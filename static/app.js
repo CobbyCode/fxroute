@@ -257,6 +257,7 @@ let state = {
         speakerAlignInFlight: false,
         speakerAlignCancelRequested: false,
         speakerAlignResult: null,
+        speakerAlignResults: null,
         statusText: 'Sweep ready. Calibration file is optional.',
         measurementSampleRate: '48000',
         assistMode: 'peq',
@@ -11830,11 +11831,15 @@ function resetMeasurementTransientStatus() {
     measurementState.statusText = '';
     measurementState.autoSubResult = null;
     measurementState.speakerAlignResult = null;
+    measurementState.speakerAlignResults = null;
     if (elements.measurementAutoSubStatus) {
         elements.measurementAutoSubStatus.textContent = MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT;
     }
     if (elements.measurementSpeakerAlignStatus) {
         elements.measurementSpeakerAlignStatus.textContent = '';
+    }
+    if (elements.measurementSpeakerAlignResults) {
+        elements.measurementSpeakerAlignResults.innerHTML = '';
     }
 }
 
@@ -11872,6 +11877,18 @@ function toggleMeasurementPanel(forceOpen = null) {
         });
     } else {
         stopMeasurementWindowHeartbeat();
+        if (typeof MeasurementFlows !== 'undefined' && typeof MeasurementFlows.clearSpeakerAlignResult === 'function') {
+            MeasurementFlows.clearSpeakerAlignResult();
+        } else {
+            const measurementState = state.measurement || {};
+            if (!measurementState.speakerAlignInFlight && !measurementState.speakerAlignJobId
+                && measurementState.activeMeasurementKind !== 'speaker_align') {
+                measurementState.speakerAlignResult = null;
+                measurementState.speakerAlignResults = null;
+                if (elements.measurementSpeakerAlignStatus) elements.measurementSpeakerAlignStatus.textContent = '';
+                if (elements.measurementSpeakerAlignResults) elements.measurementSpeakerAlignResults.innerHTML = '';
+            }
+        }
         window.FXRouteModal?.close(elements.measurementPanel);
     }
 }

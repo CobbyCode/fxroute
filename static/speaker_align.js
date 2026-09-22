@@ -94,19 +94,26 @@
             const revision = result.committed_revision;
             const revisionText = Number.isInteger(revision) ? ` at revision ${revision}` : '';
             const check = result.check;
-            const timing = check ? ` Spread ${Number(check.before_spread_ms).toFixed(3)} → ${Number(check.max_residual_ms).toFixed(3)} ms (limit ${Number(check.tolerance_ms).toFixed(3)} ms).` : '';
+            const timing = check ? ` Timing spread ${Number(check.before_spread_ms).toFixed(3)} → ${Number(check.max_residual_ms).toFixed(3)} ms (limit ${Number(check.tolerance_ms).toFixed(3)} ms).` : '';
             const gain = check && Number.isFinite(Number(check.gain_spread_db))
-                ? ` Gain spread ${Number(check.gain_spread_db).toFixed(2)} dB (limit ${Number(check.gain_tolerance_db).toFixed(2)} dB).` : '';
-            return `Speaker Align ${side} verified and committed${revisionText}.${timing}${gain}`;
+                ? ` Post-check level spread ${Number(check.gain_spread_db).toFixed(2)} dB (advisory threshold ${Number(check.gain_tolerance_db).toFixed(2)} dB).` : '';
+            const warnings = Array.isArray(check?.warnings) ? check.warnings.filter(text => String(text ?? '').trim()) : [];
+            const warningText = warnings.length ? ` Advisories: ${warnings.join('; ')}.` : '';
+            return `Speaker Align ${side} timing verified and committed${revisionText}.${timing}${gain}${warningText}`;
         }
         if (status === 'trial-done') {
             const confirmed = result.confirmed === true;
+            const warnings = Array.isArray(result.check?.warnings) ? result.check.warnings.filter(text => String(text ?? '').trim()) : [];
+            const warningText = warnings.length ? ` Advisories: ${warnings.join('; ')}.` : '';
             return confirmed
-                ? `Speaker Align ${side} trial confirmed without committing.`
-                : `Speaker Align ${side} trial did not confirm; nothing changed.`;
+                ? `Speaker Align ${side} trial confirmed without committing.${warningText}`
+                : `Speaker Align ${side} trial did not confirm; nothing changed.${warningText}`;
         }
         if (status === 'unconfirmed') {
-            return `Speaker Align ${side} not verified: ${(result.check?.reasons || []).join('; ')}. Previous delays restored.`;
+            const reasons = result.check?.reasons || [];
+            const warnings = Array.isArray(result.check?.warnings) ? result.check.warnings.filter(text => String(text ?? '').trim()) : [];
+            const warningText = warnings.length ? ` Advisories: ${warnings.join('; ')}.` : '';
+            return `Speaker Align ${side} not verified: ${reasons.join('; ')}. Previous delays restored.${warningText}`;
         }
         if (status === 'failed') {
             return trimmed(record.error) || message || `Speaker Align ${side} failed.`;
@@ -131,7 +138,7 @@
             const level = proposal.way_levels_db?.[role];
             return `<tr><th scope="row">${wayLabel(role)}${role === proposal.reference_role ? ' · ref' : ''}</th><td>${number(proposal.arrival_ms[role])}</td><td>+${number(proposal.added_delay_ms[role])}</td><td>${number(result.check.after_arrival_ms?.[role])}</td><td>${gain(gainAdded)}</td><td>${Number.isFinite(level) ? level.toFixed(1) : '—'}</td></tr>`;
         }).join('');
-        return `<table class="speaker-align-table"><caption>${side === 'right' ? 'Right' : 'Left'} speaker · ${result.confirmed ? 'Verified' : 'Not verified'} · ms/dB</caption><thead><tr><th scope="col">Way</th><th scope="col">Before</th><th scope="col">Delay added</th><th scope="col">After</th><th scope="col">Gain added</th><th scope="col">Level</th></tr></thead><tbody>${rows}</tbody></table>`;
+        return `<table class="speaker-align-table"><caption>${side === 'right' ? 'Right' : 'Left'} speaker · ${result.confirmed ? 'Verified' : 'Not verified'} · ms/dB</caption><thead><tr><th scope="col">Way</th><th scope="col">Before</th><th scope="col">Delay added</th><th scope="col">After</th><th scope="col">Gain added</th><th scope="col">Before level</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
     return {

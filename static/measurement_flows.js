@@ -825,6 +825,18 @@ async function handleSpeakerAlignResult(job) {
 }
 
 
+function clearSpeakerAlignResult() {
+    const measurementState = deps.getState().measurement || {};
+    if (measurementState.speakerAlignInFlight || measurementState.speakerAlignJobId
+        || measurementState.activeMeasurementKind === 'speaker_align') return;
+    measurementState.speakerAlignResult = null;
+    measurementState.speakerAlignResults = null;
+    const elements = deps.getElements();
+    if (elements.measurementSpeakerAlignStatus) elements.measurementSpeakerAlignStatus.textContent = '';
+    if (elements.measurementSpeakerAlignResults) elements.measurementSpeakerAlignResults.innerHTML = '';
+}
+
+
 function getHybridWizardState() {
     if (!deps.getState().measurement.hybridWizard || typeof deps.getState().measurement.hybridWizard !== 'object') {
         deps.getState().measurement.hybridWizard = {
@@ -1248,6 +1260,7 @@ function setupHybridMeasurementWizard() {
         cancelSpeakerAlign,
         pollSpeakerAlignJob,
         handleSpeakerAlignResult,
+        clearSpeakerAlignResult,
         getHybridWizardState,
         getCurrentOutputModeName,
         openHybridMeasurementWizard,
