@@ -10,6 +10,7 @@ import logging
 import math
 import statistics
 import time
+from collections.abc import Callable
 from typing import Any
 
 from audio.samplerate import (
@@ -1513,6 +1514,48 @@ def _auto_sub_dip_guard_should_veto(
         "reason": reason,
     }
     return should_veto, diagnostics
+
+def _auto_sub_confirmation_diagnostics(
+    before_points: dict[str, list],
+    final_points: dict[str, list],
+    *,
+    band_low_hz: float,
+    band_high_hz: float,
+    tolerance_db: float = _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+    dip_db_fn: Callable[[list, float, float], float | None] = _auto_sub_local_dip_db,
+    veto_fn: Callable[
+        [dict[str, float | None], dict[str, float | None]], tuple[bool, dict[str, Any]]
+    ] = _auto_sub_dip_guard_should_veto,
+) -> tuple[dict[str, Any], bool]:
+    """Pure Before/After dip diagnostics with the initial gate verdict.
+
+    Computes per-side local dips, runs the dip-guard veto and assembles the
+    confirmation gate skeleton (action ``final_kept``). The metric and veto
+    resolve through the caller's functions so runner-level patching keeps
+    working. Band selection, recheck measurement and the fallback decision
+    stay per mode; the caller reads the stored dip maps back for them.
+    """
+    before_dips = {
+        "left": dip_db_fn(before_points.get("left") or [], band_low_hz, band_high_hz),
+        "right": dip_db_fn(before_points.get("right") or [], band_low_hz, band_high_hz),
+    }
+    final_dips = {
+        "left": dip_db_fn(final_points.get("left") or [], band_low_hz, band_high_hz),
+        "right": dip_db_fn(final_points.get("right") or [], band_low_hz, band_high_hz),
+    }
+    should_veto, veto_diag = veto_fn(
+        before_dips, final_dips, per_side_tolerance_db=tolerance_db,
+    )
+    gate = {
+        "band_hz": [band_low_hz, band_high_hz],
+        "tolerance_db": tolerance_db,
+        "before_local_dip_db": before_dips,
+        "final_local_dip_db": final_dips,
+        "failed_sides": list(veto_diag.get("failed_sides") or []),
+        "action": "final_kept",
+        "dip_guard": veto_diag,
+    }
+    return gate, should_veto
 
 def _auto_sub_local_dip_recheck_decision(
     before_dips: dict[str, float | None],

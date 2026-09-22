@@ -39,6 +39,7 @@ from ..jobs import (
 from ..measurement import (
     _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+    _auto_sub_confirmation_diagnostics,
     _auto_sub_dip_guard_should_veto,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
@@ -799,27 +800,14 @@ async def _run_auto_sub_optimize(
         confirmation_gate = None
         if auto_apply:
             gate_band_low, gate_band_high = fc * 0.5, fc * 2.0
-            gate_before_dips = {
-                "left": _auto_sub_local_dip_db(balance_sweep.get("points_left") or [], gate_band_low, gate_band_high),
-                "right": _auto_sub_local_dip_db(balance_sweep.get("points_right") or [], gate_band_low, gate_band_high),
-            }
-            gate_final_dips = {
-                "left": _auto_sub_local_dip_db((final_gain_sweep or {}).get("points_left") or [], gate_band_low, gate_band_high),
-                "right": _auto_sub_local_dip_db((final_gain_sweep or {}).get("points_right") or [], gate_band_low, gate_band_high),
-            }
-            _gate_should_veto, _gate_veto_diag = _auto_sub_dip_guard_should_veto(
-                gate_before_dips, gate_final_dips,
+            confirmation_gate, _gate_should_veto = _auto_sub_confirmation_diagnostics(
+                {"left": balance_sweep.get("points_left") or [],
+                 "right": balance_sweep.get("points_right") or []},
+                {"left": (final_gain_sweep or {}).get("points_left") or [],
+                 "right": (final_gain_sweep or {}).get("points_right") or []},
+                band_low_hz=gate_band_low, band_high_hz=gate_band_high,
+                dip_db_fn=_auto_sub_local_dip_db, veto_fn=_auto_sub_dip_guard_should_veto,
             )
-            gate_failed_sides = list(_gate_veto_diag.get("failed_sides") or [])
-            confirmation_gate = {
-                "band_hz": [gate_band_low, gate_band_high],
-                "tolerance_db": _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
-                "before_local_dip_db": gate_before_dips,
-                "final_local_dip_db": gate_final_dips,
-                "failed_sides": gate_failed_sides,
-                "action": "final_kept",
-                "dip_guard": _gate_veto_diag,
-            }
             if _gate_should_veto:
                 job["stage"] = "confirmation_recheck"
                 job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent alignment at original level"
@@ -836,8 +824,8 @@ async def _run_auto_sub_optimize(
                     "right": _auto_sub_local_dip_db(recheck_sweep.get("points_right") or [], gate_band_low, gate_band_high),
                 }
                 recheck_decision = _auto_sub_local_dip_recheck_decision(
-                    gate_before_dips, gate_final_dips, recheck_dips,
-                    _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+                    confirmation_gate["before_local_dip_db"], confirmation_gate["final_local_dip_db"],
+                    recheck_dips, _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
                 )
                 recheck_outcome = recheck_decision["outcome"]
                 confirmation_gate.update({

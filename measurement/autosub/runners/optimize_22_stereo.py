@@ -57,6 +57,7 @@ from ..measurement import (
     _AUTO_SUB_ALIGNMENT_CHANGE_TOLERANCE_MS,
     _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
     _auto_sub_22_snapshot_with_gain,
+    _auto_sub_confirmation_diagnostics,
     _auto_sub_dip_guard_should_veto,
     _auto_sub_gain_deltas,
     _auto_sub_gain_log_line,
@@ -1286,27 +1287,14 @@ async def _run_auto_sub_22_stereo_optimize(
         # remains authoritative.
         # One band covering both sides: the union of their crossover regions.
         gate_band_low, gate_band_high = min(left_fc, right_fc) * 0.5, max(left_fc, right_fc) * 2.0
-        gate_before_dips = {
-            "left": _auto_sub_local_dip_db(balance_left.get("points") or [], gate_band_low, gate_band_high),
-            "right": _auto_sub_local_dip_db(balance_right.get("points") or [], gate_band_low, gate_band_high),
-        }
-        gate_final_dips = {
-            "left": _auto_sub_local_dip_db(final_gain_left.get("points") or [], gate_band_low, gate_band_high),
-            "right": _auto_sub_local_dip_db(final_gain_right.get("points") or [], gate_band_low, gate_band_high),
-        }
-        _stereo_should_veto, _stereo_veto_diag = _auto_sub_dip_guard_should_veto(
-            gate_before_dips, gate_final_dips,
+        confirmation_gate, _stereo_should_veto = _auto_sub_confirmation_diagnostics(
+            {"left": balance_left.get("points") or [],
+             "right": balance_right.get("points") or []},
+            {"left": final_gain_left.get("points") or [],
+             "right": final_gain_right.get("points") or []},
+            band_low_hz=gate_band_low, band_high_hz=gate_band_high,
+            dip_db_fn=_auto_sub_local_dip_db, veto_fn=_auto_sub_dip_guard_should_veto,
         )
-        gate_failed_sides = list(_stereo_veto_diag.get("failed_sides") or [])
-        confirmation_gate = {
-            "band_hz": [gate_band_low, gate_band_high],
-            "tolerance_db": _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
-            "before_local_dip_db": gate_before_dips,
-            "final_local_dip_db": gate_final_dips,
-            "failed_sides": gate_failed_sides,
-            "action": "final_kept",
-            "dip_guard": _stereo_veto_diag,
-        }
         if _stereo_should_veto:
             job["stage"] = "confirmation_recheck"
             job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent alignment at original levels"
@@ -1336,6 +1324,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 "left": _auto_sub_local_dip_db(recheck_left.get("points") or [], gate_band_low, gate_band_high),
                 "right": _auto_sub_local_dip_db(recheck_right.get("points") or [], gate_band_low, gate_band_high),
             }
+            gate_before_dips = confirmation_gate["before_local_dip_db"]
             recheck_passed = all(
                 recheck_dips[side] is None or gate_before_dips[side] is None
                 or recheck_dips[side] <= gate_before_dips[side] + _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB
