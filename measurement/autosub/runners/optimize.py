@@ -31,6 +31,7 @@ from ..deps import (
     _measurement_session,
     activate_candidate_owner,
 )
+from ..gain_trial import GainTrialResult, _run_gain_trial
 from ..jobs import (
     _finish_auto_sub_worker,
     _log_auto_sub_timing_summary,
@@ -643,39 +644,45 @@ async def _run_auto_sub_optimize(
             "first_step_db": applied_gain_delta,
         })
         gained_level = max(-24.0, min(12.0, original_level + applied_gain_delta))
-        if abs(applied_gain_delta) > 0.0005:
-            await _stage_auto_sub_service_state(
-                job,
-                global_config={
-                    "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                    "sub_level_db": gained_level, "sub_polarity": final_polarity,
-                    "main_highpass_enabled": original_highpass,
-                },
+        def _calc_gain(sweep: dict[str, Any]) -> dict[str, Any]:
+            return _calculate_auto_sub_gain(
+                mode=OUTPUT_MODE_SUBWOOFER_21, target_curve=job.get("target_curve"),
+                anchor=job.get("main_target_anchor"), winner_curves={
+                    "left": sweep.get("calibrated_points_left") or [],
+                    "right": sweep.get("calibrated_points_right") or [],
+                }, crossover_hz=fc,
             )
-        gain_after_sweep = await _measure_auto_sub_combined_candidate(
-            delay_ms=applied_delay, job=job, candidate_index=1, total=1,
-            sweep_index_start=total + 1, sweep_total=total + 2, stage="gain_after",
-            original_level=gained_level, original_polarity=final_polarity,
-            original_highpass=original_highpass, output_mode=OUTPUT_MODE_SUBWOOFER_21,
-            original_config_snapshot=original_config_snapshot,
-            **capture.sweep_kwargs(),
-        )
-        gain_after = _calculate_auto_sub_gain(
-            mode=OUTPUT_MODE_SUBWOOFER_21, target_curve=job.get("target_curve"),
-            anchor=job.get("main_target_anchor"), winner_curves={
-                "left": gain_after_sweep.get("calibrated_points_left") or [],
-                "right": gain_after_sweep.get("calibrated_points_right") or [],
-            }, crossover_hz=fc,
-        )
-        gain_verdict = _auto_sub_gain_verdict(job["auto_gain"], gain_after, OUTPUT_MODE_SUBWOOFER_21)
-        final_gain_deltas = gain_deltas if gain_verdict["accepted"] else {"left": 0.0, "right": 0.0}
-        final_gain_level = gained_level if gain_verdict["accepted"] else original_level
-        final_gain_sweep = gain_after_sweep if gain_verdict["accepted"] else gain_winner
-        correction_deltas: dict[str, float] = {}
-        correction_plan = None
-        correction_after = None
-        correction_verdict = None
-        if not gain_verdict["accepted"]:
+
+        def _judge_gain(base: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+            return _auto_sub_gain_verdict(base, new, OUTPUT_MODE_SUBWOOFER_21)
+
+        def _plan_gain_correction(
+            base: dict[str, Any], after: dict[str, Any], deltas: dict[str, float],
+        ) -> dict[str, Any] | None:
+            return _auto_sub_gain_response_correction(
+                base, after, deltas, OUTPUT_MODE_SUBWOOFER_21,
+            )
+
+        async def _capture_gain_after() -> dict[str, Any]:
+            if abs(applied_gain_delta) > 0.0005:
+                await _stage_auto_sub_service_state(
+                    job,
+                    global_config={
+                        "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
+                        "sub_level_db": gained_level, "sub_polarity": final_polarity,
+                        "main_highpass_enabled": original_highpass,
+                    },
+                )
+            return await _measure_auto_sub_combined_candidate(
+                delay_ms=applied_delay, job=job, candidate_index=1, total=1,
+                sweep_index_start=total + 1, sweep_total=total + 2, stage="gain_after",
+                original_level=gained_level, original_polarity=final_polarity,
+                original_highpass=original_highpass, output_mode=OUTPUT_MODE_SUBWOOFER_21,
+                original_config_snapshot=original_config_snapshot,
+                **capture.sweep_kwargs(),
+            )
+
+        async def _restore_pre_gain() -> None:
             await _stage_auto_sub_service_state(
                 job,
                 global_config={
@@ -684,61 +691,61 @@ async def _run_auto_sub_optimize(
                     "main_highpass_enabled": original_highpass,
                 },
             )
-        else:
-            correction_plan = _auto_sub_gain_response_correction(
-                job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_21,
-            )
-            correction_deltas = correction_plan.get("deltas_db") or {}
+
+        async def _capture_correction_after(correction_deltas: dict[str, float]) -> dict[str, Any]:
             correction_delta = correction_deltas.get("left", 0.0)
             corrected_level = max(-24.0, min(12.0, gained_level + correction_delta))
-            if not correction_plan.get("available"):
-                correction_verdict = {
-                    "accepted": False,
-                    "reason": correction_plan.get("reason"),
-                    "channels": {},
-                    "step1_retained": True,
-                }
-            elif abs(correction_delta) > 0.0005:
-                await _stage_auto_sub_service_state(
-                    job,
-                    global_config={
-                        "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                        "sub_level_db": corrected_level, "sub_polarity": final_polarity,
-                        "main_highpass_enabled": original_highpass,
-                    },
-                )
-                correction_sweep = await _measure_auto_sub_combined_candidate(
-                    delay_ms=applied_delay, job=job, candidate_index=1, total=1,
-                    sweep_index_start=total + 3, sweep_total=total + 4, stage="gain_correction_after",
-                    original_level=corrected_level, original_polarity=final_polarity,
-                    original_highpass=original_highpass, output_mode=OUTPUT_MODE_SUBWOOFER_21,
-                    original_config_snapshot=original_config_snapshot,
-                    **capture.sweep_kwargs(),
-                )
-                correction_after = _calculate_auto_sub_gain(
-                    mode=OUTPUT_MODE_SUBWOOFER_21, target_curve=job.get("target_curve"),
-                    anchor=job.get("main_target_anchor"), winner_curves={
-                        "left": correction_sweep.get("calibrated_points_left") or [],
-                        "right": correction_sweep.get("calibrated_points_right") or [],
-                    }, crossover_hz=fc,
-                )
-                correction_verdict = _auto_sub_gain_verdict(gain_after, correction_after, OUTPUT_MODE_SUBWOOFER_21)
-                if correction_verdict["accepted"]:
-                    final_gain_deltas = {
-                        "left": applied_gain_delta + correction_delta,
-                        "right": applied_gain_delta + correction_delta,
-                    }
-                    final_gain_level = corrected_level
-                    final_gain_sweep = correction_sweep
-                else:
-                    await _stage_auto_sub_service_state(
-                        job,
-                        global_config={
-                            "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
-                            "sub_level_db": gained_level, "sub_polarity": final_polarity,
-                            "main_highpass_enabled": original_highpass,
-                        },
-                    )
+            await _stage_auto_sub_service_state(
+                job,
+                global_config={
+                    "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
+                    "sub_level_db": corrected_level, "sub_polarity": final_polarity,
+                    "main_highpass_enabled": original_highpass,
+                },
+            )
+            return await _measure_auto_sub_combined_candidate(
+                delay_ms=applied_delay, job=job, candidate_index=1, total=1,
+                sweep_index_start=total + 3, sweep_total=total + 4, stage="gain_correction_after",
+                original_level=corrected_level, original_polarity=final_polarity,
+                original_highpass=original_highpass, output_mode=OUTPUT_MODE_SUBWOOFER_21,
+                original_config_snapshot=original_config_snapshot,
+                **capture.sweep_kwargs(),
+            )
+
+        async def _restore_step1() -> None:
+            await _stage_auto_sub_service_state(
+                job,
+                global_config={
+                    "crossover_frequency_hz": fc, "sub_alignment_ms": applied_delay,
+                    "sub_level_db": gained_level, "sub_polarity": final_polarity,
+                    "main_highpass_enabled": original_highpass,
+                },
+            )
+
+        trial: GainTrialResult = await _run_gain_trial(
+            initial_gain=job["auto_gain"], gain_deltas=gain_deltas, fallback_sweep=gain_winner,
+            calc_gain_fn=_calc_gain, verdict_fn=_judge_gain, correction_plan_fn=_plan_gain_correction,
+            capture_gain_after=_capture_gain_after, restore_pre_gain=_restore_pre_gain,
+            capture_correction_after=_capture_correction_after, restore_step1=_restore_step1,
+        )
+        gain_after_sweep = trial.after_sweep
+        gain_after = trial.after_gain
+        gain_verdict = trial.verdict
+        correction_plan = trial.correction_plan
+        correction_deltas = trial.correction_deltas
+        correction_after = trial.correction_gain
+        correction_verdict = trial.correction_verdict
+        final_gain_deltas = gain_deltas if trial.step1_accepted else {"left": 0.0, "right": 0.0}
+        final_gain_level = gained_level if trial.step1_accepted else original_level
+        final_gain_sweep = trial.retained_sweep
+        if trial.step2_accepted:
+            correction_delta = trial.correction_deltas.get("left", 0.0)
+            corrected_level = max(-24.0, min(12.0, gained_level + correction_delta))
+            final_gain_deltas = {
+                "left": applied_gain_delta + correction_delta,
+                "right": applied_gain_delta + correction_delta,
+            }
+            final_gain_level = corrected_level
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": gained_level,
             "score_before": _auto_sub_gain_log_score(job["auto_gain"]),

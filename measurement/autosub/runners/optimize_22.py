@@ -39,6 +39,7 @@ from ..deps import (
     _measurement_session,
     activate_candidate_owner,
 )
+from ..gain_trial import GainTrialResult, _run_gain_trial
 from ..jobs import (
     _auto_sub_executed_sweep_count,
     _finish_auto_sub_worker,
@@ -523,32 +524,38 @@ async def _run_auto_sub_22_optimize(
             await _restore_original_config()
             return
 
-        gain_after_sweep = await _measure_auto_sub_combined_candidate(
-            delay_ms=best_sub1, job=job, candidate_index=1, total=1,
-            sweep_index_start=matrix_sweep_total + 1, sweep_total=matrix_sweep_total + 2,
-            stage="gain_after",
-            original_level=0.0, original_polarity="normal",
-            original_highpass=bool(_auto_sub_22_global_config(gain_snapshot).get("main_highpass_enabled", True)),
-            output_mode=OUTPUT_MODE_SUBWOOFER_22, original_config_snapshot=gain_snapshot,
-            sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2, active_subs=("sub1", "sub2"),
-            **capture.sweep_kwargs(),
-        )
-        gain_after = _calculate_auto_sub_gain(
-            mode=OUTPUT_MODE_SUBWOOFER_22, target_curve=job.get("target_curve"),
-            anchor=job.get("main_target_anchor"), winner_curves={
-                "left": gain_after_sweep.get("calibrated_points_left") or [],
-                "right": gain_after_sweep.get("calibrated_points_right") or [],
-            }, crossover_hz=fc,
-        )
-        gain_verdict = _auto_sub_gain_verdict(job["auto_gain"], gain_after, OUTPUT_MODE_SUBWOOFER_22)
-        final_gain_deltas = gain_deltas if gain_verdict["accepted"] else {"left": 0.0, "right": 0.0}
-        final_gain_snapshot = gain_snapshot if gain_verdict["accepted"] else polarity_snapshot
-        final_gain_sweep = gain_after_sweep if gain_verdict["accepted"] else gain_winner
-        correction_deltas: dict[str, float] = {}
-        correction_plan = None
-        correction_after = None
-        correction_verdict = None
-        if not gain_verdict["accepted"]:
+        def _calc_gain(sweep: dict[str, Any]) -> dict[str, Any]:
+            return _calculate_auto_sub_gain(
+                mode=OUTPUT_MODE_SUBWOOFER_22, target_curve=job.get("target_curve"),
+                anchor=job.get("main_target_anchor"), winner_curves={
+                    "left": sweep.get("calibrated_points_left") or [],
+                    "right": sweep.get("calibrated_points_right") or [],
+                }, crossover_hz=fc,
+            )
+
+        def _judge_gain(base: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+            return _auto_sub_gain_verdict(base, new, OUTPUT_MODE_SUBWOOFER_22)
+
+        def _plan_gain_correction(
+            base: dict[str, Any], after: dict[str, Any], deltas: dict[str, float],
+        ) -> dict[str, Any] | None:
+            return _auto_sub_gain_response_correction(
+                base, after, deltas, OUTPUT_MODE_SUBWOOFER_22,
+            )
+
+        async def _capture_gain_after() -> dict[str, Any]:
+            return await _measure_auto_sub_combined_candidate(
+                delay_ms=best_sub1, job=job, candidate_index=1, total=1,
+                sweep_index_start=matrix_sweep_total + 1, sweep_total=matrix_sweep_total + 2,
+                stage="gain_after",
+                original_level=0.0, original_polarity="normal",
+                original_highpass=bool(_auto_sub_22_global_config(gain_snapshot).get("main_highpass_enabled", True)),
+                output_mode=OUTPUT_MODE_SUBWOOFER_22, original_config_snapshot=gain_snapshot,
+                sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2, active_subs=("sub1", "sub2"),
+                **capture.sweep_kwargs(),
+            )
+
+        async def _restore_pre_gain() -> None:
             rollback_subs = _auto_sub_22_candidate_subwoofers(
                 polarity_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
                 active_subs=("sub1", "sub2"),
@@ -558,65 +565,67 @@ async def _run_auto_sub_22_optimize(
                 global_config=_auto_sub_22_global_config(polarity_snapshot),
                 subwoofers_config=rollback_subs,
             )
-        else:
-            correction_plan = _auto_sub_gain_response_correction(
-                job["auto_gain"], gain_after, gain_deltas, OUTPUT_MODE_SUBWOOFER_22,
-            )
-            correction_deltas = correction_plan.get("deltas_db") or {}
+
+        async def _capture_correction_after(correction_deltas: dict[str, float]) -> dict[str, Any]:
             correction_delta = correction_deltas.get("left", 0.0)
-            if not correction_plan.get("available"):
-                correction_verdict = {
-                    "accepted": False,
-                    "reason": correction_plan.get("reason"),
-                    "channels": {},
-                    "step1_retained": True,
-                }
-            elif abs(correction_delta) > 0.0005:
-                correction_snapshot = _auto_sub_22_snapshot_with_gain(
-                    gain_snapshot, left_delta_db=correction_delta, right_delta_db=correction_delta,
-                )
-                await _stage_auto_sub_service_state(
-                    job,
-                    global_config=_auto_sub_22_global_config(correction_snapshot),
-                    subwoofers_config=_auto_sub_22_candidate_subwoofers(
-                        correction_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
-                        active_subs=("sub1", "sub2"),
-                    ),
-                )
-                correction_sweep = await _measure_auto_sub_combined_candidate(
-                    delay_ms=best_sub1, job=job, candidate_index=1, total=1,
-                    sweep_index_start=matrix_sweep_total + 3, sweep_total=matrix_sweep_total + 4,
-                    stage="gain_correction_after",
-                    original_level=0.0, original_polarity="normal",
-                    original_highpass=bool(_auto_sub_22_global_config(correction_snapshot).get("main_highpass_enabled", True)),
-                    output_mode=OUTPUT_MODE_SUBWOOFER_22, original_config_snapshot=correction_snapshot,
-                    sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2, active_subs=("sub1", "sub2"),
-                    **capture.sweep_kwargs(),
-                )
-                correction_after = _calculate_auto_sub_gain(
-                    mode=OUTPUT_MODE_SUBWOOFER_22, target_curve=job.get("target_curve"),
-                    anchor=job.get("main_target_anchor"), winner_curves={
-                        "left": correction_sweep.get("calibrated_points_left") or [],
-                        "right": correction_sweep.get("calibrated_points_right") or [],
-                    }, crossover_hz=fc,
-                )
-                correction_verdict = _auto_sub_gain_verdict(gain_after, correction_after, OUTPUT_MODE_SUBWOOFER_22)
-                if correction_verdict["accepted"]:
-                    final_gain_deltas = {
-                        "left": gain_deltas.get("left", 0.0) + correction_delta,
-                        "right": gain_deltas.get("right", 0.0) + correction_delta,
-                    }
-                    final_gain_snapshot = correction_snapshot
-                    final_gain_sweep = correction_sweep
-                else:
-                    await _stage_auto_sub_service_state(
-                        job,
-                        global_config=_auto_sub_22_global_config(gain_snapshot),
-                        subwoofers_config=_auto_sub_22_candidate_subwoofers(
-                            gain_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
-                            active_subs=("sub1", "sub2"),
-                        ),
-                    )
+            correction_snapshot = _auto_sub_22_snapshot_with_gain(
+                gain_snapshot, left_delta_db=correction_delta, right_delta_db=correction_delta,
+            )
+            await _stage_auto_sub_service_state(
+                job,
+                global_config=_auto_sub_22_global_config(correction_snapshot),
+                subwoofers_config=_auto_sub_22_candidate_subwoofers(
+                    correction_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
+                    active_subs=("sub1", "sub2"),
+                ),
+            )
+            return await _measure_auto_sub_combined_candidate(
+                delay_ms=best_sub1, job=job, candidate_index=1, total=1,
+                sweep_index_start=matrix_sweep_total + 3, sweep_total=matrix_sweep_total + 4,
+                stage="gain_correction_after",
+                original_level=0.0, original_polarity="normal",
+                original_highpass=bool(_auto_sub_22_global_config(correction_snapshot).get("main_highpass_enabled", True)),
+                output_mode=OUTPUT_MODE_SUBWOOFER_22, original_config_snapshot=correction_snapshot,
+                sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2, active_subs=("sub1", "sub2"),
+                **capture.sweep_kwargs(),
+            )
+
+        async def _restore_step1() -> None:
+            await _stage_auto_sub_service_state(
+                job,
+                global_config=_auto_sub_22_global_config(gain_snapshot),
+                subwoofers_config=_auto_sub_22_candidate_subwoofers(
+                    gain_snapshot, sub1_alignment_ms=best_sub1, sub2_alignment_ms=best_sub2,
+                    active_subs=("sub1", "sub2"),
+                ),
+            )
+
+        trial: GainTrialResult = await _run_gain_trial(
+            initial_gain=job["auto_gain"], gain_deltas=gain_deltas, fallback_sweep=gain_winner,
+            calc_gain_fn=_calc_gain, verdict_fn=_judge_gain, correction_plan_fn=_plan_gain_correction,
+            capture_gain_after=_capture_gain_after, restore_pre_gain=_restore_pre_gain,
+            capture_correction_after=_capture_correction_after, restore_step1=_restore_step1,
+        )
+        gain_after_sweep = trial.after_sweep
+        gain_after = trial.after_gain
+        gain_verdict = trial.verdict
+        correction_plan = trial.correction_plan
+        correction_deltas = trial.correction_deltas
+        correction_after = trial.correction_gain
+        correction_verdict = trial.correction_verdict
+        final_gain_deltas = gain_deltas if trial.step1_accepted else {"left": 0.0, "right": 0.0}
+        final_gain_snapshot = gain_snapshot if trial.step1_accepted else polarity_snapshot
+        final_gain_sweep = trial.retained_sweep
+        if trial.step2_accepted:
+            correction_delta = trial.correction_deltas.get("left", 0.0)
+            correction_snapshot = _auto_sub_22_snapshot_with_gain(
+                gain_snapshot, left_delta_db=correction_delta, right_delta_db=correction_delta,
+            )
+            final_gain_deltas = {
+                "left": gain_deltas.get("left", 0.0) + correction_delta,
+                "right": gain_deltas.get("right", 0.0) + correction_delta,
+            }
+            final_gain_snapshot = correction_snapshot
         _auto_sub_gain_log_line("AUTOGAIN_FEEDBACK", {
             "gain_after_step1": {
                 "sub1": float(_auto_sub_22_sub(gain_snapshot, "sub1").get("level_db", 0.0)),
