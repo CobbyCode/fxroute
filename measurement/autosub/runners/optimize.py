@@ -23,6 +23,7 @@ from ..candidates import (
     _stage_auto_sub_service_state,
     _commit_auto_sub_service_winner,
 )
+from ..capture import AutoSubCaptureContext
 from ..deps import (
     _AUTO_SUB_JOBS,
     _auto_sub_cancel_requested,
@@ -140,13 +141,18 @@ async def _run_auto_sub_optimize(
 
         # Resolve sample rate once for all sweeps
         auto_sub_rate = owned_rate if owned_rate is not None else _resolve_measurement_start_sample_rate()
-        await _capture_auto_sub_main_references(
-            job=job, fc=fc, input_id=input_id,
-            mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
+        capture = AutoSubCaptureContext(
+            input_id=input_id, mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
             calibration_ref=calibration_ref, calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes, auto_sub_rate=auto_sub_rate,
+            auto_sub_sweep_profile=auto_sub_sweep_profile, fc=fc,
+        )
+        await _capture_auto_sub_main_references(
+            job=job,
             output_mode=OUTPUT_MODE_SUBWOOFER_21,
             original_config_snapshot=original_config_snapshot,
+            **capture.base_kwargs(),
         )
         if _auto_sub_cancel_requested(job):
             job["message"] = "Auto Sub Optimize cancelled."
@@ -167,13 +173,10 @@ async def _run_auto_sub_optimize(
         job["message"] = "Auto Sub Optimize: measuring incumbent baseline"
         balance_sweep = await _measure_auto_sub_combined_candidate(
             delay_ms=current_alignment, job=job, candidate_index=1, total=1,
-            sweep_index_start=1, sweep_total=total, stage="balance_check", fc=fc,
-            input_id=input_id, mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
-            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
-            auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+            sweep_index_start=1, sweep_total=total, stage="balance_check",
             original_level=original_level, original_polarity=original_polarity,
             original_highpass=original_highpass,
+            **capture.sweep_kwargs(),
         )
         if _auto_sub_cancel_requested(job):
             job["message"] = "Auto Sub Optimize cancelled."
@@ -201,18 +204,10 @@ async def _run_auto_sub_optimize(
                     sweep_index_start=balance_sweep_total + (idx * 2) + 1,
                     sweep_total=total,
                     stage="coarse",
-                    fc=fc,
-                    input_id=input_id,
-                    mic_input_channel=mic_input_channel,
-                    reference_input_channel=reference_input_channel,
-                    calibration_ref=calibration_ref,
-                    calibration_filename=calibration_filename,
-                    calibration_bytes=calibration_bytes,
-                    auto_sub_sweep_profile=auto_sub_sweep_profile,
-                    auto_sub_rate=auto_sub_rate,
                     original_level=original_level,
                     original_polarity=original_polarity,
                     original_highpass=original_highpass,
+                    **capture.sweep_kwargs(),
                 )
             )
             if _auto_sub_cancel_requested(job):
@@ -317,18 +312,10 @@ async def _run_auto_sub_optimize(
                             sweep_index_start=coarse_sweep_total + (idx * 2) + 1,
                             sweep_total=total,
                             stage="fine",
-                            fc=fc,
-                            input_id=input_id,
-                            mic_input_channel=mic_input_channel,
-                            reference_input_channel=reference_input_channel,
-                            calibration_ref=calibration_ref,
-                            calibration_filename=calibration_filename,
-                            calibration_bytes=calibration_bytes,
-                            auto_sub_sweep_profile=auto_sub_sweep_profile,
-                            auto_sub_rate=auto_sub_rate,
                             original_level=original_level,
                             original_polarity=original_polarity,
                             original_highpass=original_highpass,
+                            **capture.sweep_kwargs(),
                         )
                     )
                     if _auto_sub_cancel_requested(job):
@@ -538,13 +525,10 @@ async def _run_auto_sub_optimize(
             opposite = _auto_sub_opposite_polarity(original_polarity)
             alt = await _measure_auto_sub_combined_candidate(
                 delay_ms=applied_delay, job=job, candidate_index=1, total=1,
-                sweep_index_start=total + 1, sweep_total=total + 2, stage="polarity_check", fc=fc,
-                input_id=input_id, mic_input_channel=mic_input_channel,
-                reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
-                calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
-                auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+                sweep_index_start=total + 1, sweep_total=total + 2, stage="polarity_check",
                 original_level=original_level, original_polarity=opposite,
                 original_highpass=original_highpass,
+                **capture.sweep_kwargs(),
             )
             try:
                 gate_scoring = _score_auto_sub_combined_candidates(
@@ -570,12 +554,10 @@ async def _run_auto_sub_optimize(
                         measured = await _measure_auto_sub_combined_candidate(
                             delay_ms=delay, job=job, candidate_index=idx + 1, total=len(local_delays),
                             sweep_index_start=total + 3 + idx * 2, sweep_total=total + 2 + len(local_delays) * 2,
-                            stage="polarity_fine", fc=fc, input_id=input_id,
-                            mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-                            calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                            calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
-                            auto_sub_rate=auto_sub_rate, original_level=original_level,
+                            stage="polarity_fine",
+                            original_level=original_level,
                             original_polarity=opposite, original_highpass=original_highpass,
+                            **capture.sweep_kwargs(),
                         )
                         placeholder = 2.0 + idx
                         invert_rows.append(dict(measured, delay_ms=placeholder))
@@ -672,14 +654,11 @@ async def _run_auto_sub_optimize(
             )
         gain_after_sweep = await _measure_auto_sub_combined_candidate(
             delay_ms=applied_delay, job=job, candidate_index=1, total=1,
-            sweep_index_start=total + 1, sweep_total=total + 2, stage="gain_after", fc=fc,
-            input_id=input_id, mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
-            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
-            auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+            sweep_index_start=total + 1, sweep_total=total + 2, stage="gain_after",
             original_level=gained_level, original_polarity=final_polarity,
             original_highpass=original_highpass, output_mode=OUTPUT_MODE_SUBWOOFER_21,
             original_config_snapshot=original_config_snapshot,
+            **capture.sweep_kwargs(),
         )
         gain_after = _calculate_auto_sub_gain(
             mode=OUTPUT_MODE_SUBWOOFER_21, target_curve=job.get("target_curve"),
@@ -730,14 +709,11 @@ async def _run_auto_sub_optimize(
                 )
                 correction_sweep = await _measure_auto_sub_combined_candidate(
                     delay_ms=applied_delay, job=job, candidate_index=1, total=1,
-                    sweep_index_start=total + 3, sweep_total=total + 4, stage="gain_correction_after", fc=fc,
-                    input_id=input_id, mic_input_channel=mic_input_channel,
-                    reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
-                    calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
-                    auto_sub_sweep_profile=auto_sub_sweep_profile, auto_sub_rate=auto_sub_rate,
+                    sweep_index_start=total + 3, sweep_total=total + 4, stage="gain_correction_after",
                     original_level=corrected_level, original_polarity=final_polarity,
                     original_highpass=original_highpass, output_mode=OUTPUT_MODE_SUBWOOFER_21,
                     original_config_snapshot=original_config_snapshot,
+                    **capture.sweep_kwargs(),
                 )
                 correction_after = _calculate_auto_sub_gain(
                     mode=OUTPUT_MODE_SUBWOOFER_21, target_curve=job.get("target_curve"),
@@ -843,13 +819,10 @@ async def _run_auto_sub_optimize(
                 recheck_sweep = await _measure_auto_sub_combined_candidate(
                     delay_ms=current_alignment, job=job, candidate_index=1, total=1,
                     sweep_index_start=total + 5, sweep_total=total + 7,
-                    stage="confirmation_recheck", fc=fc, input_id=input_id,
-                    mic_input_channel=mic_input_channel,
-                    reference_input_channel=reference_input_channel,
-                    calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                    calibration_bytes=calibration_bytes, auto_sub_sweep_profile=auto_sub_sweep_profile,
-                    auto_sub_rate=auto_sub_rate, original_level=original_level,
+                    stage="confirmation_recheck",
+                    original_level=original_level,
                     original_polarity=original_polarity, original_highpass=original_highpass,
+                    **capture.sweep_kwargs(),
                 )
                 recheck_dips = {
                     "left": _auto_sub_local_dip_db(recheck_sweep.get("points_left") or [], gate_band_low, gate_band_high),

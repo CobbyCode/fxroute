@@ -37,6 +37,7 @@ from ..candidates import (
     _stage_auto_sub_service_state,
     _commit_auto_sub_service_winner,
 )
+from ..capture import AutoSubCaptureContext
 from ..deps import (
     _AUTO_SUB_JOBS,
     _auto_sub_cancel_requested,
@@ -178,14 +179,26 @@ async def _run_auto_sub_22_stereo_optimize(
         left_sweep_profile = _auto_sub_sweep_profile(left_fc)
         right_sweep_profile = _auto_sub_sweep_profile(right_fc)
         auto_sub_rate = owned_rate if owned_rate is not None else _resolve_measurement_start_sample_rate()
-        await _capture_auto_sub_main_references(
-            job=job, fc=fc, input_id=input_id,
-            mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
+        left_capture = AutoSubCaptureContext(
+            input_id=input_id, mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
             calibration_ref=calibration_ref, calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes, auto_sub_rate=auto_sub_rate,
+            auto_sub_sweep_profile=left_sweep_profile, fc=left_fc,
+        )
+        right_capture = AutoSubCaptureContext(
+            input_id=input_id, mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
+            calibration_ref=calibration_ref, calibration_filename=calibration_filename,
+            calibration_bytes=calibration_bytes, auto_sub_rate=auto_sub_rate,
+            auto_sub_sweep_profile=right_sweep_profile, fc=right_fc,
+        )
+        await _capture_auto_sub_main_references(
+            job=job, fc=fc,
             output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
             original_config_snapshot=original_config_snapshot,
             side_fc={"left": left_fc, "right": right_fc},
+            **left_capture.device_kwargs(),
         )
         if _auto_sub_cancel_requested(job):
             job["message"] = "Auto Sub Optimize cancelled."
@@ -214,29 +227,25 @@ async def _run_auto_sub_22_stereo_optimize(
         job["message"] = "Auto Sub Optimize: measuring incumbent baseline"
         balance_left = await _measure_auto_sub_candidate(
             delay_ms=original_left_alignment, job=job, candidate_index=1, total=2,
-            stage="balance_check", fc=left_fc, input_id=input_id, channel="left",
-            mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-            calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes, auto_sub_sweep_profile=left_sweep_profile,
-            auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+            stage="balance_check", channel="left",
+            original_level=0.0, original_polarity="normal",
             original_highpass=True, measure_channel="left",
             output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
             original_config_snapshot=original_config_snapshot,
             sub1_alignment_ms=original_left_alignment,
             sub2_alignment_ms=original_right_alignment, active_subs=("sub1", "sub2"),
+            **left_capture.sweep_kwargs(),
         )
         balance_right = await _measure_auto_sub_candidate(
             delay_ms=original_right_alignment, job=job, candidate_index=2, total=2,
-            stage="balance_check", fc=right_fc, input_id=input_id, channel="right",
-            mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-            calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes, auto_sub_sweep_profile=right_sweep_profile,
-            auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+            stage="balance_check", channel="right",
+            original_level=0.0, original_polarity="normal",
             original_highpass=True, measure_channel="right",
             output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
             original_config_snapshot=original_config_snapshot,
             sub1_alignment_ms=original_left_alignment,
             sub2_alignment_ms=original_right_alignment, active_subs=("sub1", "sub2"),
+            **right_capture.sweep_kwargs(),
         )
         if _auto_sub_cancel_requested(job):
             job["message"] = "Auto Sub Optimize cancelled."
@@ -268,16 +277,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 candidate_index=sweep_index,
                 total=planned_sweep_total,
                 stage="left_sub",
-                fc=left_fc,
-                input_id=input_id,
                 channel="left",
-                mic_input_channel=mic_input_channel,
-                reference_input_channel=reference_input_channel,
-                calibration_ref=calibration_ref,
-                calibration_filename=calibration_filename,
-                calibration_bytes=calibration_bytes,
-                auto_sub_sweep_profile=left_sweep_profile,
-                auto_sub_rate=auto_sub_rate,
                 original_level=0.0,
                 original_polarity="normal",
                 original_highpass=True,
@@ -290,6 +290,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 sub1_alignment_ms=delay_ms,
                 sub2_alignment_ms=original_right_alignment,
                 active_subs=("sub1",),
+                **left_capture.sweep_kwargs(),
             ))
             if isinstance(job.get("progress"), dict):
                 job["progress"]["sweep_current"] = sweep_index
@@ -354,16 +355,7 @@ async def _run_auto_sub_22_stereo_optimize(
                     candidate_index=sweep_index,
                     total=planned_sweep_total,
                     stage="left_fine",
-                    fc=left_fc,
-                    input_id=input_id,
                     channel="left",
-                    mic_input_channel=mic_input_channel,
-                    reference_input_channel=reference_input_channel,
-                    calibration_ref=calibration_ref,
-                    calibration_filename=calibration_filename,
-                    calibration_bytes=calibration_bytes,
-                    auto_sub_sweep_profile=left_sweep_profile,
-                    auto_sub_rate=auto_sub_rate,
                     original_level=0.0,
                     original_polarity="normal",
                     original_highpass=True,
@@ -376,6 +368,7 @@ async def _run_auto_sub_22_stereo_optimize(
                     sub1_alignment_ms=delay_ms,
                     sub2_alignment_ms=original_right_alignment,
                     active_subs=("sub1",),
+                    **left_capture.sweep_kwargs(),
                 ))
                 if isinstance(job.get("progress"), dict):
                     job["progress"]["sweep_current"] = sweep_index
@@ -417,17 +410,13 @@ async def _run_auto_sub_22_stereo_optimize(
             # Mirrors the left alignment scan configuration for one delay.
             return await _measure_auto_sub_candidate(
                 delay_ms=delay_ms, job=job, candidate_index=index + 1, total=2,
-                stage="left_tiebreak", fc=left_fc, input_id=input_id, channel="left",
-                mic_input_channel=mic_input_channel,
-                reference_input_channel=reference_input_channel,
-                calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                calibration_bytes=calibration_bytes,
-                auto_sub_sweep_profile=left_sweep_profile, auto_sub_rate=auto_sub_rate,
+                stage="left_tiebreak", channel="left",
                 original_level=0.0, original_polarity="normal", original_highpass=True,
                 measure_channel="left", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                 original_config_snapshot=balanced_snapshot,
                 sub1_alignment_ms=delay_ms, sub2_alignment_ms=original_right_alignment,
                 active_subs=("sub1",),
+                **left_capture.sweep_kwargs(),
             )
 
         async def _right_tiebreak_measure(delay_ms: float, index: int) -> dict[str, Any]:
@@ -435,17 +424,13 @@ async def _run_auto_sub_22_stereo_optimize(
             # best_left is read at call time (the left winner is final then).
             return await _measure_auto_sub_candidate(
                 delay_ms=delay_ms, job=job, candidate_index=index + 1, total=2,
-                stage="right_tiebreak", fc=right_fc, input_id=input_id, channel="right",
-                mic_input_channel=mic_input_channel,
-                reference_input_channel=reference_input_channel,
-                calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                calibration_bytes=calibration_bytes,
-                auto_sub_sweep_profile=right_sweep_profile, auto_sub_rate=auto_sub_rate,
+                stage="right_tiebreak", channel="right",
                 original_level=0.0, original_polarity="normal", original_highpass=True,
                 measure_channel="right", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                 original_config_snapshot=balanced_snapshot,
                 sub1_alignment_ms=best_left, sub2_alignment_ms=delay_ms,
                 active_subs=("sub2",),
+                **right_capture.sweep_kwargs(),
             )
 
         left_final_valid = left_valid + left_fine_valid
@@ -505,16 +490,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 candidate_index=sweep_index,
                 total=planned_sweep_total,
                 stage="right_sub",
-                fc=right_fc,
-                input_id=input_id,
                 channel="right",
-                mic_input_channel=mic_input_channel,
-                reference_input_channel=reference_input_channel,
-                calibration_ref=calibration_ref,
-                calibration_filename=calibration_filename,
-                calibration_bytes=calibration_bytes,
-                auto_sub_sweep_profile=right_sweep_profile,
-                auto_sub_rate=auto_sub_rate,
                 original_level=0.0,
                 original_polarity="normal",
                 original_highpass=True,
@@ -527,6 +503,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 sub1_alignment_ms=best_left,
                 sub2_alignment_ms=delay_ms,
                 active_subs=("sub2",),
+                **right_capture.sweep_kwargs(),
             ))
             if isinstance(job.get("progress"), dict):
                 job["progress"]["sweep_current"] = sweep_index
@@ -594,16 +571,7 @@ async def _run_auto_sub_22_stereo_optimize(
                     candidate_index=sweep_index,
                     total=actual_sweep_total,
                     stage="right_fine",
-                    fc=right_fc,
-                    input_id=input_id,
                     channel="right",
-                    mic_input_channel=mic_input_channel,
-                    reference_input_channel=reference_input_channel,
-                    calibration_ref=calibration_ref,
-                    calibration_filename=calibration_filename,
-                    calibration_bytes=calibration_bytes,
-                    auto_sub_sweep_profile=right_sweep_profile,
-                    auto_sub_rate=auto_sub_rate,
                     original_level=0.0,
                     original_polarity="normal",
                     original_highpass=True,
@@ -616,6 +584,7 @@ async def _run_auto_sub_22_stereo_optimize(
                     sub1_alignment_ms=best_left,
                     sub2_alignment_ms=delay_ms,
                     active_subs=("sub2",),
+                    **right_capture.sweep_kwargs(),
                 ))
                 if isinstance(job.get("progress"), dict):
                     job["progress"]["sweep_current"] = sweep_index
@@ -798,13 +767,10 @@ async def _run_auto_sub_22_stereo_optimize(
             opposite = _auto_sub_opposite_polarity(incumbent_polarity)
             is_left = side == "left"
             side_fc = left_fc if is_left else right_fc
-            side_profile = left_sweep_profile if is_left else right_sweep_profile
+            side_capture = left_capture if is_left else right_capture
             alt = await _measure_auto_sub_candidate(
-                delay_ms=delay, job=job, candidate_index=1, total=1, stage=f"{side}_polarity_check", fc=side_fc,
-                input_id=input_id, channel=side, mic_input_channel=mic_input_channel,
-                reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
-                calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
-                auto_sub_sweep_profile=side_profile, auto_sub_rate=auto_sub_rate,
+                delay_ms=delay, job=job, candidate_index=1, total=1, stage=f"{side}_polarity_check",
+                channel=side,
                 original_level=0.0, original_polarity="normal", original_highpass=True,
                 measure_channel=side, output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                 original_config_snapshot=balanced_snapshot,
@@ -813,6 +779,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 active_subs=("sub1",) if is_left else ("sub2",),
                 sub1_polarity=opposite if is_left else selected_left_polarity,
                 sub2_polarity=selected_right_polarity if is_left else opposite,
+                **side_capture.sweep_kwargs(),
             )
             rows = [dict(incumbent, delay_ms=0.0, points=incumbent.get("points") or []), dict(alt, delay_ms=1.0)]
             gate_scoring = score_sub_alignment_candidates(rows, crossover_hz=side_fc, low_guard_reference_delay_ms=0.0)
@@ -835,11 +802,8 @@ async def _run_auto_sub_22_stereo_optimize(
             ]):
                 measured = await _measure_auto_sub_candidate(
                     delay_ms=candidate_delay, job=job, candidate_index=idx + 1, total=4,
-                    stage=f"{side}_polarity_fine", fc=side_fc, input_id=input_id, channel=side,
-                    mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-                    calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                    calibration_bytes=calibration_bytes, auto_sub_sweep_profile=side_profile,
-                    auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                    stage=f"{side}_polarity_fine", channel=side,
+                    original_level=0.0, original_polarity="normal",
                     original_highpass=True, measure_channel=side,
                     output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, original_config_snapshot=balanced_snapshot,
                     sub1_alignment_ms=candidate_delay if is_left else best_left,
@@ -847,6 +811,7 @@ async def _run_auto_sub_22_stereo_optimize(
                     active_subs=("sub1",) if is_left else ("sub2",),
                     sub1_polarity=opposite if is_left else selected_left_polarity,
                     sub2_polarity=selected_right_polarity if is_left else opposite,
+                    **side_capture.sweep_kwargs(),
                 )
                 placeholder = 2.0 + idx
                 invert_rows.append(dict(measured, delay_ms=placeholder, points=measured.get("points") or []))
@@ -903,26 +868,22 @@ async def _run_auto_sub_22_stereo_optimize(
             ),
         )
         deep_bass_left = await _measure_auto_sub_candidate(
-            delay_ms=best_left, job=job, candidate_index=1, total=2, stage="deep_bass_check", fc=left_fc,
-            input_id=input_id, channel="left", mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
-            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
-            auto_sub_sweep_profile=left_sweep_profile, auto_sub_rate=auto_sub_rate,
+            delay_ms=best_left, job=job, candidate_index=1, total=2, stage="deep_bass_check",
+            channel="left",
             original_level=0.0, original_polarity="normal", original_highpass=True,
             measure_channel="left", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
             original_config_snapshot=deep_bass_snapshot, sub1_alignment_ms=best_left,
             sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+            **left_capture.sweep_kwargs(),
         )
         deep_bass_right = await _measure_auto_sub_candidate(
-            delay_ms=best_right, job=job, candidate_index=2, total=2, stage="deep_bass_check", fc=right_fc,
-            input_id=input_id, channel="right", mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
-            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
-            auto_sub_sweep_profile=right_sweep_profile, auto_sub_rate=auto_sub_rate,
+            delay_ms=best_right, job=job, candidate_index=2, total=2, stage="deep_bass_check",
+            channel="right",
             original_level=0.0, original_polarity="normal", original_highpass=True,
             measure_channel="right", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
             original_config_snapshot=deep_bass_snapshot, sub1_alignment_ms=best_left,
             sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+            **right_capture.sweep_kwargs(),
         )
 
         def _deep_bass_delta_db(check_sweep: dict[str, Any], baseline_sweep: dict[str, Any]) -> float | None:
@@ -1044,26 +1005,22 @@ async def _run_auto_sub_22_stereo_optimize(
                 ),
             )
         gain_after_left = await _measure_auto_sub_candidate(
-            delay_ms=best_left, job=job, candidate_index=1, total=2, stage="gain_after", fc=left_fc,
-            input_id=input_id, channel="left", mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
-            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
-            auto_sub_sweep_profile=left_sweep_profile, auto_sub_rate=auto_sub_rate,
+            delay_ms=best_left, job=job, candidate_index=1, total=2, stage="gain_after",
+            channel="left",
             original_level=0.0, original_polarity="normal", original_highpass=True,
             measure_channel="left", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
             original_config_snapshot=gain_snapshot, sub1_alignment_ms=best_left,
             sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+            **left_capture.sweep_kwargs(),
         )
         gain_after_right = await _measure_auto_sub_candidate(
-            delay_ms=best_right, job=job, candidate_index=2, total=2, stage="gain_after", fc=right_fc,
-            input_id=input_id, channel="right", mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel, calibration_ref=calibration_ref,
-            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
-            auto_sub_sweep_profile=right_sweep_profile, auto_sub_rate=auto_sub_rate,
+            delay_ms=best_right, job=job, candidate_index=2, total=2, stage="gain_after",
+            channel="right",
             original_level=0.0, original_polarity="normal", original_highpass=True,
             measure_channel="right", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
             original_config_snapshot=gain_snapshot, sub1_alignment_ms=best_left,
             sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+            **right_capture.sweep_kwargs(),
         )
         gain_after = _calculate_auto_sub_gain(
             mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, target_curve=job.get("target_curve"),
@@ -1160,27 +1117,23 @@ async def _run_auto_sub_22_stereo_optimize(
                 )
                 correction_left = await _measure_auto_sub_candidate(
                     delay_ms=best_left, job=job, candidate_index=1, total=2,
-                    stage="gain_correction_after", fc=left_fc, input_id=input_id, channel="left",
-                    mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-                    calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                    calibration_bytes=calibration_bytes, auto_sub_sweep_profile=left_sweep_profile,
-                    auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                    stage="gain_correction_after", channel="left",
+                    original_level=0.0, original_polarity="normal",
                     original_highpass=True, measure_channel="left",
                     output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                     original_config_snapshot=correction_snapshot, sub1_alignment_ms=best_left,
                     sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+                    **left_capture.sweep_kwargs(),
                 )
                 correction_right = await _measure_auto_sub_candidate(
                     delay_ms=best_right, job=job, candidate_index=2, total=2,
-                    stage="gain_correction_after", fc=right_fc, input_id=input_id, channel="right",
-                    mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-                    calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                    calibration_bytes=calibration_bytes, auto_sub_sweep_profile=right_sweep_profile,
-                    auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                    stage="gain_correction_after", channel="right",
+                    original_level=0.0, original_polarity="normal",
                     original_highpass=True, measure_channel="right",
                     output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                     original_config_snapshot=correction_snapshot, sub1_alignment_ms=best_left,
                     sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
+                    **right_capture.sweep_kwargs(),
                 )
                 correction_after = _calculate_auto_sub_gain(
                     mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, target_curve=job.get("target_curve"),
@@ -1375,29 +1328,25 @@ async def _run_auto_sub_22_stereo_optimize(
             job["message"] = "Auto Sub Optimize: final state regressed locally; measuring incumbent alignment at original levels"
             recheck_left = await _measure_auto_sub_candidate(
                 delay_ms=original_left_alignment, job=job, candidate_index=1, total=2,
-                stage="confirmation_recheck", fc=left_fc, input_id=input_id, channel="left",
-                mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-                calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                calibration_bytes=calibration_bytes, auto_sub_sweep_profile=left_sweep_profile,
-                auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                stage="confirmation_recheck", channel="left",
+                original_level=0.0, original_polarity="normal",
                 original_highpass=True, measure_channel="left",
                 output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                 original_config_snapshot=balanced_snapshot,
                 sub1_alignment_ms=original_left_alignment,
                 sub2_alignment_ms=original_right_alignment, active_subs=("sub1", "sub2"),
+                **left_capture.sweep_kwargs(),
             )
             recheck_right = await _measure_auto_sub_candidate(
                 delay_ms=original_right_alignment, job=job, candidate_index=2, total=2,
-                stage="confirmation_recheck", fc=right_fc, input_id=input_id, channel="right",
-                mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-                calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                calibration_bytes=calibration_bytes, auto_sub_sweep_profile=right_sweep_profile,
-                auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                stage="confirmation_recheck", channel="right",
+                original_level=0.0, original_polarity="normal",
                 original_highpass=True, measure_channel="right",
                 output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                 original_config_snapshot=balanced_snapshot,
                 sub1_alignment_ms=original_left_alignment,
                 sub2_alignment_ms=original_right_alignment, active_subs=("sub1", "sub2"),
+                **right_capture.sweep_kwargs(),
             )
             recheck_dips = {
                 "left": _auto_sub_local_dip_db(recheck_left.get("points") or [], gate_band_low, gate_band_high),
@@ -1438,29 +1387,25 @@ async def _run_auto_sub_22_stereo_optimize(
                 if deep_bass_reverted:
                     final_gain_left = await _measure_auto_sub_candidate(
                         delay_ms=best_left, job=job, candidate_index=1, total=2,
-                        stage="final_commit_confirmation", fc=left_fc, input_id=input_id, channel="left",
-                        mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-                        calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                        calibration_bytes=calibration_bytes, auto_sub_sweep_profile=left_sweep_profile,
-                        auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                        stage="final_commit_confirmation", channel="left",
+                        original_level=0.0, original_polarity="normal",
                         original_highpass=True, measure_channel="left",
                         output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                         original_config_snapshot=final_gain_snapshot, sub1_alignment_ms=best_left,
                         sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
                         sub1_polarity=selected_left_polarity, sub2_polarity=selected_right_polarity,
+                        **left_capture.sweep_kwargs(),
                     )
                     final_gain_right = await _measure_auto_sub_candidate(
                         delay_ms=best_right, job=job, candidate_index=2, total=2,
-                        stage="final_commit_confirmation", fc=right_fc, input_id=input_id, channel="right",
-                        mic_input_channel=mic_input_channel, reference_input_channel=reference_input_channel,
-                        calibration_ref=calibration_ref, calibration_filename=calibration_filename,
-                        calibration_bytes=calibration_bytes, auto_sub_sweep_profile=right_sweep_profile,
-                        auto_sub_rate=auto_sub_rate, original_level=0.0, original_polarity="normal",
+                        stage="final_commit_confirmation", channel="right",
+                        original_level=0.0, original_polarity="normal",
                         original_highpass=True, measure_channel="right",
                         output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
                         original_config_snapshot=final_gain_snapshot, sub1_alignment_ms=best_left,
                         sub2_alignment_ms=best_right, active_subs=("sub1", "sub2"),
                         sub1_polarity=selected_left_polarity, sub2_polarity=selected_right_polarity,
+                        **right_capture.sweep_kwargs(),
                     )
                     final_confirmation_valid = bool(
                         _auto_sub_has_points(final_gain_left, "points")
