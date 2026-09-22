@@ -323,6 +323,14 @@ def main() -> int:
             off_summary = page.locator("#effects-crossover-summary").inner_text()
             check(f"cleared direction is named in the header ({off_summary})",
                   off_summary.endswith("Low-pass off"))
+            # Off hides only its own Frequency/Slope rows; the other
+            # direction stays independently usable.
+            check("Off low-pass hides its frequency/slope rows",
+                  not page.locator("#effects-crossover-frequency-lowpass-group").is_visible()
+                  and not page.locator("#effects-crossover-slope-lowpass-group").is_visible()
+                  and page.locator("#effects-crossover-frequency-highpass-group").is_visible()
+                  and page.locator("#effects-crossover-slope-highpass-group").is_visible()
+                  and page.locator("#effects-crossover-family-lowpass").is_visible())
             off_way = page.evaluate(
                 """fetch('/api/audio/output-state/crossover-response')
                     .then(r => r.json())
@@ -365,6 +373,47 @@ def main() -> int:
                         j.modes[j.active_mode].processing.left_mid.lowpass.slope_db_oct,
                     ]))""")
             check(f"per-filter slopes persist independently ({both_back})", both_back == "[48,12]")
+            check("re-enabled low-pass shows its frequency/slope rows again",
+                  page.locator("#effects-crossover-frequency-lowpass-group").is_visible()
+                  and page.locator("#effects-crossover-slope-lowpass-group").is_visible())
+
+            # Both Off leave the way unfiltered (flat): header names both
+            # directions and the response still evaluates a flat curve.
+            page.evaluate(
+                "applyOutputSystemMutation('set_processing',"
+                " { mode: 'stereo-sub', role: 'left_mid', highpass: null, lowpass: null }, false, { quiet: true })")
+            page.wait_for_timeout(1200)
+            flat_summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"both Off leave the way flat ({flat_summary})",
+                  "High-pass off" in flat_summary and "Low-pass off" in flat_summary)
+            check("both Off hide both frequency/slope rows, Type stays",
+                  not page.locator("#effects-crossover-frequency-highpass-group").is_visible()
+                  and not page.locator("#effects-crossover-slope-highpass-group").is_visible()
+                  and not page.locator("#effects-crossover-frequency-lowpass-group").is_visible()
+                  and not page.locator("#effects-crossover-slope-lowpass-group").is_visible()
+                  and page.locator("#effects-crossover-family-highpass").is_visible()
+                  and page.locator("#effects-crossover-family-lowpass").is_visible())
+            flat_way = page.evaluate(
+                """fetch('/api/audio/output-state/crossover-response')
+                    .then(r => r.json())
+                    .then(j => JSON.stringify({ complete: j.ways.left_mid.complete,
+                        points: (j.ways.left_mid.points || []).length }))""")
+            check(f"flat way stays evaluated ({flat_way})",
+                  '"complete":false' in flat_way.replace(" ", "") and
+                  int(flat_way.split('"points":')[1].rstrip("}")) > 100)
+            # Restore the mid band so later sections keep a filtered way.
+            page.evaluate(
+                """(() => {
+                    const hi = document.getElementById('effects-crossover-family-highpass');
+                    hi.value = 'linkwitz-riley'; hi.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            page.evaluate(
+                """(() => {
+                    const fam = document.getElementById('effects-crossover-family-lowpass');
+                    fam.value = 'linkwitz-riley'; fam.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
 
             # Cutoff changes must not move the layout: card width is identical
             # for a 3-digit and a 5-digit frequency.

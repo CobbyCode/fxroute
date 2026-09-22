@@ -205,11 +205,20 @@ assert.match(appSource, /effectsCrossoverTrimGroup/);
 assert.match(appSource, /Trim[\s\S]*hidden while linked|hidden while linked/);
 // Filter type Off plus compact headers.
 assert.match(appSource, /off: 'Off'/);
+assert.match(appSource, /\['off', \.\.\.Object\.keys\(catalog\.capabilities/);
+// Off disables the filter fully and independently per direction: Type Off
+// writes null, hides its Frequency/Slope rows, keeps Type selectable.
+// Both Off leave the way unfiltered (flat).
+assert.match(appSource, /if \(familyEl\?\.value === 'off'\) return null/);
+assert.match(appSource, /freqGroup.*kindOff \? 'none' : ''/s);
+assert.match(appSource, /slopeGroup.*kindOff \? 'none' : ''/s);
 assert.match(appSource, /-Way Stereo System/);
 assert.match(appSource, /Crossover \$/);
 assert.match(appSource, /Main HPF/);
 for (const id of ['effects-crossover-card', 'effects-crossover-tabs', 'effects-crossover-graph',
     'effects-crossover-frequency-highpass', 'effects-crossover-frequency-lowpass',
+    'effects-crossover-frequency-highpass-group', 'effects-crossover-slope-highpass-group',
+    'effects-crossover-frequency-lowpass-group', 'effects-crossover-slope-lowpass-group',
     'effects-crossover-family-highpass', 'effects-crossover-slope-highpass',
     'effects-crossover-family-lowpass', 'effects-crossover-slope-lowpass',
     'effects-crossover-trim-group',

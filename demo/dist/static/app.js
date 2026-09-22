@@ -498,6 +498,10 @@ const elements = {
     effectsCrossoverFrequencyLowpass: document.getElementById('effects-crossover-frequency-lowpass'),
     effectsCrossoverHighpassGroup: document.getElementById('effects-crossover-highpass-group'),
     effectsCrossoverLowpassGroup: document.getElementById('effects-crossover-lowpass-group'),
+    effectsCrossoverFrequencyHighpassGroup: document.getElementById('effects-crossover-frequency-highpass-group'),
+    effectsCrossoverSlopeHighpassGroup: document.getElementById('effects-crossover-slope-highpass-group'),
+    effectsCrossoverFrequencyLowpassGroup: document.getElementById('effects-crossover-frequency-lowpass-group'),
+    effectsCrossoverSlopeLowpassGroup: document.getElementById('effects-crossover-slope-lowpass-group'),
     effectsCrossoverTrimGroup: document.getElementById('effects-crossover-trim-group'),
     effectsCrossoverFamilyHighpass: document.getElementById('effects-crossover-family-highpass'),
     effectsCrossoverSlopeHighpass: document.getElementById('effects-crossover-slope-highpass'),
@@ -4131,6 +4135,14 @@ function renderCrossoverTile() {
             if (kind === 'highpass') slopeEl.title = derived
                 ? `Set by the Subwoofer tile (${derived.frequency_hz} Hz)` : '';
         }
+        // Off disables the filter fully: hide its Frequency and Slope rows
+        // so only Type stays visible. HPF and LPF switch independently.
+        const freqGroup = kind === 'highpass'
+            ? elements.effectsCrossoverFrequencyHighpassGroup : elements.effectsCrossoverFrequencyLowpassGroup;
+        const slopeGroup = kind === 'highpass'
+            ? elements.effectsCrossoverSlopeHighpassGroup : elements.effectsCrossoverSlopeLowpassGroup;
+        if (freqGroup) freqGroup.style.display = kindOff ? 'none' : '';
+        if (slopeGroup) slopeGroup.style.display = kindOff ? 'none' : '';
     }
     if (elements.effectsCrossoverLevel && document.activeElement !== elements.effectsCrossoverLevel) {
         elements.effectsCrossoverLevel.value = settings.level_db ?? 0;
