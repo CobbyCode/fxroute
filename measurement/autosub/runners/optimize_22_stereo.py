@@ -9,6 +9,8 @@ import copy
 import json
 import logging
 import statistics
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
@@ -96,6 +98,328 @@ logger = logging.getLogger(__name__)
 _AUTO_SUB_DEEP_BASS_REGRESSION_DB: float = 2.5
 
 
+@dataclass(frozen=True)
+class SideScanResult:
+    """Bundled outcome of one stereo side scan (coarse, fine, tiebreak)."""
+
+    side: str
+    scan_delays: list[float]
+    fine_delays: list[float]
+    results: list[dict[str, Any]]
+    fine_results: list[dict[str, Any]]
+    valid: list[dict[str, Any]]
+    fine_valid: list[dict[str, Any]]
+    final_valid: list[dict[str, Any]]
+    coarse_scoring: dict[str, Any]
+    fine_scoring: dict[str, Any] | None
+    scoring: dict[str, Any]
+    coarse_winner: dict[str, Any]
+    coarse_runner_up: dict[str, Any] | None
+    fine_edge: str | None
+    fine_winner: dict[str, Any] | None
+    coarse_accepted: dict[str, Any]
+    fine_accepted_candidate: dict[str, Any] | None
+    incumbent_winner: dict[str, Any] | None
+    acceptance: dict[str, Any]
+    winner: dict[str, Any]
+    best_delay: float
+    tiebreak: dict[str, Any] | None
+
+
+async def _run_stereo_side_scan(
+    *,
+    job: dict[str, Any],
+    restore: Callable[[], Awaitable[bool]],
+    side: str,
+    scan_delays: list[float],
+    original_alignment: float,
+    partner_alignment: float,
+    scanned_slot: str,
+    capture: AutoSubCaptureContext,
+    side_fc: int,
+    side_step_ms: float,
+    balanced_snapshot: dict[str, Any],
+    planned_sweep_total: int,
+    coarse_offset: int,
+    fine_total: int | None,
+    other_fine_delays: list[float] | None,
+    next_status: str,
+) -> SideScanResult | None:
+    """Run one side's coarse/fine alignment scan; None when the run aborts.
+
+    The left call passes ``other_fine_delays=None`` and initializes the
+    shared fine-scan state; the right call passes the left fine delays and
+    updates it. The right partner alignment is the left winner, so the
+    caller runs left first. Stage, progress and scoring semantics match the
+    former mirrored blocks; aborts restore and return None for the caller
+    to exit.
+    """
+    title = side.title()
+    letter = title[0]
+    sub_name = f"{title} Sub"
+    is_first = other_fine_delays is None
+    other_side = "right" if side == "left" else "left"
+
+    def _valid(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [result for result in results if _auto_sub_has_points(result, "points")]
+
+    def _reference_points(results: list[dict[str, Any]], delay_ms: float) -> list[list[float]] | None:
+        valid = _valid(results)
+        if not valid:
+            return None
+        reference = min(valid, key=lambda result: abs(float(result.get("delay_ms", 0.0) or 0.0) - delay_ms))
+        points = reference.get("points") or []
+        return points if isinstance(points, list) and len(points) >= 3 else None
+
+    def _pair(delay_ms: float) -> tuple[float, float]:
+        if scanned_slot == "sub1":
+            return delay_ms, partner_alignment
+        return partner_alignment, delay_ms
+
+    async def _tiebreak_measure(delay_ms: float, index: int) -> dict[str, Any]:
+        # Mirrors this side's scan configuration for one delay.
+        sub1, sub2 = _pair(delay_ms)
+        return await _measure_auto_sub_candidate(
+            delay_ms=delay_ms, job=job, candidate_index=index + 1, total=2,
+            stage=f"{side}_tiebreak", channel=side,
+            original_level=0.0, original_polarity="normal", original_highpass=True,
+            measure_channel=side, output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            original_config_snapshot=balanced_snapshot,
+            sub1_alignment_ms=sub1, sub2_alignment_ms=sub2,
+            active_subs=(scanned_slot,),
+            **capture.sweep_kwargs(),
+        )
+
+    results: list[dict[str, Any]] = []
+    job["stage"] = f"{side}_sub"
+    for idx, delay_ms in enumerate(scan_delays):
+        sweep_index = coarse_offset + idx + 1
+        sub1, sub2 = _pair(delay_ms)
+        results.append(await _measure_auto_sub_candidate(
+            delay_ms=delay_ms,
+            job=job,
+            candidate_index=sweep_index,
+            total=planned_sweep_total,
+            stage=f"{side}_sub",
+            channel=side,
+            original_level=0.0,
+            original_polarity="normal",
+            original_highpass=True,
+            measurement_label=f"Optimizing {sub_name}: {letter} sweep {idx + 1}/{len(scan_delays)} @ {delay_ms:.2f} ms",
+            candidate_current=idx + 1,
+            candidate_total=len(scan_delays),
+            measure_channel=side,
+            output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            original_config_snapshot=balanced_snapshot,
+            sub1_alignment_ms=sub1,
+            sub2_alignment_ms=sub2,
+            active_subs=(scanned_slot,),
+            **capture.sweep_kwargs(),
+        ))
+        if isinstance(job.get("progress"), dict):
+            job["progress"]["sweep_current"] = sweep_index
+            job["progress"]["sweep_total"] = planned_sweep_total
+        if _auto_sub_cancel_requested(job):
+            job["message"] = "Auto Sub Optimize cancelled."
+            await restore()
+            return None
+
+    valid = _valid(results)
+    valid, _ = _auto_sub_gate_candidate_rows(valid, side_fc, context=f"{side}_coarse")
+    if not valid:
+        job["status"] = "failed"
+        job["message"] = f"No valid {sub_name} sweep results to score"
+        job["error"] = {"detail": f"{sub_name} sweeps failed or produced insufficient data"}
+        await restore()
+        return None
+    coarse_scoring = score_sub_alignment_candidates(
+        valid,
+        crossover_hz=side_fc,
+        low_guard_reference_delay_ms=original_alignment,
+    )
+    _auto_sub_rank_results(coarse_scoring["results"])
+    coarse_winner = coarse_scoring["winner"]
+    coarse_runner_up = coarse_scoring.get("runner_up")
+    fine_edge = _auto_sub_coarse_winner_at_scan_edge(
+        float(coarse_winner.get("delay_ms", 0.0) or 0.0), scan_delays,
+    )
+    fine_delays = _auto_sub_fine_delay_candidates(
+        coarse_winner,
+        coarse_runner_up,
+        side_step_ms,
+        {round(float(delay), 2) for delay in scan_delays},
+        scan_delays=scan_delays,
+    )
+    fine_results: list[dict[str, Any]] = []
+    fine_valid: list[dict[str, Any]] = []
+    fine_scoring: dict[str, Any] | None = None
+    fine_winner: dict[str, Any] | None = None
+    low_guard_reference_points = _reference_points(valid, original_alignment)
+    if is_first:
+        job["fine_scan"] = {
+            "enabled": True,
+            "triggered": bool(fine_delays),
+            "status": f"{side}_running" if fine_delays else f"{side}_skipped",
+            "fine_step_ms": side_step_ms / 4.0,
+            side: {
+                "status": "running" if fine_delays else "skipped",
+                "coarse_winner": coarse_winner,
+                "coarse_runner_up": coarse_runner_up,
+                "coarse_winner_at_scan_edge": fine_edge,
+                "candidates": fine_delays,
+            },
+            other_side: {"status": "pending", "candidates": []},
+        }
+    else:
+        job["fine_scan"].update({
+            "triggered": bool(other_fine_delays or fine_delays),
+            "status": f"{side}_running" if fine_delays else f"{side}_skipped",
+        })
+        job["fine_scan"][side] = {
+            "status": "running" if fine_delays else "skipped",
+            "coarse_winner": coarse_winner,
+            "coarse_runner_up": coarse_runner_up,
+            "coarse_winner_at_scan_edge": fine_edge,
+            "candidates": fine_delays,
+        }
+    resolved_fine_total = (
+        fine_total if fine_total is not None
+        else coarse_offset + len(scan_delays) + len(fine_delays)
+    )
+    if fine_delays:
+        job["stage"] = f"{side}_fine"
+        for idx, delay_ms in enumerate(fine_delays):
+            sweep_index = coarse_offset + len(scan_delays) + idx + 1
+            sub1, sub2 = _pair(delay_ms)
+            fine_results.append(await _measure_auto_sub_candidate(
+                delay_ms=delay_ms,
+                job=job,
+                candidate_index=sweep_index,
+                total=resolved_fine_total,
+                stage=f"{side}_fine",
+                channel=side,
+                original_level=0.0,
+                original_polarity="normal",
+                original_highpass=True,
+                measurement_label=f"Optimizing {sub_name} Fine: {letter} sweep {idx + 1}/{len(fine_delays)} @ {delay_ms:.2f} ms",
+                candidate_current=idx + 1,
+                candidate_total=len(fine_delays),
+                measure_channel=side,
+                output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
+                original_config_snapshot=balanced_snapshot,
+                sub1_alignment_ms=sub1,
+                sub2_alignment_ms=sub2,
+                active_subs=(scanned_slot,),
+                **capture.sweep_kwargs(),
+            ))
+            if isinstance(job.get("progress"), dict):
+                job["progress"]["sweep_current"] = sweep_index
+                job["progress"]["sweep_total"] = resolved_fine_total
+            if _auto_sub_cancel_requested(job):
+                job["message"] = "Auto Sub Optimize cancelled."
+                await restore()
+                return None
+        fine_valid = _valid(fine_results)
+        fine_valid, _ = _auto_sub_gate_candidate_rows(fine_valid, side_fc, context=f"{side}_fine")
+        if fine_valid:
+            fine_scoring = score_sub_alignment_candidates(
+                fine_valid,
+                crossover_hz=side_fc,
+                low_guard_reference_points=low_guard_reference_points,
+                low_guard_reference_delay_ms=original_alignment,
+            )
+            _auto_sub_rank_results(fine_scoring["results"])
+            fine_winner = fine_scoring["winner"]
+            job["fine_scan"][side].update({
+                "status": "completed",
+                "winner": fine_winner,
+                "runner_up": fine_scoring.get("runner_up"),
+                "results": fine_scoring["results"],
+                "valid_count": len(fine_valid),
+                "sweep_count": len(fine_delays),
+            })
+        else:
+            job["fine_scan"][side].update({
+                "status": "no_valid_results",
+                "winner": None,
+                "runner_up": None,
+                "results": fine_results,
+                "valid_count": 0,
+                "sweep_count": len(fine_delays),
+            })
+
+    final_valid = valid + fine_valid
+    final_valid, _ = _auto_sub_gate_candidate_rows(final_valid, side_fc, context=f"{side}_combined")
+    scoring = score_sub_alignment_candidates(
+        final_valid,
+        crossover_hz=side_fc,
+        low_guard_reference_delay_ms=original_alignment,
+    )
+    # An uncertain near-tie is confirmed with one fresh sweep per top
+    # candidate before the winner is accepted (see helper docstring).
+    tiebreak = await _auto_sub_remeasure_tiebreak(
+        scoring=scoring,
+        rows=final_valid,
+        measure=_tiebreak_measure,
+        crossover_hz=side_fc,
+        low_guard_reference_delay_ms=original_alignment,
+    )
+    if tiebreak and tiebreak["applied"]:
+        scoring = tiebreak["scoring"]
+    if tiebreak:
+        job["fine_scan"][side]["tiebreak"] = tiebreak["diagnostics"]
+    _auto_sub_rank_results(scoring["results"])
+    scan_by_delay: dict[float, str] = {}
+    for result in valid:
+        scan_by_delay[_auto_sub_delay_key(result)] = "coarse"
+    for result in fine_valid:
+        scan_by_delay[_auto_sub_delay_key(result)] = "fine"
+    for result in scoring["results"]:
+        result["scan"] = scan_by_delay.get(_auto_sub_delay_key(result), result.get("scan", "coarse"))
+    coarse_accepted = _auto_sub_best_scan_result(scoring["results"], "coarse") or coarse_winner
+    fine_accepted_candidate = _auto_sub_best_scan_result(scoring["results"], "fine")
+    incumbent_winner = _auto_sub_result_for_delay(scoring["results"], original_alignment)
+    acceptance = _auto_sub_select_accepted_winner(
+        coarse_winner=coarse_accepted,
+        fine_winner=fine_accepted_candidate,
+        incumbent_winner=incumbent_winner,
+    )
+    winner = acceptance["accepted_winner"]
+    best_delay = _auto_sub_winner_delay_ms(winner, original_alignment)
+    job["fine_scan"][side]["final_winner"] = winner
+    job["fine_scan"][side]["final_results"] = scoring["results"]
+    job["fine_scan"][side]["accepted_winner"] = winner
+    job["fine_scan"][side]["fine_accepted"] = acceptance["fine_accepted"]
+    job["fine_scan"][side]["reject_reason"] = acceptance["reject_reason"]
+    job["fine_scan"][side]["incumbent_winner"] = incumbent_winner
+    job["fine_scan"][side]["incumbent_score"] = acceptance["incumbent_score"]
+    job["fine_scan"]["status"] = next_status
+    return SideScanResult(
+        side=side,
+        scan_delays=list(scan_delays),
+        fine_delays=list(fine_delays),
+        results=results,
+        fine_results=fine_results,
+        valid=valid,
+        fine_valid=fine_valid,
+        final_valid=final_valid,
+        coarse_scoring=coarse_scoring,
+        fine_scoring=fine_scoring,
+        scoring=scoring,
+        coarse_winner=coarse_winner,
+        coarse_runner_up=coarse_runner_up,
+        fine_edge=fine_edge,
+        fine_winner=fine_winner,
+        coarse_accepted=coarse_accepted,
+        fine_accepted_candidate=fine_accepted_candidate,
+        incumbent_winner=incumbent_winner,
+        acceptance=acceptance,
+        winner=winner,
+        best_delay=best_delay,
+        tiebreak=tiebreak,
+    )
+
+
 async def _run_auto_sub_22_stereo_optimize(
     job_id: str,
     input_id: str,
@@ -144,17 +468,6 @@ async def _run_auto_sub_22_stereo_optimize(
     original_right = _auto_sub_22_sub(original_config_snapshot, "sub2")
     original_left_alignment = float(original_left.get("alignment_ms", 0.0) or 0.0)
     original_right_alignment = float(original_right.get("alignment_ms", 0.0) or 0.0)
-
-    def _valid(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [result for result in results if _auto_sub_has_points(result, "points")]
-
-    def _reference_points(results: list[dict[str, Any]], delay_ms: float) -> list[list[float]] | None:
-        valid = _valid(results)
-        if not valid:
-            return None
-        reference = min(valid, key=lambda result: abs(float(result.get("delay_ms", 0.0) or 0.0) - delay_ms))
-        points = reference.get("points") or []
-        return points if isinstance(points, list) and len(points) >= 3 else None
 
     try:
         if measurement_sr_session is not None:
@@ -267,405 +580,76 @@ async def _run_auto_sub_22_stereo_optimize(
         elif _dsp_runtime() is not None:
             await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
 
-        left_results: list[dict[str, Any]] = []
-        job["stage"] = "left_sub"
-        for idx, delay_ms in enumerate(left_scan_delays):
-            sweep_index = idx + 1
-            left_results.append(await _measure_auto_sub_candidate(
-                delay_ms=delay_ms,
-                job=job,
-                candidate_index=sweep_index,
-                total=planned_sweep_total,
-                stage="left_sub",
-                channel="left",
-                original_level=0.0,
-                original_polarity="normal",
-                original_highpass=True,
-                measurement_label=f"Optimizing Left Sub: L sweep {idx + 1}/{len(left_scan_delays)} @ {delay_ms:.2f} ms",
-                candidate_current=idx + 1,
-                candidate_total=len(left_scan_delays),
-                measure_channel="left",
-                output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
-                original_config_snapshot=balanced_snapshot,
-                sub1_alignment_ms=delay_ms,
-                sub2_alignment_ms=original_right_alignment,
-                active_subs=("sub1",),
-                **left_capture.sweep_kwargs(),
-            ))
-            if isinstance(job.get("progress"), dict):
-                job["progress"]["sweep_current"] = sweep_index
-                job["progress"]["sweep_total"] = planned_sweep_total
-            if _auto_sub_cancel_requested(job):
-                job["message"] = "Auto Sub Optimize cancelled."
-                await _restore_original_config()
-                return
-
-        left_valid = _valid(left_results)
-        left_valid, _ = _auto_sub_gate_candidate_rows(left_valid, left_fc, context="left_coarse")
-        if not left_valid:
-            job["status"] = "failed"
-            job["message"] = "No valid Left Sub sweep results to score"
-            job["error"] = {"detail": "Left Sub sweeps failed or produced insufficient data"}
-            await _restore_original_config()
+        left_scan = await _run_stereo_side_scan(
+            job=job, restore=_restore_original_config, side="left",
+            scan_delays=left_scan_delays, original_alignment=original_left_alignment,
+            partner_alignment=original_right_alignment, scanned_slot="sub1",
+            capture=left_capture, side_fc=left_fc, side_step_ms=left_step_ms,
+            balanced_snapshot=balanced_snapshot, planned_sweep_total=planned_sweep_total,
+            coarse_offset=0, fine_total=planned_sweep_total,
+            other_fine_delays=None, next_status="right_pending",
+        )
+        if left_scan is None:
             return
-        left_coarse_scoring = score_sub_alignment_candidates(
-            left_valid,
-            crossover_hz=left_fc,
-            low_guard_reference_delay_ms=original_left_alignment,
-        )
-        _auto_sub_rank_results(left_coarse_scoring["results"])
-        left_coarse_winner = left_coarse_scoring["winner"]
-        left_coarse_runner_up = left_coarse_scoring.get("runner_up")
-        left_fine_edge = _auto_sub_coarse_winner_at_scan_edge(
-            float(left_coarse_winner.get("delay_ms", 0.0) or 0.0), left_scan_delays,
-        )
-        left_fine_delays = _auto_sub_fine_delay_candidates(
-            left_coarse_winner,
-            left_coarse_runner_up,
-            left_step_ms,
-            {round(float(delay), 2) for delay in left_scan_delays},
-            scan_delays=left_scan_delays,
-        )
-        left_fine_results: list[dict[str, Any]] = []
-        left_fine_valid: list[dict[str, Any]] = []
-        left_fine_scoring: dict[str, Any] | None = None
-        left_fine_winner: dict[str, Any] | None = None
-        left_low_guard_reference_points = _reference_points(left_valid, original_left_alignment)
-        job["fine_scan"] = {
-            "enabled": True,
-            "triggered": bool(left_fine_delays),
-            "status": "left_running" if left_fine_delays else "left_skipped",
-            "fine_step_ms": left_step_ms / 4.0,
-            "left": {
-                "status": "running" if left_fine_delays else "skipped",
-                "coarse_winner": left_coarse_winner,
-                "coarse_runner_up": left_coarse_runner_up,
-                "coarse_winner_at_scan_edge": left_fine_edge,
-                "candidates": left_fine_delays,
-            },
-            "right": {"status": "pending", "candidates": []},
-        }
-        if left_fine_delays:
-            job["stage"] = "left_fine"
-            for idx, delay_ms in enumerate(left_fine_delays):
-                sweep_index = len(left_scan_delays) + idx + 1
-                left_fine_results.append(await _measure_auto_sub_candidate(
-                    delay_ms=delay_ms,
-                    job=job,
-                    candidate_index=sweep_index,
-                    total=planned_sweep_total,
-                    stage="left_fine",
-                    channel="left",
-                    original_level=0.0,
-                    original_polarity="normal",
-                    original_highpass=True,
-                    measurement_label=f"Optimizing Left Sub Fine: L sweep {idx + 1}/{len(left_fine_delays)} @ {delay_ms:.2f} ms",
-                    candidate_current=idx + 1,
-                    candidate_total=len(left_fine_delays),
-                    measure_channel="left",
-                    output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
-                    original_config_snapshot=balanced_snapshot,
-                    sub1_alignment_ms=delay_ms,
-                    sub2_alignment_ms=original_right_alignment,
-                    active_subs=("sub1",),
-                    **left_capture.sweep_kwargs(),
-                ))
-                if isinstance(job.get("progress"), dict):
-                    job["progress"]["sweep_current"] = sweep_index
-                    job["progress"]["sweep_total"] = planned_sweep_total
-                if _auto_sub_cancel_requested(job):
-                    job["message"] = "Auto Sub Optimize cancelled."
-                    await _restore_original_config()
-                    return
-            left_fine_valid = _valid(left_fine_results)
-            left_fine_valid, _ = _auto_sub_gate_candidate_rows(left_fine_valid, left_fc, context="left_fine")
-            if left_fine_valid:
-                left_fine_scoring = score_sub_alignment_candidates(
-                    left_fine_valid,
-                    crossover_hz=left_fc,
-                    low_guard_reference_points=left_low_guard_reference_points,
-                    low_guard_reference_delay_ms=original_left_alignment,
-                )
-                _auto_sub_rank_results(left_fine_scoring["results"])
-                left_fine_winner = left_fine_scoring["winner"]
-                job["fine_scan"]["left"].update({
-                    "status": "completed",
-                    "winner": left_fine_winner,
-                    "runner_up": left_fine_scoring.get("runner_up"),
-                    "results": left_fine_scoring["results"],
-                    "valid_count": len(left_fine_valid),
-                    "sweep_count": len(left_fine_delays),
-                })
-            else:
-                job["fine_scan"]["left"].update({
-                    "status": "no_valid_results",
-                    "winner": None,
-                    "runner_up": None,
-                    "results": left_fine_results,
-                    "valid_count": 0,
-                    "sweep_count": len(left_fine_delays),
-                })
+        left_results = left_scan.results
+        left_fine_results = left_scan.fine_results
+        left_valid = left_scan.valid
+        left_fine_valid = left_scan.fine_valid
+        left_final_valid = left_scan.final_valid
+        left_coarse_scoring = left_scan.coarse_scoring
+        left_fine_scoring = left_scan.fine_scoring
+        left_scoring = left_scan.scoring
+        left_coarse_winner = left_scan.coarse_winner
+        left_coarse_runner_up = left_scan.coarse_runner_up
+        left_fine_edge = left_scan.fine_edge
+        left_fine_delays = left_scan.fine_delays
+        left_fine_winner = left_scan.fine_winner
+        left_coarse_accepted_candidate = left_scan.coarse_accepted
+        left_fine_accepted_candidate = left_scan.fine_accepted_candidate
+        left_incumbent_winner = left_scan.incumbent_winner
+        left_acceptance = left_scan.acceptance
+        left_winner = left_scan.winner
+        best_left = left_scan.best_delay
+        left_tiebreak = left_scan.tiebreak
 
-        async def _left_tiebreak_measure(delay_ms: float, index: int) -> dict[str, Any]:
-            # Mirrors the left alignment scan configuration for one delay.
-            return await _measure_auto_sub_candidate(
-                delay_ms=delay_ms, job=job, candidate_index=index + 1, total=2,
-                stage="left_tiebreak", channel="left",
-                original_level=0.0, original_polarity="normal", original_highpass=True,
-                measure_channel="left", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
-                original_config_snapshot=balanced_snapshot,
-                sub1_alignment_ms=delay_ms, sub2_alignment_ms=original_right_alignment,
-                active_subs=("sub1",),
-                **left_capture.sweep_kwargs(),
-            )
-
-        async def _right_tiebreak_measure(delay_ms: float, index: int) -> dict[str, Any]:
-            # Mirrors the right alignment scan configuration for one delay;
-            # best_left is read at call time (the left winner is final then).
-            return await _measure_auto_sub_candidate(
-                delay_ms=delay_ms, job=job, candidate_index=index + 1, total=2,
-                stage="right_tiebreak", channel="right",
-                original_level=0.0, original_polarity="normal", original_highpass=True,
-                measure_channel="right", output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
-                original_config_snapshot=balanced_snapshot,
-                sub1_alignment_ms=best_left, sub2_alignment_ms=delay_ms,
-                active_subs=("sub2",),
-                **right_capture.sweep_kwargs(),
-            )
-
-        left_final_valid = left_valid + left_fine_valid
-        left_final_valid, _ = _auto_sub_gate_candidate_rows(left_final_valid, left_fc, context="left_combined")
-        left_scoring = score_sub_alignment_candidates(
-            left_final_valid,
-            crossover_hz=left_fc,
-            low_guard_reference_delay_ms=original_left_alignment,
+        right_scan = await _run_stereo_side_scan(
+            job=job, restore=_restore_original_config, side="right",
+            scan_delays=right_scan_delays, original_alignment=original_right_alignment,
+            partner_alignment=best_left, scanned_slot="sub2",
+            capture=right_capture, side_fc=right_fc, side_step_ms=right_step_ms,
+            balanced_snapshot=balanced_snapshot, planned_sweep_total=planned_sweep_total,
+            coarse_offset=len(left_scan_delays) + len(left_fine_delays),
+            fine_total=None, other_fine_delays=left_fine_delays,
+            next_status="completed",
         )
-        # An uncertain near-tie is confirmed with one fresh sweep per top
-        # candidate before the winner is accepted (see helper docstring).
-        left_tiebreak = await _auto_sub_remeasure_tiebreak(
-            scoring=left_scoring,
-            rows=left_final_valid,
-            measure=_left_tiebreak_measure,
-            crossover_hz=left_fc,
-            low_guard_reference_delay_ms=original_left_alignment,
-        )
-        if left_tiebreak and left_tiebreak["applied"]:
-            left_scoring = left_tiebreak["scoring"]
-        if left_tiebreak:
-            job["fine_scan"]["left"]["tiebreak"] = left_tiebreak["diagnostics"]
-        _auto_sub_rank_results(left_scoring["results"])
-        left_scan_by_delay: dict[float, str] = {}
-        for result in left_valid:
-            left_scan_by_delay[_auto_sub_delay_key(result)] = "coarse"
-        for result in left_fine_valid:
-            left_scan_by_delay[_auto_sub_delay_key(result)] = "fine"
-        for result in left_scoring["results"]:
-            result["scan"] = left_scan_by_delay.get(_auto_sub_delay_key(result), result.get("scan", "coarse"))
-        left_coarse_accepted_candidate = _auto_sub_best_scan_result(left_scoring["results"], "coarse") or left_coarse_winner
-        left_fine_accepted_candidate = _auto_sub_best_scan_result(left_scoring["results"], "fine")
-        left_incumbent_winner = _auto_sub_result_for_delay(left_scoring["results"], original_left_alignment)
-        left_acceptance = _auto_sub_select_accepted_winner(
-            coarse_winner=left_coarse_accepted_candidate,
-            fine_winner=left_fine_accepted_candidate,
-            incumbent_winner=left_incumbent_winner,
-        )
-        left_winner = left_acceptance["accepted_winner"]
-        best_left = _auto_sub_winner_delay_ms(left_winner, original_left_alignment)
-        job["fine_scan"]["left"]["final_winner"] = left_winner
-        job["fine_scan"]["left"]["final_results"] = left_scoring["results"]
-        job["fine_scan"]["left"]["accepted_winner"] = left_winner
-        job["fine_scan"]["left"]["fine_accepted"] = left_acceptance["fine_accepted"]
-        job["fine_scan"]["left"]["reject_reason"] = left_acceptance["reject_reason"]
-        job["fine_scan"]["left"]["incumbent_winner"] = left_incumbent_winner
-        job["fine_scan"]["left"]["incumbent_score"] = left_acceptance["incumbent_score"]
-        job["fine_scan"]["status"] = "right_pending"
-
-        right_results: list[dict[str, Any]] = []
-        job["stage"] = "right_sub"
-        for idx, delay_ms in enumerate(right_scan_delays):
-            sweep_index = len(left_scan_delays) + len(left_fine_delays) + idx + 1
-            right_results.append(await _measure_auto_sub_candidate(
-                delay_ms=delay_ms,
-                job=job,
-                candidate_index=sweep_index,
-                total=planned_sweep_total,
-                stage="right_sub",
-                channel="right",
-                original_level=0.0,
-                original_polarity="normal",
-                original_highpass=True,
-                measurement_label=f"Optimizing Right Sub: R sweep {idx + 1}/{len(right_scan_delays)} @ {delay_ms:.2f} ms",
-                candidate_current=idx + 1,
-                candidate_total=len(right_scan_delays),
-                measure_channel="right",
-                output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
-                original_config_snapshot=balanced_snapshot,
-                sub1_alignment_ms=best_left,
-                sub2_alignment_ms=delay_ms,
-                active_subs=("sub2",),
-                **right_capture.sweep_kwargs(),
-            ))
-            if isinstance(job.get("progress"), dict):
-                job["progress"]["sweep_current"] = sweep_index
-                job["progress"]["sweep_total"] = planned_sweep_total
-            if _auto_sub_cancel_requested(job):
-                job["message"] = "Auto Sub Optimize cancelled."
-                await _restore_original_config()
-                return
-
-        right_valid = _valid(right_results)
-        right_valid, _ = _auto_sub_gate_candidate_rows(right_valid, right_fc, context="right_coarse")
-        if not right_valid:
-            job["status"] = "failed"
-            job["message"] = "No valid Right Sub sweep results to score"
-            job["error"] = {"detail": "Right Sub sweeps failed or produced insufficient data"}
-            await _restore_original_config()
+        if right_scan is None:
             return
-        right_coarse_scoring = score_sub_alignment_candidates(
-            right_valid,
-            crossover_hz=right_fc,
-            low_guard_reference_delay_ms=original_right_alignment,
-        )
-        _auto_sub_rank_results(right_coarse_scoring["results"])
-        right_coarse_winner = right_coarse_scoring["winner"]
-        right_coarse_runner_up = right_coarse_scoring.get("runner_up")
-        right_fine_edge = _auto_sub_coarse_winner_at_scan_edge(
-            float(right_coarse_winner.get("delay_ms", 0.0) or 0.0), right_scan_delays,
-        )
-        right_fine_delays = _auto_sub_fine_delay_candidates(
-            right_coarse_winner,
-            right_coarse_runner_up,
-            right_step_ms,
-            {round(float(delay), 2) for delay in right_scan_delays},
-            scan_delays=right_scan_delays,
-        )
-        right_fine_results: list[dict[str, Any]] = []
-        right_fine_valid: list[dict[str, Any]] = []
-        right_fine_scoring: dict[str, Any] | None = None
-        right_fine_winner: dict[str, Any] | None = None
-        right_low_guard_reference_points = _reference_points(right_valid, original_right_alignment)
+        right_results = right_scan.results
+        right_fine_results = right_scan.fine_results
+        right_valid = right_scan.valid
+        right_fine_valid = right_scan.fine_valid
+        right_final_valid = right_scan.final_valid
+        right_coarse_scoring = right_scan.coarse_scoring
+        right_fine_scoring = right_scan.fine_scoring
+        right_scoring = right_scan.scoring
+        right_coarse_winner = right_scan.coarse_winner
+        right_coarse_runner_up = right_scan.coarse_runner_up
+        right_fine_edge = right_scan.fine_edge
+        right_fine_delays = right_scan.fine_delays
+        right_fine_winner = right_scan.fine_winner
+        right_coarse_accepted_candidate = right_scan.coarse_accepted
+        right_fine_accepted_candidate = right_scan.fine_accepted_candidate
+        right_incumbent_winner = right_scan.incumbent_winner
+        right_acceptance = right_scan.acceptance
+        right_winner = right_scan.winner
+        best_right = right_scan.best_delay
+        right_tiebreak = right_scan.tiebreak
         actual_sweep_total = (
             len(left_scan_delays)
             + len(left_fine_delays)
             + len(right_scan_delays)
             + len(right_fine_delays)
         )
-        job["fine_scan"].update({
-            "triggered": bool(left_fine_delays or right_fine_delays),
-            "status": "right_running" if right_fine_delays else "right_skipped",
-        })
-        job["fine_scan"]["right"] = {
-            "status": "running" if right_fine_delays else "skipped",
-            "coarse_winner": right_coarse_winner,
-            "coarse_runner_up": right_coarse_runner_up,
-            "coarse_winner_at_scan_edge": right_fine_edge,
-            "candidates": right_fine_delays,
-        }
-        if right_fine_delays:
-            job["stage"] = "right_fine"
-            for idx, delay_ms in enumerate(right_fine_delays):
-                sweep_index = len(left_scan_delays) + len(left_fine_delays) + len(right_scan_delays) + idx + 1
-                right_fine_results.append(await _measure_auto_sub_candidate(
-                    delay_ms=delay_ms,
-                    job=job,
-                    candidate_index=sweep_index,
-                    total=actual_sweep_total,
-                    stage="right_fine",
-                    channel="right",
-                    original_level=0.0,
-                    original_polarity="normal",
-                    original_highpass=True,
-                    measurement_label=f"Optimizing Right Sub Fine: R sweep {idx + 1}/{len(right_fine_delays)} @ {delay_ms:.2f} ms",
-                    candidate_current=idx + 1,
-                    candidate_total=len(right_fine_delays),
-                    measure_channel="right",
-                    output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO,
-                    original_config_snapshot=balanced_snapshot,
-                    sub1_alignment_ms=best_left,
-                    sub2_alignment_ms=delay_ms,
-                    active_subs=("sub2",),
-                    **right_capture.sweep_kwargs(),
-                ))
-                if isinstance(job.get("progress"), dict):
-                    job["progress"]["sweep_current"] = sweep_index
-                    job["progress"]["sweep_total"] = actual_sweep_total
-                if _auto_sub_cancel_requested(job):
-                    job["message"] = "Auto Sub Optimize cancelled."
-                    await _restore_original_config()
-                    return
-            right_fine_valid = _valid(right_fine_results)
-            right_fine_valid, _ = _auto_sub_gate_candidate_rows(right_fine_valid, right_fc, context="right_fine")
-            if right_fine_valid:
-                right_fine_scoring = score_sub_alignment_candidates(
-                    right_fine_valid,
-                    crossover_hz=right_fc,
-                    low_guard_reference_points=right_low_guard_reference_points,
-                    low_guard_reference_delay_ms=original_right_alignment,
-                )
-                _auto_sub_rank_results(right_fine_scoring["results"])
-                right_fine_winner = right_fine_scoring["winner"]
-                job["fine_scan"]["right"].update({
-                    "status": "completed",
-                    "winner": right_fine_winner,
-                    "runner_up": right_fine_scoring.get("runner_up"),
-                    "results": right_fine_scoring["results"],
-                    "valid_count": len(right_fine_valid),
-                    "sweep_count": len(right_fine_delays),
-                })
-            else:
-                job["fine_scan"]["right"].update({
-                    "status": "no_valid_results",
-                    "winner": None,
-                    "runner_up": None,
-                    "results": right_fine_results,
-                    "valid_count": 0,
-                    "sweep_count": len(right_fine_delays),
-                })
-
-        right_final_valid = right_valid + right_fine_valid
-        right_final_valid, _ = _auto_sub_gate_candidate_rows(right_final_valid, right_fc, context="right_combined")
-        right_scoring = score_sub_alignment_candidates(
-            right_final_valid,
-            crossover_hz=right_fc,
-            low_guard_reference_delay_ms=original_right_alignment,
-        )
-        right_tiebreak = await _auto_sub_remeasure_tiebreak(
-            scoring=right_scoring,
-            rows=right_final_valid,
-            measure=_right_tiebreak_measure,
-            crossover_hz=right_fc,
-            low_guard_reference_delay_ms=original_right_alignment,
-        )
-        if right_tiebreak and right_tiebreak["applied"]:
-            right_scoring = right_tiebreak["scoring"]
-        if right_tiebreak:
-            job["fine_scan"]["right"]["tiebreak"] = right_tiebreak["diagnostics"]
-        _auto_sub_rank_results(right_scoring["results"])
-        right_scan_by_delay: dict[float, str] = {}
-        for result in right_valid:
-            right_scan_by_delay[_auto_sub_delay_key(result)] = "coarse"
-        for result in right_fine_valid:
-            right_scan_by_delay[_auto_sub_delay_key(result)] = "fine"
-        for result in right_scoring["results"]:
-            result["scan"] = right_scan_by_delay.get(_auto_sub_delay_key(result), result.get("scan", "coarse"))
-        right_coarse_accepted_candidate = _auto_sub_best_scan_result(right_scoring["results"], "coarse") or right_coarse_winner
-        right_fine_accepted_candidate = _auto_sub_best_scan_result(right_scoring["results"], "fine")
-        right_incumbent_winner = _auto_sub_result_for_delay(right_scoring["results"], original_right_alignment)
-        right_acceptance = _auto_sub_select_accepted_winner(
-            coarse_winner=right_coarse_accepted_candidate,
-            fine_winner=right_fine_accepted_candidate,
-            incumbent_winner=right_incumbent_winner,
-        )
-        right_winner = right_acceptance["accepted_winner"]
-        best_right = _auto_sub_winner_delay_ms(right_winner, original_right_alignment)
-        job["fine_scan"]["right"]["final_winner"] = right_winner
-        job["fine_scan"]["right"]["final_results"] = right_scoring["results"]
-        job["fine_scan"]["right"]["accepted_winner"] = right_winner
-        job["fine_scan"]["right"]["fine_accepted"] = right_acceptance["fine_accepted"]
-        job["fine_scan"]["right"]["reject_reason"] = right_acceptance["reject_reason"]
-        job["fine_scan"]["right"]["incumbent_winner"] = right_incumbent_winner
-        job["fine_scan"]["right"]["incumbent_score"] = right_acceptance["incumbent_score"]
-        job["fine_scan"]["status"] = "completed"
 
         candidate_ledger = (
             _auto_sub_candidate_ledger(
