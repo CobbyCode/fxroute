@@ -40,7 +40,13 @@ from ..candidates import (
     _commit_auto_sub_service_winner,
 )
 from ..capture import AutoSubCaptureContext
-from ..gain_trial import _resolve_gain_trial_outcome, _unavailable_correction_verdict
+from ..gain_trial import (
+    _gain_outcome_summary,
+    _gain_recommendation_clamped,
+    _gain_restore_reason,
+    _resolve_gain_trial_outcome,
+    _unavailable_correction_verdict,
+)
 from ..deps import (
     _AUTO_SUB_JOBS,
     _auto_sub_cancel_requested,
@@ -1216,6 +1222,12 @@ async def _run_auto_sub_22_stereo_optimize(
         decision, result_reason = _resolve_gain_trial_outcome(
             step1_retained, gain_verdict, correction_verdict,
         )
+        gain_applied = bool(step1_retained and gain_deltas)
+        gain_decision, gain_reason = _gain_outcome_summary(
+            decision, result_reason, applied=gain_applied,
+            deltas_db=final_gain_deltas, clamped=_gain_recommendation_clamped(job["auto_gain"]),
+            accepted_sides=accepted_step1_sides,
+        )
         if decision == "accepted_step2":
             if correction_verdict.get("stereo_probe"):
                 score_final_source = copy.deepcopy(gain_after)
@@ -1243,6 +1255,8 @@ async def _run_auto_sub_22_stereo_optimize(
         job["auto_gain"].update({
             "applied": bool(step1_retained and gain_deltas),
             "reverted": bool(gain_deltas and not step1_retained),
+            "decision": gain_decision,
+            "reason": gain_reason,
             "accepted_step1_sides": accepted_step1_sides,
             "verification": gain_after, "verification_verdict": gain_verdict,
             "response_correction": correction_plan,
@@ -1378,12 +1392,14 @@ async def _run_auto_sub_22_stereo_optimize(
                         final_gain_left, final_gain_right = {}, {}
                 job["auto_gain"].update({
                     "applied": False,
-                    "reverted": bool(first_step_deltas),
+                    "reverted": bool(job["auto_gain"].get("applied")),
                     "final_deltas_db": {"left": 0.0, "right": 0.0},
                     "final_levels_db": {
                         "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
                         "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
                     },
+                    "decision": "restored",
+                    "reason": _gain_restore_reason("winner_alignment_original_kept"),
                     "stage_output_peaks": {
                         "left": final_gain_left.get("stage_output_peaks"),
                         "right": final_gain_right.get("stage_output_peaks"),
@@ -1399,6 +1415,17 @@ async def _run_auto_sub_22_stereo_optimize(
                 best_left = original_left_alignment
                 best_right = original_right_alignment
                 confirmation_gate["action"] = "reverted_to_original"
+                job["auto_gain"].update({
+                    "applied": False,
+                    "reverted": bool(job["auto_gain"].get("applied")),
+                    "final_deltas_db": {"left": 0.0, "right": 0.0},
+                    "final_levels_db": {
+                        "sub1": float(_auto_sub_22_sub(final_gain_snapshot, "sub1").get("level_db", 0.0)),
+                        "sub2": float(_auto_sub_22_sub(final_gain_snapshot, "sub2").get("level_db", 0.0)),
+                    },
+                    "decision": "restored",
+                    "reason": _gain_restore_reason("reverted_to_original"),
+                })
         job["confirmation_gate"] = confirmation_gate
         logger.info("AUTOSUB_CONF_GATE job=%s %s", job_id, json.dumps(confirmation_gate, sort_keys=True))
         overall_score = (0.6 * min(left_score, right_score)) + (0.4 * ((left_score + right_score) / 2.0))

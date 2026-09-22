@@ -39,6 +39,88 @@ def _unavailable_correction_verdict(reason: str | None) -> dict[str, Any]:
     }
 
 
+def _format_gain_deltas(deltas_db: dict[str, float]) -> str:
+    """Signed delta text: one value when both sides moved equally."""
+    left = float(deltas_db.get("left", 0.0) or 0.0)
+    right = float(deltas_db.get("right", 0.0) or 0.0)
+    if abs(left - right) < 0.0005:
+        return f"{left:+.2f} dB"
+    return f"left {left:+.2f} dB / right {right:+.2f} dB"
+
+
+def _gain_recommendation_clamped(auto_gain: dict[str, Any] | None) -> bool:
+    """Whether the stored recommendation hit the +/-6 dB bound."""
+    if not isinstance(auto_gain, dict):
+        return False
+    channels = auto_gain.get("channels") or {}
+    if any(isinstance(entry, dict) and entry.get("clamped") for entry in channels.values()):
+        return True
+    recommendation = auto_gain.get("recommendation")
+    return bool(isinstance(recommendation, dict) and recommendation.get("clamped"))
+
+
+def _gain_outcome_summary(
+    decision: str,
+    result_reason: str | None,
+    *,
+    applied: bool,
+    deltas_db: dict[str, float],
+    clamped: bool = False,
+    accepted_sides: dict[str, bool] | None = None,
+) -> tuple[str, str]:
+    """Persistable ``(decision, reason)`` for the gain path actually taken.
+
+    ``auto_gain.reason`` used to keep the calculator's recommendation text
+    even after the trial ran, so an applied gain still claimed "no audio
+    state changed". The decision and reason stored here must always match
+    the committed level: step-1/step-2 acceptance, side-wise acceptance,
+    clamping and the restored (rejected) path.
+    """
+    detail = f" ({result_reason})" if result_reason else ""
+    clamp_note = "; recommendation clamped to the +/-6 dB bound" if clamped else ""
+    if not applied:
+        if decision == "restored":
+            return "restored", f"Gain trial rejected; original level restored{detail}{clamp_note}"
+        return decision, f"Gain trial kept the original level{detail}{clamp_note}"
+    head = {
+        "accepted_step2": "Gain applied (step-2 accepted): ",
+        "accepted_step1": "Gain applied (step-1 accepted): ",
+    }.get(decision, "Gain applied: ")
+    shown = dict(deltas_db)
+    kept_sides: list[str] = []
+    if accepted_sides:
+        # A side that kept its original level must not be credited with the
+        # trial delta: only the committed deltas may appear in the text.
+        kept_sides = [side for side in ("left", "right") if not accepted_sides.get(side)]
+        for side in kept_sides:
+            shown[side] = 0.0
+    text = f"{head}{_format_gain_deltas(shown)}{detail}{clamp_note}"
+    if kept_sides:
+        text += "; " + " and ".join(f"{side} kept the original level" for side in kept_sides)
+    return decision, text
+
+
+_GAIN_RESTORE_REASONS = {
+    "alignment_reverted_balance_kept": (
+        "Confirmation gate reverted to the incumbent alignment; "
+        "gain restored to the original level"),
+    "reverted_to_original": (
+        "Confirmation gate reverted to the original state; "
+        "gain restored to the original level"),
+    "winner_alignment_original_kept": (
+        "Confirmation gate dropped the gain; "
+        "winner alignment kept at the original level"),
+}
+
+
+def _gain_restore_reason(gate_action: str) -> str:
+    """Truthful auto_gain reason after a confirmation gate dropped the gain."""
+    return _GAIN_RESTORE_REASONS.get(
+        gate_action,
+        "Confirmation gate dropped the gain; original level restored",
+    )
+
+
 def _resolve_gain_trial_outcome(
     step1_accepted: bool,
     step1_verdict: dict[str, Any],

@@ -642,6 +642,12 @@ class Runner21ServiceIOTests(RunnerServiceIOTestBase):
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
         self.assertEqual(self.job["result"]["applied_alignment_ms"], -3.12)
         self.assertEqual(self.job["auto_gain"]["final_level_db"], 3.0)
+        # The stored decision/reason must describe this committed gain.
+        self.assertEqual(self.job["auto_gain"]["applied"], True)
+        self.assertEqual(self.job["auto_gain"]["decision"], "accepted_step2")
+        self.assertEqual(
+            self.job["auto_gain"]["reason"],
+            "Gain applied (step-2 accepted): +3.00 dB (test)")
         # Winner + gain + correction staged; the cleanup restore is gone
         # because the final state was committed (never restored through).
         self.assertEqual(len(self.harness.transitions), 3)
@@ -664,6 +670,10 @@ class Runner21ServiceIOTests(RunnerServiceIOTestBase):
             await self.run_runner(self.runner._run_auto_sub_optimize(**self.runner_args()))
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
         self.assertTrue(self.job["auto_gain"]["reverted"])
+        self.assertFalse(self.job["auto_gain"]["applied"])
+        self.assertEqual(self.job["auto_gain"]["decision"], "restored")
+        self.assertTrue(self.job["auto_gain"]["reason"].startswith(
+            "Gain trial rejected; original level restored"))
         self.assertEqual(len(self.harness.transitions), 3)
         self.assert_service_end_state()
 
@@ -684,6 +694,9 @@ class Runner21ServiceIOTests(RunnerServiceIOTestBase):
             await self.run_runner(self.runner._run_auto_sub_optimize(**self.runner_args()))
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
         self.assertEqual(self.job["auto_gain"]["final_level_db"], 2.0)
+        self.assertEqual(self.job["auto_gain"]["decision"], "accepted_step1")
+        self.assertIn("Step-1 retained; step-2 correction rejected",
+                      self.job["auto_gain"]["reason"])
         self.assertEqual(len(self.harness.transitions), 4)
         self.assert_service_end_state()
 
@@ -731,6 +744,11 @@ class Runner21ServiceIOTests(RunnerServiceIOTestBase):
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
         self.assertEqual(
             self.job["confirmation_gate"]["action"], "alignment_reverted_balance_kept")
+        # The gate dropped the gain, so the metadata must say so.
+        self.assertFalse(self.job["auto_gain"]["applied"])
+        self.assertEqual(self.job["auto_gain"]["decision"], "restored")
+        self.assertTrue(self.job["auto_gain"]["reason"].startswith(
+            "Confirmation gate reverted to the incumbent alignment"))
         self.assertEqual(len(self.harness.stage_calls), 3)
         self.assert_service_end_state()
 
@@ -881,6 +899,10 @@ class Runner22ServiceIOTests(RunnerServiceIOTestBase):
         self.assertEqual(result["derived_main_delay_ms"], 3.12)
         self.assertEqual(result["derived_sub1_delay_ms"], 0.0)
         self.assertEqual(result["derived_sub2_delay_ms"], 2.54)
+        self.assertEqual(self.job["auto_gain"]["applied"], True)
+        self.assertEqual(self.job["auto_gain"]["decision"], "accepted_step2")
+        self.assertTrue(self.job["auto_gain"]["reason"].startswith(
+            "Gain applied (step-2 accepted): "))
         self.assertGreater(len(self.harness.transitions), 0)
         self.assert_service_end_state()
 
@@ -897,6 +919,10 @@ class Runner22ServiceIOTests(RunnerServiceIOTestBase):
                 dip=_dip_by_shape)
             await self.run_runner(self.runner._run_auto_sub_22_optimize(**self.runner_args()))
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
+        self.assertFalse(self.job["auto_gain"]["applied"])
+        self.assertEqual(self.job["auto_gain"]["decision"], "restored")
+        self.assertTrue(self.job["auto_gain"]["reason"].startswith(
+            "Gain trial rejected; original level restored"))
         self.assertGreater(len(self.harness.transitions), 0)
         self.assert_service_end_state()
 
@@ -914,6 +940,9 @@ class Runner22ServiceIOTests(RunnerServiceIOTestBase):
                 dip=_dip_by_shape)
             await self.run_runner(self.runner._run_auto_sub_22_optimize(**self.runner_args()))
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
+        self.assertEqual(self.job["auto_gain"]["decision"], "accepted_step1")
+        self.assertIn("Step-1 retained; step-2 correction rejected",
+                      self.job["auto_gain"]["reason"])
         self.assertGreater(len(self.harness.transitions), 0)
         self.assert_service_end_state()
 
@@ -933,6 +962,15 @@ class Runner22ServiceIOTests(RunnerServiceIOTestBase):
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
         self.assertEqual(
             self.job["confirmation_gate"]["action"], "alignment_reverted_balance_kept")
+        # Mono keeps no gate update stale: levels are back to the originals.
+        self.assertFalse(self.job["auto_gain"]["applied"])
+        self.assertEqual(self.job["auto_gain"]["decision"], "restored")
+        self.assertTrue(self.job["auto_gain"]["reason"].startswith(
+            "Confirmation gate reverted to the incumbent alignment"))
+        self.assertEqual(self.job["auto_gain"]["final_deltas_db"],
+                         {"left": 0.0, "right": 0.0})
+        self.assertEqual(self.job["auto_gain"]["final_levels_db"],
+                         self.job["auto_gain"]["original_levels_db"])
         self.assert_service_end_state()
 
 
@@ -1060,6 +1098,9 @@ class RunnerStereoServiceIOTests(RunnerServiceIOTestBase):
         self.assertEqual(result["derived_main_delay_ms"], 3.12)
         self.assertEqual(result["derived_sub1_delay_ms"], 0.0)
         self.assertEqual(result["derived_sub2_delay_ms"], 2.54)
+        self.assertEqual(self.job["auto_gain"]["decision"], "accepted_step2")
+        self.assertTrue(self.job["auto_gain"]["reason"].startswith(
+            "Gain applied (step-2 accepted): "))
         self.assertGreater(len(self.harness.transitions), 0)
         self.assert_service_end_state()
 
@@ -1076,6 +1117,10 @@ class RunnerStereoServiceIOTests(RunnerServiceIOTestBase):
                 veto=(False, {"failed_sides": []}))
             await self.run_runner(self.runner._run_auto_sub_22_stereo_optimize(**self.runner_args()))
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
+        self.assertFalse(self.job["auto_gain"]["applied"])
+        self.assertEqual(self.job["auto_gain"]["decision"], "restored")
+        self.assertTrue(self.job["auto_gain"]["reason"].startswith(
+            "Gain trial rejected; original level restored"))
         self.assertGreater(len(self.harness.transitions), 0)
         self.assert_service_end_state()
 
@@ -1094,6 +1139,11 @@ class RunnerStereoServiceIOTests(RunnerServiceIOTestBase):
                 veto=(False, {"failed_sides": []}))
             await self.run_runner(self.runner._run_auto_sub_22_stereo_optimize(**self.runner_args()))
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
+        # Side-wise acceptance: only the accepted side is credited.
+        self.assertTrue(self.job["auto_gain"]["applied"])
+        self.assertEqual(self.job["auto_gain"]["decision"], "accepted_step1")
+        self.assertIn("right kept the original level", self.job["auto_gain"]["reason"])
+        self.assertNotIn("no audio state changed", self.job["auto_gain"]["reason"])
         self.assertGreater(len(self.harness.transitions), 0)
         self.assert_service_end_state()
 
@@ -1116,6 +1166,9 @@ class RunnerStereoServiceIOTests(RunnerServiceIOTestBase):
                 veto=(False, {"failed_sides": []}))
             await self.run_runner(self.runner._run_auto_sub_22_stereo_optimize(**self.runner_args()))
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
+        self.assertEqual(self.job["auto_gain"]["decision"], "accepted_step1")
+        self.assertIn("Step-1 retained; step-2 correction rejected",
+                      self.job["auto_gain"]["reason"])
         self.assertGreater(len(self.harness.transitions), 0)
         self.assert_service_end_state()
 
@@ -1159,6 +1212,11 @@ class RunnerStereoServiceIOTests(RunnerServiceIOTestBase):
         channels = self.job["auto_gain"]["correction_verdict"]["channels"]
         self.assertTrue(channels["left"]["accepted"])
         self.assertFalse(channels["right"]["accepted"])
+        # Corridor probe outcome is the committed gain decision/reason.
+        self.assertEqual(self.job["auto_gain"]["decision"], "accepted_step2")
+        self.assertTrue(self.job["auto_gain"]["reason"].startswith(
+            "Gain applied (step-2 accepted): left +3.00 dB / right +2.00 dB"))
+        self.assertIn("Stereo corridor probe", self.job["auto_gain"]["reason"])
         self.assertGreater(len(self.harness.transitions), 0)
         self.assert_service_end_state()
 
@@ -1183,6 +1241,10 @@ class RunnerStereoServiceIOTests(RunnerServiceIOTestBase):
         self.assertEqual(self.job["status"], "completed", self.job.get("error"))
         self.assertEqual(self.job["confirmation_gate"]["action"],
                          "winner_alignment_original_kept")
+        self.assertFalse(self.job["auto_gain"]["applied"])
+        self.assertEqual(self.job["auto_gain"]["decision"], "restored")
+        self.assertTrue(self.job["auto_gain"]["reason"].startswith(
+            "Confirmation gate dropped the gain; winner alignment kept"))
         self.assertGreater(len(self.harness.transitions), 0)
         self.assert_service_end_state()
 

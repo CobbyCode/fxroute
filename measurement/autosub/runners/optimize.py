@@ -31,7 +31,14 @@ from ..deps import (
     _measurement_session,
     activate_candidate_owner,
 )
-from ..gain_trial import GainTrialResult, _run_gain_trial
+from ..gain_trial import (
+    GainTrialResult,
+    _gain_outcome_summary,
+    _gain_recommendation_clamped,
+    _gain_restore_reason,
+    _resolve_gain_trial_outcome,
+    _run_gain_trial,
+)
 from ..jobs import (
     _finish_auto_sub_worker,
     _log_auto_sub_timing_summary,
@@ -759,18 +766,15 @@ async def _run_auto_sub_optimize(
             "applied_correction_db": ((correction_plan or {}).get("applied_deltas_db") or {}).get("left"),
             "correction_step_db": correction_deltas.get("left") if correction_deltas else None,
         })
-        decision = "accepted_step2" if correction_verdict and correction_verdict.get("accepted") else (
-            "accepted_step1" if gain_verdict.get("accepted") else "restored"
+        decision, result_reason = _resolve_gain_trial_outcome(
+            bool(gain_verdict.get("accepted")), gain_verdict, correction_verdict,
         )
         score_final_source = correction_after if decision == "accepted_step2" else (gain_after if decision == "accepted_step1" else job["auto_gain"])
-        result_reason = ((correction_verdict or gain_verdict) or {}).get("reason")
-        if (
-            decision == "accepted_step1" and correction_verdict
-            and not correction_verdict.get("accepted")
-            and "step1_retained" not in correction_verdict
-        ):
-            # Make explicit which step the rejection reason belongs to.
-            result_reason = f"Step-1 retained; step-2 correction rejected ({correction_verdict.get('reason')})"
+        gain_applied = bool(gain_verdict["accepted"] and gain_deltas)
+        gain_decision, gain_reason = _gain_outcome_summary(
+            decision, result_reason, applied=gain_applied,
+            deltas_db=final_gain_deltas, clamped=_gain_recommendation_clamped(job["auto_gain"]),
+        )
         _auto_sub_gain_log_line("AUTOGAIN_RESULT", {
             "gain_final": final_gain_level, "score_final": _auto_sub_gain_log_score(score_final_source),
             "decision": decision, "reason": result_reason,
@@ -779,6 +783,8 @@ async def _run_auto_sub_optimize(
         job["auto_gain"].update({
             "applied": bool(gain_verdict["accepted"] and gain_deltas),
             "reverted": bool(gain_deltas and not gain_verdict["accepted"]),
+            "decision": gain_decision,
+            "reason": gain_reason,
             "verification": gain_after, "verification_verdict": gain_verdict,
             "response_correction": correction_plan,
             "correction_deltas_db": correction_deltas,
@@ -877,9 +883,11 @@ async def _run_auto_sub_optimize(
                     # original level; the gain diagnostics must describe the
                     # state that was actually committed.
                     job["auto_gain"].update({
-                        "applied": False, "reverted": True,
+                        "applied": False, "reverted": bool(job["auto_gain"].get("applied")),
                         "final_deltas_db": dict(final_gain_deltas),
                         "final_level_db": original_level,
+                        "decision": "restored",
+                        "reason": _gain_restore_reason("alignment_reverted_balance_kept"),
                     })
                 else:
                     if not await _restore_original_config():
@@ -890,9 +898,11 @@ async def _run_auto_sub_optimize(
                     final_gain_deltas = {"left": 0.0, "right": 0.0}
                     confirmation_gate["action"] = "reverted_to_original"
                     job["auto_gain"].update({
-                        "applied": False, "reverted": True,
+                        "applied": False, "reverted": bool(job["auto_gain"].get("applied")),
                         "final_deltas_db": {"left": 0.0, "right": 0.0},
                         "final_level_db": original_level,
+                        "decision": "restored",
+                        "reason": _gain_restore_reason("reverted_to_original"),
                     })
             job["confirmation_gate"] = confirmation_gate
             logger.info("AUTOSUB_CONF_GATE job=%s %s", job_id, json.dumps(confirmation_gate, sort_keys=True))
