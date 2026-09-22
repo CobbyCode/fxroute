@@ -4054,8 +4054,14 @@ function renderCrossoverTile() {
     const bassContext = { bass, subRoles };
     // Derived sub high-pass for the Low way: owned by the Subwoofer tile,
     // displayed read-only here. Falls back to the response payload when the
-    // catalog is momentarily stale after a sub save.
-    const responseDerived = response.ways?.[active]?.derived_highpass || null;
+    // catalog is momentarily stale after a sub save. The response carries the
+    // sub crossover for every speaker way (the plan runs each way through it),
+    // but only the Low way replaces its own high-pass with it, so the fallback
+    // stays Low-only: otherwise a mid/high way whose stored high-pass is Off
+    // would render as if it still had one (locked Type, visible rows, no
+    // "High-pass off" in the header).
+    const responseDerived = mod.isLowWayRole && mod.isLowWayRole(active)
+        ? (response.ways?.[active]?.derived_highpass || null) : null;
     const catalogDerived = mod.derivedHighpassForRole
         ? mod.derivedHighpassForRole(active, bass, subRoles) : null;
     const derivedHighpass = (!settings.highpass && (catalogDerived || responseDerived)) || null;
