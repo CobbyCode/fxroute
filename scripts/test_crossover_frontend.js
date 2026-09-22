@@ -245,4 +245,61 @@ assert.match(appSource, /effectsCrossoverTrimGroup.*linkedCrossover \? 'none' : 
     assert.ok(tabrow >= 0 && tabrow < tabs && tabs < link && link < graph,
         'order must read tab row, way tabs, link, graph');
 }
+// The response graph painter lives in crossover_view.js; app.js keeps a
+// thin delegating wrapper so renderCrossoverTile/repaintCrossoverGraph stay
+// unchanged. No state, mutation or listener logic moved with it.
+assert.match(indexSource, /crossover_view\.js\?v=\d+\.\d+\.\d+/);
+const CrossoverView = require('../static/crossover_view.js');
+assert.equal(typeof CrossoverView.drawCrossoverResponse, 'function');
+assert.match(appSource, /function drawCrossoverResponse\(canvas, ways, activeRole\)/);
+assert.match(appSource, /FXRouteCrossoverView/);
+
+// Behavioral pin: the extracted painter handles edge cases and paints the
+// same primitives (axes, dimmed/active ways, dashed Off-direction, cutoff
+// markers) through a stub 2d context.
+globalThis.FXRouteCrossover = Crossover;
+function stubContext() {
+    const calls = [];
+    return { calls,
+        setTransform() { calls.push(['setTransform']); },
+        clearRect() { calls.push(['clearRect']); },
+        fillRect() { calls.push(['fillRect']); },
+        strokeRect() { calls.push(['strokeRect']); },
+        beginPath() { calls.push(['beginPath']); },
+        moveTo() { calls.push(['moveTo']); },
+        lineTo() { calls.push(['lineTo']); },
+        stroke() { calls.push(['stroke']); },
+        fillText() { calls.push(['fillText']); },
+        setLineDash(dash) { calls.push(['setLineDash', [...(dash || [])]]); },
+        measureText() { return { width: 30 }; },
+    };
+}
+function stubCanvas(clientWidth, ctx) {
+    return { clientWidth, clientHeight: 136, width: 0, height: 0,
+        getContext: (kind) => (kind === '2d' ? ctx : null) };
+}
+assert.equal(CrossoverView.drawCrossoverResponse(null, {}, 'left_low'), undefined);
+assert.equal(CrossoverView.drawCrossoverResponse({ getContext: () => null }, {}, 'left_low'), undefined);
+{
+    const ctx = stubContext();
+    CrossoverView.drawCrossoverResponse(stubCanvas(0, ctx), {}, 'left_low');
+    assert.ok(!ctx.calls.some(([name]) => name === 'fillText'), 'hidden card paints nothing');
+}
+{
+    const ctx = stubContext();
+    const canvas = stubCanvas(600, ctx);
+    const ways = {
+        left_low: { points: [[20, -30], [100, -12], [1000, -6], [20000, -24]],
+            complete: true, filters: { lowpass: { frequency_hz: 2000 } }, derived_highpass: null },
+        left_high: { points: [[20, -24], [1000, -6], [2000, -6], [20000, -30]],
+            complete: false, filters: { highpass: { frequency_hz: 2000 } } },
+    };
+    CrossoverView.drawCrossoverResponse(canvas, ways, 'left_low');
+    assert.equal(canvas.width, 600);
+    assert.equal(canvas.height, 136);
+    assert.ok(ctx.calls.some(([name]) => name === 'fillText'), 'axes and markers are painted');
+    assert.ok(ctx.calls.some(([name]) => name === 'stroke'), 'way curves are stroked');
+    assert.ok(ctx.calls.some(([name, arg]) => name === 'setLineDash' && arg.length === 2),
+        'cleared (Off) direction renders dashed');
+}
 console.log('crossover frontend tests: ok');
