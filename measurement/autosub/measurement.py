@@ -531,6 +531,146 @@ async def _prepare_auto_sub_capture(
     })
 
 
+async def _start_and_wait_auto_sub_capture(
+    *,
+    job: dict[str, Any],
+    delay_ms: float,
+    stage: str,
+    channel: str,
+    input_id: str,
+    mic_input_channel: str,
+    reference_input_channel: str,
+    calibration_ref: str,
+    calibration_filename: str | None,
+    calibration_bytes: bytes | None,
+    auto_sub_sweep_profile: dict[str, Any],
+    playback_gain: float,
+    config_reused: bool,
+    staged_layout: list[dict[str, Any]] | None,
+    staged_mode: str | None,
+    staged_fingerprint: str | None,
+    service_job: bool,
+    exact_sub_mute: bool,
+    exact_sub_mute_mask: int | None,
+    measurement_store: Any,
+    capture_state: dict[str, Any],
+    _marks: dict[str, float],
+) -> dict[str, Any] | None:
+    """Start the child sweep and poll it to a terminal state.
+
+    Enables exact mute, resets peaks and registers the child id, then
+    polls up to 300 times at 0.2 s with cooperative cancel checks. A
+    sweep that never reaches a terminal state is cancelled with a 0.5 s
+    settle; the caller then runs the existing drain path.
+
+    Mutates ``capture_state`` (plus ``job`` and ``_marks``) in place so
+    the outer cleanup sees every acquired resource even when this raises
+    or the task is cancelled. Returns a raw terminal candidate for the
+    cancel paths, still needing the caller's timing booking, else None.
+    """
+    if exact_sub_mute:
+        if _dsp_runtime() is None:
+            raise RuntimeError("Subwoofer runtime unavailable; exact digital mute cannot be enabled")
+        if exact_sub_mute_mask is not None:
+            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True, mask=exact_sub_mute_mask)
+        elif service_job:
+            service_mute_mask = job["output_state_context"]["sub_mute_mask"]
+            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True, mask=service_mute_mask)
+        else:
+            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True)
+        capture_state["previous_exact_sub_mute"] = previous_exact_sub_mute
+        capture_state["exact_sub_mute_enabled"] = True
+        if not _dsp_runtime().snapshot().get("exact_sub_mute"):
+            raise RuntimeError("Subwoofer helper did not retain exact digital mute state")
+    if _dsp_runtime() is None:
+        raise RuntimeError("Native DSP output peak capture unavailable")
+    await _dsp_runtime().reset_output_peaks()
+    # Per-side references travel on the job so the single sweep funnel
+    # stays signature-compatible with every Auto-Sub runner.
+    configured_reference_channels = job.get("reference_channels")
+    if isinstance(configured_reference_channels, dict):
+        sweep_reference_left = configured_reference_channels.get("left") or ""
+        sweep_reference_right = configured_reference_channels.get("right") or ""
+    else:
+        sweep_reference_left = sweep_reference_right = reference_input_channel
+    staged_sweep_context: dict[str, Any] = {}
+    if service_job:
+        staged_sweep_context = {
+            "expected_native_layout": staged_layout,
+            "expected_native_output_mode": staged_mode,
+            "expected_plan_fingerprint": staged_fingerprint,
+        }
+    sweep_job = await measurement_store.start_measurement(
+        input_id=input_id,
+        channel=channel,
+        mic_input_channel=mic_input_channel,
+        reference_input_channel=reference_input_channel,
+        reference_input_channel_left=sweep_reference_left,
+        reference_input_channel_right=sweep_reference_right,
+        calibration_ref=calibration_ref,
+        calibration_filename=calibration_filename,
+        calibration_bytes=calibration_bytes,
+        sweep_profile=auto_sub_sweep_profile,
+        measurement_scope="raw_helper",
+        playback_gain=playback_gain,
+        skip_pre_sweep_diagnostics=config_reused,
+        **staged_sweep_context,
+    )
+    capture_state["sweep_id"] = sweep_job["id"]
+    job["current_sweep_id"] = capture_state["sweep_id"]
+    _marks["sweep_start"] = time.monotonic()
+
+    if _auto_sub_cancel_requested(job):
+        try:
+            measurement_store.cancel_job(capture_state["sweep_id"])
+        except Exception:
+            pass
+        job["current_sweep_id"] = ""
+        return _auto_sub_cancelled_candidate(delay_ms, stage)
+
+    sweep_ok = False
+    poll_iters = 0
+    poll_late_total = 0.0
+    poll_late_max = 0.0
+    for _poll in range(300):
+        if _auto_sub_cancel_requested(job):
+            try:
+                measurement_store.cancel_job(capture_state["sweep_id"])
+            except Exception:
+                pass
+            if job.get("current_sweep_id") == capture_state["sweep_id"]:
+                job["current_sweep_id"] = ""
+            return _auto_sub_cancelled_candidate(delay_ms, stage)
+        _wake_at = time.monotonic() + 0.2
+        await asyncio.sleep(0.2)
+        _late = time.monotonic() - _wake_at
+        poll_late_total += _late
+        if _late > poll_late_max:
+            poll_late_max = _late
+        poll_iters += 1
+        try:
+            current = measurement_store.get_job(capture_state["sweep_id"])
+        except KeyError:
+            sweep_ok = True
+            break
+        if current.get("status") in ("completed", "failed", "cancelled"):
+            sweep_ok = True
+            break
+
+    if not sweep_ok:
+        logger.warning("Auto-sub: sweep %s timed out (delay %.2f ms), cancelling", capture_state["sweep_id"], delay_ms)
+        try:
+            measurement_store.cancel_job(capture_state["sweep_id"])
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+
+    capture_state["poll_iters"] = poll_iters
+    capture_state["poll_late_total"] = poll_late_total
+    capture_state["poll_late_max"] = poll_late_max
+    return None
+
+
 async def _measure_auto_sub_candidate(
     *,
     delay_ms: float,
@@ -664,111 +804,64 @@ async def _measure_auto_sub_candidate(
     stage_peak_comparison: dict[str, Any] | None = None
     previous_exact_sub_mute = False
     exact_sub_mute_enabled = False
+    capture_state = {
+        "sweep_id": sweep_id,
+        "sweep_drained": sweep_drained,
+        "previous_exact_sub_mute": previous_exact_sub_mute,
+        "exact_sub_mute_enabled": exact_sub_mute_enabled,
+    }
     try:
-        if exact_sub_mute:
-            if _dsp_runtime() is None:
-                raise RuntimeError("Subwoofer runtime unavailable; exact digital mute cannot be enabled")
-            if exact_sub_mute_mask is not None:
-                previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True, mask=exact_sub_mute_mask)
-            elif service_job:
-                service_mute_mask = job["output_state_context"]["sub_mute_mask"]
-                previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True, mask=service_mute_mask)
-            else:
-                previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True)
-            exact_sub_mute_enabled = True
-            if not _dsp_runtime().snapshot().get("exact_sub_mute"):
-                raise RuntimeError("Subwoofer helper did not retain exact digital mute state")
-        if _dsp_runtime() is None:
-            raise RuntimeError("Native DSP output peak capture unavailable")
-        await _dsp_runtime().reset_output_peaks()
-        # Per-side references travel on the job so the single sweep funnel
-        # stays signature-compatible with every Auto-Sub runner.
-        configured_reference_channels = job.get("reference_channels")
-        if isinstance(configured_reference_channels, dict):
-            sweep_reference_left = configured_reference_channels.get("left") or ""
-            sweep_reference_right = configured_reference_channels.get("right") or ""
-        else:
-            sweep_reference_left = sweep_reference_right = reference_input_channel
-        staged_sweep_context: dict[str, Any] = {}
-        if service_job:
-            staged_sweep_context = {
-                "expected_native_layout": staged_layout,
-                "expected_native_output_mode": staged_mode,
-                "expected_plan_fingerprint": staged_fingerprint,
-            }
-        sweep_job = await measurement_store.start_measurement(
-            input_id=input_id,
-            channel=channel,
-            mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel,
-            reference_input_channel_left=sweep_reference_left,
-            reference_input_channel_right=sweep_reference_right,
-            calibration_ref=calibration_ref,
-            calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes,
-            sweep_profile=auto_sub_sweep_profile,
-            measurement_scope="raw_helper",
-            playback_gain=playback_gain,
-            skip_pre_sweep_diagnostics=config_reused,
-            **staged_sweep_context,
-        )
-        sweep_id = sweep_job["id"]
-        job["current_sweep_id"] = sweep_id
-        _marks["sweep_start"] = time.monotonic()
-
-        if _auto_sub_cancel_requested(job):
-            try:
-                measurement_store.cancel_job(sweep_id)
-            except Exception:
-                pass
-            job["current_sweep_id"] = ""
-            return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-
-        sweep_ok = False
-        poll_iters = 0
-        poll_late_total = 0.0
-        poll_late_max = 0.0
-        for _poll in range(300):
-            if _auto_sub_cancel_requested(job):
-                try:
-                    measurement_store.cancel_job(sweep_id)
-                except Exception:
-                    pass
-                if job.get("current_sweep_id") == sweep_id:
-                    job["current_sweep_id"] = ""
-                return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-            _wake_at = time.monotonic() + 0.2
-            await asyncio.sleep(0.2)
-            _late = time.monotonic() - _wake_at
-            poll_late_total += _late
-            if _late > poll_late_max:
-                poll_late_max = _late
-            poll_iters += 1
-            try:
-                current = measurement_store.get_job(sweep_id)
-            except KeyError:
-                sweep_ok = True
-                break
-            if current.get("status") in ("completed", "failed", "cancelled"):
-                sweep_ok = True
-                break
-
-        if not sweep_ok:
-            logger.warning("Auto-sub: sweep %s timed out (delay %.2f ms), cancelling", sweep_id, delay_ms)
-            try:
-                measurement_store.cancel_job(sweep_id)
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
+        try:
+            cancelled_start = await _start_and_wait_auto_sub_capture(
+                job=job,
+                delay_ms=delay_ms,
+                stage=stage,
+                channel=channel,
+                input_id=input_id,
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile,
+                playback_gain=playback_gain,
+                config_reused=config_reused,
+                staged_layout=staged_layout,
+                staged_mode=staged_mode,
+                staged_fingerprint=staged_fingerprint,
+                service_job=service_job,
+                exact_sub_mute=exact_sub_mute,
+                exact_sub_mute_mask=exact_sub_mute_mask,
+                measurement_store=measurement_store,
+                capture_state=capture_state,
+                _marks=_marks,
+            )
+        except BaseException:
+            # The helper mutates capture_state in place; mirror it so the
+            # outer except/finally see acquired resources even when it raises
+            # or the task is cancelled inside start/polling.
+            sweep_id = capture_state["sweep_id"]
+            sweep_drained = capture_state["sweep_drained"]
+            previous_exact_sub_mute = capture_state["previous_exact_sub_mute"]
+            exact_sub_mute_enabled = capture_state["exact_sub_mute_enabled"]
+            raise
+        sweep_id = capture_state["sweep_id"]
+        sweep_drained = capture_state["sweep_drained"]
+        previous_exact_sub_mute = capture_state["previous_exact_sub_mute"]
+        exact_sub_mute_enabled = capture_state["exact_sub_mute_enabled"]
+        if cancelled_start is not None:
+            return _return_candidate(cancelled_start)
 
         _marks["sweep_poll_done"] = time.monotonic()
         logger.info(
             "AUTOSUB-POLL job=%s sweep=%s poll_iters=%d poll_late_total=%.2fs poll_late_max=%.2fs",
-            job.get("id") or "", sweep_id, poll_iters, poll_late_total, poll_late_max,
+            job.get("id") or "", sweep_id, capture_state["poll_iters"],
+            capture_state["poll_late_total"], capture_state["poll_late_max"],
         )
         if service_job:
             await measurement_store.drain_job(sweep_id)
             sweep_drained = True
+            capture_state["sweep_drained"] = True
         measured_stage_peaks = await _dsp_runtime().read_output_peaks()
         stage_peak_comparison = _auto_sub_stage_peak_comparison(
             stage_peak_prediction, measured_stage_peaks, sink_gain=sink_gain,
