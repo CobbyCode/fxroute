@@ -41,6 +41,7 @@ function extractFunction(name) {
 
 const sandbox = {
     state: { samplerate: { available: true, active_rate: 44100 } },
+    window: { FXRouteUiHelpers: require('../static/ui_helpers.js') },
 };
 vm.createContext(sandbox);
 vm.runInContext(extractFunction('formatRadioStreamLine'), sandbox);

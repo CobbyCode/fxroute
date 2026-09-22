@@ -9,18 +9,19 @@ const MeasurementUI = require('../static/measurement_ui.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+const apiSource = fs.readFileSync(path.join(repoRoot, 'static', 'api.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
 
-function extractFunction(name) {
-    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(appSource);
+function extractFrom(source, name) {
+    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
     assert.ok(match, `missing function ${name}`);
     let parenDepth = 1;
     let braceStart = -1;
-    for (let index = match.index + match[0].length; index < appSource.length; index += 1) {
-        if (appSource[index] === '(') parenDepth += 1;
-        if (appSource[index] === ')') parenDepth -= 1;
+    for (let index = match.index + match[0].length; index < source.length; index += 1) {
+        if (source[index] === '(') parenDepth += 1;
+        if (source[index] === ')') parenDepth -= 1;
         if (parenDepth === 0) {
-            braceStart = appSource.indexOf('{', index);
+            braceStart = source.indexOf('{', index);
             break;
         }
     }
@@ -28,8 +29,8 @@ function extractFunction(name) {
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = braceStart; index < appSource.length; index += 1) {
-        const char = appSource[index];
+    for (let index = braceStart; index < source.length; index += 1) {
+        const char = source[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -38,9 +39,17 @@ function extractFunction(name) {
         }
         if (char === "'" || char === '"' || char === '`') quote = char;
         else if (char === '{') depth += 1;
-        else if (char === '}' && --depth === 0) return appSource.slice(match.index, index + 1);
+        else if (char === '}' && --depth === 0) return source.slice(match.index, index + 1);
     }
     throw new Error(`unterminated function ${name}`);
+}
+
+function extractFunction(name) {
+    return extractFrom(appSource, name);
+}
+
+function extractApiFunction(name) {
+    return extractFrom(apiSource, name);
 }
 
 function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {}) {
@@ -150,7 +159,7 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
             return OutputState;
         }
         async function pollMeasurementJob() {}
-        ${extractFunction('formatTransitionErrorDetail')}
+        ${extractApiFunction('formatTransitionErrorDetail')}
         ${extractFunction('flushSubwooferSettingsBeforeMeasurement')}
         ${extractFunction('requireConcreteFilterBank')}
         ${extractFunction('startHostMeasurement')}
@@ -167,9 +176,11 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
 }
 
 async function main() {
+    assert.ok(/function\s+formatTransitionErrorDetail/.test(appSource), 'app.js must keep a formatTransitionErrorDetail wrapper');
+    assert.ok(/FXRouteApi/.test(appSource), 'app.js wrapper must delegate to api.js');
     const formatterContext = {};
     vm.createContext(formatterContext);
-    vm.runInContext(extractFunction('formatTransitionErrorDetail'), formatterContext);
+    vm.runInContext(extractApiFunction('formatTransitionErrorDetail'), formatterContext);
     assert.equal(
         formatterContext.formatTransitionErrorDetail('plain failure', 'fallback'),
         'plain failure',

@@ -190,8 +190,10 @@ try {
     assert.doesNotMatch(subIndex, /src="\/static\/app\.js/);
     assert.match(subIndex, /src="\.\/demo\/boot\.js\?v=\d+"/);
     const subApp = fs.readFileSync(path.join(subpathOut, 'static', 'app.js'), 'utf8');
-    assert.ok(subApp.includes('/fxroute/static/artwork-placeholder.svg'));
-    assert.ok(!subApp.includes("'/static/artwork-placeholder.svg"));
+    const subHelpers = fs.readFileSync(path.join(subpathOut, 'static', 'ui_helpers.js'), 'utf8');
+    assert.ok(subHelpers.includes('/fxroute/static/artwork-placeholder.svg'));
+    assert.ok(!subHelpers.includes("'/static/artwork-placeholder.svg"));
+    assert.ok(subApp.includes('FXRouteUiHelpers'));
     const subStyle = fs.readFileSync(path.join(subpathOut, 'static', 'style.css'), 'utf8');
     assert.ok(subStyle.includes("url('/fxroute/static/artwork-placeholder.svg?v=2')"));
     const subManifest = fs.readFileSync(path.join(subpathOut, 'static', 'site.webmanifest'), 'utf8');

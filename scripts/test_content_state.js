@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
 // Regression test for the shared content-state renderer (setContentState in
-// static/app.js). Library, Radio and TIDAL browse all render Loading / Empty /
+// static/ui_helpers.js, wrapped by static/app.js). Library, Radio and TIDAL browse all render Loading / Empty /
 // Error into this one vocabulary; the test pins the class/display contract so
 // no area can silently fall back to ad-hoc bare text again.
 
@@ -10,9 +10,14 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'ui_helpers.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+assert.ok(/function\s+setContentState\s*\(/.test(uiSource), 'ui_helpers.js must own setContentState');
+assert.ok(/function\s+setContentState\s*\(/.test(appSource), 'app.js must keep a setContentState wrapper');
+assert.ok(/FXRouteUiHelpers|FXRouteContentState/.test(appSource), 'app.js wrapper must delegate to ui_helpers.js');
 
 function extractFunction(name) {
+    const source = uiSource;
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
     assert.ok(match, `missing ${name}`);
     const brace = source.indexOf('{', match.index);

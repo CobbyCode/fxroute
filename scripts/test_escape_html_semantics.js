@@ -17,14 +17,12 @@ const vm = require('vm');
 const root = path.join(__dirname, '..');
 const appSource = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
 
-// Extract the real escapeHtml implementation from app.js and run it in a
-// fresh context, so the test pins the shipped function, not a copy.
-const escapeHtmlMatch = appSource.match(/function escapeHtml\(text\) \{[\s\S]*?\n\}/);
-assert.ok(escapeHtmlMatch, 'static/app.js must define escapeHtml');
-const sandbox = {};
-vm.createContext(sandbox);
-vm.runInContext(escapeHtmlMatch[0], sandbox);
-const escapeHtml = sandbox.escapeHtml;
+// Canonical implementation lives in ui_helpers.js; app.js keeps a thin
+// delegating wrapper so existing call sites stay unchanged.
+const { escapeHtml } = require('../static/ui_helpers.js');
+assert.ok(typeof escapeHtml === 'function', 'static/ui_helpers.js must export escapeHtml');
+assert.ok(/function escapeHtml\(text\)/.test(appSource), 'static/app.js must keep an escapeHtml wrapper');
+assert.ok(/FXRouteUiHelpers/.test(appSource), 'static/app.js escapeHtml wrapper must delegate to ui_helpers.js');
 
 assert.equal(escapeHtml(0), '0', 'numeric 0 must survive escaping');
 assert.equal(escapeHtml(null), '', 'null must collapse to empty');

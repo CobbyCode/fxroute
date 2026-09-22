@@ -35,7 +35,7 @@ function extractFunction(name) {
 }
 
 const sandbox = {
-    window: { __spotifyLastData: {} },
+    window: { __spotifyLastData: {}, FXRouteUiHelpers: require('../static/ui_helpers.js') },
     state: { samplerate: { available: true, active_rate: 44100 } },
 };
 vm.createContext(sandbox);

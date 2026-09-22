@@ -9,21 +9,22 @@ const MeasurementUI = require('../static/measurement_ui.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+const apiSource = fs.readFileSync(path.join(repoRoot, 'static', 'api.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-function extractFunction(name) {
+function extractFrom(source, name) {
     const marker = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`);
-    const match = marker.exec(appSource);
+    const match = marker.exec(source);
     assert.ok(match, `missing function ${name}`);
     const start = match.index;
     let parenDepth = 1;
     let braceStart = -1;
-    for (let index = match.index + match[0].length; index < appSource.length; index += 1) {
-        if (appSource[index] === '(') parenDepth += 1;
-        if (appSource[index] === ')') parenDepth -= 1;
+    for (let index = match.index + match[0].length; index < source.length; index += 1) {
+        if (source[index] === '(') parenDepth += 1;
+        if (source[index] === ')') parenDepth -= 1;
         if (parenDepth === 0) {
-            braceStart = appSource.indexOf('{', index);
+            braceStart = source.indexOf('{', index);
             break;
         }
     }
@@ -31,8 +32,8 @@ function extractFunction(name) {
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = braceStart; index < appSource.length; index += 1) {
-        const char = appSource[index];
+    for (let index = braceStart; index < source.length; index += 1) {
+        const char = source[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -44,10 +45,14 @@ function extractFunction(name) {
         } else if (char === '{') {
             depth += 1;
         } else if (char === '}' && --depth === 0) {
-            return appSource.slice(start, index + 1);
+            return source.slice(start, index + 1);
         }
     }
     throw new Error(`unterminated function ${name}`);
+}
+
+function extractFunction(name) {
+    return extractFrom(appSource, name);
 }
 
 async function main() {
@@ -81,7 +86,7 @@ async function main() {
         Math,
     };
     vm.createContext(context);
-    const functions = [
+    const appFunctions = [
         'getDefaultMeasurementPeqFilter',
         'getDefaultMeasurementPeqState',
         'ensureMeasurementPeqState',
@@ -101,7 +106,6 @@ async function main() {
         'takeMeasurementPeqToPreset',
         'createMeasurementPeqPresetFromDraft',
         'measurementCommitSourceId',
-        'formatTransitionErrorDetail',
         'ensureOutputSystemBoxes',
         'outputSystemModule',
         'outputSystemBankBinding',
@@ -111,6 +115,8 @@ async function main() {
         'measurementPeqParams',
         'fetchOutputSystemCatalog',
     ].map(extractFunction).join('\n');
+    const apiFunctions = ['formatTransitionErrorDetail'].map((name) => extractFrom(apiSource, name)).join('\n');
+    const functions = `${appFunctions}\n${apiFunctions}`;
     vm.runInContext(`let peqCreateInFlight = false;\n${functions}`, context);
 
     const inputs = Array.from({ length: 12 }, (_, index) => ({

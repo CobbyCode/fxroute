@@ -9,6 +9,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const ui = require('../static/output_state.js');
+const uiHelpers = require('../static/ui_helpers.js');
 const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
 
 function extract(name) {
@@ -135,11 +136,14 @@ context.fetch = async (url, options) => {
     requests.push({ url, fields: options.body.fields });
     return { ok: true, json: async () => ({ status: 'ok', preset: { name: 'Mono Test' } }) };
 };
-for (const name of ['escapeHtml', 'outputSystemBankBinding', 'appendBankBindingFields',
+for (const name of ['outputSystemBankBinding', 'appendBankBindingFields',
     'requireConcreteFilterBank', 'measurementBankSumsBothInputs', 'measurementPeqParams',
     'getDualFilterFileKind', 'createDualFilterPreset']) {
     vm.runInContext(extract(name), context);
 }
+context.escapeHtml = uiHelpers.escapeHtml;
+assert.ok(/function\s+escapeHtml/.test(source), 'app.js must keep an escapeHtml wrapper');
+assert.ok(/FXRouteUiHelpers/.test(source), 'app.js wrapper must delegate to ui_helpers.js');
 function dualState({ text = '', file = null }) {
     context.elements.effectsRewLeftText.value = text;
     context.elements.effectsRewRightText.value = '';

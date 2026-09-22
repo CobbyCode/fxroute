@@ -80,6 +80,9 @@ window.FXRouteMeasurementFlows?.init({
     sleep,
     fetchSavedMeasurements: () => fetchMeasurements(),
 });
+// Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
+// implementations below; app.js keeps thin delegating wrappers so existing
+// call sites stay unchanged.
 const MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS = MeasurementUI.MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS;
 const MEASUREMENT_JOB_CANCELLED_STATES = MeasurementUI.MEASUREMENT_JOB_CANCELLED_STATES;
 const MEASUREMENT_JOB_FAILED_STATES = MeasurementUI.MEASUREMENT_JOB_FAILED_STATES;
@@ -884,202 +887,21 @@ const elements = {
     powerShutdown: document.getElementById('power-shutdown'),
 };
 
-function createFxrouteModalManager() {
-    const stack = [];
-    const managedInertElements = new Set();
-
-    function focusElement(element) {
-        if (!element || typeof element.focus !== 'function') return false;
-        try {
-            element.focus({ preventScroll: true });
-        } catch (error) {
-            element.focus();
-        }
-        return document.activeElement === element;
-    }
-
-    function isVisible(element) {
-        const closedDetails = element.closest('details:not([open])');
-        if (closedDetails && element.tagName !== 'SUMMARY') return false;
-        return !element.hidden
-            && element.getAttribute('aria-hidden') !== 'true'
-            && (element.offsetParent !== null || element === document.activeElement);
-    }
-
-    function getFocusableElements(root) {
-        if (!root) return [];
-        const selector = [
-            'a[href]',
-            'area[href]',
-            'button:not([disabled])',
-            'input:not([disabled]):not([type="hidden"])',
-            'select:not([disabled])',
-            'textarea:not([disabled])',
-            'summary',
-            '[tabindex]:not([tabindex="-1"])',
-        ].join(',');
-        return Array.from(root.querySelectorAll(selector)).filter(isVisible);
-    }
-
-    function clearManagedInert() {
-        managedInertElements.forEach(element => {
-            element.inert = false;
-        });
-        managedInertElements.clear();
-    }
-
-    function containsProtectedRoot(element, protectedRoots) {
-        return protectedRoots.some(root => element === root || element.contains(root));
-    }
-
-    function applyBackgroundInert(entry) {
-        clearManagedInert();
-        if (!entry) return;
-
-        const protectedRoots = [entry.root, ...(entry.siblingRoots || [])]
-            .filter(Boolean);
-        protectedRoots.forEach(root => {
-            let node = root;
-            while (node && node.parentElement) {
-                const parent = node.parentElement;
-                Array.from(parent.children).forEach(sibling => {
-                    if (sibling === node || containsProtectedRoot(sibling, protectedRoots)) return;
-                    if (!(sibling instanceof HTMLElement) || sibling.inert) return;
-                    sibling.inert = true;
-                    managedInertElements.add(sibling);
-                });
-                node = parent;
-            }
-        });
-    }
-
-    function focusInitial(entry) {
-        const focusables = getFocusableElements(entry.root);
-        if (entry.initialFocus && isVisible(entry.initialFocus) && focusElement(entry.initialFocus)) return;
-        if (focusElement(focusables[0])) return;
-        focusElement(entry.dialog || entry.root);
-    }
-
-    function open(root, options = {}) {
-        if (!root) return;
-        const existingIndex = stack.findIndex(entry => entry.root === root);
-        if (existingIndex >= 0) {
-            const existing = stack.splice(existingIndex, 1)[0];
-            stack.push(existing);
-            applyBackgroundInert(existing);
-            focusInitial(existing);
-            return;
-        }
-
-        const dialog = options.dialog
-            || (root.matches?.('[role="dialog"]') ? root : root.querySelector?.('[role="dialog"]'))
-            || root;
-        const opener = options.opener
-            || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-        const entry = {
-            root,
-            dialog,
-            opener,
-            initialFocus: options.initialFocus || null,
-            siblingRoots: options.siblingRoots || [],
-            onEscape: options.onEscape,
-        };
-        stack.push(entry);
-        applyBackgroundInert(entry);
-        focusInitial(entry);
-    }
-
-    function close(root) {
-        const index = stack.findIndex(entry => entry.root === root);
-        if (index < 0) return;
-        const wasTop = index === stack.length - 1;
-        const [entry] = stack.splice(index, 1);
-        applyBackgroundInert(stack[stack.length - 1]);
-        if (!wasTop) return;
-
-        const replacement = stack[stack.length - 1];
-        if (replacement) {
-            if (replacement.root.contains(entry.opener)) {
-                focusElement(entry.opener);
-            } else {
-                focusInitial(replacement);
-            }
-            return;
-        }
-        focusElement(entry.opener);
-    }
-
-    function isOpen(root) {
-        return stack.some(entry => entry.root === root);
-    }
-
-    document.addEventListener('keydown', event => {
-        const entry = stack[stack.length - 1];
-        if (!entry) return;
-
-        if (event.key === 'Escape' && typeof entry.onEscape === 'function') {
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            void entry.onEscape(event);
-            return;
-        }
-        if (event.key !== 'Tab') return;
-
-        const focusables = getFocusableElements(entry.root);
-        if (!focusables.length) {
-            event.preventDefault();
-            focusElement(entry.dialog || entry.root);
-            return;
-        }
-
-        const active = document.activeElement;
-        if (!entry.root.contains(active)) {
-            event.preventDefault();
-            focusElement(event.shiftKey ? focusables[focusables.length - 1] : focusables[0]);
-            return;
-        }
-
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        if (event.shiftKey && active === first) {
-            event.preventDefault();
-            focusElement(last);
-        } else if (!event.shiftKey && active === last) {
-            event.preventDefault();
-            focusElement(first);
-        }
-    }, true);
-
-    return { open, close, isOpen };
-}
-
-window.FXRouteModal = createFxrouteModalManager();
+// Modal manager lives in static/modal.js (window.FXRouteModal).
+// app.js uses the shared singleton directly; no local factory remains.
 
 /* Shared compact content-state renderer (Library, Radio, TIDAL browse).
    One vocabulary for Loading / Empty / Error text slots so content areas
    never fall back to ad-hoc bare text. Exposed globally because radio.js
    and streaming.js load before app.js but only call it at runtime, after
    this module has defined it. */
+// Shared content-state renderer lives in static/ui_helpers.js
+// (window.FXRouteContentState). Thin wrapper keeps existing call sites unchanged.
 function setContentState(el, state, message) {
-    if (!el) return;
-    if (state === 'none' || state === 'hidden') {
-        el.classList.add('hidden');
-        el.textContent = '';
-        return;
-    }
-    el.classList.remove('hidden');
-    el.hidden = false;
-    el.style.display = '';
-    el.className = 'content-state content-state--' + state;
-    el.textContent = message || '';
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    if (mod && typeof mod.setContentState === 'function') return mod.setContentState(el, state, message);
+    if (typeof window !== 'undefined' && window.FXRouteContentState) return window.FXRouteContentState.set(el, state, message);
 }
-window.FXRouteContentState = {
-    set: setContentState,
-    loading(el, msg) { setContentState(el, 'loading', msg); },
-    empty(el, msg) { setContentState(el, 'empty', msg); },
-    error(el, msg) { setContentState(el, 'error', msg); },
-    hide(el) { setContentState(el, 'none', ''); },
-};
 
 // Initialization
 document.addEventListener('DOMContentLoaded', () => {
@@ -1920,37 +1742,13 @@ function normalizeOutputModeName(mode) {
 }
 
 function formatSampleRateKhz(rate) {
-    const numeric = Number(rate);
-    if (!Number.isFinite(numeric) || numeric <= 0) return 'Auto';
-    return `${(numeric / 1000).toFixed(1).replace(/\.0$/, '')} kHz`;
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.formatSampleRateKhz(rate);
 }
 
 function formatTransitionErrorDetail(detail, fallback = 'Request failed') {
-    if (typeof detail === 'string') {
-        const trimmedDetail = detail.trim();
-        if (trimmedDetail) return trimmedDetail;
-    } else if (detail && typeof detail === 'object') {
-        const message = typeof detail.message === 'string' ? detail.message.trim() : '';
-        if (message) {
-            const stage = typeof detail.stage === 'string' ? detail.stage.trim() : '';
-            if (stage && !message.toLowerCase().includes(stage.toLowerCase())) {
-                return `${message} (stage: ${stage})`;
-            }
-            return message;
-        }
-        // Message-less structured details (FastAPI validation lists, status
-        // objects without a message) stay out of the UI: keep them for
-        // diagnosis via console.warn and fall through to the generic fallback
-        // so no internal fields leak into toasts or error states.
-        try {
-            if (typeof console !== 'undefined' && typeof console.warn === 'function') {
-                console.warn('Suppressed message-less error detail:', detail);
-            }
-        } catch (_warnError) {
-            // Logging must never break error rendering.
-        }
-    }
-    return typeof fallback === 'string' ? fallback : 'Request failed';
+    const mod = (typeof window !== 'undefined' && window.FXRouteApi) || (typeof globalThis !== 'undefined' && globalThis.FXRouteApi) || null;
+    return mod.formatTransitionErrorDetail(detail, fallback);
 }
 
 function formatRadioStreamLine(streamInfo, effectiveOutputRate = null) {
@@ -2111,11 +1909,8 @@ function toggleSettingsPanel(forceOpen = null) {
 }
 
 function formatRateKhz(rate) {
-    const numericRate = Number(rate);
-    if (!Number.isFinite(numericRate) || numericRate <= 0) return '';
-    // Compact unit spelling (44.1kHz): shared with the footer pill, where
-    // every saved pixel counts against badge truncation.
-    return `${(numericRate / 1000).toFixed(1).replace(/\.0$/, '')}kHz`;
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.formatRateKhz(rate);
 }
 
 function formatBluetoothModeStatus(bluetooth = {}) {
@@ -2151,7 +1946,9 @@ function settingsCertificateUrl() {
 }
 
 function isSelectFocused(selectEl) {
-    return !!selectEl && document.activeElement === selectEl;
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    if (mod && typeof mod.isSelectFocused === 'function') return mod.isSelectFocused(selectEl);
+    return !!selectEl && typeof document !== 'undefined' && document.activeElement === selectEl;
 }
 
 function formatHardwareBool(value, onLabel = 'on', offLabel = 'off') {
@@ -4971,9 +4768,8 @@ function actualVolumeToSliderValue(actualVolume) {
 }
 
 function setRangeProgress(input, fraction) {
-    if (!input) return;
-    const percent = Math.max(0, Math.min(100, Number(fraction) * 100));
-    input.style.setProperty('--range-progress', `${percent}%`);
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.setRangeProgress(input, fraction);
 }
 
 function renderVolumeControlsFromActualVolume(actualVolume) {
@@ -5319,8 +5115,8 @@ function renderSamplerateUI() {
 // button's CSS colour says. The SVG is painted from currentColor, so the
 // existing muted / accent button states stay the single source of truth.
 function favoriteHeartSvg() {
-    return '<svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
-        + '<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.favoriteHeartSvg();
 }
 
 function renderTrackFavoriteButton(track = state.playback.current_track) {
@@ -7775,10 +7571,13 @@ async function playTrackInPlaylist(trackId) {
 }
 
 function artworkPlaceholderUrl() {
-    return '/static/artwork-placeholder.svg?v=2';
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.artworkPlaceholderUrl();
 }
 
 function albumArtFallbackSvg() {
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    if (mod && typeof mod.albumArtFallbackSvg === 'function') return mod.albumArtFallbackSvg();
     return artworkPlaceholderUrl();
 }
 
@@ -8201,28 +8000,12 @@ async function deletePlaylistById(playlistId) {
     }
 }
 function getDownloadFilenameFromResponse(resp, fallbackName = 'download') {
-    const header = resp.headers.get('Content-Disposition') || '';
-    const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
-    if (utf8Match && utf8Match[1]) {
-        try {
-            return decodeURIComponent(utf8Match[1]);
-        } catch (_) {
-            return utf8Match[1];
-        }
-    }
-    const plainMatch = header.match(/filename="?([^";]+)"?/i);
-    if (plainMatch && plainMatch[1]) return plainMatch[1];
-    return fallbackName;
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.getDownloadFilenameFromResponse(resp, fallbackName);
 }
 function triggerBlobDownload(blob, filename) {
-    const objectUrl = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = objectUrl;
-    link.download = filename || 'download';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.triggerBlobDownload(blob, filename);
 }
 async function downloadSelectedTracks() {
     const trackIds = getSelectedDownloadTrackIds();
@@ -12145,7 +11928,8 @@ function getMeasurementTimingInfo(measurement = {}) {
 }
 
 function sleep(ms) {
-    return new Promise(resolve => window.setTimeout(resolve, ms));
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.sleep(ms);
 }
 
 
@@ -16752,42 +16536,20 @@ function updateSeekUI() {
     }
 }
 // Utilities
-// Shared JSON fetch helpers: non-2xx responses throw with the server's
-// detail message (when present) instead of silently resolving to null.
+// Shared JSON fetch helpers live in static/api.js (window.FXRouteApi).
 async function apiFetchJson(url, options = {}) {
-    const resp = await fetch(url, options);
-    const data = await resp.json().catch(() => null);
-    if (!resp.ok) {
-        // A transition failure carries a structured detail object
-        // ({ok, transition_id, stage, failure_latched, message}). Rendering it
-        // through String() would surface the useless "[object Object]"; the
-        // shared formatter keeps the backend message and stage visible, and
-        // maps message-less details to this generic fallback (diagnosed via
-        // console.warn) instead of leaking raw JSON into the UI.
-        const detail = data && (data.detail || data.error || data.message);
-        throw new Error(formatTransitionErrorDetail(detail, `HTTP ${resp.status} ${url}`));
-    }
-    return data;
+    const mod = (typeof window !== 'undefined' && window.FXRouteApi) || (typeof globalThis !== 'undefined' && globalThis.FXRouteApi) || null;
+    return mod.apiFetchJson(url, options);
 }
 
 function apiPostJson(url, body) {
-    return apiFetchJson(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body ?? {}),
-    });
+    const mod = (typeof window !== 'undefined' && window.FXRouteApi) || (typeof globalThis !== 'undefined' && globalThis.FXRouteApi) || null;
+    return mod.apiPostJson(url, body);
 }
 
 function escapeHtml(text) {
-    if (text === null || text === undefined) return '';
-    // Escapes quotes too so the result is safe inside double-quoted attributes.
-    // Any other value (including numeric 0) is stringified as-is.
-    return String(text)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.escapeHtml(text);
 }
 
 // =========================================================================
@@ -16824,10 +16586,8 @@ let _footerContentFreezeTimer = null;
 // Format seconds → m:ss
 // ---------------------------------------------------------------------------
 function formatTime(sec) {
-    if (!sec || !isFinite(sec) || sec < 0) return '0:00';
-    const m = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    return `${m}:${s < 10 ? '0' : ''}${s}`;
+    const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
+    return mod.formatTime(sec);
 }
 
 // ---------------------------------------------------------------------------

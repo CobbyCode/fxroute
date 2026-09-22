@@ -77,7 +77,7 @@ const sandbox = {
     state: { playback: { volume: 0 } },
     queueVolumeSend(volume) { sentVolume = volume; },
     showVolumeDisplayTemporarily() {},
-    window: { __footerSource: 'spotify' },
+    window: { __footerSource: 'spotify', FXRouteUiHelpers: require('../static/ui_helpers.js') },
     isStreamingFooterSource() { return true; },
     footerContentFreezeActive() { return false; },
     renderTrackFavoriteButton() {},
