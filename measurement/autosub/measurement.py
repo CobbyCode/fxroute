@@ -231,6 +231,75 @@ async def _stage_auto_sub_service_candidate(
     return await owner.stage(proposal)
 
 
+async def _finish_auto_sub_capture(
+    *,
+    job: dict[str, Any],
+    channel: str,
+    service_job: bool,
+    sweep_id: str,
+    sweep_drained: bool,
+    exact_sub_mute_enabled: bool,
+    exact_sub_mute_mask: int | None,
+    previous_exact_sub_mute: bool,
+    measurement_store: Any,
+) -> None:
+    """Drain the child capture before restoring exact sub mute."""
+    async def finish_capture():
+        # Keep the local child id: early-return paths clear the public job
+        # field before arriving here. A terminal status is not a drained
+        # task; raw-scope cleanup must finish before releasing exact mute.
+        drain_error: BaseException | None = None
+        if service_job and sweep_id and not sweep_drained:
+            # drain_job surfaces a cancel-request persist error only
+            # AFTER the child task finished, so the restoration below
+            # always runs; the deferred error then fails the run.
+            try:
+                await measurement_store.drain_job(sweep_id)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                drain_error = exc
+                logger.error(
+                    "Auto-sub: drain after %s failed (%s); restoring exact mute before failing",
+                    channel, exc,
+                )
+        if exact_sub_mute_enabled and _dsp_runtime() is not None:
+            try:
+                if exact_sub_mute_mask is not None:
+                    await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute, mask=exact_sub_mute_mask)
+                elif service_job:
+                    await _dsp_runtime().set_exact_sub_mute(
+                        previous_exact_sub_mute,
+                        mask=job["output_state_context"]["sub_mute_mask"])
+                else:
+                    await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute)
+            except Exception as exc:
+                logger.exception("Auto-sub: failed to restore exact sub mute after %s reference", channel)
+                job["auto_gain"] = {
+                    "available": False,
+                    "reason": f"Exact sub mute restore failed after Main-only {channel}: {exc}",
+                }
+                raise RuntimeError(
+                    f"AutoSub stopped: exact sub mute restoration was not acknowledged after Main-only {channel}"
+                ) from exc
+        if drain_error is not None:
+            raise drain_error
+
+    if service_job:
+        cleanup = asyncio.create_task(finish_capture())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+    else:
+        await finish_capture()
+
+
 async def _measure_auto_sub_candidate(
     *,
     delay_ms: float,
@@ -744,60 +813,17 @@ async def _measure_auto_sub_candidate(
             "scan": stage,
         })
     finally:
-        async def finish_capture():
-            # Keep the local child id: early-return paths clear the public job
-            # field before arriving here. A terminal status is not a drained
-            # task; raw-scope cleanup must finish before releasing exact mute.
-            drain_error: BaseException | None = None
-            if service_job and sweep_id and not sweep_drained:
-                # drain_job surfaces a cancel-request persist error only
-                # AFTER the child task finished, so the restoration below
-                # always runs; the deferred error then fails the run.
-                try:
-                    await measurement_store.drain_job(sweep_id)
-                except asyncio.CancelledError:
-                    raise
-                except BaseException as exc:
-                    drain_error = exc
-                    logger.error(
-                        "Auto-sub: drain after %s failed (%s); restoring exact mute before failing",
-                        channel, exc,
-                    )
-            if exact_sub_mute_enabled and _dsp_runtime() is not None:
-                try:
-                    if exact_sub_mute_mask is not None:
-                        await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute, mask=exact_sub_mute_mask)
-                    elif service_job:
-                        await _dsp_runtime().set_exact_sub_mute(
-                            previous_exact_sub_mute,
-                            mask=job["output_state_context"]["sub_mute_mask"])
-                    else:
-                        await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute)
-                except Exception as exc:
-                    logger.exception("Auto-sub: failed to restore exact sub mute after %s reference", channel)
-                    job["auto_gain"] = {
-                        "available": False,
-                        "reason": f"Exact sub mute restore failed after Main-only {channel}: {exc}",
-                    }
-                    raise RuntimeError(
-                        f"AutoSub stopped: exact sub mute restoration was not acknowledged after Main-only {channel}"
-                    ) from exc
-            if drain_error is not None:
-                raise drain_error
-
-        if service_job:
-            cleanup = asyncio.create_task(finish_capture())
-            cancelled = False
-            while not cleanup.done():
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    cancelled = True
-            cleanup.result()
-            if cancelled:
-                raise asyncio.CancelledError
-        else:
-            await finish_capture()
+        await _finish_auto_sub_capture(
+            job=job,
+            channel=channel,
+            service_job=service_job,
+            sweep_id=sweep_id,
+            sweep_drained=sweep_drained,
+            exact_sub_mute_enabled=exact_sub_mute_enabled,
+            exact_sub_mute_mask=exact_sub_mute_mask,
+            previous_exact_sub_mute=previous_exact_sub_mute,
+            measurement_store=measurement_store,
+        )
 
 def _auto_sub_reconstruct_calibrated_points(
     normalized_points: list[list[float]], normalized_by_db: Any,
