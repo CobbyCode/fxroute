@@ -80,6 +80,28 @@ window.FXRouteMeasurementFlows?.init({
     sleep,
     fetchSavedMeasurements: () => fetchMeasurements(),
 });
+// Provider settings module: state/DOM through lazy getters, app-owned rows
+// (device name) and streaming refreshes through explicit callbacks. Runtime
+// polling and playback stay in app.js.
+window.FXRouteProviderSettings?.init({
+    getState: () => state,
+    getElements: () => elements,
+    showToast,
+    escapeHtml,
+    onAdminPayload: (data) => {
+        // Device name rides the admin payload so one fetch fills both rows;
+        // this row stays owned by app.js.
+        if (typeof data.device_name === 'string' && data.device_name) {
+            state.settings.deviceName.value = data.device_name;
+            state.settings.deviceName.loaded = true;
+        }
+        state.settings.deviceName.canChange = data.device_name_can_change === true;
+        renderDeviceNameSettings();
+    },
+    applyProviderEnabledToStreaming: (providerId, enabled) => window.FXRouteStreaming?.applyProviderEnabled(providerId, enabled),
+    refreshStreamingFlags: () => { void window.FXRouteStreaming?.refreshEnabledFlags?.(); },
+    refreshStreamingTab: () => window.FXRouteStreaming?.refreshActiveTab?.(),
+});
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
 // call sites stay unchanged.
@@ -2278,573 +2300,249 @@ async function restoreFxrouteToPublic() {
 }
 
 // ---------------------------------------------------------------------------
-// Settings -> Providers
+// Settings -> Providers (static/provider_settings.js)
 // ---------------------------------------------------------------------------
-
-const PROVIDER_UNINSTALL_CONFIRM = {
-    spotify: 'Remove Spotify Connect (spotifyd and desktop integration) from this machine? FXRoute itself stays installed. You can reinstall it later.',
-    qobuz: 'Remove the Qobuz renderer (qbzd) from this machine? FXRoute itself stays installed. You can reinstall it later.',
-    tidal: 'Remove the TIDAL backend from FXRoute? Your TIDAL session stays on disk. You can reinstall it later.',
-};
-const providerVisibilityRequestIds = new Map();
-
+// Install/update/service, visibility toggle and the Qobuz/TIDAL login
+// dialogs live in the provider module; app.js keeps thin wrappers and
+// owns the device-name row plus streaming refreshes via callbacks.
 async function fetchProviderAdmin() {
-    try {
-        const resp = await fetch('/api/streaming/providers/admin');
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to load providers');
-        state.settings.providers.list = data.providers || [];
-        state.settings.providers.loaded = true;
-        // Device name rides the same payload so one fetch fills both rows.
-        if (typeof data.device_name === 'string' && data.device_name) {
-            state.settings.deviceName.value = data.device_name;
-            state.settings.deviceName.loaded = true;
-        }
-        state.settings.deviceName.canChange = data.device_name_can_change === true;
-        renderProviderSettings();
-        renderDeviceNameSettings();
-    } catch (error) {
-        console.debug('Failed to load provider admin state', error);
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.fetchProviderAdmin();
 }
 
 async function setProviderEnabled(providerId, enabled) {
-    const requestId = (providerVisibilityRequestIds.get(providerId) || 0) + 1;
-    providerVisibilityRequestIds.set(providerId, requestId);
-    const provider = state.settings.providers.list.find((p) => p.id === providerId);
-    const previous = provider ? provider.enabled : undefined;
-    const previousApplied = provider ? provider.enabled !== false : enabled !== false;
-    if (provider) provider.enabled = enabled;
-    window.FXRouteStreaming?.applyProviderEnabled(providerId, enabled);
-    renderProviderSettings();
-    try {
-        const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/enabled`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Could not save provider visibility');
-    } catch (error) {
-        if (providerVisibilityRequestIds.get(providerId) !== requestId) return;
-        const currentProvider = state.settings.providers.list.find((p) => p.id === providerId);
-        if (currentProvider) currentProvider.enabled = previous;
-        window.FXRouteStreaming?.applyProviderEnabled(providerId, previousApplied);
-        renderProviderSettings();
-        showToast(error?.message || 'Could not save provider visibility', 'error');
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.setProviderEnabled(providerId, enabled);
 }
 
 function renderProviderOperation(providerId, detail, log) {
-    state.settings.providers.pendingOperation = providerId;
-    state.settings.providers.operationLog = log || '';
-    if (elements.settingsProviderOperation) {
-        elements.settingsProviderOperation.classList.toggle('hidden', !log);
-        if (elements.settingsProviderOperationLog) elements.settingsProviderOperationLog.textContent = log || '';
-    }
-    if (detail) showToast(detail, 'success');
-    renderProviderSettings();
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.renderProviderOperation(providerId, detail, log);
 }
 
-// While one provider operation runs, every provider action button (install,
-// uninstall, service, connect/disconnect) is disabled and visibly marked
-// busy. A silent early-return on a stale pending flag reads as a dead
-// button; the disabled state makes the reason explicit.
 function isProviderOpBusy(providerId) {
-    const pending = state.settings.providers.pendingOperation;
-    return !!pending && pending !== providerId;
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.isProviderOpBusy(providerId);
 }
 
 function providerBusyAttribute(providerId) {
-    return isProviderOpBusy(providerId) ? ' data-provider-busy="1"' : '';
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.providerBusyAttribute(providerId);
 }
 
 function wireProviderActionButtons() {
-    if (!elements.settingsProvidersList) return;
-    elements.settingsProvidersList.querySelectorAll('[data-provider-busy="1"] button').forEach((button) => {
-        button.disabled = true;
-        button.title = 'Another provider operation is running';
-    });
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.wireProviderActionButtons();
 }
 
 async function runProviderInstall(providerId) {
-    if (state.settings.providers.pendingOperation) {
-        showToast('Another provider operation is already running. Please wait for it to finish.', 'info');
-        return;
-    }
-    state.settings.providers.pendingOperation = providerId;
-    renderProviderOperation(providerId, '', '');
-    try {
-        const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/install`, { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Installation failed');
-        renderProviderOperation(providerId, data.installed ? 'Provider installed/updated.' : 'Install finished.', data.log || '');
-        // A Settings uninstall disables the provider; a reinstall must activate
-        // it again exactly like the first install, or its checkbox and tab stay off.
-        const provider = state.settings.providers.list.find((p) => p.id === providerId);
-        if (provider && provider.enabled === false) await setProviderEnabled(providerId, true);
-    } catch (error) {
-        renderProviderOperation(providerId, '', error.message || 'Installation failed');
-        showToast(error.message || 'Installation failed', 'error');
-    } finally {
-        state.settings.providers.pendingOperation = null;
-        renderProviderSettings();
-        void fetchProviderAdmin();
-        void window.FXRouteStreaming?.refreshEnabledFlags?.();
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.runProviderInstall(providerId);
 }
 
 async function runProviderUninstall(providerId) {
-    if (state.settings.providers.pendingOperation) {
-        showToast('Another provider operation is already running. Please wait for it to finish.', 'info');
-        return;
-    }
-    if (!confirm(PROVIDER_UNINSTALL_CONFIRM[providerId] || 'Remove this provider?')) return;
-    state.settings.providers.pendingOperation = providerId;
-    renderProviderOperation(providerId, '', '');
-    try {
-        const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/uninstall`, { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Uninstall failed');
-        renderProviderOperation(providerId, 'Provider removed.', data.log || '');
-        await setProviderEnabled(providerId, false);
-    } catch (error) {
-        renderProviderOperation(providerId, '', error.message || 'Uninstall failed');
-        showToast(error.message || 'Uninstall failed', 'error');
-    } finally {
-        state.settings.providers.pendingOperation = null;
-        renderProviderSettings();
-        void fetchProviderAdmin();
-        void window.FXRouteStreaming?.refreshEnabledFlags?.();
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.runProviderUninstall(providerId);
 }
 
 async function runProviderServiceAction(providerId, action) {
-    if (state.settings.providers.pendingOperation) {
-        showToast('Another provider operation is already running. Please wait for it to finish.', 'info');
-        return;
-    }
-    state.settings.providers.pendingOperation = providerId;
-    renderProviderSettings();
-    try {
-        const resp = await fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/service/${action}`, { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || `Service ${action} failed`);
-        showToast(action === 'stop' ? 'Service stopped.' : (action === 'restart' ? 'Service restarted.' : 'Service started.'), 'success');
-    } catch (error) {
-        showToast(error.message || `Service ${action} failed`, 'error');
-    } finally {
-        state.settings.providers.pendingOperation = null;
-        renderProviderSettings();
-        void fetchProviderAdmin();
-        void window.FXRouteStreaming?.refreshEnabledFlags?.();
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.runProviderServiceAction(providerId, action);
 }
-
-// ---------------------------------------------------------------------------
-// Qobuz/qbzd account login (browser OAuth handoff owned by qbzd)
-// ---------------------------------------------------------------------------
 
 async function beginQobuzLogin() {
-    try {
-        const resp = await fetch('/api/streaming/qobuz/auth/login', { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Could not start the Qobuz login');
-        if (!data.login_url) throw new Error('Qobuz login did not return a sign-in URL');
-        openQobuzLoginModal(data.login_url);
-    } catch (error) {
-        showToast(error.message || 'Could not start the Qobuz login', 'error');
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.beginQobuzLogin();
 }
 
-const qobuzLoginState = { loginUrl: '', finishing: false, wired: false };
-
 function setQobuzLoginStatus(message, mode = '') {
-    if (!elements.qobuzLoginStatus) return;
-    elements.qobuzLoginStatus.textContent = message || '';
-    elements.qobuzLoginStatus.classList.toggle('switching', mode === 'busy');
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.setQobuzLoginStatus(message, mode);
 }
 
 function setQobuzLoginBusy(busy) {
-    qobuzLoginState.finishing = !!busy;
-    if (elements.qobuzLoginFinishBtn) elements.qobuzLoginFinishBtn.disabled = !!busy;
-    if (elements.qobuzLoginCancelBtn) elements.qobuzLoginCancelBtn.disabled = !!busy;
-    if (elements.qobuzLoginCloseBtn) elements.qobuzLoginCloseBtn.disabled = !!busy;
-    if (elements.qobuzLoginRedirect) elements.qobuzLoginRedirect.disabled = !!busy;
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.setQobuzLoginBusy(busy);
 }
 
 function openQobuzLoginModal(loginUrl) {
-    if (!elements.qobuzLoginPanel) return;
-    qobuzLoginState.loginUrl = String(loginUrl || '');
-    if (elements.qobuzLoginUrl) elements.qobuzLoginUrl.value = qobuzLoginState.loginUrl;
-    if (elements.qobuzLoginOpen) elements.qobuzLoginOpen.href = qobuzLoginState.loginUrl || '#';
-    if (elements.qobuzLoginRedirect && document.activeElement !== elements.qobuzLoginRedirect) {
-        elements.qobuzLoginRedirect.value = '';
-    }
-    setQobuzLoginBusy(false);
-    setQobuzLoginStatus('Waiting for sign-in…');
-    elements.qobuzLoginPanel.classList.remove('hidden');
-    // Stacked above the settings dialog: the qbzd listener keeps running
-    // while the operator switches tabs; only explicit Cancel ends it.
-    window.FXRouteModal?.open(elements.qobuzLoginPanel, {
-        initialFocus: elements.qobuzLoginOpen,
-        onEscape: () => { if (!qobuzLoginState.finishing) void cancelQobuzLogin(); },
-    });
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.openQobuzLoginModal(loginUrl);
 }
 
 function closeQobuzLoginModal() {
-    if (!elements.qobuzLoginPanel) return;
-    elements.qobuzLoginPanel.classList.add('hidden');
-    window.FXRouteModal?.close(elements.qobuzLoginPanel);
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.closeQobuzLoginModal();
 }
 
 async function cancelQobuzLogin() {
-    // Explicit cancel only: never fired by blur, tab switch, or backdrop.
-    try {
-        await fetch('/api/streaming/qobuz/auth/login/cancel', { method: 'POST' });
-    } catch (_error) {
-        // Best-effort cleanup; the next Connect click restarts the flow.
-    } finally {
-        setQobuzLoginBusy(false);
-        closeQobuzLoginModal();
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.cancelQobuzLogin();
 }
 
 async function copyQobuzLoginUrl() {
-    const url = qobuzLoginState.loginUrl || elements.qobuzLoginUrl?.value || '';
-    if (!url) return;
-    try {
-        await navigator.clipboard.writeText(url);
-        showToast('Sign-in link copied.', 'success');
-    } catch (_error) {
-        try {
-            elements.qobuzLoginUrl?.focus();
-            elements.qobuzLoginUrl?.select();
-        } catch (_selectError) { /* input unavailable */ }
-        const ok = document.execCommand ? document.execCommand('copy') : false;
-        showToast(ok ? 'Sign-in link copied.' : 'Copy the sign-in URL manually.', ok ? 'success' : 'info');
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.copyQobuzLoginUrl();
 }
 
 async function finishQobuzLoginFromModal() {
-    if (qobuzLoginState.finishing) return;
-    const pasted = String(elements.qobuzLoginRedirect?.value || '').trim();
-    if (!pasted || pasted === qobuzLoginState.loginUrl) {
-        setQobuzLoginStatus('Paste the redirect URL from the Qobuz sign-in tab, then press Connect.');
-        showToast('Paste the redirect URL first — the login is still waiting.', 'info');
-        elements.qobuzLoginRedirect?.focus();
-        return;
-    }
-    setQobuzLoginBusy(true);
-    setQobuzLoginStatus('Completing the Qobuz login…', 'busy');
-    try {
-        const resp = await fetch('/api/streaming/qobuz/auth/login/finish', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ redirect_url: pasted }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Qobuz login failed');
-        if (data.ok === false) {
-            throw new Error(data.output || 'qbzd rejected the pasted URL');
-        }
-        closeQobuzLoginModal();
-        showToast(data.authenticated ? 'Qobuz account connected.' : 'Login finished — verifying…', 'success');
-    } catch (error) {
-        setQobuzLoginStatus(error.message || 'Qobuz login failed — check the pasted URL and try again.');
-        showToast(error.message || 'Qobuz login failed', 'error');
-    } finally {
-        setQobuzLoginBusy(false);
-        void fetchProviderAdmin();
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.finishQobuzLoginFromModal();
 }
 
 function setupQobuzLoginModal() {
-    if (qobuzLoginState.wired || !elements.qobuzLoginPanel) return;
-    qobuzLoginState.wired = true;
-    elements.qobuzLoginCopy?.addEventListener('click', () => void copyQobuzLoginUrl());
-    elements.qobuzLoginFinishBtn?.addEventListener('click', () => void finishQobuzLoginFromModal());
-    elements.qobuzLoginCancelBtn?.addEventListener('click', () => void cancelQobuzLogin());
-    elements.qobuzLoginCloseBtn?.addEventListener('click', () => void cancelQobuzLogin());
-    elements.qobuzLoginRedirect?.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            void finishQobuzLoginFromModal();
-        }
-    });
-    // Backdrop clicks must not cancel: the operator leaves this modal open
-    // while completing the sign-in in another tab.
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.setupQobuzLoginModal();
 }
-
-// TIDAL account login (browser PKCE handoff; same dialog flow as Qobuz)
-// ---------------------------------------------------------------------------
 
 async function beginTidalLogin() {
-    try {
-        const resp = await fetch('/api/streaming/tidal/auth/pkce', { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Could not start the TIDAL login');
-        if (!data.url) throw new Error('TIDAL login did not return a sign-in URL');
-        openTidalLoginModal(data.url);
-    } catch (error) {
-        showToast(error.message || 'Could not start the TIDAL login', 'error');
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.beginTidalLogin();
 }
 
-const tidalLoginState = { loginUrl: '', finishing: false, wired: false };
-
 function setTidalLoginStatus(message, mode = '') {
-    if (!elements.tidalLoginStatus) return;
-    elements.tidalLoginStatus.textContent = message || '';
-    elements.tidalLoginStatus.classList.toggle('switching', mode === 'busy');
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.setTidalLoginStatus(message, mode);
 }
 
 function setTidalLoginBusy(busy) {
-    tidalLoginState.finishing = !!busy;
-    if (elements.tidalLoginFinishBtn) elements.tidalLoginFinishBtn.disabled = !!busy;
-    if (elements.tidalLoginCancelBtn) elements.tidalLoginCancelBtn.disabled = !!busy;
-    if (elements.tidalLoginCloseBtn) elements.tidalLoginCloseBtn.disabled = !!busy;
-    if (elements.tidalLoginRedirect) elements.tidalLoginRedirect.disabled = !!busy;
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.setTidalLoginBusy(busy);
 }
 
 function openTidalLoginModal(loginUrl) {
-    if (!elements.tidalLoginPanel) return;
-    tidalLoginState.loginUrl = String(loginUrl || '');
-    if (elements.tidalLoginUrl) elements.tidalLoginUrl.value = tidalLoginState.loginUrl;
-    if (elements.tidalLoginOpen) elements.tidalLoginOpen.href = tidalLoginState.loginUrl || '#';
-    if (elements.tidalLoginRedirect && document.activeElement !== elements.tidalLoginRedirect) {
-        elements.tidalLoginRedirect.value = '';
-    }
-    setTidalLoginBusy(false);
-    setTidalLoginStatus('Waiting for sign-in…');
-    elements.tidalLoginPanel.classList.remove('hidden');
-    // Same stacking as the Qobuz dialog: the PKCE flow keeps no server-side
-    // listener, but the operator still switches tabs to sign in; only
-    // explicit Cancel/Close ends the dialog.
-    window.FXRouteModal?.open(elements.tidalLoginPanel, {
-        initialFocus: elements.tidalLoginOpen,
-        onEscape: () => { if (!tidalLoginState.finishing) closeTidalLoginModal(); },
-    });
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.openTidalLoginModal(loginUrl);
 }
 
 function closeTidalLoginModal() {
-    if (!elements.tidalLoginPanel) return;
-    elements.tidalLoginPanel.classList.add('hidden');
-    window.FXRouteModal?.close(elements.tidalLoginPanel);
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.closeTidalLoginModal();
 }
 
 async function copyTidalLoginUrl() {
-    const url = tidalLoginState.loginUrl || elements.tidalLoginUrl?.value || '';
-    if (!url) return;
-    try {
-        await navigator.clipboard.writeText(url);
-        showToast('Sign-in link copied.', 'success');
-    } catch (_error) {
-        try {
-            elements.tidalLoginUrl?.focus();
-            elements.tidalLoginUrl?.select();
-        } catch (_selectError) { /* input unavailable */ }
-        const ok = document.execCommand ? document.execCommand('copy') : false;
-        showToast(ok ? 'Sign-in link copied.' : 'Copy the sign-in URL manually.', ok ? 'success' : 'info');
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.copyTidalLoginUrl();
 }
 
 async function finishTidalLoginFromModal() {
-    if (tidalLoginState.finishing) return;
-    const pasted = String(elements.tidalLoginRedirect?.value || '').trim();
-    if (!pasted || pasted === tidalLoginState.loginUrl) {
-        setTidalLoginStatus('Paste the redirect URL from the TIDAL sign-in tab, then press Connect.');
-        showToast('Paste the redirect URL first — the login is still waiting.', 'info');
-        elements.tidalLoginRedirect?.focus();
-        return;
-    }
-    setTidalLoginBusy(true);
-    setTidalLoginStatus('Completing the TIDAL login…', 'busy');
-    try {
-        const resp = await fetch('/api/streaming/tidal/auth/pkce/finish', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ redirect_url: pasted }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'TIDAL login failed');
-        closeTidalLoginModal();
-        showToast('TIDAL connected', 'success');
-    } catch (error) {
-        setTidalLoginStatus(error.message || 'TIDAL login failed — check the pasted URL and try again.');
-        showToast(error.message || 'TIDAL login failed', 'error');
-    } finally {
-        setTidalLoginBusy(false);
-        void fetchProviderAdmin();
-        window.FXRouteStreaming?.refreshActiveTab?.();
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.finishTidalLoginFromModal();
 }
 
 function setupTidalLoginModal() {
-    if (tidalLoginState.wired || !elements.tidalLoginPanel) return;
-    tidalLoginState.wired = true;
-    elements.tidalLoginCopy?.addEventListener('click', () => void copyTidalLoginUrl());
-    elements.tidalLoginFinishBtn?.addEventListener('click', () => void finishTidalLoginFromModal());
-    elements.tidalLoginCancelBtn?.addEventListener('click', () => closeTidalLoginModal());
-    elements.tidalLoginCloseBtn?.addEventListener('click', () => closeTidalLoginModal());
-    elements.tidalLoginRedirect?.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            void finishTidalLoginFromModal();
-        }
-    });
-    // Backdrop clicks must not cancel: the operator leaves this modal open
-    // while completing the sign-in in another tab.
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.setupTidalLoginModal();
 }
 
 async function qobuzLogout() {
-    if (!confirm('Disconnect the Qobuz account? Playback stops until you sign in again. Your Qobuz library and favorites stay on your Qobuz account.')) return;
-    try {
-        const resp = await fetch('/api/streaming/qobuz/auth/logout', { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Disconnect failed');
-        showToast('Qobuz account disconnected.', 'success');
-    } catch (error) {
-        showToast(error.message || 'Disconnect failed', 'error');
-    } finally {
-        void fetchProviderAdmin();
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.qobuzLogout();
 }
 
 async function tidalLogout() {
-    if (!confirm('Disconnect the TIDAL account? Playback stops until you sign in again. Your TIDAL library and favorites stay on your TIDAL account.')) return;
-    try {
-        const resp = await fetch('/api/streaming/tidal/auth/logout', { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Disconnect failed');
-        showToast('TIDAL account disconnected.', 'success');
-    } catch (error) {
-        showToast(error.message || 'Disconnect failed', 'error');
-    } finally {
-        void fetchProviderAdmin();
-        window.FXRouteStreaming?.refreshActiveTab?.();
-    }
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.tidalLogout();
 }
 
 function providerAdminButtonHtml(provider) {
-    const busy = state.settings.providers.pendingOperation === provider.id;
-    const buttons = [];
-    const connected = provider.authenticated === true;
-    if (provider.installed) {
-        // Account providers (TIDAL, Qobuz) show exactly one auth action for
-        // their real state: Disconnect while connected, Connect otherwise.
-        // Uninstall is only offered while disconnected. Order is Update
-        // first, Connect/Disconnect last, so a line wrap pushes the auth
-        // action down while Update and Uninstall keep their position.
-        // spotifyd has no account login (Spotify Connect pairs from the
-        // Spotify app).
-        if (provider.id === 'tidal') {
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
-            if (connected) {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
-            } else {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-tidal-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
-            }
-        } else if (provider.id === 'qobuz') {
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
-            if (!connected) {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
-            }
-            // Restart is recovery, not a primary action: it makes qbzd
-            // re-read a (restored) credential file without SSH and acts as
-            // Start on an inactive unit. Only show it while qbzd is down.
-            // It stays before the auth action so Connect/Disconnect is last.
-            if (!provider.available) {
-                // Binary present but daemon never set up (manually placed
-                // binary or interrupted install): route through the regular
-                // installer run, which adopts the binary, pins the volume
-                // contract, creates/starts the user service and records the
-                // install state. Install is otherwise only offered while not
-                // installed, which dead-ends exactly this state.
-                buttons.push(`<button type="button" class="btn-primary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>Complete setup…</button>`);
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-service="restart" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Restart</button>`);
-            }
-            if (connected) {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-logout="1"${busy ? ' disabled' : ''}>Disconnect</button>`);
-            } else {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-qobuz-login="1"${busy ? ' disabled' : ''}>Connect</button>`);
-            }
-        } else if (provider.id !== 'spotify') {
-            const label = provider.available ? 'Restart' : 'Start';
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-service="start" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>${label}</button>`);
-            if (provider.available) {
-                buttons.push(`<button type="button" class="btn-secondary" data-provider-service="stop" data-provider-id="${provider.id}"${busy ? ' disabled' : ''}>Stop</button>`);
-            }
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
-        } else {
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Updating…' : 'Update…'}</button>`);
-            buttons.push(`<button type="button" class="btn-secondary" data-provider-uninstall="${provider.id}"${busy ? ' disabled' : ''}>Uninstall…</button>`);
-        }
-    } else if (provider.implemented !== false) {
-        buttons.push(`<button type="button" class="btn-primary" data-provider-install="${provider.id}"${busy ? ' disabled' : ''}>${busy ? 'Installing…' : 'Install…'}</button>`);
-    }
-    return buttons.join('');
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.providerAdminButtonHtml(provider);
 }
 
 function renderProviderSettings() {
-    if (!elements.settingsProvidersList) return;
-    const providers = state.settings.providers.list;
-    if (!providers.length) {
-        elements.settingsProvidersList.innerHTML = '<p class="settings-inline-note">Provider state unavailable.</p>';
-        return;
-    }
-    elements.settingsProvidersList.innerHTML = providers.map((provider) => {
-        const installed = provider.installed === true;
-        const statusText = !installed
-            ? 'Not installed'
-            : (provider.authenticated === false && provider.id !== 'spotify'
-                ? 'Installed · not connected'
-                : (provider.available ? 'Installed · ready' : 'Installed'));
-        const checked = provider.enabled !== false;
-        return `
-            <div class="settings-provider-row" data-provider-row="${escapeHtml(provider.id)}"${providerBusyAttribute(provider.id)}>
-                <div class="settings-provider-info">
-                    <label class="settings-provider-toggle">
-                        <input type="checkbox" data-provider-enabled="${escapeHtml(provider.id)}"${checked ? ' checked' : ''} />
-                        <span>${escapeHtml(provider.name)}</span>
-                    </label>
-                    <span class="settings-provider-status">${escapeHtml(statusText)}</span>
-                </div>
-                <div class="settings-provider-actions">${providerAdminButtonHtml(provider)}</div>
-            </div>`;
-    }).join('');
-    elements.settingsProvidersList.querySelectorAll('[data-provider-enabled]').forEach((input) => {
-        input.addEventListener('change', (event) => {
-            setProviderEnabled(event.target.getAttribute('data-provider-enabled'), event.target.checked);
-        });
-    });
-    elements.settingsProvidersList.querySelectorAll('[data-provider-install]').forEach((button) => {
-        button.addEventListener('click', () => runProviderInstall(button.getAttribute('data-provider-install')));
-    });
-    elements.settingsProvidersList.querySelectorAll('[data-provider-uninstall]').forEach((button) => {
-        button.addEventListener('click', () => runProviderUninstall(button.getAttribute('data-provider-uninstall')));
-    });
-    elements.settingsProvidersList.querySelectorAll('[data-provider-service]').forEach((button) => {
-        button.addEventListener('click', () => runProviderServiceAction(button.getAttribute('data-provider-id'), button.getAttribute('data-provider-service')));
-    });
-    elements.settingsProvidersList.querySelectorAll('[data-provider-qobuz-login]').forEach((button) => {
-        button.addEventListener('click', () => void beginQobuzLogin());
-    });
-    elements.settingsProvidersList.querySelectorAll('[data-provider-qobuz-logout]').forEach((button) => {
-        button.addEventListener('click', () => void qobuzLogout());
-    });
-    elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-login]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const provider = state.settings.providers.list.find((p) => p.id === 'tidal');
-            if (provider && provider.enabled === false) setProviderEnabled('tidal', true);
-            void beginTidalLogin();
-        });
-    });
-    elements.settingsProvidersList.querySelectorAll('[data-provider-tidal-logout]').forEach((button) => {
-        button.addEventListener('click', () => void tidalLogout());
-    });
-    wireProviderActionButtons();
+    // Provider settings live in static/provider_settings.js
+    // (window.FXRouteProviderSettings). Thin wrapper keeps existing
+    // call sites and the streaming login callbacks unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteProviderSettings) || (typeof globalThis !== 'undefined' && globalThis.FXRouteProviderSettings) || null;
+    return mod.renderProviderSettings();
 }
 
 async function applyDeviceName(value) {
