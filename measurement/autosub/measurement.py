@@ -300,6 +300,47 @@ async def _finish_auto_sub_capture(
         await finish_capture()
 
 
+def _decode_auto_sub_capture_result(
+    *,
+    job: dict[str, Any],
+    channel: str,
+    delay_ms: float,
+    sweep_id: str,
+    measurement: dict[str, Any],
+) -> dict[str, Any]:
+    """Decode sweep points, calibration and chain health from a completed capture."""
+    points = []
+    for t in (measurement.get("traces") or []):
+        if t.get("kind") == "sweep-response":
+            points = t.get("points") or []
+            break
+    if not points:
+        for t in (measurement.get("review_traces") or []):
+            points = t.get("points") or []
+            if points:
+                break
+    if not points:
+        logger.warning("Auto-sub: no points in sweep result for delay %.2f ms", delay_ms)
+    if job.get("current_sweep_id") == sweep_id:
+        job["current_sweep_id"] = ""
+    analysis = measurement.get("analysis") if isinstance(measurement.get("analysis"), dict) else {}
+    normalized_by_db = analysis.get("normalized_by_db")
+    calibrated_points = None
+    if normalized_by_db is not None:
+        calibrated_points = _auto_sub_reconstruct_calibrated_points(points, normalized_by_db)
+    chain_health = _auto_sub_chain_health_check(
+        job, analysis.get("alignment_samples"), analysis.get("sample_rate"),
+    )
+    return {
+        "points": points,
+        "analysis": analysis,
+        "normalized_by_db": normalized_by_db,
+        "calibrated_points": calibrated_points,
+        "chain_health": chain_health,
+        "measurement_channel": str(measurement.get("channel") or channel),
+    }
+
+
 async def _measure_auto_sub_candidate(
     *,
     delay_ms: float,
@@ -687,28 +728,19 @@ async def _measure_auto_sub_candidate(
         if final.get("status") == "completed" and final.get("result"):
             result = final["result"]
             measurement = result.get("measurement") or {}
-            points = []
-            for t in (measurement.get("traces") or []):
-                if t.get("kind") == "sweep-response":
-                    points = t.get("points") or []
-                    break
-            if not points:
-                for t in (measurement.get("review_traces") or []):
-                    points = t.get("points") or []
-                    if points:
-                        break
-            if not points:
-                logger.warning("Auto-sub: no points in sweep result for delay %.2f ms", delay_ms)
-            if job.get("current_sweep_id") == sweep_id:
-                job["current_sweep_id"] = ""
-            analysis = measurement.get("analysis") if isinstance(measurement.get("analysis"), dict) else {}
-            normalized_by_db = analysis.get("normalized_by_db")
-            calibrated_points = None
-            if normalized_by_db is not None:
-                calibrated_points = _auto_sub_reconstruct_calibrated_points(points, normalized_by_db)
-            chain_health = _auto_sub_chain_health_check(
-                job, analysis.get("alignment_samples"), analysis.get("sample_rate"),
+            decoded = _decode_auto_sub_capture_result(
+                job=job,
+                channel=channel,
+                delay_ms=delay_ms,
+                sweep_id=sweep_id,
+                measurement=measurement,
             )
+            points = decoded["points"]
+            analysis = decoded["analysis"]
+            normalized_by_db = decoded["normalized_by_db"]
+            calibrated_points = decoded["calibrated_points"]
+            chain_health = decoded["chain_health"]
+            measurement_channel = decoded["measurement_channel"]
             if chain_health:
                 if chain_health.get("confirmed") or not _pending_remeasure_allowed:
                     logger.error(
@@ -776,7 +808,7 @@ async def _measure_auto_sub_candidate(
                 "calibrated_points": calibrated_points,
                 "exact_sub_mute": bool(exact_sub_mute),
                 "alignment_samples": analysis.get("alignment_samples"),
-                "measurement_channel": str(measurement.get("channel") or channel),
+                "measurement_channel": measurement_channel,
                 "sample_rate": analysis.get("sample_rate"),
                 "stage_output_peaks": stage_peak_comparison,
             })
