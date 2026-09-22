@@ -185,34 +185,46 @@ assert.equal(Crossover.clampFrequencyHz(30000), 20000);
 assert.match(indexSource, /crossover\.js\?v=\d+\.\d+\.\d+/);
 assert.match(indexSource, /<canvas id="effects-crossover-graph"/);
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+const crossoverUiSource = fs.readFileSync(path.join(repoRoot, 'static', 'crossover_ui.js'), 'utf8');
+// Tile fetch/render/mutation capture live in crossover_ui.js; app.js keeps
+// thin wrappers plus the output-state ownership and settings wiring.
+for (const name of ['fetchCrossoverResponse', 'renderCrossoverTile', 'collectCrossoverWayMutation',
+    'saveCrossoverWay', 'maybeApplyCrossoverStarters', 'wireCrossoverTile']) {
+    assert.match(crossoverUiSource, new RegExp(`function ${name}\\(`), `crossover_ui.js must own ${name}`);
+    assert.match(appSource, new RegExp(`function ${name}\\(`), `app.js must keep a ${name} wrapper`);
+}
+assert.match(appSource, /FXRouteCrossoverUI/, 'app.js wrappers must delegate to the crossover UI module');
+assert.match(indexSource, /crossover_ui\.js\?v=\d+\.\d+\.\d+/);
+assert.ok(indexSource.indexOf('crossover_ui.js') < indexSource.indexOf('/static/app.js'),
+    'crossover UI module must load before app.js');
 // Starter values autofill the first valid 2/3/4-way config; no button, no status text.
 assert.doesNotMatch(appSource, /effectsCrossoverStarter/);
 assert.doesNotMatch(appSource, /Already initialized|All ways initialized|Starter values missing/);
-assert.match(appSource, /maybeApplyCrossoverStarters/);
+assert.match(crossoverUiSource, /maybeApplyCrossoverStarters/);
 // L/R link mirrors only filter values, never trim.
-assert.match(appSource, /mirrorRole/);
+assert.match(crossoverUiSource, /mirrorRole/);
 assert.match(indexSource, /Link L\/R/);
 // Link L/R is off by default: unchecked box, false initial state, and
 // strict true-checks so an unset state never links.
 assert.doesNotMatch(indexSource, /id="effects-crossover-link" checked/);
 assert.match(appSource, /linkLR:\s*false/);
-assert.match(appSource, /state\.crossover\.linkLR === true/);
-assert.doesNotMatch(appSource, /state\.crossover\.linkLR !== false/);
+assert.match(crossoverUiSource, /getState\(\)\.crossover\.linkLR === true/);
+assert.doesNotMatch(crossoverUiSource, /getState\(\)\.crossover\.linkLR !== false/);
 // Trim stays side-specific and is hidden while linked: unlinked shows all
 // trim values, linked shows only the shared crossover parameters.
 assert.match(indexSource, /id="effects-crossover-trim-group"/);
-assert.match(appSource, /effectsCrossoverTrimGroup/);
-assert.match(appSource, /Trim[\s\S]*hidden while linked|hidden while linked/);
+assert.match(crossoverUiSource, /effectsCrossoverTrimGroup/);
+assert.match(crossoverUiSource, /Trim[\s\S]*hidden while linked|hidden while linked/);
 // Filter type Off plus compact headers.
-assert.match(appSource, /off: 'Off'/);
-assert.match(appSource, /\['off', \.\.\.Object\.keys\(catalog\.capabilities/);
+assert.match(crossoverUiSource, /off: 'Off'/);
+assert.match(crossoverUiSource, /\['off', \.\.\.Object\.keys\(catalog\.capabilities/);
 // Off disables the filter fully and independently per direction: Type Off
 // writes null, hides its Frequency/Slope rows, keeps Type selectable.
 // Both Off leave the way unfiltered (flat).
-assert.match(appSource, /if \(familyEl\?\.value === 'off'\) return null/);
-assert.match(appSource, /freqGroup.*kindOff \? 'none' : ''/s);
-assert.match(appSource, /slopeGroup.*kindOff \? 'none' : ''/s);
-assert.match(appSource, /-Way Stereo System/);
+assert.match(crossoverUiSource, /if \(familyEl\?\.value === 'off'\) return null/);
+assert.match(crossoverUiSource, /freqGroup.*kindOff \? 'none' : ''/s);
+assert.match(crossoverUiSource, /slopeGroup.*kindOff \? 'none' : ''/s);
+assert.match(crossoverUiSource, /-Way Stereo System/);
 assert.match(appSource, /Crossover \$/);
 assert.match(appSource, /Main HPF/);
 for (const id of ['effects-crossover-card', 'effects-crossover-tabs', 'effects-crossover-graph',
@@ -235,8 +247,8 @@ assert.match(indexSource, /class="crossover-tabrow"/);
 assert.doesNotMatch(indexSource, /crossover-actions/);
 // A linked save carries only the shared crossover filters; trim fields are
 // added back only when unlinked.
-assert.match(appSource, /if\s*\(!linked\)\s*\{\s*\n.*mutation\.level_db/s);
-assert.match(appSource, /effectsCrossoverTrimGroup.*linkedCrossover \? 'none' : ''/);
+assert.match(crossoverUiSource, /if\s*\(!linked\)\s*\{\s*\n.*mutation\.level_db/s);
+assert.match(crossoverUiSource, /effectsCrossoverTrimGroup.*linkedCrossover \? 'none' : ''/);
 {
     const tabrow = indexSource.indexOf('class="crossover-tabrow"');
     const tabs = indexSource.indexOf('id="effects-crossover-tabs"');
@@ -302,4 +314,133 @@ assert.equal(CrossoverView.drawCrossoverResponse({ getContext: () => null }, {},
     assert.ok(ctx.calls.some(([name, arg]) => name === 'setLineDash' && arg.length === 2),
         'cleared (Off) direction renders dashed');
 }
+
+// Behavioral pin: the tile mutation capture (Off clears, linked omits trim,
+// sub-owned high-pass stays display-only), the starter autofill and the
+// linked mirror save all run through crossover_ui.js with the app mutation
+// path injected.
+const CrossoverUI = require('../static/crossover_ui.js');
+globalThis.FXRouteCrossover = Crossover;
+
+function crossoverFixtureState() {
+    return {
+        crossover: { activeWay: 'left_low', response: null, busy: false, linkLR: false },
+        outputSystem: { catalog: {
+            active_mode: 'stereo-sub', revision: 7,
+            capabilities: { filter_families: { 'linkwitz-riley': [12, 24] } },
+            modes: { 'stereo-sub': {
+                topology: { way_count: 2 },
+                bass_management: {},
+                crossover_enabled: true,
+                processing: {
+                    left_low: {}, left_high: {},
+                    right_low: {}, right_high: {},
+                },
+            } },
+        } },
+    };
+}
+
+function crossoverInput(value) {
+    return { value, addEventListener() {} };
+}
+
+function crossoverFixtureElements(overrides = {}) {
+    return {
+        effectsCrossoverCard: null,
+        effectsCrossoverFrequencyHighpass: crossoverInput(''),
+        effectsCrossoverFamilyHighpass: crossoverInput('linkwitz-riley'),
+        effectsCrossoverSlopeHighpass: crossoverInput('24'),
+        effectsCrossoverFrequencyLowpass: crossoverInput('2000'),
+        effectsCrossoverFamilyLowpass: crossoverInput('linkwitz-riley'),
+        effectsCrossoverSlopeLowpass: crossoverInput('24'),
+        effectsCrossoverLevel: crossoverInput('1.5'),
+        effectsCrossoverDelay: crossoverInput('0.25'),
+        effectsCrossoverPolarity: crossoverInput('invert'),
+        ...overrides,
+    };
+}
+
+function initCrossoverUI(state, elements, extra = {}) {
+    CrossoverUI.init({ getState: () => state, getElements: () => elements,
+        showToast: () => {}, ensureOutputBoxes: () => {},
+        applyMutation: async () => null, ...extra });
+}
+
+{
+    // Off clears the filter: Type Off writes null even with a stale value.
+    const state = crossoverFixtureState();
+    state.crossover.activeWay = 'left_high';
+    initCrossoverUI(state, crossoverFixtureElements({
+        effectsCrossoverFamilyHighpass: crossoverInput('off') }));
+    const mutation = CrossoverUI.collectCrossoverWayMutation();
+    assert.equal(mutation.role, 'left_high');
+    assert.equal(mutation.highpass, null);
+    assert.equal(mutation.level_db, 1.5, 'unlinked saves carry trim');
+}
+{
+    // Linked pairs share only the crossover filters; trim stays per-way.
+    const state = crossoverFixtureState();
+    state.crossover.linkLR = true;
+    initCrossoverUI(state, crossoverFixtureElements());
+    const mutation = CrossoverUI.collectCrossoverWayMutation();
+    assert.equal(mutation.lowpass.frequency_hz, 2000);
+    assert.ok(!('level_db' in mutation), 'linked mutation carries no trim');
+    assert.ok(!('alignment_ms' in mutation), 'linked mutation carries no align');
+    assert.ok(!('polarity' in mutation), 'linked mutation carries no polarity');
+}
+{
+    // The sub-owned Low high-pass is display-only: never persisted, even
+    // though the input shows its frequency.
+    const state = crossoverFixtureState();
+    const mode = state.outputSystem.catalog.modes['stereo-sub'];
+    mode.topology.sub_roles = ['sub1'];
+    mode.bass_management = { frequency_hz: 80, main_highpass_enabled: true };
+    initCrossoverUI(state, crossoverFixtureElements({
+        effectsCrossoverFrequencyHighpass: crossoverInput('80') }));
+    const mutation = CrossoverUI.collectCrossoverWayMutation();
+    assert.equal(mutation.highpass, null, 'derived high-pass is not persisted');
+    assert.equal(mutation.lowpass.frequency_hz, 2000);
+}
+(async () => {
+{
+    // First valid 2-way config seeds every way with starters, then refetches.
+    const realFetch = globalThis.fetch;
+    const applied = [];
+    const toasts = [];
+    const state = crossoverFixtureState();
+    const elements = crossoverFixtureElements();
+    initCrossoverUI(state, elements, {
+        showToast: (message) => toasts.push(message),
+        applyMutation: async (kind, fields) => { applied.push([kind, fields]); return { ok: true }; },
+    });
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ways: {} }) });
+    await CrossoverUI.maybeApplyCrossoverStarters();
+    globalThis.fetch = realFetch;
+    assert.equal(applied.length, 4, 'all four 2-way roles are seeded');
+    assert.equal(applied[0][1].role, 'left_low');
+    assert.equal(applied[0][1].lowpass.frequency_hz, 2000);
+    assert.ok(toasts.length > 0, 'seeding reports success');
+    assert.deepEqual(state.crossover.response, { ways: {} });
+}
+{
+    // A linked save mirrors the shared filters to the mirror way; the
+    // mirror carries no trim.
+    const realFetch = globalThis.fetch;
+    const applied = [];
+    const state = crossoverFixtureState();
+    state.crossover.linkLR = true;
+    initCrossoverUI(state, crossoverFixtureElements(), {
+        applyMutation: async (kind, fields) => { applied.push(fields); return { ok: true }; },
+    });
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ways: {} }) });
+    await CrossoverUI.saveCrossoverWay();
+    globalThis.fetch = realFetch;
+    assert.equal(applied.length, 2);
+    assert.equal(applied[0].role, 'left_low');
+    assert.equal(applied[1].role, 'right_low');
+    assert.ok(!('level_db' in applied[1]), 'mirror save carries no trim');
+    assert.equal(applied[1].lowpass.frequency_hz, 2000);
+}
 console.log('crossover frontend tests: ok');
+})().catch((error) => { console.error(error); process.exit(1); });

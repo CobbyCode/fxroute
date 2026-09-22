@@ -102,6 +102,16 @@ window.FXRouteProviderSettings?.init({
     refreshStreamingFlags: () => { void window.FXRouteStreaming?.refreshEnabledFlags?.(); },
     refreshStreamingTab: () => window.FXRouteStreaming?.refreshActiveTab?.(),
 });
+// Crossover tile UI: state/DOM through lazy getters; output mutations and
+// box ownership stay in app.js behind explicit callbacks. Bank, routing and
+// measurement logic are not moved.
+window.FXRouteCrossoverUI?.init({
+    getState: () => state,
+    getElements: () => elements,
+    showToast,
+    ensureOutputBoxes: () => ensureOutputSystemBoxes(),
+    applyMutation: (kind, fields, message, options) => applyOutputSystemMutation(kind, fields, message, options),
+});
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
 // call sites stay unchanged.
@@ -1430,6 +1440,13 @@ function updateTabsScrollAffordance() {
     nav.classList.toggle('can-scroll', canScroll);
 }
 
+function wireCrossoverTile() {
+    // Crossover tile UI lives in static/crossover_ui.js
+    // (window.FXRouteCrossoverUI). Thin wrapper keeps the settings wiring unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
+    return mod.wireCrossoverTile();
+}
+
 function setupSettingsActions() {
     if (!elements.settingsOpenBtn || !elements.settingsPanel || !elements.settingsCloseBtn) return;
     elements.settingsOpenBtn.addEventListener('click', () => toggleSettingsPanel(true));
@@ -1494,24 +1511,7 @@ function setupSettingsActions() {
                 { mode: catalog.active_mode, bank_id: bankId }, false);
         });
     }
-    const crossoverControlChanged = () => { void saveCrossoverWay(); };
-    for (const el of [elements.effectsCrossoverFrequencyHighpass, elements.effectsCrossoverFrequencyLowpass,
-        elements.effectsCrossoverFamilyHighpass, elements.effectsCrossoverSlopeHighpass,
-        elements.effectsCrossoverFamilyLowpass, elements.effectsCrossoverSlopeLowpass,
-        elements.effectsCrossoverLevel,
-        elements.effectsCrossoverDelay, elements.effectsCrossoverPolarity]) {
-        if (el) el.addEventListener('change', crossoverControlChanged);
-    }
-    if (elements.effectsCrossoverLink) {
-        elements.effectsCrossoverLink.addEventListener('change', (event) => {
-            state.crossover.linkLR = event.target.checked === true;
-            // The link state shows directly on the tabs (merged vs. split)
-            // and on the Trim group (hidden while linked), so the tile
-            // re-renders immediately instead of waiting for the next save
-            // or fetch.
-            renderCrossoverTile();
-        });
-    }
+    wireCrossoverTile();
     if (elements.settingsSourceSelect) {
         elements.settingsSourceSelect.addEventListener('change', (event) => {
             const value = event.target.value || 'app-playback';
@@ -3508,317 +3508,51 @@ function crossoverModule() {
 }
 
 async function fetchCrossoverResponse() {
-    ensureOutputSystemBoxes();
-    const catalog = state.outputSystem.catalog;
-    if (!catalog?.modes?.[catalog.active_mode]?.crossover_enabled) {
-        state.crossover.response = null;
-        renderCrossoverTile();
-        return null;
-    }
-    try {
-        const resp = await fetch('/api/audio/output-state/crossover-response');
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error('Crossover response unavailable');
-        state.crossover.response = data;
-    } catch (e) {
-        state.crossover.response = null;
-    }
-    renderCrossoverTile();
-    return state.crossover.response;
+    // Crossover tile UI lives in static/crossover_ui.js
+    // (window.FXRouteCrossoverUI). Thin wrapper keeps existing
+    // call sites unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
+    return mod.fetchCrossoverResponse();
 }
 
 function renderCrossoverTile() {
-    ensureOutputSystemBoxes();
-    const mod = crossoverModule();
-    const catalog = state.outputSystem.catalog;
-    const card = elements.effectsCrossoverCard;
-    if (!card) return;
-    const response = state.crossover.response;
-    const roles = mod && response && response.crossover_enabled
-        ? mod.orderedWays(response.ways) : [];
-    card.classList.toggle('hidden', roles.length === 0);
-    if (!roles.length) return;
-    if (!roles.includes(state.crossover.activeWay)) state.crossover.activeWay = roles[0];
-    const active = state.crossover.activeWay;
-    const modeConfig = catalog.modes[catalog.active_mode] || {};
-    const processing = modeConfig.processing || {};
-    const settings = processing[active] || {};
-    const busy = state.crossover.busy || state.outputSystem.busy;
-    const bass = modeConfig.bass_management || {};
-    const subRoles = modeConfig.topology?.sub_roles || [];
-    const bassContext = { bass, subRoles };
-    // Derived sub high-pass for the Low way: owned by the Subwoofer tile,
-    // displayed read-only here. Falls back to the response payload when the
-    // catalog is momentarily stale after a sub save. The response carries the
-    // sub crossover for every speaker way (the plan runs each way through it),
-    // but only the Low way replaces its own high-pass with it, so the fallback
-    // stays Low-only: otherwise a mid/high way whose stored high-pass is Off
-    // would render as if it still had one (locked Type, visible rows, no
-    // "High-pass off" in the header).
-    const responseDerived = mod.isLowWayRole && mod.isLowWayRole(active)
-        ? (response.ways?.[active]?.derived_highpass || null) : null;
-    const catalogDerived = mod.derivedHighpassForRole
-        ? mod.derivedHighpassForRole(active, bass, subRoles) : null;
-    const derivedHighpass = (!settings.highpass && (catalogDerived || responseDerived)) || null;
-    // Linked pairs share one tab per way ("L/R · Low"); unlinked pairs go
-    // back to separate L/R tabs. The checkbox keeps its place regardless.
-    // Link is off by default and couples only the crossover filters; Trim
-    // (Level/Align/Polarity) stays per-way and is hidden while linked.
-    const linkedCrossover = state.crossover.linkLR === true;
-    mod.renderWayTabs(elements.effectsCrossoverTabs, roles, active, (role) => {
-        // A linked pair shares one tab carrying the canonical left role:
-        // re-picking the visible pair keeps the current side, otherwise the
-        // tab's role wins. Filters still mirror; trim stays per-way.
-        const mate = mod.mirrorRole ? mod.mirrorRole(state.crossover.activeWay) : null;
-        state.crossover.activeWay = (linkedCrossover && mate === role) ? state.crossover.activeWay : role;
-        renderCrossoverTile();
-    }, linkedCrossover);
-    if (elements.effectsCrossoverGraph) {
-        drawCrossoverResponse(elements.effectsCrossoverGraph, response.ways, active);
-    }
-    const applicable = mod.applicableFilters(active, bassContext);
-    const showHighpass = applicable.includes('highpass');
-    const showLowpass = applicable.includes('lowpass');
-    if (elements.effectsCrossoverHighpassGroup) {
-        elements.effectsCrossoverHighpassGroup.style.display = showHighpass ? '' : 'none';
-    }
-    if (elements.effectsCrossoverLowpassGroup) {
-        elements.effectsCrossoverLowpassGroup.style.display = showLowpass ? '' : 'none';
-    }
-    if (elements.effectsCrossoverTrimGroup) {
-        elements.effectsCrossoverTrimGroup.style.display = linkedCrossover ? 'none' : '';
-    }
-    if (elements.effectsCrossoverFrequencyHighpass && document.activeElement !== elements.effectsCrossoverFrequencyHighpass) {
-        elements.effectsCrossoverFrequencyHighpass.value = settings.highpass?.frequency_hz
-            ?? derivedHighpass?.frequency_hz ?? '';
-        elements.effectsCrossoverFrequencyHighpass.disabled = !showHighpass || busy || !!derivedHighpass;
-        elements.effectsCrossoverFrequencyHighpass.title = derivedHighpass
-            ? `Set by the Subwoofer tile (${derivedHighpass.frequency_hz} Hz)` : '';
-    }
-    if (elements.effectsCrossoverFrequencyLowpass && document.activeElement !== elements.effectsCrossoverFrequencyLowpass) {
-        elements.effectsCrossoverFrequencyLowpass.value = settings.lowpass?.frequency_hz ?? '';
-        elements.effectsCrossoverFrequencyLowpass.disabled = !showLowpass || busy;
-    }
-    const families = ['off', ...Object.keys(catalog.capabilities?.filter_families || {})];
-    for (const kind of ['highpass', 'lowpass']) {
-        const derived = kind === 'highpass' ? derivedHighpass : null;
-        const definition = settings[kind] || derived || {};
-        // An unstored filter displays Off; saving it writes nothing. Off is a
-        // valid operating state: that direction runs without a filter.
-        const displayFamily = definition.family || 'off';
-        const displaySlope = definition.slope_db_oct ?? null;
-        const familyEl = kind === 'highpass' ? elements.effectsCrossoverFamilyHighpass : elements.effectsCrossoverFamilyLowpass;
-        const slopeEl = kind === 'highpass' ? elements.effectsCrossoverSlopeHighpass : elements.effectsCrossoverSlopeLowpass;
-        const kindBusy = busy || !applicable.includes(kind) || !!derived;
-        const kindOff = displayFamily === 'off';
-        if (familyEl) {
-            const html = families.map((family) =>
-                `<option value="${mod.esc(family)}"${family === displayFamily ? ' selected' : ''}>${mod.esc(familyLabel(family))}</option>`).join('');
-            if (familyEl.innerHTML !== html) familyEl.innerHTML = html;
-            if (familyEl.value !== displayFamily) {
-                familyEl.value = displayFamily;
-            }
-            familyEl.disabled = kindBusy;
-            if (kind === 'highpass') familyEl.title = derived
-                ? `Set by the Subwoofer tile (${derived.frequency_hz} Hz)` : '';
-            if (kindOff) {
-                const freqEl = kind === 'highpass'
-                    ? elements.effectsCrossoverFrequencyHighpass : elements.effectsCrossoverFrequencyLowpass;
-                if (freqEl) freqEl.disabled = true;
-            }
-        }
-        if (slopeEl) {
-            const slopes = kindOff ? [] : mod.slopesForFamily(familyEl?.value || displayFamily, catalog.capabilities);
-            const html = slopes.map((slope) =>
-                `<option value="${slope}"${slope === displaySlope ? ' selected' : ''}>${slope}</option>`).join('');
-            if (slopeEl.innerHTML !== html) slopeEl.innerHTML = html;
-            if (displaySlope === null) {
-                slopeEl.value = '';
-            } else if (String(slopeEl.value) !== String(displaySlope)) {
-                slopeEl.value = displaySlope;
-            }
-            slopeEl.disabled = kindBusy || kindOff;
-            if (kind === 'highpass') slopeEl.title = derived
-                ? `Set by the Subwoofer tile (${derived.frequency_hz} Hz)` : '';
-        }
-        // Off disables the filter fully: hide its Frequency and Slope rows
-        // so only Type stays visible. HPF and LPF switch independently.
-        const freqGroup = kind === 'highpass'
-            ? elements.effectsCrossoverFrequencyHighpassGroup : elements.effectsCrossoverFrequencyLowpassGroup;
-        const slopeGroup = kind === 'highpass'
-            ? elements.effectsCrossoverSlopeHighpassGroup : elements.effectsCrossoverSlopeLowpassGroup;
-        if (freqGroup) freqGroup.style.display = kindOff ? 'none' : '';
-        if (slopeGroup) slopeGroup.style.display = kindOff ? 'none' : '';
-    }
-    if (elements.effectsCrossoverLevel && document.activeElement !== elements.effectsCrossoverLevel) {
-        elements.effectsCrossoverLevel.value = settings.level_db ?? 0;
-        elements.effectsCrossoverLevel.disabled = busy;
-    }
-    if (elements.effectsCrossoverDelay && document.activeElement !== elements.effectsCrossoverDelay) {
-        elements.effectsCrossoverDelay.value = settings.alignment_ms ?? 0;
-        elements.effectsCrossoverDelay.disabled = busy;
-    }
-    if (elements.effectsCrossoverPolarity) {
-        elements.effectsCrossoverPolarity.value = settings.polarity || 'normal';
-        elements.effectsCrossoverPolarity.disabled = busy;
-    }
-    const wayCount = modeConfig.topology?.way_count || 0;
-    // The bass high-pass is per side for an unlinked stereo sub pair, so the
-    // active way decides which side's crossover the header shows.
-    const summaryBass = mod.bassHighpass ? mod.bassHighpass(bass, subRoles, active) : null;
-    if (elements.effectsCrossoverSummary) {
-        const base = wayCount
-            ? `${wayCount}-Way Stereo System`
-            : 'Configure speaker ways in Output Routing first.';
-        const parts = [base];
-        if (summaryBass && wayCount) parts.push(`Sub HPF ${summaryBass.frequency_hz} Hz`);
-        // A cleared direction is a valid Off state; name it here instead of
-        // leaving only an empty Type select as its trace.
-        const cleared = applicable
-            .filter((kind) => !settings[kind] && !(kind === 'highpass' && derivedHighpass))
-            .map((kind) => (kind === 'highpass' ? 'High-pass off' : 'Low-pass off'));
-        parts.push(...cleared);
-        elements.effectsCrossoverSummary.textContent = parts.join(' · ');
-    }
-    if (elements.effectsCrossoverLink) {
-        elements.effectsCrossoverLink.checked = state.crossover.linkLR === true;
-        elements.effectsCrossoverLink.disabled = busy;
-    }
+    // Crossover tile UI lives in static/crossover_ui.js
+    // (window.FXRouteCrossoverUI). Thin wrapper keeps existing
+    // call sites unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
+    return mod.renderCrossoverTile();
 }
 
 function familyLabel(family) {
-    return { off: 'Off', 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' }[family] || family;
+    // Crossover tile UI lives in static/crossover_ui.js
+    // (window.FXRouteCrossoverUI). Thin wrapper keeps existing
+    // call sites unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
+    return mod.familyLabel(family);
 }
 
 function collectCrossoverWayMutation() {
-    ensureOutputSystemBoxes();
-    const mod = crossoverModule();
-    const catalog = state.outputSystem.catalog;
-    const active = state.crossover.activeWay;
-    if (!mod || !catalog || !active) return null;
-    const modeConfig = catalog.modes[catalog.active_mode] || {};
-    const bassContext = { bass: modeConfig.bass_management || {},
-        subRoles: modeConfig.topology?.sub_roles || [] };
-    const applicable = mod.applicableFilters(active, bassContext);
-    const readFreq = (el, fallback) => {
-        if (!el || el.value === '' || el.value === null) return fallback;
-        return mod.clampFrequencyHz(el.value);
-    };
-    const current = catalog.modes[catalog.active_mode]?.processing?.[active] || {};
-    // The sub-owned Low high-pass is display-only: never persist it as a
-    // stored way filter, even though the input shows its frequency.
-    const derivedHighpass = !current.highpass && mod.derivedHighpassForRole
-        ? mod.derivedHighpassForRole(active, bassContext.bass, bassContext.subRoles) : null;
-    const highpassEnabled = applicable.includes('highpass') && !derivedHighpass;
-    const wayCount = modeConfig.topology?.way_count || 0;
-    const build = (kind, previous, enabled, freqEl, familyEl, slopeEl) => {
-        if (!enabled) return previous ?? null;
-        // Off clears the filter; the way then runs open in that direction.
-        if (familyEl?.value === 'off') return null;
-        const raw = freqEl ? freqEl.value : '';
-        const family = familyEl?.value || previous?.family || 'linkwitz-riley';
-        if ((raw === '' || raw === null) && !previous) {
-            // Re-enabling a cleared filter: the frequency field is still
-            // empty, so default to the starter frequency instead of dropping
-            // the filter again.
-            const fallback = (mod.starterFrequency
-                ? mod.starterFrequency(wayCount, active, kind) : null) ?? 1000;
-            const slope = Number(slopeEl?.value || 24);
-            return { family, slope_db_oct: slope, frequency_hz: mod.clampFrequencyHz(fallback) };
-        }
-        const slope = Number(slopeEl?.value || previous?.slope_db_oct || 24);
-        return { family, slope_db_oct: slope, frequency_hz: readFreq(freqEl, previous?.frequency_hz ?? 1000) };
-    };
-    // Linked L/R maintains only the shared crossover filters. Trim
-    // (Level/Align/Polarity) stays per-way and hidden while linked, so it
-    // is omitted from the mutation and the backend keeps stored values.
-    const linked = state.crossover.linkLR === true;
-    const mutation = {
-        kind: 'set_processing',
-        mode: catalog.active_mode,
-        role: active,
-        highpass: build('highpass', current.highpass, highpassEnabled,
-            elements.effectsCrossoverFrequencyHighpass,
-            elements.effectsCrossoverFamilyHighpass, elements.effectsCrossoverSlopeHighpass),
-        lowpass: build('lowpass', current.lowpass, applicable.includes('lowpass'),
-            elements.effectsCrossoverFrequencyLowpass,
-            elements.effectsCrossoverFamilyLowpass, elements.effectsCrossoverSlopeLowpass),
-    };
-    if (!linked) {
-        mutation.level_db = mod.clampLevelDb(elements.effectsCrossoverLevel?.value ?? 0);
-        mutation.alignment_ms = mod.clampAlignmentMs(elements.effectsCrossoverDelay?.value ?? 0);
-        mutation.polarity = elements.effectsCrossoverPolarity?.value === 'invert' ? 'invert' : 'normal';
-    }
-    return mutation;
+    // Crossover tile UI lives in static/crossover_ui.js
+    // (window.FXRouteCrossoverUI). Thin wrapper keeps existing
+    // call sites unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
+    return mod.collectCrossoverWayMutation();
 }
 
 async function saveCrossoverWay() {
-    const fields = collectCrossoverWayMutation();
-    if (!fields) return;
-    // The L/R link shares only the crossover filter values with the mirror
-    // way. Trim (level/align/polarity) stays per-way physical tuning and is
-    // hidden while linked, so a linked save never touches it.
-    const mod = crossoverModule();
-    const catalog = state.outputSystem.catalog;
-    const mirror = mod?.mirrorRole ? mod.mirrorRole(fields.role) : null;
-    const mirrorProcessing = catalog?.modes?.[catalog.active_mode]?.processing || {};
-    const linked = state.crossover.linkLR === true && mirror && mirror !== fields.role
-        && Object.prototype.hasOwnProperty.call(mirrorProcessing, mirror);
-    state.crossover.busy = true;
-    renderCrossoverTile();
-    try {
-        const { kind, ...rest } = fields;
-        await applyOutputSystemMutation(kind, rest, false, { quiet: true });
-        if (linked) {
-            const { role: _role, level_db: _level, alignment_ms: _align, polarity: _polarity, ...mirrorShared } = rest;
-            await applyOutputSystemMutation(kind, { ...mirrorShared, role: mirror }, false, { quiet: true });
-        }
-        await fetchCrossoverResponse();
-    } finally {
-        state.crossover.busy = false;
-        renderCrossoverTile();
-    }
+    // Crossover tile UI lives in static/crossover_ui.js
+    // (window.FXRouteCrossoverUI). Thin wrapper keeps existing
+    // call sites unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
+    return mod.saveCrossoverWay();
 }
 
 async function maybeApplyCrossoverStarters() {
-    /* First valid 2/3/4-way configuration: every way still empty, so seed
-     * the sensible starter filters instead of asking. Partially configured
-     * ways are manual edits and stay untouched. */
-    const mod = crossoverModule();
-    const catalog = state.outputSystem.catalog;
-    if (!mod || !catalog) return false;
-    const modeConfig = catalog.modes[catalog.active_mode] || {};
-    const wayCount = modeConfig.topology?.way_count || 0;
-    if (![2, 3, 4].includes(wayCount)) return false;
-    let starters;
-    try {
-        starters = mod.starterValues(wayCount);
-    } catch (e) {
-        return false;
-    }
-    const processing = modeConfig.processing || {};
-    const roles = Object.keys(starters);
-    const allEmpty = roles.length > 0 && roles.every((role) => {
-        const current = processing[role] || {};
-        return !current.highpass && !current.lowpass;
-    });
-    if (!allEmpty) return false;
-    state.crossover.busy = true;
-    renderCrossoverTile();
-    try {
-        for (const role of roles) {
-            const wanted = starters[role] || {};
-            await applyOutputSystemMutation('set_processing',
-                { mode: catalog.active_mode, role, highpass: wanted.highpass ?? null, lowpass: wanted.lowpass ?? null },
-                false, { quiet: true });
-        }
-        showToast(`Starter values applied (${wayCount}-way).`, 'success');
-        await fetchCrossoverResponse();
-    } finally {
-        state.crossover.busy = false;
-        renderCrossoverTile();
-    }
-    return true;
+    // Crossover tile UI lives in static/crossover_ui.js
+    // (window.FXRouteCrossoverUI). Thin wrapper keeps existing
+    // call sites unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
+    return mod.maybeApplyCrossoverStarters();
 }
 
 async function saveAudioSourceSelection(mode, inputKey = '') {
