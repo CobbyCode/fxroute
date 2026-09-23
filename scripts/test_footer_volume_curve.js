@@ -81,6 +81,7 @@ const sandbox = {
     isStreamingFooterSource() { return true; },
     footerContentFreezeActive() { return false; },
     renderTrackFavoriteButton() {},
+    LibraryUI: { renderTrackFavoriteButton() {} },
     updatePlaybackCover() {},
     renderFooterModeButtons() {},
     setFooterProgressState() {},

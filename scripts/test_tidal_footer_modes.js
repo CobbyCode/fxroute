@@ -74,6 +74,7 @@ const sandbox = {
     footerSingleTrackStartLockActive: () => false,
     isStreamingFooterSource: (source) => source === 'spotify' || source === 'qobuz',
     renderLibraryModeButtons: () => {},
+    LibraryUI: { renderLibraryModeButtons: () => {} },
 };
 
 vm.createContext(sandbox);

@@ -8,6 +8,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const index = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const libraryUi = fs.readFileSync(path.join(root, 'static', 'library_ui.js'), 'utf8');
 const panelUi = fs.readFileSync(path.join(root, 'static', 'measurement_panel_ui.js'), 'utf8');
 const savedUi = fs.readFileSync(path.join(root, 'static', 'measurement_saved_ui.js'), 'utf8');
 const editorsUi = fs.readFileSync(path.join(root, 'static', 'measurement_editors_ui.js'), 'utf8');
@@ -161,7 +162,8 @@ const bankUi = fs.readFileSync(path.join(root, 'static', 'output_bank_ui.js'), '
 assert.match(bankUi, /getElements\(\)\.effectsToggleImportBtn\.textContent = shouldOpen \? 'Close Import' : 'Import';/);
 assert.match(bankUi, /function setEffectsImportPanelOpen\(/, 'bank module owns the import panel toggle');
 assert.doesNotMatch(app, /\n(?:async function|function) setEffectsImportPanelOpen\(/, 'shim dropped from app.js');
-assert.match(app, /elements\.toggleImportBtn\.textContent = 'Close Import';/);
+assert.match(libraryUi, /getElements\(\)\.toggleImportBtn\.textContent = 'Close Import';/,
+    'library module must flip the import button label');
 assert.ok(!app.includes(`textContent = '${String.fromCharCode(0x2212)} Close'`));
 assert.match(index, /id="toggle-import"[^>]*aria-expanded="false"[^>]*aria-controls="library-import-panel"/);
 assert.doesNotMatch(responsiveCss, /#toggle-import::before/);

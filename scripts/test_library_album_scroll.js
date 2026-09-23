@@ -6,7 +6,7 @@
 // opening a detail used to inherit the grid's scroll position and start
 // mid-page at the tracks. This test executes the real
 // scrollLibraryDetailToTop/openAlbumDetail/openSmartTopTracks/openPlaylistDetail
-// functions extracted from static/app.js against stubbed dependencies and
+// functions extracted from static/library_ui.js against stubbed dependencies and
 // asserts that:
 //
 //   1. opening an album resets the window scroll to the top and shows the
@@ -22,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const appJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const libraryJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'library_ui.js'), 'utf8');
 const streamingJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming.js'), 'utf8');
 
 function extractFunction(source, name) {
@@ -65,11 +65,11 @@ function extractFunction(source, name) {
     throw new Error(`unterminated ${name}`);
 }
 
-const scrollSrc = extractFunction(appJs, 'scrollLibraryDetailToTop');
-const openAlbumSrc = extractFunction(appJs, 'openAlbumDetail');
-const openTopTracksSrc = extractFunction(appJs, 'openSmartTopTracks');
-const openPlaylistSrc = extractFunction(appJs, 'openPlaylistDetail');
-const renderTracksSrc = extractFunction(appJs, 'renderAlbumDetailTracks');
+const scrollSrc = extractFunction(libraryJs, 'scrollLibraryDetailToTop');
+const openAlbumSrc = extractFunction(libraryJs, 'openAlbumDetail');
+const openTopTracksSrc = extractFunction(libraryJs, 'openSmartTopTracks');
+const openPlaylistSrc = extractFunction(libraryJs, 'openPlaylistDetail');
+const renderTracksSrc = extractFunction(libraryJs, 'renderAlbumDetailTracks');
 const openTidalDetailSrc = extractFunction(streamingJs, 'openTidalDetail');
 
 assert.ok(scrollSrc.includes('window.scrollTo(0, 0)'),
@@ -142,6 +142,12 @@ function makeSandbox({ tracksOk = true } = {}) {
         setPlaylistDetailBackdrop() {},
         renderPlaylistDetailInfo() {},
         renderPlaylistDetailTracks() {},
+    };
+    // The library module reads state/DOM/toast through injected getters.
+    sandbox.deps = {
+        getState: () => sandbox.state,
+        getElements: () => sandbox.elements,
+        showToast: () => {},
     };
     return { sandbox, elements, scrollCalls };
 }

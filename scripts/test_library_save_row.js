@@ -7,7 +7,7 @@
 // inside the detail between header and tracks — like the TIDAL save row —
 // instead of sitting misplaced under the track list. This test executes the
 // real dockPlaylistSaveRow/updatePlaylistSaveRowVisibility functions
-// extracted from static/app.js against a minimal parent/child DOM model and
+// extracted from static/library_ui.js against a minimal parent/child DOM model and
 // asserts that:
 //
 //   1. with an open album detail the row docks between header and tracks,
@@ -27,6 +27,7 @@ const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const appJs = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const libraryJs = fs.readFileSync(path.join(root, 'static', 'library_ui.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'static', 'style.css'), 'utf8');
 
 function extractFunction(source, name) {
@@ -66,8 +67,8 @@ function extractFunction(source, name) {
     throw new Error(`unterminated ${name}`);
 }
 
-const dockSrc = extractFunction(appJs, 'dockPlaylistSaveRow');
-const visibilitySrc = extractFunction(appJs, 'updatePlaylistSaveRowVisibility');
+const dockSrc = extractFunction(libraryJs, 'dockPlaylistSaveRow');
+const visibilitySrc = extractFunction(libraryJs, 'updatePlaylistSaveRowVisibility');
 
 // --- minimal parent/child DOM model ----------------------------------------
 
@@ -157,7 +158,7 @@ function makeTree() {
 }
 
 function makeSandbox(tree, { selected = 0, editingPlaylist = false } = {}) {
-    return {
+    const sandbox = {
         console: { warn() {} },
         window: { scrollTo() {} },
         elements: tree.elements,
@@ -168,6 +169,12 @@ function makeSandbox(tree, { selected = 0, editingPlaylist = false } = {}) {
             },
         },
     };
+    // The library module reads state/DOM through injected getters.
+    sandbox.deps = {
+        getState: () => sandbox.state,
+        getElements: () => sandbox.elements,
+    };
+    return sandbox;
 }
 
 async function runVisibility(sandbox) {

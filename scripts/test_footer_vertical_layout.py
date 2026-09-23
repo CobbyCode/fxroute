@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CSS = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
 HTML = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 APP = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+LIBRARY = (ROOT / "static" / "library_ui.js").read_text(encoding="utf-8")
 
 
 def rule(selector: str) -> str:
@@ -164,7 +165,7 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         self.assertEqual(markup.count('id="track-favorite-btn"'), 1)
         self.assertIn("renderTrackFavoriteButton(current_track)", APP)
         self.assertIn("toggleCurrentTrackFavorite", APP)
-        self.assertIn("/favorite`,", APP)
+        self.assertIn("/favorite`,", LIBRARY)
 
     def test_stereo_meter_uses_real_backend_fields(self):
         markup = footer_markup()

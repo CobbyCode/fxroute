@@ -18,6 +18,7 @@ const buildSource = fs.readFileSync(path.join(root, 'scripts', 'build_demo.py'),
 const routesSource = fs.readFileSync(path.join(root, 'demo', 'routes.js'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "app.js"), 'utf8');
 const settingsSystemSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "settings_system.js"), 'utf8');
+const libraryUiSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "library_ui.js"), 'utf8');
 const htmlSource = fs.readFileSync(path.join(root, "demo", "dist", "index.html"), 'utf8');
 const streamingSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "streaming.js"), 'utf8');
 
@@ -220,7 +221,7 @@ for (const artist of context.FXROUTE_DEMO_LIBRARY.tidalArtists) {
 const marlowe = context.FXROUTE_DEMO_LIBRARY.tidalArtists.find(a => a.id === 't_artist_01');
 assert.ok(marlowe && marlowe.image_url === '/static/demo/t-the-marlowe-ensemble-velvet-skyline.jpg');
 assert.ok(fs.existsSync(path.join(root, 'static', 'demo', 't-the-marlowe-ensemble-velvet-skyline.jpg')));
-assert.match(appSource, /album\.demo_cover_url/);
+assert.match(libraryUiSource, /album\.demo_cover_url/);
 assert.match(buildSource, /static_src\s*\/\s*['"]demo['"]|demo_art/);
 assert.match(routesSource, /suspend_supported: true/);
 assert.match(routesSource, /power_off_supported: true/);

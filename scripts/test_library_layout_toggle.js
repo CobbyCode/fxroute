@@ -6,7 +6,7 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const js = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const js = fs.readFileSync(path.join(__dirname, '..', 'static', 'library_ui.js'), 'utf8');
 
 function extractFunction(source, name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -35,13 +35,13 @@ assert.ok(renderTracks.includes('updateLibraryViewModeToggle()'),
     'Tracks/Folders rendering must synchronize the Library layout toggle');
 
 const updateToggle = extractFunction(js, 'updateLibraryViewModeToggle');
-assert.ok(updateToggle.includes("state.library.viewMode === 'albums'"),
+assert.ok(updateToggle.includes("deps.getState().library.viewMode === 'albums'"),
     'the Library layout toggle must be restricted to Albums');
-assert.ok(updateToggle.includes('!state.library.albumDetail') && updateToggle.includes('!state.library.playlistDetail'),
+assert.ok(updateToggle.includes('!deps.getState().library.albumDetail') && updateToggle.includes('!deps.getState().library.playlistDetail'),
     'the Library layout toggle must not appear in detail views');
 
 const setLayout = extractFunction(js, 'setAlbumLayout');
-assert.ok(setLayout.includes("state.library.viewMode !== 'albums'"),
+assert.ok(setLayout.includes("deps.getState().library.viewMode !== 'albums'"),
     'layout clicks outside Albums must have no effect');
 
 console.log('PASS  scripts/test_library_layout_toggle.js');

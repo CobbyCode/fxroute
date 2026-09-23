@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'library_ui.js'), 'utf8');
 const match = /function\s+getTrackIdsInLibraryOrder\s*\(/.exec(source);
 assert.ok(match, 'missing getTrackIdsInLibraryOrder');
 const brace = source.indexOf('{', match.index);
@@ -27,7 +27,10 @@ const sandbox = {
             tracks: ['a', 'b', 'c', 'd', 'e', 'f'].map(id => ({ id })),
         },
     },
+    // The library module reads state through the injected getter.
+    deps: null,
 };
+sandbox.deps = { getState: () => sandbox.state };
 vm.createContext(sandbox);
 vm.runInContext(source.slice(match.index, end), sandbox);
 
