@@ -149,8 +149,8 @@ window.FXRouteOutputSystemController?.init({
         ?? false),
 });
 // Bank/compare/import UI: state/DOM through lazy getters; effects editors,
-// measurement editors and the main effects render stay in app.js behind
-// explicit callbacks, mutations run through the controller-owned app path.
+// measurement editor events/takes and the main effects render stay in app.js
+// behind explicit callbacks, mutations run through the controller-owned app path.
 window.FXRouteBankUI?.init({
     getState: () => state,
     getElements: () => elements,
@@ -177,7 +177,7 @@ window.FXRouteMeasurementPanelUI?.init({
     measurementModeReady: () => measurementModeReady(),
     escapeHtml: (value) => escapeHtml(value),
     formatRateKhz: (rate) => formatRateKhz(rate),
-    measurementAreaBadge: (measurement) => measurementAreaBadge(measurement),
+    measurementAreaBadge: (measurement) => window.FXRouteMeasurementSavedUI.measurementAreaBadge(measurement),
     syncMeasurementSweepButton: () => syncMeasurementSweepButton(),
     getActiveMeasurementKind: () => getActiveMeasurementKind(),
     hasActiveMeasurementJob: () => hasActiveMeasurementJob(),
@@ -191,6 +191,40 @@ window.FXRouteMeasurementPanelUI?.init({
     buildMeasurementIrSummary: (diagnostics) => buildMeasurementIrSummary(diagnostics),
     buildMeasurementIrDiagnosticsTooltip: (diagnostics) => buildMeasurementIrDiagnosticsTooltip(diagnostics),
     renderMeasurementIrDiagnostics: (entries, frequencyView) => renderMeasurementIrDiagnostics(entries, frequencyView),
+});
+window.FXRouteMeasurementSavedUI?.init({
+    getState: () => state,
+    getElements: () => elements,
+    getCurrentMeasurementEntry: () => getCurrentMeasurementEntry(),
+    getVisibleMeasurementColorById: () => getVisibleMeasurementColorById(),
+    getOutputSystemModule: () => outputSystemModule(),
+    getCompactDisplayName: (name, maxChars) => getCompactDisplayName(name, maxChars),
+    escapeHtml: (value) => escapeHtml(value),
+});
+window.FXRouteMeasurementEditorsUI?.init({
+    getState: () => state,
+    getElements: () => elements,
+    getDocument: () => document,
+    escapeHtml: (value) => escapeHtml(value),
+    ensureCustomHouseCurveState: () => ensureCustomHouseCurveState(),
+    getCustomHouseCurvePointSlot: (id) => getCustomHouseCurvePointSlot(id),
+    getCustomHouseCurvePointColor: (point, slot) => getCustomHouseCurvePointColor(point, slot),
+    getMeasurementPeqPresetName: (mode) => getMeasurementPeqPresetName(mode),
+    getMeasurementPeqDraftMode: (peq) => getMeasurementPeqDraftMode(peq),
+    isPeqCreateInFlight: () => peqCreateInFlight,
+    measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
+    getMeasurementConvolverCurveOptions: () => getMeasurementConvolverCurveOptions(),
+    getMeasurementConvolverSourceSelectionState: () => getMeasurementConvolverSourceSelectionState(),
+    analyzeMeasurementConvolverSide: (side) => analyzeMeasurementConvolverSide(side),
+    getMeasurementConvolverDraftPhaseMismatch: (conv) => getMeasurementConvolverDraftPhaseMismatch(conv),
+    isConvolverCreateInFlight: () => convolverCreateInFlight,
+    getMeasurementConvolverCurve: (key) => getMeasurementConvolverCurve(key),
+    getMeasurementConvolverTimingDelta: (left, right) => getMeasurementConvolverTimingDelta(left, right),
+    getMeasurementDirectArrivalTiming: (measurement) => getMeasurementDirectArrivalTiming(measurement),
+    getMeasurementConvolverMeasurementForSide: (side) => getMeasurementConvolverMeasurementForSide(side),
+    formatMeasurementConvolverTimingRelation: (timing) => formatMeasurementConvolverTimingRelation(timing),
+    getMeasurementConvolverItemName: (mode, gain, options) => getMeasurementConvolverItemName(mode, gain, options),
+    buildMeasurementConvolverWarnings: (analyses) => buildMeasurementConvolverWarnings(analyses),
 });
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
@@ -8482,16 +8516,6 @@ function getMeasurementConvolverCurve(curveKey) {
     return getMeasurementConvolverCurveOptions().find((curve) => curve.key === curveKey) || measurementConvolverCurves.neutral;
 }
 
-function getMeasurementSlotChipStyle(color = '', active = false) {
-    if (!color) return '';
-    return `style="border-color:${escapeHtml(color)}66;background:${escapeHtml(color)}22;${active ? `color:#08110d;background:${escapeHtml(color)};box-shadow:0 0 0 2px ${escapeHtml(color)}66, 0 0 0 4px rgba(248,250,252,0.28);` : ''}"`;
-}
-
-function renderMeasurementSlotChip({ label, index, color = '', active = false, occupied = false, attributes = '' }) {
-    const classes = `measurement-slot-chip measurement-peq-chip${active ? ' is-active' : ''}${occupied ? '' : ' is-empty'}`;
-    return `<button type="button" class="${classes}" ${getMeasurementSlotChipStyle(color, active)} data-measurement-slot-index="${index}" ${attributes}>${escapeHtml(label)}</button>`;
-}
-
 function getAutoSubTargetCurveSnapshot() {
     const conv = ensureMeasurementConvolverState();
     const key = String(conv.targetCurve || '');
@@ -11751,7 +11775,7 @@ function renderMeasurementPanel() {
     normalizeMeasurementInputChannelSelections();
     measurementState.modeNote = measurementModeNoteText();
     const current = getCurrentMeasurementEntry();
-    const measurements = getSavedListMeasurements();
+    const measurements = window.FXRouteMeasurementSavedUI.getSavedListMeasurements();
     const graphEntries = getGraphMeasurementEntries();
     const assistMode = measurementState.assistMode === 'convolver' ? 'convolver' : 'peq';
     const activeEditor = getMeasurementActiveEditor();
@@ -11769,152 +11793,12 @@ function renderMeasurementPanel() {
     window.FXRouteMeasurementPanelUI.renderMeasurementPanelActionsSection(ctx);
     window.FXRouteMeasurementPanelUI.renderMeasurementPanelViewSection(ctx);
     window.FXRouteMeasurementPanelUI.renderMeasurementPanelStatusSection(ctx);
-    renderMeasurementPanelEditorsSection(ctx);
-    renderMeasurementPanelConvolverSection(ctx);
-    renderMeasurementPanelSavedListSection(ctx);
+    window.FXRouteMeasurementEditorsUI.renderMeasurementPanelEditorsSection(ctx);
+    window.FXRouteMeasurementEditorsUI.renderMeasurementPanelConvolverSection(ctx);
+    window.FXRouteMeasurementSavedUI.renderMeasurementPanelSavedListSection(ctx);
     syncAutoSubButton();
     syncSpeakerAlignButton();
     scheduleMeasurementGraphRender();
-}
-
-function renderMeasurementPanelEditorsSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
-    if (elements.measurementPeqPanel) {
-        elements.measurementPeqPanel.classList.toggle('hidden', !frequencyView || activeEditor !== 'peq' || (!peq.enabled && !peq.filters.length));
-    }
-    const customHouseCurve = ensureCustomHouseCurveState();
-    const activeCustomPoint = customHouseCurve.points.find((point) => point.id === customHouseCurve.activePointId) || null;
-    if (elements.measurementCustomHouseCurvePanel) {
-        elements.measurementCustomHouseCurvePanel.classList.toggle('hidden', !frequencyView || activeEditor !== 'houseCurve');
-    }
-    if (elements.measurementCustomHouseCurveChips) {
-        elements.measurementCustomHouseCurveChips.innerHTML = Array.from({ length: 8 }, (_, index) => {
-            const point = customHouseCurve.points.find((candidate) => Number(candidate.slot) === index) || null;
-            const active = point && point.id === customHouseCurve.activePointId;
-            const color = point ? getCustomHouseCurvePointColor(point, index) : '';
-            return renderMeasurementSlotChip({
-                label: `P${index + 1}`,
-                index,
-                color,
-                active,
-                occupied: !!point,
-                attributes: `data-custom-house-curve-slot="${index}" data-custom-house-curve-point="${point ? escapeHtml(point.id) : ''}"`,
-            });
-        }).join('');
-    }
-    if (elements.measurementCustomHouseCurveEditor) {
-        const activeCustomSlot = activeCustomPoint ? getCustomHouseCurvePointSlot(activeCustomPoint.id) : -1;
-        const activeCustomColor = activeCustomPoint ? getCustomHouseCurvePointColor(activeCustomPoint, activeCustomSlot) : '';
-        elements.measurementCustomHouseCurveEditor.innerHTML = activeCustomPoint ? `
-            <div class="measurement-peq-editor-grid" data-custom-house-curve-editor-slot="${activeCustomSlot}" style="border-color:${escapeHtml(activeCustomColor)}66;">
-                <div class="measurement-custom-house-curve-slot-label" style="color:${escapeHtml(activeCustomColor)};">P${activeCustomSlot + 1}</div>
-                <div class="field-group measurement-peq-direct-input-field">
-                    <label for="measurement-custom-house-curve-frequency">Frequency (Hz)</label>
-                    <input id="measurement-custom-house-curve-frequency" class="url-input measurement-peq-number-input" type="number" min="20" max="20000" step="1" value="${Math.round(activeCustomPoint.freqHz)}" data-custom-house-curve-field="freqHz">
-                </div>
-                <div class="field-group measurement-peq-direct-input-field">
-                    <label for="measurement-custom-house-curve-gain">Gain (dB)</label>
-                    <input id="measurement-custom-house-curve-gain" class="url-input measurement-peq-number-input" type="number" min="-24" max="24" step="0.1" value="${Number(activeCustomPoint.gainDb).toFixed(1)}" data-custom-house-curve-field="gainDb">
-                </div>
-                <div class="measurement-peq-editor-actions">
-                    <button type="button" class="btn-danger" data-custom-house-curve-delete="${escapeHtml(activeCustomPoint.id)}">Delete</button>
-                </div>
-            </div>` : '<div class="measurement-peq-editor-empty">Use P1-P8 to add up to 8 curve points.</div>';
-    }
-    if (elements.measurementCustomHouseCurveName && document.activeElement !== elements.measurementCustomHouseCurveName) {
-        elements.measurementCustomHouseCurveName.value = customHouseCurve.name || '';
-    }
-    if (elements.measurementCustomHouseCurveCreateBtn) {
-        elements.measurementCustomHouseCurveCreateBtn.disabled = customHouseCurve.points.length < 2 || !String(customHouseCurve.name || '').trim() || customHouseCurve.saving;
-        elements.measurementCustomHouseCurveCreateBtn.textContent = customHouseCurve.saving ? 'Creating…' : 'Create Target Curve';
-    }
-    if (elements.measurementConvolverPanel) {
-        elements.measurementConvolverPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'convolver');
-    }
-    if (elements.measurementPeqChips) {
-        elements.measurementPeqChips.innerHTML = Array.from({ length: 12 }, (_, index) => {
-            const filter = peq.filters[index] || null;
-            const active = filter && filter.id === peq.activeFilterId;
-            return renderMeasurementSlotChip({
-                label: `F${index + 1}`,
-                index,
-                color: filter ? filter.color : '',
-                active,
-                occupied: !!filter,
-                attributes: `data-measurement-peq-slot="${index}" data-measurement-peq-chip="${filter ? escapeHtml(filter.id) : ''}"`,
-            });
-        }).join('');
-    }
-    if (elements.measurementPeqEditor) {
-        if (!activePeqFilter) {
-            elements.measurementPeqEditor.innerHTML = '<div class="measurement-peq-editor-empty">Use F1-F12 or the graph near the fixed 0 dB line to add up to 12 temporary filters.</div>';
-        } else {
-            const hideFreqQ = activePeqFilter.type === 'gain';
-            elements.measurementPeqEditor.innerHTML = `
-                <div class="measurement-peq-editor-grid">
-                    <div class="field-group">
-                        <label for="measurement-peq-type">Type</label>
-                        <select id="measurement-peq-type" class="url-input" data-measurement-peq-field="type">
-                            ${measurementPeqTypes.map((type) => `<option value="${type}" ${activePeqFilter.type === type ? 'selected' : ''}>${measurementPeqTypeLabels[type] || type}</option>`).join('')}
-                        </select>
-                    </div>
-                    ${hideFreqQ ? '' : `
-                    <div class="field-group measurement-peq-direct-input-field">
-                        <label for="measurement-peq-freq">Frequency (Hz)</label>
-                        <div class="measurement-peq-stepper">
-                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-frequency-step="-1" aria-label="Decrease frequency">−</button>
-                            <input id="measurement-peq-freq" class="url-input measurement-peq-number-input" type="number" min="20" max="20000" step="1" inputmode="numeric" value="${Math.round(activePeqFilter.freqHz || 1000)}" data-measurement-peq-field="freqHz">
-                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-frequency-step="1" aria-label="Increase frequency">+</button>
-                        </div>
-                    </div>`}
-                    <div class="field-group measurement-peq-direct-input-field">
-                        <label for="measurement-peq-gain">Gain (dB)</label>
-                        <div class="measurement-peq-stepper">
-                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-gain-step="-1" aria-label="Decrease gain">−</button>
-                            <input id="measurement-peq-gain" class="url-input measurement-peq-number-input" type="number" min="-24" max="24" step="0.1" inputmode="decimal" value="${Number(activePeqFilter.gainDb || 0).toFixed(1)}" data-measurement-peq-field="gainDb">
-                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-gain-step="1" aria-label="Increase gain">+</button>
-                        </div>
-                    </div>
-                    ${hideFreqQ ? '' : `
-                    <div class="field-group measurement-peq-direct-input-field">
-                        <label for="measurement-peq-q">Q</label>
-                        <div class="measurement-peq-stepper">
-                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-q-step="-1" aria-label="Decrease Q">−</button>
-                            <input id="measurement-peq-q" class="url-input measurement-peq-number-input" type="number" min="0.1" max="20" step="0.1" inputmode="decimal" aria-keyshortcuts="ArrowUp ArrowDown" value="${Number(activePeqFilter.q || 1).toFixed(2)}" data-measurement-peq-field="q">
-                            <button type="button" class="btn-secondary measurement-peq-step-btn" data-measurement-peq-q-step="1" aria-label="Increase Q">+</button>
-                        </div>
-                    </div>`}
-                    <div class="measurement-peq-editor-actions">
-                        <button type="button" class="btn-danger" data-measurement-peq-delete="${escapeHtml(activePeqFilter.id)}">Delete</button>
-                    </div>
-                </div>
-            `;
-        }
-    }
-    const peqDraftLeftCount = peq.draft?.leftBands?.length || 0;
-    const peqDraftRightCount = peq.draft?.rightBands?.length || 0;
-    if (elements.measurementPeqDraftSummary) {
-        const draftMode = peqDraftLeftCount && peqDraftRightCount ? 'LR draft ready' : (peqDraftRightCount ? 'R draft ready' : (peqDraftLeftCount ? 'L draft ready' : 'no draft staged'));
-        elements.measurementPeqDraftSummary.innerHTML = `<div>Draft: ${escapeHtml(draftMode)} · L: ${peqDraftLeftCount} bands · R: ${peqDraftRightCount} bands</div>`;
-    }
-    if (elements.measurementPeqPresetName) {
-        const hasDraft = !!peqDraftLeftCount || !!peqDraftRightCount;
-        // Like the convolver field: show the stable auto suggestion even
-        // before Take, and keep it editable from the moment a name stands
-        // in the field. A typed name is stored touched, so a later Take
-        // never overwrites it; Create still requires a staged draft.
-        const nameValue = peq.draft?.presetName || getMeasurementPeqPresetName(getMeasurementPeqDraftMode(peq) || 'both');
-        if (document.activeElement !== elements.measurementPeqPresetName) {
-            elements.measurementPeqPresetName.value = nameValue;
-        }
-        elements.measurementPeqPresetName.disabled = peqCreateInFlight;
-        elements.measurementPeqPresetName.placeholder = hasDraft ? 'Preset name' : 'Type a name, or Take L/R/Both to stage';
-    }
-    if (elements.measurementPeqTakeLeftBtn) elements.measurementPeqTakeLeftBtn.disabled = !peq.filters.length;
-    if (elements.measurementPeqTakeRightBtn) elements.measurementPeqTakeRightBtn.disabled = !peq.filters.length;
-    if (elements.measurementPeqTakeBothBtn) elements.measurementPeqTakeBothBtn.disabled = !peq.filters.length;
-    if (elements.measurementPeqCreateBtn) elements.measurementPeqCreateBtn.disabled = (!peqDraftLeftCount && !peqDraftRightCount) || !String(peq.draft?.presetName || '').trim() || peqCreateInFlight;
-    syncMeasurementSummedSubTakeModes();
-
 }
 
 function measurementBankSumsBothInputs() {
@@ -11922,243 +11806,6 @@ function measurementBankSumsBothInputs() {
      * would stage one half of a correction the engine applies to both inputs. */
     const area = measurementAreaFromCatalog();
     return area?.channel_mode === 'mono';
-}
-
-function syncMeasurementSummedSubTakeModes() {
-    /* Steer a mono bank toward the takes that compile there: the engine sums
-     * both inputs into one output role, so a dual PEQ needs identical L/R
-     * bands and a convolver needs a mono IR file. A mono bank offers one
-     * Take Mono button; side takes are hidden. Disabled buttons keep the
-     * tooltip as the reason. */
-    const summed = measurementBankSumsBothInputs();
-    for (const button of [elements.measurementPeqTakeLeftBtn, elements.measurementPeqTakeRightBtn,
-        elements.measurementConvolverTakeRightBtn, elements.measurementConvolverTakeBothBtn]) {
-        button?.classList?.toggle('hidden', summed);
-    }
-    if (elements.measurementPeqTakeBothBtn) elements.measurementPeqTakeBothBtn.textContent = summed ? 'Take Mono' : 'Take Both';
-    if (elements.measurementConvolverTakeLeftBtn) elements.measurementConvolverTakeLeftBtn.textContent = summed ? 'Take Mono' : 'Take L';
-    const bothReason = summed ? 'This area is fed by both inputs: its bank needs a mono IR, so take a single side.' : '';
-    const sideReason = summed ? 'This area is fed by both inputs: take Both to stage the identical L/R correction.' : '';
-    for (const button of [elements.measurementPeqTakeLeftBtn, elements.measurementPeqTakeRightBtn,
-                          elements.measurementConvolverTakeBothBtn]) {
-        if (!button) continue;
-        if (summed) {
-            button.disabled = true;
-            button.title = button === elements.measurementConvolverTakeBothBtn ? bothReason : sideReason;
-        } else if (button.dataset.summedSub === 'true') {
-            // Leave disabled to the render pass; only clear the stale marker.
-            button.dataset.summedSub = 'false';
-            button.title = '';
-        }
-    }
-}
-
-function renderMeasurementPanelConvolverSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
-    if (elements.measurementConvolverTarget) {
-        const optionsHtml = getMeasurementConvolverCurveOptions().map((curve) => `<option value="${escapeHtml(curve.key)}" ${conv.targetCurve === curve.key ? 'selected' : ''}>${escapeHtml(curve.label || curve.shortLabel || curve.key)}</option>`).join('');
-        if (elements.measurementConvolverTarget.innerHTML !== optionsHtml) elements.measurementConvolverTarget.innerHTML = optionsHtml;
-        elements.measurementConvolverTarget.value = conv.targetCurve;
-    }
-    if (elements.measurementConvolverRangeStart && document.activeElement !== elements.measurementConvolverRangeStart) elements.measurementConvolverRangeStart.value = String(Math.round(conv.rangeStartHz));
-    if (elements.measurementConvolverRangeEnd && document.activeElement !== elements.measurementConvolverRangeEnd) elements.measurementConvolverRangeEnd.value = String(Math.round(conv.rangeEndHz));
-    if (elements.measurementConvolverMaxBoost) elements.measurementConvolverMaxBoost.value = String(conv.maxBoostDb);
-    if (elements.measurementConvolverMaxCut) elements.measurementConvolverMaxCut.value = String(conv.maxCutDb);
-    if (elements.measurementConvolverDipGuard) elements.measurementConvolverDipGuard.value = conv.dipGuard;
-    if (elements.measurementConvolverSampleRate) elements.measurementConvolverSampleRate.value = String(measurementState.measurementSampleRate || '48000');
-    if (elements.measurementConvolverPhaseMode) elements.measurementConvolverPhaseMode.value = conv.phaseMode;
-    if (elements.measurementConvolverIrLength) elements.measurementConvolverIrLength.value = String(conv.irLength);
-    const convolverSourceSelection = getMeasurementConvolverSourceSelectionState();
-    const convAnalyses = ['left', 'right'].map((side) => analyzeMeasurementConvolverSide(side));
-    const left = convAnalyses[0];
-    const right = convAnalyses[1];
-    const leftDraft = conv.draft?.left || null;
-    const rightDraft = conv.draft?.right || null;
-    const hasConvolverDraft = !!leftDraft || !!rightDraft;
-    const draftPhaseMismatch = getMeasurementConvolverDraftPhaseMismatch(conv);
-    const isCreatingConvolverPreset = !!conv.creatingPreset || convolverCreateInFlight;
-    if (elements.measurementConvolverSummary) {
-        const curve = getMeasurementConvolverCurve(conv.targetCurve);
-        const hasCreatedConvolver = (state.dsp?.assistStack || []).some((item) => item.type === 'convolver');
-        let draftStatus;
-        const draftDetails = [];
-        const currentTimingDelta = left && right
-            ? getMeasurementConvolverTimingDelta(
-                getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide('left')),
-                getMeasurementDirectArrivalTiming(getMeasurementConvolverMeasurementForSide('right')),
-            )
-            : null;
-        const summaryTimingDelta = leftDraft && rightDraft
-            ? getMeasurementConvolverTimingDelta(leftDraft.timing, rightDraft.timing)
-            : currentTimingDelta;
-        if (isCreatingConvolverPreset) {
-            draftStatus = 'Creating convolver preset...';
-        } else if (draftPhaseMismatch) {
-            draftStatus = 'Draft phase does not match the selected phase type. Take L/R again.';
-        } else if (leftDraft && rightDraft) {
-            const timingDelta = summaryTimingDelta;
-            if (timingDelta) {
-                draftStatus = `Draft ready · ${formatMeasurementConvolverTimingRelation(timingDelta)}`;
-            } else {
-                draftStatus = 'Draft ready · Timing unavailable';
-            }
-        } else if (leftDraft || rightDraft) {
-            draftStatus = 'Draft ready · Timing unavailable';
-        } else {
-            draftStatus = hasCreatedConvolver ? 'Convolver preset created' : 'No draft staged';
-            if (currentTimingDelta && measurementConvolverAlignedPhaseModes.includes(conv.phaseMode)) {
-                draftStatus += ` · ${formatMeasurementConvolverTimingRelation(currentTimingDelta)}`;
-            }
-        }
-        if (summaryTimingDelta && (leftDraft && rightDraft || (left && right && measurementConvolverAlignedPhaseModes.includes(conv.phaseMode)))) {
-            if (summaryTimingDelta.absMs > MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS) {
-                draftDetails.push('Filter not created because timing offset exceeds safety limit.');
-            }
-        }
-        if (conv.draft?.notice) draftDetails.push(conv.draft.notice);
-        if (hasConvolverDraft) {
-            const stagedPhaseModes = [...new Set([leftDraft, rightDraft].map(getMeasurementConvolverDraftPhaseMode).filter(Boolean))];
-            if (stagedPhaseModes.length) {
-                draftDetails.push(`Staged phase: ${stagedPhaseModes.map(getMeasurementConvolverPhaseLabel).join(' + ')}`);
-            }
-        }
-        elements.measurementConvolverSummary.innerHTML = `
-            <div><strong>${escapeHtml(curve.label)}</strong> · ${escapeHtml(getMeasurementConvolverTypeLabel(conv.quality))} · Max Boost +${conv.maxBoostDb} dB · Max Cut ${conv.maxCutDb} dB · Dip Guard ${escapeHtml(conv.dipGuard)}</div>
-            <div>Range data. L: ${left ? `${left.points} pts, gain ${formatMeasurementConvolverGain(left.autoGainDb)} (energy ${formatMeasurementConvolverGain(left.energyGainDb ?? 0)})` : 'none'} · R: ${right ? `${right.points} pts, gain ${formatMeasurementConvolverGain(right.autoGainDb)} (energy ${formatMeasurementConvolverGain(right.energyGainDb ?? 0)})` : 'none'}</div>
-            <div>${escapeHtml(draftStatus)}</div>
-            ${draftDetails.map((detail) => `<div>${escapeHtml(detail)}</div>`).join('')}
-        `;
-    }
-    if (elements.measurementConvolverPresetName) {
-        const draftMode = getMeasurementConvolverPreviewMode(left, right, leftDraft, rightDraft);
-        const draftPhaseMode = getMeasurementConvolverDraftPhaseMode(leftDraft || rightDraft) || conv.phaseMode;
-        const previewGainDb = getMeasurementConvolverPreviewGain(draftMode, left, right, leftDraft, rightDraft);
-        const nameValue = hasConvolverDraft
-            ? (conv.draft?.presetName || getMeasurementConvolverItemName(draftMode, previewGainDb, { phaseMode: draftPhaseMode }))
-            : getMeasurementConvolverItemName(draftMode, previewGainDb, { phaseMode: conv.phaseMode });
-        if (document.activeElement !== elements.measurementConvolverPresetName) {
-            elements.measurementConvolverPresetName.value = nameValue;
-        }
-        elements.measurementConvolverPresetName.disabled = !!draftPhaseMismatch || isCreatingConvolverPreset;
-        elements.measurementConvolverPresetName.placeholder = hasConvolverDraft ? 'Preset name' : 'Type a name, or Take L/R/Both to stage';
-    }
-    if (elements.measurementConvolverWarnings) {
-        const warnings = buildMeasurementConvolverWarnings(convAnalyses);
-        elements.measurementConvolverWarnings.innerHTML = warnings.map((warning) => `<div>${escapeHtml(warning)}</div>`).join('');
-        elements.measurementConvolverWarnings.classList.toggle('hidden', !warnings.length);
-    }
-    if (elements.measurementConvolverTakeLeftBtn) {
-        elements.measurementConvolverTakeLeftBtn.disabled = !left || !convolverSourceSelection.take.left || isCreatingConvolverPreset;
-        elements.measurementConvolverTakeLeftBtn.classList.toggle('is-active', !!left && convolverSourceSelection.take.left && !isCreatingConvolverPreset);
-        elements.measurementConvolverTakeLeftBtn.setAttribute('aria-pressed', !!left && convolverSourceSelection.take.left && !isCreatingConvolverPreset ? 'true' : 'false');
-    }
-    if (elements.measurementConvolverTakeRightBtn) {
-        elements.measurementConvolverTakeRightBtn.disabled = !right || !convolverSourceSelection.take.right || isCreatingConvolverPreset;
-        elements.measurementConvolverTakeRightBtn.classList.toggle('is-active', !!right && convolverSourceSelection.take.right && !isCreatingConvolverPreset);
-        elements.measurementConvolverTakeRightBtn.setAttribute('aria-pressed', !!right && convolverSourceSelection.take.right && !isCreatingConvolverPreset ? 'true' : 'false');
-    }
-    if (elements.measurementConvolverTakeBothBtn) {
-        elements.measurementConvolverTakeBothBtn.disabled = !left || !right || !convolverSourceSelection.take.both || isCreatingConvolverPreset;
-        elements.measurementConvolverTakeBothBtn.classList.toggle('is-active', !!left && !!right && convolverSourceSelection.take.both && !isCreatingConvolverPreset);
-        elements.measurementConvolverTakeBothBtn.setAttribute('aria-pressed', !!left && !!right && convolverSourceSelection.take.both && !isCreatingConvolverPreset ? 'true' : 'false');
-    }
-    if (elements.measurementConvolverCreateBtn) {
-        elements.measurementConvolverCreateBtn.disabled = !hasConvolverDraft || !!draftPhaseMismatch || !String(conv.draft?.presetName || '').trim() || isCreatingConvolverPreset;
-        elements.measurementConvolverCreateBtn.textContent = isCreatingConvolverPreset ? 'Creating...' : 'Create Convolver Preset';
-    }
-}
-
-function measurementAreaBadge(measurement) {
-    /* The frozen area a saved result was captured in, from its measurement
-     * target.  Legacy results (and demo data) carry no target and stay
-     * unlabelled rather than being silently called "Global". */
-    const target = measurement?.measurement_target;
-    if (!target || target.legacy || target.schema !== 'fxroute.measurement-target') return null;
-    const mod = outputSystemModule();
-    const label = (mod && typeof mod.roleLabel === 'function')
-        ? mod.roleLabel(String(target.bank_id || 'global'))
-        : String(target.bank_id || 'global');
-    const mode = String(target.mode || '');
-    const stale = !!measurement.measurement_target_stale;
-    return {
-        label,
-        mode,
-        stale,
-        title: mode
-            ? `${label} · ${(mod && typeof mod.modeLabel === 'function' ? mod.modeLabel(mode) : mode)} · measured ${label === 'Global' ? 'whole system' : 'area only'}`
-            : label,
-    };
-}
-
-function renderMeasurementPanelSavedListSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
-    const selectedSavedCount = measurements.filter(measurement => measurementState.visibilityById?.[measurement.id]).length;
-    const allSavedSelected = measurements.length > 0 && selectedSavedCount === measurements.length;
-    const visibleMeasurementColorById = getVisibleMeasurementColorById();
-
-    const savedItemsHtml = measurements.map((measurement) => {
-        const pointsLabel = summarizeMeasurementEntry(measurement);
-        const traceColor = visibleMeasurementColorById[measurement.id] || '';
-        const isSelected = !!measurementState.visibilityById?.[measurement.id];
-        const isVisibleInGraph = !!traceColor;
-        const qualitySummary = getMeasurementQualitySummary(measurement);
-        const qualityTitle = getMeasurementQualityTitle(measurement);
-        const timingInfo = getMeasurementTimingInfo(measurement);
-        const micInputChannel = measurement.input_channels?.mic ? ` · Mic In ${measurement.input_channels.mic}` : '';
-        const referenceInputChannel = measurement.input_channels?.electrical_reference ? ` · Ref In ${measurement.input_channels.electrical_reference}` : '';
-        const areaBadge = measurementAreaBadge(measurement);
-        const areaBadgeHtml = areaBadge
-            ? `<span class="measurement-area-badge${areaBadge.stale ? ' is-stale' : ''}" title="${escapeHtml(areaBadge.title)}">${escapeHtml(areaBadge.label)}</span>`
-            : '';
-        return `
-            <div class="measurement-list-item" style="${isVisibleInGraph ? `border-color:${traceColor}; box-shadow: inset 0 0 0 1px ${traceColor}33; background: linear-gradient(180deg, rgba(255,255,255,0.03), ${traceColor}12);` : ''}">
-                <div class="measurement-list-row">
-                    <span class="measurement-toggle">
-                        <input type="checkbox" data-measurement-toggle="${escapeHtml(measurement.id)}" ${isSelected ? 'checked' : ''}>
-                        <span class="measurement-swatch ${isVisibleInGraph ? '' : 'measurement-swatch-inactive'}" ${isVisibleInGraph ? `style="background:${escapeHtml(traceColor)}"` : ''}></span>
-                        <span class="measurement-list-title"><a href="${escapeHtml(measurementFileUrl(measurement.id))}" title="${escapeHtml(measurement.name)}">${escapeHtml(getCompactDisplayName(measurement.name, 24))}</a></span>
-                        ${areaBadgeHtml}
-                    </span>
-                    <span class="measurement-list-meta">${escapeHtml(formatMeasurementDate(measurement.created_at))}</span>
-                </div>
-                <div class="measurement-list-row">
-                    <span class="measurement-list-meta">${escapeHtml(measurement.input_device?.label || 'Capture input')} · ${escapeHtml(String(measurement.channel || 'left'))}${escapeHtml(micInputChannel)}${escapeHtml(referenceInputChannel)}</span>
-                    <span class="measurement-list-points">${escapeHtml(pointsLabel)}</span>
-                </div>
-                <div class="measurement-list-row">
-                    <span class="measurement-list-meta" title="${escapeHtml(timingInfo.detail)}">${escapeHtml(timingInfo.line)}</span>
-                </div>
-                <div class="measurement-list-row">
-                    <span class="measurement-list-meta" title="${escapeHtml(qualityTitle)}">${escapeHtml(qualitySummary)} · ${isVisibleInGraph ? 'visible, dashed compare trace' : 'hidden compare trace'}</span>
-                </div>
-            </div>
-        `;
-    }).join('');
-
-    const savedHtml = measurements.length
-        ? `
-            <details class="measurement-saved-group" ${measurementState.savedGroupOpen ? 'open' : ''}>
-                <summary>${measurementState.savedGroupOpen ? 'Close saved' : 'Open saved'} (${measurements.length})</summary>
-                <div class="measurement-saved-list">
-                    <div class="measurement-saved-toolbar">
-                        <div class="measurement-saved-toolbar-selection">
-                            <label class="measurement-list-meta measurement-select-all-toggle"><input type="checkbox" data-measurement-select-all ${allSavedSelected ? 'checked' : ''} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''}>Select all</label>
-                            <button type="button" class="btn-danger measurement-saved-delete-action ${selectedSavedCount ? '' : 'is-inert'}" data-measurement-delete-selected ${selectedSavedCount ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount ? 'false' : 'true'}" aria-label="Delete selected measurements"><span class="label-full">Delete selected</span><span class="label-compact" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></span></button>
-                            <button type="button" class="btn-secondary measurement-saved-merge-action ${selectedSavedCount >= 2 ? '' : 'is-inert'}" data-measurement-merge-selected ${selectedSavedCount >= 2 ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount >= 2 ? 'false' : 'true'}" aria-label="Merge selected measurements"><span class="label-full">Merge selected</span><span class="label-compact" aria-hidden="true">⇄</span></button>
-                        </div>
-                        <button type="button" class="btn-secondary measurement-saved-close-action" data-measurement-close-saved aria-label="Close saved measurements"><span class="label-full">Close</span><span class="label-compact">×</span></button>
-                    </div>
-                    ${savedItemsHtml}
-                </div>
-            </details>
-        `
-        : '';
-
-    elements.measurementList.innerHTML = savedHtml;
-}
-
-function getSavedListMeasurements() {
-    const measurementState = state.measurement || {};
-    const current = getCurrentMeasurementEntry();
-    return (measurementState.measurements || []).filter(measurement => measurement.id !== current?.id);
 }
 
 function commitCustomHouseCurveField(input) {
@@ -12293,7 +11940,7 @@ function bindMeasurementPanelDelegation() {
         state.measurement.savedGroupOpen = !!details.open;
         const summary = details.querySelector('summary');
         if (summary) {
-            summary.textContent = `${state.measurement.savedGroupOpen ? 'Close saved' : 'Open saved'} (${getSavedListMeasurements().length})`;
+            summary.textContent = `${state.measurement.savedGroupOpen ? 'Close saved' : 'Open saved'} (${window.FXRouteMeasurementSavedUI.getSavedListMeasurements().length})`;
         }
     }, true);
     list?.addEventListener('change', (event) => {
@@ -12305,7 +11952,7 @@ function bindMeasurementPanelDelegation() {
             return;
         }
         if (input.matches('[data-measurement-select-all]')) {
-            getSavedListMeasurements().forEach((measurement) => {
+            window.FXRouteMeasurementSavedUI.getSavedListMeasurements().forEach((measurement) => {
                 state.measurement.visibilityById[measurement.id] = !!input.checked;
             });
             state.measurement.savedGroupOpen = true;

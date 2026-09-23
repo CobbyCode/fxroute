@@ -9,6 +9,11 @@ const root = path.resolve(__dirname, '..');
 const index = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
 const panelUi = fs.readFileSync(path.join(root, 'static', 'measurement_panel_ui.js'), 'utf8');
+const savedUi = fs.readFileSync(path.join(root, 'static', 'measurement_saved_ui.js'), 'utf8');
+const editorsUi = fs.readFileSync(path.join(root, 'static', 'measurement_editors_ui.js'), 'utf8');
+assert.ok(index.indexOf('measurement_panel_ui.js?v=') < index.indexOf('measurement_saved_ui.js?v='));
+assert.ok(index.indexOf('measurement_saved_ui.js?v=') < index.indexOf('measurement_editors_ui.js?v='));
+assert.ok(index.indexOf('measurement_editors_ui.js?v=') < index.indexOf('app.js?v='));
 const flows = fs.readFileSync(path.join(root, 'static', 'measurement_flows.js'), 'utf8');
 const measurementCss = fs.readFileSync(path.join(root, 'static', 'css', '_measurement.css'), 'utf8');
 const responsiveCss = fs.readFileSync(path.join(root, 'static', 'css', '_responsive.css'), 'utf8');
@@ -40,15 +45,16 @@ assert.match(app, /area\.sides\.includes\(state\.measurement\.sweepSide\)/, 'a s
 assert.match(app, /data-sweep-side/, 'side chips drive the single sweep');
 // Saved results show the frozen area they were captured in (legacy results
 // without a target stay unlabelled, never silently "Global").
-assert.match(app, /function measurementAreaBadge\(measurement\) \{/);
-assert.match(app, /target\.schema !== 'fxroute\.measurement-target'\) return null;/);
-assert.match(app, /target\.legacy \|\| target\.schema/);
-assert.match(app, /measurement-area-badge\$\{areaBadge\.stale \? ' is-stale' : ''\}/);
+assert.match(savedUi, /function measurementAreaBadge\(measurement\) \{/);
+assert.match(savedUi, /target\.schema !== 'fxroute\.measurement-target'\) return null;/);
+assert.match(savedUi, /target\.legacy \|\| target\.schema/);
+assert.match(savedUi, /measurement-area-badge\$\{areaBadge\.stale \? ' is-stale' : ''\}/);
 assert.match(panelUi, /Measured area: \$\{areaBadge\.title\}/);
 // A summed-sub bank is mono on the preset side: per-side PEQ takes and a
 // Both convolver take cannot compile there, so the UI disables them.
 assert.match(app, /function measurementBankSumsBothInputs\(\) \{/);
-assert.match(app, /function syncMeasurementSummedSubTakeModes\(\) \{/);
+assert.match(editorsUi, /function syncMeasurementSummedSubTakeModes\(\) \{/);
+assert.match(app, /FXRouteMeasurementEditorsUI\.renderMeasurementPanelEditorsSection\(ctx\);\s+window\.FXRouteMeasurementEditorsUI\.renderMeasurementPanelConvolverSection\(ctx\);\s+window\.FXRouteMeasurementSavedUI\.renderMeasurementPanelSavedListSection\(ctx\);/);
 assert.match(app, /if \(mode !== 'both' && measurementBankSumsBothInputs\(\)\)/);
 assert.match(app, /if \(mode === 'both' && measurementBankSumsBothInputs\(\)\)/);
 assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button>/);

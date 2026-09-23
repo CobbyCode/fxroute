@@ -110,9 +110,10 @@ assert.equal(state.measurement.convolverAssistant.targetCurve, 'neutral');
 assert.equal(state.measurement.activeEditor, 'none');
 
 // Shared slot geometry/state contract for both rendered chip groups.
-assert.match(source, /renderMeasurementSlotChip\(\{[\s\S]*label: `P\$\{index \+ 1\}`/);
-assert.match(source, /renderMeasurementSlotChip\(\{[\s\S]*label: `F\$\{index \+ 1\}`/);
-assert.match(source, /measurement-slot-chip measurement-peq-chip/);
+const editorsSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_editors_ui.js'), 'utf8');
+assert.match(editorsSource, /renderMeasurementSlotChip\(\{[\s\S]*label: `P\$\{index \+ 1\}`/);
+assert.match(editorsSource, /renderMeasurementSlotChip\(\{[\s\S]*label: `F\$\{index \+ 1\}`/);
+assert.match(editorsSource, /measurement-slot-chip measurement-peq-chip/);
 assert.match(style, /\.measurement-slot-chip,\s*\.measurement-peq-chip\s*\{/);
 assert.match(style, /\.measurement-slot-chip\s*\{[\s\S]*flex: 0 0 3\.25rem/);
 assert.match(style, /\.measurement-peq-chip\.is-empty\s*\{[\s\S]*border-style: dashed/);

@@ -8,6 +8,8 @@ const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
 const SubwooferUI = require('../static/subwoofer_ui.js');
 const BankUIModule = require('../static/output_bank_ui.js');
+const SavedUIModule = require('../static/measurement_saved_ui.js');
+const EditorsUIModule = require('../static/measurement_editors_ui.js');
 require('../static/output_state.js');
 
 if (typeof globalThis.window === 'undefined') globalThis.window = {};
@@ -198,10 +200,17 @@ function makeMeasurementContext({ fetchResponse = null, subSaveGate = null } = {
         ${extractApiFunction('formatTransitionErrorDetail')}
         ${extractFunction('startHostMeasurement')}
         ${extractFunction('startLrRepeatMeasurement')}
-        ${extractFunction('measurementAreaBadge')}
         ${extractFunction('measurementBankSumsBothInputs')}
-        ${extractFunction('syncMeasurementSummedSubTakeModes')}
     `, context);
+    context.measurementAreaBadge = (measurement) => {
+        SavedUIModule.init({ getOutputSystemModule: () => context.OutputState });
+        return SavedUIModule.measurementAreaBadge(measurement);
+    };
+    context.syncMeasurementSummedSubTakeModes = () => {
+        EditorsUIModule.init({ getElements: () => context.elements,
+            measurementBankSumsBothInputs: () => context.measurementBankSumsBothInputs() });
+        return EditorsUIModule.syncMeasurementSummedSubTakeModes();
+    };
     return {
         context, fetchCalls, saveCalls, state, toasts,
         get startForm() { return capturedStartForm; },

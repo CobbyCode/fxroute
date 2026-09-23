@@ -16,21 +16,22 @@ const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const editorsSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_editors_ui.js'), 'utf8');
 
-function extractFunction(name) {
-    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
+function extractFunction(name, from = source) {
+    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(from);
     assert.ok(match, `missing ${name}`);
     let parenDepth = 1;
     let brace = -1;
-    for (let index = match.index + match[0].length; index < source.length; index += 1) {
-        if (source[index] === '(') parenDepth += 1;
-        if (source[index] === ')') parenDepth -= 1;
-        if (parenDepth === 0) { brace = source.indexOf('{', index); break; }
+    for (let index = match.index + match[0].length; index < from.length; index += 1) {
+        if (from[index] === '(') parenDepth += 1;
+        if (from[index] === ')') parenDepth -= 1;
+        if (parenDepth === 0) { brace = from.indexOf('{', index); break; }
     }
     assert.notEqual(brace, -1, `missing body ${name}`);
     let depth = 0, quote = '', escaped = false;
-    for (let index = brace; index < source.length; index += 1) {
-        const char = source[index];
+    for (let index = brace; index < from.length; index += 1) {
+        const char = from[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -39,7 +40,7 @@ function extractFunction(name) {
         }
         if (`'"\``.includes(char)) quote = char;
         else if (char === '{') depth += 1;
-        else if (char === '}' && --depth === 0) return source.slice(match.index, index + 1);
+        else if (char === '}' && --depth === 0) return from.slice(match.index, index + 1);
     }
     throw new Error(`unterminated ${name}`);
 }
@@ -91,7 +92,7 @@ function makeContext() {
         'ensureMeasurementConvolverState',
         'getMeasurementConvolverItemName',
         'resolveMeasurementConvolverItemName',
-    ].map(extractFunction).join('\n'), context);
+    ].map((name) => extractFunction(name)).join('\n'), context);
     return context;
 }
 
@@ -159,7 +160,7 @@ console.log('convolver preset name edit tests: ok');
 // in-flight creation, never the missing draft. Typed text still marks
 // the draft touched so Take keeps it.
 {
-    const renderSection = extractFunction('renderMeasurementPanelConvolverSection');
+    const renderSection = extractFunction('renderMeasurementPanelConvolverSection', editorsSource);
     assert.match(
         renderSection,
         /measurementConvolverPresetName\.disabled\s*=\s*!!draftPhaseMismatch\s*\|\|\s*isCreatingConvolverPreset/,

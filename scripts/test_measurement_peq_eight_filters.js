@@ -9,6 +9,7 @@ const MeasurementUI = require('../static/measurement_ui.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+const editorsSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_editors_ui.js'), 'utf8');
 const apiSource = fs.readFileSync(path.join(repoRoot, 'static', 'api.js'), 'utf8');
 const controllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'output_system_controller.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
@@ -224,9 +225,9 @@ async function main() {
 
     assert.match(appSource, /peq\.filters\.length >= 12/, 'PEQ assistant guard must enforce the twelve-filter limit');
     assert.match(appSource, /supports up to 12 filters/, 'limit toast must describe twelve filters');
-    assert.match(appSource, /Array\.from\(\{ length: 12 \}/, 'PEQ assistant must render twelve slots');
-    assert.match(appSource, /const filter = peq\.filters\[index\] \|\| null/, 'unpopulated slots, including F9-F12, must remain unset');
-    assert.match(appSource, /F1-F12[^<']*up to 12 temporary filters/, 'empty-state help must describe F1-F12');
+    assert.match(editorsSource, /Array\.from\(\{ length: 12 \}/, 'PEQ assistant must render twelve slots');
+    assert.match(editorsSource, /const filter = peq\.filters\[index\] \|\| null/, 'unpopulated slots, including F9-F12, must remain unset');
+    assert.match(editorsSource, /F1-F12[^<']*up to 12 temporary filters/, 'empty-state help must describe F1-F12');
     const panelSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_panel_ui.js'), 'utf8');
     assert.match(panelSource, /\$\{peq\.filters\.length\}\/12 assistant filters/, 'counter must use the twelve-filter limit');
     assert.match(htmlSource, /up to 12 temporary filters/, 'panel help must describe the twelve-filter limit');
