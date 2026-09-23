@@ -108,7 +108,7 @@ function checkHybridDistinctFromLinear() {
 }
 
 function checkMinimumAlignedRouting() {
-    const appPath = path.join(repoRoot, 'static', 'app.js');
+    const appPath = path.join(repoRoot, 'static', 'measurement_convolver_editor.js');
     const appSource = fs.readFileSync(appPath, 'utf8');
     const ui = require(path.join(repoRoot, 'static', 'measurement_ui.js'));
     const minimumAlignedMapping = "phaseMode === 'minimum_aligned' ? 'minimum' : phaseMode";

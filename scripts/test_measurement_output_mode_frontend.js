@@ -198,10 +198,31 @@ function makeMeasurementContext({ fetchResponse = null, subSaveGate = null } = {
         }
         async function pollMeasurementJob() {}
         ${extractApiFunction('formatTransitionErrorDetail')}
-        ${extractFunction('startHostMeasurement')}
-        ${extractFunction('startLrRepeatMeasurement')}
         ${extractFunction('measurementBankSumsBothInputs')}
     `, context);
+    vm.runInContext(fs.readFileSync(path.join(repoRoot, 'static', 'measurement_capture.js'), 'utf8'), context);
+    context.FXRouteMeasurementCapture.init({
+        getState: () => state,
+        getElements: () => context.elements,
+        getFormDataType: () => context.FormData,
+        fetch: (...args) => context.fetch(...args),
+        showToast: (message) => { toasts.push(message); },
+        renderMeasurementPanel: () => context.renderMeasurementPanel(),
+        requireConcreteFilterBank: () => context.requireConcreteFilterBank(),
+        measurementModeReady: () => true,
+        measurementRepeatBlockedReason: () => '',
+        flushSubwooferSettingsBeforeMeasurement: () => context.flushSubwooferSettingsBeforeMeasurement(),
+        measurementAreaFromCatalog: () => context.measurementAreaFromCatalog(),
+        appendMeasurementReferenceFields: (formData) => context.appendMeasurementReferenceFields(formData),
+        postRuntimeDebugSnapshot: () => context.postRuntimeDebugSnapshot(),
+        formatTransitionErrorDetail: (...args) => context.formatTransitionErrorDetail(...args),
+        normalizeMeasurementKind: (...args) => context.normalizeMeasurementKind(...args),
+        formatMeasurementJobStatusText: (...args) => context.formatMeasurementJobStatusText(...args),
+        pollMeasurementJob: (...args) => context.pollMeasurementJob(...args),
+        cancelMeasurement: async () => {},
+    });
+    context.startHostMeasurement = (...args) => context.FXRouteMeasurementCapture.startHostMeasurement(...args);
+    context.startLrRepeatMeasurement = (...args) => context.FXRouteMeasurementCapture.startLrRepeatMeasurement(...args);
     context.measurementAreaBadge = (measurement) => {
         SavedUIModule.init({ getOutputSystemModule: () => context.OutputState });
         return SavedUIModule.measurementAreaBadge(measurement);

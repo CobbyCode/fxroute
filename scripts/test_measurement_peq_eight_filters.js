@@ -11,6 +11,7 @@ const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
 const editorsSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_editors_ui.js'), 'utf8');
 const peqSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_peq_editor.js'), 'utf8');
+const convolverSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_convolver_editor.js'), 'utf8');
 const apiSource = fs.readFileSync(path.join(repoRoot, 'static', 'api.js'), 'utf8');
 const controllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'output_system_controller.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
@@ -202,7 +203,7 @@ async function main() {
 
     // Every measurement-derived commit names its source measurement, and only
     // the measurement flows do: the effects-panel PEQ create stays unbound.
-    const convolverCommitSites = appSource.split("'source_measurement_id', measurementCommitSourceId()").length - 1;
+    const convolverCommitSites = convolverSource.split("'source_measurement_id', deps.measurementCommitSourceId()").length - 1;
     assert.equal(convolverCommitSites, 2, 'both measurement convolver commits must name their source measurement');
     assert.match(peqSource, /source_measurement_id: deps\.measurementCommitSourceId\(\),/, 'the measurement PEQ commit must name its source measurement');
     assert.equal(context.measurementCommitSourceId(), 'measurement-1', 'a loaded measurement supplies its stored id');

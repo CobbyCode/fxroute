@@ -53,9 +53,9 @@ def _check_sub_mute_minus80() -> None:
 
 
 def _check_convolver_invalidation() -> None:
-    text = (ROOT / "static" / "app.js").read_text()
+    text = (ROOT / "static" / "measurement_convolver_editor.js").read_text()
     assert "const previousIrLength = String(conv.irLength" in text
-    assert "const previousSampleRate = String(state.measurement?.measurementSampleRate" in text
+    assert "const previousSampleRate = String(deps.getState().measurement?.measurementSampleRate" in text
     assert "Sample rate changed. Take L/R again." in text
     assert "Convolver taps changed. Take L/R again." in text
     # Taps check must run after the legacy quality remap (which sets irLength

@@ -13,12 +13,14 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const MeasurementUI = require('../static/measurement_ui.js');
+require('../static/measurement_dsp.js');
+require('../static/measurement_ui.js');
+const convolverEditor = require('../static/measurement_convolver_editor.js');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const convolverSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_convolver_editor.js'), 'utf8');
 const editorsSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_editors_ui.js'), 'utf8');
 
-function extractFunction(name, from = source) {
+function extractFunction(name, from = convolverSource) {
     const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(from);
     assert.ok(match, `missing ${name}`);
     let parenDepth = 1;
@@ -59,41 +61,13 @@ function makeContext() {
             },
         },
     };
-    const context = {
-        MeasurementUI,
-        measurementConvolverCurves: MeasurementUI.measurementConvolverCurves,
-        measurementConvolverPhaseModes: MeasurementUI.measurementConvolverPhaseModes,
-        measurementConvolverTapOptions: MeasurementUI.measurementConvolverTapOptions,
-        state,
-        formatMeasurementConvolverGain: (...args) => MeasurementUI.formatMeasurementConvolverGain(...args),
-        getMeasurementConvolverNameSuffix: (...args) => MeasurementUI.getMeasurementConvolverNameSuffix(...args),
-        getMeasurementConvolverPhaseTag: (...args) => MeasurementUI.getMeasurementConvolverPhaseTag(...args),
-        getMeasurementConvolverCurveOptions: MeasurementUI.getMeasurementConvolverCurveOptions
-            ? (...args) => MeasurementUI.getMeasurementConvolverCurveOptions(...args)
-            : () => [{ key: 'neutral', label: 'Neutral', shortLabel: 'Neutral' }],
-        getMeasurementConvolverCurve: (key) => {
-            const options = (MeasurementUI.getMeasurementConvolverCurveOptions
-                ? MeasurementUI.getMeasurementConvolverCurveOptions()
-                : [{ key: 'neutral', label: 'Neutral', shortLabel: 'Neutral' }]);
-            return options.find((curve) => curve.key === key) || { key: 'neutral', label: 'Neutral', shortLabel: 'Neutral' };
-        },
-        clampMeasurementConvolverFrequency: MeasurementUI.clampMeasurementConvolverFrequency
-            || ((value, fallback = 20) => {
-                const numeric = Number(value);
-                return Math.min(20000, Math.max(20, Number.isFinite(numeric) ? numeric : fallback));
-            }),
-        getMeasurementConvolverTypeKeys: MeasurementUI.getMeasurementConvolverTypeKeys,
-        getMeasurementConvolverPhaseModeForType: MeasurementUI.getMeasurementConvolverPhaseModeForType,
-        getMeasurementConvolverFirLengthForType: MeasurementUI.getMeasurementConvolverFirLengthForType,
-    };
-    vm.createContext(context);
-    vm.runInContext([
-        'getDefaultMeasurementConvolverState',
-        'ensureMeasurementConvolverState',
-        'getMeasurementConvolverItemName',
-        'resolveMeasurementConvolverItemName',
-    ].map((name) => extractFunction(name)).join('\n'), context);
-    return context;
+    convolverEditor.init({
+        getState: () => state,
+        getElements: () => ({}),
+        showToast: () => {},
+        renderMeasurementPanel: () => {},
+    });
+    return convolverEditor;
 }
 
 const AUTO = 'Conv LR Min Neutral 20-250Hz -4dB 043055';

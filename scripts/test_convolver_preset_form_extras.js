@@ -103,8 +103,16 @@ function makeContext() {
         ${extractFunction('normalizeEffectsLoudnessStrength')}
         ${extractFunction('normalizeEffectsToneEffectMode')}
         ${extractFunction('collectEffectsExtras')}
-        ${extractFunction('appendMeasurementConvolverExtras')}
     `, context);
+    require('../static/measurement_dsp.js');
+    require('../static/measurement_ui.js');
+    const convolverEditor = require('../static/measurement_convolver_editor.js');
+    convolverEditor.init({
+        getState: () => ({}),
+        getElements: () => ({}),
+        collectEffectsExtras: () => context.collectEffectsExtras(),
+    });
+    context.appendMeasurementConvolverExtras = (...args) => convolverEditor.appendMeasurementConvolverExtras(...args);
     return context;
 }
 
@@ -131,9 +139,12 @@ function main() {
     }
 
     // 2. Static: no multipart builder may append delay_* fields anywhere in
-    //    app.js; the endpoints keep them optional with defaults.
+    //    app.js or the convolver editor; the endpoints keep them optional with defaults.
+    const convolverSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_convolver_editor.js'), 'utf8');
     assert.ok(!/formData\.append\('delay_/.test(appSource),
         "stale delay_* form fields found; collectEffectsExtras() no longer provides them (422)");
+    assert.ok(!/formData\.append\('delay_/.test(convolverSource),
+        "stale delay_* form fields found in the convolver editor (422)");
 
     // 3. collectEffectsExtras() must not reference the removed delay elements.
     assert.ok(!/delayEnabled|delayLeftMs|delayRightMs/.test(extractFunction('collectEffectsExtras')),
