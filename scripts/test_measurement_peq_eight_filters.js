@@ -10,6 +10,7 @@ const MeasurementUI = require('../static/measurement_ui.js');
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
 const apiSource = fs.readFileSync(path.join(repoRoot, 'static', 'api.js'), 'utf8');
+const controllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'output_system_controller.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
@@ -51,8 +52,14 @@ function extractFrom(source, name) {
     throw new Error(`unterminated function ${name}`);
 }
 
+const OutputStateModule = require('../static/output_state.js');
+
 function extractFunction(name) {
     return extractFrom(appSource, name);
+}
+
+function extractControllerFunction(name) {
+    return extractFrom(controllerSource, name);
 }
 
 async function main() {
@@ -113,10 +120,29 @@ async function main() {
         'measurementAreaFromCatalog',
         'requireConcreteFilterBank',
         'measurementPeqParams',
-        'fetchOutputSystemCatalog',
     ].map(extractFunction).join('\n');
     const apiFunctions = ['formatTransitionErrorDetail'].map((name) => extractFrom(apiSource, name)).join('\n');
-    const functions = `${appFunctions}\n${apiFunctions}`;
+    // fetchOutputSystemCatalog is controller-owned; the app wrapper only
+    // delegates. Run the canonical implementation with injected deps.
+    const controllerFunctions = [
+        'fetchOutputSystemCatalog',
+    ].map(extractControllerFunction).join('\n');
+    const functions = `${appFunctions}\n${apiFunctions}\n${controllerFunctions}`;
+    context.deps = {
+        getState: () => state,
+        showToast: (message, kind) => toasts.push({ message, kind }),
+        ensureOutputBoxes: () => context.ensureOutputSystemBoxes(),
+        outputSystemModule: () => OutputStateModule,
+        renderOutputSection: () => {},
+        renderBankSelector: () => {},
+        renderCompare: () => {},
+        syncCrossover: () => {},
+        syncSpeakerAlign: () => {},
+        renderSubwoofer: () => {},
+        syncAutoSub: () => {},
+        reportMutationError: () => {},
+        syncCompareBusy: () => {},
+    };
     vm.runInContext(`let peqCreateInFlight = false;\n${functions}`, context);
 
     const inputs = Array.from({ length: 12 }, (_, index) => ({
@@ -141,8 +167,9 @@ async function main() {
     assert.deepEqual(plain(state.measurement.peqAssistant.draft.rightBands), expectedBands);
 
     await context.createMeasurementPeqPresetFromDraft();
-    assert.equal(requests.length, 1, 'preset creation must make one request');
-    const payload = JSON.parse(requests[0].options.body);
+    const presetPosts = requests.filter((request) => request.url === '/api/dsp/presets/create-peq');
+    assert.equal(presetPosts.length, 1, 'preset creation must make one request');
+    const payload = JSON.parse(presetPosts[0].options.body);
     assert.deepEqual(payload.peq.params.leftBands, expectedBands, 'left preset bands must be complete and ordered');
     assert.deepEqual(payload.peq.params.rightBands, expectedBands, 'right preset bands must be complete and ordered');
     // The commit gate needs to know which measurement the bands came from.

@@ -120,6 +120,31 @@ window.FXRouteSubwooferUI?.init({
     getActiveEditing: () => _activeEditing,
     applyMutation: (kind, fields, message, options) => applyOutputSystemMutation(kind, fields, message, options),
 });
+// Output-system controller: catalog fetch plus revisioned mutations with a
+// fixed downstream refresh order. State boxes and all renders stay in app.js.
+window.FXRouteOutputSystemController?.init({
+    getState: () => state,
+    showToast,
+    ensureOutputBoxes: () => ensureOutputSystemBoxes(),
+    renderOutputSection: () => renderOutputSystemSection(),
+    renderBankSelector: () => renderEffectsBankSelector(),
+    renderCompare: () => renderEffectsCompare(),
+    syncCrossover: (enabled) => {
+        if (enabled) {
+            void fetchCrossoverResponse();
+        } else {
+            state.crossover.response = null;
+            renderCrossoverTile();
+        }
+    },
+    syncSpeakerAlign: () => syncSpeakerAlignButton(),
+    renderSubwoofer: () => renderSubwooferPanel(),
+    syncAutoSub: () => syncAutoSubButton(),
+    reportMutationError: (html) => {
+        if (elements.osFeedback) elements.osFeedback.innerHTML = html;
+    },
+    syncCompareBusy: () => setEffectsCompareLoadBusy(effectsCompareLoadInFlight),
+});
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
 // call sites stay unchanged.
@@ -3119,27 +3144,11 @@ function ensureOutputSystemBoxes() {
 }
 
 async function fetchOutputSystemCatalog(force = false) {
-    ensureOutputSystemBoxes();
-    const mod = outputSystemModule();
-    if (!mod) return null;
-    if (state.outputSystem.catalog && !force) return state.outputSystem.catalog;
-    try {
-        state.outputSystem.catalog = await mod.fetchCatalog(fetch);
-    } catch (e) {
-        state.outputSystem.catalog = null;
-    }
-    renderOutputSystemSection();
-    renderEffectsCompare();
-    if (state.outputSystem.catalog?.modes?.[state.outputSystem.catalog.active_mode]?.crossover_enabled) {
-        void fetchCrossoverResponse();
-    } else {
-        state.crossover.response = null;
-        renderCrossoverTile();
-    }
-    syncSpeakerAlignButton();
-    renderSubwooferPanel();
-    syncAutoSubButton();
-    return state.outputSystem.catalog;
+    // Output-system orchestration lives in static/output_system_controller.js
+    // (window.FXRouteOutputSystemController). Thin wrapper keeps existing
+    // call sites and the mutation fan-out order unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteOutputSystemController) || (typeof globalThis !== 'undefined' && globalThis.FXRouteOutputSystemController) || null;
+    return mod.fetchOutputSystemCatalog(force);
 }
 
 function measurementAreaFromCatalog() {
@@ -3272,51 +3281,11 @@ function renderOutputSystemSection() {
 }
 
 async function applyOutputSystemMutation(kind, fields, successMessage, options = {}) {
-    ensureOutputSystemBoxes();
-    const mod = outputSystemModule();
-    if (!mod || !state.outputSystem.catalog || state.outputSystem.busy) return null;
-    state.outputSystem.busy = true;
-    renderOutputSystemSection();
-    renderEffectsBankSelector();
-    try {
-        const mutation = mod.buildMutation(kind, fields);
-        const getCatalog = async () => {
-            const fresh = await mod.fetchCatalog(fetch);
-            state.outputSystem.catalog = fresh;
-            return fresh;
-        };
-        const { data, catalog } = await mod.applyMutation(
-            fetch, state.outputSystem.catalog, getCatalog, mutation);
-        state.outputSystem.catalog = catalog;
-        // The apply response carries no catalog: refetch so renders use
-        // the committed revision instead of the pre-apply snapshot. A
-        // failed refetch must not mask the successful apply.
-        try {
-            await fetchOutputSystemCatalog(true);
-        } catch (e) {
-            renderOutputSystemSection();
-            renderEffectsBankSelector();
-        }
-        if (successMessage) showToast(successMessage, 'success');
-        if (!options.quiet && data && data.live_applied === false && data.live_reason && data.live_reason !== 'nothing-to-apply') {
-            showToast(`Saved (revision ${data.revision}); live apply: ${data.live_reason}`, 'info');
-        }
-        return data;
-    } catch (e) {
-        if (elements.osFeedback) {
-            elements.osFeedback.innerHTML = `<div style="color: var(--danger);">${mod.esc(e.message || 'Output system update failed')}</div>`;
-        }
-        showToast(e.message || 'Output system update failed', 'error');
-        return null;
-    } finally {
-        state.outputSystem.busy = false;
-        renderOutputSystemSection();
-        renderEffectsBankSelector();
-        // The busy disable in setEffectsCompareLoadBusy must be lifted here:
-        // this finally is the only path that runs after every mutation, and
-        // the bank selector render above does not touch the compare selects.
-        setEffectsCompareLoadBusy(effectsCompareLoadInFlight);
-    }
+    // Output-system orchestration lives in static/output_system_controller.js
+    // (window.FXRouteOutputSystemController). Thin wrapper keeps existing
+    // call sites and the mutation fan-out order unchanged.
+    const mod = (typeof window !== 'undefined' && window.FXRouteOutputSystemController) || (typeof globalThis !== 'undefined' && globalThis.FXRouteOutputSystemController) || null;
+    return mod.applyOutputSystemMutation(kind, fields, successMessage, options);
 }
 
 function outputSystemBankBinding() {
