@@ -16,17 +16,20 @@ const vm = require('vm');
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
+// All extracted effects helpers live in output_effects_ui.js; appSource stays
+// for whole-file regression greps.
+const effectSource = fs.readFileSync(path.join(repoRoot, 'static', 'output_effects_ui.js'), 'utf8');
 
 function extractFunction(name) {
-    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(appSource);
+    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(effectSource);
     assert.ok(match, `missing function ${name}`);
     let parenDepth = 1;
     let braceStart = -1;
-    for (let index = match.index + match[0].length; index < appSource.length; index += 1) {
-        if (appSource[index] === '(') parenDepth += 1;
-        if (appSource[index] === ')') parenDepth -= 1;
+    for (let index = match.index + match[0].length; index < effectSource.length; index += 1) {
+        if (effectSource[index] === '(') parenDepth += 1;
+        if (effectSource[index] === ')') parenDepth -= 1;
         if (parenDepth === 0) {
-            braceStart = appSource.indexOf('{', index);
+            braceStart = effectSource.indexOf('{', index);
             break;
         }
     }
@@ -34,8 +37,8 @@ function extractFunction(name) {
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = braceStart; index < appSource.length; index += 1) {
-        const char = appSource[index];
+    for (let index = braceStart; index < effectSource.length; index += 1) {
+        const char = effectSource[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -46,20 +49,20 @@ function extractFunction(name) {
         else if (char === '{') depth += 1;
         else if (char === '}') {
             depth -= 1;
-            if (depth === 0) return appSource.slice(match.index, index + 1);
+            if (depth === 0) return effectSource.slice(match.index, index + 1);
         }
     }
     throw new Error(`unterminated function ${name}`);
 }
 
 function extractConst(name) {
-    const match = new RegExp(`const ${name}\\s*=`).exec(appSource);
+    const match = new RegExp(`const ${name}\\s*=`).exec(effectSource);
     assert.ok(match, `missing const ${name}`);
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = match.index; index < appSource.length; index += 1) {
-        const char = appSource[index];
+    for (let index = match.index; index < effectSource.length; index += 1) {
+        const char = effectSource[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -69,7 +72,7 @@ function extractConst(name) {
         if (char === "'" || char === '"' || char === '`') quote = char;
         else if (char === '{' || char === '(' || char === '[') depth += 1;
         else if (char === '}' || char === ')' || char === ']') depth -= 1;
-        else if (char === ';' && depth === 0) return appSource.slice(match.index, index + 1);
+        else if (char === ';' && depth === 0) return effectSource.slice(match.index, index + 1);
     }
     throw new Error(`unterminated const ${name}`);
 }
@@ -89,7 +92,7 @@ function makeContext() {
         effectsToneEffectEnabled: { checked: false },
         effectsToneEffectMode: { value: 'crystalizer' },
     };
-    const context = { elements, window: {} };
+    const context = { elements, window: {}, deps: { getElements: () => elements } };
     vm.createContext(context);
     vm.runInContext(`
         ${extractConst('EFFECTS_HEADROOM_ALLOWED_GAIN_DB')}
@@ -141,7 +144,7 @@ function main() {
     // 2. Static: no multipart builder may append delay_* fields anywhere in
     //    app.js or the convolver editor; the endpoints keep them optional with defaults.
     const convolverSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_convolver_editor.js'), 'utf8');
-    assert.ok(!/formData\.append\('delay_/.test(appSource),
+    assert.ok(!/formData\.append\('delay_/.test(appSource) && !/formData\.append\('delay_/.test(effectSource),
         "stale delay_* form fields found; collectEffectsExtras() no longer provides them (422)");
     assert.ok(!/formData\.append\('delay_/.test(convolverSource),
         "stale delay_* form fields found in the convolver editor (422)");

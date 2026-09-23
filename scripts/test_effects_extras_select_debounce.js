@@ -16,16 +16,16 @@ const path = require('path');
 const vm = require('vm');
 
 const repoRoot = path.resolve(__dirname, '..');
-const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+const effectSource = fs.readFileSync(path.join(repoRoot, 'static', 'output_effects_ui.js'), 'utf8');
 
 function extractConst(name) {
-    const match = new RegExp(`const ${name}\\s*=`).exec(appSource);
+    const match = new RegExp(`const ${name}\\s*=`).exec(effectSource);
     assert.ok(match, `missing const ${name}`);
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = match.index; index < appSource.length; index += 1) {
-        const char = appSource[index];
+    for (let index = match.index; index < effectSource.length; index += 1) {
+        const char = effectSource[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -35,7 +35,7 @@ function extractConst(name) {
         if (char === "'" || char === '"' || char === '`') quote = char;
         else if (char === '{' || char === '(' || char === '[') depth += 1;
         else if (char === '}' || char === ')' || char === ']') depth -= 1;
-        else if (char === ';' && depth === 0) return appSource.slice(match.index, index + 1);
+        else if (char === ';' && depth === 0) return effectSource.slice(match.index, index + 1);
     }
     throw new Error(`unterminated const ${name}`);
 }
@@ -43,21 +43,21 @@ function extractConst(name) {
 // Extract the focus-tracking forEach wiring block verbatim: locate the last
 // array entry (stable across versions) and balance from its forEach call.
 function extractValueControlWiring() {
-    const lastEntry = 'elements.effectsToneEffectMode,';
-    const entryIndex = appSource.indexOf(lastEntry);
+    const lastEntry = 'deps.getElements().effectsToneEffectMode,';
+    const entryIndex = effectSource.indexOf(lastEntry);
     assert.notEqual(entryIndex, -1, 'missing value-control array');
-    const forEachIndex = appSource.indexOf('.forEach(el => {', entryIndex);
+    const forEachIndex = effectSource.indexOf('.forEach(el => {', entryIndex);
     assert.notEqual(forEachIndex, -1, 'missing value-control forEach');
-    const arrayStart = appSource.lastIndexOf('[', forEachIndex);
+    const arrayStart = effectSource.lastIndexOf('[', forEachIndex);
     assert.notEqual(arrayStart, -1, 'missing value-control array start');
-    let braceStart = appSource.indexOf('{', forEachIndex);
+    let braceStart = effectSource.indexOf('{', forEachIndex);
     let depth = 0;
     let quote = '';
     let escaped = false;
     let lineComment = false;
-    for (let index = braceStart; index < appSource.length; index += 1) {
-        const char = appSource[index];
-        const next = appSource[index + 1];
+    for (let index = braceStart; index < effectSource.length; index += 1) {
+        const char = effectSource[index];
+        const next = effectSource[index + 1];
         if (lineComment) {
             if (char === '\n') lineComment = false;
             continue;
@@ -78,9 +78,9 @@ function extractValueControlWiring() {
         else if (char === '}') {
             depth -= 1;
             if (depth === 0) {
-                const tail = appSource.slice(index, index + 3);
+                const tail = effectSource.slice(index, index + 3);
                 assert.ok(tail.startsWith('})'), 'unexpected forEach tail ' + JSON.stringify(tail));
-                return appSource.slice(arrayStart, index + 2);
+                return effectSource.slice(arrayStart, index + 2);
             }
         }
     }
@@ -117,11 +117,16 @@ function makeEnv() {
     // Manual clock: deterministic debounce timing without real waiting.
     let now = 0;
     let nextId = 1;
-    const pending = new Map();
-    const saveDelays = [];
-    const context = {
-        elements,
-        _activeEditing: new Set(),
+    const pending = new Map();        const saveDelays = [];
+        const activeEditing = new Set();
+        const context = {
+            elements,
+            _activeEditing: activeEditing,
+            // The module wiring reads DOM/edit-guard via deps.
+            deps: {
+                getElements: () => elements,
+                getActiveEditing: () => activeEditing,
+            },
         saveDelays,
         saveEffectsExtrasDebounced(delayMs) {
             context.window.clearTimeout(context._timer);

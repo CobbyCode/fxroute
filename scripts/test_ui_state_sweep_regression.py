@@ -67,7 +67,7 @@ def _check_convolver_invalidation() -> None:
 
 
 def _check_headroom_range() -> None:
-    app = (ROOT / "static" / "app.js").read_text()
+    app = (ROOT / "static" / "output_effects_ui.js").read_text()
     # -1..-9 are offered when headroom is enabled ("no headroom" is the
     # checkbox's job, so 0 dB is not offered). 0 stays accepted in the
     # allow-list so a previously stored 0 round-trips through
