@@ -54,8 +54,9 @@ for (const model of ['UMIK-1', 'UMIK-2', 'UMM-6']) {
     );
 }
 assert.equal(spl.splCalibrationModeLabel({ automatic: { available: false } }), 'Manual SPL measurement');
-// app.js keeps thin wrappers delegating to the SPL module.
-assert.match(appSource, /window\.FXRouteMeasurementSplCalibration\.toggleSplCalibrationNoise\(\)/);
+// app.js wires its SPL buttons straight to the SPL module (no wrappers).
+assert.doesNotMatch(appSource, /\n(?:async function|function) toggleSplCalibrationNoise\(/);
+assert.match(appSource, /FXRouteMeasurementSplCalibration\.toggleSplCalibrationNoise/);
 assert.match(splSource, /function toggleSplCalibrationNoise\(\) \{/);
 
 (async () => {

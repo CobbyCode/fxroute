@@ -27,7 +27,7 @@ const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8
 // the first render of the freshly opened panel.
 const toggleStart = appSource.indexOf('function toggleMeasurementPanel(');
 assert.notEqual(toggleStart, -1, 'missing toggleMeasurementPanel');
-const toggleEnd = appSource.indexOf('function getSelectedMeasurementInput(', toggleStart);
+const toggleEnd = appSource.indexOf('function drawMeasurementPeqOverlay(', toggleStart);
 assert.notEqual(toggleEnd, -1, 'missing toggleMeasurementPanel end anchor');
 const toggleBody = appSource.slice(toggleStart, toggleEnd);
 assert.ok(

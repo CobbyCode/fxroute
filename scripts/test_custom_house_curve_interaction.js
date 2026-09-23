@@ -39,6 +39,7 @@ function extractFunction(name) {
 }
 
 const dsp = require(path.join(__dirname, '..', 'static', 'measurement_dsp.js'));
+const convolverEditor = require(path.join(__dirname, '..', 'static', 'measurement_convolver_editor.js'));
 const state = {
     measurement: {
         activeEditor: 'none',
@@ -101,7 +102,28 @@ for (const name of ['ensureCustomHouseCurveState', 'openCustomHouseCurveEditor',
     'deleteCustomHouseCurvePoint', 'resetCustomHouseCurveDraft']) {
     context[name] = (...args) => calibration[name](...args);
 }
-context.window = { FXRouteMeasurementPeqEditor: { clearMeasurementPeqPointerDrag: () => { state.measurement.peqAssistant.dragFilterId = null; } } };
+context.window = {
+    FXRouteMeasurementPeqEditor: {
+        clearMeasurementPeqPointerDrag: () => { state.measurement.peqAssistant.dragFilterId = null; },
+        ensureMeasurementPeqState: (...args) => context.ensureMeasurementPeqState(...args),
+    },
+    FXRouteMeasurementConvolverEditor: {
+        ensureMeasurementConvolverState: (...args) => context.ensureMeasurementConvolverState(...args),
+        updateMeasurementConvolverField: (...args) => context.updateMeasurementConvolverField(...args),
+        getDefaultMeasurementConvolverState: (...args) => convolverEditor.getDefaultMeasurementConvolverState(...args),
+        clampMeasurementConvolverFrequency: (...args) => convolverEditor.clampMeasurementConvolverFrequency(...args),
+    },
+    FXRouteMeasurementCalibration: {
+        ensureCustomHouseCurveState: (...args) => calibration.ensureCustomHouseCurveState(...args),
+        resetCustomHouseCurveDraft: (...args) => calibration.resetCustomHouseCurveDraft(...args),
+        addCustomHouseCurvePointAtPosition: (...args) => calibration.addCustomHouseCurvePointAtPosition(...args),
+        updateCustomHouseCurvePoint: (...args) => calibration.updateCustomHouseCurvePoint(...args),
+    },
+};
+context.MeasurementGraph = {
+    scheduleMeasurementGraphRender: (...args) => context.scheduleMeasurementGraphRender(...args),
+};
+context.MeasurementDsp = dsp;
 
 const bounds = pointerState.bounds;
 const range = pointerState.range;
@@ -204,7 +226,7 @@ context.handleMeasurementGraphPointerUp({ pointerId: 12, pointerType: 'touch', p
 assert.ok(pointerPoint.freqHz >= 20 && pointerPoint.freqHz <= 20000);
 assert.ok(pointerPoint.gainDb >= range.minDb && pointerPoint.gainDb <= range.maxDb);
 
-assert.match(source, /const point = hitPoint \|\| addCustomHouseCurvePointAtPosition/);
+assert.match(source, /const point = hitPoint \|\| window\.FXRouteMeasurementCalibration\.addCustomHouseCurvePointAtPosition/);
 assert.match(source, /measurementXToFrequency\(pointer\.x, pointer\.bounds\)/);
 assert.match(source, /Editing Custom House Curve…/);
 assert.match(source, /if \(getMeasurementActiveEditor\(\) !== 'peq'\) return;/);

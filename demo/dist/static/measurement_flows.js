@@ -1202,7 +1202,7 @@ async function runHybridWizardStep(step) {
     const wizard = getHybridWizardState();
     wizard.quality = null;
     wizard.phase = 'measuring';
-    wizard.status = `Measuring ${hybridSpeakerName(step.channel)}…`;
+    wizard.status = `Measuring ${ui.hybridSpeakerName(step.channel)}…`;
     renderHybridMeasurementWizard();
     const response = await api.startMeasurement(buildHybridMeasurementForm(step));
     const data = await response.json().catch(() => ({}));
@@ -1249,7 +1249,7 @@ async function runHybridWizardStep(step) {
         wizard.phase = processing ? 'processing' : (wizard.cancelRequested ? 'cancelling' : 'measuring');
         wizard.status = wizard.cancelRequested
             ? 'Cancelling measurement…'
-            : (processing ? `Processing ${step.channel === 'stereo' ? 'measurement' : step.channel}…` : `Measuring ${hybridSpeakerName(step.channel)}…`);
+            : (processing ? `Processing ${step.channel === 'stereo' ? 'measurement' : step.channel}…` : `Measuring ${ui.hybridSpeakerName(step.channel)}…`);
         renderHybridMeasurementWizard();
         if (ui.MEASUREMENT_JOB_SUCCESS_STATES.has(status)) {
             if (wizard.cancelRequested) return false;

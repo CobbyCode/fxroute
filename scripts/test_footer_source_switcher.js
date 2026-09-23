@@ -60,7 +60,10 @@ function extractFunction(name) {
     throw new Error(`unterminated ${name}`);
 }
 
-const sandbox = { state: { settings: { sourceMode: { pending: false } } } };
+const sandbox = {
+    state: { settings: { sourceMode: { pending: false } } },
+    window: { FXRouteMeasurementJob: { hasActiveMeasurementJob: () => false } },
+};
 vm.createContext(sandbox);
 vm.runInContext([
     extractFunction('shortSourcePairLabel'),
@@ -242,6 +245,7 @@ const selectSigDecl = /let _sourceSelectSignature = null;/.exec(appSource);
 assert.ok(selectSigDecl, 'missing _sourceSelectSignature module state');
 vm.runInContext(fs.readFileSync(path.join(root, 'static', 'measurement_job.js'), 'utf8'), renderSandbox);
 renderSandbox.FXRouteMeasurementJob.init({ getState: () => renderSandbox.state });
+renderSandbox.window.FXRouteMeasurementJob = renderSandbox.FXRouteMeasurementJob;
 renderSandbox.hasActiveMeasurementJob = (...args) => renderSandbox.FXRouteMeasurementJob.hasActiveMeasurementJob(...args);
 vm.runInContext([
     selectSigDecl[0],

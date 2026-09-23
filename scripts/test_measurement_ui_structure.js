@@ -38,15 +38,15 @@ assert.match(convolverEditor, /function createMeasurementConvolverPresetFromDraf
 assert.match(capture, /async function startHostMeasurement\(jobGeneration/);
 assert.match(capture, /async function startMeasurement\(\) \{/);
 assert.match(app, /window\.FXRouteMeasurementConvolverEditor\.updateMeasurementConvolverField\(field, value\)/);
-assert.match(app, /window\.FXRouteMeasurementCapture\.startHostMeasurement\(jobGeneration\)/);
+assert.doesNotMatch(app, /\n(?:async function|function) startHostMeasurement\(/, 'no app.js wrapper: startHostMeasurement lives in measurement_capture.js');
 assert.match(jobMod, /async function pollMeasurementJob\(jobId, jobGeneration/);
 assert.match(jobMod, /async function cancelMeasurement\(\) \{/);
 assert.match(savedActions, /async function saveCurrentMeasurement\(\) \{/);
 assert.match(savedActions, /async function mergeSelectedMeasurements\(\) \{/);
 assert.match(splMod, /function toggleSplCalibrationNoise\(\) \{/);
-assert.match(app, /window\.FXRouteMeasurementJob\.pollMeasurementJob\(jobId, jobGeneration\)/);
+assert.match(app, /window\.FXRouteMeasurementJob\.pollMeasurementJob\(jobId, generation\)/, 'capture wiring calls the canonical job module');
 assert.match(app, /window\.FXRouteMeasurementSavedActions\.saveCurrentMeasurement\(\)/);
-assert.match(app, /window\.FXRouteMeasurementSplCalibration\.toggleSplCalibrationNoise\(\)/);
+assert.doesNotMatch(app, /\n(?:async function|function) toggleSplCalibrationNoise\(/, 'no app.js wrapper: SPL noise lives in measurement_spl_calibration.js');
 assert.match(app, /FXRouteMeasurementSetup\.getMeasurementSettingsRevision\(\)/);
 assert.match(setupUi, /if \(!channelCountKnown\) \{/);
 const flows = fs.readFileSync(path.join(root, 'static', 'measurement_flows.js'), 'utf8');

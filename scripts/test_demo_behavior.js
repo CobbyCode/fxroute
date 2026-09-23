@@ -17,6 +17,7 @@ const bootSource = fs.readFileSync(path.join(root, 'demo', 'boot.js'), 'utf8');
 const buildSource = fs.readFileSync(path.join(root, 'scripts', 'build_demo.py'), 'utf8');
 const routesSource = fs.readFileSync(path.join(root, 'demo', 'routes.js'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "app.js"), 'utf8');
+const settingsSystemSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "settings_system.js"), 'utf8');
 const htmlSource = fs.readFileSync(path.join(root, "demo", "dist", "index.html"), 'utf8');
 const streamingSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "streaming.js"), 'utf8');
 
@@ -234,9 +235,9 @@ assert.match(htmlSource, /id="power-shutdown"[\s\S]*>\s*[\s\S]*Shut down\s*</);
 assert.match(appSource, /power-menu-toggle/);
 assert.match(appSource, /power-suspend/);
 assert.match(appSource, /power-shutdown/);
-assert.match(appSource, /setPowerMenuOpen\(!open\)/);
-assert.match(appSource, /document\.addEventListener\('click', \(\) => setPowerMenuOpen\(false\)\)/);
-assert.match(appSource, /document\.addEventListener\('keydown', ev => \{[\s\S]*Escape[\s\S]*setPowerMenuOpen\(false\)/);
+assert.match(settingsSystemSource, /setPowerMenuOpen\(!open\)/);
+assert.match(settingsSystemSource, /document\.addEventListener\('click', \(\) => setPowerMenuOpen\(false\)\)/);
+assert.match(settingsSystemSource, /document\.addEventListener\('keydown', ev => \{[\s\S]*Escape[\s\S]*setPowerMenuOpen\(false\)/);
 assert.doesNotMatch(streamingSource, /Play demo track/);
 assert.doesNotMatch(streamingSource, /data\.demo_boot \? 'demo-start'/);
 // The demo serves the canonical streaming.js live; these assertions track

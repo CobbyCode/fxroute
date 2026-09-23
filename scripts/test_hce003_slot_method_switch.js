@@ -77,6 +77,23 @@ vm.runInContext([
 ].map(extractFunction).join('\n'), context);
 calibration.init({ getState: () => state });
 context.ensureCustomHouseCurveState = () => calibration.ensureCustomHouseCurveState();
+// Extracted app.js editors call the canonical modules through window (no
+// app.js wrappers remain); bridge to the same test doubles.
+context.window = {
+    FXRouteMeasurementCalibration: {
+        ensureCustomHouseCurveState: (...args) => context.ensureCustomHouseCurveState(...args),
+    },
+    FXRouteMeasurementPeqEditor: {
+        ensureMeasurementPeqState: (...args) => context.ensureMeasurementPeqState(...args),
+    },
+    FXRouteMeasurementConvolverEditor: {
+        ensureMeasurementConvolverState: (...args) => context.ensureMeasurementConvolverState(...args),
+        getMeasurementConvolverCurveOptions: (...args) => context.getMeasurementConvolverCurveOptions(...args),
+    },
+};
+context.MeasurementGraph = {
+    scheduleMeasurementGraphRender: (...args) => context.scheduleMeasurementGraphRender(...args),
+};
 
 // 1–2. Neutral -> Custom -> re-activate the already selected PEQ method:
 // editor closes, Neutral remains selected, PEQ becomes visible/enabled.

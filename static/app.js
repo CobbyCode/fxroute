@@ -34,6 +34,7 @@ window.FXRouteMeasurementGraph?.init({
     drawCustomHouseCurveHandles,
 });
 const MeasurementFlows = window.FXRouteMeasurementFlows || {};
+const SettingsSystem = window.FXRouteSettingsSystem || {};
 // Flow module (auto-sub + hybrid wizard): backend calls via injected api,
 // state/dom getters plus ui callbacks injected as hoisted references.
 window.FXRouteMeasurementFlows?.init({
@@ -53,14 +54,14 @@ window.FXRouteMeasurementFlows?.init({
     getElements: () => elements,
     showToast,
     renderMeasurementPanel,
-    renderMeasurementPanelDefensively,
+    renderMeasurementPanelDefensively: (...args) => window.FXRouteMeasurementJob.renderMeasurementPanelDefensively(...args),
     isSubwooferModeName,
     isSubwoofer22Mode,
-    getActiveMeasurementKind,
-    hasActiveMeasurementJob,
+    getActiveMeasurementKind: (...args) => window.FXRouteMeasurementJob.getActiveMeasurementKind(...args),
+    hasActiveMeasurementJob: (...args) => window.FXRouteMeasurementJob.hasActiveMeasurementJob(...args),
     measurementModeReady,
-    normalizeMeasurementInputChannelSelections,
-    getSelectedMeasurementInputChannelCount,
+    normalizeMeasurementInputChannelSelections: (...args) => window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections(...args),
+    getSelectedMeasurementInputChannelCount: (...args) => window.FXRouteMeasurementSetup.getSelectedMeasurementInputChannelCount(...args),
     getAutoSubTargetCurveSnapshot,
     flushSubwooferSettingsBeforeMeasurement,
     postRuntimeDebugSnapshot,
@@ -70,11 +71,11 @@ window.FXRouteMeasurementFlows?.init({
         const area = measurementAreaFromCatalog();
         return area ? area.bank_id : '';
     },
-    getMeasurementReferenceWarning,
+    getMeasurementReferenceWarning: (...args) => window.FXRouteMeasurementSetup.getMeasurementReferenceWarning(...args),
     normalizeOutputModeName,
-    getMeasurementJobStatus,
-    normalizeMeasurementEntry,
-    getMeasurementJobResultMeasurement,
+    getMeasurementJobStatus: (job) => MeasurementUI.getMeasurementJobStatus(job),
+    normalizeMeasurementEntry: (measurement, index) => MeasurementUI.normalizeMeasurementEntry(measurement, index),
+    getMeasurementJobResultMeasurement: (job) => MeasurementUI.getMeasurementJobResultMeasurement(job),
     setMeasurementAssistMode,
     escapeHtml,
     sleep,
@@ -90,17 +91,31 @@ window.FXRouteProviderSettings?.init({
     escapeHtml,
     onAdminPayload: (data) => {
         // Device name rides the admin payload so one fetch fills both rows;
-        // this row stays owned by app.js.
+        // the row itself is owned by the settings system module.
         if (typeof data.device_name === 'string' && data.device_name) {
             state.settings.deviceName.value = data.device_name;
             state.settings.deviceName.loaded = true;
         }
         state.settings.deviceName.canChange = data.device_name_can_change === true;
-        renderDeviceNameSettings();
+        SettingsSystem.renderDeviceNameSettings();
     },
     applyProviderEnabledToStreaming: (providerId, enabled) => window.FXRouteStreaming?.applyProviderEnabled(providerId, enabled),
     refreshStreamingFlags: () => { void window.FXRouteStreaming?.refreshEnabledFlags?.(); },
     refreshStreamingTab: () => window.FXRouteStreaming?.refreshActiveTab?.(),
+});
+// Settings system module (static/settings_system.js): maintenance/update,
+// device name, music libraries, hardware controller and the power menu.
+// State/DOM through lazy getters; panel and library refreshes stay in
+// app.js behind explicit callbacks.
+window.FXRouteSettingsSystem?.init({
+    getState: () => state,
+    getElements: () => elements,
+    showToast,
+    escapeHtml,
+    renderSettingsPanel: () => renderSettingsPanel(),
+    renderLibraryView: () => renderLibraryView(),
+    fetchLibraryStatus: () => fetchLibraryStatus(),
+    confirmDialog: (message) => confirm(message),
 });
 // Crossover tile UI: state/DOM through lazy getters; output mutations and
 // box ownership stay in app.js behind explicit callbacks. Bank, routing and
@@ -137,9 +152,9 @@ window.FXRouteOutputSystemController?.init({
             renderCrossoverTile();
         }
     },
-    syncSpeakerAlign: () => syncSpeakerAlignButton(),
+    syncSpeakerAlign: () => MeasurementFlows.syncSpeakerAlignButton(),
     renderSubwoofer: () => renderSubwooferPanel(),
-    syncAutoSub: () => syncAutoSubButton(),
+    syncAutoSub: () => MeasurementFlows.syncAutoSubButton(),
     reportMutationError: (html) => {
         if (elements.osFeedback) elements.osFeedback.innerHTML = html;
     },
@@ -160,7 +175,7 @@ window.FXRouteBankUI?.init({
     refreshCatalog: (force) => fetchOutputSystemCatalog(force),
     collectEffectsExtras: () => collectEffectsExtras(),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
-    presetFileUrl: (name) => presetFileUrl(name),
+    presetFileUrl: (name) => MeasurementUI.presetFileUrl(name),
     renderEffects: () => renderEffects(),
     renderMeasurementArea: () => renderMeasurementArea(),
     measurementArea: () => measurementAreaFromCatalog(),
@@ -171,25 +186,25 @@ window.FXRouteMeasurementPanelUI?.init({
     getElements: () => elements,
     renderMeasurementArea: () => renderMeasurementArea(),
     isSelectFocused: (select) => isSelectFocused(select),
-    getSelectedMeasurementInput: () => getSelectedMeasurementInput(),
-    getSelectedMeasurementInputChannelCount: () => getSelectedMeasurementInputChannelCount(),
-    getMeasurementReferenceWarning: () => getMeasurementReferenceWarning(),
+    getSelectedMeasurementInput: () => window.FXRouteMeasurementSetup.getSelectedMeasurementInput(),
+    getSelectedMeasurementInputChannelCount: () => window.FXRouteMeasurementSetup.getSelectedMeasurementInputChannelCount(),
+    getMeasurementReferenceWarning: () => window.FXRouteMeasurementSetup.getMeasurementReferenceWarning(),
     measurementModeReady: () => measurementModeReady(),
     escapeHtml: (value) => escapeHtml(value),
     formatRateKhz: (rate) => formatRateKhz(rate),
     measurementAreaBadge: (measurement) => window.FXRouteMeasurementSavedUI.measurementAreaBadge(measurement),
-    syncMeasurementSweepButton: () => syncMeasurementSweepButton(),
-    getActiveMeasurementKind: () => getActiveMeasurementKind(),
-    hasActiveMeasurementJob: () => hasActiveMeasurementJob(),
+    syncMeasurementSweepButton: () => window.FXRouteMeasurementJob.syncMeasurementSweepButton(),
+    getActiveMeasurementKind: () => window.FXRouteMeasurementJob.getActiveMeasurementKind(),
+    hasActiveMeasurementJob: () => window.FXRouteMeasurementJob.hasActiveMeasurementJob(),
     measurementRepeatBlockedReason: () => measurementRepeatBlockedReason(),
     syncMeasurementRepeatNote: (lrActive, reason) => syncMeasurementRepeatNote(lrActive, reason),
-    ensureCustomHouseCurveState: () => ensureCustomHouseCurveState(),
-    getMeasurementConvolverCurveOptions: () => getMeasurementConvolverCurveOptions(),
-    getDefaultMeasurementConvolverState: () => getDefaultMeasurementConvolverState(),
+    ensureCustomHouseCurveState: () => window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState(),
+    getMeasurementConvolverCurveOptions: () => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverCurveOptions(),
+    getDefaultMeasurementConvolverState: () => window.FXRouteMeasurementConvolverEditor.getDefaultMeasurementConvolverState(),
     measurementSetupStatusText: () => measurementSetupStatusText(),
-    buildMeasurementIrDiagnostics: (entries, frequencyView) => buildMeasurementIrDiagnostics(entries, frequencyView),
-    buildMeasurementIrSummary: (diagnostics) => buildMeasurementIrSummary(diagnostics),
-    buildMeasurementIrDiagnosticsTooltip: (diagnostics) => buildMeasurementIrDiagnosticsTooltip(diagnostics),
+    buildMeasurementIrDiagnostics: (entries, frequencyView) => MeasurementUI.buildMeasurementIrDiagnostics(entries, frequencyView),
+    buildMeasurementIrSummary: (diagnostics) => MeasurementUI.buildMeasurementIrSummary(diagnostics),
+    buildMeasurementIrDiagnosticsTooltip: (diagnostics) => MeasurementUI.buildMeasurementIrDiagnosticsTooltip(diagnostics),
     renderMeasurementIrDiagnostics: (entries, frequencyView) => renderMeasurementIrDiagnostics(entries, frequencyView),
 });
 window.FXRouteMeasurementSavedUI?.init({
@@ -201,48 +216,48 @@ window.FXRouteMeasurementSavedUI?.init({
     getCompactDisplayName: (name, maxChars) => getCompactDisplayName(name, maxChars),
     escapeHtml: (value) => escapeHtml(value),
     renderMeasurementPanel: () => renderMeasurementPanel(),
-    mergeSelectedMeasurements: () => mergeSelectedMeasurements(),
-    deleteSelectedMeasurements: () => deleteSelectedMeasurements(),
+    mergeSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.mergeSelectedMeasurements(),
+    deleteSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.deleteSelectedMeasurements(),
 });
 window.FXRouteMeasurementEditorsUI?.init({
     getState: () => state,
     getElements: () => elements,
     getDocument: () => document,
     escapeHtml: (value) => escapeHtml(value),
-    ensureCustomHouseCurveState: () => ensureCustomHouseCurveState(),
+    ensureCustomHouseCurveState: () => window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState(),
     getCustomHouseCurvePointSlot: (id) => getCustomHouseCurvePointSlot(id),
     getCustomHouseCurvePointColor: (point, slot) => getCustomHouseCurvePointColor(point, slot),
-    getMeasurementPeqPresetName: (mode) => getMeasurementPeqPresetName(mode),
-    getMeasurementPeqDraftMode: (peq) => getMeasurementPeqDraftMode(peq),
+    getMeasurementPeqPresetName: (mode) => window.FXRouteMeasurementPeqEditor.getMeasurementPeqPresetName(mode),
+    getMeasurementPeqDraftMode: (peq) => window.FXRouteMeasurementPeqEditor.getMeasurementPeqDraftMode(peq),
     isPeqCreateInFlight: () => peqCreateInFlight,
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
-    getMeasurementConvolverCurveOptions: () => getMeasurementConvolverCurveOptions(),
-    getMeasurementConvolverSourceSelectionState: () => getMeasurementConvolverSourceSelectionState(),
-    analyzeMeasurementConvolverSide: (side) => analyzeMeasurementConvolverSide(side),
-    getMeasurementConvolverDraftPhaseMismatch: (conv) => getMeasurementConvolverDraftPhaseMismatch(conv),
+    getMeasurementConvolverCurveOptions: () => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverCurveOptions(),
+    getMeasurementConvolverSourceSelectionState: () => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverSourceSelectionState(),
+    analyzeMeasurementConvolverSide: (side) => window.FXRouteMeasurementConvolverEditor.analyzeMeasurementConvolverSide(side),
+    getMeasurementConvolverDraftPhaseMismatch: (conv) => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverDraftPhaseMismatch(conv),
     isConvolverCreateInFlight: () => convolverCreateInFlight,
-    getMeasurementConvolverCurve: (key) => getMeasurementConvolverCurve(key),
-    getMeasurementConvolverTimingDelta: (left, right) => getMeasurementConvolverTimingDelta(left, right),
-    getMeasurementDirectArrivalTiming: (measurement) => getMeasurementDirectArrivalTiming(measurement),
-    getMeasurementConvolverMeasurementForSide: (side) => getMeasurementConvolverMeasurementForSide(side),
-    formatMeasurementConvolverTimingRelation: (timing) => formatMeasurementConvolverTimingRelation(timing),
-    getMeasurementConvolverItemName: (mode, gain, options) => getMeasurementConvolverItemName(mode, gain, options),
-    buildMeasurementConvolverWarnings: (analyses) => buildMeasurementConvolverWarnings(analyses),
-    getMeasurementPeqActiveFilter: () => getMeasurementPeqActiveFilter(),
-    updateMeasurementPeqFilter: (id, patch) => updateMeasurementPeqFilter(id, patch),
-    updateCustomHouseCurvePoint: (id, patch) => updateCustomHouseCurvePoint(id, patch),
-    stepMeasurementPeqFrequency: (id, direction, step) => stepMeasurementPeqFrequency(id, direction, step),
-    stepMeasurementPeqGain: (id, direction, step) => stepMeasurementPeqGain(id, direction, step),
-    stepMeasurementPeqQ: (id, direction, step) => stepMeasurementPeqQ(id, direction, step),
-    selectMeasurementPeqFilter: (id) => selectMeasurementPeqFilter(id),
-    addMeasurementPeqFilter: () => addMeasurementPeqFilter(),
-    addCustomHouseCurvePoint: (point) => addCustomHouseCurvePoint(point),
-    deleteCustomHouseCurvePoint: (id) => deleteCustomHouseCurvePoint(id),
-    deleteMeasurementPeqFilter: (id) => deleteMeasurementPeqFilter(id),
-    handleMeasurementPeqNumberInputArrowKey: (event) => handleMeasurementPeqNumberInputArrowKey(event),
-    focusMeasurementPeqPanelContext: () => focusMeasurementPeqPanelContext(),
+    getMeasurementConvolverCurve: (key) => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverCurve(key),
+    getMeasurementConvolverTimingDelta: (left, right) => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverTimingDelta(left, right),
+    getMeasurementDirectArrivalTiming: (measurement) => window.FXRouteMeasurementConvolverEditor.getMeasurementDirectArrivalTiming(measurement),
+    getMeasurementConvolverMeasurementForSide: (side) => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverMeasurementForSide(side),
+    formatMeasurementConvolverTimingRelation: (timing) => window.FXRouteMeasurementConvolverEditor.formatMeasurementConvolverTimingRelation(timing),
+    getMeasurementConvolverItemName: (mode, gain, options) => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverItemName(mode, gain, options),
+    buildMeasurementConvolverWarnings: (analyses) => window.FXRouteMeasurementConvolverEditor.buildMeasurementConvolverWarnings(analyses),
+    getMeasurementPeqActiveFilter: () => window.FXRouteMeasurementPeqEditor.getMeasurementPeqActiveFilter(),
+    updateMeasurementPeqFilter: (id, patch) => window.FXRouteMeasurementPeqEditor.updateMeasurementPeqFilter(id, patch),
+    updateCustomHouseCurvePoint: (id, patch) => window.FXRouteMeasurementCalibration.updateCustomHouseCurvePoint(id, patch),
+    stepMeasurementPeqFrequency: (id, direction, step) => window.FXRouteMeasurementPeqEditor.stepMeasurementPeqFrequency(id, direction, step),
+    stepMeasurementPeqGain: (id, direction, step) => window.FXRouteMeasurementPeqEditor.stepMeasurementPeqGain(id, direction, step),
+    stepMeasurementPeqQ: (id, direction, step) => window.FXRouteMeasurementPeqEditor.stepMeasurementPeqQ(id, direction, step),
+    selectMeasurementPeqFilter: (id) => window.FXRouteMeasurementPeqEditor.selectMeasurementPeqFilter(id),
+    addMeasurementPeqFilter: () => window.FXRouteMeasurementPeqEditor.addMeasurementPeqFilter(),
+    addCustomHouseCurvePoint: (point) => window.FXRouteMeasurementCalibration.addCustomHouseCurvePoint(point),
+    deleteCustomHouseCurvePoint: (id) => window.FXRouteMeasurementCalibration.deleteCustomHouseCurvePoint(id),
+    deleteMeasurementPeqFilter: (id) => window.FXRouteMeasurementPeqEditor.deleteMeasurementPeqFilter(id),
+    handleMeasurementPeqNumberInputArrowKey: (event) => window.FXRouteMeasurementPeqEditor.handleMeasurementPeqNumberInputArrowKey(event),
+    focusMeasurementPeqPanelContext: () => window.FXRouteMeasurementPeqEditor.focusMeasurementPeqPanelContext(),
     renderMeasurementPanel: () => renderMeasurementPanel(),
-    scheduleMeasurementGraphRender: () => scheduleMeasurementGraphRender(),
+    scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
 });
 window.FXRouteMeasurementSetup?.init({
     getState: () => state,
@@ -257,13 +272,13 @@ window.FXRouteMeasurementCalibration?.init({
     fetch: (...args) => fetch(...args),
     showToast: (message, kind) => showToast(message, kind),
     renderMeasurementPanel: () => renderMeasurementPanel(),
-    scheduleMeasurementGraphRender: () => scheduleMeasurementGraphRender(),
+    scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
     fetchMeasurements: () => fetchMeasurements(),
-    updateMeasurementConvolverField: (field, value) => updateMeasurementConvolverField(field, value),
-    ensureMeasurementConvolverState: () => ensureMeasurementConvolverState(),
+    updateMeasurementConvolverField: (field, value) => window.FXRouteMeasurementConvolverEditor.updateMeasurementConvolverField(field, value),
+    ensureMeasurementConvolverState: () => window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState(),
     setMeasurementActiveEditor: (editor) => setMeasurementActiveEditor(editor),
-    measurementXToFrequency: (x, bounds) => measurementXToFrequency(x, bounds),
-    measurementYToDb: (y, bounds, range) => measurementYToDb(y, bounds, range),
+    measurementXToFrequency: (x, bounds) => MeasurementDsp.measurementXToFrequency(x, bounds),
+    measurementYToDb: (y, bounds, range) => MeasurementDsp.measurementYToDb(y, bounds, range),
     triggerBlobDownload: (blob, name) => triggerBlobDownload(blob, name),
     getDownloadFilenameFromResponse: (response, fallback) => getDownloadFilenameFromResponse(response, fallback),
 });
@@ -273,7 +288,7 @@ window.FXRouteMeasurementPeqEditor?.init({
     fetch: (...args) => fetch(...args),
     showToast: (message, kind) => showToast(message, kind),
     renderMeasurementPanel: () => renderMeasurementPanel(),
-    scheduleMeasurementGraphRender: () => scheduleMeasurementGraphRender(),
+    scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
     getMeasurementActiveEditor: () => getMeasurementActiveEditor(),
     setMeasurementActiveEditor: (editor) => setMeasurementActiveEditor(editor),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
@@ -302,8 +317,8 @@ window.FXRouteMeasurementConvolverEditor?.init({
     fetch: (...args) => fetch(...args),
     showToast: (message, kind) => showToast(message, kind),
     renderMeasurementPanel: () => renderMeasurementPanel(),
-    scheduleMeasurementGraphRender: () => scheduleMeasurementGraphRender(),
-    saveMeasurementSetupSettings: (patch) => saveMeasurementSetupSettings(patch),
+    scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
+    saveMeasurementSetupSettings: (patch) => window.FXRouteMeasurementSetup.saveMeasurementSetupSettings(patch),
     collectEffectsExtras: () => collectEffectsExtras(),
     appendBankBindingFields: (formData) => appendBankBindingFields(formData),
     measurementCommitSourceId: () => measurementCommitSourceId(),
@@ -315,7 +330,7 @@ window.FXRouteMeasurementConvolverEditor?.init({
     getVisibleMeasurementEntries: () => getVisibleMeasurementEntries(),
     getCurrentMeasurementEntries: () => getCurrentMeasurementEntries(),
     getMeasurementDisplayTraces: (measurement) => getMeasurementDisplayTraces(measurement),
-    smoothMeasurementTracePoints: (points, mode) => smoothMeasurementTracePoints(points, mode),
+    smoothMeasurementTracePoints: (points, mode) => MeasurementDsp.smoothMeasurementTracePoints(points, mode),
     waitForNextAnimationFrame: () => waitForNextAnimationFrame(),
     isConvolverCreateInFlight: () => convolverCreateInFlight,
     setConvolverCreateInFlight: (active) => { convolverCreateInFlight = active; },
@@ -332,13 +347,13 @@ window.FXRouteMeasurementCapture?.init({
     measurementRepeatBlockedReason: () => measurementRepeatBlockedReason(),
     flushSubwooferSettingsBeforeMeasurement: () => flushSubwooferSettingsBeforeMeasurement(),
     measurementAreaFromCatalog: () => measurementAreaFromCatalog(),
-    appendMeasurementReferenceFields: (formData) => appendMeasurementReferenceFields(formData),
+    appendMeasurementReferenceFields: (formData) => window.FXRouteMeasurementSetup.appendMeasurementReferenceFields(formData),
     postRuntimeDebugSnapshot: (label, extra) => postRuntimeDebugSnapshot(label, extra),
     formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
-    normalizeMeasurementKind: (kind) => normalizeMeasurementKind(kind),
-    formatMeasurementJobStatusText: (job, fallback) => formatMeasurementJobStatusText(job, fallback),
-    pollMeasurementJob: (jobId, generation) => pollMeasurementJob(jobId, generation),
-    cancelMeasurement: () => cancelMeasurement(),
+    normalizeMeasurementKind: (kind) => MeasurementUI.normalizeMeasurementKind(kind),
+    formatMeasurementJobStatusText: (job, fallback) => window.FXRouteMeasurementJob.formatMeasurementJobStatusText(job, fallback),
+    pollMeasurementJob: (jobId, generation) => window.FXRouteMeasurementJob.pollMeasurementJob(jobId, generation),
+    cancelMeasurement: () => window.FXRouteMeasurementJob.cancelMeasurement(),
 });
 window.FXRouteMeasurementJob?.init({
     getState: () => state,
@@ -346,21 +361,21 @@ window.FXRouteMeasurementJob?.init({
     fetch: (...args) => fetch(...args),
     showToast: (message, kind) => showToast(message, kind),
     renderMeasurementPanel: () => renderMeasurementPanel(),
-    normalizeMeasurementKind: (kind) => normalizeMeasurementKind(kind),
-    formatMeasurementInputLevelText: (level) => formatMeasurementInputLevelText(level),
-    getMeasurementJobStatus: (job) => getMeasurementJobStatus(job),
-    getMeasurementJobResultMeasurement: (job) => getMeasurementJobResultMeasurement(job),
-    getMeasurementTimingInfo: (measurement) => getMeasurementTimingInfo(measurement),
-    normalizeMeasurementEntry: (measurement, index) => normalizeMeasurementEntry(measurement, index),
+    normalizeMeasurementKind: (kind) => MeasurementUI.normalizeMeasurementKind(kind),
+    formatMeasurementInputLevelText: (level) => MeasurementUI.formatMeasurementInputLevelText(level),
+    getMeasurementJobStatus: (job) => MeasurementUI.getMeasurementJobStatus(job),
+    getMeasurementJobResultMeasurement: (job) => MeasurementUI.getMeasurementJobResultMeasurement(job),
+    getMeasurementTimingInfo: (measurement) => MeasurementUI.getMeasurementTimingInfo(measurement),
+    normalizeMeasurementEntry: (measurement, index) => MeasurementUI.normalizeMeasurementEntry(measurement, index),
     measurementModeReady: () => measurementModeReady(),
     measurementRepeatBlockedReason: () => measurementRepeatBlockedReason(),
     syncMeasurementRepeatNote: (lrActive, reason) => syncMeasurementRepeatNote(lrActive, reason),
     setMeasurementSweepMenuOpen: (open) => setMeasurementSweepMenuOpen(open),
-    syncAutoSubButton: () => syncAutoSubButton(),
-    syncSpeakerAlignButton: () => syncSpeakerAlignButton(),
-    cancelHybridWizardMeasurement: () => cancelHybridWizardMeasurement(),
-    cancelAutoSubOptimize: () => cancelAutoSubOptimize(),
-    cancelSpeakerAlign: () => cancelSpeakerAlign(),
+    syncAutoSubButton: () => MeasurementFlows.syncAutoSubButton(),
+    syncSpeakerAlignButton: () => MeasurementFlows.syncSpeakerAlignButton(),
+    cancelHybridWizardMeasurement: () => MeasurementFlows.cancelHybridWizardMeasurement(),
+    cancelAutoSubOptimize: () => MeasurementFlows.cancelAutoSubOptimize(),
+    cancelSpeakerAlign: () => MeasurementFlows.cancelSpeakerAlign(),
     postRuntimeDebugSnapshot: (label, extra) => postRuntimeDebugSnapshot(label, extra),
     formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
     sleep: (ms) => sleep(ms),
@@ -372,7 +387,7 @@ window.FXRouteMeasurementSavedActions?.init({
     renderMeasurementPanel: () => renderMeasurementPanel(),
     fetchMeasurements: () => fetchMeasurements(),
     formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
-    normalizeMeasurementEntry: (measurement, index) => normalizeMeasurementEntry(measurement, index),
+    normalizeMeasurementEntry: (measurement, index) => MeasurementUI.normalizeMeasurementEntry(measurement, index),
     getVisibleMeasurementEntries: () => getVisibleMeasurementEntries(),
     confirm: (message) => window.confirm(message),
     prompt: (message, defaultValue) => window.prompt(message, defaultValue),
@@ -745,7 +760,6 @@ let lastLibraryPlaybackContextSignature = null;
 let libraryModeRequestInFlight = false;
 let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
-let musicLibraryRefreshTimer = null;
 let measurementInputScanOnFocusDone = false;
 let measurementGraphResizeObserver = null;
 let playbackFooterResizeObserver = null;
@@ -1203,7 +1217,8 @@ function setContentState(el, state, message) {
 
 // Initialization
 document.addEventListener('DOMContentLoaded', () => {
-    try { updatePowerButtonConnectionState(); } catch(e) { console.error('updatePowerButtonConnectionState crashed:', e); }
+    try { SettingsSystem.updatePowerButtonConnectionState(); } catch(e) { console.error('updatePowerButtonConnectionState crashed:', e); }
+    try { SettingsSystem.setupPowerMenu(); } catch(e) { console.error('setupPowerMenu crashed:', e); }
     try { setupWebSocket(); } catch(e) { console.error('setupWebSocket crashed:', e); }
     try { setupTabNavigation(); } catch(e) { console.error('setupTabNavigation crashed:', e); }
     try {
@@ -1249,7 +1264,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { setupDownloadActions(); } catch(e) { console.error('setupDownloadActions crashed:', e); }
     try { setupEffectsActions(); } catch(e) { console.error('setupEffectsActions crashed:', e); }
     try { setupMeasurementActions(); } catch(e) { console.error('setupMeasurementActions crashed:', e); }
-    try { setupHybridMeasurementWizard(); } catch(e) { console.error('setupHybridMeasurementWizard crashed:', e); }
+    try { MeasurementFlows.setupHybridMeasurementWizard(); } catch(e) { console.error('setupHybridMeasurementWizard crashed:', e); }
     try { primeSubwooferPreview(); } catch(e) { console.error('primeSubwooferPreview crashed:', e); }
     try { window.addEventListener('load', requestSubwooferPreviewRedrawFromState, { once: true }); } catch(e) { console.error('subwoofer preview load hook crashed:', e); }
     try { fetchInitialData(); } catch(e) { console.error('fetchInitialData crashed:', e); }
@@ -1343,7 +1358,7 @@ function connectWebSocket() {
             clearTimeout(offlineIndicatorTimer);
             offlineIndicatorTimer = null;
         }
-        updatePowerButtonConnectionState();
+        SettingsSystem.updatePowerButtonConnectionState();
         elements.offlineIndicator.classList.add('hidden');
         stopMetadataPolling();
         startPeakStatusPolling();
@@ -1388,7 +1403,7 @@ function scheduleOfflineIndicator() {
     offlineIndicatorTimer = setTimeout(() => {
         offlineIndicatorTimer = null;
         if (state.wsConnected) return;
-        updatePowerButtonConnectionState();
+        SettingsSystem.updatePowerButtonConnectionState();
         elements.offlineIndicator.classList.remove('hidden');
     }, CONFIG.offlineIndicatorDelay);
 }
@@ -1780,14 +1795,14 @@ function setupSettingsActions() {
     }
     if (elements.settingsDeviceNameApply) {
         elements.settingsDeviceNameApply.addEventListener('click', () => {
-            void applyDeviceName(elements.settingsDeviceNameInput?.value || '');
+            void SettingsSystem.applyDeviceName(elements.settingsDeviceNameInput?.value || '');
         });
     }
     if (elements.settingsDeviceNameInput) {
         elements.settingsDeviceNameInput.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
                 event.preventDefault();
-                void applyDeviceName(elements.settingsDeviceNameInput.value || '');
+                void SettingsSystem.applyDeviceName(elements.settingsDeviceNameInput.value || '');
             }
         });
     }
@@ -1796,21 +1811,21 @@ function setupSettingsActions() {
             const libraryId = event.target.value;
             if (libraryId === 'manual') {
                 const url = prompt('SMB share URL', 'smb://server/share');
-                if (url) void addManualMusicLibrary(url);
+                if (url) void SettingsSystem.addManualMusicLibrary(url);
                 else renderSettingsPanel();
             } else if (libraryId) {
-                void selectMusicLibrary(libraryId);
+                void SettingsSystem.selectMusicLibrary(libraryId);
             }
         });
     }
-    elements.settingsHardwareRcaBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/rca', 'RCA selected'));
-    elements.settingsHardwareXlrBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/xlr', 'XLR selected'));
-    elements.settingsHardwarePressBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/input/press', 'Input button pressed'));
-    elements.settingsHardwareAutoOnBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/auto/on', 'Auto mode enabled'));
-    elements.settingsHardwareAutoOffBtn?.addEventListener('click', () => runHardwareCommand('/api/hardware/auto/off', 'Auto mode disabled'));
-    elements.settingsUpdateCheckBtn?.addEventListener('click', () => checkFxrouteUpdate());
-    elements.settingsUpdateRunBtn?.addEventListener('click', () => runFxrouteUpdate());
-    elements.settingsRestoreRunBtn?.addEventListener('click', () => restoreFxrouteToPublic());
+    elements.settingsHardwareRcaBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/input/rca', 'RCA selected'));
+    elements.settingsHardwareXlrBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/input/xlr', 'XLR selected'));
+    elements.settingsHardwarePressBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/input/press', 'Input button pressed'));
+    elements.settingsHardwareAutoOnBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/auto/on', 'Auto mode enabled'));
+    elements.settingsHardwareAutoOffBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/auto/off', 'Auto mode disabled'));
+    elements.settingsUpdateCheckBtn?.addEventListener('click', () => SettingsSystem.checkFxrouteUpdate());
+    elements.settingsUpdateRunBtn?.addEventListener('click', () => SettingsSystem.runFxrouteUpdate());
+    elements.settingsRestoreRunBtn?.addEventListener('click', () => SettingsSystem.restoreFxrouteToPublic());
     elements.settingsUpdateDetailsToggle?.addEventListener('click', () => {
         const maintenance = state.settings.maintenance;
         const isOpen = !!maintenance.detailsExpanded
@@ -1819,7 +1834,7 @@ function setupSettingsActions() {
             || (!!maintenance.hasError && !maintenance.userCollapsedDetails);
         maintenance.detailsExpanded = !isOpen;
         maintenance.userCollapsedDetails = isOpen;
-        renderMaintenancePanel();
+        SettingsSystem.renderMaintenancePanel();
     });
     const backdrop = elements.settingsPanel.querySelector('.manage-overlay-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => toggleSettingsPanel(false));
@@ -2092,10 +2107,7 @@ function stopSettingsStatusPolling() {
         clearInterval(settingsStatusPollTimer);
         settingsStatusPollTimer = null;
     }
-    if (musicLibraryRefreshTimer) {
-        clearTimeout(musicLibraryRefreshTimer);
-        musicLibraryRefreshTimer = null;
-    }
+    SettingsSystem.stopMusicLibraryRefresh();
 }
 
 function startSettingsStatusPolling() {
@@ -2108,7 +2120,7 @@ function startSettingsStatusPolling() {
         // Music library discovery is refreshed on dialog open and after
         // selection; re-polling it here every 2.5s only re-scans the SMB
         // network and adds pointless requests while the dialog stays open.
-        void Promise.all([fetchAudioSourceOverview(), fetchHardwareStatus()]);
+        void Promise.all([fetchAudioSourceOverview(), SettingsSystem.fetchHardwareStatus()]);
     }, 2500);
 }
 
@@ -2124,7 +2136,7 @@ function toggleSettingsPanel(forceOpen = null) {
     if (shouldOpen) {
         settingsOutputScanOnFocusDone = false;
         renderSettingsPanel();
-        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), fetchHardwareStatus(), fetchMusicLibraries(), fetchProviderAdmin(), checkFxrouteUpdate({ silent: true })]);
+        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), SettingsSystem.fetchHardwareStatus(), SettingsSystem.fetchMusicLibraries(), fetchProviderAdmin(), SettingsSystem.checkFxrouteUpdate({ silent: true })]);
         startSettingsStatusPolling();
         window.FXRouteModal?.open(elements.settingsPanel, {
             initialFocus: elements.settingsCloseBtn,
@@ -2179,331 +2191,7 @@ function isSelectFocused(selectEl) {
     return !!selectEl && typeof document !== 'undefined' && document.activeElement === selectEl;
 }
 
-function formatHardwareBool(value, onLabel = 'on', offLabel = 'off') {
-    if (value === true) return onLabel;
-    if (value === false) return offLabel;
-    return 'unknown';
-}
 
-function renderHardwareController() {
-    const hardware = state.settings?.hardware || {};
-    const connected = !!hardware.connected;
-    const status = hardware.status || {};
-    const input = hardware.input || status.INPUT || 'unknown';
-    if (elements.settingsHardwareSummary) {
-        elements.settingsHardwareSummary.textContent = connected
-            ? `Connected${hardware.device ? `: ${hardware.device}` : ''}`
-            : 'Controller not detected.';
-    }
-    if (elements.settingsHardwareDetail) {
-        if (connected) {
-            const trigger = formatHardwareBool(hardware.trigger ?? status.TRIGGER, 'trigger active', 'trigger off');
-            const power = formatHardwareBool(hardware.power ?? status.POWER, 'power on', 'power off');
-            const auto = formatHardwareBool(hardware.auto ?? status.AUTO, 'auto on', 'auto off');
-            elements.settingsHardwareDetail.textContent = `Input: ${input} · ${trigger} · ${power} · ${auto}`;
-        } else {
-            const note = Array.isArray(hardware.notes) && hardware.notes.length ? hardware.notes[0] : 'USB controller is optional.';
-            elements.settingsHardwareDetail.textContent = note;
-        }
-    }
-    [
-        elements.settingsHardwareRcaBtn,
-        elements.settingsHardwareXlrBtn,
-        elements.settingsHardwarePressBtn,
-        elements.settingsHardwareAutoOnBtn,
-        elements.settingsHardwareAutoOffBtn,
-    ].forEach((button) => {
-        if (button) button.disabled = !connected || !!hardware.pending;
-    });
-}
-
-function updateLogFromResult(data = {}) {
-    const parts = [];
-    if (data.stdout) parts.push(String(data.stdout).trim());
-    if (data.stderr) parts.push(String(data.stderr).trim());
-    return parts.filter(Boolean).join('\n\n');
-}
-
-function parseUpdateSummary(logText = '') {
-    const currentMatch = logText.match(/Current:\s*([^\n]+)/);
-    const remoteMatch = logText.match(/Remote:\s*([^\n]+)/);
-    const current = currentMatch ? currentMatch[1].trim() : '';
-    const remote = remoteMatch ? remoteMatch[1].trim() : '';
-    if (current && remote) return `Current ${current} · Latest ${remote}`;
-    return current ? `Current ${current}` : 'Version status checked.';
-}
-
-function parseUpdateVersion(value = '') {
-    return String(value || '').replace(/\s*\([^)]*\).*$/, '').trim();
-}
-
-function parseUpdateInfo(logText = '') {
-    const currentMatch = logText.match(/Current:\s*([^\n]+)/);
-    const remoteMatch = logText.match(/Remote:\s*([^\n]+)/);
-    const completedMatch = logText.match(/Update completed:\s*([^\n]+)/);
-    const completedVersion = parseUpdateVersion(completedMatch ? completedMatch[1] : '');
-    const currentVersion = completedVersion || parseUpdateVersion(currentMatch ? currentMatch[1] : '');
-    const latestVersion = parseUpdateVersion(remoteMatch ? remoteMatch[1] : '');
-    const updateAvailable = logText.includes('Update available.')
-        ? true
-        : logText.includes('FXRoute is already up to date.')
-            || logText.includes('Update completed:')
-            ? false
-            : null;
-    return { currentVersion, latestVersion, updateAvailable };
-}
-
-function maintenanceStatusText(maintenance = {}) {
-    if (maintenance.dirtyBlock) return 'Local source changes. Update disabled';
-    if (maintenance.hasError) return 'Update check failed';
-    if (maintenance.restartPending) return 'Restarting FXRoute';
-    if (maintenance.pending) return maintenance.updateAvailable === true ? 'Updating FXRoute' : 'Checking for updates';
-    if (maintenance.updateAvailable === true) return 'Update available';
-    if (maintenance.updateAvailable === false) return 'FXRoute is up to date';
-    return maintenance.latestSummary || 'Version status not checked yet.';
-}
-
-function renderMaintenancePanel() {
-    const maintenance = state.settings?.maintenance || {};
-    const currentVersion = maintenance.currentVersion || maintenance.installedVersion || '';
-    const latestVersion = maintenance.latestVersion || '';
-    const showLatest = !!latestVersion && latestVersion !== currentVersion;
-    const showDetails = !!maintenance.detailsExpanded
-        || (!!maintenance.pending && maintenance.operation === 'update')
-        || !!maintenance.restartPending
-        || (!!maintenance.hasError && !maintenance.userCollapsedDetails)
-        || !!maintenance.dirtyBlock;
-    if (elements.settingsMaintenanceStatus) {
-        elements.settingsMaintenanceStatus.textContent = maintenanceStatusText(maintenance);
-    }
-    if (elements.settingsMaintenanceCurrent) {
-        elements.settingsMaintenanceCurrent.textContent = currentVersion || 'Unknown';
-    }
-    if (elements.settingsMaintenanceLatestRow) {
-        elements.settingsMaintenanceLatestRow.classList.toggle('hidden', !showLatest);
-    }
-    if (elements.settingsMaintenanceLatest) {
-        elements.settingsMaintenanceLatest.textContent = latestVersion || 'Unknown';
-    }
-    if (elements.settingsMaintenanceDetail) {
-        elements.settingsMaintenanceDetail.textContent = maintenance.detail || '';
-    }
-    if (elements.settingsUpdateLog) {
-        elements.settingsUpdateLog.textContent = maintenance.log || 'No update log available yet.';
-    }
-    if (elements.settingsUpdateDetailsToggle) {
-        elements.settingsUpdateDetailsToggle.textContent = showDetails ? 'Hide update details' : 'Show update details';
-        elements.settingsUpdateDetailsToggle.setAttribute('aria-expanded', showDetails ? 'true' : 'false');
-    }
-    if (elements.settingsUpdateDetails) {
-        elements.settingsUpdateDetails.classList.toggle('hidden', !showDetails);
-    }
-    if (elements.settingsUpdateCheckBtn) {
-        elements.settingsUpdateCheckBtn.disabled = !!maintenance.pending || !!maintenance.restartPending;
-    }
-    if (elements.settingsUpdateRunBtn) {
-        const updateDisabled = !!maintenance.pending || !!maintenance.restartPending || maintenance.updateAvailable !== true;
-        elements.settingsUpdateRunBtn.disabled = updateDisabled;
-        elements.settingsUpdateRunBtn.classList.toggle('btn-primary', maintenance.updateAvailable === true && !updateDisabled);
-        elements.settingsUpdateRunBtn.classList.toggle('btn-secondary', maintenance.updateAvailable !== true || updateDisabled);
-    }
-    if (elements.settingsRestoreRunBtn) {
-        const restoreDisabled = !!maintenance.pending || !!maintenance.restartPending;
-        elements.settingsRestoreRunBtn.disabled = restoreDisabled;
-    }
-    if (elements.settingsRestoreSection) {
-        elements.settingsRestoreSection.classList.toggle('hidden', !maintenance.dirtyBlock);
-    }
-}
-
-async function checkFxrouteUpdate(options = {}) {
-    const silent = !!options.silent;
-    if (!silent) {
-        state.settings.maintenance.pending = true;
-        state.settings.maintenance.operation = 'check';
-        state.settings.maintenance.detail = 'Checking GitHub for updates…';
-        state.settings.maintenance.hasError = false;
-        state.settings.maintenance.userCollapsedDetails = false;
-        renderSettingsPanel();
-    }
-    let data = {};
-    try {
-        const resp = await fetch('/api/system/update');
-        data = await resp.json().catch(() => ({}));
-        const logText = updateLogFromResult(data);
-        if (!resp.ok || data.ok === false) throw new Error(data.detail || data.stderr || 'Update check failed');
-        const updateInfo = parseUpdateInfo(logText);
-        state.settings.maintenance = {
-            ...state.settings.maintenance,
-            installedVersion: data.installed_version || '',
-            latestSummary: parseUpdateSummary(logText),
-            detail: updateInfo.updateAvailable ? 'Update available.' : 'FXRoute is up to date.',
-            ...updateInfo,
-            log: logText,
-            pending: false,
-            restartPending: false,
-            operation: '',
-            userCollapsedDetails: false,
-            hasError: false,
-        };
-    } catch (error) {
-        const errorMsg = error.message || 'Update check failed';
-        const isDirtyBlock = errorMsg.includes('Local changes detected');
-        state.settings.maintenance = {
-            ...state.settings.maintenance,
-            installedVersion: data.installed_version || state.settings.maintenance.installedVersion || '',
-            latestSummary: isDirtyBlock
-                ? 'Local source changes detected. Update disabled to protect this checkout.'
-                : 'Update check failed.',
-            detail: errorMsg,
-            log: errorMsg,
-            pending: false,
-            restartPending: false,
-            operation: '',
-            userCollapsedDetails: false,
-            hasError: true,
-            dirtyBlock: isDirtyBlock,
-        };
-    }
-    renderSettingsPanel();
-}
-
-async function waitForFxrouteRestart() {
-    const deadline = Date.now() + 30000;
-    await new Promise(resolve => setTimeout(resolve, 1200));
-    while (Date.now() < deadline) {
-        try {
-            const resp = await fetch('/api/status', { cache: 'no-store' });
-            if (resp.ok) {
-                state.settings.maintenance.restartPending = false;
-                state.settings.maintenance.operation = '';
-                state.settings.maintenance.detail = 'Reload/restart completed. Refresh the page if the interface still shows old assets.';
-                renderSettingsPanel();
-                showToast('FXRoute restart completed', 'success');
-                return;
-            }
-        } catch (e) {
-            // The service is expected to disappear briefly during restart.
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    state.settings.maintenance.restartPending = false;
-    state.settings.maintenance.operation = '';
-    state.settings.maintenance.detail = 'Update finished, but restart confirmation timed out. Check fxroute-status on the host.';
-    renderSettingsPanel();
-}
-
-async function runFxrouteUpdate() {
-    state.settings.maintenance.pending = true;
-    state.settings.maintenance.operation = 'update';
-    state.settings.maintenance.detail = 'Updating FXRoute…';
-    state.settings.maintenance.hasError = false;
-    state.settings.maintenance.userCollapsedDetails = false;
-    renderSettingsPanel();
-    let data = {};
-    try {
-        const resp = await fetch('/api/system/update', { method: 'POST' });
-        data = await resp.json().catch(() => ({}));
-        const logText = updateLogFromResult(data);
-        if (!resp.ok || data.ok === false) throw new Error(data.detail || data.stderr || 'Update failed');
-        const updateInfo = parseUpdateInfo(logText);
-        state.settings.maintenance = {
-            ...state.settings.maintenance,
-            installedVersion: data.installed_version || state.settings.maintenance.installedVersion,
-            latestSummary: 'Update completed.',
-            detail: data.restart_scheduled ? 'Restarting FXRoute service…' : 'Update completed.',
-            currentVersion: updateInfo.currentVersion || data.installed_version || state.settings.maintenance.currentVersion,
-            latestVersion: updateInfo.latestVersion || state.settings.maintenance.latestVersion,
-            updateAvailable: false,
-            log: logText,
-            pending: false,
-            restartPending: !!data.restart_scheduled,
-            operation: data.restart_scheduled ? 'update' : '',
-            userCollapsedDetails: false,
-            hasError: false,
-            dirtyBlock: false,
-        };
-        renderSettingsPanel();
-        if (data.restart_scheduled) {
-            void waitForFxrouteRestart();
-        } else {
-            showToast('FXRoute update completed', 'success');
-        }
-    } catch (error) {
-        const errorMsg = error.message || 'Update failed';
-        const isDirtyBlock = errorMsg.includes('Local changes detected');
-        state.settings.maintenance.pending = false;
-        state.settings.maintenance.restartPending = false;
-        state.settings.maintenance.operation = '';
-        state.settings.maintenance.installedVersion = data.installed_version || state.settings.maintenance.installedVersion || '';
-        state.settings.maintenance.latestSummary = isDirtyBlock
-            ? 'Local source changes detected. Update disabled to protect this checkout.'
-            : 'Update failed.';
-        state.settings.maintenance.detail = errorMsg;
-        state.settings.maintenance.log = errorMsg;
-        state.settings.maintenance.hasError = true;
-        state.settings.maintenance.userCollapsedDetails = false;
-        state.settings.maintenance.dirtyBlock = isDirtyBlock;
-        renderSettingsPanel();
-        showToast(errorMsg, 'error');
-    }
-}
-
-async function restoreFxrouteToPublic() {
-    const confirmMsg = [
-        'This will reset the FXRoute checkout to the current public release on GitHub. ',
-        'Tracked source changes will be saved as a patch file and untracked files as an archive, both in backups/. ',
-        'User data, music, config, and runtime cache are not affected. ',
-        'The service will restart after restore.\n\nContinue?'
-    ].join('');
-    if (!confirm(confirmMsg)) return;
-
-    state.settings.maintenance.pending = true;
-    state.settings.maintenance.operation = 'restore';
-    state.settings.maintenance.detail = 'Restoring to public release…';
-    state.settings.maintenance.hasError = false;
-    state.settings.maintenance.userCollapsedDetails = false;
-    renderSettingsPanel();
-    let data = {};
-    try {
-        const resp = await fetch('/api/system/restore', { method: 'POST' });
-        data = await resp.json().catch(() => ({}));
-        const logText = updateLogFromResult(data);
-        if (!resp.ok || data.ok === false) throw new Error(data.detail || data.stderr || 'Restore failed');
-        state.settings.maintenance = {
-            ...state.settings.maintenance,
-            installedVersion: data.installed_version || state.settings.maintenance.installedVersion,
-            latestSummary: 'Restore completed.',
-            detail: 'Restarting FXRoute service…',
-            currentVersion: data.installed_version || state.settings.maintenance.currentVersion,
-            latestVersion: '',
-            updateAvailable: null,
-            log: logText,
-            pending: false,
-            restartPending: true,
-            operation: 'restore',
-            userCollapsedDetails: false,
-            hasError: false,
-            dirtyBlock: false,
-        };
-        renderSettingsPanel();
-        void waitForFxrouteRestart();
-    } catch (error) {
-        const errorMsg = error.message || 'Restore failed';
-        state.settings.maintenance.pending = false;
-        state.settings.maintenance.restartPending = false;
-        state.settings.maintenance.operation = '';
-        state.settings.maintenance.installedVersion = data.installed_version || state.settings.maintenance.installedVersion || '';
-        state.settings.maintenance.latestSummary = 'Restore failed.';
-        state.settings.maintenance.detail = errorMsg;
-        state.settings.maintenance.log = errorMsg;
-        state.settings.maintenance.hasError = true;
-        state.settings.maintenance.userCollapsedDetails = false;
-        state.settings.maintenance.dirtyBlock = false;
-        renderSettingsPanel();
-        showToast(errorMsg, 'error');
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Settings -> Providers (static/provider_settings.js)
@@ -2751,58 +2439,6 @@ function renderProviderSettings() {
     return mod.renderProviderSettings();
 }
 
-async function applyDeviceName(value) {
-    const name = String(value || '').trim().toLowerCase();
-    if (!name) {
-        showToast('Enter a device name first', 'info');
-        return;
-    }
-    if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name) || name === 'localhost') {
-        showToast('Use only lowercase letters, digits and hyphens (no leading/trailing hyphen)', 'error');
-        return;
-    }
-    state.settings.deviceName.pending = true;
-    renderDeviceNameSettings();
-    try {
-        const resp = await fetch('/api/system/device-name', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ hostname: name }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Could not change the device name');
-        state.settings.deviceName.value = data.hostname || name;
-        if (elements.settingsDeviceNameInput) elements.settingsDeviceNameInput.value = state.settings.deviceName.value;
-        showToast(data.changed === false ? 'Device name unchanged.' : `Device name set to ${state.settings.deviceName.value}.local`, 'success');
-    } catch (error) {
-        showToast(error.message || 'Could not change the device name', 'error');
-    } finally {
-        state.settings.deviceName.pending = false;
-        renderDeviceNameSettings();
-    }
-}
-
-function renderDeviceNameSettings() {
-    if (!elements.settingsDeviceNameInput) return;
-    if (!state.settings.deviceName.loaded) {
-        elements.settingsDeviceNameInput.placeholder = 'Loading…';
-        return;
-    }
-    if (document.activeElement !== elements.settingsDeviceNameInput) {
-        elements.settingsDeviceNameInput.value = state.settings.deviceName.value || '';
-        elements.settingsDeviceNameInput.placeholder = state.settings.deviceName.value || 'fxroute';
-    }
-    const changeBlocked = state.settings.deviceName.canChange === false;
-    elements.settingsDeviceNameInput.disabled = changeBlocked || state.settings.deviceName.pending;
-    if (elements.settingsDeviceNameApply) {
-        elements.settingsDeviceNameApply.disabled = state.settings.deviceName.pending || changeBlocked;
-    }
-    if (elements.settingsDeviceNameHint) {
-        elements.settingsDeviceNameHint.textContent = state.settings.deviceName.canChange === false
-            ? 'This system does not support changing the device name here.'
-            : `Reach this FXRoute as http://${state.settings.deviceName.value || 'fxroute'}.local:8000. A change takes effect after a moment.`;
-    }
-}
 
 function renderSettingsPanel() {
     if (elements.settingsCertificateLink) {
@@ -2909,7 +2545,7 @@ function renderSettingsPanel() {
     }
     const musicLibrary = state.settings?.musicLibrary || {};
     if (elements.settingsMusicLibrarySelect && !isSelectFocused(elements.settingsMusicLibrarySelect)) {
-        const model = musicLibrarySelectModel(musicLibrary);
+        const model = SettingsSystem.musicLibrarySelectModel(musicLibrary);
         elements.settingsMusicLibrarySelect.innerHTML = model.html;
         elements.settingsMusicLibrarySelect.value = model.value;
         elements.settingsMusicLibrarySelect.disabled = model.disabled;
@@ -2920,9 +2556,9 @@ function renderSettingsPanel() {
             musicLibrary.scanning && cachedCount > 0 ? 'Scanning…' : '';
     }
     renderProviderSettings();
-    renderDeviceNameSettings();
-    renderHardwareController();
-    renderMaintenancePanel();
+    SettingsSystem.renderDeviceNameSettings();
+    SettingsSystem.renderHardwareController();
+    SettingsSystem.renderMaintenancePanel();
     renderSubwooferPanel();
     renderOutputSystemSection();
     applySourceModeUiState();
@@ -2937,120 +2573,6 @@ function renderSettingsPanel() {
 // (scanning) and no SMB entry is known yet, the selector shows a disabled
 // "Scanning network shares…" placeholder instead of the local-only list;
 // already-cached SMB entries keep rendering immediately.
-function musicLibrarySelectModel(musicLibrary = {}) {
-    const libraries = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries : [];
-    if (libraries.length === 0 && musicLibrary.loading) {
-        return {
-            html: '<option value="">Discovering network shares…</option>',
-            value: '',
-            disabled: true,
-        };
-    }
-    const hasSmb = libraries.some((library) => library && library.type === 'smb');
-    if (musicLibrary.scanning && !hasSmb) {
-        return {
-            html: '<option value="">Scanning network shares…</option>',
-            value: '',
-            disabled: true,
-        };
-    }
-    return {
-        html: libraries
-            .map((library) => `<option value="${escapeHtml(library.id || '')}">${escapeHtml(library.label || '')}</option>`)
-            .join('') || '<option value="local">Local</option>',
-        value: musicLibrary.active_id || 'local',
-        disabled: !!musicLibrary.pending || !!musicLibrary.loading,
-    };
-}
-
-async function fetchMusicLibraries() {
-    state.settings.musicLibrary = { ...(state.settings.musicLibrary || {}), loading: true };
-    renderSettingsPanel();
-    try {
-        const resp = await fetch('/api/music-libraries');
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to discover music libraries');
-        state.settings.musicLibrary = { ...data, pending: false, loading: false, scanning: !!data.discovery_refreshing };
-        renderSettingsPanel();
-        // Stale-while-revalidate: the response above already shows cached
-        // shares; when the backend refreshed in the background, fetch once
-        // more so new shares appear without another user action. The timer
-        // dies with the dialog (stopSettingsStatusPolling).
-        if (musicLibraryRefreshTimer) {
-            clearTimeout(musicLibraryRefreshTimer);
-            musicLibraryRefreshTimer = null;
-        }
-        if (data.discovery_refreshing) {
-            musicLibraryRefreshTimer = setTimeout(() => {
-                musicLibraryRefreshTimer = null;
-                if (elements.settingsPanel && !elements.settingsPanel.classList.contains('hidden')) {
-                    void fetchMusicLibraries();
-                }
-            }, 5000);
-        }
-    } catch (error) {
-        state.settings.musicLibrary = { ...(state.settings.musicLibrary || {}), loading: false, scanning: false };
-        renderSettingsPanel();
-        console.debug('Failed to discover music libraries', error);
-    }
-}
-
-async function selectMusicLibrary(libraryId) {
-    const previousId = state.settings.musicLibrary.active_id;
-    if (musicLibraryRefreshTimer) {
-        clearTimeout(musicLibraryRefreshTimer);
-        musicLibraryRefreshTimer = null;
-    }
-    state.settings.musicLibrary.pending = true;
-    renderSettingsPanel();
-    try {
-        const resp = await fetch('/api/music-libraries/select', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: libraryId }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to switch music library');
-        state.settings.musicLibrary = { ...data, pending: false };
-        state.library.tracks = [];
-        state.library.selectedTrackIds = [];
-        state.library.currentFolder = '';
-        state.library.albums = [];
-        state.library.albumsLoaded = false;
-        state.library.albumDetail = null;
-        state.library.scanning = true;
-        renderSettingsPanel();
-        renderLibraryView();
-        await fetchLibraryStatus();
-        showToast('Music library switched', 'success');
-    } catch (error) {
-        state.settings.musicLibrary.active_id = previousId;
-        state.settings.musicLibrary.pending = false;
-        renderSettingsPanel();
-        showToast(error.message || 'Failed to switch music library', 'error');
-    }
-}
-
-async function addManualMusicLibrary(url) {
-    if (musicLibraryRefreshTimer) {
-        clearTimeout(musicLibraryRefreshTimer);
-        musicLibraryRefreshTimer = null;
-    }
-    try {
-        const resp = await fetch('/api/music-libraries/manual', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to add network share');
-        state.settings.musicLibrary = { ...data, pending: false };
-        renderSettingsPanel();
-        await selectMusicLibrary(data.entry.id);
-    } catch (error) {
-        showToast(error.message || 'Failed to add network share', 'error');
-    }
-}
 
 function externalInputModeActive() {
     return state.settings?.sourceMode?.mode === 'external-input';
@@ -3148,7 +2670,7 @@ function stepSourceSwitcher(delta) {
 // Measurement and AutoSub capture own their signal path: while a job is
 // active the footer switcher is parked instead of rewiring the graph.
 function sourceSwitcherGuardReason() {
-    if (typeof hasActiveMeasurementJob === 'function' && hasActiveMeasurementJob()) {
+    if (window.FXRouteMeasurementJob.hasActiveMeasurementJob()) {
         return 'Unavailable while a measurement is running';
     }
     if (state.settings?.sourceMode?.pending) {
@@ -3281,8 +2803,8 @@ async function fetchAudioOutputOverview() {
         };
         renderSettingsPanel();
         renderSubwooferPanel();
-        syncAutoSubButton();
-        syncSpeakerAlignButton();
+        MeasurementFlows.syncAutoSubButton();
+        MeasurementFlows.syncSpeakerAlignButton();
         void fetchOutputSystemCatalog(true);
     } catch (e) {
         state.settings.audioOutputs = {
@@ -3298,8 +2820,8 @@ async function fetchAudioOutputOverview() {
         };
         renderSettingsPanel();
         renderSubwooferPanel();
-        syncAutoSubButton();
-        syncSpeakerAlignButton();
+        MeasurementFlows.syncAutoSubButton();
+        MeasurementFlows.syncSpeakerAlignButton();
     }
 }
 
@@ -3448,7 +2970,7 @@ function syncSweepSideRow(area) {
         button.setAttribute('aria-pressed', selected ? 'true' : 'false');
         button.disabled = !!state.measurement.startInFlight;
     });
-    syncSpeakerAlignButton();
+    MeasurementFlows.syncSpeakerAlignButton();
 }
 
 function outputSystemDevice() {
@@ -3686,67 +3208,6 @@ async function saveAudioSourceSelection(mode, inputKey = '') {
     }
 }
 
-function normalizeHardwareStatus(data = {}) {
-    return {
-        available: data.available !== false,
-        connected: !!data.connected,
-        device: data.device || null,
-        status: data.status || {},
-        raw: data.raw || null,
-        input: data.input || data.status?.INPUT || null,
-        power: data.power ?? data.status?.POWER ?? null,
-        trigger: data.trigger ?? data.status?.TRIGGER ?? null,
-        auto: data.auto ?? data.status?.AUTO ?? null,
-        notes: Array.isArray(data.notes) ? data.notes : [],
-        pending: false,
-    };
-}
-
-async function fetchHardwareStatus() {
-    try {
-        const resp = await fetch('/api/hardware/status');
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to fetch hardware status');
-        state.settings.hardware = normalizeHardwareStatus(data);
-    } catch (e) {
-        state.settings.hardware = {
-            available: false,
-            connected: false,
-            device: null,
-            status: {},
-            raw: null,
-            input: null,
-            power: null,
-            trigger: null,
-            auto: null,
-            notes: [e.message || 'Failed to fetch hardware status'],
-            pending: false,
-        };
-    }
-    renderSettingsPanel();
-}
-
-async function runHardwareCommand(endpoint, successMessage) {
-    state.settings.hardware.pending = true;
-    renderSettingsPanel();
-    try {
-        const resp = await fetch(endpoint, { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Hardware command failed');
-        state.settings.hardware = normalizeHardwareStatus(data);
-        if (state.settings.hardware.connected) {
-            showToast(successMessage, 'success');
-        } else {
-            const note = state.settings.hardware.notes?.[0];
-            showToast(note || 'Hardware controller not connected', 'warning');
-        }
-    } catch (e) {
-        state.settings.hardware.pending = false;
-        showToast(e.message || 'Hardware command failed', 'error');
-        void fetchHardwareStatus();
-    }
-    renderSettingsPanel();
-}
 
 async function fetchAudioSourceOverview() {
     try {
@@ -7994,13 +7455,13 @@ function wireBankUi() {
 }
 
 function setupEffectsActions() {
-    if (elements.splCalibrationOpen) elements.splCalibrationOpen.addEventListener('click', openSplCalibration);
-    if (elements.splCalibrationClose) elements.splCalibrationClose.addEventListener('click', closeSplCalibration);
+    if (elements.splCalibrationOpen) elements.splCalibrationOpen.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.openSplCalibration());
+    if (elements.splCalibrationClose) elements.splCalibrationClose.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.closeSplCalibration());
     if (elements.splCalibrationPanel?.querySelector('.manage-overlay-backdrop')) {
-        elements.splCalibrationPanel.querySelector('.manage-overlay-backdrop').addEventListener('click', closeSplCalibration);
+        elements.splCalibrationPanel.querySelector('.manage-overlay-backdrop').addEventListener('click', () => window.FXRouteMeasurementSplCalibration.closeSplCalibration());
     }
-    if (elements.splCalibrationNoise) elements.splCalibrationNoise.addEventListener('click', toggleSplCalibrationNoise);
-    if (elements.splCalibrationSave) elements.splCalibrationSave.addEventListener('click', saveSplCalibration);
+    if (elements.splCalibrationNoise) elements.splCalibrationNoise.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.toggleSplCalibrationNoise());
+    if (elements.splCalibrationSave) elements.splCalibrationSave.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.saveSplCalibration());
     wireBankUi();
     if (elements.effectsPeqPresetName) elements.effectsPeqPresetName.addEventListener('input', (event) => {
         if (!state.dsp?.peqDraft) return;
@@ -8135,45 +7596,6 @@ function setupEffectsActions() {
     renderEffectsCombine();
 }
 
-
-function splCalibrationModeLabel(data) {
-    return window.FXRouteMeasurementSplCalibration.splCalibrationModeLabel(data);
-}
-
-
-function resetSplCalibrationNoiseButton() {
-    return window.FXRouteMeasurementSplCalibration.resetSplCalibrationNoiseButton();
-}
-
-
-async function runSplCalibrationNoiseCountdown(generation) {
-    return window.FXRouteMeasurementSplCalibration.runSplCalibrationNoiseCountdown(generation);
-}
-
-
-async function stopSplCalibrationOperation(statusText = '') {
-    return window.FXRouteMeasurementSplCalibration.stopSplCalibrationOperation(statusText);
-}
-
-
-async function openSplCalibration() {
-    return window.FXRouteMeasurementSplCalibration.openSplCalibration();
-}
-
-
-async function closeSplCalibration() {
-    return window.FXRouteMeasurementSplCalibration.closeSplCalibration();
-}
-
-
-async function toggleSplCalibrationNoise() {
-    return window.FXRouteMeasurementSplCalibration.toggleSplCalibrationNoise();
-}
-
-
-async function saveSplCalibration() {
-    return window.FXRouteMeasurementSplCalibration.saveSplCalibration();
-}
 
 async function startDownload(urlOverride = null) {
     const url = (urlOverride || elements.downloadUrl.value || '').trim();
@@ -8314,25 +7736,7 @@ function updateDownloadUI() {
     elements.downloadStatus.innerHTML = html;
     elements.downloadStatus.classList.toggle('hidden', !html.trim());
 }
-function normalizeMeasurementTrace(trace = {}, index = 0) {
-    return MeasurementUI.normalizeMeasurementTrace(trace, index);
-}
 
-function normalizeMeasurementEntry(measurement = {}, index = 0) {
-    return MeasurementUI.normalizeMeasurementEntry(measurement, index);
-}
-
-function normalizeMeasurementVisibility(measurements = [], previous = {}) {
-    return MeasurementUI.normalizeMeasurementVisibility(measurements, previous);
-}
-
-function formatMeasurementDate(value) {
-    return MeasurementUI.formatMeasurementDate(value);
-}
-
-function normalizeMeasurementReviewVisibility(measurements = [], previous = {}) {
-    return MeasurementUI.normalizeMeasurementReviewVisibility(measurements, previous);
-}
 
 function getVisibleMeasurementEntries() {
     const currentId = state.measurement.currentMeasurement?.id;
@@ -8340,15 +7744,15 @@ function getVisibleMeasurementEntries() {
 }
 
 function getCurrentMeasurementEntry() {
-    return state.measurement.currentMeasurement ? normalizeMeasurementEntry(state.measurement.currentMeasurement, 0) : null;
+    return state.measurement.currentMeasurement ? MeasurementUI.normalizeMeasurementEntry(state.measurement.currentMeasurement, 0) : null;
 }
 
 function getCurrentMeasurementEntries() {
     const autoSubMeasurements = Array.isArray(state.measurement.autoSubMeasurements)
-        ? state.measurement.autoSubMeasurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index))
+        ? state.measurement.autoSubMeasurements.map((measurement, index) => MeasurementUI.normalizeMeasurementEntry(measurement, index))
         : [];
     const repeatMeasurements = Array.isArray(state.measurement.pendingRepeatMeasurements)
-        ? state.measurement.pendingRepeatMeasurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index))
+        ? state.measurement.pendingRepeatMeasurements.map((measurement, index) => MeasurementUI.normalizeMeasurementEntry(measurement, index))
         : [];
     if (autoSubMeasurements.length) return autoSubMeasurements;
     return repeatMeasurements.length ? repeatMeasurements : [getCurrentMeasurementEntry()].filter(Boolean);
@@ -8375,22 +7779,6 @@ function getAutoSubDisplayReferenceEntries() {
     return [...entriesById.values()];
 }
 
-function measurementSmoothingHalfWindowOctaves(mode = '1/6-oct') {
-    return MeasurementDsp.measurementSmoothingHalfWindowOctaves(mode);
-}
-
-function smoothMeasurementTracePoints(points = [], mode = '1/6-oct') {
-    return MeasurementDsp.smoothMeasurementTracePoints(points, mode);
-}
-
-function measurementFileUrl(measurementId = '') {
-    return MeasurementUI.measurementFileUrl(measurementId);
-}
-
-function presetFileUrl(presetName = '') {
-    return MeasurementUI.presetFileUrl(presetName);
-}
-
 
 function getVisibleMeasurementColorById() {
     const colorById = {};
@@ -8403,40 +7791,6 @@ function getVisibleMeasurementColorById() {
     return colorById;
 }
 
-function getDefaultMeasurementPeqFilter(index = 0) {
-    return window.FXRouteMeasurementPeqEditor.getDefaultMeasurementPeqFilter(index);
-}
-
-function getDefaultMeasurementPeqState() {
-    return window.FXRouteMeasurementPeqEditor.getDefaultMeasurementPeqState();
-}
-
-function ensureMeasurementPeqState() {
-    return window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
-}
-
-function getMeasurementPeqFilters() {
-    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqFilters();
-}
-
-function getMeasurementPeqActiveFilter() {
-    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqActiveFilter();
-}
-
-function clampMeasurementConvolverFrequency(value, fallback = 20) {
-    return window.FXRouteMeasurementConvolverEditor.clampMeasurementConvolverFrequency(value, fallback);
-}
-
-
-function getDefaultMeasurementConvolverState() {
-    return window.FXRouteMeasurementConvolverEditor.getDefaultMeasurementConvolverState();
-}
-
-
-function ensureMeasurementConvolverState() {
-    return window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
-}
-
 
 function getMeasurementActiveEditor() {
     const editor = String(state.measurement?.activeEditor || 'none');
@@ -8444,9 +7798,9 @@ function getMeasurementActiveEditor() {
 }
 
 function getMeasurementRestorableTargetCurve() {
-    const conv = ensureMeasurementConvolverState();
+    const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
     const targetCurve = String(conv.targetCurve || '');
-    return getMeasurementConvolverCurveOptions().some((curve) => curve.key === targetCurve)
+    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverCurveOptions().some((curve) => curve.key === targetCurve)
         ? targetCurve
         : 'neutral';
 }
@@ -8454,14 +7808,14 @@ function getMeasurementRestorableTargetCurve() {
 function setMeasurementActiveEditor(editor = 'none') {
     const nextEditor = ['none', 'peq', 'houseCurve'].includes(editor) ? editor : 'none';
     state.measurement.activeEditor = nextEditor;
-    const custom = ensureCustomHouseCurveState();
+    const custom = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
     custom.open = nextEditor === 'houseCurve';
     custom.displayTarget = nextEditor === 'houseCurve' ? 'editing-custom-house-curve' : 'actual';
     if (nextEditor !== 'peq') {
-        const peq = ensureMeasurementPeqState();
+        const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
         peq.dragFilterId = null;
     }
-    ensureCustomHouseCurveState().dragPointId = null;
+    window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState().dragPointId = null;
     if (state.measurement.convolverAssistant && typeof state.measurement.convolverAssistant === 'object') {
         state.measurement.convolverAssistant.dragMode = null;
     }
@@ -8470,32 +7824,23 @@ function setMeasurementActiveEditor(editor = 'none') {
 
 function setMeasurementAssistMode(mode) {
     const nextMode = mode === 'convolver' ? 'convolver' : 'peq';
-    const conv = ensureMeasurementConvolverState();
+    const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
     // The custom editor is an overlay on the actual target selection. Never
     // let its sentinel or a deleted house curve become the active target when
     // returning to PEQ or Convolver.
     conv.targetCurve = getMeasurementRestorableTargetCurve();
     state.measurement.assistMode = nextMode;
     setMeasurementActiveEditor(nextMode === 'peq' ? 'peq' : 'none');
-    if (nextMode === 'peq') ensureMeasurementPeqState().enabled = true;
+    if (nextMode === 'peq') window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState().enabled = true;
     renderMeasurementPanel();
-    scheduleMeasurementGraphRender();
-}
-
-function getMeasurementConvolverCurveOptions() {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverCurveOptions();
-}
-
-
-function getMeasurementConvolverCurve(curveKey) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverCurve(curveKey);
+    MeasurementGraph.scheduleMeasurementGraphRender();
 }
 
 
 function getAutoSubTargetCurveSnapshot() {
-    const conv = ensureMeasurementConvolverState();
+    const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
     const key = String(conv.targetCurve || '');
-    const curve = getMeasurementConvolverCurveOptions().find((option) => option.key === key);
+    const curve = window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverCurveOptions().find((option) => option.key === key);
     if (!curve) return null;
     return {
         key,
@@ -8505,13 +7850,9 @@ function getAutoSubTargetCurveSnapshot() {
     };
 }
 
-function getMeasurementConvolverCurveDb(curveKey, frequencyHz) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverCurveDb(curveKey, frequencyHz);
-}
-
 
 function getMeasurementHouseCurvePreviewPoints() {
-    return ensureCustomHouseCurveState().points
+    return window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState().points
         .map((point) => [Number(point.freqHz), Number(point.gainDb)])
         .filter(([frequency, gain]) => Number.isFinite(frequency) && frequency > 0 && Number.isFinite(gain))
         .sort((left, right) => left[0] - right[0]);
@@ -8521,125 +7862,20 @@ function getMeasurementTargetCurvePreview() {
     if (getMeasurementActiveEditor() === 'houseCurve') {
         return { label: 'Editing Custom House Curve…', shortLabel: 'Editing Custom House Curve…', points: getMeasurementHouseCurvePreviewPoints() };
     }
-    return getMeasurementConvolverCurve(ensureMeasurementConvolverState().targetCurve);
+    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverCurve(window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState().targetCurve);
 }
 
-function getMeasurementConvolverDraftPhaseMode(draft = null) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverDraftPhaseMode(draft);
-}
-
-
-function getMeasurementConvolverDrafts(conv = ensureMeasurementConvolverState()) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverDrafts(conv);
-}
-
-
-function getMeasurementConvolverDraftPhaseMismatch(conv = ensureMeasurementConvolverState()) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverDraftPhaseMismatch(conv);
-}
-
-
-function clearMeasurementConvolverDraftForPhaseChange(previousPhaseMode = '') {
-    return window.FXRouteMeasurementConvolverEditor.clearMeasurementConvolverDraftForPhaseChange(previousPhaseMode);
-}
-
-
-function clearMeasurementConvolverDraftForSettingsChange(notice = '') {
-    return window.FXRouteMeasurementConvolverEditor.clearMeasurementConvolverDraftForSettingsChange(notice);
-}
-
-
-function updateMeasurementConvolverField(field, value) {
-    return window.FXRouteMeasurementConvolverEditor.updateMeasurementConvolverField(field, value);
-}
-
-
-function focusMeasurementPeqPanelContext() {
-    return window.FXRouteMeasurementPeqEditor.focusMeasurementPeqPanelContext();
-}
-
-function isEditableMeasurementPeqTarget(target) {
-    return window.FXRouteMeasurementPeqEditor.isEditableMeasurementPeqTarget(target);
-}
-
-function handleMeasurementPeqNumberInputArrowKey(event) {
-    return window.FXRouteMeasurementPeqEditor.handleMeasurementPeqNumberInputArrowKey(event);
-}
-
-function syncMeasurementPeqQInput(value) {
-    return window.FXRouteMeasurementPeqEditor.syncMeasurementPeqQInput(value);
-}
-
-function stepActiveMeasurementPeqQ(direction = 1, step = 0.1) {
-    return window.FXRouteMeasurementPeqEditor.stepActiveMeasurementPeqQ(direction, step);
-}
-
-function handleMeasurementPeqGraphWheel(event) {
-    return window.FXRouteMeasurementPeqEditor.handleMeasurementPeqGraphWheel(event);
-}
-
-function selectMeasurementPeqFilter(filterId) {
-    return window.FXRouteMeasurementPeqEditor.selectMeasurementPeqFilter(filterId);
-}
-
-function clampMeasurementPeqFrequency(value) {
-    return window.FXRouteMeasurementPeqEditor.clampMeasurementPeqFrequency(value);
-}
-
-function clampMeasurementPeqGain(value) {
-    return window.FXRouteMeasurementPeqEditor.clampMeasurementPeqGain(value);
-}
-
-function clampMeasurementPeqQ(value) {
-    return window.FXRouteMeasurementPeqEditor.clampMeasurementPeqQ(value);
-}
-
-function measurementXToFrequency(x, bounds) {
-    return MeasurementDsp.measurementXToFrequency(x, bounds);
-}
-
-function measurementYToDb(y, bounds, range) {
-    return MeasurementDsp.measurementYToDb(y, bounds, range);
-}
-
-function addMeasurementPeqFilter(defaults = {}) {
-    return window.FXRouteMeasurementPeqEditor.addMeasurementPeqFilter(defaults);
-}
-
-function createMeasurementPeqFilterFromPoint({ x, y, bounds, range }) {
-    return window.FXRouteMeasurementPeqEditor.createMeasurementPeqFilterFromPoint({ x, y, bounds, range });
-}
-
-function updateMeasurementPeqFilter(filterId, updates = {}) {
-    return window.FXRouteMeasurementPeqEditor.updateMeasurementPeqFilter(filterId, updates);
-}
-
-function stepMeasurementPeqQ(filterId, direction = 1, step = 0.1) {
-    return window.FXRouteMeasurementPeqEditor.stepMeasurementPeqQ(filterId, direction, step);
-}
-
-function stepMeasurementPeqGain(filterId, direction = 1, step = 0.1) {
-    return window.FXRouteMeasurementPeqEditor.stepMeasurementPeqGain(filterId, direction, step);
-}
-
-function stepMeasurementPeqFrequency(filterId, direction = 1, step = 1) {
-    return window.FXRouteMeasurementPeqEditor.stepMeasurementPeqFrequency(filterId, direction, step);
-}
-
-function deleteMeasurementPeqFilter(filterId) {
-    return window.FXRouteMeasurementPeqEditor.deleteMeasurementPeqFilter(filterId);
-}
 
 function resetMeasurementGraph() {
     if (getMeasurementActiveEditor() === 'houseCurve') {
-        resetCustomHouseCurveDraft();
+        window.FXRouteMeasurementCalibration.resetCustomHouseCurveDraft();
         renderMeasurementPanel();
-        scheduleMeasurementGraphRender();
+        MeasurementGraph.scheduleMeasurementGraphRender();
         return;
     }
     setMeasurementActiveEditor('none');
-    const peq = ensureMeasurementPeqState();
-    const conv = ensureMeasurementConvolverState();
+    const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
+    const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
     state.measurement.currentMeasurement = null;
     state.measurement.pendingRepeatMeasurements = [];
     state.measurement.autoSubMeasurements = [];
@@ -8649,255 +7885,14 @@ function resetMeasurementGraph() {
     peq.filters = [];
     peq.activeFilterId = null;
     peq.dragFilterId = null;
-    Object.assign(conv, getDefaultMeasurementConvolverState());
+    Object.assign(conv, window.FXRouteMeasurementConvolverEditor.getDefaultMeasurementConvolverState());
     renderMeasurementPanel();
-    scheduleMeasurementGraphRender();
-}
-
-function measurementPeqFilterToBand(filter = {}) {
-    return window.FXRouteMeasurementPeqEditor.measurementPeqFilterToBand(filter);
-}
-
-function showMeasurementPeqTakeFeedback(message) {
-    return window.FXRouteMeasurementPeqEditor.showMeasurementPeqTakeFeedback(message);
-}
-
-function getMeasurementPeqNameSuffix(date = new Date()) {
-    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqNameSuffix(date);
-}
-
-function getMeasurementPeqDraftMode(peq = ensureMeasurementPeqState()) {
-    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqDraftMode(peq);
-}
-
-function getMeasurementPeqPresetName(mode = 'both', options = {}) {
-    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqPresetName(mode, options);
-}
-
-function takeMeasurementPeqToPreset(mode = 'both') {
-    return window.FXRouteMeasurementPeqEditor.takeMeasurementPeqToPreset(mode);
-}
-
-function resolveMeasurementPeqPresetName(peq, fieldValue, mode) {
-    return window.FXRouteMeasurementPeqEditor.resolveMeasurementPeqPresetName(peq, fieldValue, mode);
-}
-
-function createMeasurementPeqPresetFromDraft() {
-    return window.FXRouteMeasurementPeqEditor.createMeasurementPeqPresetFromDraft();
-}
-
-function getMeasurementConvolverSelectedSourceEntries() {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverSelectedSourceEntries();
-}
-
-
-function getMeasurementConvolverSourceEntries() {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverSourceEntries();
-}
-
-
-function getMeasurementConvolverSourceSelectionState() {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverSourceSelectionState();
-}
-
-
-function getMeasurementConvolverMeasurementForSide(side = 'left') {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverMeasurementForSide(side);
-}
-
-
-function getMeasurementConvolverTracePoints(side = 'left') {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverTracePoints(side);
-}
-
-
-function getMeasurementConvolverAdaptiveDipGuardStrength(frequencyHz) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverAdaptiveDipGuardStrength(frequencyHz);
-}
-
-
-function applyMeasurementConvolverDipGuard(requestedCorrections, index, mode = 'off') {
-    return window.FXRouteMeasurementConvolverEditor.applyMeasurementConvolverDipGuard(requestedCorrections, index, mode);
-}
-
-
-function analyzeMeasurementConvolverSide(side = 'left') {
-    return window.FXRouteMeasurementConvolverEditor.analyzeMeasurementConvolverSide(side);
-}
-
-
-function getMeasurementConvolverSelectedSourceCount() {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverSelectedSourceCount();
-}
-
-
-function getMeasurementConvolverMultiSourceWarning() {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverMultiSourceWarning();
-}
-
-
-function buildMeasurementConvolverWarnings(analyses = []) {
-    return window.FXRouteMeasurementConvolverEditor.buildMeasurementConvolverWarnings(analyses);
-}
-
-
-function formatMeasurementConvolverGain(value) {
-    return window.FXRouteMeasurementConvolverEditor.formatMeasurementConvolverGain(value);
-}
-
-
-function getMeasurementConvolverNameSuffix(date = new Date()) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverNameSuffix(date);
-}
-
-
-function getMeasurementConvolverItemName(mode = 'both', autoGainDb = 0, options = {}) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverItemName(mode, autoGainDb, options);
-}
-
-
-function getMeasurementConvolverPreviewMode(leftAnalysis, rightAnalysis, leftDraft = null, rightDraft = null) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverPreviewMode(leftAnalysis, rightAnalysis, leftDraft, rightDraft);
-}
-
-
-function getMeasurementConvolverPreviewGain(mode = 'both', leftAnalysis = null, rightAnalysis = null, leftDraft = null, rightDraft = null) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverPreviewGain(mode, leftAnalysis, rightAnalysis, leftDraft, rightDraft);
-}
-
-
-function showMeasurementConvolverFeedback(message) {
-    return window.FXRouteMeasurementConvolverEditor.showMeasurementConvolverFeedback(message);
+    MeasurementGraph.scheduleMeasurementGraphRender();
 }
 
 
 function waitForNextAnimationFrame() {
     return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
-}
-
-function getMeasurementConvolverSampleRate() {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverSampleRate();
-}
-
-
-
-function getMeasurementConvolverTypeOption(type = 'linear_4096') {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverTypeOption(type);
-}
-
-
-function getMeasurementConvolverTypeKeys() {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverTypeKeys();
-}
-
-
-function getMeasurementConvolverPhaseModeForType(type = 'linear_4096') {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverPhaseModeForType(type);
-}
-
-
-function getMeasurementConvolverPhaseLabel(phaseMode = 'linear') {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverPhaseLabel(phaseMode);
-}
-
-
-function getMeasurementConvolverPhaseTag(phaseMode = 'linear') {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverPhaseTag(phaseMode);
-}
-
-
-function getMeasurementConvolverFirLengthForType(type = 'linear_4096') {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverFirLengthForType(type);
-}
-
-
-function getMeasurementConvolverFirLength() {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverFirLength();
-}
-
-
-function getMeasurementConvolverTypeLabel(type = 'linear_4096') {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverTypeLabel(type);
-}
-
-
-function interpolateMeasurementConvolverCorrection(analysis, frequencyHz, autoGainDb) {
-    return window.FXRouteMeasurementConvolverEditor.interpolateMeasurementConvolverCorrection(analysis, frequencyHz, autoGainDb);
-}
-
-
-function buildMeasurementConvolverMagnitudeBins(analysis, sampleRate, length, autoGainDb) {
-    return window.FXRouteMeasurementConvolverEditor.buildMeasurementConvolverMagnitudeBins(analysis, sampleRate, length, autoGainDb);
-}
-
-
-function buildMeasurementConvolverLinearImpulseFromMagnitudes(magnitudes, length) {
-    return window.FXRouteMeasurementConvolverEditor.buildMeasurementConvolverLinearImpulseFromMagnitudes(magnitudes, length);
-}
-
-
-function fftMeasurementConvolverComplex(real, imag, inverse = false) {
-    return window.FXRouteMeasurementConvolverEditor.fftMeasurementConvolverComplex(real, imag, inverse);
-}
-
-
-function buildMeasurementConvolverMinimumSpectrum(magnitudes, length) {
-    return window.FXRouteMeasurementConvolverEditor.buildMeasurementConvolverMinimumSpectrum(magnitudes, length);
-}
-
-
-function buildMeasurementConvolverImpulseFromSpectrum(real, imag) {
-    return window.FXRouteMeasurementConvolverEditor.buildMeasurementConvolverImpulseFromSpectrum(real, imag);
-}
-
-
-function buildMeasurementConvolverImpulse(analysis, sampleRate, length, autoGainDb, phaseMode = 'linear') {
-    return window.FXRouteMeasurementConvolverEditor.buildMeasurementConvolverImpulse(analysis, sampleRate, length, autoGainDb, phaseMode);
-}
-
-
-function getMeasurementConvolverTimingMs(timing = {}) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverTimingMs(timing);
-}
-
-
-function getMeasurementConvolverTimingDelta(leftTiming, rightTiming) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverTimingDelta(leftTiming, rightTiming);
-}
-
-
-function getMeasurementConvolverTimingPairDebug(timingDelta) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverTimingPairDebug(timingDelta);
-}
-
-
-function formatMeasurementConvolverTimingRelation(timingDelta) {
-    return window.FXRouteMeasurementConvolverEditor.formatMeasurementConvolverTimingRelation(timingDelta);
-}
-
-
-function getMeasurementConvolverTimingSafetyMessage(timingDelta, limitMs = MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverTimingSafetyMessage(timingDelta, limitMs);
-}
-
-
-function alignStereoImpulsesForMinimumAligned(leftImpulse, rightImpulse, sampleRate, leftTiming, rightTiming, maxAlignMs = MEASUREMENT_CONVOLVER_TIMING_SAFETY_LIMIT_MS) {
-    return window.FXRouteMeasurementConvolverEditor.alignStereoImpulsesForMinimumAligned(leftImpulse, rightImpulse, sampleRate, leftTiming, rightTiming, maxAlignMs);
-}
-
-
-function getMeasurementAnalysisSampleRate(measurement = {}) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementAnalysisSampleRate(measurement);
-}
-
-
-function getMeasurementDirectArrivalTiming(measurement = {}) {
-    return window.FXRouteMeasurementConvolverEditor.getMeasurementDirectArrivalTiming(measurement);
-}
-
-
-function writeMeasurementConvolverWav(channels, sampleRate) {
-    return window.FXRouteMeasurementConvolverEditor.writeMeasurementConvolverWav(channels, sampleRate);
 }
 
 
@@ -8910,48 +7905,16 @@ function measurementCommitSourceId() {
     return String(current?.id || '');
 }
 
-function appendMeasurementConvolverExtras(formData) {
-    return window.FXRouteMeasurementConvolverEditor.appendMeasurementConvolverExtras(formData);
-}
-
-
-async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, options = {}) {
-    return window.FXRouteMeasurementConvolverEditor.createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, options);
-}
-
-
-function takeMeasurementConvolverToDraft(mode = 'both') {
-    return window.FXRouteMeasurementConvolverEditor.takeMeasurementConvolverToDraft(mode);
-}
-
-
-function resolveMeasurementConvolverItemName(conv, fieldValue, mode, sharedAutoGainDb) {
-    return window.FXRouteMeasurementConvolverEditor.resolveMeasurementConvolverItemName(conv, fieldValue, mode, sharedAutoGainDb);
-}
-
-
-async function createMeasurementConvolverPresetFromDraft() {
-    return window.FXRouteMeasurementConvolverEditor.createMeasurementConvolverPresetFromDraft();
-}
-
-
-function getMeasurementGraphBounds(displayWidth, displayHeight) {
-    return MeasurementUI.getMeasurementGraphBounds(displayWidth, displayHeight);
-}
-
-function getMeasurementGraphDisplaySize(canvas) {
-    return MeasurementUI.getMeasurementGraphDisplaySize(canvas);
-}
 
 function getMeasurementGraphRenderContext() {
     const canvas = elements.measurementGraph;
     if (!canvas) return null;
-    const displaySize = getMeasurementGraphDisplaySize(canvas);
+    const displaySize = MeasurementUI.getMeasurementGraphDisplaySize(canvas);
     if (!displaySize.width || !displaySize.height) return null;
     const displayWidth = displaySize.width;
     const displayHeight = displaySize.height;
-    const bounds = getMeasurementGraphBounds(displayWidth, displayHeight);
-    const range = getMeasurementGraphRange(getGraphMeasurementEntries());
+    const bounds = MeasurementUI.getMeasurementGraphBounds(displayWidth, displayHeight);
+    const range = MeasurementDsp.getMeasurementGraphRange(MeasurementGraph.getGraphMeasurementEntries());
     return { canvas, displayWidth, displayHeight, bounds, range };
 }
 
@@ -8959,15 +7922,12 @@ function getMeasurementGraphView() {
     return state.measurement?.measurementView === 'ir' ? 'ir' : 'freq';
 }
 
-function getMeasurementIrPreviewPoints(measurement = {}) {
-    return MeasurementUI.getMeasurementIrPreviewPoints(measurement);
-}
 
 function buildMeasurementIrGraphEntry(measurement = {}, { current = false, graphColor = '' } = {}) {
     const displayTraces = getMeasurementDisplayTraces(measurement)
         .filter(trace => String(trace.kind || 'measured') !== 'target' && String(trace.kind || '').indexOf('filter') === -1);
     if (!displayTraces.length) return null;
-    const points = getMeasurementIrPreviewPoints(measurement);
+    const points = MeasurementUI.getMeasurementIrPreviewPoints(measurement);
     if (!points.length) return null;
     return {
         ...measurement,
@@ -8983,37 +7943,6 @@ function buildMeasurementIrGraphEntry(measurement = {}, { current = false, graph
     };
 }
 
-function getMeasurementIrPeakAbs(points = [], minMs = -0.5, maxMs = 0.5) {
-    return MeasurementUI.getMeasurementIrPeakAbs(points, minMs, maxMs);
-}
-
-function getMeasurementIrWindowRms(points = [], minMs = 5, maxMs = 30) {
-    return MeasurementUI.getMeasurementIrWindowRms(points, minMs, maxMs);
-}
-
-function getMeasurementIrStrongestAbs(points = [], minMs = 0.5, maxMs = 10) {
-    return MeasurementUI.getMeasurementIrStrongestAbs(points, minMs, maxMs);
-}
-
-function formatMeasurementIrDb(valueDb) {
-    return MeasurementUI.formatMeasurementIrDb(valueDb);
-}
-
-function formatMeasurementIrMs(valueMs) {
-    return MeasurementUI.formatMeasurementIrMs(valueMs);
-}
-
-function formatMeasurementIrAmplitude(value) {
-    return MeasurementUI.formatMeasurementIrAmplitude(value);
-}
-
-function getMeasurementIrDiagnostics(entry = {}) {
-    return MeasurementUI.getMeasurementIrDiagnostics(entry);
-}
-
-function buildMeasurementIrDiagnostics(graphEntries = [], frequencyView = true) {
-    return MeasurementUI.buildMeasurementIrDiagnostics(graphEntries, frequencyView);
-}
 
 function formatMeasurementIrCompactRange(values = [], { digits = 0, suffix = '' } = {}) {
     const finiteValues = values.map(Number).filter(Number.isFinite);
@@ -9025,18 +7954,11 @@ function formatMeasurementIrCompactRange(values = [], { digits = 0, suffix = '' 
     return `${formatValue(minValue)}–${formatValue(maxValue)}${suffix}`;
 }
 
-function buildMeasurementIrSummary(diagnostics = []) {
-    return MeasurementUI.buildMeasurementIrSummary(diagnostics);
-}
-
-function buildMeasurementIrDiagnosticsTooltip(diagnostics = []) {
-    return MeasurementUI.buildMeasurementIrDiagnosticsTooltip(diagnostics);
-}
 
 function renderMeasurementIrDiagnostics(graphEntries = [], frequencyView = true) {
     if (!elements.measurementIrDiagnostics) return;
-    const diagnostics = buildMeasurementIrDiagnostics(graphEntries, frequencyView);
-    const tooltip = buildMeasurementIrDiagnosticsTooltip(diagnostics);
+    const diagnostics = MeasurementUI.buildMeasurementIrDiagnostics(graphEntries, frequencyView);
+    const tooltip = MeasurementUI.buildMeasurementIrDiagnosticsTooltip(diagnostics);
     elements.measurementIrDiagnostics.classList.add('hidden');
     elements.measurementIrDiagnostics.textContent = '';
     elements.measurementIrDiagnostics.title = tooltip;
@@ -9053,50 +7975,32 @@ function getMeasurementGraphPointerPosition(event) {
     };
 }
 
-function formatMeasurementHoverFrequency(frequencyHz) {
-    return MeasurementUI.formatMeasurementHoverFrequency(frequencyHz);
-}
-
-function formatMeasurementHoverDb(valueDb) {
-    return MeasurementUI.formatMeasurementHoverDb(valueDb);
-}
-
-function getMeasurementTraceDisplayedDbAtFrequency(points = [], frequencyHz = 1000) {
-    return MeasurementUI.getMeasurementTraceDisplayedDbAtFrequency(points, frequencyHz);
-}
 
 function getMeasurementFrequencyHoverTooltip(event) {
     const pointer = getMeasurementGraphPointerPosition(event);
     if (!pointer) return '';
     const { x, y, bounds, range } = pointer;
     if (x < bounds.left || x > bounds.left + bounds.width || y < bounds.top || y > bounds.top + bounds.height) return '';
-    const frequencyHz = measurementXToFrequency(x, bounds);
-    const graphEntries = getGraphMeasurementEntries();
+    const frequencyHz = MeasurementDsp.measurementXToFrequency(x, bounds);
+    const graphEntries = MeasurementGraph.getGraphMeasurementEntries();
     const candidates = [];
     graphEntries.forEach((entry) => {
         (entry.traces || []).forEach((trace) => {
-            const levelDb = getMeasurementTraceDisplayedDbAtFrequency(trace.points || [], frequencyHz);
+            const levelDb = MeasurementUI.getMeasurementTraceDisplayedDbAtFrequency(trace.points || [], frequencyHz);
             if (!Number.isFinite(levelDb)) return;
-            const traceY = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(levelDb, bounds, range)));
+            const traceY = Math.max(bounds.top, Math.min(bounds.top + bounds.height, MeasurementDsp.measurementDbToY(levelDb, bounds, range)));
             candidates.push({ levelDb, distancePx: Math.abs(traceY - y) });
         });
     });
     candidates.sort((a, b) => a.distancePx - b.distancePx);
     const candidate = candidates[0] || null;
     if (!candidate) return '';
-    return `${formatMeasurementHoverFrequency(frequencyHz)} · ${formatMeasurementHoverDb(candidate.levelDb)}`;
+    return `${MeasurementUI.formatMeasurementHoverFrequency(frequencyHz)} · ${MeasurementUI.formatMeasurementHoverDb(candidate.levelDb)}`;
 }
 
-function getMeasurementPeqHandlePosition(filter, bounds, range) {
-    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqHandlePosition(filter, bounds, range);
-}
-
-function getMeasurementPeqHandleHitRadius(pointerType = '') {
-    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqHandleHitRadius(pointerType);
-}
 
 function getCustomHouseCurvePointSlot(pointId) {
-    const custom = ensureCustomHouseCurveState();
+    const custom = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
     const index = custom.points.findIndex((point) => point.id === pointId);
     if (index < 0) return -1;
     const slot = Number(custom.points[index]?.slot);
@@ -9113,8 +8017,8 @@ function getCustomHouseCurvePointColor(point, slot = getCustomHouseCurvePointSlo
 
 function getCustomHouseCurveHandlePosition(point, bounds, range) {
     return {
-        x: measurementFrequencyToX(point.freqHz || 20, bounds),
-        y: Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(point.gainDb || 0, bounds, range))),
+        x: MeasurementDsp.measurementFrequencyToX(point.freqHz || 20, bounds),
+        y: Math.max(bounds.top, Math.min(bounds.top + bounds.height, MeasurementDsp.measurementDbToY(point.gainDb || 0, bounds, range))),
     };
 }
 
@@ -9127,7 +8031,7 @@ function getCustomHouseCurveHandleHitRadius(pointerType = '') {
 function findCustomHouseCurveHandleAtPosition(x, y, bounds, range, pointerType = '') {
     if (getMeasurementActiveEditor() !== 'houseCurve') return null;
     const hitRadius = getCustomHouseCurveHandleHitRadius(pointerType);
-    const points = ensureCustomHouseCurveState().points;
+    const points = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState().points;
     for (let index = points.length - 1; index >= 0; index -= 1) {
         const point = points[index];
         const handle = getCustomHouseCurveHandlePosition(point, bounds, range);
@@ -9136,26 +8040,11 @@ function findCustomHouseCurveHandleAtPosition(x, y, bounds, range, pointerType =
     return null;
 }
 
-function findMeasurementPeqFilterHandleAtPosition(x, y, bounds, range, pointerType = '') {
-    return window.FXRouteMeasurementPeqEditor.findMeasurementPeqFilterHandleAtPosition(x, y, bounds, range, pointerType);
-}
-
-function measurementPeqWorkingLineHit(y, bounds, range) {
-    return window.FXRouteMeasurementPeqEditor.measurementPeqWorkingLineHit(y, bounds, range);
-}
-
-function measurementPeqTouchCreateCoolingDown(pointerType = '') {
-    return window.FXRouteMeasurementPeqEditor.measurementPeqTouchCreateCoolingDown(pointerType);
-}
-
-function markMeasurementPeqTouchCreate(pointerType = '') {
-    return window.FXRouteMeasurementPeqEditor.markMeasurementPeqTouchCreate(pointerType);
-}
 
 function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
-    const conv = ensureMeasurementConvolverState();
-    const startX = measurementFrequencyToX(conv.rangeStartHz, bounds);
-    const endX = measurementFrequencyToX(conv.rangeEndHz, bounds);
+    const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
+    const startX = MeasurementDsp.measurementFrequencyToX(conv.rangeStartHz, bounds);
+    const endX = MeasurementDsp.measurementFrequencyToX(conv.rangeEndHz, bounds);
     if (y < bounds.top || y > bounds.top + bounds.height) return null;
     if (Math.abs(x - startX) <= 12) return 'start';
     if (Math.abs(x - endX) <= 12) return 'end';
@@ -9174,9 +8063,9 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
     ctx.setLineDash([6, 5]);
     ctx.beginPath();
     frequencies.forEach((frequency, index) => {
-        const x = measurementFrequencyToX(frequency, bounds);
+        const x = MeasurementDsp.measurementFrequencyToX(frequency, bounds);
         const levelDb = MeasurementDsp.getMeasurementConvolverCurveDbFromPoints(points, frequency);
-        const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, measurementDbToY(levelDb, bounds, range)));
+        const y = Math.max(bounds.top, Math.min(bounds.top + bounds.height, MeasurementDsp.measurementDbToY(levelDb, bounds, range)));
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
     });
@@ -9192,9 +8081,9 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
 
 function drawMeasurementConvolverRangeOverlay(ctx, bounds) {
     if (getMeasurementActiveEditor() === 'houseCurve' || (state.measurement?.assistMode || 'peq') !== 'convolver') return;
-    const conv = ensureMeasurementConvolverState();
-    const startX = measurementFrequencyToX(conv.rangeStartHz, bounds);
-    const endX = measurementFrequencyToX(conv.rangeEndHz, bounds);
+    const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
+    const startX = MeasurementDsp.measurementFrequencyToX(conv.rangeStartHz, bounds);
+    const endX = MeasurementDsp.measurementFrequencyToX(conv.rangeEndHz, bounds);
     ctx.save();
     ctx.fillStyle = 'rgba(96, 165, 250, 0.16)';
     ctx.fillRect(startX, bounds.top, Math.max(1, endX - startX), bounds.height);
@@ -9218,7 +8107,7 @@ function drawMeasurementConvolverRangeOverlay(ctx, bounds) {
 
 function drawCustomHouseCurveHandles(ctx, bounds, range) {
     if (getMeasurementActiveEditor() !== 'houseCurve') return;
-    const custom = ensureCustomHouseCurveState();
+    const custom = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
     if (!custom.points.length) return;
     ctx.save();
     custom.points.forEach((point) => {
@@ -9236,35 +8125,20 @@ function drawCustomHouseCurveHandles(ctx, bounds, range) {
     ctx.restore();
 }
 
-function measurementIrTimeToX(timeMs, bounds) {
-    return MeasurementUI.measurementIrTimeToX(timeMs, bounds);
-}
-
-function measurementXToIrTime(x, bounds) {
-    return MeasurementUI.measurementXToIrTime(x, bounds);
-}
-
-function measurementIrAmplitudeToY(amplitude, bounds) {
-    return MeasurementUI.measurementIrAmplitudeToY(amplitude, bounds);
-}
-
-function getNearestMeasurementIrPoint(points = [], targetTimeMs = 0) {
-    return MeasurementUI.getNearestMeasurementIrPoint(points, targetTimeMs);
-}
 
 function getMeasurementIrHoverTooltip(event) {
     const pointer = getMeasurementGraphPointerPosition(event);
     if (!pointer) return '';
     const { x, y, bounds } = pointer;
     if (x < bounds.left || x > bounds.left + bounds.width || y < bounds.top || y > bounds.top + bounds.height) return '';
-    const targetTimeMs = measurementXToIrTime(x, bounds);
-    const graphEntries = getGraphMeasurementEntries();
+    const targetTimeMs = MeasurementUI.measurementXToIrTime(x, bounds);
+    const graphEntries = MeasurementGraph.getGraphMeasurementEntries();
     const candidates = graphEntries.map((entry) => {
         const trace = (entry.traces || [])[0] || {};
-        const nearest = getNearestMeasurementIrPoint(trace.points || [], targetTimeMs);
+        const nearest = MeasurementUI.getNearestMeasurementIrPoint(trace.points || [], targetTimeMs);
         if (!nearest) return null;
-        const pointX = measurementIrTimeToX(nearest.timeMs, bounds);
-        const pointY = measurementIrAmplitudeToY(nearest.amplitude, bounds);
+        const pointX = MeasurementUI.measurementIrTimeToX(nearest.timeMs, bounds);
+        const pointY = MeasurementUI.measurementIrAmplitudeToY(nearest.amplitude, bounds);
         return {
             nearest,
             distancePx: Math.hypot(pointX - x, pointY - y),
@@ -9273,14 +8147,14 @@ function getMeasurementIrHoverTooltip(event) {
     const candidate = candidates[0] || null;
     if (!candidate) return '';
     const { nearest } = candidate;
-    return `${formatMeasurementIrMs(nearest.timeMs)} · amp ${formatMeasurementIrAmplitude(nearest.amplitude)}`;
+    return `${MeasurementUI.formatMeasurementIrMs(nearest.timeMs)} · amp ${MeasurementUI.formatMeasurementIrAmplitude(nearest.amplitude)}`;
 }
 
 function drawMeasurementIrGraph(ctx, bounds, graphEntries) {
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1;
     [-1, -0.5, 0, 0.5, 1].forEach((amplitude) => {
-        const y = measurementIrAmplitudeToY(amplitude, bounds);
+        const y = MeasurementUI.measurementIrAmplitudeToY(amplitude, bounds);
         ctx.beginPath();
         ctx.moveTo(bounds.left, y);
         ctx.lineTo(bounds.left + bounds.width, y);
@@ -9293,7 +8167,7 @@ function drawMeasurementIrGraph(ctx, bounds, graphEntries) {
     });
 
     [-2, 0, 5, 10, 15, 20, 25, 30].forEach((timeMs) => {
-        const x = measurementIrTimeToX(timeMs, bounds);
+        const x = MeasurementUI.measurementIrTimeToX(timeMs, bounds);
         ctx.strokeStyle = timeMs === 0 ? 'rgba(209,250,229,0.26)' : 'rgba(255,255,255,0.08)';
         ctx.beginPath();
         ctx.moveTo(x, bounds.top);
@@ -9315,8 +8189,8 @@ function drawMeasurementIrGraph(ctx, bounds, graphEntries) {
             ctx.setLineDash(entry.current ? [] : (isReviewTrace ? [6, 5] : [10, 6]));
             ctx.beginPath();
             trace.points.forEach(([timeMs, amplitude], pointIndex) => {
-                const x = measurementIrTimeToX(timeMs, bounds);
-                const y = measurementIrAmplitudeToY(amplitude, bounds);
+                const x = MeasurementUI.measurementIrTimeToX(timeMs, bounds);
+                const y = MeasurementUI.measurementIrAmplitudeToY(amplitude, bounds);
                 if (pointIndex === 0) ctx.moveTo(x, y);
                 else ctx.lineTo(x, y);
             });
@@ -9334,9 +8208,9 @@ function handleMeasurementGraphPointerDown(event) {
     if (x < bounds.left || x > bounds.left + bounds.width || y < bounds.top || y > bounds.top + bounds.height) return;
     const pointerType = String(event.pointerType || '');
     if (getMeasurementActiveEditor() === 'houseCurve') {
-        const custom = ensureCustomHouseCurveState();
+        const custom = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
         const hitPoint = findCustomHouseCurveHandleAtPosition(x, y, bounds, range, pointerType);
-        const point = hitPoint || addCustomHouseCurvePointAtPosition({ x, y, bounds, range });
+        const point = hitPoint || window.FXRouteMeasurementCalibration.addCustomHouseCurvePointAtPosition({ x, y, bounds, range });
         if (!point) return;
         if (pointerType === 'touch') event.preventDefault();
         custom.activePointId = point.id;
@@ -9344,17 +8218,17 @@ function handleMeasurementGraphPointerDown(event) {
         measurementGraphPointerId = event.pointerId;
         elements.measurementGraph?.setPointerCapture?.(event.pointerId);
         renderMeasurementPanel();
-        scheduleMeasurementGraphRender();
+        MeasurementGraph.scheduleMeasurementGraphRender();
         return;
     }
     if (getMeasurementActiveEditor() === 'houseCurve') return;
     if ((state.measurement?.assistMode || 'peq') === 'convolver') {
-        const conv = ensureMeasurementConvolverState();
+        const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
         const dragMode = getMeasurementConvolverRangeHandleAtPosition(x, y, bounds);
         if (!dragMode) return;
         if (pointerType === 'touch') event.preventDefault();
         conv.dragMode = dragMode;
-        conv.dragAnchorHz = measurementXToFrequency(x, bounds);
+        conv.dragAnchorHz = MeasurementDsp.measurementXToFrequency(x, bounds);
         conv.dragStartHz = conv.rangeStartHz;
         conv.dragEndHz = conv.rangeEndHz;
         measurementGraphPointerId = event.pointerId;
@@ -9375,32 +8249,32 @@ function handleMeasurementGraphPointerMove(event) {
     if (elements.measurementGraph) {
         elements.measurementGraph.title = getMeasurementFrequencyHoverTooltip(event);
     }
-    const custom = ensureCustomHouseCurveState();
+    const custom = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
     if (custom.dragPointId && measurementGraphPointerId === event.pointerId && getMeasurementActiveEditor() === 'houseCurve') {
         if (event.pointerType === 'touch') event.preventDefault();
         const pointer = getMeasurementGraphPointerPosition(event);
         if (!pointer) return;
         const point = custom.points.find((item) => item.id === custom.dragPointId);
         if (!point) return;
-        const visibleFrequency = measurementXToFrequency(pointer.x, pointer.bounds);
-        const visibleGain = Math.min(pointer.range.maxDb, Math.max(pointer.range.minDb, measurementYToDb(pointer.y, pointer.bounds, pointer.range)));
-        updateCustomHouseCurvePoint(point.id, { freqHz: visibleFrequency, gainDb: visibleGain });
-        scheduleMeasurementGraphRender();
+        const visibleFrequency = MeasurementDsp.measurementXToFrequency(pointer.x, pointer.bounds);
+        const visibleGain = Math.min(pointer.range.maxDb, Math.max(pointer.range.minDb, MeasurementDsp.measurementYToDb(pointer.y, pointer.bounds, pointer.range)));
+        window.FXRouteMeasurementCalibration.updateCustomHouseCurvePoint(point.id, { freqHz: visibleFrequency, gainDb: visibleGain });
+        MeasurementGraph.scheduleMeasurementGraphRender();
         renderMeasurementPanel();
         return;
     }
-    const conv = ensureMeasurementConvolverState();
+    const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
     if (conv.dragMode && measurementGraphPointerId === event.pointerId) {
         if (event.pointerType === 'touch') event.preventDefault();
         const pointer = getMeasurementGraphPointerPosition(event);
         if (!pointer) return;
-        const currentHz = measurementXToFrequency(pointer.x, pointer.bounds);
-        if (conv.dragMode === 'start') conv.rangeStartHz = Math.min(Math.round(clampMeasurementConvolverFrequency(currentHz)), conv.rangeEndHz - 1);
-        if (conv.dragMode === 'end') conv.rangeEndHz = Math.max(Math.round(clampMeasurementConvolverFrequency(currentHz)), conv.rangeStartHz + 1);
+        const currentHz = MeasurementDsp.measurementXToFrequency(pointer.x, pointer.bounds);
+        if (conv.dragMode === 'start') conv.rangeStartHz = Math.min(Math.round(window.FXRouteMeasurementConvolverEditor.clampMeasurementConvolverFrequency(currentHz)), conv.rangeEndHz - 1);
+        if (conv.dragMode === 'end') conv.rangeEndHz = Math.max(Math.round(window.FXRouteMeasurementConvolverEditor.clampMeasurementConvolverFrequency(currentHz)), conv.rangeStartHz + 1);
         if (conv.dragMode === 'move') {
             const ratio = Math.log10(currentHz / Math.max(1, conv.dragAnchorHz || currentHz));
-            const start = clampMeasurementConvolverFrequency((conv.dragStartHz || conv.rangeStartHz) * (10 ** ratio));
-            const end = clampMeasurementConvolverFrequency((conv.dragEndHz || conv.rangeEndHz) * (10 ** ratio));
+            const start = window.FXRouteMeasurementConvolverEditor.clampMeasurementConvolverFrequency((conv.dragStartHz || conv.rangeStartHz) * (10 ** ratio));
+            const end = window.FXRouteMeasurementConvolverEditor.clampMeasurementConvolverFrequency((conv.dragEndHz || conv.rangeEndHz) * (10 ** ratio));
             const widthRatio = (conv.dragEndHz || conv.rangeEndHz) / Math.max(1, conv.dragStartHz || conv.rangeStartHz);
             if (start <= 20) {
                 conv.rangeStartHz = 20;
@@ -9413,8 +8287,8 @@ function handleMeasurementGraphPointerMove(event) {
                 conv.rangeEndHz = Math.round(end);
             }
         }
-        ensureMeasurementConvolverState();
-        scheduleMeasurementGraphRender();
+        window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
+        MeasurementGraph.scheduleMeasurementGraphRender();
         renderMeasurementPanel();
         return;
     }
@@ -9427,8 +8301,8 @@ function handleMeasurementGraphPointerLeave() {
 
 function handleMeasurementGraphPointerUp(event) {
     if (getMeasurementGraphView() === 'ir') return;
-    const custom = ensureCustomHouseCurveState();
-    const conv = ensureMeasurementConvolverState();
+    const custom = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
+    const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
     if (measurementGraphPointerId !== null && event.pointerId === measurementGraphPointerId && event.pointerType === 'touch') {
         event.preventDefault();
     }
@@ -9444,13 +8318,6 @@ function handleMeasurementGraphPointerUp(event) {
     delete conv.dragEndHz;
 }
 
-function buildMeasurementGraphEntry(measurement = {}, { current = false, graphColor = '' } = {}) {
-    return MeasurementGraph.buildMeasurementGraphEntry(measurement, { current, graphColor });
-}
-
-function getGraphMeasurementEntries() {
-    return MeasurementGraph.getGraphMeasurementEntries();
-}
 
 function measurementModeReady() {
     return !!state.measurement.hostCaptureAvailable && !!state.measurement.selectedInputId;
@@ -9465,97 +8332,6 @@ function measurementModeNoteText() {
     return 'Host-local capture on this system.';
 }
 
-function measurementHasCalibrationSelected() {
-    return window.FXRouteMeasurementCalibration.measurementHasCalibrationSelected();
-}
-
-function applyMeasurementCalibrationState(data) {
-    return window.FXRouteMeasurementCalibration.applyMeasurementCalibrationState(data);
-}
-
-function setActiveMeasurementCalibration(calibrationFileId) {
-    return window.FXRouteMeasurementCalibration.setActiveMeasurementCalibration(calibrationFileId);
-}
-
-function uploadMeasurementCalibration(file) {
-    return window.FXRouteMeasurementCalibration.uploadMeasurementCalibration(file);
-}
-
-function downloadSelectedMeasurementCalibration() {
-    return window.FXRouteMeasurementCalibration.downloadSelectedMeasurementCalibration();
-}
-
-function deleteSelectedMeasurementCalibration() {
-    return window.FXRouteMeasurementCalibration.deleteSelectedMeasurementCalibration();
-}
-
-function applyMeasurementHouseCurveState(data) {
-    return window.FXRouteMeasurementCalibration.applyMeasurementHouseCurveState(data);
-}
-
-function uploadMeasurementHouseCurve(file) {
-    return window.FXRouteMeasurementCalibration.uploadMeasurementHouseCurve(file);
-}
-
-function ensureCustomHouseCurveState() {
-    return window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
-}
-
-function getCustomHouseCurveNameSuggestion() {
-    return window.FXRouteMeasurementCalibration.getCustomHouseCurveNameSuggestion();
-}
-
-function openCustomHouseCurveEditor() {
-    return window.FXRouteMeasurementCalibration.openCustomHouseCurveEditor();
-}
-
-function handleMeasurementTargetCurveSelection(value) {
-    return window.FXRouteMeasurementCalibration.handleMeasurementTargetCurveSelection(value);
-}
-
-function addCustomHouseCurvePoint(defaults = {}) {
-    return window.FXRouteMeasurementCalibration.addCustomHouseCurvePoint(defaults);
-}
-
-function resetCustomHouseCurveDraft() {
-    return window.FXRouteMeasurementCalibration.resetCustomHouseCurveDraft();
-}
-
-function updateCustomHouseCurvePoint(pointId, updates = {}) {
-    return window.FXRouteMeasurementCalibration.updateCustomHouseCurvePoint(pointId, updates);
-}
-
-function addCustomHouseCurvePointAtPosition({ x, y, bounds, range }) {
-    return window.FXRouteMeasurementCalibration.addCustomHouseCurvePointAtPosition({ x, y, bounds, range });
-}
-
-function deleteCustomHouseCurvePoint(pointId) {
-    return window.FXRouteMeasurementCalibration.deleteCustomHouseCurvePoint(pointId);
-}
-
-function serializeCustomHouseCurvePoints(points) {
-    return window.FXRouteMeasurementCalibration.serializeCustomHouseCurvePoints(points);
-}
-
-function createCustomHouseCurve() {
-    return window.FXRouteMeasurementCalibration.createCustomHouseCurve();
-}
-
-function downloadSelectedMeasurementHouseCurve() {
-    return window.FXRouteMeasurementCalibration.downloadSelectedMeasurementHouseCurve();
-}
-
-function deleteSelectedMeasurementHouseCurve() {
-    return window.FXRouteMeasurementCalibration.deleteSelectedMeasurementHouseCurve();
-}
-
-function applyMeasurementSetupSettings(settings = {}, fields = null) {
-    return window.FXRouteMeasurementSetup.applyMeasurementSetupSettings(settings, fields);
-}
-
-function saveMeasurementSetupSettings(patch = {}) {
-    return window.FXRouteMeasurementSetup.saveMeasurementSetupSettings(patch);
-}
 
 async function fetchMeasurements() {
     const settingsRevision = window.FXRouteMeasurementSetup.getMeasurementSettingsRevision();
@@ -9565,14 +8341,14 @@ async function fetchMeasurements() {
         const resp = await fetch('/api/measurements');
         if (!resp.ok) throw new Error('Failed to fetch measurements');
         const data = await resp.json();
-        const measurements = Array.isArray(data.measurements) ? data.measurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index)) : [];
+        const measurements = Array.isArray(data.measurements) ? data.measurements.map((measurement, index) => MeasurementUI.normalizeMeasurementEntry(measurement, index)) : [];
         state.measurement.measurements = measurements;
-        state.measurement.visibilityById = normalizeMeasurementVisibility(measurements, state.measurement.visibilityById || {});
-        state.measurement.reviewVisibilityById = normalizeMeasurementReviewVisibility(measurements, state.measurement.reviewVisibilityById || {});
+        state.measurement.visibilityById = MeasurementUI.normalizeMeasurementVisibility(measurements, state.measurement.visibilityById || {});
+        state.measurement.reviewVisibilityById = MeasurementUI.normalizeMeasurementReviewVisibility(measurements, state.measurement.reviewVisibilityById || {});
         state.measurement.storage = data.storage || null;
         window.FXRouteMeasurementCalibration.applyMeasurementFileCatalog(data);
         if (settingsRevision === window.FXRouteMeasurementSetup.getMeasurementSettingsRevision()) {
-            applyMeasurementSetupSettings(data.measurement_settings || {});
+            window.FXRouteMeasurementSetup.applyMeasurementSetupSettings(data.measurement_settings || {});
         }
         window.FXRouteMeasurementCalibration.validateMeasurementCalibrationSelection();
         if (!state.measurement.startInFlight && !state.measurement.saveInFlight && !state.measurement.activeJobId && !state.measurement.currentMeasurement) {
@@ -9607,13 +8383,6 @@ function measurementSetupStatusText() {
     return measurementInputAvailabilityMessage() || measurementState.statusText || describeMeasurementScope();
 }
 
-function applyMeasurementInputSelection(inputId) {
-    return window.FXRouteMeasurementSetup.applyMeasurementInputSelection(inputId);
-}
-
-function fetchMeasurementInputs() {
-    return window.FXRouteMeasurementSetup.fetchMeasurementInputs();
-}
 
 function isMeasurementPanelOpen() {
     return !!elements.measurementPanel && !elements.measurementPanel.classList.contains('hidden');
@@ -9694,9 +8463,9 @@ function toggleMeasurementPanel(forceOpen = null) {
         measurementInputScanOnFocusDone = false;
         resetMeasurementTransientStatus();
         renderMeasurementPanel();
-        void fetchMeasurementInputs();
+        void window.FXRouteMeasurementSetup.fetchMeasurementInputs();
         void ensureMeasurementAreaCatalog();
-        scheduleMeasurementGraphRender();
+        MeasurementGraph.scheduleMeasurementGraphRender();
         window.FXRouteModal?.open(elements.measurementPanel, {
             initialFocus: elements.measurementCloseBtn,
             onEscape: () => {
@@ -9729,60 +8498,17 @@ function toggleMeasurementPanel(forceOpen = null) {
     }
 }
 
-function getSelectedMeasurementInput() {
-    return window.FXRouteMeasurementSetup.getSelectedMeasurementInput();
-}
-
-function getSelectedMeasurementInputChannelCount() {
-    return window.FXRouteMeasurementSetup.getSelectedMeasurementInputChannelCount();
-}
-
-function normalizeMeasurementInputChannelSelections() {
-    return window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections();
-}
-
-function getMeasurementReferenceWarning() {
-    return window.FXRouteMeasurementSetup.getMeasurementReferenceWarning();
-}
-
-function appendMeasurementReferenceFields(formData) {
-    return window.FXRouteMeasurementSetup.appendMeasurementReferenceFields(formData);
-}
-
-function scheduleMeasurementGraphRender() {
-    return MeasurementGraph.scheduleMeasurementGraphRender();
-}
-
-function scheduleMeasurementGraphRenderForResize() {
-    return MeasurementGraph.scheduleMeasurementGraphRenderForResize();
-}
-
-function getMeasurementGraphRange(entries = []) {
-    return MeasurementDsp.getMeasurementGraphRange(entries);
-}
-
-function measurementFrequencyToX(frequency, bounds) {
-    return MeasurementDsp.measurementFrequencyToX(frequency, bounds);
-}
-
-function measurementDbToY(level, bounds, range) {
-    return MeasurementDsp.measurementDbToY(level, bounds, range);
-}
-
-function getMeasurementPeqFilterMagnitude(filter = {}, frequencyHz = 1000, sampleRate = 48000) {
-    return MeasurementDsp.getMeasurementPeqFilterMagnitude(filter, frequencyHz, sampleRate);
-}
 
 function drawMeasurementPeqOverlay(ctx, bounds, range) {
     if (getMeasurementActiveEditor() !== 'peq') return;
-    const peq = ensureMeasurementPeqState();
+    const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
     if (!peq.enabled || !peq.filters.length) return;
     const sampleFrequencies = Array.from({ length: 220 }, (_, index) => 20 * (10 ** ((Math.log10(20000 / 20) * index) / 219)));
     const activeFilterId = peq.activeFilterId;
 
     peq.filters.forEach((filter) => {
         if (filter.type === 'gain') {
-            const y = measurementDbToY(filter.gainDb || 0, bounds, range);
+            const y = MeasurementDsp.measurementDbToY(filter.gainDb || 0, bounds, range);
             ctx.strokeStyle = `${filter.color}88`;
             ctx.lineWidth = filter.id === activeFilterId ? 1.7 : 1.1;
             ctx.setLineDash([4, 4]);
@@ -9797,9 +8523,9 @@ function drawMeasurementPeqOverlay(ctx, bounds, range) {
         ctx.lineWidth = filter.id === activeFilterId ? 2 : 1.2;
         ctx.beginPath();
         sampleFrequencies.forEach((frequencyHz, index) => {
-            const level = getMeasurementPeqFilterMagnitude(filter, frequencyHz);
-            const x = measurementFrequencyToX(frequencyHz, bounds);
-            const y = measurementDbToY(level, bounds, range);
+            const level = MeasurementDsp.getMeasurementPeqFilterMagnitude(filter, frequencyHz);
+            const x = MeasurementDsp.measurementFrequencyToX(frequencyHz, bounds);
+            const y = MeasurementDsp.measurementDbToY(level, bounds, range);
             if (index === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
         });
@@ -9810,16 +8536,16 @@ function drawMeasurementPeqOverlay(ctx, bounds, range) {
     ctx.lineWidth = 2.1;
     ctx.beginPath();
     sampleFrequencies.forEach((frequencyHz, index) => {
-        const summed = peq.filters.reduce((sum, filter) => sum + getMeasurementPeqFilterMagnitude(filter, frequencyHz), 0);
-        const x = measurementFrequencyToX(frequencyHz, bounds);
-        const y = measurementDbToY(summed, bounds, range);
+        const summed = peq.filters.reduce((sum, filter) => sum + MeasurementDsp.getMeasurementPeqFilterMagnitude(filter, frequencyHz), 0);
+        const x = MeasurementDsp.measurementFrequencyToX(frequencyHz, bounds);
+        const y = MeasurementDsp.measurementDbToY(summed, bounds, range);
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
     });
     ctx.stroke();
 
     peq.filters.forEach((filter) => {
-        const handle = getMeasurementPeqHandlePosition(filter, bounds, range);
+        const handle = window.FXRouteMeasurementPeqEditor.getMeasurementPeqHandlePosition(filter, bounds, range);
         ctx.fillStyle = filter.color;
         ctx.strokeStyle = filter.id === activeFilterId ? '#f8fafc' : 'rgba(15,23,42,0.9)';
         ctx.lineWidth = filter.id === activeFilterId ? 2.4 : 1.5;
@@ -9830,50 +8556,6 @@ function drawMeasurementPeqOverlay(ctx, bounds, range) {
     });
 }
 
-function drawMeasurementGraph() {
-    return MeasurementGraph.drawMeasurementGraph(elements.measurementGraph);
-}
-
-function summarizeMeasurementBand(summary = {}, fallbackLabel = 'No points') {
-    return MeasurementUI.summarizeMeasurementBand(summary, fallbackLabel);
-}
-
-function formatMeasurementUpperLimit(maxHz) {
-    return MeasurementUI.formatMeasurementUpperLimit(maxHz);
-}
-
-function summarizeMeasurementEntry(measurement = {}) {
-    return MeasurementUI.summarizeMeasurementEntry(measurement);
-}
-
-function formatMeasurementQualityReason(item = {}) {
-    return MeasurementUI.formatMeasurementQualityReason(item);
-}
-
-function getMeasurementQualitySummary(measurement = {}) {
-    return MeasurementUI.getMeasurementQualitySummary(measurement);
-}
-
-function getMeasurementQualityTitle(measurement = {}) {
-    return MeasurementUI.getMeasurementQualityTitle(measurement);
-}
-
-function formatSignedMeasurementMs(valueMs, digits = 2) {
-    return MeasurementUI.formatSignedMeasurementMs(valueMs, digits);
-}
-
-
-function getMeasurementLrRepeatGlobalDeltaMs(measurement = {}, repeat = {}) {
-    return MeasurementUI.getMeasurementLrRepeatGlobalDeltaMs(measurement, repeat);
-}
-
-function formatMeasurementLrRepeatDelta(measurement = {}, repeat = {}) {
-    return MeasurementUI.formatMeasurementLrRepeatDelta(measurement, repeat);
-}
-
-function getMeasurementTimingInfo(measurement = {}) {
-    return MeasurementUI.getMeasurementTimingInfo(measurement);
-}
 
 function sleep(ms) {
     const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
@@ -9881,228 +8563,21 @@ function sleep(ms) {
 }
 
 
-function getMeasurementJobStatus(job = {}) {
-    return MeasurementUI.getMeasurementJobStatus(job);
-}
-
-function normalizeMeasurementKind(kind) {
-    return MeasurementUI.normalizeMeasurementKind(kind);
-}
-
-function getActiveMeasurementKind() {
-    return window.FXRouteMeasurementJob.getActiveMeasurementKind();
-}
-
-
-function hasActiveMeasurementJob() {
-    return window.FXRouteMeasurementJob.hasActiveMeasurementJob();
-}
-
-
-function getMeasurementJobResultMeasurement(job = {}) {
-    return MeasurementUI.getMeasurementJobResultMeasurement(job);
-}
-
-function formatMeasurementInputLevelText(inputLevel = {}) {
-    return MeasurementUI.formatMeasurementInputLevelText(inputLevel);
-}
-
-function formatMeasurementJobStatusText(job = {}, fallback = 'Measurement running…') {
-    return window.FXRouteMeasurementJob.formatMeasurementJobStatusText(job, fallback);
-}
-
-
-function syncMeasurementSweepButton() {
-    return window.FXRouteMeasurementJob.syncMeasurementSweepButton();
-}
-
-
-function syncMeasurementStartButtonFallback() {
-    return window.FXRouteMeasurementJob.syncMeasurementStartButtonFallback();
-}
-
-
-function syncSpeakerAlignButton() {
-    return MeasurementFlows.syncSpeakerAlignButton();
-}
-
-async function startSpeakerAlign(side) {
-    return MeasurementFlows.startSpeakerAlign(side);
-}
-
-async function cancelSpeakerAlign() {
-    return MeasurementFlows.cancelSpeakerAlign();
-}
-
-async function pollSpeakerAlignJob(jobId) {
-    return MeasurementFlows.pollSpeakerAlignJob(jobId);
-}
-
-async function handleSpeakerAlignResult(job) {
-    return MeasurementFlows.handleSpeakerAlignResult(job);
-}
-
-async function saveSpeakerAlignRun(side) {
-    return MeasurementFlows.saveSpeakerAlignRun(side);
-}
-
-async function openSpeakerAlignRun() {
-    return MeasurementFlows.openSpeakerAlignRun();
-}
-
-function syncSubwooferControlsDuringAutoSub() {
-    return MeasurementFlows.syncSubwooferControlsDuringAutoSub();
-}
-
-function syncAutoSubButton() {
-    return MeasurementFlows.syncAutoSubButton();
-}
-
-async function startAutoSubOptimize() {
-    return MeasurementFlows.startAutoSubOptimize();
-}
-
-async function cancelAutoSubOptimize() {
-    return MeasurementFlows.cancelAutoSubOptimize();
-}
-
-async function pollAutoSubJob(jobId) {
-    return MeasurementFlows.pollAutoSubJob(jobId);
-}
-
-async function handleAutoSubResult(job) {
-    return MeasurementFlows.handleAutoSubResult(job);
-}
-
-function renderMeasurementPanelDefensively(context = 'measurement render') {
-    return window.FXRouteMeasurementJob.renderMeasurementPanelDefensively(context);
-}
-
-
-
-
-async function startHostMeasurement(jobGeneration = state.measurement.jobGeneration) {
-    return window.FXRouteMeasurementCapture.startHostMeasurement(jobGeneration);
-}
-
-
-async function startLrRepeatMeasurement(jobGeneration = state.measurement.jobGeneration) {
-    return window.FXRouteMeasurementCapture.startLrRepeatMeasurement(jobGeneration);
-}
-
-
-function getHybridWizardState() {
-    return MeasurementFlows.getHybridWizardState();
-}
-
-function getCurrentOutputModeName() {
-    return MeasurementFlows.getCurrentOutputModeName();
-}
-
-function openHybridMeasurementWizard() {
-    return MeasurementFlows.openHybridMeasurementWizard();
-}
-
-async function closeHybridMeasurementWizard() {
-    return MeasurementFlows.closeHybridMeasurementWizard();
-}
-
-function renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false) {
-    return MeasurementFlows.renderHybridRoomDiagram(step, mode, complete);
-}
-
-function renderHybridMeasurementWizard() {
-    return MeasurementFlows.renderHybridMeasurementWizard();
-}
-
-function buildHybridMeasurementForm(step) {
-    return MeasurementFlows.buildHybridMeasurementForm(step);
-}
-
-function hybridSpeakerName(channel) {
-    return MeasurementUI.hybridSpeakerName(channel);
-}
-
-async function runHybridWizardStep(step) {
-    return MeasurementFlows.runHybridWizardStep(step);
-}
-
-async function cancelHybridWizardMeasurement() {
-    return MeasurementFlows.cancelHybridWizardMeasurement();
-}
-
-async function runHybridWizardSweep() {
-    return MeasurementFlows.runHybridWizardSweep();
-}
-
-function openHybridProfileInConvolver() {
-    return MeasurementFlows.openHybridProfileInConvolver();
-}
-
-function setupHybridMeasurementWizard() {
-    return MeasurementFlows.setupHybridMeasurementWizard();
-}
-
-async function startMeasurement() {
-    return window.FXRouteMeasurementCapture.startMeasurement();
-}
-
-
-async function startLrRepeat() {
-    return window.FXRouteMeasurementCapture.startLrRepeat();
-}
-
-
-async function cancelMeasurement() {
-    return window.FXRouteMeasurementJob.cancelMeasurement();
-}
-
-
-function requestMeasurementCancellation() {
-    return window.FXRouteMeasurementJob.requestMeasurementCancellation();
-}
-
-
-async function pollMeasurementJob(jobId, jobGeneration = state.measurement.jobGeneration) {
-    return window.FXRouteMeasurementJob.pollMeasurementJob(jobId, jobGeneration);
-}
-
-
-async function saveCurrentMeasurement() {
-    return window.FXRouteMeasurementSavedActions.saveCurrentMeasurement();
-}
-
-
-async function deleteMeasurement(measurementId, measurementName = 'Measurement') {
-    return window.FXRouteMeasurementSavedActions.deleteMeasurement(measurementId, measurementName);
-}
-
-
-async function deleteSelectedMeasurements() {
-    return window.FXRouteMeasurementSavedActions.deleteSelectedMeasurements();
-}
-
-
-async function mergeSelectedMeasurements() {
-    return window.FXRouteMeasurementSavedActions.mergeSelectedMeasurements();
-}
-
-
 function renderMeasurementPanel() {
     if (!elements.measurementSummary || !elements.measurementList) return;
     const measurementState = state.measurement || {};
-    normalizeMeasurementInputChannelSelections();
+    window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections();
     measurementState.modeNote = measurementModeNoteText();
     const current = getCurrentMeasurementEntry();
     const measurements = window.FXRouteMeasurementSavedUI.getSavedListMeasurements();
-    const graphEntries = getGraphMeasurementEntries();
+    const graphEntries = MeasurementGraph.getGraphMeasurementEntries();
     const assistMode = measurementState.assistMode === 'convolver' ? 'convolver' : 'peq';
     const activeEditor = getMeasurementActiveEditor();
     const graphView = getMeasurementGraphView();
     const frequencyView = graphView === 'freq';
-    const peq = ensureMeasurementPeqState();
-    const conv = ensureMeasurementConvolverState();
-    const activePeqFilter = getMeasurementPeqActiveFilter();
+    const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
+    const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
+    const activePeqFilter = window.FXRouteMeasurementPeqEditor.getMeasurementPeqActiveFilter();
 
     const ctx = { measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter };
     window.FXRouteMeasurementPanelUI.renderMeasurementPanelSetupSection(ctx);
@@ -10115,9 +8590,9 @@ function renderMeasurementPanel() {
     window.FXRouteMeasurementEditorsUI.renderMeasurementPanelEditorsSection(ctx);
     window.FXRouteMeasurementEditorsUI.renderMeasurementPanelConvolverSection(ctx);
     window.FXRouteMeasurementSavedUI.renderMeasurementPanelSavedListSection(ctx);
-    syncAutoSubButton();
-    syncSpeakerAlignButton();
-    scheduleMeasurementGraphRender();
+    MeasurementFlows.syncAutoSubButton();
+    MeasurementFlows.syncSpeakerAlignButton();
+    MeasurementGraph.scheduleMeasurementGraphRender();
 }
 
 function measurementBankSumsBothInputs() {
@@ -10155,8 +8630,8 @@ function setupMeasurementActions() {
     elements.measurementSetupBackBtn?.addEventListener('click', () => setMeasurementSetupOpen(false));
     if (elements.measurementSweepToggleBtn) {
         elements.measurementSweepToggleBtn.addEventListener('click', () => {
-            if (state.measurement.startInFlight || hasActiveMeasurementJob()) {
-                void requestMeasurementCancellation();
+            if (state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) {
+                void window.FXRouteMeasurementJob.requestMeasurementCancellation();
                 return;
             }
             const shouldOpen = elements.measurementSweepMenu?.classList.contains('hidden');
@@ -10185,21 +8660,21 @@ function setupMeasurementActions() {
         const scanMeasurementInputsOnceForSelect = () => {
             if (measurementInputScanOnFocusDone) return;
             measurementInputScanOnFocusDone = true;
-            void fetchMeasurementInputs();
+            void window.FXRouteMeasurementSetup.fetchMeasurementInputs();
         };
         elements.measurementInputSelect.addEventListener('pointerdown', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('focus', scanMeasurementInputsOnceForSelect);
         elements.measurementInputSelect.addEventListener('change', (event) => {
-            applyMeasurementInputSelection(event.target.value || '');
+            window.FXRouteMeasurementSetup.applyMeasurementInputSelection(event.target.value || '');
         });
     }
     if (elements.measurementInputRefreshBtn) {
         elements.measurementInputRefreshBtn.addEventListener('click', () => {
-            void fetchMeasurementInputs();
+            void window.FXRouteMeasurementSetup.fetchMeasurementInputs();
         });
     }
     const saveMeasurementReferenceSelections = () => {
-        void saveMeasurementSetupSettings({
+        void window.FXRouteMeasurementSetup.saveMeasurementSetupSettings({
             selectedMicInputChannel: state.measurement.selectedMicInputChannel,
             selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
             selectedReferenceInputChannelLeft: state.measurement.selectedReferenceInputChannelLeft || '',
@@ -10209,7 +8684,7 @@ function setupMeasurementActions() {
     if (elements.measurementMicInputChannelSelect) {
         elements.measurementMicInputChannelSelect.addEventListener('change', (event) => {
             state.measurement.selectedMicInputChannel = event.target.value || '1';
-            normalizeMeasurementInputChannelSelections();
+            window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections();
             saveMeasurementReferenceSelections();
             renderMeasurementPanel();
         });
@@ -10218,7 +8693,7 @@ function setupMeasurementActions() {
         if (!select) return;
         select.addEventListener('change', (event) => {
             state.measurement[stateKey] = event.target.value || '';
-            normalizeMeasurementInputChannelSelections();
+            window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections();
             renderMeasurementPanel();
             saveMeasurementReferenceSelections();
         });
@@ -10228,14 +8703,14 @@ function setupMeasurementActions() {
     bindReferenceInputChannelSelect(elements.measurementReferenceInputChannelRightSelect, 'selectedReferenceInputChannelRight');
     if (elements.measurementSweepStartBtn) {
         elements.measurementSweepStartBtn.addEventListener('click', () => {
-            if (state.measurement.startInFlight || hasActiveMeasurementJob()) return;
+            if (state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
             setMeasurementSweepMenuOpen(false);
-            void startMeasurement();
+            void window.FXRouteMeasurementCapture.startMeasurement();
         });
     }
     document.querySelectorAll('#measurement-sweep-side-row [data-sweep-side]').forEach((button) => {
         button.addEventListener('click', () => {
-            if (state.measurement.startInFlight || hasActiveMeasurementJob()) return;
+            if (state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
             const side = button.getAttribute('data-sweep-side') || 'stereo';
             const area = measurementAreaFromCatalog();
             if (!Array.isArray(area?.sides) || !area.sides.includes(side)) return;
@@ -10248,18 +8723,18 @@ function setupMeasurementActions() {
             if (getMeasurementGraphView() === 'ir') return;
             state.measurement.displaySmoothing = button.getAttribute('data-measurement-smoothing') || '1/6-oct';
             renderMeasurementPanel();
-            scheduleMeasurementGraphRender();
+            MeasurementGraph.scheduleMeasurementGraphRender();
         });
     });
     document.querySelectorAll('[data-measurement-view]').forEach((button) => {
         button.addEventListener('click', () => {
             state.measurement.measurementView = button.getAttribute('data-measurement-view') || 'freq';
-            ensureMeasurementPeqState().dragFilterId = null;
-            ensureCustomHouseCurveState().dragPointId = null;
-            ensureMeasurementConvolverState().dragMode = null;
+            window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState().dragFilterId = null;
+            window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState().dragPointId = null;
+            window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState().dragMode = null;
             measurementGraphPointerId = null;
             renderMeasurementPanel();
-            scheduleMeasurementGraphRender();
+            MeasurementGraph.scheduleMeasurementGraphRender();
         });
     });
     if (elements.measurementCalibrationSelect) {
@@ -10268,14 +8743,14 @@ function setupMeasurementActions() {
             if (elements.measurementCalibrationFile) elements.measurementCalibrationFile.value = '';
             state.measurement.calibrationFilename = '';
             renderMeasurementPanel();
-            void setActiveMeasurementCalibration(state.measurement.selectedCalibrationRef);
+            void window.FXRouteMeasurementCalibration.setActiveMeasurementCalibration(state.measurement.selectedCalibrationRef);
         });
     }
     if (elements.measurementCalibrationFile) {
         elements.measurementCalibrationFile.addEventListener('change', () => {
             const file = elements.measurementCalibrationFile.files?.[0];
             if (file) {
-                void uploadMeasurementCalibration(file);
+                void window.FXRouteMeasurementCalibration.uploadMeasurementCalibration(file);
             } else {
                 state.measurement.calibrationFilename = '';
                 renderMeasurementPanel();
@@ -10283,10 +8758,10 @@ function setupMeasurementActions() {
         });
     }
     if (elements.measurementCalibrationDeleteBtn) {
-        elements.measurementCalibrationDeleteBtn.addEventListener('click', () => { void deleteSelectedMeasurementCalibration(); });
+        elements.measurementCalibrationDeleteBtn.addEventListener('click', () => { void window.FXRouteMeasurementCalibration.deleteSelectedMeasurementCalibration(); });
     }
     if (elements.measurementCalibrationExportBtn) {
-        elements.measurementCalibrationExportBtn.addEventListener('click', () => { void downloadSelectedMeasurementCalibration(); });
+        elements.measurementCalibrationExportBtn.addEventListener('click', () => { void window.FXRouteMeasurementCalibration.downloadSelectedMeasurementCalibration(); });
     }
     if (elements.measurementHouseCurveSelect) {
         elements.measurementHouseCurveSelect.addEventListener('change', (event) => {
@@ -10294,16 +8769,16 @@ function setupMeasurementActions() {
             if (elements.measurementHouseCurveFile) elements.measurementHouseCurveFile.value = '';
             state.measurement.houseCurveFilename = '';
             setMeasurementActiveEditor('none');
-            updateMeasurementConvolverField('targetCurve', houseCurveId ? `house:${houseCurveId}` : 'neutral');
+            window.FXRouteMeasurementConvolverEditor.updateMeasurementConvolverField('targetCurve', houseCurveId ? `house:${houseCurveId}` : 'neutral');
             renderMeasurementPanel();
-            scheduleMeasurementGraphRender();
+            MeasurementGraph.scheduleMeasurementGraphRender();
         });
     }
     if (elements.measurementHouseCurveFile) {
         elements.measurementHouseCurveFile.addEventListener('change', () => {
             const file = elements.measurementHouseCurveFile.files?.[0];
             if (file) {
-                void uploadMeasurementHouseCurve(file);
+                void window.FXRouteMeasurementCalibration.uploadMeasurementHouseCurve(file);
             } else {
                 state.measurement.houseCurveFilename = '';
                 renderMeasurementPanel();
@@ -10311,10 +8786,10 @@ function setupMeasurementActions() {
         });
     }
     if (elements.measurementHouseCurveDeleteBtn) {
-        elements.measurementHouseCurveDeleteBtn.addEventListener('click', () => { void deleteSelectedMeasurementHouseCurve(); });
+        elements.measurementHouseCurveDeleteBtn.addEventListener('click', () => { void window.FXRouteMeasurementCalibration.deleteSelectedMeasurementHouseCurve(); });
     }
     if (elements.measurementHouseCurveExportBtn) {
-        elements.measurementHouseCurveExportBtn.addEventListener('click', () => { void downloadSelectedMeasurementHouseCurve(); });
+        elements.measurementHouseCurveExportBtn.addEventListener('click', () => { void window.FXRouteMeasurementCalibration.downloadSelectedMeasurementHouseCurve(); });
     }
     if (elements.measurementNameInput) {
         elements.measurementNameInput.addEventListener('input', (event) => {
@@ -10324,30 +8799,30 @@ function setupMeasurementActions() {
     if (elements.measurementRepeatStartBtn) {
         elements.measurementRepeatStartBtn.addEventListener('click', () => {
             setMeasurementSweepMenuOpen(false);
-            if (getActiveMeasurementKind() === 'lr_repeat') {
-                void cancelMeasurement();
+            if (window.FXRouteMeasurementJob.getActiveMeasurementKind() === 'lr_repeat') {
+                void window.FXRouteMeasurementJob.cancelMeasurement();
                 return;
             }
-            void startLrRepeat();
+            void window.FXRouteMeasurementCapture.startLrRepeat();
         });
     }
     if (elements.measurementAutoSubStartBtn) {
         elements.measurementAutoSubStartBtn.addEventListener('click', () => {
             const measurementState = state.measurement || {};
             if (measurementState.autoSubInFlight) {
-                void cancelAutoSubOptimize();
+                void MeasurementFlows.cancelAutoSubOptimize();
                 return;
             }
-            void startAutoSubOptimize();
+            void MeasurementFlows.startAutoSubOptimize();
         });
     }
-    elements.measurementSpeakerAlignLeftBtn?.addEventListener('click', () => { void startSpeakerAlign('left'); });
-    elements.measurementSpeakerAlignRightBtn?.addEventListener('click', () => { void startSpeakerAlign('right'); });
-    elements.measurementSpeakerAlignCancelBtn?.addEventListener('click', () => { void cancelSpeakerAlign(); });
-    elements.measurementSpeakerAlignSaveBtn?.addEventListener('click', () => { void saveSpeakerAlignRun(); });
-    elements.measurementSpeakerAlignOpenBtn?.addEventListener('click', () => { void openSpeakerAlignRun(); });
+    elements.measurementSpeakerAlignLeftBtn?.addEventListener('click', () => { void MeasurementFlows.startSpeakerAlign('left'); });
+    elements.measurementSpeakerAlignRightBtn?.addEventListener('click', () => { void MeasurementFlows.startSpeakerAlign('right'); });
+    elements.measurementSpeakerAlignCancelBtn?.addEventListener('click', () => { void MeasurementFlows.cancelSpeakerAlign(); });
+    elements.measurementSpeakerAlignSaveBtn?.addEventListener('click', () => { void MeasurementFlows.saveSpeakerAlignRun(); });
+    elements.measurementSpeakerAlignOpenBtn?.addEventListener('click', () => { void MeasurementFlows.openSpeakerAlignRun(); });
     if (elements.measurementSaveBtn) {
-        elements.measurementSaveBtn.addEventListener('click', () => { void saveCurrentMeasurement(); });
+        elements.measurementSaveBtn.addEventListener('click', () => { void window.FXRouteMeasurementSavedActions.saveCurrentMeasurement(); });
     }
     if (elements.measurementClearBtn) {
         elements.measurementClearBtn.addEventListener('click', () => resetMeasurementGraph());
@@ -10376,11 +8851,11 @@ function setupMeasurementActions() {
         });
     }
     if (elements.measurementTargetCurve) {
-        elements.measurementTargetCurve.addEventListener('change', (event) => handleMeasurementTargetCurveSelection(event.target.value));
+        elements.measurementTargetCurve.addEventListener('change', (event) => window.FXRouteMeasurementCalibration.handleMeasurementTargetCurveSelection(event.target.value));
     }
     if (elements.measurementCustomHouseCurveName) {
         elements.measurementCustomHouseCurveName.addEventListener('input', (event) => {
-            const custom = ensureCustomHouseCurveState();
+            const custom = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
             custom.name = event.target.value || '';
             custom.nameTouched = true;
             if (elements.measurementCustomHouseCurveCreateBtn) {
@@ -10389,45 +8864,45 @@ function setupMeasurementActions() {
         });
     }
     if (elements.measurementCustomHouseCurveCreateBtn) {
-        elements.measurementCustomHouseCurveCreateBtn.addEventListener('click', () => { void createCustomHouseCurve(); });
+        elements.measurementCustomHouseCurveCreateBtn.addEventListener('click', () => { void window.FXRouteMeasurementCalibration.createCustomHouseCurve(); });
     }
     [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverMaxCut, elements.measurementConvolverDipGuard, elements.measurementConvolverSampleRate, elements.measurementConvolverPhaseMode, elements.measurementConvolverIrLength].forEach((input) => {
         if (!input) return;
         const commit = () => {
             setMeasurementActiveEditor('none');
-            updateMeasurementConvolverField(input.dataset.measurementConvolverField, input.value);
+            window.FXRouteMeasurementConvolverEditor.updateMeasurementConvolverField(input.dataset.measurementConvolverField, input.value);
             renderMeasurementPanel();
-            scheduleMeasurementGraphRender();
+            MeasurementGraph.scheduleMeasurementGraphRender();
         };
         input.addEventListener('change', commit);
         if (input instanceof HTMLInputElement) input.addEventListener('input', commit);
     });
     if (elements.measurementConvolverPresetName) {
         elements.measurementConvolverPresetName.addEventListener('input', (event) => {
-            const conv = ensureMeasurementConvolverState();
+            const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
             conv.draft.presetName = event.target.value || '';
             conv.draft.nameTouched = true;
             if (elements.measurementConvolverCreateBtn) {
                 const hasDraft = !!conv.draft.left || !!conv.draft.right;
-                elements.measurementConvolverCreateBtn.disabled = !hasDraft || !!getMeasurementConvolverDraftPhaseMismatch(conv) || !conv.draft.presetName.trim() || convolverCreateInFlight;
+                elements.measurementConvolverCreateBtn.disabled = !hasDraft || !!window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverDraftPhaseMismatch(conv) || !conv.draft.presetName.trim() || convolverCreateInFlight;
             }
         });
     }
     if (elements.measurementConvolverTakeLeftBtn) {
-        elements.measurementConvolverTakeLeftBtn.addEventListener('click', () => takeMeasurementConvolverToDraft('left'));
+        elements.measurementConvolverTakeLeftBtn.addEventListener('click', () => window.FXRouteMeasurementConvolverEditor.takeMeasurementConvolverToDraft('left'));
     }
     if (elements.measurementConvolverTakeRightBtn) {
-        elements.measurementConvolverTakeRightBtn.addEventListener('click', () => takeMeasurementConvolverToDraft('right'));
+        elements.measurementConvolverTakeRightBtn.addEventListener('click', () => window.FXRouteMeasurementConvolverEditor.takeMeasurementConvolverToDraft('right'));
     }
     if (elements.measurementConvolverTakeBothBtn) {
-        elements.measurementConvolverTakeBothBtn.addEventListener('click', () => takeMeasurementConvolverToDraft('both'));
+        elements.measurementConvolverTakeBothBtn.addEventListener('click', () => window.FXRouteMeasurementConvolverEditor.takeMeasurementConvolverToDraft('both'));
     }
     if (elements.measurementConvolverCreateBtn) {
-        elements.measurementConvolverCreateBtn.addEventListener('click', () => { void createMeasurementConvolverPresetFromDraft(); });
+        elements.measurementConvolverCreateBtn.addEventListener('click', () => { void window.FXRouteMeasurementConvolverEditor.createMeasurementConvolverPresetFromDraft(); });
     }
     if (elements.measurementPeqPresetName) {
         elements.measurementPeqPresetName.addEventListener('input', (event) => {
-            const peq = ensureMeasurementPeqState();
+            const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
             peq.draft.presetName = event.target.value || '';
             peq.draft.nameTouched = true;
             if (elements.measurementPeqCreateBtn) {
@@ -10437,16 +8912,16 @@ function setupMeasurementActions() {
         });
     }
     if (elements.measurementPeqTakeLeftBtn) {
-        elements.measurementPeqTakeLeftBtn.addEventListener('click', () => takeMeasurementPeqToPreset('left'));
+        elements.measurementPeqTakeLeftBtn.addEventListener('click', () => window.FXRouteMeasurementPeqEditor.takeMeasurementPeqToPreset('left'));
     }
     if (elements.measurementPeqTakeRightBtn) {
-        elements.measurementPeqTakeRightBtn.addEventListener('click', () => takeMeasurementPeqToPreset('right'));
+        elements.measurementPeqTakeRightBtn.addEventListener('click', () => window.FXRouteMeasurementPeqEditor.takeMeasurementPeqToPreset('right'));
     }
     if (elements.measurementPeqTakeBothBtn) {
-        elements.measurementPeqTakeBothBtn.addEventListener('click', () => takeMeasurementPeqToPreset('both'));
+        elements.measurementPeqTakeBothBtn.addEventListener('click', () => window.FXRouteMeasurementPeqEditor.takeMeasurementPeqToPreset('both'));
     }
     if (elements.measurementPeqCreateBtn) {
-        elements.measurementPeqCreateBtn.addEventListener('click', () => { void createMeasurementPeqPresetFromDraft(); });
+        elements.measurementPeqCreateBtn.addEventListener('click', () => { void window.FXRouteMeasurementPeqEditor.createMeasurementPeqPresetFromDraft(); });
     }
     if (elements.measurementGraph) {
         elements.measurementGraph.addEventListener('pointerdown', handleMeasurementGraphPointerDown);
@@ -10454,17 +8929,17 @@ function setupMeasurementActions() {
         elements.measurementGraph.addEventListener('pointerup', handleMeasurementGraphPointerUp);
         elements.measurementGraph.addEventListener('pointercancel', handleMeasurementGraphPointerUp);
         elements.measurementGraph.addEventListener('pointerleave', handleMeasurementGraphPointerLeave);
-        elements.measurementGraph.addEventListener('wheel', handleMeasurementPeqGraphWheel, { passive: false });
+        elements.measurementGraph.addEventListener('wheel', (...args) => window.FXRouteMeasurementPeqEditor.handleMeasurementPeqGraphWheel(...args), { passive: false });
     }
     const measurementGraphWrap = elements.measurementGraph?.closest('.measurement-graph-wrap');
     if (measurementGraphWrap && typeof ResizeObserver === 'function') {
-        measurementGraphResizeObserver = new ResizeObserver(() => scheduleMeasurementGraphRenderForResize());
+        measurementGraphResizeObserver = new ResizeObserver(() => MeasurementGraph.scheduleMeasurementGraphRenderForResize());
         measurementGraphResizeObserver.observe(measurementGraphWrap);
     }
-    window.addEventListener('resize', scheduleMeasurementGraphRenderForResize);
-    window.addEventListener('orientationchange', scheduleMeasurementGraphRenderForResize);
-    document.addEventListener('fullscreenchange', scheduleMeasurementGraphRenderForResize);
-    window.visualViewport?.addEventListener('resize', scheduleMeasurementGraphRenderForResize);
+    window.addEventListener('resize', () => MeasurementGraph.scheduleMeasurementGraphRenderForResize());
+    window.addEventListener('orientationchange', () => MeasurementGraph.scheduleMeasurementGraphRenderForResize());
+    document.addEventListener('fullscreenchange', () => MeasurementGraph.scheduleMeasurementGraphRenderForResize());
+    window.visualViewport?.addEventListener('resize', () => MeasurementGraph.scheduleMeasurementGraphRenderForResize());
     renderMeasurementPanel();
 }
 
@@ -11567,13 +10042,6 @@ async function deleteEffectsPreset() {
     // call sites unchanged.
     const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
     return mod.deleteEffectsPreset();
-}
-function updatePowerButtonConnectionState() {
-    if (!elements.powerMenuToggle) return;
-    const online = !!state.wsConnected;
-    elements.powerMenuToggle.classList.toggle('is-online', online);
-    elements.powerMenuToggle.title = online ? 'FXRoute online' : 'FXRoute offline';
-    elements.powerMenuToggle.setAttribute('aria-label', online ? 'System power (online)' : 'System power (offline)');
 }
 function showToast(message, type = 'info') {
     const toast = document.createElement('div');
@@ -12690,111 +11158,4 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initSpotify);
 } else {
     initSpotify();
-}
-
-// System power menu (suspend / shut down via systemd-logind / D-Bus)
-// =================================================================
-// The backend reports the textual logind CanSuspend / CanPowerOff state
-// and exposes two narrow POST endpoints (suspend / power-off).  This
-// module only fetches capabilities, toggles a tiny dropdown and asks
-// for confirmation before the destructive POST.
-const POWER_CAPABILITIES_REFRESH_MS = 60 * 1000;
-const POWER_CONFIRM_SHUTDOWN = 'Shut down the host now? Active playback will stop.';
-const POWER_CONFIRM_SUSPEND = 'Suspend the host now? Active playback will stop.';
-
-function setupPowerMenu() {
-    if (!elements.powerMenuRoot || !elements.powerMenuToggle || !elements.powerMenu) return;
-    elements.powerMenuToggle.addEventListener('click', ev => {
-        ev.stopPropagation();
-        const open = !elements.powerMenu.classList.contains('hidden');
-        setPowerMenuOpen(!open);
-    });
-    elements.powerMenu.addEventListener('click', ev => ev.stopPropagation());
-    if (elements.powerSuspend) {
-        elements.powerSuspend.addEventListener('click', () => {
-            setPowerMenuOpen(false);
-            handlePowerAction('suspend');
-        });
-    }
-    if (elements.powerShutdown) {
-        elements.powerShutdown.addEventListener('click', () => {
-            setPowerMenuOpen(false);
-            handlePowerAction('power-off');
-        });
-    }
-    document.addEventListener('click', () => setPowerMenuOpen(false));
-    document.addEventListener('keydown', ev => {
-        if (ev.key === 'Escape') setPowerMenuOpen(false);
-    });
-    refreshPowerCapabilities();
-    setInterval(refreshPowerCapabilities, POWER_CAPABILITIES_REFRESH_MS);
-}
-
-function setPowerMenuOpen(open) {
-    if (!elements.powerMenu || !elements.powerMenuToggle) return;
-    elements.powerMenu.classList.toggle('hidden', !open);
-    elements.powerMenuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-}
-
-function refreshPowerCapabilities() {
-    fetch('/api/system/power')
-        .then(resp => resp.ok ? resp.json() : Promise.reject(new Error(`HTTP ${resp.status}`)))
-        .then(applyPowerCapabilities)
-        .catch(() => applyPowerCapabilities({ available: false, suspend: 'unavailable', power_off: 'unavailable', suspend_supported: false, power_off_supported: false }));
-}
-
-function applyPowerCapabilities(caps) {
-    state.powerCapabilities = caps || {};
-    const suspendSupported = !!(caps && caps.suspend_supported);
-    const powerOffSupported = !!(caps && caps.power_off_supported);
-    if (!elements.powerMenuRoot) return;
-    const anySupported = suspendSupported || powerOffSupported;
-    elements.powerMenuRoot.classList.toggle('hidden', !anySupported);
-    if (elements.powerSuspend) {
-        elements.powerSuspend.classList.toggle('hidden', !suspendSupported);
-    }
-    if (elements.powerShutdown) {
-        elements.powerShutdown.classList.toggle('hidden', !powerOffSupported);
-    }
-    // Close the menu when both items disappear mid-refresh.
-    if (!anySupported) setPowerMenuOpen(false);
-}
-
-async function handlePowerAction(action) {
-    const isShutdown = action === 'power-off';
-    const button = isShutdown ? elements.powerShutdown : elements.powerSuspend;
-    const confirmMsg = isShutdown ? POWER_CONFIRM_SHUTDOWN : POWER_CONFIRM_SUSPEND;
-    if (!confirm(confirmMsg)) return;
-
-    if (button) {
-        button.dataset.pending = 'true';
-        button.classList.add('active');
-    }
-    const endpoint = isShutdown ? '/api/system/power/power-off' : '/api/system/power/suspend';
-    const pendingLabel = isShutdown ? 'Shutting down…' : 'Suspending…';
-
-    try {
-        const resp = await fetch(endpoint, { method: 'POST' });
-        if (!resp.ok) {
-            const detail = await resp.json().catch(() => ({}));
-            const message = (detail && detail.detail) || `Power action failed (${resp.status})`;
-            showToast(message, 'error');
-            return;
-        }
-        // Expect the host to drop the websocket within a few seconds.
-        showToast(pendingLabel, 'info');
-    } catch (e) {
-        showToast(e && e.message ? e.message : 'Power action failed', 'error');
-    } finally {
-        if (button) {
-            button.dataset.pending = 'false';
-            button.classList.remove('active');
-        }
-    }
-}
-
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', setupPowerMenu);
-} else {
-    setupPowerMenu();
 }

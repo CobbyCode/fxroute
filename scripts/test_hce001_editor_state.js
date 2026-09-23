@@ -71,6 +71,20 @@ for (const name of ['ensureCustomHouseCurveState', 'openCustomHouseCurveEditor',
     'addCustomHouseCurvePoint', 'handleMeasurementTargetCurveSelection']) {
     context[name] = (...args) => calibration[name](...args);
 }
+// Extracted app.js editors call the canonical calibration module through
+// window (no app.js wrappers remain); bridge to the same test doubles.
+context.window = {
+    FXRouteMeasurementCalibration: {
+        ensureCustomHouseCurveState: (...args) => context.ensureCustomHouseCurveState(...args),
+    },
+    FXRouteMeasurementPeqEditor: {
+        ensureMeasurementPeqState: (...args) => context.ensureMeasurementPeqState(...args),
+    },
+    FXRouteMeasurementConvolverEditor: {
+        ensureMeasurementConvolverState: (...args) => context.ensureMeasurementConvolverState(...args),
+        updateMeasurementConvolverField: (...args) => context.updateMeasurementConvolverField(...args),
+    },
+};
 
 // 1. Custom opens deterministically and PEQ is closed.
 state.measurement.peqAssistant.filters = [{ id: 'f1' }];
