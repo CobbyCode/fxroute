@@ -9,9 +9,9 @@
 const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
-
-const MeasurementUI = require('../static/measurement_ui.js');
+require('../static/measurement_dsp.js');
+require('../static/measurement_ui.js');
+const peqEditor = require('../static/measurement_peq_editor.js');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 const editorsSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_editors_ui.js'), 'utf8');
@@ -45,31 +45,14 @@ function extractFunction(name, from = source) {
 
 function makeContext() {
     const state = { measurement: {} };
-    const context = {
-        MeasurementUI,
-        state,
-        getMeasurementPeqNameSuffix: (...args) => MeasurementUI.getMeasurementPeqNameSuffix(...args),
-        measurementPeqFilterToBand: (filter = {}) => ({
-            filterType: filter.type || 'bell',
-            frequencyHz: Number(filter.freqHz) || 1000,
-            gainDb: Number(filter.gainDb) || 0,
-            q: Number(filter.q) || 1,
-            delayMs: 0,
-        }),
+    peqEditor.init({
+        getState: () => state,
         showToast: () => {},
-        showMeasurementPeqTakeFeedback: () => {},
+        getElements: () => ({}),
+        setTimeout: () => 1,
         renderMeasurementPanel: () => {},
-    };
-    vm.createContext(context);
-    vm.runInContext([
-        'getDefaultMeasurementPeqState',
-        'ensureMeasurementPeqState',
-        'getMeasurementPeqDraftMode',
-        'getMeasurementPeqPresetName',
-        'resolveMeasurementPeqPresetName',
-        'takeMeasurementPeqToPreset',
-    ].map((name) => extractFunction(name)).join('\n'), context);
-    return context;
+    });
+    return { ...peqEditor, state };
 }
 
 function peqWithFilters(ctx, count = 2) {
@@ -139,7 +122,7 @@ console.log('peq preset name edit tests: ok');
     assert.match(renderFn, /const nameValue = peq\.draft\?\.presetName \|\| deps\.getMeasurementPeqPresetName\(/);
     assert.match(renderFn, /measurementPeqPresetName\.disabled = deps\.isPeqCreateInFlight\(\)/);
     assert.doesNotMatch(renderFn, /measurementPeqPresetName\.disabled = !hasDraft/);
-    const takeFn = extractFunction('takeMeasurementPeqToPreset');
+    const takeFn = extractFunction('takeMeasurementPeqToPreset', fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_peq_editor.js'), 'utf8'));
     assert.match(takeFn, /if\s*\(!peq\.draft\.nameTouched\)\s*peq\.draft\.presetName\s*=/);
     console.log('peq preset name field-availability contract: ok');
 }

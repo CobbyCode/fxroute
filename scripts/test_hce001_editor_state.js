@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
+const calibration = require('../static/measurement_calibration.js');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 
@@ -56,10 +57,20 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext([
-    'ensureCustomHouseCurveState', 'getMeasurementActiveEditor', 'setMeasurementActiveEditor',
-    'openCustomHouseCurveEditor', 'addCustomHouseCurvePoint', 'handleMeasurementTargetCurveSelection',
+    'getMeasurementActiveEditor', 'setMeasurementActiveEditor',
     'getMeasurementHouseCurvePreviewPoints',
 ].map(extractFunction).join('\n'), context);
+calibration.init({
+    getState: () => state,
+    setMeasurementActiveEditor: (editor) => context.setMeasurementActiveEditor(editor),
+    updateMeasurementConvolverField: context.updateMeasurementConvolverField,
+    renderMeasurementPanel: context.renderMeasurementPanel,
+    scheduleMeasurementGraphRender: context.scheduleMeasurementGraphRender,
+});
+for (const name of ['ensureCustomHouseCurveState', 'openCustomHouseCurveEditor',
+    'addCustomHouseCurvePoint', 'handleMeasurementTargetCurveSelection']) {
+    context[name] = (...args) => calibration[name](...args);
+}
 
 // 1. Custom opens deterministically and PEQ is closed.
 state.measurement.peqAssistant.filters = [{ id: 'f1' }];

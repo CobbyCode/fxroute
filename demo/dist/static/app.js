@@ -251,6 +251,51 @@ window.FXRouteMeasurementSetup?.init({
     measurementModeNoteText: () => measurementModeNoteText(),
     describeMeasurementScope: (note) => describeMeasurementScope(note),
 });
+window.FXRouteMeasurementCalibration?.init({
+    getState: () => state,
+    getElements: () => elements,
+    fetch: (...args) => fetch(...args),
+    showToast: (message, kind) => showToast(message, kind),
+    renderMeasurementPanel: () => renderMeasurementPanel(),
+    scheduleMeasurementGraphRender: () => scheduleMeasurementGraphRender(),
+    fetchMeasurements: () => fetchMeasurements(),
+    updateMeasurementConvolverField: (field, value) => updateMeasurementConvolverField(field, value),
+    ensureMeasurementConvolverState: () => ensureMeasurementConvolverState(),
+    setMeasurementActiveEditor: (editor) => setMeasurementActiveEditor(editor),
+    measurementXToFrequency: (x, bounds) => measurementXToFrequency(x, bounds),
+    measurementYToDb: (y, bounds, range) => measurementYToDb(y, bounds, range),
+    triggerBlobDownload: (blob, name) => triggerBlobDownload(blob, name),
+    getDownloadFilenameFromResponse: (response, fallback) => getDownloadFilenameFromResponse(response, fallback),
+});
+window.FXRouteMeasurementPeqEditor?.init({
+    getState: () => state,
+    getElements: () => elements,
+    fetch: (...args) => fetch(...args),
+    showToast: (message, kind) => showToast(message, kind),
+    renderMeasurementPanel: () => renderMeasurementPanel(),
+    scheduleMeasurementGraphRender: () => scheduleMeasurementGraphRender(),
+    getMeasurementActiveEditor: () => getMeasurementActiveEditor(),
+    setMeasurementActiveEditor: (editor) => setMeasurementActiveEditor(editor),
+    measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
+    requireConcreteFilterBank: () => requireConcreteFilterBank(),
+    validatePeqBands: (side, bands) => validatePeqBands(side, bands),
+    normalizePeqEqMode: (mode) => normalizePeqEqMode(mode),
+    collectEffectsExtras: () => collectEffectsExtras(),
+    bankBindingJson: () => bankBindingJson(),
+    measurementCommitSourceId: () => measurementCommitSourceId(),
+    measurementPeqParams: (left, right, mode) => measurementPeqParams(left, right, mode),
+    formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
+    fetchEffects: () => fetchEffects(),
+    fetchOutputSystemCatalog: (force) => fetchOutputSystemCatalog(force),
+    isPeqCreateInFlight: () => peqCreateInFlight,
+    setPeqCreateInFlight: (active) => { peqCreateInFlight = active; },
+    getGraphPointerId: () => measurementGraphPointerId,
+    setGraphPointerId: (id) => { measurementGraphPointerId = id; },
+    getMeasurementGraphPointerPosition: (event) => getMeasurementGraphPointerPosition(event),
+    getPeqHandleHitRadiusPx: () => MEASUREMENT_PEQ_HANDLE_HIT_RADIUS_PX,
+    getPeqTouchHandleHitRadiusPx: () => MEASUREMENT_PEQ_TOUCH_HANDLE_HIT_RADIUS_PX,
+    getPeqTouchCreateCooldownMs: () => MEASUREMENT_PEQ_TOUCH_CREATE_COOLDOWN_MS,
+});
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
 // call sites stay unchanged.
@@ -261,7 +306,6 @@ const MEASUREMENT_JOB_SUCCESS_STATES = MeasurementUI.MEASUREMENT_JOB_SUCCESS_STA
 const measurementComparePalette = MeasurementUI.measurementComparePalette;
 const measurementCurrentColor = MeasurementUI.measurementCurrentColor;
 const measurementPeqPalette = MeasurementUI.measurementPeqPalette;
-const measurementPeqTypes = MeasurementUI.measurementPeqTypes;
 const measurementPeqTypeLabels = MeasurementUI.measurementPeqTypeLabels;
 const measurementConvolverPhaseModes = MeasurementUI.measurementConvolverPhaseModes;
 const measurementConvolverAlignedPhaseModes = MeasurementUI.measurementConvolverAlignedPhaseModes;
@@ -619,8 +663,6 @@ let measurementGraphResizeObserver = null;
 let playbackFooterResizeObserver = null;
 let playbackFooterSpaceFrame = null;
 let measurementGraphPointerId = null;
-let measurementPeqTakeFeedbackTimer = null;
-let measurementPeqLastTouchCreateAt = 0;
 let measurementWindowHeartbeatTimer = null;
 // Seek - globals
 let seekDragging = false;
@@ -8403,36 +8445,23 @@ function getVisibleMeasurementColorById() {
 }
 
 function getDefaultMeasurementPeqFilter(index = 0) {
-    return MeasurementUI.getDefaultMeasurementPeqFilter(index);
+    return window.FXRouteMeasurementPeqEditor.getDefaultMeasurementPeqFilter(index);
 }
 
 function getDefaultMeasurementPeqState() {
-    return MeasurementUI.getDefaultMeasurementPeqState();
+    return window.FXRouteMeasurementPeqEditor.getDefaultMeasurementPeqState();
 }
 
 function ensureMeasurementPeqState() {
-    if (!state.measurement) state.measurement = {};
-    if (!state.measurement.peqAssistant || typeof state.measurement.peqAssistant !== 'object') {
-        state.measurement.peqAssistant = getDefaultMeasurementPeqState();
-    }
-    const peq = state.measurement.peqAssistant;
-    if (!Array.isArray(peq.filters)) peq.filters = [];
-    if (typeof peq.enabled !== 'boolean') peq.enabled = peq.filters.length > 0;
-    if (!peq.draft || typeof peq.draft !== 'object') peq.draft = { leftBands: [], rightBands: [], presetName: '', nameTouched: false };
-    if (!Array.isArray(peq.draft.leftBands)) peq.draft.leftBands = [];
-    if (!Array.isArray(peq.draft.rightBands)) peq.draft.rightBands = [];
-    if (typeof peq.draft.presetName !== 'string') peq.draft.presetName = '';
-    peq.draft.nameTouched = !!peq.draft.nameTouched;
-    return peq;
+    return window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
 }
 
 function getMeasurementPeqFilters() {
-    return ensureMeasurementPeqState().filters;
+    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqFilters();
 }
 
 function getMeasurementPeqActiveFilter() {
-    const peq = ensureMeasurementPeqState();
-    return peq.filters.find((filter) => filter.id === peq.activeFilterId) || null;
+    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqActiveFilter();
 }
 
 function clampMeasurementConvolverFrequency(value, fallback = 20) {
@@ -8700,72 +8729,43 @@ function updateMeasurementConvolverField(field, value) {
 }
 
 function focusMeasurementPeqPanelContext() {
-    if (!elements.measurementPeqPanel || elements.measurementPeqPanel.classList.contains('hidden')) return;
-    elements.measurementPeqPanel.focus({ preventScroll: true });
+    return window.FXRouteMeasurementPeqEditor.focusMeasurementPeqPanelContext();
 }
 
 function isEditableMeasurementPeqTarget(target) {
-    if (!(target instanceof Element)) return false;
-    return !!target.closest('input, select, textarea, [contenteditable="true"]');
+    return window.FXRouteMeasurementPeqEditor.isEditableMeasurementPeqTarget(target);
 }
 
 function handleMeasurementPeqNumberInputArrowKey(event) {
-    const input = event.currentTarget;
-    if (!(input instanceof HTMLInputElement) || input.type !== 'number') return;
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.key === 'ArrowUp') {
-        input.stepUp();
-    } else {
-        input.stepDown();
-    }
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return window.FXRouteMeasurementPeqEditor.handleMeasurementPeqNumberInputArrowKey(event);
 }
 
 function syncMeasurementPeqQInput(value) {
-    const input = elements.measurementPeqEditor?.querySelector('#measurement-peq-q');
-    if (input) input.value = Number(value).toFixed(2);
+    return window.FXRouteMeasurementPeqEditor.syncMeasurementPeqQInput(value);
 }
 
 function stepActiveMeasurementPeqQ(direction = 1, step = 0.1) {
-    const activeFilter = getMeasurementPeqActiveFilter();
-    if (!activeFilter) return null;
-    const nextValue = stepMeasurementPeqQ(activeFilter.id, direction, step);
-    if (nextValue === null) return null;
-    syncMeasurementPeqQInput(nextValue);
-    scheduleMeasurementGraphRender();
-    return nextValue;
+    return window.FXRouteMeasurementPeqEditor.stepActiveMeasurementPeqQ(direction, step);
 }
 
 function handleMeasurementPeqGraphWheel(event) {
-    if (!elements.measurementPanel || elements.measurementPanel.classList.contains('hidden')) return;
-    if (!elements.measurementPeqPanel || elements.measurementPeqPanel.classList.contains('hidden')) return;
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
-    if (ensureMeasurementPeqState().dragFilterId) return;
-    if (Math.abs(Number(event.deltaY) || 0) < 1) return;
-    const direction = event.deltaY > 0 ? -1 : 1;
-    const nextValue = stepActiveMeasurementPeqQ(direction, 0.1);
-    if (nextValue === null) return;
-    event.preventDefault();
-    focusMeasurementPeqPanelContext();
+    return window.FXRouteMeasurementPeqEditor.handleMeasurementPeqGraphWheel(event);
 }
 
 function selectMeasurementPeqFilter(filterId) {
-    const peq = ensureMeasurementPeqState();
-    peq.activeFilterId = peq.filters.some((filter) => filter.id === filterId) ? filterId : (peq.filters[0]?.id || null);
+    return window.FXRouteMeasurementPeqEditor.selectMeasurementPeqFilter(filterId);
 }
 
 function clampMeasurementPeqFrequency(value) {
-    return MeasurementDsp.clampMeasurementPeqFrequency(value);
+    return window.FXRouteMeasurementPeqEditor.clampMeasurementPeqFrequency(value);
 }
 
 function clampMeasurementPeqGain(value) {
-    return MeasurementDsp.clampMeasurementPeqGain(value);
+    return window.FXRouteMeasurementPeqEditor.clampMeasurementPeqGain(value);
 }
 
 function clampMeasurementPeqQ(value) {
-    return MeasurementDsp.clampMeasurementPeqQ(value);
+    return window.FXRouteMeasurementPeqEditor.clampMeasurementPeqQ(value);
 }
 
 function measurementXToFrequency(x, bounds) {
@@ -8777,72 +8777,31 @@ function measurementYToDb(y, bounds, range) {
 }
 
 function addMeasurementPeqFilter(defaults = {}) {
-    if (getMeasurementActiveEditor() === 'houseCurve') return null;
-    setMeasurementActiveEditor('peq');
-    const peq = ensureMeasurementPeqState();
-    if (peq.filters.length >= 12) {
-        showToast('Measurement assistant supports up to 12 filters', 'warning');
-        return null;
-    }
-    const filter = {
-        ...getDefaultMeasurementPeqFilter(peq.filters.length),
-        ...defaults,
-    };
-    filter.freqHz = Math.round(clampMeasurementPeqFrequency(filter.freqHz));
-    filter.gainDb = Number(clampMeasurementPeqGain(filter.gainDb).toFixed(1));
-    filter.q = Number(clampMeasurementPeqQ(filter.q).toFixed(2));
-    peq.filters.push(filter);
-    peq.enabled = true;
-    peq.activeFilterId = filter.id;
-    return filter;
+    return window.FXRouteMeasurementPeqEditor.addMeasurementPeqFilter(defaults);
 }
 
 function createMeasurementPeqFilterFromPoint({ x, y, bounds, range }) {
-    return addMeasurementPeqFilter({
-        freqHz: measurementXToFrequency(x, bounds),
-        gainDb: measurementYToDb(y, bounds, range),
-    });
+    return window.FXRouteMeasurementPeqEditor.createMeasurementPeqFilterFromPoint({ x, y, bounds, range });
 }
 
 function updateMeasurementPeqFilter(filterId, updates = {}) {
-    const filter = getMeasurementPeqFilters().find((item) => item.id === filterId);
-    if (!filter) return;
-    if (updates.type) filter.type = measurementPeqTypes.includes(updates.type) ? updates.type : filter.type;
-    if (updates.freqHz !== undefined) filter.freqHz = Math.round(clampMeasurementPeqFrequency(updates.freqHz));
-    if (updates.gainDb !== undefined) filter.gainDb = Number(clampMeasurementPeqGain(updates.gainDb).toFixed(1));
-    if (updates.q !== undefined) filter.q = Number(clampMeasurementPeqQ(updates.q).toFixed(2));
+    return window.FXRouteMeasurementPeqEditor.updateMeasurementPeqFilter(filterId, updates);
 }
 
 function stepMeasurementPeqQ(filterId, direction = 1, step = 0.1) {
-    const filter = getMeasurementPeqFilters().find((item) => item.id === filterId);
-    if (!filter) return null;
-    const nextValue = clampMeasurementPeqQ((Number(filter.q) || 0) + (direction * step));
-    updateMeasurementPeqFilter(filterId, { q: nextValue });
-    return Number(nextValue.toFixed(2));
+    return window.FXRouteMeasurementPeqEditor.stepMeasurementPeqQ(filterId, direction, step);
 }
 
 function stepMeasurementPeqGain(filterId, direction = 1, step = 0.1) {
-    const filter = getMeasurementPeqFilters().find((item) => item.id === filterId);
-    if (!filter) return null;
-    const nextValue = clampMeasurementPeqGain((Number(filter.gainDb) || 0) + (direction * step));
-    updateMeasurementPeqFilter(filterId, { gainDb: nextValue });
-    return Number(nextValue.toFixed(1));
+    return window.FXRouteMeasurementPeqEditor.stepMeasurementPeqGain(filterId, direction, step);
 }
 
 function stepMeasurementPeqFrequency(filterId, direction = 1, step = 1) {
-    const filter = getMeasurementPeqFilters().find((item) => item.id === filterId);
-    if (!filter) return null;
-    const nextValue = clampMeasurementPeqFrequency((Number(filter.freqHz) || 20) + (direction * step));
-    updateMeasurementPeqFilter(filterId, { freqHz: nextValue });
-    return Math.round(nextValue);
+    return window.FXRouteMeasurementPeqEditor.stepMeasurementPeqFrequency(filterId, direction, step);
 }
 
 function deleteMeasurementPeqFilter(filterId) {
-    const peq = ensureMeasurementPeqState();
-    peq.filters = peq.filters.filter((filter) => filter.id !== filterId);
-    peq.activeFilterId = peq.filters.some((filter) => filter.id === peq.activeFilterId) ? peq.activeFilterId : (peq.filters[0]?.id || null);
-    peq.enabled = peq.filters.length > 0;
-    peq.dragFilterId = null;
+    return window.FXRouteMeasurementPeqEditor.deleteMeasurementPeqFilter(filterId);
 }
 
 function resetMeasurementGraph() {
@@ -8870,149 +8829,35 @@ function resetMeasurementGraph() {
 }
 
 function measurementPeqFilterToBand(filter = {}) {
-    return {
-        filterType: filter.type || 'bell',
-        frequencyHz: Math.round(clampMeasurementPeqFrequency(filter.freqHz)),
-        gainDb: Number(clampMeasurementPeqGain(filter.gainDb).toFixed(1)),
-        q: Number(clampMeasurementPeqQ(filter.q).toFixed(2)),
-        delayMs: 0,
-    };
+    return window.FXRouteMeasurementPeqEditor.measurementPeqFilterToBand(filter);
 }
 
 function showMeasurementPeqTakeFeedback(message) {
-    if (!elements.measurementPeqTakeFeedback) return;
-    elements.measurementPeqTakeFeedback.textContent = message;
-    elements.measurementPeqTakeFeedback.classList.add('is-visible');
-    if (measurementPeqTakeFeedbackTimer) clearTimeout(measurementPeqTakeFeedbackTimer);
-    measurementPeqTakeFeedbackTimer = setTimeout(() => {
-        elements.measurementPeqTakeFeedback?.classList.remove('is-visible');
-        measurementPeqTakeFeedbackTimer = null;
-    }, 2200);
+    return window.FXRouteMeasurementPeqEditor.showMeasurementPeqTakeFeedback(message);
 }
 
 function getMeasurementPeqNameSuffix(date = new Date()) {
-    return MeasurementUI.getMeasurementPeqNameSuffix(date);
+    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqNameSuffix(date);
 }
 
 function getMeasurementPeqDraftMode(peq = ensureMeasurementPeqState()) {
-    const hasLeft = !!peq.draft?.leftBands?.length;
-    const hasRight = !!peq.draft?.rightBands?.length;
-    if (hasLeft && hasRight) return 'both';
-    if (hasRight) return 'right';
-    if (hasLeft) return 'left';
-    return null;
+    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqDraftMode(peq);
 }
 
 function getMeasurementPeqPresetName(mode = 'both', options = {}) {
-    const prefix = mode === 'both' ? 'PEQ LR' : (mode === 'right' ? 'PEQ R' : 'PEQ L');
-    const count = ensureMeasurementPeqState().filters.length || 0;
-    const base = `${prefix} Measurement ${count}f`;
-    return options.unique ? `${base} ${getMeasurementPeqNameSuffix()}` : base;
+    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqPresetName(mode, options);
 }
 
 function takeMeasurementPeqToPreset(mode = 'both') {
-    const peq = ensureMeasurementPeqState();
-    if (!peq.filters.length) {
-        showToast('Add at least one measurement PEQ filter first', 'warning');
-        return;
-    }
-    if (mode !== 'both' && measurementBankSumsBothInputs()) {
-        const warning = 'This area is fed by both inputs: take Both to stage the identical L/R correction.';
-        showMeasurementPeqTakeFeedback(warning);
-        showToast(warning, 'warning');
-        return;
-    }
-    const mappedBands = peq.filters.map((filter) => measurementPeqFilterToBand(filter));
-    if (mode === 'left') {
-        peq.draft.leftBands = mappedBands.map((band) => ({ ...band }));
-    } else if (mode === 'right') {
-        peq.draft.rightBands = mappedBands.map((band) => ({ ...band }));
-    } else {
-        peq.draft.leftBands = mappedBands.map((band) => ({ ...band }));
-        peq.draft.rightBands = mappedBands.map((band) => ({ ...band }));
-    }
-    const effectiveMode = getMeasurementPeqDraftMode(peq) || mode;
-    if (!peq.draft.nameTouched) peq.draft.presetName = getMeasurementPeqPresetName(effectiveMode, { unique: true });
-    state.dsp = state.dsp || {};
-    state.dsp.assistStack = state.dsp.assistStack || [];
-    state.dsp.assistStack.push({ type: 'peq', mode, createdAt: new Date().toISOString(), bands: mappedBands.map((band) => ({ ...band })) });
-    renderMeasurementPanel();
-    const successMessage = mode === 'left'
-        ? 'Measurement PEQ staged Left bands'
-        : (mode === 'right' ? 'Measurement PEQ staged Right bands' : 'Measurement PEQ staged Left and Right bands');
-    showMeasurementPeqTakeFeedback(mode === 'left' ? 'Left staged' : (mode === 'right' ? 'Right staged' : 'Left + Right staged'));
-    showToast(successMessage, 'success');
+    return window.FXRouteMeasurementPeqEditor.takeMeasurementPeqToPreset(mode);
 }
 
 function resolveMeasurementPeqPresetName(peq, fieldValue, mode) {
-    // Mirrors the convolver field: the visible input is authoritative, so
-    // the stored preset can never diverge from what the user saw. An
-    // untouched field still holds the staged auto name.
-    const fieldName = String(fieldValue ?? '').trim();
-    if (fieldName) return fieldName;
-    const draftName = String(peq?.draft?.presetName || '').trim();
-    if (draftName) return draftName;
-    return getMeasurementPeqPresetName(mode || 'both', { unique: true });
+    return window.FXRouteMeasurementPeqEditor.resolveMeasurementPeqPresetName(peq, fieldValue, mode);
 }
 
-async function createMeasurementPeqPresetFromDraft() {
-    if (!requireConcreteFilterBank()) return;
-    if (peqCreateInFlight) {
-        showToast('PEQ preset creation already in progress', 'warning');
-        return;
-    }
-    const peq = ensureMeasurementPeqState();
-    const leftBands = (peq.draft?.leftBands || []).map((band) => ({ ...band }));
-    const rightBands = (peq.draft?.rightBands || []).map((band) => ({ ...band }));
-    if (!leftBands.length && !rightBands.length) {
-        showToast('Take L, R or Both into the PEQ draft first', 'warning');
-        return;
-    }
-    const validationError = validatePeqBands('Left', leftBands) || validatePeqBands('Right', rightBands);
-    if (validationError) {
-        showMeasurementPeqTakeFeedback(validationError);
-        showToast(validationError, 'error');
-        return;
-    }
-    const presetName = resolveMeasurementPeqPresetName(peq, elements.measurementPeqPresetName?.value, getMeasurementPeqDraftMode(peq) || 'both');
-    peq.draft.presetName = presetName;
-    const eqMode = normalizePeqEqMode(state.dsp?.peqDraft?.eqMode || elements.effectsPeqModeSelect?.value || 'IIR');
-    peqCreateInFlight = true;
-    if (elements.measurementPeqCreateBtn) elements.measurementPeqCreateBtn.disabled = true;
-    showMeasurementPeqTakeFeedback(`Creating ${presetName}…`);
-    try {
-        const resp = await fetch('/api/dsp/presets/create-peq', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                presetName,
-                loadAfterCreate: false,
-                ...collectEffectsExtras(),
-                ...bankBindingJson(),
-                source_measurement_id: measurementCommitSourceId(),
-                peq: {
-                    enabled: true,
-                    params: measurementPeqParams(leftBands, rightBands, eqMode),
-                },
-            }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'PEQ preset creation failed'));
-        await fetchEffects();
-        void fetchOutputSystemCatalog(true);
-        peq.draft.leftBands = [];
-        peq.draft.rightBands = [];
-        peq.draft.presetName = '';
-        peq.draft.nameTouched = false;
-        showMeasurementPeqTakeFeedback(`${presetName} created`);
-        showToast(`Created PEQ preset: ${data.preset?.name || presetName}`, 'success');
-    } catch (e) {
-        showMeasurementPeqTakeFeedback('PEQ preset creation failed');
-        showToast(e.message || 'PEQ preset creation failed', 'error');
-    } finally {
-        peqCreateInFlight = false;
-        renderMeasurementPanel();
-    }
+function createMeasurementPeqPresetFromDraft() {
+    return window.FXRouteMeasurementPeqEditor.createMeasurementPeqPresetFromDraft();
 }
 
 function getMeasurementConvolverSelectedSourceEntries() {
@@ -9749,16 +9594,11 @@ function getMeasurementFrequencyHoverTooltip(event) {
 }
 
 function getMeasurementPeqHandlePosition(filter, bounds, range) {
-    return {
-        x: measurementFrequencyToX(filter.freqHz || 1000, bounds),
-        y: measurementDbToY(filter.gainDb || 0, bounds, range),
-    };
+    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqHandlePosition(filter, bounds, range);
 }
 
 function getMeasurementPeqHandleHitRadius(pointerType = '') {
-    return pointerType === 'touch'
-        ? MEASUREMENT_PEQ_TOUCH_HANDLE_HIT_RADIUS_PX
-        : MEASUREMENT_PEQ_HANDLE_HIT_RADIUS_PX;
+    return window.FXRouteMeasurementPeqEditor.getMeasurementPeqHandleHitRadius(pointerType);
 }
 
 function getCustomHouseCurvePointSlot(pointId) {
@@ -9803,28 +9643,19 @@ function findCustomHouseCurveHandleAtPosition(x, y, bounds, range, pointerType =
 }
 
 function findMeasurementPeqFilterHandleAtPosition(x, y, bounds, range, pointerType = '') {
-    const hitRadius = getMeasurementPeqHandleHitRadius(pointerType);
-    const filters = getMeasurementPeqFilters();
-    for (let index = filters.length - 1; index >= 0; index -= 1) {
-        const filter = filters[index];
-        const handle = getMeasurementPeqHandlePosition(filter, bounds, range);
-        const distance = Math.hypot(handle.x - x, handle.y - y);
-        if (distance <= hitRadius) return filter;
-    }
-    return null;
+    return window.FXRouteMeasurementPeqEditor.findMeasurementPeqFilterHandleAtPosition(x, y, bounds, range, pointerType);
 }
 
 function measurementPeqWorkingLineHit(y, bounds, range) {
-    const zeroY = measurementDbToY(0, bounds, range);
-    return Math.abs(y - zeroY) <= 40;
+    return window.FXRouteMeasurementPeqEditor.measurementPeqWorkingLineHit(y, bounds, range);
 }
 
 function measurementPeqTouchCreateCoolingDown(pointerType = '') {
-    return pointerType === 'touch' && (Date.now() - measurementPeqLastTouchCreateAt) < MEASUREMENT_PEQ_TOUCH_CREATE_COOLDOWN_MS;
+    return window.FXRouteMeasurementPeqEditor.measurementPeqTouchCreateCoolingDown(pointerType);
 }
 
 function markMeasurementPeqTouchCreate(pointerType = '') {
-    if (pointerType === 'touch') measurementPeqLastTouchCreateAt = Date.now();
+    return window.FXRouteMeasurementPeqEditor.markMeasurementPeqTouchCreate(pointerType);
 }
 
 function getMeasurementConvolverRangeHandleAtPosition(x, y, bounds) {
@@ -10037,30 +9868,7 @@ function handleMeasurementGraphPointerDown(event) {
         renderMeasurementPanel();
         return;
     }
-    const peq = ensureMeasurementPeqState();
-    const hitFilter = findMeasurementPeqFilterHandleAtPosition(x, y, bounds, range, pointerType);
-    if (hitFilter) {
-        if (pointerType === 'touch') event.preventDefault();
-        peq.enabled = true;
-        peq.activeFilterId = hitFilter.id;
-        peq.dragFilterId = hitFilter.id;
-        measurementGraphPointerId = event.pointerId;
-        elements.measurementGraph?.setPointerCapture?.(event.pointerId);
-        renderMeasurementPanel();
-        focusMeasurementPeqPanelContext();
-        return;
-    }
-    if (!measurementPeqWorkingLineHit(y, bounds, range)) return;
-    if (measurementPeqTouchCreateCoolingDown(pointerType)) return;
-    const created = createMeasurementPeqFilterFromPoint({ x, y, bounds, range });
-    if (!created) return;
-    if (pointerType === 'touch') event.preventDefault();
-    markMeasurementPeqTouchCreate(pointerType);
-    peq.dragFilterId = created.id;
-    measurementGraphPointerId = event.pointerId;
-    elements.measurementGraph?.setPointerCapture?.(event.pointerId);
-    renderMeasurementPanel();
-    focusMeasurementPeqPanelContext();
+    window.FXRouteMeasurementPeqEditor.handleMeasurementPeqPointerDown(event, pointer, pointerType);
 }
 
 function handleMeasurementGraphPointerMove(event) {
@@ -10116,18 +9924,7 @@ function handleMeasurementGraphPointerMove(event) {
         renderMeasurementPanel();
         return;
     }
-    const peq = ensureMeasurementPeqState();
-    if (!peq.dragFilterId || measurementGraphPointerId !== event.pointerId) return;
-    if (event.pointerType === 'touch') event.preventDefault();
-    const pointer = getMeasurementGraphPointerPosition(event);
-    if (!pointer) return;
-    const { x, y, bounds, range } = pointer;
-    updateMeasurementPeqFilter(peq.dragFilterId, {
-        freqHz: measurementXToFrequency(x, bounds),
-        gainDb: measurementYToDb(y, bounds, range),
-    });
-    scheduleMeasurementGraphRender();
-    renderMeasurementPanel();
+    window.FXRouteMeasurementPeqEditor.handleMeasurementPeqPointerMove(event);
 }
 
 function handleMeasurementGraphPointerLeave() {
@@ -10136,7 +9933,6 @@ function handleMeasurementGraphPointerLeave() {
 
 function handleMeasurementGraphPointerUp(event) {
     if (getMeasurementGraphView() === 'ir') return;
-    const peq = ensureMeasurementPeqState();
     const custom = ensureCustomHouseCurveState();
     const conv = ensureMeasurementConvolverState();
     if (measurementGraphPointerId !== null && event.pointerId === measurementGraphPointerId && event.pointerType === 'touch') {
@@ -10146,7 +9942,7 @@ function handleMeasurementGraphPointerUp(event) {
         elements.measurementGraph?.releasePointerCapture?.(event.pointerId);
         measurementGraphPointerId = null;
     }
-    peq.dragFilterId = null;
+    window.FXRouteMeasurementPeqEditor.clearMeasurementPeqPointerDrag();
     custom.dragPointId = null;
     conv.dragMode = null;
     delete conv.dragAnchorHz;
@@ -10176,345 +9972,87 @@ function measurementModeNoteText() {
 }
 
 function measurementHasCalibrationSelected() {
-    return !!(state.measurement.calibrationFilename || state.measurement.selectedCalibrationRef);
+    return window.FXRouteMeasurementCalibration.measurementHasCalibrationSelected();
 }
 
 function applyMeasurementCalibrationState(data) {
-    if (!data || typeof data !== 'object') return;
-    state.measurement.calibrationOptions = Array.isArray(data.calibrations) ? data.calibrations : state.measurement.calibrationOptions;
-    state.measurement.selectedCalibrationRef = String(data.active_calibration_file_id || '');
-    if (state.measurement.selectedCalibrationRef && !state.measurement.calibrationOptions.some(item => item.id === state.measurement.selectedCalibrationRef)) {
-        state.measurement.selectedCalibrationRef = '';
-    }
-    state.measurement.calibrationFilename = '';
-    if (elements.measurementCalibrationFile) elements.measurementCalibrationFile.value = '';
+    return window.FXRouteMeasurementCalibration.applyMeasurementCalibrationState(data);
 }
 
-async function setActiveMeasurementCalibration(calibrationFileId) {
-    state.measurement.calibrationUpdating = true;
-    renderMeasurementPanel();
-    try {
-        const resp = await fetch('/api/measurements/calibrations/active', {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ calibration_file_id: calibrationFileId || '' }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to save calibration selection');
-        applyMeasurementCalibrationState(data);
-        showToast(calibrationFileId ? 'Calibration file selected' : 'Calibration disabled', 'success');
-    } catch (error) {
-        console.error('setActiveMeasurementCalibration failed', error);
-        state.measurement.statusText = error.message || 'Failed to save calibration selection';
-        showToast(state.measurement.statusText, 'error');
-        await fetchMeasurements();
-    } finally {
-        state.measurement.calibrationUpdating = false;
-        renderMeasurementPanel();
-    }
+function setActiveMeasurementCalibration(calibrationFileId) {
+    return window.FXRouteMeasurementCalibration.setActiveMeasurementCalibration(calibrationFileId);
 }
 
-async function uploadMeasurementCalibration(file) {
-    if (!file) return;
-    state.measurement.calibrationUpdating = true;
-    state.measurement.calibrationFilename = file.name || 'calibration.txt';
-    renderMeasurementPanel();
-    const formData = new FormData();
-    formData.append('calibration_file', file);
-    try {
-        const resp = await fetch('/api/measurements/calibrations', { method: 'POST', body: formData });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to upload calibration file');
-        applyMeasurementCalibrationState(data);
-        showToast('Calibration file uploaded and selected', 'success');
-    } catch (error) {
-        console.error('uploadMeasurementCalibration failed', error);
-        state.measurement.statusText = error.message || 'Failed to upload calibration file';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.calibrationUpdating = false;
-        renderMeasurementPanel();
-    }
+function uploadMeasurementCalibration(file) {
+    return window.FXRouteMeasurementCalibration.uploadMeasurementCalibration(file);
 }
 
-async function downloadSelectedMeasurementCalibration() {
-    const calibrationId = state.measurement.selectedCalibrationRef || '';
-    const selected = (state.measurement.calibrationOptions || []).find(option => option.id === calibrationId);
-    if (!calibrationId || !selected) return;
-    state.measurement.calibrationExporting = true;
-    renderMeasurementPanel();
-    try {
-        const resp = await fetch(`/api/measurements/calibrations/${encodeURIComponent(calibrationId)}/export`);
-        if (!resp.ok) {
-            const data = await resp.json().catch(() => ({}));
-            throw new Error(data.detail || 'Failed to export calibration file');
-        }
-        triggerBlobDownload(await resp.blob(), getDownloadFilenameFromResponse(resp, selected.filename || 'calibration.txt'));
-    } catch (error) {
-        console.error('downloadSelectedMeasurementCalibration failed', error);
-        state.measurement.statusText = error.message || 'Failed to export calibration file';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.calibrationExporting = false;
-        renderMeasurementPanel();
-    }
+function downloadSelectedMeasurementCalibration() {
+    return window.FXRouteMeasurementCalibration.downloadSelectedMeasurementCalibration();
 }
 
-async function deleteSelectedMeasurementCalibration() {
-    const calibrationId = state.measurement.selectedCalibrationRef || '';
-    const selected = (state.measurement.calibrationOptions || []).find(option => option.id === calibrationId);
-    if (!calibrationId || !selected) {
-        showToast('No calibration file selected to delete', 'warning');
-        return;
-    }
-    if (state.measurement.startInFlight || state.measurement.activeJobId) {
-        showToast('Cannot delete calibration during an active measurement', 'warning');
-        return;
-    }
-    if (!window.confirm(`Delete calibration file "${selected.filename || calibrationId}"?`)) return;
-    state.measurement.calibrationDeleting = true;
-    renderMeasurementPanel();
-    try {
-        const resp = await fetch(`/api/measurements/calibrations/${encodeURIComponent(calibrationId)}`, { method: 'DELETE' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to delete calibration file');
-        applyMeasurementCalibrationState(data);
-        showToast('Calibration file deleted', 'success');
-    } catch (error) {
-        console.error('deleteSelectedMeasurementCalibration failed', error);
-        state.measurement.statusText = error.message || 'Failed to delete calibration file';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.calibrationDeleting = false;
-        renderMeasurementPanel();
-    }
+function deleteSelectedMeasurementCalibration() {
+    return window.FXRouteMeasurementCalibration.deleteSelectedMeasurementCalibration();
 }
 
 function applyMeasurementHouseCurveState(data) {
-    if (!data || typeof data !== 'object') return;
-    state.measurement.houseCurveOptions = Array.isArray(data.house_curves) ? data.house_curves : state.measurement.houseCurveOptions;
-    state.measurement.houseCurveFilename = '';
-    if (elements.measurementHouseCurveFile) elements.measurementHouseCurveFile.value = '';
+    return window.FXRouteMeasurementCalibration.applyMeasurementHouseCurveState(data);
 }
 
-async function uploadMeasurementHouseCurve(file) {
-    if (!file) return;
-    state.measurement.houseCurveUpdating = true;
-    state.measurement.houseCurveFilename = file.name || 'house-curve.txt';
-    renderMeasurementPanel();
-    const formData = new FormData();
-    formData.append('house_curve_file', file);
-    try {
-        const resp = await fetch('/api/measurements/house-curves', { method: 'POST', body: formData });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to upload house curve file');
-        applyMeasurementHouseCurveState(data);
-        const uploadedId = data.uploaded_house_curve_id ? `house:${data.uploaded_house_curve_id}` : '';
-        if (uploadedId) updateMeasurementConvolverField('targetCurve', uploadedId);
-        showToast('House curve uploaded and selected', 'success');
-    } catch (error) {
-        console.error('uploadMeasurementHouseCurve failed', error);
-        state.measurement.statusText = error.message || 'Failed to upload house curve file';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.houseCurveUpdating = false;
-        renderMeasurementPanel();
-    }
+function uploadMeasurementHouseCurve(file) {
+    return window.FXRouteMeasurementCalibration.uploadMeasurementHouseCurve(file);
 }
 
 function ensureCustomHouseCurveState() {
-    const measurement = state.measurement || (state.measurement = {});
-    if (!measurement.customHouseCurve || typeof measurement.customHouseCurve !== 'object') {
-        measurement.customHouseCurve = { open: false, displayTarget: 'actual', points: [], activePointId: null, dragPointId: null, name: '', nameTouched: false, saving: false };
-    }
-    const custom = measurement.customHouseCurve;
-    custom.displayTarget = custom.displayTarget === 'editing-custom-house-curve' ? custom.displayTarget : 'actual';
-    if (!Array.isArray(custom.points)) custom.points = [];
-    const usedSlots = new Set();
-    custom.points = custom.points.slice(0, 8);
-    custom.points.forEach((point) => {
-        let slot = Number(point?.slot);
-        if (!Number.isInteger(slot) || slot < 0 || slot >= 8 || usedSlots.has(slot)) {
-            slot = Array.from({ length: 8 }, (_, candidate) => candidate).find((candidate) => !usedSlots.has(candidate));
-        }
-        usedSlots.add(slot);
-        point.slot = slot;
-    });
-    if (!custom.points.some((point) => point.id === custom.activePointId)) custom.activePointId = custom.points[0]?.id || null;
-    if (!custom.points.some((point) => point.id === custom.dragPointId)) custom.dragPointId = null;
-    return custom;
+    return window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
 }
 
 function getCustomHouseCurveNameSuggestion() {
-    const normalize = (value) => String(value || '').trim().toLowerCase().replace(/[-_.]+/g, ' ').replace(/\s+/g, ' ');
-    const used = new Set((state.measurement?.houseCurveOptions || []).map((curve) => normalize(curve.filename)));
-    let index = 1;
-    while (used.has(normalize('Custom House Curve ' + index))) index += 1;
-    return 'Custom House Curve ' + index;
+    return window.FXRouteMeasurementCalibration.getCustomHouseCurveNameSuggestion();
 }
 
 function openCustomHouseCurveEditor() {
-    const custom = ensureCustomHouseCurveState();
-    setMeasurementActiveEditor('houseCurve');
-    if (!custom.points.length) addCustomHouseCurvePoint({ slot: 0, freqHz: 20, gainDb: 0 });
-    if (!custom.nameTouched || !custom.name.trim()) custom.name = getCustomHouseCurveNameSuggestion();
-    renderMeasurementPanel();
-    scheduleMeasurementGraphRender();
+    return window.FXRouteMeasurementCalibration.openCustomHouseCurveEditor();
 }
 
 function handleMeasurementTargetCurveSelection(value) {
-    if (value === 'create-custom-house-curve' || value === 'editing-custom-house-curve') {
-        openCustomHouseCurveEditor();
-        return;
-    }
-    setMeasurementActiveEditor('none');
-    updateMeasurementConvolverField('targetCurve', value);
-    renderMeasurementPanel();
-    scheduleMeasurementGraphRender();
+    return window.FXRouteMeasurementCalibration.handleMeasurementTargetCurveSelection(value);
 }
 
 function addCustomHouseCurvePoint(defaults = {}) {
-    const custom = ensureCustomHouseCurveState();
-    const fallbackFrequencies = [20, 40, 80, 160, 320, 1000, 5000, 20000];
-    const requestedSlot = Number(defaults.slot);
-    const freeSlots = Array.from({ length: 8 }, (_, slot) => slot).filter((slot) => !custom.points.some((point) => Number(point.slot) === slot));
-    const slot = Number.isInteger(requestedSlot) && requestedSlot >= 0 && requestedSlot < 8 && freeSlots.includes(requestedSlot)
-        ? requestedSlot
-        : freeSlots[0];
-    if (slot === undefined) return null;
-    const point = {
-        id: 'house-point-' + Date.now() + '-' + Math.random().toString(16).slice(2),
-        slot,
-        freqHz: Math.round(Math.min(20000, Math.max(20, Number(defaults.freqHz) || fallbackFrequencies[slot]))),
-        gainDb: Number(Math.min(24, Math.max(-24, Number(defaults.gainDb) || 0)).toFixed(1)),
-    };
-    custom.points.push(point);
-    custom.activePointId = point.id;
-    return point;
+    return window.FXRouteMeasurementCalibration.addCustomHouseCurvePoint(defaults);
 }
 
 function resetCustomHouseCurveDraft() {
-    const custom = ensureCustomHouseCurveState();
-    custom.points = [];
-    custom.activePointId = null;
-    custom.dragPointId = null;
-    addCustomHouseCurvePoint({ slot: 0, freqHz: 20, gainDb: 0 });
+    return window.FXRouteMeasurementCalibration.resetCustomHouseCurveDraft();
 }
 
 function updateCustomHouseCurvePoint(pointId, updates = {}) {
-    const point = ensureCustomHouseCurveState().points.find((item) => item.id === pointId);
-    if (!point) return;
-    if (updates.freqHz !== undefined) point.freqHz = Math.round(Math.min(20000, Math.max(20, Number(updates.freqHz) || 20)));
-    if (updates.gainDb !== undefined) point.gainDb = Number(Math.min(24, Math.max(-24, Number(updates.gainDb) || 0)).toFixed(1));
+    return window.FXRouteMeasurementCalibration.updateCustomHouseCurvePoint(pointId, updates);
 }
 
 function addCustomHouseCurvePointAtPosition({ x, y, bounds, range }) {
-    const frequencyHz = measurementXToFrequency(x, bounds);
-    const gainDb = Math.min(range.maxDb, Math.max(range.minDb, measurementYToDb(y, bounds, range)));
-    return addCustomHouseCurvePoint({ freqHz: frequencyHz, gainDb: gainDb });
+    return window.FXRouteMeasurementCalibration.addCustomHouseCurvePointAtPosition({ x, y, bounds, range });
 }
 
 function deleteCustomHouseCurvePoint(pointId) {
-    const custom = ensureCustomHouseCurveState();
-    custom.points = custom.points.filter((point) => point.id !== pointId);
-    custom.activePointId = custom.points[0]?.id || null;
+    return window.FXRouteMeasurementCalibration.deleteCustomHouseCurvePoint(pointId);
 }
 
 function serializeCustomHouseCurvePoints(points) {
-    return points
-        .map((point) => [Number(point.freqHz), Number(point.gainDb)])
-        .sort((left, right) => left[0] - right[0])
-        .map(([frequency, gain]) => String(frequency) + '\t' + gain.toFixed(1))
-        .join('\n') + '\n';
+    return window.FXRouteMeasurementCalibration.serializeCustomHouseCurvePoints(points);
 }
 
-async function createCustomHouseCurve() {
-    const custom = ensureCustomHouseCurveState();
-    const name = String(custom.name || '').trim();
-    if (!name || custom.points.length < 2 || custom.saving) return;
-    const sorted = custom.points.map((point) => [Number(point.freqHz), Number(point.gainDb)]).sort((left, right) => left[0] - right[0]);
-    if (sorted.some((point, index) => index && point[0] <= sorted[index - 1][0])) {
-        showToast('House curve frequencies must be unique', 'warning');
-        return;
-    }
-    custom.saving = true;
-    renderMeasurementPanel();
-    const safeFilename = name + '.txt';
-    const file = new File([serializeCustomHouseCurvePoints(custom.points)], safeFilename, { type: 'text/plain' });
-    const formData = new FormData();
-    formData.append('house_curve_file', file);
-    try {
-        const resp = await fetch('/api/measurements/house-curves', { method: 'POST', body: formData });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to create target curve');
-        applyMeasurementHouseCurveState(data);
-        const uploadedKey = data.uploaded_house_curve_id ? 'house:' + data.uploaded_house_curve_id : '';
-        if (uploadedKey) updateMeasurementConvolverField('targetCurve', uploadedKey);
-        setMeasurementActiveEditor('none');
-        custom.points = [];
-        custom.activePointId = null;
-        custom.name = '';
-        custom.nameTouched = false;
-        showToast('Target curve created and selected', 'success');
-    } catch (error) {
-        state.measurement.statusText = error.message || 'Failed to create target curve';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        custom.saving = false;
-        renderMeasurementPanel();
-        scheduleMeasurementGraphRender();
-    }
+function createCustomHouseCurve() {
+    return window.FXRouteMeasurementCalibration.createCustomHouseCurve();
 }
 
-async function downloadSelectedMeasurementHouseCurve() {
-    const houseCurveId = elements.measurementHouseCurveSelect ? (elements.measurementHouseCurveSelect.value || '') : '';
-    const selected = (state.measurement.houseCurveOptions || []).find(option => option.id === houseCurveId);
-    if (!houseCurveId || !selected) return;
-    state.measurement.houseCurveExporting = true;
-    renderMeasurementPanel();
-    try {
-        const resp = await fetch(`/api/measurements/house-curves/${encodeURIComponent(houseCurveId)}/export`);
-        if (!resp.ok) {
-            const data = await resp.json().catch(() => ({}));
-            throw new Error(data.detail || 'Failed to export house curve file');
-        }
-        triggerBlobDownload(await resp.blob(), getDownloadFilenameFromResponse(resp, `${selected.filename || 'house-curve'}.txt`));
-    } catch (error) {
-        console.error('downloadSelectedMeasurementHouseCurve failed', error);
-        state.measurement.statusText = error.message || 'Failed to export house curve file';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.houseCurveExporting = false;
-        renderMeasurementPanel();
-    }
+function downloadSelectedMeasurementHouseCurve() {
+    return window.FXRouteMeasurementCalibration.downloadSelectedMeasurementHouseCurve();
 }
 
-async function deleteSelectedMeasurementHouseCurve() {
-    const houseCurveId = elements.measurementHouseCurveSelect ? (elements.measurementHouseCurveSelect.value || '') : '';
-    const selected = (state.measurement.houseCurveOptions || []).find(option => option.id === houseCurveId);
-    if (!houseCurveId || !selected) {
-        showToast('No house curve file selected to delete', 'warning');
-        return;
-    }
-    if (!window.confirm(`Delete house curve file "${selected.filename || houseCurveId}"?`)) return;
-    state.measurement.houseCurveDeleting = true;
-    renderMeasurementPanel();
-    try {
-        const resp = await fetch(`/api/measurements/house-curves/${encodeURIComponent(houseCurveId)}`, { method: 'DELETE' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to delete house curve file');
-        applyMeasurementHouseCurveState(data);
-        const conv = ensureMeasurementConvolverState();
-        if (conv.targetCurve === `house:${houseCurveId}`) conv.targetCurve = 'neutral';
-        showToast('House curve file deleted', 'success');
-    } catch (error) {
-        console.error('deleteSelectedMeasurementHouseCurve failed', error);
-        state.measurement.statusText = error.message || 'Failed to delete house curve file';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.houseCurveDeleting = false;
-        renderMeasurementPanel();
-    }
+function deleteSelectedMeasurementHouseCurve() {
+    return window.FXRouteMeasurementCalibration.deleteSelectedMeasurementHouseCurve();
 }
 
 function applyMeasurementSetupSettings(settings = {}, fields = null) {
@@ -10538,15 +10076,11 @@ async function fetchMeasurements() {
         state.measurement.visibilityById = normalizeMeasurementVisibility(measurements, state.measurement.visibilityById || {});
         state.measurement.reviewVisibilityById = normalizeMeasurementReviewVisibility(measurements, state.measurement.reviewVisibilityById || {});
         state.measurement.storage = data.storage || null;
-        state.measurement.calibrationOptions = Array.isArray(data.calibrations) ? data.calibrations : [];
-        state.measurement.selectedCalibrationRef = String(data.active_calibration_file_id || '');
-        state.measurement.houseCurveOptions = Array.isArray(data.house_curves) ? data.house_curves : [];
+        window.FXRouteMeasurementCalibration.applyMeasurementFileCatalog(data);
         if (settingsRevision === window.FXRouteMeasurementSetup.getMeasurementSettingsRevision()) {
             applyMeasurementSetupSettings(data.measurement_settings || {});
         }
-        if (state.measurement.selectedCalibrationRef && !state.measurement.calibrationOptions.some(item => item.id === state.measurement.selectedCalibrationRef)) {
-            state.measurement.selectedCalibrationRef = '';
-        }
+        window.FXRouteMeasurementCalibration.validateMeasurementCalibrationSelection();
         if (!state.measurement.startInFlight && !state.measurement.saveInFlight && !state.measurement.activeJobId && !state.measurement.currentMeasurement) {
             state.measurement.statusText = describeMeasurementScope(data.scope_note);
         }

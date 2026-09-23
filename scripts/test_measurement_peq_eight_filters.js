@@ -10,6 +10,7 @@ const MeasurementUI = require('../static/measurement_ui.js');
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
 const editorsSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_editors_ui.js'), 'utf8');
+const peqSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_peq_editor.js'), 'utf8');
 const apiSource = fs.readFileSync(path.join(repoRoot, 'static', 'api.js'), 'utf8');
 const controllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'output_system_controller.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
@@ -72,6 +73,7 @@ async function main() {
     const state = { measurement: { currentMeasurement: { id: 'measurement-1' } }, dsp: {} };
     const context = {
         MeasurementUI,
+        FXRouteMeasurementUI: MeasurementUI,
         state,
         measurementPeqPalette: ['#1', '#2', '#3', '#4'],
         MeasurementDsp: {
@@ -95,6 +97,7 @@ async function main() {
         Date,
         Math,
     };
+    context.FXRouteMeasurementDsp = context.MeasurementDsp;
     vm.createContext(context);
     // Bank-bound helpers run through the real bank module bridged into the
     // sandbox; app.js keeps thin delegating wrappers.
@@ -104,24 +107,7 @@ async function main() {
         measurementArea: () => ({ available: true, channel_mode: 'stereo' }) });
     context.window = { FXRouteBankUI: BankUIModule };
     const appFunctions = [
-        'getDefaultMeasurementPeqFilter',
-        'getDefaultMeasurementPeqState',
-        'ensureMeasurementPeqState',
-        'ensureCustomHouseCurveState',
-        'ensureMeasurementConvolverState',
         'getMeasurementActiveEditor',
-        'setMeasurementActiveEditor',
-        'clampMeasurementPeqFrequency',
-        'clampMeasurementPeqGain',
-        'clampMeasurementPeqQ',
-        'addMeasurementPeqFilter',
-        'measurementPeqFilterToBand',
-        'getMeasurementPeqNameSuffix',
-        'getMeasurementPeqDraftMode',
-        'getMeasurementPeqPresetName',
-        'resolveMeasurementPeqPresetName',
-        'takeMeasurementPeqToPreset',
-        'createMeasurementPeqPresetFromDraft',
         'measurementCommitSourceId',
         'ensureOutputSystemBoxes',
         'outputSystemModule',
@@ -158,6 +144,31 @@ async function main() {
         syncCompareBusy: () => {},
     };
     vm.runInContext(`let peqCreateInFlight = false;\n${functions}`, context);
+    vm.runInContext(fs.readFileSync(path.join(repoRoot, 'static', 'measurement_peq_editor.js'), 'utf8'), context);
+    const editor = context.FXRouteMeasurementPeqEditor;
+    editor.init({
+        getState: () => state, getElements: () => context.elements,
+        fetch: context.fetch, showToast: context.showToast,
+        renderMeasurementPanel: context.renderMeasurementPanel,
+        setMeasurementActiveEditor: (editorName) => { state.measurement.activeEditor = editorName; },
+        getMeasurementActiveEditor: () => context.getMeasurementActiveEditor(),
+        requireConcreteFilterBank: () => context.requireConcreteFilterBank(),
+        validatePeqBands: context.validatePeqBands,
+        normalizePeqEqMode: context.normalizePeqEqMode,
+        collectEffectsExtras: context.collectEffectsExtras,
+        bankBindingJson: () => context.bankBindingJson(),
+        measurementCommitSourceId: () => context.measurementCommitSourceId(),
+        measurementPeqParams: (...args) => context.measurementPeqParams(...args),
+        formatTransitionErrorDetail: (...args) => context.formatTransitionErrorDetail(...args),
+        fetchEffects: context.fetchEffects,
+        fetchOutputSystemCatalog: (...args) => context.fetchOutputSystemCatalog(...args),
+        isPeqCreateInFlight: () => vm.runInContext('peqCreateInFlight', context),
+        setPeqCreateInFlight: (active) => { context.nextPeqCreateInFlight = active; vm.runInContext('peqCreateInFlight = nextPeqCreateInFlight', context); },
+    });
+    for (const name of [
+        'ensureMeasurementPeqState', 'addMeasurementPeqFilter', 'takeMeasurementPeqToPreset',
+        'createMeasurementPeqPresetFromDraft',
+    ]) context[name] = (...args) => editor[name](...args);
 
     const inputs = Array.from({ length: 12 }, (_, index) => ({
         type: index % 2 ? 'bell' : 'notch',
@@ -193,7 +204,7 @@ async function main() {
     // the measurement flows do: the effects-panel PEQ create stays unbound.
     const convolverCommitSites = appSource.split("'source_measurement_id', measurementCommitSourceId()").length - 1;
     assert.equal(convolverCommitSites, 2, 'both measurement convolver commits must name their source measurement');
-    assert.match(appSource, /source_measurement_id: measurementCommitSourceId\(\),/, 'the measurement PEQ commit must name its source measurement');
+    assert.match(peqSource, /source_measurement_id: deps\.measurementCommitSourceId\(\),/, 'the measurement PEQ commit must name its source measurement');
     assert.equal(context.measurementCommitSourceId(), 'measurement-1', 'a loaded measurement supplies its stored id');
     state.measurement.currentMeasurement = null;
     assert.equal(context.measurementCommitSourceId(), '', 'an unsaved measurement keeps the pre-gate path');
@@ -223,8 +234,8 @@ async function main() {
     assert.equal(toasts.at(-1).kind, 'error');
     nextResponse = null;
 
-    assert.match(appSource, /peq\.filters\.length >= 12/, 'PEQ assistant guard must enforce the twelve-filter limit');
-    assert.match(appSource, /supports up to 12 filters/, 'limit toast must describe twelve filters');
+    assert.match(peqSource, /peq\.filters\.length >= 12/, 'PEQ assistant guard must enforce the twelve-filter limit');
+    assert.match(peqSource, /supports up to 12 filters/, 'limit toast must describe twelve filters');
     assert.match(editorsSource, /Array\.from\(\{ length: 12 \}/, 'PEQ assistant must render twelve slots');
     assert.match(editorsSource, /const filter = peq\.filters\[index\] \|\| null/, 'unpopulated slots, including F9-F12, must remain unset');
     assert.match(editorsSource, /F1-F12[^<']*up to 12 temporary filters/, 'empty-state help must describe F1-F12');

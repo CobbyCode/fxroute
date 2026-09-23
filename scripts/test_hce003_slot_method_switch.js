@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
+const calibration = require('../static/measurement_calibration.js');
 
 const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
@@ -69,12 +70,13 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext([
-    'ensureCustomHouseCurveState',
     'getMeasurementActiveEditor',
     'getMeasurementRestorableTargetCurve',
     'setMeasurementActiveEditor',
     'setMeasurementAssistMode',
 ].map(extractFunction).join('\n'), context);
+calibration.init({ getState: () => state });
+context.ensureCustomHouseCurveState = () => calibration.ensureCustomHouseCurveState();
 
 // 1–2. Neutral -> Custom -> re-activate the already selected PEQ method:
 // editor closes, Neutral remains selected, PEQ becomes visible/enabled.

@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
+const calibration = require('../static/measurement_calibration.js');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 const dspSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_dsp.js'), 'utf8');
@@ -77,16 +78,30 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext([
-    'ensureCustomHouseCurveState', 'getMeasurementActiveEditor', 'setMeasurementActiveEditor',
-    'openCustomHouseCurveEditor', 'handleMeasurementTargetCurveSelection',
-    'addCustomHouseCurvePoint', 'addCustomHouseCurvePointAtPosition',
-    'updateCustomHouseCurvePoint', 'deleteCustomHouseCurvePoint', 'resetCustomHouseCurveDraft', 'resetMeasurementGraph',
+    'getMeasurementActiveEditor', 'setMeasurementActiveEditor',
+    'resetMeasurementGraph',
     'getCustomHouseCurvePointSlot', 'getCustomHouseCurvePointColor',
     'getMeasurementHouseCurvePreviewPoints', 'getMeasurementTargetCurvePreview',
     'getCustomHouseCurveHandlePosition', 'getCustomHouseCurveHandleHitRadius',
     'findCustomHouseCurveHandleAtPosition', 'handleMeasurementGraphPointerDown',
     'handleMeasurementGraphPointerMove', 'handleMeasurementGraphPointerUp',
 ].map(extractFunction).join('\n'), context);
+calibration.init({
+    getState: () => state, getElements: () => context.elements,
+    setMeasurementActiveEditor: (editor) => context.setMeasurementActiveEditor(editor),
+    updateMeasurementConvolverField: context.updateMeasurementConvolverField,
+    measurementXToFrequency: dsp.measurementXToFrequency,
+    measurementYToDb: dsp.measurementYToDb,
+    renderMeasurementPanel: context.renderMeasurementPanel,
+    scheduleMeasurementGraphRender: context.scheduleMeasurementGraphRender,
+});
+for (const name of ['ensureCustomHouseCurveState', 'openCustomHouseCurveEditor',
+    'handleMeasurementTargetCurveSelection', 'addCustomHouseCurvePoint',
+    'addCustomHouseCurvePointAtPosition', 'updateCustomHouseCurvePoint',
+    'deleteCustomHouseCurvePoint', 'resetCustomHouseCurveDraft']) {
+    context[name] = (...args) => calibration[name](...args);
+}
+context.window = { FXRouteMeasurementPeqEditor: { clearMeasurementPeqPointerDrag: () => { state.measurement.peqAssistant.dragFilterId = null; } } };
 
 const bounds = pointerState.bounds;
 const range = pointerState.range;
