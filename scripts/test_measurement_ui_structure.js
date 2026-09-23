@@ -8,6 +8,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const index = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const panelUi = fs.readFileSync(path.join(root, 'static', 'measurement_panel_ui.js'), 'utf8');
 const flows = fs.readFileSync(path.join(root, 'static', 'measurement_flows.js'), 'utf8');
 const measurementCss = fs.readFileSync(path.join(root, 'static', 'css', '_measurement.css'), 'utf8');
 const responsiveCss = fs.readFileSync(path.join(root, 'static', 'css', '_responsive.css'), 'utf8');
@@ -43,7 +44,7 @@ assert.match(app, /function measurementAreaBadge\(measurement\) \{/);
 assert.match(app, /target\.schema !== 'fxroute\.measurement-target'\) return null;/);
 assert.match(app, /target\.legacy \|\| target\.schema/);
 assert.match(app, /measurement-area-badge\$\{areaBadge\.stale \? ' is-stale' : ''\}/);
-assert.match(app, /Measured area: \$\{areaBadge\.title\}/);
+assert.match(panelUi, /Measured area: \$\{areaBadge\.title\}/);
 // A summed-sub bank is mono on the preset side: per-side PEQ takes and a
 // Both convolver take cannot compile there, so the UI disables them.
 assert.match(app, /function measurementBankSumsBothInputs\(\) \{/);
@@ -57,8 +58,8 @@ assert.match(index, /id="measurement-repeat-note" class="measurement-repeat-help
 assert.match(app, /function measurementRepeatBlockedReason\(\) \{/);
 assert.match(app, /if \(!area \|\| area\.repeat_supported !== false\) return '';/);
 assert.match(app, /const repeatBlockedReason = measurementRepeatBlockedReason\(\);/);
-assert.match(app, /elements\.measurementRepeatStartBtn\.disabled = repeatBlockedReason && !lrActive/);
-assert.match(app, /syncMeasurementRepeatNote\(lrActive, repeatBlockedReason\);/);
+assert.match(panelUi, /elements\.measurementRepeatStartBtn\.disabled = repeatBlockedReason && !lrActive/);
+assert.match(panelUi, /syncMeasurementRepeatNote\(lrActive, repeatBlockedReason\);/);
 assert.match(app, /elements\.measurementRepeatNote\.textContent = lrActive \|\| !blockedReason/);
 assert.match(app, /showToast\(repeatBlockedReason, 'warning'\)/);
 assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);

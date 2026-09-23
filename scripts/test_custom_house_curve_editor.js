@@ -100,7 +100,8 @@ async function main() {
     assert.ok(state.measurement.houseCurveOptions.some((curve) => curve.id === 'new-Custom-House-Curve-2.txt'));
 
     assert.match(html, /Create Target Curve/);
-    assert.match(source, /Create Custom House Curve…/);
+    const panelSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_panel_ui.js'), 'utf8');
+    assert.match(panelSource, /Create Custom House Curve…/);
     assert.match(dspSource, /Math\.log10\(frequency\).*Math\.log10\(leftHz\)/s, 'existing target interpolation remains logarithmic');
     console.log('ok custom house curve: eight editable/deletable points, sorted compatible upload, collision-free name, immediate target selection');
 }

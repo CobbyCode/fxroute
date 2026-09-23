@@ -227,7 +227,8 @@ async function main() {
     assert.match(appSource, /Array\.from\(\{ length: 12 \}/, 'PEQ assistant must render twelve slots');
     assert.match(appSource, /const filter = peq\.filters\[index\] \|\| null/, 'unpopulated slots, including F9-F12, must remain unset');
     assert.match(appSource, /F1-F12[^<']*up to 12 temporary filters/, 'empty-state help must describe F1-F12');
-    assert.match(appSource, /\$\{peq\.filters\.length\}\/12 assistant filters/, 'counter must use the twelve-filter limit');
+    const panelSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_panel_ui.js'), 'utf8');
+    assert.match(panelSource, /\$\{peq\.filters\.length\}\/12 assistant filters/, 'counter must use the twelve-filter limit');
     assert.match(htmlSource, /up to 12 temporary filters/, 'panel help must describe the twelve-filter limit');
 
     console.log('ok PEQ assistant: twelve slots accepted, thirteenth rejected; F1-F12 markers updated');
