@@ -13,7 +13,8 @@ const path = require('node:path');
 require('../static/output_state.js');
 const BankUI = require('../static/output_bank_ui.js');
 const appSource = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
-assert.match(appSource, /function visiblePresetEntriesForBank\(/, 'app.js must keep a wrapper');
+assert.equal(typeof BankUI.visiblePresetEntriesForBank, 'function', 'bank module owns the preset entry list');
+assert.doesNotMatch(appSource, /\nfunction visiblePresetEntriesForBank\(/, 'shim dropped from app.js');
 assert.match(appSource, /FXRouteBankUI/, 'app.js must delegate bank UI to the module');
 
 function makeContext(presets, catalog) {

@@ -27,10 +27,12 @@ globalThis.window.devicePixelRatio = globalThis.window.devicePixelRatio || 1;
 // Module boundary: canonical owner plus app.js delegation and script order.
 for (const name of ['renderSubwooferPanel', 'saveSubwooferDebounced',
     'flushSubwooferSettingsBeforeMeasurement', 'normalizeSubwooferSettings',
-    'collectSubwooferSettings', 'drawSubwooferPreview', 'wireSubwooferControls',
+    'collectSubwooferSettings', 'drawSubwooferPreview',
     'beginSubwooferSave', 'routedSubwooferView', 'isSubwooferModeName']) {
     assert.match(appSource, new RegExp(`function ${name}\\(`), `app.js must keep a ${name} wrapper`);
 }
+assert.equal(typeof SubwooferUI.wireSubwooferControls, 'function', 'subwoofer module owns the wiring');
+assert.doesNotMatch(appSource, /\n(?:async function|function) wireSubwooferControls\(/, 'shim dropped from app.js');
 assert.match(appSource, /FXRouteSubwooferUI/, 'app.js wrappers must delegate to the subwoofer module');
 assert.match(indexSource, /subwoofer_ui\.js\?v=\d+\.\d+\.\d+/);
 assert.ok(indexSource.indexOf('subwoofer_ui.js') < indexSource.indexOf('/static/app.js'),

@@ -15,7 +15,7 @@ if (typeof globalThis.document === 'undefined') {
 }
 
 const appSource = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
-assert.match(appSource, /function renderEffectsCompare\(/, 'app.js must keep a compare wrapper');
+assert.match(appSource, /window\.FXRouteBankUI\.renderEffectsCompare\(/, 'app.js delegates compare rendering to the bank module');
 assert.match(appSource, /FXRouteBankUI/, 'app.js must delegate bank UI to the module');
 
 const bank = (id, label) => ({

@@ -20,16 +20,23 @@ const BankUI = require('../static/output_bank_ui.js');
 for (const name of ['renderEffectsBankSelector', 'renderEffectsCompare', 'toggleComparePreset',
     'submitEffectsImport', 'createDualFilterPreset', 'deleteEffectsPreset',
     'outputSystemBankBinding', 'bankBindingJson', 'wireBankUi']) {
-    assert.match(appSource, new RegExp(`function ${name}\\(`), `app.js must keep a ${name} wrapper`);
+    assert.equal(typeof BankUI[name], 'function', `bank module must own ${name}`);
+    assert.doesNotMatch(appSource, new RegExp(`\\n(?:async function|function) ${name}\\(`),
+        `shim dropped from app.js: ${name}`);
 }
-assert.match(appSource, /FXRouteBankUI/, 'app.js wrappers must delegate to the bank module');
+assert.match(appSource, /window\.FXRouteBankUI\.renderEffectsBankSelector\(/, 'bank calls point at the module directly');
+assert.match(appSource, /window\.FXRouteBankUI\.renderEffectsCompare\(/, 'compare calls point at the module directly');
+assert.match(appSource, /FXRouteBankUI/, 'app.js delegates bank UI to the module');
 assert.match(indexSource, /output_bank_ui\.js\?v=\d+\.\d+\.\d+/);
 assert.ok(indexSource.indexOf('output_bank_ui.js') < indexSource.indexOf('/static/app.js'),
     'bank module must load before app.js');
-// Editors stay out: PEQ/convolver takes and the main effects render remain.
-assert.match(appSource, /function createPeqPreset\(/, 'PEQ editor stays in app.js');
-assert.match(appSource, /function renderEffects\(/, 'main effects render stays in app.js');
-assert.match(appSource, /function fetchEffects\(/, 'effects fetch stays in app.js');
+// Editors stay out of the bank module: the PEQ editor and the main effects
+// fetch/render live in output_effects_ui.js now.
+const effectsSource = fs.readFileSync(path.join(repoRoot, 'static', 'output_effects_ui.js'), 'utf8');
+assert.match(effectsSource, /function createPeqPreset\(/, 'PEQ editor lives in the effects module');
+assert.match(effectsSource, /function renderEffects\(/, 'main effects render lives in the effects module');
+assert.match(effectsSource, /function fetchEffects\(/, 'effects fetch lives in the effects module');
+assert.doesNotMatch(appSource, /\n(?:async function|function) fetchEffects\(/, 'effects fetch no longer in app.js');
 
 function stubClassList() {
     const set = new Set();

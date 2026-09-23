@@ -54,9 +54,11 @@ for (const model of ['UMIK-1', 'UMIK-2', 'UMM-6']) {
     );
 }
 assert.equal(spl.splCalibrationModeLabel({ automatic: { available: false } }), 'Manual SPL measurement');
-// app.js wires its SPL buttons straight to the SPL module (no wrappers).
+// The SPL noise button is wired straight to the SPL module; that wiring
+// lives with setupEffectsActions in output_effects_ui.js (no app.js wrapper).
 assert.doesNotMatch(appSource, /\n(?:async function|function) toggleSplCalibrationNoise\(/);
-assert.match(appSource, /FXRouteMeasurementSplCalibration\.toggleSplCalibrationNoise/);
+const effectsSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'output_effects_ui.js'), 'utf8');
+assert.match(effectsSource, /FXRouteMeasurementSplCalibration\.toggleSplCalibrationNoise/);
 assert.match(splSource, /function toggleSplCalibrationNoise\(\) \{/);
 
 (async () => {

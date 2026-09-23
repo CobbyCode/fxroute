@@ -13,7 +13,8 @@ const uiHelpers = require('../static/ui_helpers.js');
 require('../static/api.js');
 const BankUI = require('../static/output_bank_ui.js');
 const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
-assert.ok(/function\s+renderBankImportTarget/.test(source), 'app.js must keep a wrapper');
+assert.equal(typeof BankUI.renderBankImportTarget, 'function', 'bank module owns the import target renderer');
+assert.ok(!/\nfunction\s+renderBankImportTarget/.test(source), 'shim dropped from app.js');
 assert.ok(/FXRouteBankUI/.test(source), 'app.js must delegate bank UI to the module');
 
 const bank = (id, label, roles, channel_mode = 'stereo') => ({

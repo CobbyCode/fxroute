@@ -44,7 +44,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const BankUI = require('../static/output_bank_ui.js');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../static/app.js'), 'utf8');
-assert.match(source, /function toggleComparePreset\(/, 'app.js must keep a toggle wrapper');
+assert.doesNotMatch(source, /\n(?:async function|function) toggleComparePreset\(/, 'toggle shim dropped: app.js delegates to FXRouteBankUI directly');
 assert.match(source, /FXRouteBankUI/, 'app.js must delegate bank UI to the module');
 const calls = [];
 const sharedState = { outputSystem: { catalog }, dsp: { compare: {}, active_preset: 'Wrong legacy preset' } };

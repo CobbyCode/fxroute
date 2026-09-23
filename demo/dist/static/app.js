@@ -35,6 +35,7 @@ window.FXRouteMeasurementGraph?.init({
 });
 const MeasurementFlows = window.FXRouteMeasurementFlows || {};
 const SettingsSystem = window.FXRouteSettingsSystem || {};
+const EffectsUI = window.FXRouteEffectsUI || {};
 // Flow module (auto-sub + hybrid wizard): backend calls via injected api,
 // state/dom getters plus ui callbacks injected as hoisted references.
 window.FXRouteMeasurementFlows?.init({
@@ -117,6 +118,27 @@ window.FXRouteSettingsSystem?.init({
     fetchLibraryStatus: () => fetchLibraryStatus(),
     confirmDialog: (message) => confirm(message),
 });
+
+// Output effects module (static/output_effects_ui.js): effects fetch/render,
+// output PEQ band model and editor, preset creation/switching and effects
+// extras incl. persistence. Compare/combine/bank/import delegation points at
+// window.FXRouteBankUI directly; crossover repaint, catalog refresh and the
+// shared upload-area wiring stay in app.js behind explicit callbacks.
+window.FXRouteEffectsUI?.init({
+    getState: () => state,
+    getElements: () => elements,
+    showToast,
+    escapeHtml: (value) => escapeHtml(value),
+    fetchOutputSystemCatalog: (force) => fetchOutputSystemCatalog(force),
+    formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
+    measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
+    renderCrossoverTile: () => renderCrossoverTile(),
+    repaintCrossoverGraph: () => repaintCrossoverGraph(),
+    setupUploadArea: (areaId, fileInputId, onFile) => setupUploadArea(areaId, fileInputId, onFile),
+    getActiveEditing: () => _activeEditing,
+    isPeqCreateInFlight: () => peqCreateInFlight,
+    setPeqCreateInFlight: (active) => { peqCreateInFlight = active; },
+});
 // Crossover tile UI: state/DOM through lazy getters; output mutations and
 // box ownership stay in app.js behind explicit callbacks. Bank, routing and
 // measurement logic are not moved.
@@ -142,8 +164,8 @@ window.FXRouteOutputSystemController?.init({
     showToast,
     ensureOutputBoxes: () => ensureOutputSystemBoxes(),
     renderOutputSection: () => renderOutputSystemSection(),
-    renderBankSelector: () => renderEffectsBankSelector(),
-    renderCompare: () => renderEffectsCompare(),
+    renderBankSelector: () => window.FXRouteBankUI.renderEffectsBankSelector(),
+    renderCompare: () => window.FXRouteBankUI.renderEffectsCompare(),
     syncCrossover: (enabled) => {
         if (enabled) {
             void fetchCrossoverResponse();
@@ -158,7 +180,7 @@ window.FXRouteOutputSystemController?.init({
     reportMutationError: (html) => {
         if (elements.osFeedback) elements.osFeedback.innerHTML = html;
     },
-    syncCompareBusy: () => setEffectsCompareLoadBusy(
+    syncCompareBusy: () => window.FXRouteBankUI.setEffectsCompareLoadBusy(
         (typeof window !== 'undefined' && window.FXRouteBankUI?.isCompareLoadBusy?.())
         ?? (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI?.isCompareLoadBusy?.())
         ?? false),
@@ -171,12 +193,12 @@ window.FXRouteBankUI?.init({
     getElements: () => elements,
     showToast,
     escapeHtml,
-    fetchEffects: () => fetchEffects(),
+    fetchEffects: () => EffectsUI.fetchEffects(),
     refreshCatalog: (force) => fetchOutputSystemCatalog(force),
-    collectEffectsExtras: () => collectEffectsExtras(),
+    collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
     presetFileUrl: (name) => MeasurementUI.presetFileUrl(name),
-    renderEffects: () => renderEffects(),
+    renderEffects: () => EffectsUI.renderEffects(),
     renderMeasurementArea: () => renderMeasurementArea(),
     measurementArea: () => measurementAreaFromCatalog(),
     applyMutation: (kind, fields, message, options) => applyOutputSystemMutation(kind, fields, message, options),
@@ -213,7 +235,7 @@ window.FXRouteMeasurementSavedUI?.init({
     getCurrentMeasurementEntry: () => getCurrentMeasurementEntry(),
     getVisibleMeasurementColorById: () => getVisibleMeasurementColorById(),
     getOutputSystemModule: () => outputSystemModule(),
-    getCompactDisplayName: (name, maxChars) => getCompactDisplayName(name, maxChars),
+    getCompactDisplayName: (name, maxChars) => window.FXRouteBankUI.getCompactDisplayName(name, maxChars),
     escapeHtml: (value) => escapeHtml(value),
     renderMeasurementPanel: () => renderMeasurementPanel(),
     mergeSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.mergeSelectedMeasurements(),
@@ -292,15 +314,15 @@ window.FXRouteMeasurementPeqEditor?.init({
     getMeasurementActiveEditor: () => getMeasurementActiveEditor(),
     setMeasurementActiveEditor: (editor) => setMeasurementActiveEditor(editor),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
-    requireConcreteFilterBank: () => requireConcreteFilterBank(),
-    validatePeqBands: (side, bands) => validatePeqBands(side, bands),
-    normalizePeqEqMode: (mode) => normalizePeqEqMode(mode),
-    collectEffectsExtras: () => collectEffectsExtras(),
-    bankBindingJson: () => bankBindingJson(),
+    requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
+    validatePeqBands: (side, bands) => EffectsUI.validatePeqBands(side, bands),
+    normalizePeqEqMode: (mode) => EffectsUI.normalizePeqEqMode(mode),
+    collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
+    bankBindingJson: () => window.FXRouteBankUI.bankBindingJson(),
     measurementCommitSourceId: () => measurementCommitSourceId(),
-    measurementPeqParams: (left, right, mode) => measurementPeqParams(left, right, mode),
+    measurementPeqParams: (left, right, mode) => window.FXRouteBankUI.measurementPeqParams(left, right, mode),
     formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
-    fetchEffects: () => fetchEffects(),
+    fetchEffects: () => EffectsUI.fetchEffects(),
     fetchOutputSystemCatalog: (force) => fetchOutputSystemCatalog(force),
     isPeqCreateInFlight: () => peqCreateInFlight,
     setPeqCreateInFlight: (active) => { peqCreateInFlight = active; },
@@ -319,12 +341,12 @@ window.FXRouteMeasurementConvolverEditor?.init({
     renderMeasurementPanel: () => renderMeasurementPanel(),
     scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
     saveMeasurementSetupSettings: (patch) => window.FXRouteMeasurementSetup.saveMeasurementSetupSettings(patch),
-    collectEffectsExtras: () => collectEffectsExtras(),
-    appendBankBindingFields: (formData) => appendBankBindingFields(formData),
+    collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
+    appendBankBindingFields: (formData) => window.FXRouteBankUI.appendBankBindingFields(formData),
     measurementCommitSourceId: () => measurementCommitSourceId(),
-    requireConcreteFilterBank: () => requireConcreteFilterBank(),
+    requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
-    fetchEffects: () => fetchEffects(),
+    fetchEffects: () => EffectsUI.fetchEffects(),
     fetchOutputSystemCatalog: (force) => fetchOutputSystemCatalog(force),
     formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
     getVisibleMeasurementEntries: () => getVisibleMeasurementEntries(),
@@ -342,7 +364,7 @@ window.FXRouteMeasurementCapture?.init({
     fetch: (...args) => fetch(...args),
     showToast: (message, kind) => showToast(message, kind),
     renderMeasurementPanel: () => renderMeasurementPanel(),
-    requireConcreteFilterBank: () => requireConcreteFilterBank(),
+    requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
     measurementModeReady: () => measurementModeReady(),
     measurementRepeatBlockedReason: () => measurementRepeatBlockedReason(),
     flushSubwooferSettingsBeforeMeasurement: () => flushSubwooferSettingsBeforeMeasurement(),
@@ -395,7 +417,7 @@ window.FXRouteMeasurementSavedActions?.init({
 window.FXRouteMeasurementSplCalibration?.init({
     getElements: () => elements,
     fetch: (...args) => fetch(...args),
-    fetchEffects: () => fetchEffects(),
+    fetchEffects: () => EffectsUI.fetchEffects(),
     openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
     closeModal: (panel) => window.FXRouteModal?.close(panel),
 });
@@ -782,8 +804,6 @@ const SAMPLERATE_BURST_POLL_DELAYS_MS = [0, 120, 280, 520, 900, 1400, 2200, 3200
 const LIBRARY_SCAN_POLL_INTERVAL_MS = 1200;
 const DOWNLOAD_STATUS_POLL_INTERVAL_MS = 1500;
 const PEAK_STATUS_POLL_INTERVAL_MS = 1200;
-const EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS = 800;
-const EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS = 2000;
 const MEASUREMENT_WINDOW_HEARTBEAT_INTERVAL_MS = 10000;
 // DOM elements
 const elements = {
@@ -1262,61 +1282,14 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch(e) { console.error('streaming module initialization crashed:', e); }
     try { setupLibraryActions(); } catch(e) { console.error('setupLibraryActions crashed:', e); }
     try { setupDownloadActions(); } catch(e) { console.error('setupDownloadActions crashed:', e); }
-    try { setupEffectsActions(); } catch(e) { console.error('setupEffectsActions crashed:', e); }
+    try { EffectsUI.setupEffectsActions(); } catch(e) { console.error('EffectsUI.setupEffectsActions crashed:', e); }
     try { setupMeasurementActions(); } catch(e) { console.error('setupMeasurementActions crashed:', e); }
     try { MeasurementFlows.setupHybridMeasurementWizard(); } catch(e) { console.error('setupHybridMeasurementWizard crashed:', e); }
     try { primeSubwooferPreview(); } catch(e) { console.error('primeSubwooferPreview crashed:', e); }
     try { window.addEventListener('load', requestSubwooferPreviewRedrawFromState, { once: true }); } catch(e) { console.error('subwoofer preview load hook crashed:', e); }
     try { fetchInitialData(); } catch(e) { console.error('fetchInitialData crashed:', e); }
 });
-// WebSocket
-function normalizeEffectsCompareSelection(compare = {}) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.normalizeEffectsCompareSelection(compare);
-}
 
-function resolveEffectsCompareState(compare, presets = [], activePreset = '') {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.resolveEffectsCompareState(compare, presets, activePreset);
-}
-
-async function saveEffectsCompareState(compare) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.saveEffectsCompareState(compare);
-}
-
-function getDefaultEffectsCombineDraft() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.getDefaultEffectsCombineDraft();
-}
-
-function normalizeEffectsCombineDraft(draft = {}, presets = []) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.normalizeEffectsCombineDraft(draft, presets);
-}
-
-function setEffectsImportPanelOpen(shouldOpen) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.setEffectsImportPanelOpen(shouldOpen);
-}
 
 function setMeasurementSweepMenuOpen(shouldOpen) {
     if (!elements.measurementSweepMenu || !elements.measurementSweepToggleBtn) return;
@@ -1538,7 +1511,7 @@ function handleWebSocketMessage(msg) {
             if (data.player && data.player.state && data.player.state.dsp) {
                 state.dsp = data.player.state.dsp;
                 if (state.dsp?.global_extras) {
-                    applyEffectsExtras({
+                    EffectsUI.applyEffectsExtras({
                         limiterEnabled: !!state.dsp.global_extras?.limiter?.enabled,
                         headroomEnabled: !!state.dsp.global_extras?.headroom?.enabled,
                         headroomGainDb: Number(state.dsp.global_extras?.headroom?.params?.gainDb ?? -3),
@@ -1557,7 +1530,7 @@ function handleWebSocketMessage(msg) {
                         toneEffectMode: String(state.dsp.global_extras?.tone_effect?.mode || 'crystalizer'),
                     });
                 }
-                renderEffects();
+                EffectsUI.renderEffects();
             }
             break;
         case 'playback': {
@@ -1646,12 +1619,12 @@ function handleWebSocketMessage(msg) {
             const presetNames = (data.presets || []).map(p => p.name);
             state.dsp = {
                 ...data,
-                combineDraft: state.dsp?.combineDraft || getDefaultEffectsCombineDraft(),
-                peqDraft: state.dsp?.peqDraft || { presetName: '', eqMode: 'IIR', loadAfterCreate: false, leftBands: [defaultPeqBand()], rightBands: [defaultPeqBand()] },
-                compare: resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
+                combineDraft: state.dsp?.combineDraft || window.FXRouteBankUI.getDefaultEffectsCombineDraft(),
+                peqDraft: state.dsp?.peqDraft || { presetName: '', eqMode: 'IIR', loadAfterCreate: false, leftBands: [EffectsUI.defaultPeqBand()], rightBands: [EffectsUI.defaultPeqBand()] },
+                compare: window.FXRouteBankUI.resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
             };
-            state.dsp.combineDraft = normalizeEffectsCombineDraft(state.dsp.combineDraft, presetNames);
-            renderEffects();
+            state.dsp.combineDraft = window.FXRouteBankUI.normalizeEffectsCombineDraft(state.dsp.combineDraft, presetNames);
+            EffectsUI.renderEffects();
             break;
         case 'download_complete':
             showToast(`Download complete: ${data.filename}`, 'success');
@@ -2190,7 +2163,6 @@ function isSelectFocused(selectEl) {
     if (mod && typeof mod.isSelectFocused === 'function') return mod.isSelectFocused(selectEl);
     return !!selectEl && typeof document !== 'undefined' && document.activeElement === selectEl;
 }
-
 
 
 // ---------------------------------------------------------------------------
@@ -3031,93 +3003,6 @@ async function applyOutputSystemMutation(kind, fields, successMessage, options =
     return mod.applyOutputSystemMutation(kind, fields, successMessage, options);
 }
 
-function outputSystemBankBinding() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.outputSystemBankBinding();
-}
-
-function outputSystemCombineBank() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.outputSystemCombineBank();
-}
-
-function visiblePresetEntriesForBank() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.visiblePresetEntriesForBank();
-}
-
-function visiblePresetNamesForBank() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.visiblePresetNamesForBank();
-}
-
-function appendBankBindingFields(formData) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.appendBankBindingFields(formData);
-}
-
-function bankBindingJson() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.bankBindingJson();
-}
-
-function measurementPeqParams(leftBands, rightBands, eqMode) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.measurementPeqParams(leftBands, rightBands, eqMode);
-}
-
-function requireConcreteFilterBank() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.requireConcreteFilterBank();
-}
-
-function renderEffectsBankSelector() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.renderEffectsBankSelector();
-}
-
-function syncBankActionButtons() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.syncBankActionButtons();
-}
-
-function renderBankImportTarget() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.renderBankImportTarget();
-}
 
 function crossoverModule() {
     return (typeof window !== 'undefined' && window.FXRouteCrossover) || null;
@@ -5148,7 +5033,7 @@ function highlightActiveTrack() {
 async function fetchInitialData() {
     startSampleratePolling();
     void fetchProviderAdmin();
-    await Promise.all([radioModule.fetchStations(), fetchTracks(), fetchEffects(), fetchMeasurements(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus(), fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
+    await Promise.all([radioModule.fetchStations(), fetchTracks(), EffectsUI.fetchEffects(), fetchMeasurements(), fetchPlaybackStatus(), fetchSamplerateStatus(), fetchDownloadStatus(), fetchAudioOutputOverview(), fetchAudioSourceOverview()]);
     requestSubwooferPreviewRedrawFromState();
     await fetchPlaylists();
 }
@@ -7354,247 +7239,8 @@ function setupUploadArea(areaId, fileInputId, onFile) {
     });
 }
 
-async function readTextFile(file) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.readTextFile(file);
-}
-
-function getDualFilterFileKind(file) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.getDualFilterFileKind(file);
-}
-
-async function populateDualFilterTextareaFromFile(side, file) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.populateDualFilterTextareaFromFile(side, file);
-}
-
-async function createDualFilterPreset() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.createDualFilterPreset();
-}
-
-function updateEffectsPeqDisclosureLabel() {
-    if (!elements.effectsPeqDisclosureMeta || !elements.effectsPeqDisclosure) return;
-    const leftCount = state.dsp?.peqDraft?.leftBands?.length || 0;
-    const rightCount = state.dsp?.peqDraft?.rightBands?.length || 0;
-    const actionLabel = elements.effectsPeqDisclosure.open ? 'Collapse' : 'Expand';
-    elements.effectsPeqDisclosureMeta.textContent = `L${leftCount} · R${rightCount} · ${actionLabel}`;
-    updateEffectsPeqSummary();
-}
 
 /* Collapsed-card preview: compact read-only band list from the draft. */
-function formatPeqSummaryBand(band) {
-    if (!band) return null;
-    const fixed = (value) => {
-        const n = Number(value);
-        return Number.isFinite(n) ? Math.round(n * 10) / 10 : 0;
-    };
-    if (band.filterType === 'delay') return `${fixed(band.delayMs)} ms`;
-    if (band.filterType === 'gain') {
-        const gain = fixed(band.gainDb);
-        return `${gain > 0 ? '+' : ''}${gain} dB`;
-    }
-    const hz = Number(band.frequencyHz);
-    const freq = Number.isFinite(hz) && hz >= 1000 ? `${Math.round(hz / 100) / 10} kHz` : `${Math.round(hz)} Hz`;
-    const gain = fixed(band.gainDb);
-    return `${freq} ${gain > 0 ? '+' : ''}${gain} dB Q${fixed(band.q)}`;
-}
-
-function updateEffectsPeqSummary() {
-    if (!elements.effectsPeqSummary) return;
-    const formatSide = (bands) => {
-        const items = (bands || []).map(formatPeqSummaryBand).filter(Boolean);
-        if (!items.length) return null;
-        const shown = items.slice(0, 3).join(' · ');
-        return items.length > 3 ? `${shown} · +${items.length - 3}` : shown;
-    };
-    const left = formatSide(state.dsp?.peqDraft?.leftBands);
-    const right = formatSide(state.dsp?.peqDraft?.rightBands);
-    const lines = [];
-    if (left) lines.push(`L  ${left}`);
-    if (right) lines.push(`R  ${right}`);
-    if (!lines.length) {
-        elements.effectsPeqSummary.textContent = '';
-        elements.effectsPeqSummary.hidden = true;
-        return;
-    }
-    elements.effectsPeqSummary.textContent = lines.join('\n');
-    elements.effectsPeqSummary.hidden = false;
-}
-
-function clearEffectsPeqStatusOnCollapse() {
-    if (!elements.effectsPeqDisclosure || elements.effectsPeqDisclosure.open) return;
-    if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
-}
-
-function wireSubwooferControls() {
-    // Subwoofer tile UI lives in static/subwoofer_ui.js
-    // (window.FXRouteSubwooferUI). Thin wrapper keeps the settings wiring unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteSubwooferUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteSubwooferUI) || null;
-    return mod.wireSubwooferControls();
-}
-
-function wireBankUi() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps the settings wiring unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.wireBankUi();
-}
-
-function setupEffectsActions() {
-    if (elements.splCalibrationOpen) elements.splCalibrationOpen.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.openSplCalibration());
-    if (elements.splCalibrationClose) elements.splCalibrationClose.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.closeSplCalibration());
-    if (elements.splCalibrationPanel?.querySelector('.manage-overlay-backdrop')) {
-        elements.splCalibrationPanel.querySelector('.manage-overlay-backdrop').addEventListener('click', () => window.FXRouteMeasurementSplCalibration.closeSplCalibration());
-    }
-    if (elements.splCalibrationNoise) elements.splCalibrationNoise.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.toggleSplCalibrationNoise());
-    if (elements.splCalibrationSave) elements.splCalibrationSave.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.saveSplCalibration());
-    wireBankUi();
-    if (elements.effectsPeqPresetName) elements.effectsPeqPresetName.addEventListener('input', (event) => {
-        if (!state.dsp?.peqDraft) return;
-        state.dsp.peqDraft.presetName = event.target.value;
-    });
-    if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.addEventListener('change', (event) => {
-        if (!state.dsp?.peqDraft) return;
-        state.dsp.peqDraft.eqMode = normalizePeqEqMode(event.target.value);
-        event.target.value = state.dsp.peqDraft.eqMode;
-    });
-    if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.addEventListener('click', addPeqBandPair);
-    if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
-    /* Compact − / value / + steppers: nudge the paired number input by its
-       own step/min/max and let the existing input/change listeners apply
-       the value (draft update + debounced save, unchanged semantics). */
-    function nudgeStepperControl(button) {
-        const control = button.closest('.stepper-control');
-        const input = control ? control.querySelector('input[type="number"]') : null;
-        if (!input || input.disabled) return;
-        const direction = button.dataset.stepper === 'dec' ? -1 : 1;
-        const step = Number(input.step);
-        const stepValue = Number.isFinite(step) && step > 0 ? step : 1;
-        const decimals = Math.min((String(input.step).split('.')[1] || '').length, 4);
-        const min = input.min === '' ? -Infinity : Number(input.min);
-        const max = input.max === '' ? Infinity : Number(input.max);
-        const current = Number(input.value);
-        if (!Number.isFinite(current)) return;
-        let next = current + direction * stepValue;
-        next = Number(next.toFixed(decimals));
-        if (Number.isFinite(min)) next = Math.max(min, next);
-        if (Number.isFinite(max)) next = Math.min(max, next);
-        if (next === current) return;
-        input.focus({ preventScroll: true });
-        input.value = String(next);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-
-    document.addEventListener('mousedown', (event) => {
-        /* Keep focus on the number input when its stepper buttons are
-           pressed: losing focus would drop the input from _activeEditing
-           and let the pending-save echo overwrite the user's value. */
-        const button = event.target instanceof Element ? event.target.closest('.stepper-btn') : null;
-        if (button) event.preventDefault();
-    });
-
-    document.addEventListener('click', (event) => {
-        const button = event.target instanceof Element ? event.target.closest('.stepper-btn') : null;
-        if (button) nudgeStepperControl(button);
-    });
-
-    wireSubwooferControls();
-    if (elements.effectsSubwooferPreview && elements.effectsCrossoverGraph) {
-        if (elements.effectsCrossoverGraph) {
-            if ('ResizeObserver' in window) {
-                const crossoverResizeObserver = new ResizeObserver(() => repaintCrossoverGraph());
-                crossoverResizeObserver.observe(elements.effectsCrossoverGraph);
-                elements.effectsCrossoverGraph._fxrouteResizeObserver = crossoverResizeObserver;
-            } else {
-                window.addEventListener('resize', repaintCrossoverGraph);
-            }
-        }
-    }
-    // Track focus to avoid resetting input values while user is typing.
-    // SELECTs are discrete choices (no typing to protect): they save with
-    // the short toggle debounce so live A/B switching applies promptly
-    // instead of restarting the 2000 ms typing debounce on every flip.
-    // Numeric inputs keep the long typing debounce.
-    [
-        elements.effectsHeadroomGainDb,
-        elements.effectsAutogainTargetDb,
-        elements.effectsLoudnessStrength,
-        elements.effectsLoudnessFftSize,
-        elements.effectsBassAmount,
-        elements.effectsToneEffectMode,
-    ].forEach(el => {
-        if (!el) return;
-        const valueDebounceMs = el.tagName === 'SELECT'
-            ? EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS
-            : EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS;
-        el.addEventListener('focus', () => _activeEditing.add(el));
-        el.addEventListener('input', () => saveEffectsExtrasDebounced(valueDebounceMs));
-        el.addEventListener('change', () => saveEffectsExtrasDebounced(valueDebounceMs));
-        el.addEventListener('blur', () => {
-            _activeEditing.delete(el);
-            saveEffectsExtrasDebounced(0); // commit immediately on blur
-        });
-    });
-
-    if (elements.effectsLimiterEnabled) elements.effectsLimiterEnabled.addEventListener('change', () => saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS));
-    if (elements.effectsHeadroomEnabled) elements.effectsHeadroomEnabled.addEventListener('change', () => {
-        updateEffectsExtrasUi();
-        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
-    });
-    if (elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.addEventListener('change', () => {
-        updateEffectsExtrasUi();
-        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
-    });
-    if (elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.addEventListener('change', () => {
-        updateEffectsExtrasUi();
-        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
-    });
-    if (elements.effectsBassEnabled) elements.effectsBassEnabled.addEventListener('change', () => {
-        updateEffectsExtrasUi();
-        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
-    });
-    if (elements.effectsToneEffectEnabled) elements.effectsToneEffectEnabled.addEventListener('change', () => {
-        updateEffectsExtrasUi();
-        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
-    });
-    loadSavedEffectsExtras();
-    setupEffectsCompareActions();
-    if (elements.effectsPeqDisclosure) {
-        elements.effectsPeqDisclosure.addEventListener('toggle', () => {
-            updateEffectsPeqDisclosureLabel();
-            clearEffectsPeqStatusOnCollapse();
-        });
-        updateEffectsPeqDisclosureLabel();
-    }
-    setupUploadArea('effects-import-area', 'effects-import-file', () => {
-        submitEffectsImport();
-    });
-    setupUploadArea('effects-rew-left-area', 'effects-rew-left-file', (file) => {
-        void populateDualFilterTextareaFromFile('left', file);
-    });
-    setupUploadArea('effects-rew-right-area', 'effects-rew-right-file', (file) => {
-        void populateDualFilterTextareaFromFile('right', file);
-    });
-    updateEffectsImportUi();
-    setEffectsImportPanelOpen(false);
-    resetPeqDraft();
-    renderEffectsCombine();
-}
 
 
 async function startDownload(urlOverride = null) {
@@ -8943,703 +8589,10 @@ function setupMeasurementActions() {
     renderMeasurementPanel();
 }
 
-async function fetchEffects() {
-    try {
-        const resp = await fetch('/api/dsp/presets');
-        if (!resp.ok) throw new Error('Failed to fetch DSP presets');
-        const data = await resp.json();
-        const prev = state.dsp?.compare;
-        const presetNames = (data.presets || []).map(p => p.name);
-        state.dsp = {
-            ...data,
-            combineDraft: state.dsp?.combineDraft || getDefaultEffectsCombineDraft(),
-            peqDraft: state.dsp?.peqDraft || {
-                presetName: '',
-                eqMode: 'IIR',
-                loadAfterCreate: false,
-                leftBands: [defaultPeqBand()],
-                rightBands: [defaultPeqBand()],
-            },
-            assistStack: Array.isArray(state.dsp?.assistStack) ? state.dsp.assistStack : [],
-            compare: resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
-        };
-        state.dsp.combineDraft = normalizeEffectsCombineDraft(state.dsp.combineDraft, presetNames);
-        if (!Array.isArray(state.dsp.peqDraft?.leftBands) || !state.dsp.peqDraft.leftBands.length) state.dsp.peqDraft.leftBands = [defaultPeqBand()];
-        if (!Array.isArray(state.dsp.peqDraft?.rightBands) || !state.dsp.peqDraft.rightBands.length) state.dsp.peqDraft.rightBands = [defaultPeqBand()];
-        state.dsp.peqDraft.eqMode = normalizePeqEqMode(state.dsp.peqDraft?.eqMode);
-        if (data.global_extras) {
-            applyEffectsExtras({
-                limiterEnabled: !!data.global_extras?.limiter?.enabled,
-                headroomEnabled: !!data.global_extras?.headroom?.enabled,
-                headroomGainDb: Number(data.global_extras?.headroom?.params?.gainDb ?? -3),
-                autogainEnabled: !!data.global_extras?.autogain?.enabled,
-                autogainTargetDb: Number(data.global_extras?.autogain?.params?.targetDb ?? -12),
-                loudnessEnabled: !!data.global_extras?.loudness?.enabled,
-                loudnessStrength: data.global_extras?.loudness?.params?.strength ?? 10,
-                loudnessFftSize: Number(data.global_extras?.loudness?.params?.fftSize ?? 4096),
-                loudnessVolumeDb: Number(data.global_extras?.loudness?.params?.volumeDb ?? 0),
-                delayEnabled: !!data.global_extras?.delay?.enabled,
-                delayLeftMs: Number(data.global_extras?.delay?.params?.leftMs || 0),
-                delayRightMs: Number(data.global_extras?.delay?.params?.rightMs || 0),
-                bassEnabled: !!data.global_extras?.bass_enhancer?.enabled,
-                bassAmount: Number(data.global_extras?.bass_enhancer?.params?.amount || 0),
-                toneEffectEnabled: !!data.global_extras?.tone_effect?.enabled,
-                toneEffectMode: String(data.global_extras?.tone_effect?.mode || 'crystalizer'),
-            });
-        }
-        renderEffects();
-        void fetchOutputSystemCatalog();
-    } catch (e) {
-        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">DSP presets are unavailable</div>';
-    }
-}
-function defaultPeqBand() {
-    return {
-        filterType: 'bell',
-        frequencyHz: 1000,
-        gainDb: 0,
-        q: 1,
-        delayMs: 0,
-    };
-}
-function isPeqGainBand(band = {}) {
-    return String(band?.filterType || '').toLowerCase() === 'gain';
-}
-function isPeqDelayBand(band = {}) {
-    return String(band?.filterType || '').toLowerCase() === 'delay';
-}
-function getPeqBandFallback(field, band = {}) {
-    if (field === 'frequencyHz') return Number.isFinite(Number(band?.frequencyHz)) ? Number(band.frequencyHz) : 1000;
-    if (field === 'q') return Number.isFinite(Number(band?.q)) ? Number(band.q) : 1;
-    if (field === 'gainDb') return Number.isFinite(Number(band?.gainDb)) ? Number(band.gainDb) : 0;
-    if (field === 'delayMs') return Number.isFinite(Number(band?.delayMs)) ? Number(band.delayMs) : 0;
-    return 0;
-}
-function normalizePeqEqMode(value, fallback = 'IIR') {
-    const normalized = String(value || fallback).trim().toUpperCase();
-    return ['IIR', 'FIR', 'FFT', 'SPM'].includes(normalized) ? normalized : fallback;
-}
-function getDefaultPeqDraft() {
-    return {
-        presetName: '',
-        eqMode: 'IIR',
-        loadAfterCreate: false,
-        leftBands: [defaultPeqBand()],
-        rightBands: [defaultPeqBand()],
-    };
-}
-function resetPeqDraft() {
-    state.dsp.peqDraft = getDefaultPeqDraft();
-    if (elements.effectsPeqPresetName) elements.effectsPeqPresetName.value = '';
-    if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.value = 'IIR';
-    renderPeqBands();
-}
-function addPeqBandPair() {
-    if (!state.dsp?.peqDraft) {
-        state.dsp.peqDraft = getDefaultPeqDraft();
-    }
-    const leftBands = state.dsp.peqDraft.leftBands || (state.dsp.peqDraft.leftBands = []);
-    const rightBands = state.dsp.peqDraft.rightBands || (state.dsp.peqDraft.rightBands = []);
-    if (leftBands.length >= 20 || rightBands.length >= 20) {
-        showToast('Maximum 20 Left and Right PEQ bands supported', 'error');
-        return;
-    }
-    leftBands.push(defaultPeqBand());
-    rightBands.push(defaultPeqBand());
-    renderPeqBands();
-}
-function removePeqBand(side, index) {
-    if (!state.dsp?.peqDraft) return;
-    const key = side === 'right' ? 'rightBands' : 'leftBands';
-    const bands = state.dsp.peqDraft[key] || [];
-    if (index < 0 || index >= bands.length) return;
-    bands.splice(index, 1);
-    renderPeqBands();
-}
-function ensurePeqBandExists(side, index) {
-    if (!state.dsp?.peqDraft) return null;
-    const key = side === 'right' ? 'rightBands' : 'leftBands';
-    state.dsp.peqDraft[key] = state.dsp.peqDraft[key] || [];
-    while (state.dsp.peqDraft[key].length <= index) {
-        state.dsp.peqDraft[key].push(defaultPeqBand());
-    }
-    return state.dsp.peqDraft[key][index] || null;
-}
-function getOtherPeqSide(side) {
-    return side === 'right' ? 'left' : 'right';
-}
-function getPeqLinkedSpecialType(leftBand = {}, rightBand = {}) {
-    if (isPeqGainBand(leftBand) && isPeqGainBand(rightBand)) return 'gain';
-    if (isPeqDelayBand(leftBand) && isPeqDelayBand(rightBand)) return 'delay';
-    return '';
-}
-function getPeqBandPair(side, index) {
-    if (!state.dsp?.peqDraft) return { sourceBand: null, otherBand: null };
-    const sourceBand = ensurePeqBandExists(side, index);
-    const otherBand = ensurePeqBandExists(getOtherPeqSide(side), index);
-    return { sourceBand, otherBand };
-}
-function syncLinkedPeqSpecialBand(side, index) {
-    const { sourceBand, otherBand } = getPeqBandPair(side, index);
-    if (!sourceBand || !otherBand) return;
-    const linkedType = getPeqLinkedSpecialType(sourceBand, otherBand);
-    if (linkedType === 'gain') otherBand.gainDb = sourceBand.gainDb;
-    if (linkedType === 'delay') otherBand.delayMs = sourceBand.delayMs;
-}
-function normalizeLinkedPeqSpecialBands() {
-    if (!state.dsp?.peqDraft) return;
-    const leftBands = state.dsp.peqDraft.leftBands || [];
-    const rightBands = state.dsp.peqDraft.rightBands || [];
-    const count = Math.max(leftBands.length, rightBands.length);
-    for (let index = 0; index < count; index += 1) {
-        const leftBand = leftBands[index] || null;
-        const rightBand = rightBands[index] || null;
-        if (getPeqLinkedSpecialType(leftBand, rightBand)) {
-            syncLinkedPeqSpecialBand('left', index);
-        }
-    }
-}
-function updatePeqBand(side, index, field, value) {
-    if (!state.dsp?.peqDraft) return;
-    const band = ensurePeqBandExists(side, index);
-    if (!band) return;
-    band[field] = value;
-
-    if (field === 'gainDb' || field === 'delayMs') {
-        syncLinkedPeqSpecialBand(side, index);
-    }
-}
-function syncLinkedPeqSpecialBandValueInDom(side, index, field) {
-    const { sourceBand, otherBand } = getPeqBandPair(side, index);
-    const otherSide = getOtherPeqSide(side);
-    const otherInput = document.querySelector(`[data-peq-side="${otherSide}"][data-peq-index="${index}"][data-peq-field="${field}"]`);
-    if (!sourceBand || !otherBand || !otherInput || !getPeqLinkedSpecialType(sourceBand, otherBand)) return;
-    if (field === 'gainDb') otherInput.value = String(sourceBand.gainDb);
-    if (field === 'delayMs') otherInput.value = String(sourceBand.delayMs);
-}
-function renderPeqBandColumn(container, side, bands) {
-    if (!container) return;
-    const filterTypeLabels = {
-        bell: 'Bell',
-        notch: 'Notch',
-        gain: 'Gain',
-        delay: 'Delay',
-        low_shelf: 'Low shelf',
-        high_shelf: 'High shelf',
-        low_pass: 'Low pass',
-        high_pass: 'High pass',
-    };
-    if (!bands.length) {
-        container.innerHTML = '<div class="effects-peq-empty">No bands yet.</div>';
-        return;
-    }
-    container.innerHTML = bands.map((band, index) => {
-        const isGain = isPeqGainBand(band);
-        const isDelay = isPeqDelayBand(band);
-        const otherBands = side === 'right' ? (state.dsp?.peqDraft?.leftBands || []) : (state.dsp?.peqDraft?.rightBands || []);
-        const isLinkedSpecialPair = !!getPeqLinkedSpecialType(band, otherBands[index] || null);
-        const showRemove = true;
-        const fieldIdPrefix = `effects-peq-${side}-${index}`;
-        return `
-        <div class="effects-peq-band" data-peq-side="${side}" data-peq-band="${index}">
-            <div class="effects-peq-band-header">
-                <div>
-                    <div class="effects-peq-band-title">Band ${index + 1}</div>
-                    ${isLinkedSpecialPair ? '<div class="effects-peq-band-subtitle">L/R linked</div>' : ''}
-                </div>
-                ${showRemove ? `<button type="button" class="btn-danger btn-inline" data-peq-remove-side="${side}" data-peq-remove-index="${index}">Remove</button>` : '<span class="effects-peq-remove-spacer"></span>'}
-            </div>
-            <div class="effects-peq-band-fields${isGain ? ' effects-peq-band-fields-gain' : ''}">
-                <div class="field-group">
-                    <label for="${fieldIdPrefix}-type">Type</label>
-                    <select id="${fieldIdPrefix}-type" name="${fieldIdPrefix}-type" class="url-input" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="filterType">
-                        ${['bell', 'notch', 'gain', 'delay', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass'].map(type => `<option value="${type}" ${band.filterType === type ? 'selected' : ''}>${filterTypeLabels[type]}</option>`).join('')}
-                    </select>
-                </div>
-                ${isDelay ? `
-                <div class="field-group">
-                    <label for="${fieldIdPrefix}-delay">Delay (ms)</label>
-                    <input id="${fieldIdPrefix}-delay" name="${fieldIdPrefix}-delay" type="number" class="url-input" min="0" max="500" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="delayMs" value="${Number.isFinite(Number(band.delayMs)) ? band.delayMs : 0}">
-                </div>` : `
-                <div class="field-group">
-                    <label for="${fieldIdPrefix}-gain">Gain (dB)</label>
-                    <input id="${fieldIdPrefix}-gain" name="${fieldIdPrefix}-gain" type="number" class="url-input" min="-24" max="24" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="gainDb" value="${band.gainDb}">
-                </div>
-                ${isGain ? '' : `
-                <div class="field-group">
-                    <label for="${fieldIdPrefix}-frequency">Freq (Hz)</label>
-                    <input id="${fieldIdPrefix}-frequency" name="${fieldIdPrefix}-frequency" type="number" class="url-input" min="20" max="20000" step="1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="frequencyHz" value="${band.frequencyHz}">
-                </div>
-                <div class="field-group">
-                    <label for="${fieldIdPrefix}-q">Q</label>
-                    <input id="${fieldIdPrefix}-q" name="${fieldIdPrefix}-q" type="number" class="url-input" min="0.1" max="20" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="q" value="${band.q}">
-                </div>`}`}
-            </div>
-        </div>
-    `;
-    }).join('');
-    container.querySelectorAll('[data-peq-remove-side][data-peq-remove-index]').forEach(button => {
-        button.addEventListener('click', () => {
-            removePeqBand(button.dataset.peqRemoveSide, Number(button.dataset.peqRemoveIndex));
-        });
-    });
-    container.querySelectorAll('[data-peq-field]').forEach(input => {
-        const handleFieldUpdate = (live = false) => {
-            const sideName = input.dataset.peqSide;
-            const index = Number(input.dataset.peqIndex);
-            const field = input.dataset.peqField;
-            const value = field === 'filterType' ? input.value : Number(input.value);
-            updatePeqBand(sideName, index, field, value);
-            const currentBand = ensurePeqBandExists(sideName, index);
-            if (field === 'filterType') {
-                renderPeqBands();
-                return;
-            }
-            if (field === 'gainDb' && isPeqGainBand(currentBand)) {
-                if (live) {
-                    syncLinkedPeqSpecialBandValueInDom(sideName, index, 'gainDb');
-                } else {
-                    renderPeqBands();
-                }
-            }
-            if (field === 'delayMs' && isPeqDelayBand(currentBand)) {
-                if (live) {
-                    syncLinkedPeqSpecialBandValueInDom(sideName, index, 'delayMs');
-                } else {
-                    renderPeqBands();
-                }
-            }
-        };
-        input.addEventListener('change', () => handleFieldUpdate(false));
-        if (input.dataset.peqField === 'gainDb' || input.dataset.peqField === 'delayMs') {
-            input.addEventListener('input', () => handleFieldUpdate(true));
-        }
-    });
-}
-function renderPeqBands() {
-    if (!state.dsp?.peqDraft) {
-        state.dsp = state.dsp || {};
-        state.dsp.peqDraft = getDefaultPeqDraft();
-    }
-    normalizeLinkedPeqSpecialBands();
-    const draft = state.dsp.peqDraft;
-    draft.eqMode = normalizePeqEqMode(draft.eqMode);
-    if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.value = draft.eqMode;
-    renderPeqBandColumn(elements.effectsPeqLeftBands, 'left', draft.leftBands || []);
-    renderPeqBandColumn(elements.effectsPeqRightBands, 'right', draft.rightBands || []);
-    updateEffectsPeqDisclosureLabel();
-}
-function readPeqNumberInput(input, fallback) {
-    if (!input) return fallback;
-    const raw = String(input.value ?? '').trim();
-    if (!raw) return fallback;
-    const value = Number(raw);
-    return Number.isFinite(value) ? value : fallback;
-}
-function collectPeqBandsFromDom(side) {
-    const container = side === 'right' ? elements.effectsPeqRightBands : elements.effectsPeqLeftBands;
-    if (!container) return [];
-    const draftBands = side === 'right' ? (state.dsp?.peqDraft?.rightBands || []) : (state.dsp?.peqDraft?.leftBands || []);
-    return Array.from(container.querySelectorAll('[data-peq-band]')).map((bandEl, index) => {
-        const draftBand = draftBands[index] || defaultPeqBand();
-        const filterType = bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="filterType"]`)?.value || 'bell';
-        return {
-            filterType,
-            frequencyHz: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="frequencyHz"]`), getPeqBandFallback('frequencyHz', draftBand)),
-            gainDb: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="gainDb"]`), getPeqBandFallback('gainDb', draftBand)),
-            q: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="q"]`), getPeqBandFallback('q', draftBand)),
-            delayMs: readPeqNumberInput(bandEl.querySelector(`[data-peq-side="${side}"][data-peq-index="${index}"][data-peq-field="delayMs"]`), getPeqBandFallback('delayMs', draftBand)),
-        };
-    });
-}
-function validatePeqBands(side, bands) {
-    for (let index = 0; index < bands.length; index += 1) {
-        const band = bands[index] || {};
-        const isGain = isPeqGainBand(band);
-        const isDelay = isPeqDelayBand(band);
-        if (isDelay) {
-            if (!Number.isFinite(band.delayMs) || band.delayMs < 0 || band.delayMs > 500) {
-                return `${side} band ${index + 1}: delay must be between 0 and 500 ms`;
-            }
-            continue;
-        }
-        if (!isGain && (!Number.isFinite(band.frequencyHz) || band.frequencyHz < 20 || band.frequencyHz > 20000)) {
-            return `${side} band ${index + 1}: frequency must be between 20 and 20000 Hz`;
-        }
-        if (!Number.isFinite(band.gainDb) || band.gainDb < -24 || band.gainDb > 24) {
-            return `${side} band ${index + 1}: gain must be between -24 and 24 dB`;
-        }
-        if (!isGain && (!Number.isFinite(band.q) || band.q < 0.1 || band.q > 20)) {
-            return `${side} band ${index + 1}: Q must be between 0.1 and 20`;
-        }
-    }
-    return null;
-}
-function getPeqGainTotal(bands = []) {
-    return bands.reduce((sum, band) => {
-        if (!isPeqGainBand(band) || band?.enabled === false) return sum;
-        const value = Number(band?.gainDb);
-        return Number.isFinite(value) ? sum + value : sum;
-    }, 0);
-}
-async function createPeqPreset() {
-    if (!requireConcreteFilterBank()) return;
-    if (peqCreateInFlight) {
-        showToast('PEQ preset creation already in progress', 'warning');
-        return;
-    }
-    peqCreateInFlight = true;
-    if (!state.dsp?.peqDraft) {
-        state.dsp = state.dsp || {};
-        state.dsp.peqDraft = getDefaultPeqDraft();
-    }
-    const presetName = elements.effectsPeqPresetName?.value?.trim() || '';
-    if (!presetName) {
-        peqCreateInFlight = false;
-        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please enter a PEQ preset name.</div>';
-        if (elements.effectsPeqPresetName) elements.effectsPeqPresetName.focus();
-        showToast('Please enter a PEQ preset name', 'error');
-        return;
-    }
-    const leftBands = collectPeqBandsFromDom('left');
-    const rightBands = measurementBankSumsBothInputs() ? leftBands : collectPeqBandsFromDom('right');
-    if (!leftBands.length && !rightBands.length) {
-        peqCreateInFlight = false;
-        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '<div style="color: var(--danger);">Please add at least one Left or Right band.</div>';
-        showToast('Please add at least one Left or Right band', 'error');
-        return;
-    }
-    const validationError = validatePeqBands('Left', leftBands) || validatePeqBands('Right', rightBands);
-    if (validationError) {
-        peqCreateInFlight = false;
-        if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">${escapeHtml(validationError)}</div>`;
-        showToast(validationError, 'error');
-        return;
-    }
-    const leftGainTotal = getPeqGainTotal(leftBands);
-    const rightGainTotal = getPeqGainTotal(rightBands);
-    const dualGainMismatch = Math.abs(leftGainTotal) > 1e-9 && Math.abs(rightGainTotal) > 1e-9 && Math.abs(leftGainTotal - rightGainTotal) > 1e-9;
-    if (dualGainMismatch) {
-        peqCreateInFlight = false;
-        const gainError = 'Gain currently works as shared stereo trim; use the same Gain on both sides or only one shared Gain value.';
-        if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">${escapeHtml(gainError)}</div>`;
-        showToast(gainError, 'error');
-        return;
-    }
-    const eqMode = normalizePeqEqMode(elements.effectsPeqModeSelect?.value || state.dsp.peqDraft?.eqMode);
-    state.dsp.peqDraft.leftBands = leftBands;
-    state.dsp.peqDraft.rightBands = rightBands;
-    state.dsp.peqDraft.eqMode = eqMode;
-    if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = true;
-    if (elements.effectsStatus) elements.effectsStatus.innerHTML = `<div>Creating PEQ preset: <strong>${escapeHtml(presetName)}</strong>…</div>`;
-    try {
-        const resp = await fetch('/api/dsp/presets/create-peq', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                presetName,
-                loadAfterCreate: false,
-                ...collectEffectsExtras(),
-                ...bankBindingJson(),
-                peq: {
-                    enabled: true,
-                    params: measurementPeqParams(leftBands, rightBands, eqMode),
-                },
-            }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'PEQ preset creation failed'));
-        await fetchEffects();
-        void fetchOutputSystemCatalog(true);
-        if (elements.effectsPeqDisclosure) elements.effectsPeqDisclosure.open = false;
-        updateEffectsPeqDisclosureLabel();
-        resetPeqDraft();
-        if (elements.effectsStatus) elements.effectsStatus.innerHTML = '';
-        showToast(`Created PEQ preset: ${data.preset.name}`, 'success');
-    } catch (e) {
-        elements.effectsStatus.innerHTML = `<div style="color: var(--danger);">PEQ preset creation failed: ${escapeHtml(e.message)}</div>`;
-        showToast(e.message || 'PEQ preset creation failed', 'error');
-    } finally {
-        if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = false;
-        peqCreateInFlight = false;
-    }
-}
-async function importRewPeqPreset() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.importRewPeqPreset();
-}
-function renderEffects() {
-    const fx = state.dsp;
-    const presets = fx.presets || [];
-    const presetNames = presets.map(p => p.name);
-    elements.effectsInfo.textContent = fx.available
-        ? `${fx.preset_count} presets`
-        : 'DSP is not available';
-    if (fx.combineDraft) {
-        fx.combineDraft = normalizeEffectsCombineDraft(fx.combineDraft, presetNames);
-    }
-    if (!fx.available) {
-        elements.effectsDeleteBtn.disabled = true;
-        if (elements.effectsToggleImportBtn) elements.effectsToggleImportBtn.disabled = true;
-        if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.disabled = true;
-        if (elements.effectsCombineSaveBtn) elements.effectsCombineSaveBtn.disabled = true;
-        if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.disabled = true;
-        if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.disabled = true;
-        if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = true;
-        elements.effectsStatus.innerHTML = '';
-        return;
-    }
-    if (presets.length === 0) {
-        elements.effectsDeleteBtn.disabled = true;
-    } else {
-        elements.effectsDeleteBtn.disabled = fx.active_preset === 'Direct' || fx.active_preset === 'Neutral';
-    }
-    if (elements.effectsToggleImportBtn) elements.effectsToggleImportBtn.disabled = false;
-    if (elements.effectsRewDualCreatePresetBtn) elements.effectsRewDualCreatePresetBtn.disabled = false;
-    if (elements.effectsPeqAddBandBtn) elements.effectsPeqAddBandBtn.disabled = false;
-    if (elements.effectsPeqModeSelect) elements.effectsPeqModeSelect.disabled = false;
-    if (elements.effectsPeqCreatePresetBtn) elements.effectsPeqCreatePresetBtn.disabled = false;
-    renderPeqBands();
-    renderEffectsCompare();
-    renderEffectsCombine();
-    renderCrossoverTile();
-}
-function getEmptyEffectsCompareState() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.getEmptyEffectsCompareState();
-}
-
-function getEffectsCompareState() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.getEffectsCompareState();
-}
-
-function getEffectiveEffectsCompareSide(compare, activePreset) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.getEffectiveEffectsCompareSide(compare, activePreset);
-}
-
-function setEffectsCompareLoadBusy(isBusy) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.setEffectsCompareLoadBusy(isBusy);
-}
-
-function getEffectsChainLabelForPreset(presetName, presetMap = new Map()) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.getEffectsChainLabelForPreset(presetName, presetMap);
-}
-
-function getCompactDisplayName(name = '', maxChars = 24) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.getCompactDisplayName(name, maxChars);
-}
-
-function renderPresetDownloadLink(presetName = '') {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.renderPresetDownloadLink(presetName);
-}
-
-function renderEffectsCompare() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.renderEffectsCompare();
-}
-
-function getEffectsCombineValidationState() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.getEffectsCombineValidationState();
-}
-
-function renderEffectsCombine() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.renderEffectsCombine();
-}
-
-async function createCombinedEffectsPreset() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.createCombinedEffectsPreset();
-}
-
-async function loadEffectsComparePreset(target, newSide, targetA, targetB) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.loadEffectsComparePreset(target, newSide, targetA, targetB);
-}
-
-async function handleEffectsCompareSelectionChange(slot) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.handleEffectsCompareSelectionChange(slot);
-}
-
-function getEffectsCompareToggleTarget({ effectiveActiveSide, activePreset, presetA, presetB }) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.getEffectsCompareToggleTarget({ effectiveActiveSide, activePreset, presetA, presetB });
-}
-
-async function toggleComparePreset() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.toggleComparePreset();
-}
-
-function setupEffectsCompareActions() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.setupEffectsCompareActions();
-}
-
-async function switchEffectsPreset() {
-    // Preset switching now goes exclusively through toggleComparePreset
-    // (or the A/B dropdowns) — this function is kept only as a harmless stub
-    // for older callers / delete-from-active flow remnants.
-    return null;
-}
 
 // Track which inputs are currently being edited by the user
 const _activeEditing = new Set();
-// Offered values when headroom is enabled. 0 dB is deliberately NOT offered:
-// "no headroom" is the checkbox's job. 0 stays in the set anyway so a
-// previously stored 0 round-trips through render/collect instead of being
-// silently rewritten to the -3 dB fallback.
-const EFFECTS_HEADROOM_ALLOWED_GAIN_DB = new Set([-9, -8, -7, -6, -5, -4, -3, -2, -1, 0]);
-const EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB = new Set([-12, -15, -18, -23]);
-const EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE = new Set([256, 512, 1024, 2048, 4096, 8192, 16384]);
-const EFFECTS_LOUDNESS_LEGACY_STRENGTHS = new Map([
-    ['full', 10],
-    ['med', 7],
-    ['light', 4],
-    ['min', 1],
-]);
-const EFFECTS_TONE_EFFECT_MODES = new Set(['crystalizer', 'maximizer']);
 
-function normalizeEffectsHeadroomGainDb(value, fallback = -3) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return fallback;
-    const rounded = Math.round(numeric);
-    return EFFECTS_HEADROOM_ALLOWED_GAIN_DB.has(rounded) ? rounded : fallback;
-}
-
-function normalizeEffectsAutogainTargetDb(value, fallback = -12) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return fallback;
-    const rounded = Math.round(numeric);
-    return EFFECTS_AUTOGAIN_ALLOWED_TARGET_DB.has(rounded) ? rounded : fallback;
-}
-
-function normalizeEffectsLoudnessFftSize(value, fallback = 4096) {
-    const numeric = Math.round(Number(value));
-    return EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE.has(numeric) ? numeric : fallback;
-}
-
-function normalizeEffectsLoudnessStrength(value, fallback = 10) {
-    const legacy = EFFECTS_LOUDNESS_LEGACY_STRENGTHS.get(String(value).trim().toLowerCase());
-    if (legacy !== undefined) return legacy;
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return fallback;
-    return Math.max(1, Math.min(10, Math.round(numeric)));
-}
-
-function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {
-    const normalized = String(value || fallback).trim().toLowerCase();
-    return EFFECTS_TONE_EFFECT_MODES.has(normalized) ? normalized : fallback;
-}
-
-function applyEffectsExtras(extras = {}) {
-    if (elements.effectsLimiterEnabled) elements.effectsLimiterEnabled.checked = !!extras.limiterEnabled;
-    if (elements.effectsHeadroomEnabled) elements.effectsHeadroomEnabled.checked = !!extras.headroomEnabled;
-    if (elements.effectsHeadroomGainDb && !_activeEditing.has(elements.effectsHeadroomGainDb)) {
-        elements.effectsHeadroomGainDb.value = String(normalizeEffectsHeadroomGainDb(extras.headroomGainDb, -3));
-    }
-    if (elements.effectsAutogainEnabled) elements.effectsAutogainEnabled.checked = !!extras.autogainEnabled;
-    if (elements.effectsAutogainTargetDb && !_activeEditing.has(elements.effectsAutogainTargetDb)) {
-        elements.effectsAutogainTargetDb.value = String(normalizeEffectsAutogainTargetDb(extras.autogainTargetDb, -12));
-    }
-    if (elements.effectsLoudnessEnabled) elements.effectsLoudnessEnabled.checked = !!extras.loudnessEnabled;
-    if (elements.effectsLoudnessStrength && !_activeEditing.has(elements.effectsLoudnessStrength)) {
-        elements.effectsLoudnessStrength.value = normalizeEffectsLoudnessStrength(extras.loudnessStrength, 10);
-    }
-    if (elements.effectsLoudnessFftSize && !_activeEditing.has(elements.effectsLoudnessFftSize)) {
-        elements.effectsLoudnessFftSize.value = String(normalizeEffectsLoudnessFftSize(extras.loudnessFftSize, 4096));
-    }
-    if (elements.effectsBassEnabled) elements.effectsBassEnabled.checked = !!extras.bassEnabled;
-    // Only update amount when bass is enabled — otherwise keep field value (user may re-enable)
-    if (elements.effectsBassAmount && !!extras.bassEnabled && !_activeEditing.has(elements.effectsBassAmount)) {
-        elements.effectsBassAmount.value = String(Number(extras.bassAmount || 0));
-    }
-    if (elements.effectsToneEffectEnabled) elements.effectsToneEffectEnabled.checked = !!extras.toneEffectEnabled;
-    if (elements.effectsToneEffectMode && !_activeEditing.has(elements.effectsToneEffectMode)) {
-        elements.effectsToneEffectMode.value = normalizeEffectsToneEffectMode(extras.toneEffectMode, 'crystalizer');
-    }
-    updateEffectsExtrasUi();
-}
-
-function updateEffectsExtrasUi() {
-    if (elements.effectsHeadroomGainWrap) {
-        elements.effectsHeadroomGainWrap.classList.toggle('hidden', !elements.effectsHeadroomEnabled?.checked);
-    }
-    if (elements.effectsAutogainTargetWrap) {
-        elements.effectsAutogainTargetWrap.classList.toggle('hidden', !elements.effectsAutogainEnabled?.checked);
-    }
-    if (elements.effectsLoudnessFftWrap) {
-        elements.effectsLoudnessFftWrap.classList.toggle('hidden', !elements.effectsLoudnessEnabled?.checked);
-    }
-    if (elements.effectsLoudnessStrengthWrap) {
-        elements.effectsLoudnessStrengthWrap.classList.toggle('hidden', !elements.effectsLoudnessEnabled?.checked);
-    }
-    if (elements.effectsBassControlsWrap) {
-        elements.effectsBassControlsWrap.classList.toggle('hidden', !elements.effectsBassEnabled?.checked);
-    }
-    if (elements.effectsToneEffectWrap) {
-        elements.effectsToneEffectWrap.classList.toggle('hidden', !elements.effectsToneEffectEnabled?.checked);
-    }
-}
 
 function getSubwooferPreviewSettingsFromState() {
     // Subwoofer tile UI lives in static/subwoofer_ui.js
@@ -9849,200 +8802,7 @@ function saveSubwooferDebounced(delayMs) {
     return mod.saveSubwooferDebounced(delayMs);
 }
 
-function loadSavedEffectsExtras() {
-    const fx = state.dsp;
-    if (!fx?.global_extras) return;
-    applyEffectsExtras({
-        limiterEnabled: !!fx.global_extras?.limiter?.enabled,
-        headroomEnabled: !!fx.global_extras?.headroom?.enabled,
-        headroomGainDb: Number(fx.global_extras?.headroom?.params?.gainDb ?? -3),
-        autogainEnabled: !!fx.global_extras?.autogain?.enabled,
-        autogainTargetDb: Number(fx.global_extras?.autogain?.params?.targetDb ?? -12),
-        loudnessEnabled: !!fx.global_extras?.loudness?.enabled,
-        loudnessStrength: fx.global_extras?.loudness?.params?.strength ?? 10,
-        loudnessFftSize: Number(fx.global_extras?.loudness?.params?.fftSize ?? 4096),
-        loudnessVolumeDb: Number(fx.global_extras?.loudness?.params?.volumeDb ?? 0),
-        delayEnabled: !!fx.global_extras?.delay?.enabled,
-        delayLeftMs: Number(fx.global_extras?.delay?.params?.leftMs || 0),
-        delayRightMs: Number(fx.global_extras?.delay?.params?.rightMs || 0),
-        bassEnabled: !!fx.global_extras?.bass_enhancer?.enabled,
-        bassAmount: Number(fx.global_extras?.bass_enhancer?.params?.amount || 0),
-        toneEffectEnabled: !!fx.global_extras?.tone_effect?.enabled,
-        toneEffectMode: String(fx.global_extras?.tone_effect?.mode || 'crystalizer'),
-    });
-}
 
-function describeEffectsExtras(extras) {
-    const parts = [];
-    parts.push(extras.limiterEnabled ? 'Limiter ON (-1.0 dB)' : 'Limiter OFF');
-    parts.push(extras.headroomEnabled ? `Headroom ON (${Number(extras.headroomGainDb || 0).toFixed(0)} dB)` : 'Headroom OFF');
-    parts.push(extras.autogainEnabled ? `Autogain ON (${extras.autogainTargetDb} LUFS)` : 'Autogain OFF');
-    parts.push(extras.loudnessEnabled ? `Loudness ON (FFT ${extras.loudnessFftSize})` : 'Loudness OFF');
-    parts.push(extras.toneEffectEnabled ? `Tone ON (${normalizeEffectsToneEffectMode(extras.toneEffectMode, 'crystalizer')})` : 'Tone OFF');
-    return parts.join(' • ');
-}
-
-let _extrasDebounceTimer = null;
-let effectsExtrasSaveInFlight = false;
-let effectsExtrasPendingResave = false;
-function saveEffectsExtrasDebounced(delayMs = EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS) {
-    window.clearTimeout(_extrasDebounceTimer);
-    if (delayMs <= 0) {
-        _doSaveEffectsExtras();
-        return;
-    }
-    _extrasDebounceTimer = window.setTimeout(() => {
-        _doSaveEffectsExtras();
-    }, delayMs);
-}
-
-function collectEffectsExtras() {
-    return {
-        limiterEnabled: elements.effectsLimiterEnabled?.checked || false,
-        headroomEnabled: elements.effectsHeadroomEnabled?.checked || false,
-        headroomGainDb: normalizeEffectsHeadroomGainDb(elements.effectsHeadroomGainDb?.value, -3),
-        autogainEnabled: elements.effectsAutogainEnabled?.checked || false,
-        autogainTargetDb: normalizeEffectsAutogainTargetDb(elements.effectsAutogainTargetDb?.value, -12),
-        loudnessEnabled: elements.effectsLoudnessEnabled?.checked || false,
-        loudnessStrength: normalizeEffectsLoudnessStrength(elements.effectsLoudnessStrength?.value, 10),
-        loudnessFftSize: normalizeEffectsLoudnessFftSize(elements.effectsLoudnessFftSize?.value, 4096),
-        bassEnabled: elements.effectsBassEnabled?.checked || false,
-        bassAmount: parseFloat(elements.effectsBassAmount?.value || '0'),
-        toneEffectEnabled: elements.effectsToneEffectEnabled?.checked || false,
-        toneEffectMode: normalizeEffectsToneEffectMode(elements.effectsToneEffectMode?.value, 'crystalizer'),
-    };
-}
-
-// The extras API merges only explicitly supplied fields, and a present
-// loudnessEnabled is the canonical Loudness/Volume transition signal.
-// Send it only on an actual enabled-state change (relative to the last
-// known server state) so unrelated extras saves never take the canonical
-// volume write path.  With unknown server state it is still sent.
-function buildEffectsExtrasSaveBody(extras, serverExtras) {
-    const body = { ...extras };
-    if (serverExtras && !!body.loudnessEnabled === !!serverExtras.loudness?.enabled) {
-        delete body.loudnessEnabled;
-    }
-    return body;
-}
-
-async function _doSaveEffectsExtras() {
-    const compareBusy = (typeof window !== 'undefined' && window.FXRouteBankUI?.isCompareLoadBusy?.())
-        ?? (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI?.isCompareLoadBusy?.())
-        ?? false;
-    if (compareBusy || effectsExtrasSaveInFlight) {
-        effectsExtrasPendingResave = true;
-        return;
-    }
-    effectsExtrasSaveInFlight = true;
-    effectsExtrasPendingResave = false;
-    const extras = collectEffectsExtras();
-    const body = buildEffectsExtrasSaveBody(extras, state.dsp?.global_extras);
-    try {
-        const resp = await fetch('/api/dsp/extras', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to save output extras');
-        state.dsp = state.dsp || {};
-        state.dsp.global_extras = data.extras || {
-            limiter: { enabled: !!extras.limiterEnabled, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
-            headroom: { enabled: !!extras.headroomEnabled, params: { gainDb: extras.headroomGainDb } },
-            autogain: { enabled: !!extras.autogainEnabled, params: { targetDb: extras.autogainTargetDb } },
-            loudness: {
-                enabled: !!extras.loudnessEnabled,
-                params: {
-                    ...(state.dsp?.global_extras?.loudness?.params || {}),
-                    strength: extras.loudnessStrength,
-                    fftSize: extras.loudnessFftSize,
-                },
-            },
-            delay: { enabled: !!extras.delayEnabled, params: { leftMs: extras.delayLeftMs, rightMs: extras.delayRightMs } },
-            bass_enhancer: { enabled: !!extras.bassEnabled, params: { amount: extras.bassAmount, harmonics: 8.5, scope: 100.0, blend: 0.0 } },
-            tone_effect: { enabled: !!extras.toneEffectEnabled, mode: extras.toneEffectMode },
-        };
-        renderEffects();
-    } catch (error) {
-        setEffectsExtrasFeedback('Failed', 'error');
-        showToast(error.message || 'Failed to save output extras', 'error');
-    } finally {
-        effectsExtrasSaveInFlight = false;
-        if (effectsExtrasPendingResave) {
-            effectsExtrasPendingResave = false;
-            saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
-        }
-    }
-}
-
-function setEffectsExtrasFeedback(message, cls) {
-    if (!elements.effectsExtrasFeedback) return;
-    elements.effectsExtrasFeedback.textContent = message;
-    elements.effectsExtrasFeedback.className = 'effects-extras-feedback' + (cls ? ' ' + cls : '');
-}
-
-function detectEffectsImportType(file) {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.detectEffectsImportType(file);
-}
-
-function updateEffectsImportUi() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.updateEffectsImportUi();
-}
-
-function handleEffectsImportFileChange() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.handleEffectsImportFileChange();
-}
-
-async function submitEffectsImport() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.submitEffectsImport();
-}
-
-async function importEffectsPresetJson() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.importEffectsPresetJson();
-}
-async function importEffectsPresetBundle() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.importEffectsPresetBundle();
-}
-
-async function createConvolverPreset() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.createConvolverPreset();
-}
-async function deleteEffectsPreset() {
-    // Bank/compare/import UI lives in static/output_bank_ui.js
-    // (window.FXRouteBankUI). Thin wrapper keeps existing
-    // call sites unchanged.
-    const mod = (typeof window !== 'undefined' && window.FXRouteBankUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI) || null;
-    return mod.deleteEffectsPreset();
-}
 function showToast(message, type = 'info') {
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
