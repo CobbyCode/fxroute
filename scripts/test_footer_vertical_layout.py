@@ -11,6 +11,8 @@ CSS = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
 HTML = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 APP = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
 LIBRARY = (ROOT / "static" / "library_ui.js").read_text(encoding="utf-8")
+PLAYBACK_UI = (ROOT / "static" / "playback_ui.js").read_text(encoding="utf-8")
+PLAYBACK_CORE = (ROOT / "static" / "playback_core.js").read_text(encoding="utf-8")
 
 
 def rule(selector: str) -> str:
@@ -163,25 +165,25 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         markup = footer_markup()
         self.assertEqual(markup.count('id="playback-cover"'), 1)
         self.assertEqual(markup.count('id="track-favorite-btn"'), 1)
-        self.assertIn("renderTrackFavoriteButton(current_track)", APP)
-        self.assertIn("toggleCurrentTrackFavorite", APP)
+        self.assertIn("renderTrackFavoriteButton(current_track)", PLAYBACK_UI)
+        self.assertIn("toggleCurrentTrackFavorite", PLAYBACK_UI)
         self.assertIn("/favorite`,", LIBRARY)
 
     def test_stereo_meter_uses_real_backend_fields(self):
         markup = footer_markup()
         self.assertEqual(markup.count('id="meter-l"'), 1)
         self.assertEqual(markup.count('id="meter-r"'), 1)
-        self.assertIn("warning?.vu_db_l", APP)
-        self.assertIn("warning?.vu_db_r", APP)
-        self.assertIn("warning?.detected_l", APP)
-        self.assertIn("warning?.detected_r", APP)
+        self.assertIn("warning?.vu_db_l", PLAYBACK_UI)
+        self.assertIn("warning?.vu_db_r", PLAYBACK_UI)
+        self.assertIn("warning?.detected_l", PLAYBACK_UI)
+        self.assertIn("warning?.detected_r", PLAYBACK_UI)
         self.assertNotIn('id="playback-eq"', markup)
 
     def test_progress_and_volume_have_explicit_active_fill(self):
         self.assertIn("--range-progress", CSS)
         self.assertIn("background: linear-gradient(to right", CSS)
-        self.assertIn("setRangeProgress(elements.seekSlider", APP)
-        self.assertIn("setRangeProgress(elements.volumeSlider", APP)
+        self.assertIn("setRangeProgress(deps.getElements().seekSlider", PLAYBACK_UI)
+        self.assertIn("setRangeProgress(deps.getElements().volumeSlider", PLAYBACK_CORE)
         self.assertIn('aria-label="Playback position"', footer_markup())
         self.assertIn('aria-label="Volume"', footer_markup())
 
@@ -198,7 +200,7 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
         ):
             self.assertIn(f'id="{element_id}"', markup)
         self.assertIn('<div class="seek-row hidden">', markup)
-        self.assertIn("setFooterProgressState(hasProgress, radioTimed)", APP)
+        self.assertIn("setFooterProgressState(hasProgress, radioTimed)", PLAYBACK_UI)
 
     def test_phone_recomposes_into_three_rows(self):
         self.assertRegex(
@@ -219,8 +221,8 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
 
     def test_page_end_clearance_tracks_real_footer_height(self):
         self.assertIn("padding-bottom: var(--playback-footer-space)", rule("body"))
-        self.assertIn("new ResizeObserver(schedulePlaybackFooterSpaceSync)", APP)
-        self.assertIn("rect.height + bottomInset + 16", APP)
+        self.assertIn("new ResizeObserver(schedulePlaybackFooterSpaceSync)", PLAYBACK_UI)
+        self.assertIn("rect.height + bottomInset + 16", PLAYBACK_UI)
 
     def test_all_control_ids_are_preserved_once(self):
         markup = footer_markup()

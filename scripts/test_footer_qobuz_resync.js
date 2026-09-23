@@ -21,7 +21,9 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const coreSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_core.js'), 'utf8');
+const src = coreSource;
 
 function extractFunction(source, name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -59,22 +61,20 @@ function extractFunction(source, name) {
 }
 
 // --- structural guards: qobuz must travel the same init/resync paths ------
-assert.ok(/function\s+fetchQobuzStatus\s*\(/.test(src), 'app.js must define fetchQobuzStatus');
-assert.ok(/function\s+handleIncomingQobuzState\s*\(/.test(src), 'app.js must define handleIncomingQobuzState');
-assert.ok(/function\s+shouldPollQobuz\s*\(/.test(src), 'app.js must define shouldPollQobuz');
-assert.ok(/function\s+startQobuzPoll\s*\(/.test(src), 'app.js must define startQobuzPoll');
-assert.ok(/if\s*\(data\.qobuz\)/.test(src), 'WS init must handle data.qobuz');
-assert.ok(/fetchQobuzStatus\(\)/.test(src), 'resync/tab paths must fetch Qobuz status');
+// Provider runtime stays in app.js; ownership lives in playback_core.js.
+assert.ok(/function\s+fetchQobuzStatus\s*\(/.test(appSource), 'app.js must define fetchQobuzStatus');
+assert.ok(/function\s+handleIncomingQobuzState\s*\(/.test(appSource), 'app.js must define handleIncomingQobuzState');
+assert.ok(/function\s+shouldPollQobuz\s*\(/.test(appSource), 'app.js must define shouldPollQobuz');
+assert.ok(/function\s+startQobuzPoll\s*\(/.test(appSource), 'app.js must define startQobuzPoll');
+assert.ok(/if\s*\(data\.qobuz\)/.test(appSource), 'WS init must handle data.qobuz');
+assert.ok(/fetchQobuzStatus\(\)/.test(appSource + coreSource), 'resync/tab paths must fetch Qobuz status');
 
-const FNAMES = [
+const CORE_FNAMES = [
     'getBackendFooterOwner',
     'setFooterSource',
-    'nonAppSourceModeActive',
     'spotifyPlayingOwnsFooter',
     'spotifyPausedHasFooterContext',
     'qobuzPlayingOwnsFooter',
-    'qobuzIsInstalled',
-    'shouldPollQobuz',
     'localPlaybackHasFooterContext',
     'localEndedPlaybackHasFooterContext',
     'localFooterHoldHasContext',
@@ -83,9 +83,12 @@ const FNAMES = [
     'footerContentFreezeActive',
     'reconcileFooterSource',
     'syncFooterOwnershipFromPlayback',
-    'handleIncomingQobuzState',
 ];
-const fns = FNAMES.map((n) => extractFunction(src, n)).join('\n');
+// handleIncomingQobuzState + shouldPollQobuz stay in app.js (provider
+// runtime); they reach ownership through the PlaybackCore namespace.
+const APP_FNAMES = ['handleIncomingQobuzState', 'shouldPollQobuz', 'qobuzIsInstalled'];
+const fns = CORE_FNAMES.map((n) => extractFunction(coreSource, n)).join('\n')
+    + '\n' + APP_FNAMES.map((n) => extractFunction(appSource, n)).join('\n');
 
 function makeSandbox({ footerSource = 'local', visibleTab = 'radio', owner = null, qobuz = null, spotify = null } = {}) {
     const rendered = [];
@@ -122,7 +125,25 @@ function makeSandbox({ footerSource = 'local', visibleTab = 'radio', owner = nul
         startSpotifyPoll: () => {},
         shouldPollSpotify: () => false,
         updateFooterForStreamingOwner: (data) => { rendered.push(data); },
+        // Core-owned state reads through deps; the staying provider runtime
+        // reaches ownership through these namespaces (mirrors app.js wiring).
+        deps: {
+            getState: () => sandbox.state,
+            nonAppSourceModeActive: () => false,
+            stopSpotifyPoll: () => {},
+            bumpSpotifyPollGeneration: () => {},
+        },
         console,
+    };
+    // Namespace shims for the staying provider runtime under test: ownership
+    // forwards to the extracted core functions, rendering to the test spy.
+    sandbox.PlaybackCore = {
+        reconcileFooterSource: (...args) => sandbox.reconcileFooterSource(...args),
+        getBackendFooterOwner: (...args) => sandbox.getBackendFooterOwner(...args),
+    };
+    sandbox.PlaybackUI = {
+        updateFooterForStreamingOwner: (data) => { rendered.push(data); },
+        maybeShowStreamingQueueCue: () => false,
     };
     sandbox.rendered = rendered;
     sandbox.globalThis = sandbox;

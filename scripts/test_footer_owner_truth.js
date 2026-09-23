@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_core.js'), 'utf8');
 
 function extractFunction(name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -40,6 +40,9 @@ function extractFunction(name) {
 const sandbox = {
     state: { playback: {} },
     window: { __spotifyLastData: null, __qobuzLastData: null },
+    // getBackendFooterOwner() falls back to deps.getState().playback when
+    // called without an explicit payload (module owns no globals).
+    deps: { getState: () => sandbox.state },
 };
 vm.createContext(sandbox);
 vm.runInContext(extractFunction('getBackendFooterOwner'), sandbox);

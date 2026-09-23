@@ -11,9 +11,10 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
 
-function extractFunction(name) {
+function extractFrom(source, name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
     assert.ok(match, `missing ${name}`);
     const brace = source.indexOf('{', match.index);
@@ -37,21 +38,27 @@ function extractFunction(name) {
 const sandbox = {
     window: { __spotifyLastData: {}, FXRouteUiHelpers: require('../static/ui_helpers.js') },
     state: { samplerate: { available: true, active_rate: 44100 } },
+    // formatStreamingMetaLine reads samplerate state and the shared kHz
+    // formatter through deps (module owns no globals).
+    deps: {
+        getState: () => sandbox.state,
+        formatRateKhz: (...args) => sandbox.formatRateKhz(...args),
+    },
 };
 vm.createContext(sandbox);
 // Dependencies for the artwork resolution chain.
-vm.runInContext(extractFunction('trackCoverUrl'), sandbox);
-vm.runInContext(extractFunction('trackCoverKnownAvailable'), sandbox);
-vm.runInContext(extractFunction('playbackArtworkUrl'), sandbox);
-vm.runInContext(extractFunction('playbackArtworkKnownAvailable'), sandbox);
-vm.runInContext(extractFunction('streamingArtworkItem'), sandbox);
+vm.runInContext(extractFrom(uiSource, 'trackCoverUrl'), sandbox);
+vm.runInContext(extractFrom(uiSource, 'trackCoverKnownAvailable'), sandbox);
+vm.runInContext(extractFrom(uiSource, 'playbackArtworkUrl'), sandbox);
+vm.runInContext(extractFrom(uiSource, 'playbackArtworkKnownAvailable'), sandbox);
+vm.runInContext(extractFrom(uiSource, 'streamingArtworkItem'), sandbox);
 // Shared footer meta renderer: the cover detail tech line must use the same
 // formatter as the footer (formatStreamingMetaLine -> formatRadioStreamLine).
-vm.runInContext(extractFunction('formatRadioStreamLine'), sandbox);
-vm.runInContext(extractFunction('formatRateKhz'), sandbox);
-vm.runInContext(extractFunction('formatStreamingMetaLine'), sandbox);
-vm.runInContext(extractFunction('coverDetailStreamingMeta'), sandbox);
-vm.runInContext(extractFunction('mergeSpotifyState'), sandbox);
+vm.runInContext(extractFrom(uiSource, 'formatRadioStreamLine'), sandbox);
+vm.runInContext(extractFrom(appSource, 'formatRateKhz'), sandbox);
+vm.runInContext(extractFrom(uiSource, 'formatStreamingMetaLine'), sandbox);
+vm.runInContext(extractFrom(uiSource, 'coverDetailStreamingMeta'), sandbox);
+vm.runInContext(extractFrom(appSource, 'mergeSpotifyState'), sandbox);
 
 const meta = sandbox.coverDetailStreamingMeta;
 const artwork = sandbox.streamingArtworkItem;

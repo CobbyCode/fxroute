@@ -2813,9 +2813,15 @@
             // native path so footer ownership (and the VU/peak gating derived
             // from it) follows the TIDAL start instead of a stale cached
             // commit. The WebSocket playback frame stays a redundant backup.
+            // The commit helper lives in static/playback_core.js (single
+            // owner); streaming.js only calls it at runtime, after app.js has
+            // loaded, so the namespace lookup stays lazy here.
             try {
-                if (data && data.playback && typeof applyNativePlayResponse === 'function') {
-                    applyNativePlayResponse(data);
+                const commitPlayback = (typeof window !== 'undefined' && window.FXRoutePlaybackCore?.applyNativePlayResponse)
+                    || (typeof globalThis !== 'undefined' && globalThis.FXRoutePlaybackCore?.applyNativePlayResponse)
+                    || null;
+                if (data && data.playback && typeof commitPlayback === 'function') {
+                    commitPlayback(data);
                 }
             } catch (_commitError) {
                 // The footer commit must never break playback.

@@ -23,6 +23,7 @@ const path = require('path');
 const vm = require('vm');
 
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const coreJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_core.js'), 'utf8');
 const streamingJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming.js'), 'utf8');
 
 function extractFunction(source, name) {
@@ -62,16 +63,21 @@ function extractFunction(source, name) {
 
 // --- structural guards ---------------------------------------------------------
 // The TIDAL start must commit through the shared native response path ...
-assert.ok(appJs.includes('function applyNativePlayResponse('), 'app.js must define applyNativePlayResponse');
-const commitSrc = extractFunction(appJs, 'applyNativePlayResponse');
+// --- structural guards ---------------------------------------------------------
+// The TIDAL start must commit through the shared native response path ...
+// Ownership/transport live in playback_core.js (single owner); the provider
+// tab runtime in streaming.js is unchanged.
+assert.ok(coreJs.includes('function applyNativePlayResponse('), 'playback_core.js must define applyNativePlayResponse');
+const commitSrc = extractFunction(coreJs, 'applyNativePlayResponse');
 assert.ok(commitSrc.includes('mergePlaybackState('), 'shared commit must merge the authoritative payload');
 assert.ok(commitSrc.includes('syncFooterOwnershipFromPlayback('), 'shared commit must re-resolve footer ownership');
 assert.ok(!/tidal/i.test(commitSrc), 'shared commit must not branch on any provider identity');
-assert.ok(streamingJs.includes('applyNativePlayResponse(data)'), 'playTidalTracks must commit through the shared native path');
+assert.ok(streamingJs.includes('FXRoutePlaybackCore'), 'playTidalTracks must commit through the playback core module');
+assert.ok(streamingJs.includes('applyNativePlayResponse'), 'playTidalTracks must commit through the shared native path');
 // All three native starts commit through the same helper; no caller keeps an
 // inline merge+UI block that could drift from the shared commit path.
-const playRadioSrc = extractFunction(appJs, 'playRadio');
-const playLocalSrc = extractFunction(appJs, 'playLocal');
+const playRadioSrc = extractFunction(coreJs, 'playRadio');
+const playLocalSrc = extractFunction(coreJs, 'playLocal');
 assert.ok(playRadioSrc.includes('applyNativePlayResponse(data)'), 'playRadio must commit through the shared native path');
 assert.ok(playLocalSrc.includes('applyNativePlayResponse(data)'), 'playLocal must commit through the shared native path');
 assert.ok(!playRadioSrc.includes('mergePlaybackState('), 'playRadio must not keep an inline merge block');
@@ -85,7 +91,7 @@ assert.ok(
 assert.ok(playLocalSrc.includes('maybeShowNativeTrackCue('), 'playLocal must keep its queue-started cue');
 // ... and the peak poll must heal a stale owner when a broadcast was missed.
 assert.ok(
-    /mergePlaybackState\(\{\s*current_track:\s*data\.current_track,[^}]*playback_owner:\s*data\.playback_owner/.test(appJs),
+    /mergePlaybackState\(\{\s*current_track:\s*data\.current_track,[^}]*playback_owner:\s*data\.playback_owner/.test(coreJs),
     'fetchMetadata must merge playback_owner so the peak poll heals a stale footer owner',
 );
 
@@ -94,7 +100,6 @@ const FNAMES = [
     'getBackendFooterOwner',
     'getEffectivePlaybackControlSource',
     'setFooterSource',
-    'nonAppSourceModeActive',
     'spotifyPlayingOwnsFooter',
     'spotifyPausedHasFooterContext',
     'qobuzPlayingOwnsFooter',
@@ -106,7 +111,8 @@ const FNAMES = [
     'reconcileFooterSource',
     'syncFooterOwnershipFromPlayback',
 ];
-const fns = FNAMES.map((n) => extractFunction(appJs, n)).join('\n');
+// nonAppSourceModeActive stays in app.js; the core reads it through deps.
+const fns = FNAMES.map((n) => extractFunction(coreJs, n)).join('\n');
 
 function runCase({ ownerCache, spotify, qobuz, playback, entry }) {
     const sandbox = {
@@ -141,6 +147,12 @@ function runCase({ ownerCache, spotify, qobuz, playback, entry }) {
         stopQobuzPoll: () => {},
         shouldPollSpotify: () => false,
         shouldPollQobuz: () => false,
+        deps: {
+            getState: () => sandbox.state,
+            nonAppSourceModeActive: () => false,
+            stopSpotifyPoll: () => {},
+            bumpSpotifyPollGeneration: () => {},
+        },
         console,
     };
     sandbox.globalThis = sandbox;
@@ -246,13 +258,19 @@ function runRadioResponseCase({ spotify, ownerCache }) {
         applyRemoteVolume: () => {},
         updatePlaybackUI: () => { sandbox.updatePlaybackUICalls += 1; },
         updatePlaybackUICalls: 0,
+        deps: {
+            getState: () => sandbox.state,
+            stopSpotifyPoll: () => { sandbox.stopSpotifyPollCalls += 1; },
+            bumpSpotifyPollGeneration: () => { sandbox._spotifyPollGeneration += 1; },
+            updatePlaybackUI: () => { sandbox.updatePlaybackUICalls += 1; },
+        },
         console,
     };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
     vm.runInContext(
-        `${fns}\n${extractFunction(appJs, 'mergePlaybackState')}\n`
-        + `${extractFunction(appJs, 'rememberLastRadioTrack')}\n${extractFunction(appJs, 'applyNativePlayResponse')}\n`
+        `${fns}\n${extractFunction(coreJs, 'mergePlaybackState')}\n`
+        + `${extractFunction(coreJs, 'rememberLastRadioTrack')}\n${extractFunction(coreJs, 'applyNativePlayResponse')}\n`
         + 'this.__run = () => { applyNativePlayResponse(' + JSON.stringify(RADIO_PLAY_RESPONSE) + '); return state.playback; };',
         sandbox,
     );

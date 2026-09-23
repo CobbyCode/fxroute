@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
 
 function extractFunction(name) {
     const match = new RegExp(`(async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
@@ -70,6 +70,8 @@ function makeHarness({ decode, supportDecode = true, fetchImpl, realTimers = fal
         document: { body: { contains: (el) => el.inDocument !== false } },
         scheduleNowPlayingCueRemoval: (cue, ms) => { calls.removal.push(ms); },
         fetch: fetchImpl || (async () => { throw new Error('unexpected fetch'); }),
+        // The cue cover loader fetches same-origin covers through deps.
+        deps: { fetchFn: (...args) => sandbox.fetch(...args) },
     };
     vm.createContext(sandbox);
     vm.runInContext('var nowPlayingCueCoverAbort = null;', sandbox);

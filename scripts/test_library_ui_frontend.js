@@ -111,7 +111,7 @@ for (const snippet of [
     'window.FXRouteLibraryUI?.init({',
     'LibraryUI.setupLibraryActions()',
     'LibraryUI.setupDownloadActions()',
-    'LibraryUI.fetchTracks()',
+    'fetchTracks: (...args) => LibraryUI.fetchTracks(...args)',
     'renderLibraryView: () => LibraryUI.renderLibraryView()',
     'fetchLibraryStatus: () => LibraryUI.fetchLibraryStatus()',
     'setupUploadArea: (areaId, fileInputId, onFile) => LibraryUI.setupUploadArea(',

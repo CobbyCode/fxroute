@@ -73,12 +73,13 @@ assert.ok(!js.includes('.streaming-quality'),
 assert.ok(!js.includes('formatQuality'),
     'streaming module must not own a quality formatter');
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const playbackUiJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
 const libraryJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'library_ui.js'), 'utf8');
-assert.ok(appJs.includes('function formatStreamingMetaLine('),
-    'app.js must host the shared streaming footer meta renderer');
-assert.ok(appJs.includes("formatStreamingMetaLine(data)"),
+assert.ok(playbackUiJs.includes('function formatStreamingMetaLine('),
+    'playback_ui.js must host the shared streaming footer meta renderer');
+assert.ok(playbackUiJs.includes("formatStreamingMetaLine(data)"),
     'streaming footer must render through the shared meta-tag renderer');
-assert.ok(!appJs.includes('renderStreamingFooterMeta'),
+assert.ok(!playbackUiJs.includes('renderStreamingFooterMeta'),
     'no UI-side remember-last-string caching of the footer meta tag');
 
 // --- queue continuation line is data-driven ----------------------------------
