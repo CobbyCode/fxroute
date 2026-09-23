@@ -42,30 +42,49 @@ assert.deepEqual(ui.buildMutation('switch_all_banks', { mode: 'stereo-sub', acti
     { kind: 'switch_all_banks', mode: 'stereo-sub', active_side: 'A' });
 const fs = require('node:fs');
 const vm = require('node:vm');
+const BankUI = require('../static/output_bank_ui.js');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../static/app.js'), 'utf8');
+assert.match(source, /function toggleComparePreset\(/, 'app.js must keep a toggle wrapper');
+assert.match(source, /FXRouteBankUI/, 'app.js must delegate bank UI to the module');
 const calls = [];
+const sharedState = { outputSystem: { catalog }, dsp: { compare: {}, active_preset: 'Wrong legacy preset' } };
+const sharedElements = { effectsCompareA: { value: 'Neutral' }, effectsCompareB: { value: 'Room' },
+    effectsMeasureOpenBtn: { disabled: false, title: '' },
+    effectsToggleImportBtn: { disabled: false, title: '' } };
+BankUI.init({
+    getState: () => sharedState,
+    getElements: () => sharedElements,
+    showToast(message) { throw new Error(message); },
+    escapeHtml: (value) => String(value),
+    fetchEffects: async () => {},
+    refreshCatalog: async () => null,
+    collectEffectsExtras: () => ({}),
+    measurementBankSumsBothInputs: () => false,
+    presetFileUrl: () => '',
+    renderEffects: () => {},
+    renderMeasurementArea: () => {},
+    measurementArea: () => ui.measurementArea(sharedState.outputSystem.catalog),
+    applyMutation: async (kind, fields) => { calls.push({ kind, ...fields }); return {}; },
+    confirmDialog: () => true,
+});
 const context = {
-    state: { outputSystem: { catalog }, dsp: { compare: {}, active_preset: 'Wrong legacy preset' } },
-    elements: { effectsCompareA: { value: 'Neutral' }, effectsCompareB: { value: 'Room' },
-        effectsMeasureOpenBtn: { disabled: false, title: '' },
-        effectsToggleImportBtn: { disabled: false, title: '' } },
-    effectsCompareLoadInFlight: false,
-    outputSystemModule: () => ui,
-    measurementAreaFromCatalog: () => ui.measurementArea(context.state.outputSystem.catalog),
-    applyOutputSystemMutation: async (kind, fields) => { calls.push({ kind, ...fields }); return {}; },
-    renderEffectsCompare() {}, renderEffects() {}, setEffectsCompareLoadBusy() {},
+    window: { FXRouteBankUI: BankUI },
+    elements: sharedElements,
     showToast(message) { throw new Error(message); }, console,
     fetch() { throw new Error('Bank compare must not call the legacy global preset endpoint'); },
 };
 vm.createContext(context);
-for (const name of ['getEmptyEffectsCompareState', 'normalizeEffectsCompareSelection',
-    'getEffectiveEffectsCompareSide', 'getEffectsCompareState', 'getEffectsCompareToggleTarget',
-    'handleEffectsCompareSelectionChange', 'loadEffectsComparePreset', 'toggleComparePreset',
-    'syncBankActionButtons']) {
-    const match = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));
-    assert.ok(match, name);
-    vm.runInContext(match[0], context);
-}
+vm.runInContext([
+    'function getEmptyEffectsCompareState() { return window.FXRouteBankUI.getEmptyEffectsCompareState(...arguments); }',
+    'function normalizeEffectsCompareSelection() { return window.FXRouteBankUI.normalizeEffectsCompareSelection(...arguments); }',
+    'function getEffectiveEffectsCompareSide() { return window.FXRouteBankUI.getEffectiveEffectsCompareSide(...arguments); }',
+    'function getEffectsCompareState() { return window.FXRouteBankUI.getEffectsCompareState(...arguments); }',
+    'function getEffectsCompareToggleTarget() { return window.FXRouteBankUI.getEffectsCompareToggleTarget(...arguments); }',
+    'async function handleEffectsCompareSelectionChange() { return window.FXRouteBankUI.handleEffectsCompareSelectionChange(...arguments); }',
+    'async function loadEffectsComparePreset() { return window.FXRouteBankUI.loadEffectsComparePreset(...arguments); }',
+    'async function toggleComparePreset() { return window.FXRouteBankUI.toggleComparePreset(...arguments); }',
+    'function syncBankActionButtons() { return window.FXRouteBankUI.syncBankActionButtons(...arguments); }',
+].join('\n'), context);
 (async () => {
     config.selected_bank = 'main';
     assert.equal(context.getEffectsCompareState().activePreset, 'Neutral');

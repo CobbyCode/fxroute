@@ -8,17 +8,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
-const ui = require('../static/output_state.js');
-
-// Match a top-level function from its declaration to its column-0 closing
-// brace (same proven extraction as test_paired_bank_frontend.js; handles
-// multi-line signatures with default params containing braces).
-function extractFunction(name) {
-    const match = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));
-    assert.ok(match, `function ${name} found in app.js`);
-    return match[0];
+require('../static/output_state.js');
+const BankUI = require('../static/output_bank_ui.js');
+if (typeof globalThis.document === 'undefined') {
+    globalThis.document = { querySelectorAll: () => [], getElementById: () => null };
 }
+
+const appSource = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
+assert.match(appSource, /function renderEffectsCompare\(/, 'app.js must keep a compare wrapper');
+assert.match(appSource, /FXRouteBankUI/, 'app.js must delegate bank UI to the module');
 
 const bank = (id, label) => ({
     id, ...(label ? { label } : {}), preset_a: 'Neutral', preset_b: null,
@@ -35,38 +33,47 @@ function makeContext(selectedBank, banks) {
     };
     const catalog = { revision: 7, active_mode: 'stereo-sub',
         modes: { 'stereo-sub': config } };
+    const escapeHtmlStub = (text) => String(text ?? '').replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const sharedState = {
+        outputSystem: { catalog, busy: false },
+        dsp: { presets: [{ name: 'Neutral' }], compare: {}, active_preset: '' },
+    };
+    const sharedElements = {
+        effectsCompareRow: { style: {} },
+        effectsCompareA: { innerHTML: '' },
+        effectsCompareB: { innerHTML: '' },
+        effectsCompareActive: { innerHTML: '', textContent: '' },
+        effectsCompareChain: { textContent: '' },
+        effectsCompareToggle: { textContent: '' },
+    };
+    BankUI.init({
+        getState: () => sharedState,
+        getElements: () => sharedElements,
+        showToast: () => {},
+        escapeHtml: escapeHtmlStub,
+        fetchEffects: async () => {},
+        refreshCatalog: async () => null,
+        collectEffectsExtras: () => ({}),
+        measurementBankSumsBothInputs: () => false,
+        presetFileUrl: () => '',
+        renderEffects: () => {},
+        renderMeasurementArea: () => {},
+        measurementArea: () => null,
+        applyMutation: async () => null,
+        confirmDialog: () => true,
+    });
     const context = {
-        state: {
-            outputSystem: { catalog, busy: false },
-            dsp: { presets: [{ name: 'Neutral' }], compare: {}, active_preset: '' },
-        },
-        elements: {
-            effectsCompareRow: { style: {} },
-            effectsCompareA: { innerHTML: '' },
-            effectsCompareB: { innerHTML: '' },
-            effectsCompareActive: { innerHTML: '', textContent: '' },
-            effectsCompareChain: { textContent: '' },
-            effectsCompareToggle: { textContent: '' },
-        },
-        effectsCompareLoadInFlight: false,
-        outputSystemModule: () => ui,
-        escapeHtml: (text) => String(text ?? '').replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
-        renderPresetDownloadLink: (name) => String(name || ''),
-        getEffectsChainLabelForPreset: () => '',
-        renderEffectsBankSelector() {},
-        setEffectsCompareLoadBusy() {},
-        syncBankActionButtons() {},
+        state: sharedState,
+        elements: sharedElements,
+        window: { FXRouteBankUI: BankUI },
         document: { querySelectorAll: () => [], getElementById: () => null },
-        window: {},
         console,
     };
     vm.createContext(context);
-    for (const name of ['getEmptyEffectsCompareState', 'normalizeEffectsCompareSelection',
-        'getEffectiveEffectsCompareSide', 'getEffectsCompareState',
-        'visiblePresetEntriesForBank', 'renderEffectsCompare']) {
-        vm.runInContext(extractFunction(name), context);
-    }
+    vm.runInContext(
+        'function renderEffectsCompare() { return window.FXRouteBankUI.renderEffectsCompare(...arguments); }',
+        context);
     return context;
 }
 

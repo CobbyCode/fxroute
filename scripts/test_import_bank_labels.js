@@ -10,13 +10,11 @@ const vm = require('node:vm');
 
 const ui = require('../static/output_state.js');
 const uiHelpers = require('../static/ui_helpers.js');
+require('../static/api.js');
+const BankUI = require('../static/output_bank_ui.js');
 const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
-
-function extract(name) {
-    const match = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));
-    assert.ok(match, name);
-    return match[0];
-}
+assert.ok(/function\s+renderBankImportTarget/.test(source), 'app.js must keep a wrapper');
+assert.ok(/FXRouteBankUI/.test(source), 'app.js must delegate bank UI to the module');
 
 const bank = (id, label, roles, channel_mode = 'stereo') => ({
     id, label, roles, channel_mode, preset: 'Neutral', preset_a: 'Neutral',
@@ -59,7 +57,7 @@ const documentStub = {
 const hiddenOf = (key) => !!nodes[key]?.toggled?.hidden;
 
 const context = {
-    state: { outputSystem: { catalog } },
+    state: { outputSystem: { catalog }, dsp: { presets: [] } },
     elements: {
         effectsRewRightText: trackingNode(),
         effectsRewLeftText: trackingNode(),
@@ -68,16 +66,36 @@ const context = {
         effectsImportFile: trackingNode(),
         effectsRewDualCreatePresetBtn: trackingNode(),
     },
-    outputSystemModule: () => ui,
-    measurementAreaFromCatalog: () => ui.measurementArea(context.state.outputSystem.catalog),
-    updateEffectsImportUi: () => {},
+    window: { FXRouteBankUI: BankUI },
     document: documentStub,
     showToast: (message) => { throw new Error(message); },
     console,
 };
+globalThis.document = documentStub;
+const requests = [];
+const toasts = [];
+BankUI.init({
+    getState: () => context.state,
+    getElements: () => context.elements,
+    showToast: (message, kind) => { toasts.push({ message, kind }); },
+    escapeHtml: uiHelpers.escapeHtml,
+    fetchEffects: async () => {},
+    refreshCatalog: async () => null,
+    collectEffectsExtras: () => ({}),
+    measurementBankSumsBothInputs: () => mode().selected_bank === 'sub1',
+    presetFileUrl: () => '',
+    renderEffects: () => {},
+    renderMeasurementArea: () => {},
+    measurementArea: () => ui.measurementArea(catalog),
+    applyMutation: async () => null,
+    confirmDialog: () => true,
+});
 vm.createContext(context);
-vm.runInContext('let _bankImportChannelMode = null;', context);
-vm.runInContext(extract('renderBankImportTarget'), context);
+vm.runInContext([
+    'function renderBankImportTarget() { return window.FXRouteBankUI.renderBankImportTarget(...arguments); }',
+    'async function createDualFilterPreset() { return window.FXRouteBankUI.createDualFilterPreset(...arguments); }',
+    'function getDualFilterFileKind() { return window.FXRouteBankUI.getDualFilterFileKind(...arguments); }',
+].join('\n'), context);
 
 // Stereo bank: file area visible with explicit formats, per-side L/R labels.
 mode().selected_bank = 'main';
@@ -120,28 +138,20 @@ class FakeFormData {
     append(key, value) { (this.fields[key] = this.fields[key] || []).push(value); }
     delete(key) { delete this.fields[key]; }
 }
-const requests = [];
-const toasts = [];
-context.elements.effectsRewDualPresetName = { value: 'Mono Test', focus() {} };
-context.elements.effectsRewDualCreatePresetBtn = { disabled: false };
-context.elements.effectsStatus = { innerHTML: '' };
-context.collectEffectsExtras = () => ({});
-context.fetchEffects = async () => {};
-context.fetchOutputSystemCatalog = async () => {};
-context.showToast = (message, kind) => { toasts.push({ message, kind }); };
-context.FormData = FakeFormData;
-context.File = File;
-context.document = documentStub;
-context.fetch = async (url, options) => {
+const realFormData = globalThis.FormData;
+const realFetch = globalThis.fetch;
+globalThis.FormData = FakeFormData;
+globalThis.fetch = async (url, options) => {
     requests.push({ url, fields: options.body.fields });
     return { ok: true, json: async () => ({ status: 'ok', preset: { name: 'Mono Test' } }) };
 };
-for (const name of ['outputSystemBankBinding', 'appendBankBindingFields',
-    'requireConcreteFilterBank', 'measurementBankSumsBothInputs', 'measurementPeqParams',
-    'getDualFilterFileKind', 'createDualFilterPreset']) {
-    vm.runInContext(extract(name), context);
-}
-context.escapeHtml = uiHelpers.escapeHtml;
+context.elements.effectsRewDualPresetName = { value: 'Mono Test', focus() {} };
+context.elements.effectsRewDualCreatePresetBtn = { disabled: false };
+context.elements.effectsStatus = { innerHTML: '' };
+vm.runInContext([
+    'async function createDualFilterPreset() { return window.FXRouteBankUI.createDualFilterPreset(...arguments); }',
+    'function getDualFilterFileKind() { return window.FXRouteBankUI.getDualFilterFileKind(...arguments); }',
+].join('\n'), context);
 assert.ok(/function\s+escapeHtml/.test(source), 'app.js must keep an escapeHtml wrapper');
 assert.ok(/FXRouteUiHelpers/.test(source), 'app.js wrapper must delegate to ui_helpers.js');
 function dualState({ text = '', file = null }) {
@@ -184,5 +194,11 @@ function dualState({ text = '', file = null }) {
     await context.createDualFilterPreset();
     assert.equal(requests.length, before);
     assert.match(toasts.at(-1).message, /Stereo file area/);
+    globalThis.FormData = realFormData;
+    globalThis.fetch = realFetch;
     console.log('import bank label and routing tests passed');
-})().catch((error) => { console.error(error); process.exitCode = 1; });
+})().catch((error) => {
+    globalThis.FormData = realFormData;
+    globalThis.fetch = realFetch;
+    console.error(error); process.exitCode = 1;
+});

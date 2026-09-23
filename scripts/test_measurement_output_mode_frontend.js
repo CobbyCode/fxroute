@@ -7,6 +7,7 @@ const path = require('path');
 const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
 const SubwooferUI = require('../static/subwoofer_ui.js');
+const BankUIModule = require('../static/output_bank_ui.js');
 require('../static/output_state.js');
 
 if (typeof globalThis.window === 'undefined') globalThis.window = {};
@@ -162,7 +163,15 @@ function makeMeasurementContext({ fetchResponse = null, subSaveGate = null } = {
             return subSaveGate ? subSaveGate.promise : Promise.resolve({ saved: true });
         } });
     vm.createContext(context);
+    // Bank gating runs through the real bank module bridged into the
+    // sandbox; app.js keeps a thin delegating wrapper.
+    BankUIModule.init({ getState: () => state, getElements: () => ({}),
+        showToast: (message) => { toasts.push(message); },
+        escapeHtml: (value) => String(value),
+        measurementArea: () => require('../static/output_state.js').measurementArea(context.outputCatalog) });
+    context.window = { FXRouteBankUI: BankUIModule };
     vm.runInContext(`
+        function requireConcreteFilterBank() { return window.FXRouteBankUI.requireConcreteFilterBank(); }
         function setPendingSave() { SubwooferUI.saveSubwooferDebounced(5); }
         function flushSubwooferSettingsBeforeMeasurement() {
             return SubwooferUI.flushSubwooferSettingsBeforeMeasurement();
@@ -187,7 +196,6 @@ function makeMeasurementContext({ fetchResponse = null, subSaveGate = null } = {
         }
         async function pollMeasurementJob() {}
         ${extractApiFunction('formatTransitionErrorDetail')}
-        ${extractFunction('requireConcreteFilterBank')}
         ${extractFunction('startHostMeasurement')}
         ${extractFunction('startLrRepeatMeasurement')}
         ${extractFunction('measurementAreaBadge')}

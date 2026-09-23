@@ -114,7 +114,9 @@ assert.doesNotMatch(index, /Advanced Measurement/);
 assert.doesNotMatch(flows, /Subwoofer Alignment/i);
 
 assert.match(index, /id="effects-toggle-import"[^>]*>Import<\/button>/);
-assert.match(app, /elements\.effectsToggleImportBtn\.textContent = shouldOpen \? 'Close Import' : 'Import';/);
+const bankUi = fs.readFileSync(path.join(root, 'static', 'output_bank_ui.js'), 'utf8');
+assert.match(bankUi, /getElements\(\)\.effectsToggleImportBtn\.textContent = shouldOpen \? 'Close Import' : 'Import';/);
+assert.match(app, /function setEffectsImportPanelOpen\(/, 'app.js must keep an import panel wrapper');
 assert.match(app, /elements\.toggleImportBtn\.textContent = 'Close Import';/);
 assert.ok(!app.includes(`textContent = '${String.fromCharCode(0x2212)} Close'`));
 assert.match(index, /id="toggle-import"[^>]*aria-expanded="false"[^>]*aria-controls="library-import-panel"/);

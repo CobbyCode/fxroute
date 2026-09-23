@@ -1,50 +1,31 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
 // Strict per-bank stock, wiring level: switching banks must never surface
-// another bank's presets through visiblePresetEntriesForBank() — the same
-// guard as test_bank_preset_frontend.js, but asserted against the actual
-// app.js picker wiring (catalog -> bank id -> presetsForBank) instead of the
-// output_state.js helper in isolation. Untagged legacy reads as Global stock;
-// All Banks lists none (joint A/B switching only).
+// another bank's presets through visiblePresetEntriesForBank() — asserted
+// against the real output_bank_ui.js picker wiring (catalog -> bank id ->
+// presetsForBank) instead of the output_state.js helper in isolation.
+// Untagged legacy reads as Global stock; All Banks lists none (joint A/B
+// switching only). app.js keeps thin delegating wrappers.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
-
-// Pull a function body out of app.js by name (brace counting).
-function extractFunction(name) {
-    const start = source.indexOf(`function ${name}(`);
-    assert.ok(start !== -1, `function ${name} found in app.js`);
-    let depth = 0;
-    let end = -1;
-    for (let i = source.indexOf('{', start); i < source.length; i += 1) {
-        if (source[i] === '{') depth += 1;
-        if (source[i] === '}') {
-            depth -= 1;
-            if (depth === 0) { end = i + 1; break; }
-        }
-    }
-    assert.ok(end !== -1, `function ${name} body complete`);
-    return source.slice(start, end);
-}
+require('../static/output_state.js');
+const BankUI = require('../static/output_bank_ui.js');
+const appSource = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
+assert.match(appSource, /function visiblePresetEntriesForBank\(/, 'app.js must keep a wrapper');
+assert.match(appSource, /FXRouteBankUI/, 'app.js must delegate bank UI to the module');
 
 function makeContext(presets, catalog) {
-    const context = {
-        state: { dsp: { presets }, outputSystem: { catalog } },
-        outputSystemModule: () => require('../static/output_state.js'),
-        window: {},
-        console,
-    };
-    vm.createContext(context);
-    vm.runInContext(extractFunction('visiblePresetEntriesForBank'), context);
-    vm.runInContext(extractFunction('visiblePresetNamesForBank'), context);
-    return context;
+    const state = { dsp: { presets }, outputSystem: { catalog } };
+    BankUI.init({ getState: () => state, getElements: () => ({}),
+        showToast: () => {}, escapeHtml: (value) => String(value) });
+    return state;
 }
 
 function namesFor(presets, catalog) {
-    return vm.runInContext('visiblePresetNamesForBank()', makeContext(presets, catalog));
+    makeContext(presets, catalog);
+    return BankUI.visiblePresetNamesForBank();
 }
 
 const presets = [
@@ -95,22 +76,19 @@ assert.equal(seen.size, 4, 'all four banks exercised');
 // All Banks owns no presets: joint A/B switching only.
 assert.deepEqual(namesFor(presets, catalog('all')), []);
 // No catalog/module: unfiltered fallback.
-assert.deepEqual(
-    vm.runInContext('visiblePresetNamesForBank()',
-        makeContext(presets, null)),
+assert.deepEqual((() => { makeContext(presets, null); return BankUI.visiblePresetNamesForBank(); })(),
     presets.map(p => p.name));
-// Fallback when the module lacks presetsForBank (defensive parity with app.js).
+// Fallback when the module lacks presetsForBank.
 {
-    const context = {
-        state: { dsp: { presets }, outputSystem: { catalog: catalog('low') } },
-        outputSystemModule: () => ({}),
-        window: {},
-        console,
-    };
-    vm.createContext(context);
-    vm.runInContext(extractFunction('visiblePresetEntriesForBank'), context);
-    assert.deepEqual(vm.runInContext('visiblePresetEntriesForBank()', context),
-        presets);
+    const outputState = require('../static/output_state.js');
+    const real = outputState.presetsForBank;
+    delete outputState.presetsForBank;
+    try {
+        makeContext(presets, catalog('low'));
+        assert.deepEqual(BankUI.visiblePresetEntriesForBank(), presets);
+    } finally {
+        outputState.presetsForBank = real;
+    }
 }
 
 console.log('bank preset leak frontend tests passed');

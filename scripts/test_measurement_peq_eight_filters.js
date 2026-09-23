@@ -53,6 +53,8 @@ function extractFrom(source, name) {
 }
 
 const OutputStateModule = require('../static/output_state.js');
+require('../static/api.js');
+const BankUIModule = require('../static/output_bank_ui.js');
 
 function extractFunction(name) {
     return extractFrom(appSource, name);
@@ -93,6 +95,13 @@ async function main() {
         Math,
     };
     vm.createContext(context);
+    // Bank-bound helpers run through the real bank module bridged into the
+    // sandbox; app.js keeps thin delegating wrappers.
+    BankUIModule.init({ getState: () => state, getElements: () => ({}),
+        showToast: (message, kind) => toasts.push({ message, kind }),
+        escapeHtml: (value) => String(value),
+        measurementArea: () => ({ available: true, channel_mode: 'stereo' }) });
+    context.window = { FXRouteBankUI: BankUIModule };
     const appFunctions = [
         'getDefaultMeasurementPeqFilter',
         'getDefaultMeasurementPeqState',
@@ -115,11 +124,7 @@ async function main() {
         'measurementCommitSourceId',
         'ensureOutputSystemBoxes',
         'outputSystemModule',
-        'outputSystemBankBinding',
-        'bankBindingJson',
         'measurementAreaFromCatalog',
-        'requireConcreteFilterBank',
-        'measurementPeqParams',
     ].map(extractFunction).join('\n');
     const apiFunctions = ['formatTransitionErrorDetail'].map((name) => extractFrom(apiSource, name)).join('\n');
     // fetchOutputSystemCatalog is controller-owned; the app wrapper only
@@ -127,7 +132,15 @@ async function main() {
     const controllerFunctions = [
         'fetchOutputSystemCatalog',
     ].map(extractControllerFunction).join('\n');
-    const functions = `${appFunctions}\n${apiFunctions}\n${controllerFunctions}`;
+    // Bank-bound helpers run through the real bank module bridged into the
+    // sandbox; app.js keeps thin delegating wrappers.
+    const bankBridges = [
+        'outputSystemBankBinding',
+        'bankBindingJson',
+        'requireConcreteFilterBank',
+        'measurementPeqParams',
+    ].map((name) => `function ${name}() { return window.FXRouteBankUI.${name}(...arguments); }`).join('\n');
+    const functions = `${appFunctions}\n${apiFunctions}\n${controllerFunctions}\n${bankBridges}`;
     context.deps = {
         getState: () => state,
         showToast: (message, kind) => toasts.push({ message, kind }),
