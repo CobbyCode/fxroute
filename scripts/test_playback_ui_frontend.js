@@ -105,4 +105,115 @@ assert.ok(UI.meterLitCount(-6, 6) > 0);
 assert.equal(UI.streamingCueKey({ trackId: 'a', status: 'Playing' }), UI.streamingCueKey({ trackId: 'a', status: 'Playing' }));
 assert.equal(UI.nativeTrackCueKey({ id: 'x', source: 'local' }), UI.nativeTrackCueKey({ id: 'x', source: 'local' }));
 
+// Transport wiring regression: globalTogglePlayback/globalPrevious/globalNext
+// are injected deps (they live in playback_core.js), so a bare reference
+// throws ReferenceError inside setupPlaybackControls, aborts the function and
+// silently kills every footer control after the failing line.
+{
+    const setupBody = (() => {
+        const lines = uiSource.split('\n');
+        const start = lines.findIndex((l) => l.startsWith('function setupPlaybackControls('));
+        assert.ok(start >= 0, 'missing setupPlaybackControls');
+        const end = lines.findIndex((l, i) => i > start && l.startsWith('function '));
+        return lines.slice(start, end > start ? end : lines.length).join('\n');
+    })();
+    for (const name of ['globalTogglePlayback', 'globalPrevious', 'globalNext']) {
+        assert.doesNotMatch(
+            setupBody,
+            new RegExp(`(?<![\\w.$])${name}\\s*[,)]`),
+            `setupPlaybackControls must bind deps.${name}, not the bare symbol ${name}`,
+        );
+        assert.ok(
+            setupBody.includes(`deps.${name}`),
+            `setupPlaybackControls must bind deps.${name}`,
+        );
+    }
+
+    // Runtime wiring: run the real setup against a stub DOM and prove the
+    // registered handlers are the injected core functions.
+    const registered = Object.create(null);
+    const makeElement = (name) => ({
+        classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+        style: {},
+        dataset: {},
+        disabled: false,
+        textContent: '',
+        title: '',
+        addEventListener(type, handler) { registered[`${name}:${type}`] = handler; },
+        removeEventListener() {},
+        setAttribute() {},
+        removeAttribute() {},
+        getAttribute() { return null; },
+        hasAttribute() { return false; },
+        appendChild() {},
+        remove() {},
+        focus() {},
+        blur() {},
+        matches() { return false; },
+        closest() { return null; },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+    });
+    const elementsStub = new Proxy({}, {
+        get(_target, prop) {
+            return typeof prop === 'string' ? makeElement(prop) : undefined;
+        },
+    });
+    const handlers = {
+        globalTogglePlayback() {},
+        globalPrevious() {},
+        globalNext() {},
+    };
+    const stateStub = {
+        playback: {
+            playing: false, paused: true, position: 0, duration: 0, volume: 53,
+            current_track: null, queue: { active: false, index: -1, count: 0, tracks: [], loop: false, shuffle: false },
+        },
+        library: { shuffle: false, loop: false },
+        samplerate: {},
+        settings: {},
+    };
+    const hadWindow = 'window' in global;
+    const hadDocument = 'document' in global;
+    const prevWindow = global.window;
+    const prevDocument = global.document;
+    global.window = {
+        addEventListener() {},
+        removeEventListener() {},
+        innerWidth: 1440,
+        innerHeight: 900,
+        matchMedia() {
+            return { matches: false, addEventListener() {}, removeEventListener() {} };
+        },
+    };
+    global.document = {
+        addEventListener() {},
+        removeEventListener() {},
+        getElementById() { return null; },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        body: { classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } } },
+        documentElement: { style: { setProperty() {} } },
+    };
+    try {
+        UI.init({
+            getElements: () => elementsStub,
+            getState: () => stateStub,
+            renderLibraryModeButtons() {},
+            ...handlers,
+        });
+        UI.setupPlaybackControls();
+        assert.equal(registered['btnPlayPause:click'], handlers.globalTogglePlayback,
+            'play/pause must bind the injected globalTogglePlayback');
+        assert.equal(registered['btnPrevious:click'], handlers.globalPrevious,
+            'previous must bind the injected globalPrevious');
+        assert.equal(registered['btnNext:click'], handlers.globalNext,
+            'next must bind the injected globalNext');
+        assert.ok(registered['volumeSlider:input'], 'volume slider must stay wired');
+    } finally {
+        if (hadWindow) global.window = prevWindow; else delete global.window;
+        if (hadDocument) global.document = prevDocument; else delete global.document;
+    }
+}
+
 console.log('PASS  scripts/test_playback_ui_frontend.js (playback UI module owns footer/meter/queue/seek/cover)');

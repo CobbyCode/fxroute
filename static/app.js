@@ -286,6 +286,8 @@ window.FXRoutePlaybackUI?.init({
     globalTogglePlayback: (...args) => PlaybackCore.globalTogglePlayback(...args),
     globalPrevious: (...args) => PlaybackCore.globalPrevious(...args),
     globalNext: (...args) => PlaybackCore.globalNext(...args),
+    clearQueue: (...args) => PlaybackCore.clearQueue(...args),
+    handleVolumeChange: (...args) => PlaybackCore.handleVolumeChange(...args),
     isPlaybackActionInFlight: () => PlaybackCore.isPlaybackActionInFlight(),
     getPendingOptimisticTrack: () => PlaybackCore.getPendingOptimisticTrack(),
     setLibraryModeSyncArmed: (active) => PlaybackCore.setLibraryModeSyncArmed(active),

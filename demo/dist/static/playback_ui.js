@@ -78,6 +78,8 @@
         globalTogglePlayback: () => {},
         globalPrevious: () => {},
         globalNext: () => {},
+        clearQueue: () => {},
+        handleVolumeChange: () => {},
         isPlaybackActionInFlight: () => false,
         getPendingOptimisticTrack: () => null,
         setLibraryModeSyncArmed: () => {},
@@ -156,9 +158,9 @@ function setupPlaybackControls() {
         return;
     }
     if (deps.getElements().footerShuffleBtn) deps.getElements().footerShuffleBtn.addEventListener('click', toggleFooterShuffle);
-    if (deps.getElements().btnPrevious) deps.getElements().btnPrevious.addEventListener('click', globalPrevious);
-    deps.getElements().btnPlayPause.addEventListener('click', globalTogglePlayback);
-    if (deps.getElements().btnNext) deps.getElements().btnNext.addEventListener('click', globalNext);
+    if (deps.getElements().btnPrevious) deps.getElements().btnPrevious.addEventListener('click', deps.globalPrevious);
+    deps.getElements().btnPlayPause.addEventListener('click', deps.globalTogglePlayback);
+    if (deps.getElements().btnNext) deps.getElements().btnNext.addEventListener('click', deps.globalNext);
     if (deps.getElements().sourcePrev) deps.getElements().sourcePrev.addEventListener('click', () => deps.stepSourceSwitcher(-1));
     if (deps.getElements().sourceNext) deps.getElements().sourceNext.addEventListener('click', () => deps.stepSourceSwitcher(1));
     if (deps.getElements().sourceSelect) deps.getElements().sourceSelect.addEventListener('change', (event) => {
@@ -172,10 +174,10 @@ function setupPlaybackControls() {
         }
     });
     if (deps.getElements().footerLoopBtn) deps.getElements().footerLoopBtn.addEventListener('click', toggleFooterLoop);
-    if (deps.getElements().btnClearQueue) deps.getElements().btnClearQueue.addEventListener('click', clearQueue);
+    if (deps.getElements().btnClearQueue) deps.getElements().btnClearQueue.addEventListener('click', deps.clearQueue);
     if (deps.getElements().trackFavoriteBtn) deps.getElements().trackFavoriteBtn.addEventListener('click', toggleCurrentTrackFavorite);
     window.addEventListener('fxroute:tidal-favorites', renderFooterFavoriteFromTidalChange);
-    deps.getElements().volumeSlider.addEventListener('input', handleVolumeChange);
+    deps.getElements().volumeSlider.addEventListener('input', deps.handleVolumeChange);
     if (deps.getElements().playbackCover) {
         deps.getElements().playbackCover.addEventListener('click', toggleCoverDetailCard);
         deps.getElements().playbackCover.addEventListener('keydown', event => {
