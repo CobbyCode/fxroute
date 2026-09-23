@@ -13,6 +13,7 @@ const vm = require('vm');
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 const coreJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_core.js'), 'utf8');
 const uiJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
+const rtJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming_runtime.js'), 'utf8');
 const streamingJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming.js'), 'utf8');
 
 function extractFunction(source, name) {
@@ -249,10 +250,10 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // 4. Spotify wiring in app.js: the incoming-state path cues (covers the
     // FXRoute transport response, poll refreshes and out-of-band starts).
     await run('spotify incoming state reuses the shared cue on queue start', async () => {
-        assert.ok(appJs.includes('function handleIncomingSpotifyState('), 'missing handleIncomingSpotifyState');
-        assert.ok(appJs.includes("maybeShowStreamingQueueCue('spotify'"), 'spotify incoming state must call the shared streaming cue');
-        assert.ok(appJs.includes('async function spotifyCommand('), 'missing spotifyCommand');
-        assert.ok(appJs.includes('handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true })'),
+        assert.ok(rtJs.includes('function handleIncomingSpotifyState('), 'missing handleIncomingSpotifyState');
+        assert.ok(rtJs.includes("maybeShowStreamingQueueCue('spotify'"), 'spotify incoming state must call the shared streaming cue');
+        assert.ok(rtJs.includes('async function spotifyCommand('), 'missing spotifyCommand');
+        assert.ok(rtJs.includes('handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true })'),
             'spotifyCommand must route responses through the incoming-state path');
         assert.ok(uiJs.includes('function showStreamingQueueStarted('), 'missing showStreamingQueueStarted helper');
         assert.ok(uiJs.includes('function maybeShowStreamingQueueCue('), 'missing maybeShowStreamingQueueCue decision');
@@ -262,9 +263,9 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // 5. Qobuz wiring: footer command, tab transport and incoming state reuse
     // the shared cue (immediate command feedback + poll/out-of-band starts).
     await run('qobuz command, tab transport and incoming state reuse the shared cue', async () => {
-        assert.ok(appJs.includes('async function qobuzCommand('), 'missing qobuzCommand');
-        assert.ok(appJs.includes("maybeShowStreamingQueueCue('qobuz'"), 'qobuz paths must call the shared cue decision');
-        assert.ok(appJs.includes('function handleIncomingQobuzState('), 'missing handleIncomingQobuzState');
+        assert.ok(rtJs.includes('async function qobuzCommand('), 'missing qobuzCommand');
+        assert.ok(rtJs.includes("maybeShowStreamingQueueCue('qobuz'"), 'qobuz paths must call the shared cue decision');
+        assert.ok(rtJs.includes('function handleIncomingQobuzState('), 'missing handleIncomingQobuzState');
         assert.ok(streamingJs.includes("maybeShowStreamingQueueCue('qobuz'"), 'qobuz tab transport must call the shared cue decision');
         assert.ok(appJs.includes('maybeShowStreamingQueueCue: (...args) => PlaybackUI.maybeShowStreamingQueueCue'),
             'app.js must inject the shared cue decision into streaming');

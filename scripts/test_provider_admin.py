@@ -762,6 +762,7 @@ class ProviderTabOwnershipTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app_js = (ROOT / "static" / "app.js").read_text()
         cls.streaming_js = (ROOT / "static" / "streaming.js").read_text()
+        cls.runtime_js = (ROOT / "static" / "streaming_runtime.js").read_text()
 
     @staticmethod
     def _function_body(source: str, name: str) -> str:
@@ -823,7 +824,7 @@ class ProviderTabOwnershipTests(unittest.TestCase):
         self.assertNotIn("spotifyElements", self.app_js)
 
     def test_spotify_status_only_forwards_an_installed_transition(self):
-        body = self._function_body(self.app_js, "syncSpotifyTabAvailability")
+        body = self._function_body(self.runtime_js, "syncSpotifyTabAvailability")
         for forbidden in ("tabBtn", "style.display", "classList", "getElementById", "hidden"):
             self.assertNotIn(
                 forbidden,
@@ -836,7 +837,7 @@ class ProviderTabOwnershipTests(unittest.TestCase):
         # This runs on every incoming Spotify state, i.e. far more often than
         # provider discovery; a visibility write here is what re-showed a
         # disabled Spotify provider tab.
-        body = self._function_body(self.app_js, "handleIncomingSpotifyState")
+        body = self._function_body(self.runtime_js, "handleIncomingSpotifyState")
         self.assertIn("syncSpotifyTabAvailability(mergedData.installed === true);", body)
         for forbidden in ("style.display", "spotifyTab.hidden", "classList.toggle('hidden'"):
             self.assertNotIn(forbidden, body, f"incoming Spotify state must not write {forbidden}")

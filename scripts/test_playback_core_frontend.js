@@ -97,10 +97,17 @@ for (const decl of [
     'let tidalFavoriteRequestInFlight = false;',
     'let libraryModeRequestInFlight = false;',
     'let lastSampleratePlaybackSignature = null;',
+]) {
+    assert.match(appSource, new RegExp(`^${decl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm'), `shared flag stays in app.js: ${decl}`);
+}
+// Poll generations moved with the streaming runtime (single polling owner).
+const rtSource = fs.readFileSync(path.join(repoRoot, 'static', 'streaming_runtime.js'), 'utf8');
+for (const decl of [
     'let _spotifyPollGeneration = 0;',
     'let _qobuzPollGeneration = 0;',
 ]) {
-    assert.match(appSource, new RegExp(`^${decl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm'), `shared flag stays in app.js: ${decl}`);
+    assert.match(rtSource, new RegExp(`^${decl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm'), `poll generation lives in streaming_runtime.js: ${decl}`);
+    assert.doesNotMatch(appSource, new RegExp(`^${decl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm'), `app.js must not keep: ${decl}`);
 }
 // app.js wiring reaches the module through the PlaybackCore alias.
 for (const snippet of [
@@ -112,7 +119,7 @@ for (const snippet of [
     'PlaybackCore.syncFooterOwnershipFromPlayback(',
     'PlaybackCore.setPlaybackActionInFlight(false)',
     'getState: () => state,',
-    'shouldPollQobuz: (...args) => shouldPollQobuz(...args),',
+    'shouldPollQobuz: (...args) => StreamingRuntime.shouldPollQobuz(...args),',
 ]) {
     assert.ok(appSource.includes(snippet), `app.js wiring must reference ${snippet}`);
 }

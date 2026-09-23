@@ -23,6 +23,7 @@ const vm = require('vm');
 
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 const coreSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_core.js'), 'utf8');
+const runtimeSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming_runtime.js'), 'utf8');
 const src = coreSource;
 
 function extractFunction(source, name) {
@@ -61,13 +62,14 @@ function extractFunction(source, name) {
 }
 
 // --- structural guards: qobuz must travel the same init/resync paths ------
-// Provider runtime stays in app.js; ownership lives in playback_core.js.
-assert.ok(/function\s+fetchQobuzStatus\s*\(/.test(appSource), 'app.js must define fetchQobuzStatus');
-assert.ok(/function\s+handleIncomingQobuzState\s*\(/.test(appSource), 'app.js must define handleIncomingQobuzState');
-assert.ok(/function\s+shouldPollQobuz\s*\(/.test(appSource), 'app.js must define shouldPollQobuz');
-assert.ok(/function\s+startQobuzPoll\s*\(/.test(appSource), 'app.js must define startQobuzPoll');
+// Provider runtime lives in streaming_runtime.js; ownership lives in
+// playback_core.js.
+assert.ok(/function\s+fetchQobuzStatus\s*\(/.test(runtimeSource), 'streaming_runtime.js must define fetchQobuzStatus');
+assert.ok(/function\s+handleIncomingQobuzState\s*\(/.test(runtimeSource), 'streaming_runtime.js must define handleIncomingQobuzState');
+assert.ok(/function\s+shouldPollQobuz\s*\(/.test(runtimeSource), 'streaming_runtime.js must define shouldPollQobuz');
+assert.ok(/function\s+startQobuzPoll\s*\(/.test(runtimeSource), 'streaming_runtime.js must define startQobuzPoll');
 assert.ok(/if\s*\(data\.qobuz\)/.test(appSource), 'WS init must handle data.qobuz');
-assert.ok(/fetchQobuzStatus\(\)/.test(appSource + coreSource), 'resync/tab paths must fetch Qobuz status');
+assert.ok(/fetchQobuzStatus\(\)/.test(appSource + coreSource + runtimeSource), 'resync/tab paths must fetch Qobuz status');
 
 const CORE_FNAMES = [
     'getBackendFooterOwner',
@@ -84,11 +86,13 @@ const CORE_FNAMES = [
     'reconcileFooterSource',
     'syncFooterOwnershipFromPlayback',
 ];
-// handleIncomingQobuzState + shouldPollQobuz stay in app.js (provider
-// runtime); they reach ownership through the PlaybackCore namespace.
-const APP_FNAMES = ['handleIncomingQobuzState', 'shouldPollQobuz', 'qobuzIsInstalled'];
+// handleIncomingQobuzState + shouldPollQobuz + qobuzIsInstalled live in the
+// streaming runtime module; they reach ownership through the PlaybackCore
+// namespace.
+const APP_FNAMES = [];
+const RT_FNAMES = ['handleIncomingQobuzState', 'shouldPollQobuz', 'qobuzIsInstalled'];
 const fns = CORE_FNAMES.map((n) => extractFunction(coreSource, n)).join('\n')
-    + '\n' + APP_FNAMES.map((n) => extractFunction(appSource, n)).join('\n');
+    + '\n' + RT_FNAMES.map((n) => extractFunction(runtimeSource, n)).join('\n');
 
 function makeSandbox({ footerSource = 'local', visibleTab = 'radio', owner = null, qobuz = null, spotify = null } = {}) {
     const rendered = [];
@@ -132,6 +136,10 @@ function makeSandbox({ footerSource = 'local', visibleTab = 'radio', owner = nul
             nonAppSourceModeActive: () => false,
             stopSpotifyPoll: () => {},
             bumpSpotifyPollGeneration: () => {},
+            reconcileFooterSource: (...args) => sandbox.PlaybackCore.reconcileFooterSource(...args),
+            getBackendFooterOwner: (...args) => sandbox.PlaybackCore.getBackendFooterOwner(...args),
+            updateFooterForStreamingOwner: (data) => { rendered.push(data); },
+            maybeShowStreamingQueueCue: () => false,
         },
         console,
     };

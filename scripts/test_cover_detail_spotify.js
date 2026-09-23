@@ -13,6 +13,7 @@ const vm = require('vm');
 
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 const uiSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
+const rtSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming_runtime.js'), 'utf8');
 
 function extractFrom(source, name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -58,7 +59,7 @@ vm.runInContext(extractFrom(uiSource, 'formatRadioStreamLine'), sandbox);
 vm.runInContext(extractFrom(appSource, 'formatRateKhz'), sandbox);
 vm.runInContext(extractFrom(uiSource, 'formatStreamingMetaLine'), sandbox);
 vm.runInContext(extractFrom(uiSource, 'coverDetailStreamingMeta'), sandbox);
-vm.runInContext(extractFrom(appSource, 'mergeSpotifyState'), sandbox);
+vm.runInContext(extractFrom(rtSource, 'mergeSpotifyState'), sandbox);
 
 const meta = sandbox.coverDetailStreamingMeta;
 const artwork = sandbox.streamingArtworkItem;
