@@ -363,7 +363,9 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     def test_panel_close_always_requests_idempotent_server_stop(self):
         app = (
-            pathlib.Path(__file__).resolve().parents[1] / "static" / "app.js"
+            pathlib.Path(__file__).resolve().parents[1]
+            / "static"
+            / "measurement_spl_calibration.js"
         ).read_text()
         stop_body = app.split("async function stopSplCalibrationOperation", 1)[1].split(
             "async function closeSplCalibration()", 1

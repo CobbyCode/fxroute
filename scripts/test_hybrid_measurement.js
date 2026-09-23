@@ -17,7 +17,8 @@ assert(indexSource.indexOf('hybrid_measurement.js') < indexSource.indexOf('app.j
 assert(flowsSource.includes("formData.append('measurement_role', step.role)"));
 assert(flowsSource.includes("hybrid_constraints: model.constraints"));
 assert(flowsSource.includes('HybridMeasurement.isUsableDirectMeasurement(measurement)'));
-assert(appSource.includes("'Cancel measurement'"));
+const jobSource = fs.readFileSync(path.join(root, 'static', 'measurement_job.js'), 'utf8');
+assert(jobSource.includes("'Cancel measurement'"));
 assert(appSource.includes('cancelHybridWizardMeasurement'));
 assert(flowsSource.includes("processing ? `Processing ${step.channel"));
 assert(indexSource.includes('hybrid-seat-cushion-left'));

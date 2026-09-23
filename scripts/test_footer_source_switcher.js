@@ -240,10 +240,12 @@ vm.createContext(renderSandbox);
 renderSandbox.escapeHtml = (text) => String(text ?? '');
 const selectSigDecl = /let _sourceSelectSignature = null;/.exec(appSource);
 assert.ok(selectSigDecl, 'missing _sourceSelectSignature module state');
+vm.runInContext(fs.readFileSync(path.join(root, 'static', 'measurement_job.js'), 'utf8'), renderSandbox);
+renderSandbox.FXRouteMeasurementJob.init({ getState: () => renderSandbox.state });
+renderSandbox.hasActiveMeasurementJob = (...args) => renderSandbox.FXRouteMeasurementJob.hasActiveMeasurementJob(...args);
 vm.runInContext([
     selectSigDecl[0],
     extractFunction('isStreamingFooterSource'),
-    extractFunction('hasActiveMeasurementJob'),
     extractFunction('nonAppSourceModeActive'),
     extractFunction('shortSourcePairLabel'),
     extractFunction('buildSourceSwitcherEntries'),

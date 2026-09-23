@@ -340,6 +340,50 @@ window.FXRouteMeasurementCapture?.init({
     pollMeasurementJob: (jobId, generation) => pollMeasurementJob(jobId, generation),
     cancelMeasurement: () => cancelMeasurement(),
 });
+window.FXRouteMeasurementJob?.init({
+    getState: () => state,
+    getElements: () => elements,
+    fetch: (...args) => fetch(...args),
+    showToast: (message, kind) => showToast(message, kind),
+    renderMeasurementPanel: () => renderMeasurementPanel(),
+    normalizeMeasurementKind: (kind) => normalizeMeasurementKind(kind),
+    formatMeasurementInputLevelText: (level) => formatMeasurementInputLevelText(level),
+    getMeasurementJobStatus: (job) => getMeasurementJobStatus(job),
+    getMeasurementJobResultMeasurement: (job) => getMeasurementJobResultMeasurement(job),
+    getMeasurementTimingInfo: (measurement) => getMeasurementTimingInfo(measurement),
+    normalizeMeasurementEntry: (measurement, index) => normalizeMeasurementEntry(measurement, index),
+    measurementModeReady: () => measurementModeReady(),
+    measurementRepeatBlockedReason: () => measurementRepeatBlockedReason(),
+    syncMeasurementRepeatNote: (lrActive, reason) => syncMeasurementRepeatNote(lrActive, reason),
+    setMeasurementSweepMenuOpen: (open) => setMeasurementSweepMenuOpen(open),
+    syncAutoSubButton: () => syncAutoSubButton(),
+    syncSpeakerAlignButton: () => syncSpeakerAlignButton(),
+    cancelHybridWizardMeasurement: () => cancelHybridWizardMeasurement(),
+    cancelAutoSubOptimize: () => cancelAutoSubOptimize(),
+    cancelSpeakerAlign: () => cancelSpeakerAlign(),
+    postRuntimeDebugSnapshot: (label, extra) => postRuntimeDebugSnapshot(label, extra),
+    formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
+    sleep: (ms) => sleep(ms),
+});
+window.FXRouteMeasurementSavedActions?.init({
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    showToast: (message, kind) => showToast(message, kind),
+    renderMeasurementPanel: () => renderMeasurementPanel(),
+    fetchMeasurements: () => fetchMeasurements(),
+    formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
+    normalizeMeasurementEntry: (measurement, index) => normalizeMeasurementEntry(measurement, index),
+    getVisibleMeasurementEntries: () => getVisibleMeasurementEntries(),
+    confirm: (message) => window.confirm(message),
+    prompt: (message, defaultValue) => window.prompt(message, defaultValue),
+});
+window.FXRouteMeasurementSplCalibration?.init({
+    getElements: () => elements,
+    fetch: (...args) => fetch(...args),
+    fetchEffects: () => fetchEffects(),
+    openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+    closeModal: (panel) => window.FXRouteModal?.close(panel),
+});
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
 // call sites stay unchanged.
@@ -8091,175 +8135,46 @@ function setupEffectsActions() {
     renderEffectsCombine();
 }
 
-let splCalibrationNoiseActive = false;
-let splCalibrationAutomaticAvailable = false;
-let splCalibrationAutomaticRunning = false;
-let splCalibrationOperationGeneration = 0;
 
 function splCalibrationModeLabel(data) {
-    return data.automatic?.available
-        ? `Automatic SPL measurement: ${data.automatic.microphone_model} detected`
-        : 'Manual SPL measurement';
+    return window.FXRouteMeasurementSplCalibration.splCalibrationModeLabel(data);
 }
+
 
 function resetSplCalibrationNoiseButton() {
-    if (!elements.splCalibrationNoise) return;
-    elements.splCalibrationNoise.disabled = false;
-    elements.splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
+    return window.FXRouteMeasurementSplCalibration.resetSplCalibrationNoiseButton();
 }
+
 
 async function runSplCalibrationNoiseCountdown(generation) {
-    for (const count of [3, 2, 1]) {
-        if (generation !== splCalibrationOperationGeneration) return false;
-        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = `Starting noise: ${count}`;
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    return generation === splCalibrationOperationGeneration;
+    return window.FXRouteMeasurementSplCalibration.runSplCalibrationNoiseCountdown(generation);
 }
+
 
 async function stopSplCalibrationOperation(statusText = '') {
-    const generation = ++splCalibrationOperationGeneration;
-    splCalibrationAutomaticRunning = false;
-    if (elements.splCalibrationNoise) elements.splCalibrationNoise.disabled = true;
-    try {
-        const response = await fetch('/api/measurements/spl-calibration/noise', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: false }),
-        });
-        if (!response.ok) throw new Error('Failed to stop SPL calibration');
-    } finally {
-        if (generation !== splCalibrationOperationGeneration) return;
-        splCalibrationNoiseActive = false;
-        resetSplCalibrationNoiseButton();
-        if (statusText && elements.splCalibrationStatus) {
-            elements.splCalibrationStatus.textContent = statusText;
-        }
-    }
+    return window.FXRouteMeasurementSplCalibration.stopSplCalibrationOperation(statusText);
 }
+
 
 async function openSplCalibration() {
-    elements.splCalibrationPanel?.classList.remove('hidden');
-    window.FXRouteModal?.open(elements.splCalibrationPanel, {
-        initialFocus: elements.splCalibrationNoise,
-        onEscape: () => { void closeSplCalibration(); },
-    });
-    try {
-        const response = await fetch('/api/measurements/spl-calibration');
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || 'Failed to load SPL calibration');
-        splCalibrationNoiseActive = !!data.noise_active;
-        splCalibrationAutomaticAvailable = !!data.automatic?.available;
-        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
-        if (elements.splCalibrationAutoStatus) {
-            elements.splCalibrationAutoStatus.textContent = splCalibrationModeLabel(data);
-        }
-    } catch (error) {
-        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
-    }
+    return window.FXRouteMeasurementSplCalibration.openSplCalibration();
 }
+
 
 async function closeSplCalibration() {
-    await stopSplCalibrationOperation().catch(() => null);
-    elements.splCalibrationPanel?.classList.add('hidden');
-    window.FXRouteModal?.close(elements.splCalibrationPanel);
+    return window.FXRouteMeasurementSplCalibration.closeSplCalibration();
 }
+
 
 async function toggleSplCalibrationNoise() {
-    if (splCalibrationAutomaticRunning) {
-        await stopSplCalibrationOperation('Automatic SPL measurement cancelled.').catch((error) => {
-            if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
-        });
-        return;
-    }
-    const next = !splCalibrationNoiseActive;
-    if (!next) {
-        await stopSplCalibrationOperation('Noise stopped; previous volume state restored.').catch((error) => {
-            if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
-        });
-        return;
-    }
-    const generation = ++splCalibrationOperationGeneration;
-    if (elements.splCalibrationNoise) elements.splCalibrationNoise.disabled = true;
-    try {
-        if (!await runSplCalibrationNoiseCountdown(generation)) return;
-        if (splCalibrationAutomaticAvailable) {
-            splCalibrationAutomaticRunning = true;
-            if (elements.splCalibrationNoise) {
-                elements.splCalibrationNoise.disabled = false;
-                elements.splCalibrationNoise.textContent = 'Cancel measurement';
-            }
-            if (elements.splCalibrationStatus) {
-                elements.splCalibrationStatus.textContent = 'Automatic SPL measurement in progress…';
-            }
-            const response = await fetch('/api/measurements/spl-calibration/automatic', { method: 'POST' });
-            const data = await response.json();
-            if (generation !== splCalibrationOperationGeneration) return;
-            if (!response.ok) throw new Error(data.detail || 'Automatic UMIK SPL measurement failed');
-            if (elements.splCalibrationMeasured) {
-                elements.splCalibrationMeasured.value = Number(data.measured_spl_db).toFixed(1);
-            }
-            splCalibrationNoiseActive = false;
-            if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Start noise';
-            if (elements.splCalibrationStatus) {
-                const adjustment = Number(data.required_adjustment_db);
-                elements.splCalibrationStatus.textContent = `${data.microphone_model} measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · Loudness calibration offset ${adjustment >= 0 ? '+' : ''}${adjustment.toFixed(1)} dB. Save / Apply couples this offset to Loudness only.`;
-            }
-            return;
-        }
-        const response = await fetch('/api/measurements/spl-calibration/noise', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: true }),
-        });
-        const data = await response.json();
-        if (generation !== splCalibrationOperationGeneration) return;
-        if (!response.ok) throw new Error(data.detail || 'Calibration noise failed');
-        splCalibrationNoiseActive = true;
-        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Stop noise';
-        if (elements.splCalibrationStatus) {
-            elements.splCalibrationStatus.textContent = 'Settling… read the C/Slow meter after about 1 second and average for about 3 seconds.';
-        }
-    } catch (error) {
-        if (generation === splCalibrationOperationGeneration && elements.splCalibrationStatus) {
-            elements.splCalibrationStatus.textContent = error.message;
-        }
-    } finally {
-        if (generation === splCalibrationOperationGeneration) {
-            splCalibrationAutomaticRunning = false;
-            resetSplCalibrationNoiseButton();
-        }
-    }
+    return window.FXRouteMeasurementSplCalibration.toggleSplCalibrationNoise();
 }
 
+
 async function saveSplCalibration() {
-    const measured = Number(elements.splCalibrationMeasured?.value);
-    if (!Number.isFinite(measured)) {
-        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = 'Enter the measured C/Slow SPL value.';
-        return;
-    }
-    try {
-        const response = await fetch('/api/measurements/spl-calibration/apply', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ measured_spl_db: measured }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || 'Failed to apply SPL calibration');
-        splCalibrationNoiseActive = false;
-        if (elements.splCalibrationNoise) elements.splCalibrationNoise.textContent = 'Start noise';
-        if (elements.splCalibrationStatus) {
-            const adjustment = Number(data.required_adjustment_db);
-            const sign = adjustment >= 0 ? '+' : '';
-            elements.splCalibrationStatus.textContent = data.calibrated
-                ? `Measured ${measured.toFixed(1)} dB SPL · Loudness calibration offset ${sign}${adjustment.toFixed(1)} dB · calibrated.`
-                : `Measured ${measured.toFixed(1)} dB SPL · Loudness calibration offset ${sign}${adjustment.toFixed(1)} dB. The offset is coupled to Loudness only; playback with Loudness off is unchanged.`;
-        }
-        await fetchEffects();
-    } catch (error) {
-        if (elements.splCalibrationStatus) elements.splCalibrationStatus.textContent = error.message;
-    }
+    return window.FXRouteMeasurementSplCalibration.saveSplCalibration();
 }
+
 async function startDownload(urlOverride = null) {
     const url = (urlOverride || elements.downloadUrl.value || '').trim();
     if (!url) {
@@ -9975,21 +9890,14 @@ function normalizeMeasurementKind(kind) {
 }
 
 function getActiveMeasurementKind() {
-    const measurementState = state.measurement || {};
-    if (measurementState.autoSubInFlight) return 'auto_sub';
-    if (measurementState.speakerAlignInFlight) return 'speaker_align';
-    if (measurementState.hybridWizard?.running) return 'hybrid';
-    const normalized = normalizeMeasurementKind(measurementState.activeMeasurementKind);
-    if (normalized && measurementState.activeJobId) return normalized;
-    if (measurementState.repeatJobActive && measurementState.activeJobId) return 'lr_repeat';
-    if (measurementState.activeJobId) return 'single';
-    return '';
+    return window.FXRouteMeasurementJob.getActiveMeasurementKind();
 }
 
+
 function hasActiveMeasurementJob() {
-    const measurementState = state.measurement || {};
-    return !!(measurementState.activeJobId || measurementState.autoSubInFlight || measurementState.speakerAlignInFlight || measurementState.hybridWizard?.running);
+    return window.FXRouteMeasurementJob.hasActiveMeasurementJob();
 }
+
 
 function getMeasurementJobResultMeasurement(job = {}) {
     return MeasurementUI.getMeasurementJobResultMeasurement(job);
@@ -10000,58 +9908,19 @@ function formatMeasurementInputLevelText(inputLevel = {}) {
 }
 
 function formatMeasurementJobStatusText(job = {}, fallback = 'Measurement running…') {
-    const message = String(job.message || fallback);
-    const levelText = formatMeasurementInputLevelText(job.input_level);
-    const isLrRepeat = job.job_kind === 'lr-repeat' || !!state.measurement?.repeatJobActive;
-    if (!isLrRepeat || !levelText || /\b(CLIP|dBFS)\b/.test(message)) return message;
-    return `${message} · ${levelText}`;
+    return window.FXRouteMeasurementJob.formatMeasurementJobStatusText(job, fallback);
 }
+
 
 function syncMeasurementSweepButton() {
-    if (!elements.measurementSweepToggleBtn) return;
-    const measurementState = state.measurement || {};
-    const calibrationBusy = measurementState.calibrationUpdating || measurementState.calibrationDeleting;
-    const measurementActive = !!measurementState.startInFlight || hasActiveMeasurementJob();
-    const hybridWizard = measurementState.hybridWizard || {};
-    const hybridButtonHost = elements.measurementHybridHeaderActions;
-    const sweepMenuHost = elements.measurementSweepMenu?.parentElement;
-    const shouldShowHybridCancel = !!hybridWizard.running && !!hybridWizard.open;
-
-    if (shouldShowHybridCancel && hybridButtonHost && !hybridButtonHost.contains(elements.measurementSweepToggleBtn)) {
-        hybridButtonHost.append(elements.measurementSweepToggleBtn);
-    } else if (!shouldShowHybridCancel && sweepMenuHost && !sweepMenuHost.contains(elements.measurementSweepToggleBtn)) {
-        sweepMenuHost.insertBefore(elements.measurementSweepToggleBtn, elements.measurementSweepMenu);
-    }
-
-    elements.measurementSweepToggleBtn.disabled = !!calibrationBusy;
-    elements.measurementSweepToggleBtn.textContent = measurementActive ? 'Cancel' : 'Start Sweep';
-    elements.measurementSweepToggleBtn.setAttribute('aria-expanded', measurementActive ? 'false' : (elements.measurementSweepMenu?.classList.contains('hidden') ? 'false' : 'true'));
-    if (measurementActive) setMeasurementSweepMenuOpen(false);
+    return window.FXRouteMeasurementJob.syncMeasurementSweepButton();
 }
+
 
 function syncMeasurementStartButtonFallback() {
-    syncMeasurementSweepButton();
-    const measurementState = state.measurement || {};
-    const activeKind = getActiveMeasurementKind();
-    const activeJobRunning = hasActiveMeasurementJob();
-    const lrActive = activeKind === 'lr_repeat';
-    const calibrationBusy = measurementState.calibrationUpdating || measurementState.calibrationDeleting;
-    const repeatBlockedReason = measurementRepeatBlockedReason();
-    if (elements.measurementRepeatStartBtn) {
-        elements.measurementRepeatStartBtn.disabled = repeatBlockedReason && !lrActive
-            ? true
-            : (calibrationBusy
-                ? true
-                : (activeJobRunning ? !lrActive
-                : (measurementState.startInFlight || measurementState.inputsLoading || !measurementModeReady())));
-        elements.measurementRepeatStartBtn.textContent = lrActive
-            ? 'Cancel measurement'
-            : 'Start LR Repeat';
-    }
-    syncMeasurementRepeatNote(lrActive, repeatBlockedReason);
-    syncAutoSubButton();
-    syncSpeakerAlignButton();
+    return window.FXRouteMeasurementJob.syncMeasurementStartButtonFallback();
 }
+
 
 function syncSpeakerAlignButton() {
     return MeasurementFlows.syncSpeakerAlignButton();
@@ -10106,21 +9975,9 @@ async function handleAutoSubResult(job) {
 }
 
 function renderMeasurementPanelDefensively(context = 'measurement render') {
-    try {
-        renderMeasurementPanel();
-        return true;
-    } catch (error) {
-        console.error(`${context} failed`, error);
-        state.measurement.activeJobId = '';
-        state.measurement.startInFlight = false;
-        state.measurement.statusText = error?.message
-            ? `Measurement finished, but the result could not be rendered: ${error.message}`
-            : 'Measurement finished, but the result could not be rendered.';
-        syncMeasurementStartButtonFallback();
-        showToast(state.measurement.statusText, 'error');
-        return false;
-    }
+    return window.FXRouteMeasurementJob.renderMeasurementPanelDefensively(context);
 }
+
 
 
 
@@ -10197,363 +10054,39 @@ async function startLrRepeat() {
 
 
 async function cancelMeasurement() {
-    const jobId = String(state.measurement.activeJobId || '');
-    if (!jobId) return;
-    const jobGeneration = state.measurement.jobGeneration;
-    state.measurement.statusText = 'Cancelling measurement…';
-    renderMeasurementPanel();
-    try {
-        const resp = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to cancel measurement'));
-        if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== jobId) return;
-        state.measurement.statusText = String(data.job?.message || 'Measurement cancelled.');
-        if (MEASUREMENT_JOB_CANCELLED_STATES.has(getMeasurementJobStatus(data.job || {}))) {
-            state.measurement.activeJobId = '';
-            state.measurement.startInFlight = false;
-            state.measurement.activeMeasurementKind = '';
-            state.measurement.cancelRequested = false;
-            state.measurement.repeatJobActive = false;
-            syncMeasurementStartButtonFallback();
-        }
-    } catch (error) {
-        if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== jobId) return;
-        console.error('cancelMeasurement failed', error);
-        state.measurement.statusText = error.message || 'Failed to cancel measurement';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        renderMeasurementPanelDefensively('measurement cancel render');
-    }
+    return window.FXRouteMeasurementJob.cancelMeasurement();
 }
+
 
 function requestMeasurementCancellation() {
-    const activeKind = getActiveMeasurementKind();
-    if (activeKind === 'hybrid') return cancelHybridWizardMeasurement();
-    if (activeKind === 'auto_sub') return cancelAutoSubOptimize();
-    if (activeKind === 'speaker_align') return cancelSpeakerAlign();
-    if (state.measurement.activeJobId) return cancelMeasurement();
-    if (state.measurement.startInFlight) {
-        state.measurement.cancelRequested = true;
-        state.measurement.statusText = 'Cancelling measurement…';
-        renderMeasurementPanel();
-    }
-    return Promise.resolve();
+    return window.FXRouteMeasurementJob.requestMeasurementCancellation();
 }
+
 
 async function pollMeasurementJob(jobId, jobGeneration = state.measurement.jobGeneration) {
-    if (!jobId) return;
-    for (let attempt = 0; attempt < 360; attempt += 1) {
-        if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== String(jobId)) return;
-        const resp = await fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`);
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to fetch measurement job'));
-        const job = data.job || {};
-        if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== String(jobId)) return;
-        const jobStatus = getMeasurementJobStatus(job);
-        state.measurement.statusText = formatMeasurementJobStatusText(job, state.measurement.statusText || 'Measurement running…');
-        if (MEASUREMENT_JOB_SUCCESS_STATES.has(jobStatus)) {
-            state.measurement.statusText = String(job.message || 'Measurement finished.');
-            state.measurement.activeJobId = '';
-            state.measurement.startInFlight = false;
-            state.measurement.cancelRequested = false;
-            const repeatMeasurements = Array.isArray(job?.result?.measurements) ? job.result.measurements : [];
-            state.measurement.activeMeasurementKind = '';
-            state.measurement.repeatJobActive = false;
-            syncMeasurementStartButtonFallback();
-            renderMeasurementPanelDefensively('measurement completion state sync');
-            await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
-                jobId,
-                jobStatus,
-                measurementKind: repeatMeasurements.length ? 'lr-repeat' : 'single',
-            });
-            if (state.measurement.jobGeneration !== jobGeneration) return;
-            if (repeatMeasurements.length) {
-                state.measurement.pendingRepeatMeasurements = repeatMeasurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index));
-                state.measurement.currentMeasurement = state.measurement.pendingRepeatMeasurements[0] || null;
-                state.measurement.currentMeasurementName = String(job?.result?.base_name || '').trim();
-                state.measurement.currentMeasurementSaved = false;
-                state.measurement.pendingRepeatMeasurements.forEach((measurement) => {
-                    state.measurement.reviewVisibilityById[measurement.id] = !!measurement.review_traces?.length;
-                });
-                state.measurement.statusText = String(job.message || 'L/R repeat finished.');
-                renderMeasurementPanelDefensively('L/R repeat completion render');
-                showToast('L/R repeat finished. Review and save when ready.', 'success');
-                return;
-            }
-            const resultMeasurement = getMeasurementJobResultMeasurement(job);
-            if (resultMeasurement) {
-                try {
-                    state.measurement.currentMeasurement = normalizeMeasurementEntry(resultMeasurement, 0);
-                    state.measurement.currentMeasurementName = state.measurement.currentMeasurement.name || '';
-                    state.measurement.currentMeasurementSaved = false;
-                    state.measurement.reviewVisibilityById[state.measurement.currentMeasurement.id] = !!state.measurement.currentMeasurement.review_traces?.length;
-                    const timingInfo = getMeasurementTimingInfo(state.measurement.currentMeasurement);
-                    if (timingInfo.line) state.measurement.statusText = timingInfo.line;
-                } catch (error) {
-                    console.error('measurement result normalization failed', error, job);
-                    state.measurement.statusText = error?.message
-                        ? `Measurement finished, but the result could not be displayed: ${error.message}`
-                        : 'Measurement finished, but the result could not be displayed.';
-                    renderMeasurementPanelDefensively('measurement completion render after normalization failure');
-                    showToast(state.measurement.statusText, 'error');
-                    return;
-                }
-            } else {
-                state.measurement.statusText = String(job.message || 'Measurement finished, but no result data was returned.');
-            }
-            const rendered = renderMeasurementPanelDefensively('measurement completion render');
-            if (resultMeasurement && rendered) showToast('Measurement finished', 'success');
-            if (!resultMeasurement) showToast(state.measurement.statusText, 'warning');
-            return;
-        }
-        if (MEASUREMENT_JOB_FAILED_STATES.has(jobStatus)) {
-            state.measurement.activeJobId = '';
-            state.measurement.startInFlight = false;
-            state.measurement.cancelRequested = false;
-            state.measurement.activeMeasurementKind = '';
-            state.measurement.repeatJobActive = false;
-            syncMeasurementStartButtonFallback();
-            renderMeasurementPanelDefensively('measurement failure state sync');
-            await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
-                jobId,
-                jobStatus,
-                failed: true,
-            });
-            if (state.measurement.jobGeneration !== jobGeneration) return;
-            throw new Error(formatTransitionErrorDetail(job.error?.detail, job.message || 'Measurement failed'));
-        }
-        if (MEASUREMENT_JOB_CANCELLED_STATES.has(jobStatus)) {
-            state.measurement.activeJobId = '';
-            state.measurement.startInFlight = false;
-            state.measurement.cancelRequested = false;
-            state.measurement.activeMeasurementKind = '';
-            state.measurement.repeatJobActive = false;
-            state.measurement.statusText = String(job.message || 'Measurement cancelled.');
-            renderMeasurementPanelDefensively('measurement cancellation state sync');
-            await postRuntimeDebugSnapshot('ui-directly-after-measurement-end', {
-                jobId,
-                jobStatus,
-                cancelled: true,
-            });
-            if (state.measurement.jobGeneration !== jobGeneration) return;
-            renderMeasurementPanelDefensively('measurement cancellation render');
-            showToast('Measurement cancelled', 'success');
-            return;
-        }
-        state.measurement.activeJobId = String(job.id || jobId);
-        renderMeasurementPanelDefensively('measurement polling render');
-        await sleep(800);
-    }
-    if (state.measurement.jobGeneration !== jobGeneration || String(state.measurement.activeJobId || '') !== String(jobId)) return;
-    state.measurement.activeJobId = '';
-    state.measurement.startInFlight = false;
-    state.measurement.cancelRequested = false;
-    state.measurement.activeMeasurementKind = '';
-    state.measurement.repeatJobActive = false;
-    syncMeasurementStartButtonFallback();
-    throw new Error('Measurement job timed out while waiting for completion');
+    return window.FXRouteMeasurementJob.pollMeasurementJob(jobId, jobGeneration);
 }
+
 
 async function saveCurrentMeasurement() {
-    const current = state.measurement.currentMeasurement;
-    const autoSubMeasurements = Array.isArray(state.measurement.autoSubMeasurements)
-        ? state.measurement.autoSubMeasurements
-        : [];
-    const hasAutoSub = autoSubMeasurements.length > 0;
-    const hasPending = !hasAutoSub && current && !state.measurement.currentMeasurementSaved;
-    if (!hasAutoSub && !hasPending) return;
-    if (state.measurement.saveInFlight) return;
-
-    const repeatMeasurements = Array.isArray(state.measurement.pendingRepeatMeasurements)
-        ? state.measurement.pendingRepeatMeasurements
-        : [];
-    const baseName = hasAutoSub
-        ? ((state.measurement.currentMeasurementName || '').trim() || 'AutoSub')
-        : ((state.measurement.currentMeasurementName || '').trim() || 'L/R Repeat');
-    let payload;
-    if (hasAutoSub) {
-        // Save AutoSub measurements: split each entry by its channel traces
-        const measurements = [];
-        autoSubMeasurements.forEach((measurement) => {
-            const traces = Array.isArray(measurement.traces) ? measurement.traces : [];
-            traces.forEach((trace) => {
-                const ch = String(trace.role || trace.channel || '').toLowerCase() === 'right' ? 'right' : 'left';
-                const traceLabel = String(trace.label || measurement.name || 'AutoSub');
-                const suffix = traceLabel.replace(/^AutoSub\s+/, '');
-                const name = suffix ? `${baseName} ${suffix}` : baseName;
-                measurements.push({
-                    id: `${measurement.id}-${ch}`,
-                    name,
-                    channel: ch,
-                    traces: [{...trace, channel: ch}],
-                    measurement_kind: measurement.measurement_kind || 'auto_sub',
-                    autosub_meta: measurement.autosub_meta || null,
-                });
-            });
-        });
-        payload = { measurements };
-    } else if (repeatMeasurements.length) {
-        payload = {
-            measurements: repeatMeasurements.map((measurement) => {
-                const item = JSON.parse(JSON.stringify(measurement));
-                item.name = `${baseName} · ${String(item.channel || '').toLowerCase() === 'right' ? 'R' : 'L'}`;
-                return item;
-            }),
-        };
-    } else {
-        payload = JSON.parse(JSON.stringify(current));
-        payload.name = (state.measurement.currentMeasurementName || current.name || '').trim() || current.name || 'Measurement';
-    }
-
-    state.measurement.saveInFlight = true;
-    state.measurement.statusText = 'Saving current measurement…';
-    renderMeasurementPanel();
-    try {
-        const resp = await fetch('/api/measurements/save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save measurement'));
-        const savedMeasurements = Array.isArray(data.measurements)
-            ? data.measurements.map((measurement, index) => normalizeMeasurementEntry(measurement, index))
-            : [normalizeMeasurementEntry(data.measurement || payload, 0)];
-        const saved = savedMeasurements[0];
-        savedMeasurements.forEach((measurement) => {
-            state.measurement.visibilityById[measurement.id] = true;
-            state.measurement.reviewVisibilityById[measurement.id] = false;
-        });
-        state.measurement.currentMeasurement = null;
-        state.measurement.pendingRepeatMeasurements = [];
-        state.measurement.autoSubMeasurements = [];
-        state.measurement.currentMeasurementSaved = false;
-        state.measurement.currentMeasurementName = '';
-        state.measurement.statusText = 'Measurement saved.';
-        await fetchMeasurements();
-        showToast('Measurement saved', 'success');
-    } catch (error) {
-        console.error('saveCurrentMeasurement failed', {
-            message: error?.message || String(error),
-            name: error?.name || '',
-            error,
-        });
-        state.measurement.statusText = error.message || 'Failed to save measurement';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.saveInFlight = false;
-        renderMeasurementPanel();
-    }
+    return window.FXRouteMeasurementSavedActions.saveCurrentMeasurement();
 }
+
 
 async function deleteMeasurement(measurementId, measurementName = 'Measurement') {
-    if (!measurementId || state.measurement.saveInFlight || state.measurement.startInFlight) return;
-    if (!window.confirm(`Delete saved measurement \"${measurementName}\"?`)) return;
-    state.measurement.saveInFlight = true;
-    state.measurement.statusText = 'Deleting saved measurement…';
-    renderMeasurementPanel();
-    try {
-        const resp = await fetch(`/api/measurements/${encodeURIComponent(measurementId)}`, { method: 'DELETE' });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to delete measurement'));
-        delete state.measurement.visibilityById[measurementId];
-        delete state.measurement.reviewVisibilityById[measurementId];
-        state.measurement.statusText = 'Saved runs updated.';
-        await fetchMeasurements();
-    } catch (error) {
-        console.error('deleteMeasurement failed', error);
-        state.measurement.statusText = error.message || 'Failed to delete measurement';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.saveInFlight = false;
-        renderMeasurementPanel();
-    }
+    return window.FXRouteMeasurementSavedActions.deleteMeasurement(measurementId, measurementName);
 }
+
 
 async function deleteSelectedMeasurements() {
-    if (state.measurement.saveInFlight || state.measurement.startInFlight) return;
-    const measurements = getVisibleMeasurementEntries();
-    if (!measurements.length) {
-        showToast('No saved measurements selected', 'warning');
-        return;
-    }
-    const label = measurements.length === 1 ? `saved measurement \"${measurements[0].name}\"` : `${measurements.length} saved measurements`;
-    if (!window.confirm(`Delete ${label}?`)) return;
-    state.measurement.saveInFlight = true;
-    state.measurement.statusText = `Deleting ${measurements.length === 1 ? 'saved measurement' : 'saved measurements'}…`;
-    renderMeasurementPanel();
-    let deletedCount = 0;
-    try {
-        for (const measurement of measurements) {
-            const resp = await fetch(`/api/measurements/${encodeURIComponent(measurement.id)}`, { method: 'DELETE' });
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, `Failed to delete ${measurement.name}`));
-            delete state.measurement.visibilityById[measurement.id];
-            delete state.measurement.reviewVisibilityById[measurement.id];
-            deletedCount += 1;
-        }
-        state.measurement.statusText = 'Saved runs updated.';
-        await fetchMeasurements();
-    } catch (error) {
-        console.error('deleteSelectedMeasurements failed', error);
-        state.measurement.statusText = error.message || 'Failed to delete selected measurements';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.saveInFlight = false;
-        renderMeasurementPanel();
-    }
+    return window.FXRouteMeasurementSavedActions.deleteSelectedMeasurements();
 }
+
 
 async function mergeSelectedMeasurements() {
-    if (state.measurement.saveInFlight || state.measurement.startInFlight) return;
-    const measurements = getVisibleMeasurementEntries();
-    if (measurements.length < 2) {
-        showToast('Select at least two saved measurements to merge', 'warning');
-        return;
-    }
-    const defaultName = `Merged ${measurements.length} measurements`;
-    const requestedName = window.prompt('Name for merged measurement file:', defaultName);
-    if (requestedName === null) return;
-    const name = requestedName.trim() || defaultName;
-
-    state.measurement.saveInFlight = true;
-    state.measurement.statusText = `Merging ${measurements.length} saved measurements…`;
-    renderMeasurementPanel();
-    try {
-        const resp = await fetch('/api/measurements/merge', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name,
-                measurementIds: measurements.map(measurement => measurement.id),
-            }),
-        });
-        const responseText = await resp.text();
-        let data = {};
-        try {
-            data = responseText ? JSON.parse(responseText) : {};
-        } catch (_error) {
-            data = {};
-        }
-        if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, responseText.trim() || 'Failed to merge selected measurements'));
-        const merged = normalizeMeasurementEntry(data.measurement || {}, 0);
-        if (merged.id) {
-            state.measurement.visibilityById[merged.id] = true;
-            state.measurement.reviewVisibilityById[merged.id] = false;
-        }
-        state.measurement.statusText = 'Merged measurement saved.';
-        await fetchMeasurements();
-        if (merged.id) state.measurement.visibilityById[merged.id] = true;
-        showToast(`Created merged measurement: ${merged.name || name}`, 'success');
-    } catch (error) {
-        console.error('mergeSelectedMeasurements failed', error);
-        state.measurement.statusText = error.message || 'Failed to merge selected measurements';
-        showToast(state.measurement.statusText, 'error');
-    } finally {
-        state.measurement.saveInFlight = false;
-        renderMeasurementPanel();
-    }
+    return window.FXRouteMeasurementSavedActions.mergeSelectedMeasurements();
 }
+
 
 function renderMeasurementPanel() {
     if (!elements.measurementSummary || !elements.measurementList) return;
