@@ -3,7 +3,7 @@
 
 // Contract: measurement start payloads carry consistent channel fields.
 //
-// - normalizeMeasurementInputChannelSelections (app.js) clears the
+// - normalizeMeasurementInputChannelSelections (measurement_setup.js) clears the
 //   reference channel when it equals the mic channel, so mic == reference
 //   can never reach any start endpoint through the UI. All four start
 //   paths (single, L/R repeat, hybrid, auto-sub) run it before reading
@@ -12,8 +12,7 @@
 //   the reference field follows the reference warning, calibration
 //   follows the file-or-ref rule shared with the other paths.
 //
-// Both units are executed from their real sources (balanced-brace
-// extraction for the app.js global, vm-loaded flows module).
+// Both units are executed from their real modules.
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -21,64 +20,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const root = path.join(__dirname, '..');
-const appSource = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
-
-function extractGlobalFunction(source, name) {
-    const marker = `\nfunction ${name}(`;
-    const start = source.indexOf(marker);
-    assert.notStrictEqual(start, -1, `${name} must exist in static/app.js`);
-    let i = source.indexOf('(', start);
-    let parens = 0;
-    let quote = null;
-    for (; i < source.length; i++) {
-        const ch = source[i];
-        if (quote) {
-            if (ch === '\\') i++;
-            else if (ch === quote) quote = null;
-            continue;
-        }
-        if (ch === '"' || ch === "'" || ch === '`') quote = ch;
-        else if (ch === '(') parens++;
-        else if (ch === ')') {
-            parens--;
-            if (parens === 0) break;
-        }
-    }
-    i = source.indexOf('{', i);
-    let depth = 0;
-    quote = null;
-    let lineComment = false;
-    let blockComment = false;
-    for (; i < source.length; i++) {
-        const ch = source[i];
-        const next = source[i + 1];
-        if (lineComment) {
-            if (ch === '\n') lineComment = false;
-            continue;
-        }
-        if (blockComment) {
-            if (ch === '*' && next === '/') {
-                blockComment = false;
-                i++;
-            }
-            continue;
-        }
-        if (quote) {
-            if (ch === '\\') i++;
-            else if (ch === quote) quote = null;
-            continue;
-        }
-        if (ch === '/' && next === '/') { lineComment = true; i++; continue; }
-        if (ch === '/' && next === '*') { blockComment = true; i++; continue; }
-        if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
-        if (ch === '{') depth++;
-        if (ch === '}') {
-            depth--;
-            if (depth === 0) return source.slice(start + 1, i + 1);
-        }
-    }
-    throw new Error(`unbalanced braces in ${name}`);
-}
+const measurementSetup = require('../static/measurement_setup.js');
 
 function formEntries(formData) {
     const entries = {};
@@ -91,17 +33,11 @@ function formEntries(formData) {
 
 // --- Part 1: the shared channel-normalization choke point ---------------
 function runNormalize(state, channels) {
-    const sandbox = {
-        state: { measurement: state },
-        getSelectedMeasurementInput: () => (channels == null ? null : { channels }),
-    };
-    vm.createContext(sandbox);
-    vm.runInContext(
-        extractGlobalFunction(appSource, 'normalizeMeasurementInputChannelSelections'),
-        sandbox
-    );
-    vm.runInContext('normalizeMeasurementInputChannelSelections()', sandbox);
-    return sandbox.state.measurement;
+    const measurement = { ...state, inputs: channels == null ? [] : [{ id: 'test-input', channels }],
+        selectedInputId: channels == null ? '' : 'test-input' };
+    measurementSetup.init({ getState: () => ({ measurement }) });
+    measurementSetup.normalizeMeasurementInputChannelSelections();
+    return measurement;
 }
 
 let normalized = runNormalize(
@@ -219,22 +155,13 @@ assert.strictEqual(entries.channel, 'left');
 console.log('hybrid payload selected area: ok');
 
 // --- Part 3: per-side reference fields -----------------------------------
-function runAppendReferenceFields(state, channelCount, warning) {
-    const sandbox = {
-        state: { measurement: state },
-        FormData,
-        normalizeMeasurementInputChannelSelections: () => {},
-        getSelectedMeasurementInputChannelCount: () => channelCount,
-        getMeasurementReferenceWarning: () => warning,
-    };
-    vm.createContext(sandbox);
-    vm.runInContext(
-        extractGlobalFunction(appSource, 'appendMeasurementReferenceFields'),
-        sandbox
-    );
-    sandbox.fd = new FormData();
-    vm.runInContext('appendMeasurementReferenceFields(fd)', sandbox);
-    return formEntries(sandbox.fd);
+function runAppendReferenceFields(state, channelCount) {
+    const measurement = { ...state, inputs: channelCount == null ? [] : [{ id: 'test-input', channels: channelCount }],
+        selectedInputId: channelCount == null ? '' : 'test-input' };
+    measurementSetup.init({ getState: () => ({ measurement }) });
+    const formData = new FormData();
+    measurementSetup.appendMeasurementReferenceFields(formData);
+    return formEntries(formData);
 }
 
 let referenceEntries = runAppendReferenceFields(
@@ -245,7 +172,6 @@ let referenceEntries = runAppendReferenceFields(
         selectedReferenceInputChannelRight: '3',
     },
     4,
-    ''
 );
 assert.deepStrictEqual(referenceEntries, {
     reference_input_channel_left: '2',
@@ -262,27 +188,24 @@ referenceEntries = runAppendReferenceFields(
         selectedReferenceInputChannelRight: '2',
     },
     2,
-    ''
 );
 assert.deepStrictEqual(referenceEntries, { reference_input_channel: '2' });
 console.log('2-channel reference payload: ok');
 
-// The warning is an injected dependency here; the split L/R fields must still
-// go out unchanged while the shared field is gated. app.js only ever produces
-// the shared-reference message (a split conflict is cleared beforehand).
+// Before the input topology arrives, a conflicting shared reference is gated
+// without changing stored split settings or inventing split payload fields.
 referenceEntries = runAppendReferenceFields(
     {
-        selectedMicInputChannel: '1',
+        selectedMicInputChannel: '2',
         selectedReferenceInputChannel: '2',
-        selectedReferenceInputChannelLeft: '2',
+        selectedReferenceInputChannelLeft: '3',
         selectedReferenceInputChannelRight: '3',
     },
-    4,
-    'Electrical reference disabled'
+    null,
 );
 assert.strictEqual(referenceEntries.reference_input_channel, '', 'warning gates the shared field');
-assert.strictEqual(referenceEntries.reference_input_channel_left, '2');
-assert.strictEqual(referenceEntries.reference_input_channel_right, '3');
-console.log('split reference payload gated: ok');
+assert.strictEqual(referenceEntries.reference_input_channel_left, undefined);
+assert.strictEqual(referenceEntries.reference_input_channel_right, undefined);
+console.log('unknown-topology reference payload gated: ok');
 
 console.log('measurement payload contracts: ok');

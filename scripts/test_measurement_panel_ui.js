@@ -118,4 +118,27 @@ assert.equal(elements.measurementInputRefreshBtn.textContent, 'Detecting…');
 assert.equal(elements.measurementInputRefreshBtn.disabled, true);
 assert.equal(elements.measurementReferenceInputChannelRightSelect.disabled, true);
 
+const navigationListeners = [];
+const navigationDocument = { activeElement: null };
+const chips = Array.from({ length: 3 }, () => ({
+    disabled: false,
+    focus(options) { navigationDocument.activeElement = this; assert.deepEqual(options, { preventScroll: true }); },
+}));
+chips[1].disabled = true;
+const chipRow = {
+    addEventListener: (type, handler) => { assert.equal(type, 'keydown'); navigationListeners.push(handler); },
+    querySelectorAll: (selector) => { assert.equal(selector, '[data-measurement-view]'); return chips; },
+};
+panel.init({ getDocument: () => navigationDocument });
+panel.bindChipArrowKeyNavigation(chipRow, '[data-measurement-view]');
+panel.bindChipArrowKeyNavigation(chipRow, '[data-measurement-view]');
+assert.equal(navigationListeners.length, 1);
+navigationDocument.activeElement = chips[2];
+let prevented = 0;
+navigationListeners[0]({ key: 'ArrowRight', preventDefault: () => prevented++ });
+assert.equal(navigationDocument.activeElement, chips[0]);
+navigationListeners[0]({ key: 'ArrowLeft', preventDefault: () => prevented++ });
+assert.equal(navigationDocument.activeElement, chips[2]);
+assert.equal(prevented, 2);
+
 console.log('measurement panel setup/inputs rendering: ok');

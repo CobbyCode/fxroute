@@ -156,4 +156,48 @@ assert.match(elements.measurementConvolverSummary.innerHTML, /Creating convolver
 assert.match(elements.measurementConvolverSummary.innerHTML, /timing offset exceeds safety limit/);
 assert.equal(elements.measurementConvolverTakeBothBtn.disabled, true);
 
+// Delegated handlers are attached once to stable chip/editor containers.
+const listeners = {};
+for (const name of ['measurementPeqChips', 'measurementCustomHouseCurveChips',
+    'measurementPeqEditor', 'measurementCustomHouseCurveEditor']) {
+    listeners[name] = {};
+    elements[name].addEventListener = (type, handler) => {
+        (listeners[name][type] ||= []).push(handler);
+    };
+}
+const eventCalls = [];
+editors.init({
+    getMeasurementPeqActiveFilter: () => peq.filters[0],
+    updateMeasurementPeqFilter: (id, patch) => eventCalls.push(['peq', id, patch]),
+    updateCustomHouseCurvePoint: (id, patch) => eventCalls.push(['curve', id, patch]),
+    stepMeasurementPeqGain: (id, direction, step) => {
+        eventCalls.push(['step', id, direction, step]);
+        return 2.7;
+    },
+    renderMeasurementPanel: () => eventCalls.push('render'),
+    scheduleMeasurementGraphRender: () => eventCalls.push('graph'),
+    focusMeasurementPeqPanelContext: () => eventCalls.push('focus'),
+});
+editors.bindMeasurementEditorDelegation();
+editors.bindMeasurementEditorDelegation();
+assert.equal(listeners.measurementPeqChips.click.length, 1);
+assert.equal(listeners.measurementCustomHouseCurveChips.click.length, 1);
+assert.deepEqual(Object.keys(listeners.measurementPeqEditor).sort(), ['change', 'click', 'input', 'keydown']);
+const peqInput = { dataset: { measurementPeqField: 'gainDb' }, value: '2.5',
+    closest: () => peqInput };
+listeners.measurementPeqEditor.input[0]({ target: peqInput });
+assert.deepEqual(eventCalls, [['peq', 'filter-1', { gainDb: 2.5 }], 'graph']);
+const curveInput = { dataset: { customHouseCurveField: 'gainDb' }, value: '1.2',
+    closest: () => curveInput };
+listeners.measurementCustomHouseCurveEditor.change[0]({ target: curveInput });
+assert.deepEqual(eventCalls.slice(-3), [['curve', 'point-1', { gainDb: 1.2 }], 'render', 'graph']);
+const gainInput = { step: '0.1', value: '' };
+elements.measurementPeqEditor.querySelector = (selector) => selector === '#measurement-peq-gain' ? gainInput : null;
+const stepButton = { dataset: { measurementPeqGainStep: '1' } };
+listeners.measurementPeqEditor.click[0]({ target: {
+    closest: (selector) => selector.startsWith('[data-measurement-peq-frequency-step]') ? stepButton : null,
+} });
+assert.equal(gainInput.value, '2.7');
+assert.deepEqual(eventCalls.slice(-3), [['step', 'filter-1', 1, 0.1], 'graph', 'focus']);
+
 console.log('measurement editor/convolver rendering: ok');

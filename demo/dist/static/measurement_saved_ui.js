@@ -16,6 +16,10 @@
         getOutputSystemModule: () => null,
         getCompactDisplayName: (name) => String(name || ''),
         escapeHtml: (value) => String(value == null ? '' : value),
+        getDetailsElementType: () => root.HTMLDetailsElement,
+        renderMeasurementPanel: () => {},
+        mergeSelectedMeasurements: () => {},
+        deleteSelectedMeasurements: () => {},
     };
 
     function init(overrides) {
@@ -116,5 +120,55 @@
         return (measurementState.measurements || []).filter(measurement => measurement.id !== current?.id);
     }
 
-    return { init, measurementAreaBadge, renderMeasurementPanelSavedListSection, getSavedListMeasurements };
+    let savedListDelegationBound = false;
+    function bindMeasurementSavedListDelegation() {
+        if (savedListDelegationBound) return;
+        savedListDelegationBound = true;
+        const list = deps.getElements().measurementList;
+        // <details> toggle does not bubble; capture phase still reaches ancestors.
+        list?.addEventListener('toggle', (event) => {
+            const details = event.target;
+            if (!(details instanceof (deps.getDetailsElementType()))) return;
+            deps.getState().measurement.savedGroupOpen = !!details.open;
+            const summary = details.querySelector('summary');
+            if (summary) {
+                summary.textContent = `${deps.getState().measurement.savedGroupOpen ? 'Close saved' : 'Open saved'} (${getSavedListMeasurements().length})`;
+            }
+        }, true);
+        list?.addEventListener('change', (event) => {
+            const input = event.target;
+            if (input.matches('[data-measurement-toggle]')) {
+                deps.getState().measurement.visibilityById[input.dataset.measurementToggle] = !!input.checked;
+                deps.getState().measurement.savedGroupOpen = true;
+                deps.renderMeasurementPanel();
+                return;
+            }
+            if (input.matches('[data-measurement-select-all]')) {
+                getSavedListMeasurements().forEach((measurement) => {
+                    deps.getState().measurement.visibilityById[measurement.id] = !!input.checked;
+                });
+                deps.getState().measurement.savedGroupOpen = true;
+                deps.renderMeasurementPanel();
+            }
+        });
+        list?.addEventListener('click', (event) => {
+            const mergeButton = event.target.closest('[data-measurement-merge-selected]');
+            if (mergeButton) {
+                deps.mergeSelectedMeasurements();
+                return;
+            }
+            const deleteButton = event.target.closest('[data-measurement-delete-selected]');
+            if (deleteButton) {
+                deps.deleteSelectedMeasurements();
+                return;
+            }
+            const closeButton = event.target.closest('[data-measurement-close-saved]');
+            if (closeButton) {
+                deps.getState().measurement.savedGroupOpen = false;
+                deps.renderMeasurementPanel();
+            }
+        });
+    }
+
+    return { init, measurementAreaBadge, renderMeasurementPanelSavedListSection, getSavedListMeasurements, bindMeasurementSavedListDelegation };
 });

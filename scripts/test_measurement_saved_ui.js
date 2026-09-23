@@ -71,4 +71,46 @@ assert.match(html, /data-measurement-merge-selected  disabled/);
 savedUi.renderMeasurementPanelSavedListSection({ measurementState: state.measurement, measurements: [] });
 assert.equal(elements.measurementList.innerHTML, '');
 
+// Delegation remains on the stable list, including a capture-phase toggle.
+const listeners = {};
+const calls = [];
+elements.measurementList.addEventListener = (type, handler, capture) => {
+    (listeners[type] ||= []).push({ handler, capture });
+};
+savedUi.init({
+    renderMeasurementPanel: () => calls.push('render'),
+    mergeSelectedMeasurements: () => calls.push('merge'),
+    deleteSelectedMeasurements: () => calls.push('delete'),
+});
+savedUi.bindMeasurementSavedListDelegation();
+savedUi.bindMeasurementSavedListDelegation();
+assert.deepEqual(Object.fromEntries(Object.entries(listeners).map(([key, value]) => [key, value.length])),
+    { toggle: 1, change: 1, click: 1 });
+assert.equal(listeners.toggle[0].capture, true);
+const summary = { textContent: '' };
+class Details {
+    open = false;
+    querySelector() { return summary; }
+}
+savedUi.init({ getDetailsElementType: () => Details });
+listeners.toggle[0].handler({ target: new Details() });
+assert.equal(state.measurement.savedGroupOpen, false);
+assert.equal(summary.textContent, 'Open saved (2)');
+listeners.change[0].handler({ target: {
+    dataset: { measurementToggle: 'mid' }, checked: false,
+    matches: (selector) => selector === '[data-measurement-toggle]',
+} });
+assert.equal(state.measurement.visibilityById.mid, false);
+assert.equal(state.measurement.savedGroupOpen, true);
+assert.deepEqual(calls, ['render']);
+listeners.change[0].handler({ target: {
+    checked: true, matches: (selector) => selector === '[data-measurement-select-all]',
+} });
+assert.deepEqual([state.measurement.visibilityById.mid, state.measurement.visibilityById.legacy], [true, true]);
+listeners.click[0].handler({ target: { closest: (selector) => selector === '[data-measurement-merge-selected]' ? {} : null } });
+assert.deepEqual(calls, ['render', 'render', 'merge']);
+listeners.click[0].handler({ target: { closest: (selector) => selector === '[data-measurement-close-saved]' ? {} : null } });
+assert.equal(state.measurement.savedGroupOpen, false);
+assert.deepEqual(calls.slice(-2), ['merge', 'render']);
+
 console.log('measurement saved-list rendering: ok');

@@ -200,6 +200,9 @@ window.FXRouteMeasurementSavedUI?.init({
     getOutputSystemModule: () => outputSystemModule(),
     getCompactDisplayName: (name, maxChars) => getCompactDisplayName(name, maxChars),
     escapeHtml: (value) => escapeHtml(value),
+    renderMeasurementPanel: () => renderMeasurementPanel(),
+    mergeSelectedMeasurements: () => mergeSelectedMeasurements(),
+    deleteSelectedMeasurements: () => deleteSelectedMeasurements(),
 });
 window.FXRouteMeasurementEditorsUI?.init({
     getState: () => state,
@@ -225,6 +228,28 @@ window.FXRouteMeasurementEditorsUI?.init({
     formatMeasurementConvolverTimingRelation: (timing) => formatMeasurementConvolverTimingRelation(timing),
     getMeasurementConvolverItemName: (mode, gain, options) => getMeasurementConvolverItemName(mode, gain, options),
     buildMeasurementConvolverWarnings: (analyses) => buildMeasurementConvolverWarnings(analyses),
+    getMeasurementPeqActiveFilter: () => getMeasurementPeqActiveFilter(),
+    updateMeasurementPeqFilter: (id, patch) => updateMeasurementPeqFilter(id, patch),
+    updateCustomHouseCurvePoint: (id, patch) => updateCustomHouseCurvePoint(id, patch),
+    stepMeasurementPeqFrequency: (id, direction, step) => stepMeasurementPeqFrequency(id, direction, step),
+    stepMeasurementPeqGain: (id, direction, step) => stepMeasurementPeqGain(id, direction, step),
+    stepMeasurementPeqQ: (id, direction, step) => stepMeasurementPeqQ(id, direction, step),
+    selectMeasurementPeqFilter: (id) => selectMeasurementPeqFilter(id),
+    addMeasurementPeqFilter: () => addMeasurementPeqFilter(),
+    addCustomHouseCurvePoint: (point) => addCustomHouseCurvePoint(point),
+    deleteCustomHouseCurvePoint: (id) => deleteCustomHouseCurvePoint(id),
+    deleteMeasurementPeqFilter: (id) => deleteMeasurementPeqFilter(id),
+    handleMeasurementPeqNumberInputArrowKey: (event) => handleMeasurementPeqNumberInputArrowKey(event),
+    focusMeasurementPeqPanelContext: () => focusMeasurementPeqPanelContext(),
+    renderMeasurementPanel: () => renderMeasurementPanel(),
+    scheduleMeasurementGraphRender: () => scheduleMeasurementGraphRender(),
+});
+window.FXRouteMeasurementSetup?.init({
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    renderMeasurementPanel: () => renderMeasurementPanel(),
+    measurementModeNoteText: () => measurementModeNoteText(),
+    describeMeasurementScope: (note) => describeMeasurementScope(note),
 });
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
@@ -590,7 +615,6 @@ let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
 let musicLibraryRefreshTimer = null;
 let measurementInputScanOnFocusDone = false;
-let measurementSettingsRevision = 0;
 let measurementGraphResizeObserver = null;
 let playbackFooterResizeObserver = null;
 let playbackFooterSpaceFrame = null;
@@ -10494,56 +10518,15 @@ async function deleteSelectedMeasurementHouseCurve() {
 }
 
 function applyMeasurementSetupSettings(settings = {}, fields = null) {
-    if (!settings || typeof settings !== 'object') return;
-    const applies = (field) => !fields || fields.has(field);
-    if (applies('selectedInputId') && Object.prototype.hasOwnProperty.call(settings, 'selectedInputId')) {
-        state.measurement.selectedInputLegacyId = String(settings.selectedInputId || '');
-    }
-    if (applies('selectedInputKey') && Object.prototype.hasOwnProperty.call(settings, 'selectedInputKey')) {
-        state.measurement.selectedInputKey = String(settings.selectedInputKey || '');
-    }
-    if ((applies('selectedInputId') || applies('selectedInputKey')) && Object.prototype.hasOwnProperty.call(settings, 'selectedInputConfigured')) {
-        state.measurement.selectedInputConfigured = !!settings.selectedInputConfigured;
-    }
-    if (applies('selectedMicInputChannel') && Object.prototype.hasOwnProperty.call(settings, 'selectedMicInputChannel')) {
-        state.measurement.selectedMicInputChannel = String(settings.selectedMicInputChannel || '1');
-    }
-    if (applies('selectedReferenceInputChannel') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannel')) {
-        state.measurement.selectedReferenceInputChannel = String(settings.selectedReferenceInputChannel || '');
-    }
-    if (applies('selectedReferenceInputChannelLeft') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannelLeft')) {
-        state.measurement.selectedReferenceInputChannelLeft = String(settings.selectedReferenceInputChannelLeft || '');
-    }
-    if (applies('selectedReferenceInputChannelRight') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannelRight')) {
-        state.measurement.selectedReferenceInputChannelRight = String(settings.selectedReferenceInputChannelRight || '');
-    }
-    if (applies('measurementSampleRate') && Object.prototype.hasOwnProperty.call(settings, 'measurementSampleRate')) {
-        state.measurement.measurementSampleRate = String(settings.measurementSampleRate || '48000');
-    }
-    normalizeMeasurementInputChannelSelections();
+    return window.FXRouteMeasurementSetup.applyMeasurementSetupSettings(settings, fields);
 }
 
-async function saveMeasurementSetupSettings(patch = {}) {
-    const revision = ++measurementSettingsRevision;
-    try {
-        const resp = await fetch('/api/measurements/settings', {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(patch),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || 'Failed to save measurement settings');
-        if (revision === measurementSettingsRevision) {
-            applyMeasurementSetupSettings(data.measurement_settings || {}, new Set(Object.keys(patch)));
-        }
-        renderMeasurementPanel();
-    } catch (error) {
-        console.error('saveMeasurementSetupSettings failed', error);
-    }
+function saveMeasurementSetupSettings(patch = {}) {
+    return window.FXRouteMeasurementSetup.saveMeasurementSetupSettings(patch);
 }
 
 async function fetchMeasurements() {
-    const settingsRevision = measurementSettingsRevision;
+    const settingsRevision = window.FXRouteMeasurementSetup.getMeasurementSettingsRevision();
     state.measurement.loading = true;
     renderMeasurementPanel();
     try {
@@ -10558,7 +10541,7 @@ async function fetchMeasurements() {
         state.measurement.calibrationOptions = Array.isArray(data.calibrations) ? data.calibrations : [];
         state.measurement.selectedCalibrationRef = String(data.active_calibration_file_id || '');
         state.measurement.houseCurveOptions = Array.isArray(data.house_curves) ? data.house_curves : [];
-        if (settingsRevision === measurementSettingsRevision) {
+        if (settingsRevision === window.FXRouteMeasurementSetup.getMeasurementSettingsRevision()) {
             applyMeasurementSetupSettings(data.measurement_settings || {});
         }
         if (state.measurement.selectedCalibrationRef && !state.measurement.calibrationOptions.some(item => item.id === state.measurement.selectedCalibrationRef)) {
@@ -10597,95 +10580,11 @@ function measurementSetupStatusText() {
 }
 
 function applyMeasurementInputSelection(inputId) {
-    state.measurement.selectedInputId = String(inputId || '');
-    const selectedInput = getSelectedMeasurementInput();
-    state.measurement.selectedInputKey = selectedInput?.persistentId || '';
-    state.measurement.selectedInputConfigured = !!selectedInput;
-    state.measurement.selectedInputUnavailable = false;
-    normalizeMeasurementInputChannelSelections();
-    void saveMeasurementSetupSettings({
-        selectedInputId: state.measurement.selectedInputId,
-        selectedInputKey: state.measurement.selectedInputKey,
-        selectedMicInputChannel: state.measurement.selectedMicInputChannel || '1',
-        selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
-        selectedReferenceInputChannelLeft: state.measurement.selectedReferenceInputChannelLeft || '',
-        selectedReferenceInputChannelRight: state.measurement.selectedReferenceInputChannelRight || '',
-    });
-    renderMeasurementPanel();
+    return window.FXRouteMeasurementSetup.applyMeasurementInputSelection(inputId);
 }
 
-async function fetchMeasurementInputs() {
-    state.measurement.inputsLoading = true;
-    renderMeasurementPanel();
-    const revisionAtStart = measurementSettingsRevision;
-    try {
-        const resp = await fetch('/api/measurements/inputs');
-        if (!resp.ok) throw new Error('Failed to fetch measurement inputs');
-        const data = await resp.json();
-        const inputs = Array.isArray(data.inputs) && data.inputs.length
-            ? data.inputs.map((input, index) => ({
-                id: String(input.id || `input-${index + 1}`),
-                label: String(input.label || input.id || `Input ${index + 1}`),
-                note: String(input.note || ''),
-                channels: Math.max(1, Number(input.channels || 1)),
-                supportedRates: Array.isArray(input.supported_rates) ? input.supported_rates.map(Number).filter(rate => Number.isFinite(rate) && rate > 0) : [],
-                measurementSampleRate: Number(input.measurement_sample_rate || input.sample_rate || 0),
-                nodeName: String(input.node_name || ''),
-                persistentId: String(input.persistent_id || ''),
-            }))
-            : [];
-        const previousInputId = state.measurement.selectedInputId;
-        const previousInputKey = state.measurement.selectedInputKey;
-        const selection = data.selection && typeof data.selection === 'object' ? data.selection : {};
-        // A settings save that started while this request was in flight means
-        // the response reflects pre-change settings; its selection snapshot is
-        // stale and must not clobber a deliberate re-selection.
-        const selectionStale = measurementSettingsRevision !== revisionAtStart;
-        state.measurement.inputs = inputs;
-        state.measurement.hostCaptureAvailable = !!data.capture_available && !!inputs.length;
-        state.measurement.captureAvailable = state.measurement.hostCaptureAvailable;
-        state.measurement.modeNote = measurementModeNoteText();
-        if (!selectionStale) {
-            state.measurement.selectedInputId = String(selection.input_id || '');
-            state.measurement.selectedInputKey = String(selection.persistent_id || previousInputKey || '');
-            state.measurement.selectedInputConfigured = !!selection.configured;
-            state.measurement.selectedInputUnavailable = !!selection.unavailable;
-        }
-        const selectedMeasurementInput = inputs.find(input => input.id === state.measurement.selectedInputId);
-        if (selectedMeasurementInput?.measurementSampleRate > 0) {
-            state.measurement.measurementSampleRate = String(selectedMeasurementInput.measurementSampleRate);
-        }
-        normalizeMeasurementInputChannelSelections();
-        if (!selectionStale && !state.measurement.startInFlight && !state.measurement.activeJobId
-            && !state.measurement.selectedInputUnavailable && state.measurement.hostCaptureAvailable) {
-            state.measurement.statusText = describeMeasurementScope(data.scope_note);
-        }
-        if (!selectionStale && state.measurement.selectedInputId && (
-            !state.measurement.selectedInputConfigured
-            || previousInputId !== state.measurement.selectedInputId
-            || previousInputKey !== state.measurement.selectedInputKey
-        )) {
-            state.measurement.selectedInputConfigured = true;
-            void saveMeasurementSetupSettings({
-                selectedInputId: state.measurement.selectedInputId,
-                selectedInputKey: state.measurement.selectedInputKey,
-            });
-        }
-    } catch (error) {
-        console.error('fetchMeasurementInputs failed', error);
-        state.measurement.inputs = [];
-        state.measurement.hostCaptureAvailable = false;
-        state.measurement.captureAvailable = false;
-        state.measurement.modeNote = measurementModeNoteText();
-        if (measurementSettingsRevision === revisionAtStart) {
-            state.measurement.selectedInputId = '';
-            state.measurement.selectedInputUnavailable = state.measurement.selectedInputConfigured;
-            state.measurement.statusText = error.message || 'Failed to load capture inputs';
-        }
-    } finally {
-        state.measurement.inputsLoading = false;
-        renderMeasurementPanel();
-    }
+function fetchMeasurementInputs() {
+    return window.FXRouteMeasurementSetup.fetchMeasurementInputs();
 }
 
 function isMeasurementPanelOpen() {
@@ -10803,89 +10702,23 @@ function toggleMeasurementPanel(forceOpen = null) {
 }
 
 function getSelectedMeasurementInput() {
-    const measurementState = state.measurement || {};
-    return (measurementState.inputs || []).find(input => input.id === measurementState.selectedInputId) || null;
+    return window.FXRouteMeasurementSetup.getSelectedMeasurementInput();
 }
 
 function getSelectedMeasurementInputChannelCount() {
-    return Math.max(1, Number(getSelectedMeasurementInput()?.channels || 1));
+    return window.FXRouteMeasurementSetup.getSelectedMeasurementInputChannelCount();
 }
 
 function normalizeMeasurementInputChannelSelections() {
-    const measurementState = state.measurement || {};
-    const selectedInput = getSelectedMeasurementInput();
-    const channelCountKnown = !!selectedInput;
-    const channelCount = channelCountKnown ? Math.max(1, Number(selectedInput.channels || 1)) : 1;
-    if (channelCountKnown) {
-        const micChannel = Math.max(1, Math.min(channelCount, Number(measurementState.selectedMicInputChannel || 1)));
-        measurementState.selectedMicInputChannel = String(micChannel);
-    } else if (!measurementState.selectedMicInputChannel) {
-        measurementState.selectedMicInputChannel = '1';
-    }
-
-    const normalizeReferenceChannel = (value) => {
-        if (!value) return '';
-        const referenceChannel = Number(value);
-        return Number.isFinite(referenceChannel) && referenceChannel >= 1 && (!channelCountKnown || referenceChannel <= channelCount)
-            ? String(referenceChannel)
-            : '';
-    };
-
-    if (!channelCountKnown) {
-        // The input topology is still unknown: the settings response of
-        // /api/measurements can resolve before /api/measurements/inputs, so
-        // deciding between split and shared references here would be a guess.
-        // The persisted settings are authoritative — validate them and leave
-        // their shape alone. Collapsing a stored L/R pair (3/4) onto the shared
-        // value would silently lose Ref R for the rest of the session. The
-        // topology-aware pass below runs again once the input list is loaded.
-        measurementState.selectedReferenceInputChannelLeft = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelLeft);
-        measurementState.selectedReferenceInputChannelRight = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelRight);
-        measurementState.selectedReferenceInputChannel = normalizeReferenceChannel(measurementState.selectedReferenceInputChannel);
-        return;
-    }
-
-    const splitReferences = channelCount >= 3;
-    let left = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelLeft);
-    let right = normalizeReferenceChannel(measurementState.selectedReferenceInputChannelRight);
-    if (!splitReferences) {
-        // 2-channel (and single-channel) interfaces keep one shared reference.
-        left = normalizeReferenceChannel(measurementState.selectedReferenceInputChannel);
-        right = left;
-    } else if (!left && !right) {
-        // Seed the split fields from a previously selected shared reference.
-        left = right = normalizeReferenceChannel(measurementState.selectedReferenceInputChannel);
-    }
-    if (left === measurementState.selectedMicInputChannel) left = '';
-    if (right === measurementState.selectedMicInputChannel) right = '';
-    measurementState.selectedReferenceInputChannelLeft = left;
-    measurementState.selectedReferenceInputChannelRight = right;
-    // Shared field: the single 2-channel selection, or the common L/R value.
-    measurementState.selectedReferenceInputChannel = left && left === right ? left : (left || right || '');
+    return window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections();
 }
 
 function getMeasurementReferenceWarning() {
-    // A split L/R reference can never collide with the mic channel here:
-    // normalizeMeasurementInputChannelSelections() clears the affected side as
-    // soon as the input topology is known, so modelling that conflict would
-    // describe a state the UI cannot reach. The one reachable conflict is the
-    // shared reference while the topology is still unknown — that pass only
-    // validates persisted values and deliberately leaves their shape alone.
-    const measurementState = state.measurement || {};
-    const reference = String(measurementState.selectedReferenceInputChannel || '');
-    if (!reference) return '';
-    if (reference !== String(measurementState.selectedMicInputChannel || '')) return '';
-    return 'Electrical reference disabled: mic and reference must use different input channels.';
+    return window.FXRouteMeasurementSetup.getMeasurementReferenceWarning();
 }
 
 function appendMeasurementReferenceFields(formData) {
-    normalizeMeasurementInputChannelSelections();
-    const measurementState = state.measurement || {};
-    if (getSelectedMeasurementInputChannelCount() >= 3) {
-        formData.append('reference_input_channel_left', measurementState.selectedReferenceInputChannelLeft || '');
-        formData.append('reference_input_channel_right', measurementState.selectedReferenceInputChannelRight || '');
-    }
-    formData.append('reference_input_channel', getMeasurementReferenceWarning() ? '' : (measurementState.selectedReferenceInputChannel || ''));
+    return window.FXRouteMeasurementSetup.appendMeasurementReferenceFields(formData);
 }
 
 function scheduleMeasurementGraphRender() {
@@ -11808,176 +11641,6 @@ function measurementBankSumsBothInputs() {
     return area?.channel_mode === 'mono';
 }
 
-function commitCustomHouseCurveField(input) {
-    const custom = ensureCustomHouseCurveState();
-    if (!custom.activePointId) return;
-    updateCustomHouseCurvePoint(custom.activePointId, { [input.dataset.customHouseCurveField]: Number(input.value) });
-}
-
-function commitPeqEditorField(input, reRender) {
-    const activeFilter = getMeasurementPeqActiveFilter();
-    if (!activeFilter) return;
-    const field = input.dataset.measurementPeqField;
-    const value = field === 'type' ? input.value : Number(input.value);
-    updateMeasurementPeqFilter(activeFilter.id, { [field]: value });
-    if (reRender) renderMeasurementPanel();
-    scheduleMeasurementGraphRender();
-}
-
-function handleMeasurementPeqStepClick(button) {
-    const activeFilter = getMeasurementPeqActiveFilter();
-    if (!activeFilter) return;
-    const container = elements.measurementPeqEditor;
-    if (button.dataset.measurementPeqFrequencyStep !== undefined) {
-        const input = container?.querySelector('#measurement-peq-freq');
-        const step = Number(input?.step) || 1;
-        const direction = Number(button.dataset.measurementPeqFrequencyStep || '0');
-        const nextValue = stepMeasurementPeqFrequency(activeFilter.id, direction, step);
-        if (nextValue === null) return;
-        if (input) input.value = String(nextValue);
-    } else if (button.dataset.measurementPeqGainStep !== undefined) {
-        const input = container?.querySelector('#measurement-peq-gain');
-        const step = Number(input?.step) || 0.1;
-        const direction = Number(button.dataset.measurementPeqGainStep || '0');
-        const nextValue = stepMeasurementPeqGain(activeFilter.id, direction, step);
-        if (nextValue === null) return;
-        if (input) input.value = nextValue.toFixed(1);
-    } else {
-        const input = container?.querySelector('#measurement-peq-q');
-        const step = Number(input?.step) || 0.1;
-        const direction = Number(button.dataset.measurementPeqQStep || '0');
-        const nextValue = stepMeasurementPeqQ(activeFilter.id, direction, step);
-        if (nextValue === null) return;
-        if (input) input.value = nextValue.toFixed(2);
-    }
-    scheduleMeasurementGraphRender();
-    focusMeasurementPeqPanelContext();
-}
-
-let measurementPanelDelegationBound = false;
-// Dynamic panel regions rebuild their innerHTML on every render; their
-// listeners therefore live once on the stable containers via delegation.
-function bindMeasurementPanelDelegation() {
-    if (measurementPanelDelegationBound) return;
-    measurementPanelDelegationBound = true;
-    elements.measurementPeqChips?.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-measurement-peq-slot]');
-        if (!button) return;
-        const filterId = button.dataset.measurementPeqChip;
-        if (filterId) {
-            selectMeasurementPeqFilter(filterId);
-        } else {
-            const created = addMeasurementPeqFilter();
-            if (!created) return;
-        }
-        renderMeasurementPanel();
-        scheduleMeasurementGraphRender();
-        focusMeasurementPeqPanelContext();
-    });
-    elements.measurementCustomHouseCurveChips?.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-custom-house-curve-slot]');
-        if (!button) return;
-        const custom = ensureCustomHouseCurveState();
-        const pointId = button.dataset.customHouseCurvePoint;
-        if (pointId) custom.activePointId = pointId;
-        else if (!addCustomHouseCurvePoint({ slot: Number(button.dataset.customHouseCurveSlot) })) return;
-        renderMeasurementPanel();
-        scheduleMeasurementGraphRender();
-    });
-    elements.measurementCustomHouseCurveEditor?.addEventListener('input', (event) => {
-        const input = event.target.closest('[data-custom-house-curve-field]');
-        if (!input) return;
-        commitCustomHouseCurveField(input);
-        scheduleMeasurementGraphRender();
-    });
-    elements.measurementCustomHouseCurveEditor?.addEventListener('change', (event) => {
-        const input = event.target.closest('[data-custom-house-curve-field]');
-        if (!input) return;
-        commitCustomHouseCurveField(input);
-        renderMeasurementPanel();
-        scheduleMeasurementGraphRender();
-    });
-    elements.measurementCustomHouseCurveEditor?.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-custom-house-curve-delete]');
-        if (!button) return;
-        deleteCustomHouseCurvePoint(button.dataset.customHouseCurveDelete);
-        renderMeasurementPanel();
-        scheduleMeasurementGraphRender();
-    });
-    elements.measurementPeqEditor?.addEventListener('keydown', (event) => {
-        if (!(event.target instanceof HTMLInputElement) || event.target.type !== 'number') return;
-        if (!event.target.matches('[data-measurement-peq-field]')) return;
-        handleMeasurementPeqNumberInputArrowKey(event);
-    });
-    elements.measurementPeqEditor?.addEventListener('input', (event) => {
-        const input = event.target.closest('[data-measurement-peq-field]');
-        if (!input) return;
-        commitPeqEditorField(input, input.dataset.measurementPeqField === 'type');
-    });
-    elements.measurementPeqEditor?.addEventListener('change', (event) => {
-        const input = event.target.closest('[data-measurement-peq-field]');
-        if (!input) return;
-        commitPeqEditorField(input, true);
-    });
-    elements.measurementPeqEditor?.addEventListener('click', (event) => {
-        const stepButton = event.target.closest('[data-measurement-peq-frequency-step], [data-measurement-peq-gain-step], [data-measurement-peq-q-step]');
-        if (stepButton) {
-            handleMeasurementPeqStepClick(stepButton);
-            return;
-        }
-        const deleteButton = event.target.closest('[data-measurement-peq-delete]');
-        if (!deleteButton) return;
-        deleteMeasurementPeqFilter(deleteButton.dataset.measurementPeqDelete);
-        renderMeasurementPanel();
-        scheduleMeasurementGraphRender();
-    });
-
-    const list = elements.measurementList;
-    // <details> toggle does not bubble; capture phase still reaches ancestors.
-    list?.addEventListener('toggle', (event) => {
-        const details = event.target;
-        if (!(details instanceof HTMLDetailsElement)) return;
-        state.measurement.savedGroupOpen = !!details.open;
-        const summary = details.querySelector('summary');
-        if (summary) {
-            summary.textContent = `${state.measurement.savedGroupOpen ? 'Close saved' : 'Open saved'} (${window.FXRouteMeasurementSavedUI.getSavedListMeasurements().length})`;
-        }
-    }, true);
-    list?.addEventListener('change', (event) => {
-        const input = event.target;
-        if (input.matches('[data-measurement-toggle]')) {
-            state.measurement.visibilityById[input.dataset.measurementToggle] = !!input.checked;
-            state.measurement.savedGroupOpen = true;
-            renderMeasurementPanel();
-            return;
-        }
-        if (input.matches('[data-measurement-select-all]')) {
-            window.FXRouteMeasurementSavedUI.getSavedListMeasurements().forEach((measurement) => {
-                state.measurement.visibilityById[measurement.id] = !!input.checked;
-            });
-            state.measurement.savedGroupOpen = true;
-            renderMeasurementPanel();
-        }
-    });
-    list?.addEventListener('click', (event) => {
-        const mergeButton = event.target.closest('[data-measurement-merge-selected]');
-        if (mergeButton) {
-            mergeSelectedMeasurements();
-            return;
-        }
-        const deleteButton = event.target.closest('[data-measurement-delete-selected]');
-        if (deleteButton) {
-            deleteSelectedMeasurements();
-            return;
-        }
-        const closeButton = event.target.closest('[data-measurement-close-saved]');
-        if (closeButton) {
-            state.measurement.savedGroupOpen = false;
-            renderMeasurementPanel();
-        }
-    });
-}
-
 function setMeasurementSetupOpen(open) {
     state.measurement.setupOpen = open;
     setMeasurementSweepMenuOpen(false);
@@ -11987,31 +11650,10 @@ function setMeasurementSetupOpen(open) {
     if (open) elements.measurementPanel.querySelector('.measurement-dialog').scrollTop = 0;
 }
 
-/* Arrow keys walk a horizontal chip group with wrap-around; disabled chips
-   are skipped and Enter/Space keep working via the browser defaults. */
-function bindChipArrowKeyNavigation(container, chipSelector) {
-    if (!container) return;
-    container.addEventListener('keydown', (event) => {
-        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-        const chips = Array.from(container.querySelectorAll(chipSelector))
-            .filter(button => !button.disabled);
-        if (!chips.length) return;
-        const currentIndex = chips.indexOf(document.activeElement);
-        let next;
-        if (currentIndex < 0) {
-            next = event.key === 'ArrowRight' ? chips[0] : chips[chips.length - 1];
-        } else {
-            const offset = event.key === 'ArrowRight' ? 1 : -1;
-            next = chips[(currentIndex + offset + chips.length) % chips.length];
-        }
-        event.preventDefault();
-        next.focus({ preventScroll: true });
-    });
-}
-
 function setupMeasurementActions() {
     if (!elements.measurementPanel || !elements.effectsMeasureOpenBtn || !elements.measurementCloseBtn) return;
-    bindMeasurementPanelDelegation();
+    window.FXRouteMeasurementEditorsUI.bindMeasurementEditorDelegation();
+    window.FXRouteMeasurementSavedUI.bindMeasurementSavedListDelegation();
     elements.effectsMeasureOpenBtn.addEventListener('click', () => toggleMeasurementPanel(true));
     elements.measurementCloseBtn.addEventListener('click', () => toggleMeasurementPanel(false));
     const backdrop = elements.measurementPanel.querySelector('.manage-overlay-backdrop');
@@ -12050,9 +11692,9 @@ function setupMeasurementActions() {
         });
     }
     const smoothingChipsRow = document.getElementById('measurement-smoothing-chips');
-    if (smoothingChipsRow) bindChipArrowKeyNavigation(smoothingChipsRow, '[data-measurement-smoothing]');
+    if (smoothingChipsRow) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(smoothingChipsRow, '[data-measurement-smoothing]');
     const measurementViewToggle = document.querySelector('.measurement-view-toggle');
-    if (measurementViewToggle) bindChipArrowKeyNavigation(measurementViewToggle, '[data-measurement-view]');
+    if (measurementViewToggle) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(measurementViewToggle, '[data-measurement-view]');
     if (elements.measurementInputSelect) {
         const scanMeasurementInputsOnceForSelect = () => {
             if (measurementInputScanOnFocusDone) return;

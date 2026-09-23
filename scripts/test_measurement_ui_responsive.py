@@ -486,6 +486,17 @@ def _run():
             assert page.locator("[data-measurement-toggle='legacy-global'] ~ .measurement-area-badge").count() == 0, (
                 "a legacy result without a target must not be labelled as an area")
             checks += 3
+            saved_summary.first.click()
+            page.wait_for_function("() => document.querySelector('.measurement-saved-group summary')?.textContent === 'Open saved (2)'")
+            saved_summary.first.click()
+            page.wait_for_function("() => document.querySelector('.measurement-saved-group summary')?.textContent === 'Close saved (2)'")
+            saved_toggle = page.locator("[data-measurement-toggle='area-mid']")
+            was_checked = saved_toggle.is_checked()
+            saved_toggle.click()
+            assert saved_toggle.is_checked() != was_checked
+            saved_toggle.click()
+            assert saved_toggle.is_checked() == was_checked
+            checks += 4
             page.close()
             browser.close()
     finally:

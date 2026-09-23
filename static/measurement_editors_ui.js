@@ -12,6 +12,7 @@
         getState: () => ({ dsp: {} }),
         getElements: () => ({}),
         getDocument: () => root.document,
+        getInputElementType: () => root.HTMLInputElement,
         escapeHtml: (value) => String(value == null ? '' : value),
         ensureCustomHouseCurveState: () => ({ points: [] }),
         getCustomHouseCurvePointSlot: () => -1,
@@ -32,6 +33,21 @@
         formatMeasurementConvolverTimingRelation: () => '',
         getMeasurementConvolverItemName: () => '',
         buildMeasurementConvolverWarnings: () => [],
+        getMeasurementPeqActiveFilter: () => null,
+        updateMeasurementPeqFilter: () => {},
+        updateCustomHouseCurvePoint: () => {},
+        stepMeasurementPeqFrequency: () => null,
+        stepMeasurementPeqGain: () => null,
+        stepMeasurementPeqQ: () => null,
+        selectMeasurementPeqFilter: () => {},
+        addMeasurementPeqFilter: () => null,
+        addCustomHouseCurvePoint: () => null,
+        deleteCustomHouseCurvePoint: () => {},
+        deleteMeasurementPeqFilter: () => {},
+        handleMeasurementPeqNumberInputArrowKey: () => {},
+        focusMeasurementPeqPanelContext: () => {},
+        renderMeasurementPanel: () => {},
+        scheduleMeasurementGraphRender: () => {},
     };
 
     function init(overrides) {
@@ -334,6 +350,132 @@
         }
     }
 
+    function commitCustomHouseCurveField(input) {
+        const custom = deps.ensureCustomHouseCurveState();
+        if (!custom.activePointId) return;
+        deps.updateCustomHouseCurvePoint(custom.activePointId, { [input.dataset.customHouseCurveField]: Number(input.value) });
+    }
+
+    function commitPeqEditorField(input, reRender) {
+        const activeFilter = deps.getMeasurementPeqActiveFilter();
+        if (!activeFilter) return;
+        const field = input.dataset.measurementPeqField;
+        const value = field === 'type' ? input.value : Number(input.value);
+        deps.updateMeasurementPeqFilter(activeFilter.id, { [field]: value });
+        if (reRender) deps.renderMeasurementPanel();
+        deps.scheduleMeasurementGraphRender();
+    }
+
+    function handleMeasurementPeqStepClick(button) {
+        const activeFilter = deps.getMeasurementPeqActiveFilter();
+        if (!activeFilter) return;
+        const container = deps.getElements().measurementPeqEditor;
+        if (button.dataset.measurementPeqFrequencyStep !== undefined) {
+            const input = container?.querySelector('#measurement-peq-freq');
+            const step = Number(input?.step) || 1;
+            const direction = Number(button.dataset.measurementPeqFrequencyStep || '0');
+            const nextValue = deps.stepMeasurementPeqFrequency(activeFilter.id, direction, step);
+            if (nextValue === null) return;
+            if (input) input.value = String(nextValue);
+        } else if (button.dataset.measurementPeqGainStep !== undefined) {
+            const input = container?.querySelector('#measurement-peq-gain');
+            const step = Number(input?.step) || 0.1;
+            const direction = Number(button.dataset.measurementPeqGainStep || '0');
+            const nextValue = deps.stepMeasurementPeqGain(activeFilter.id, direction, step);
+            if (nextValue === null) return;
+            if (input) input.value = nextValue.toFixed(1);
+        } else {
+            const input = container?.querySelector('#measurement-peq-q');
+            const step = Number(input?.step) || 0.1;
+            const direction = Number(button.dataset.measurementPeqQStep || '0');
+            const nextValue = deps.stepMeasurementPeqQ(activeFilter.id, direction, step);
+            if (nextValue === null) return;
+            if (input) input.value = nextValue.toFixed(2);
+        }
+        deps.scheduleMeasurementGraphRender();
+        deps.focusMeasurementPeqPanelContext();
+    }
+
+    let editorDelegationBound = false;
+    // Dynamic panel regions rebuild their innerHTML on every render; their
+    // listeners therefore live once on the stable containers via delegation.
+    function bindMeasurementEditorDelegation() {
+        if (editorDelegationBound) return;
+        editorDelegationBound = true;
+        const elements = deps.getElements();
+        elements.measurementPeqChips?.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-measurement-peq-slot]');
+            if (!button) return;
+            const filterId = button.dataset.measurementPeqChip;
+            if (filterId) {
+                deps.selectMeasurementPeqFilter(filterId);
+            } else {
+                const created = deps.addMeasurementPeqFilter();
+                if (!created) return;
+            }
+            deps.renderMeasurementPanel();
+            deps.scheduleMeasurementGraphRender();
+            deps.focusMeasurementPeqPanelContext();
+        });
+        elements.measurementCustomHouseCurveChips?.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-custom-house-curve-slot]');
+            if (!button) return;
+            const custom = deps.ensureCustomHouseCurveState();
+            const pointId = button.dataset.customHouseCurvePoint;
+            if (pointId) custom.activePointId = pointId;
+            else if (!deps.addCustomHouseCurvePoint({ slot: Number(button.dataset.customHouseCurveSlot) })) return;
+            deps.renderMeasurementPanel();
+            deps.scheduleMeasurementGraphRender();
+        });
+        elements.measurementCustomHouseCurveEditor?.addEventListener('input', (event) => {
+            const input = event.target.closest('[data-custom-house-curve-field]');
+            if (!input) return;
+            commitCustomHouseCurveField(input);
+            deps.scheduleMeasurementGraphRender();
+        });
+        elements.measurementCustomHouseCurveEditor?.addEventListener('change', (event) => {
+            const input = event.target.closest('[data-custom-house-curve-field]');
+            if (!input) return;
+            commitCustomHouseCurveField(input);
+            deps.renderMeasurementPanel();
+            deps.scheduleMeasurementGraphRender();
+        });
+        elements.measurementCustomHouseCurveEditor?.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-custom-house-curve-delete]');
+            if (!button) return;
+            deps.deleteCustomHouseCurvePoint(button.dataset.customHouseCurveDelete);
+            deps.renderMeasurementPanel();
+            deps.scheduleMeasurementGraphRender();
+        });
+        elements.measurementPeqEditor?.addEventListener('keydown', (event) => {
+            if (!(event.target instanceof (deps.getInputElementType())) || event.target.type !== 'number') return;
+            if (!event.target.matches('[data-measurement-peq-field]')) return;
+            deps.handleMeasurementPeqNumberInputArrowKey(event);
+        });
+        elements.measurementPeqEditor?.addEventListener('input', (event) => {
+            const input = event.target.closest('[data-measurement-peq-field]');
+            if (!input) return;
+            commitPeqEditorField(input, input.dataset.measurementPeqField === 'type');
+        });
+        elements.measurementPeqEditor?.addEventListener('change', (event) => {
+            const input = event.target.closest('[data-measurement-peq-field]');
+            if (!input) return;
+            commitPeqEditorField(input, true);
+        });
+        elements.measurementPeqEditor?.addEventListener('click', (event) => {
+            const stepButton = event.target.closest('[data-measurement-peq-frequency-step], [data-measurement-peq-gain-step], [data-measurement-peq-q-step]');
+            if (stepButton) {
+                handleMeasurementPeqStepClick(stepButton);
+                return;
+            }
+            const deleteButton = event.target.closest('[data-measurement-peq-delete]');
+            if (!deleteButton) return;
+            deps.deleteMeasurementPeqFilter(deleteButton.dataset.measurementPeqDelete);
+            deps.renderMeasurementPanel();
+            deps.scheduleMeasurementGraphRender();
+        });
+    }
+
     return {
         init,
         renderMeasurementPanelEditorsSection,
@@ -341,5 +483,6 @@
         syncMeasurementSummedSubTakeModes,
         renderMeasurementSlotChip,
         getMeasurementSlotChipStyle,
+        bindMeasurementEditorDelegation,
     };
 });
