@@ -460,13 +460,8 @@
     border-radius: 2px;
 }
 
-.speaker-align-run-row {
+.speaker-align-result-actions {
     margin-top: 10px;
-}
-
-.speaker-align-run-select {
-    min-width: 190px;
-    max-width: 260px;
 }
 
 #measurement-sweep-start,

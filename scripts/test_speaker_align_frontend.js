@@ -87,6 +87,10 @@ async function main() {
     assert.match(measurementCss, /\.speaker-align-table\s*\{[^}]*min-width:\s*\d+px/);
     assert.match(measurementCss, /\.speaker-align-time\s*\{[^}]*border:\s*1px solid var\(--border\)/);
     assert.match(measurementCss, /\.speaker-align-time-svg\s*\{[^}]*width:\s*100%/);
+    const indexSource = fs.readFileSync(require.resolve('../static/index.html'), 'utf8');
+    assert.doesNotMatch(indexSource, /measurement-speaker-align-save/, 'no permanent setup Save row');
+    assert.doesNotMatch(indexSource, /speaker-align-run-row/, 'no permanent setup run row');
+    assert.match(indexSource, /id="measurement-speaker-align-actions"/, 'result actions outlet exists');
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.021/);
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.250/);
     // Saveable time-domain run: Before from planning, After from
@@ -153,24 +157,28 @@ async function main() {
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), true);
     // Save/Open run through the flows module: seeded result saves a
     // speaker-align-run-v1 payload, reopening restores the same view data.
+    // Save lives in the result actions (not the setup), Open resolves by id.
     state.outputSystem.catalog.modes.stereo.selected_bank = 'global';
     state.measurement.speakerAlignResults = { right: runResult };
     state.measurement.speakerAlignResult = runResult;
+    state.measurement.speakerAlignResultSaved = false;
     const saveCalls = [];
-    elements.measurementSpeakerAlignSaveBtn = element();
-    elements.measurementSpeakerAlignOpenBtn = element();
-    elements.measurementSpeakerAlignSavedSelect = { value: '', innerHTML: '', disabled: false };
+    elements.measurementSpeakerAlignActions = element();
     flows.init({
         showToast: (message, kind) => calls.push(['toast', message, kind]),
         renderMeasurementPanel: () => {},
         formatTransitionErrorDetail: (detail, fallback) => (typeof detail === 'string' ? detail : fallback),
         fetchSavedMeasurements: async () => calls.push('reload-measurements'),
+        hasActiveMeasurementJob: () => false,
         api: { ...speakerApi,
             saveSpeakerAlignMeasurement: async payload => {
                 saveCalls.push(payload);
                 return { ok: true, json: async () => ({}) };
             } },
     });
+    flows.renderSpeakerAlignResultActions();
+    assert.match(elements.measurementSpeakerAlignActions.innerHTML, /data-speaker-align-save="right"/,
+        'result actions offer Save');
     await flows.saveSpeakerAlignRun('right');
     assert.equal(saveCalls.length, 1, 'save posts one run payload');
     assert.equal(saveCalls[0].measurement_kind, 'speaker-align-run-v1');
@@ -178,8 +186,11 @@ async function main() {
     state.measurement.measurements = [{ id: saveCalls[0].id, name: 'Right align',
         measurement_kind: 'speaker-align-run-v1', speaker_align: saveCalls[0].speaker_align,
         analysis: saveCalls[0].analysis, traces: saveCalls[0].traces || [] }];
-    elements.measurementSpeakerAlignSavedSelect.value = saveCalls[0].id;
-    await flows.openSpeakerAlignRun();
+    assert.match(elements.measurementSpeakerAlignActions.innerHTML, /disabled>Saved</,
+        'saved result shows Saved, not Save');
+    assert.ok(flows.isSpeakerAlignRunEntry(state.measurement.measurements[0]), 'run entry recognized');
+    assert.equal(flows.isSpeakerAlignRunEntry({ id: 'x', measurement_kind: 'sweep' }), false);
+    await flows.openSpeakerAlignRunById(saveCalls[0].id);
     assert.ok(state.measurement.speakerAlignResult?.proposal, 'reopened result restored');
     assert.deepEqual(Object.keys(state.measurement.speakerAlignResult.proposal.arrival_ms).sort(),
         ['right_high', 'right_low']);

@@ -415,6 +415,8 @@ window.FXRouteMeasurementSavedUI?.init({
     renderMeasurementPanel: () => renderMeasurementPanel(),
     mergeSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.mergeSelectedMeasurements(),
     deleteSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.deleteSelectedMeasurements(),
+    openSpeakerAlignRunById: (measurementId) => window.FXRouteMeasurementFlows.openSpeakerAlignRunById(measurementId),
+    isSpeakerAlignRunEntry: (measurement) => window.FXRouteMeasurementFlows.isSpeakerAlignRunEntry(measurement),
 });
 window.FXRouteMeasurementEditorsUI?.init({
     getState: () => state,
@@ -766,6 +768,7 @@ let state = {
         speakerAlignCancelRequested: false,
         speakerAlignResult: null,
         speakerAlignResults: null,
+        speakerAlignResultSaved: false,
         statusText: 'Sweep ready. Calibration file is optional.',
         measurementSampleRate: '48000',
         assistMode: 'peq',
@@ -1138,9 +1141,7 @@ const elements = {
     measurementSpeakerAlignGroup: document.getElementById('measurement-speaker-align-group'),
     measurementSpeakerAlignStatus: document.getElementById('measurement-speaker-align-status'),
     measurementSpeakerAlignResults: document.getElementById('measurement-speaker-align-results'),
-    measurementSpeakerAlignSaveBtn: document.getElementById('measurement-speaker-align-save'),
-    measurementSpeakerAlignSavedSelect: document.getElementById('measurement-speaker-align-saved'),
-    measurementSpeakerAlignOpenBtn: document.getElementById('measurement-speaker-align-open'),
+    measurementSpeakerAlignActions: document.getElementById('measurement-speaker-align-actions'),
     measurementHybridOpenBtn: document.getElementById('measurement-hybrid-open'),
     measurementHybridPanel: document.getElementById('measurement-hybrid-panel'),
     measurementHybridCloseBtn: document.getElementById('measurement-hybrid-close'),
@@ -4363,8 +4364,12 @@ function setupMeasurementActions() {
     elements.measurementSpeakerAlignLeftBtn?.addEventListener('click', () => { void MeasurementFlows.startSpeakerAlign('left'); });
     elements.measurementSpeakerAlignRightBtn?.addEventListener('click', () => { void MeasurementFlows.startSpeakerAlign('right'); });
     elements.measurementSpeakerAlignCancelBtn?.addEventListener('click', () => { void MeasurementFlows.cancelSpeakerAlign(); });
-    elements.measurementSpeakerAlignSaveBtn?.addEventListener('click', () => { void MeasurementFlows.saveSpeakerAlignRun(); });
-    elements.measurementSpeakerAlignOpenBtn?.addEventListener('click', () => { void MeasurementFlows.openSpeakerAlignRun(); });
+    // Align-run Save lives in the result actions (rendered only with a
+    // result); saved runs open from the normal saved-measurements list.
+    elements.measurementSpeakerAlignResults?.addEventListener('click', (event) => {
+        const save = event.target instanceof Element ? event.target.closest('[data-speaker-align-save]') : null;
+        if (save) void MeasurementFlows.saveSpeakerAlignRun(save.dataset.speakerAlignSave || undefined);
+    });
     if (elements.measurementSaveBtn) {
         elements.measurementSaveBtn.addEventListener('click', () => { void window.FXRouteMeasurementSavedActions.saveCurrentMeasurement(); });
     }

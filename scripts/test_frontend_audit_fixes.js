@@ -21,6 +21,7 @@ const StreamingRuntime = require('../static/streaming_runtime.js');
 const PlaybackUI = require('../static/playback_ui.js');
 const SubwooferUI = require('../static/subwoofer_ui.js');
 const SavedActions = require('../static/measurement_saved_actions.js');
+const SavedUI = require('../static/measurement_saved_ui.js');
 
 function stubEl() {
     return {
@@ -367,6 +368,39 @@ async function main() {
         await SavedActions.deleteSelectedMeasurements();
         assert.ok(reloads.length >= 1, 'list refreshes even on partial failure');
         assert.ok(toasts.some(([, k]) => k === 'error'), 'partial failure toasts');
+    }
+
+    // 11. Saved list offers Open run only on align-run entries, wired by id.
+    {
+        const opened = [];
+        let clickHandler = null;
+        const listEl = { innerHTML: '', addEventListener: (type, fn) => { if (type === 'click') clickHandler = fn; } };
+        const state = { measurement: { measurements: [
+            { id: 'm-sweep', name: 'Sweep', measurement_kind: 'sweep', created_at: '2026-01-01', channel: 'left', traces: [] },
+            { id: 'm-align', name: 'Right align', measurement_kind: 'speaker-align-run-v1', created_at: '2026-01-02', channel: 'right', traces: [], speaker_align: { side: 'right' } },
+        ], visibilityById: {}, saveInFlight: false, startInFlight: false, savedGroupOpen: true } };
+        SavedUI.init({
+            getState: () => state,
+            getElements: () => ({ measurementList: listEl }),
+            getCurrentMeasurementEntry: () => null,
+            getVisibleMeasurementColorById: () => ({}),
+            getCompactDisplayName: (name) => String(name),
+            escapeHtml: (value) => String(value ?? ''),
+            renderMeasurementPanel: () => {},
+            openSpeakerAlignRunById: (id) => opened.push(id),
+            isSpeakerAlignRunEntry: (measurement) => !!measurement
+                && (measurement.measurement_kind === 'speaker-align-run-v1' || !!measurement.speaker_align),
+        });
+        SavedUI.bindMeasurementSavedListDelegation();
+        SavedUI.renderMeasurementPanelSavedListSection({ measurementState: state.measurement, current: null,
+            measurements: state.measurement.measurements, graphEntries: [], assistMode: 'peq',
+            activeEditor: null, graphView: null, frequencyView: null, peq: {}, conv: {}, activePeqFilter: null });
+        assert.match(listEl.innerHTML, /data-measurement-open-align-run="m-align"/, 'align entry offers Open run');
+        assert.doesNotMatch(listEl.innerHTML, /data-measurement-open-align-run="m-sweep"/, 'sweep entry has no Open run');
+        assert.ok(typeof clickHandler === 'function', 'click delegation bound');
+        clickHandler({ target: { closest: (selector) => (selector === '[data-measurement-open-align-run]'
+            ? { dataset: { measurementOpenAlignRun: 'm-align' } } : null) } });
+        assert.deepEqual(opened, ['m-align'], 'Open run resolves by measurement id');
     }
 
     console.log('frontend audit fixes: ok');
