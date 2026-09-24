@@ -7175,6 +7175,13 @@ https://${MDNS_HOSTNAME}.local {
 EOF
   fi
 
+  # SELinuxContext: /usr/bin/caddy carries the httpd_exec_t label, so the
+  # targeted policy runs it as httpd_t, which may bind no unreserved ports
+  # (admin endpoint), connect to no app port (proxy upstream), and write no
+  # caddy data dir (TLS renewal) since selinux-policy 20260914; the denials
+  # are dontaudit-hidden. unconfined_service_t fails the entrypoint check
+  # on httpd_exec_t (status 203/EXEC), so run this root service as
+  # unconfined_t. The directive is ignored on distros without SELinux.
   cat > "$tmp_service" <<EOF
 [Unit]
 Description=FXRoute Caddy reverse proxy
@@ -7186,6 +7193,7 @@ Type=simple
 Environment=HOME=${caddy_data_dir}
 Environment=XDG_CONFIG_HOME=${caddy_data_dir}/config
 Environment=XDG_DATA_HOME=${caddy_data_dir}
+SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0
 ExecStart=${caddy_bin} run --config ${config_path} --adapter caddyfile
 Restart=on-failure
 RestartSec=5

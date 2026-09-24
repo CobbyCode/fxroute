@@ -103,6 +103,24 @@ class CaddyAdminEndpointTests(unittest.TestCase):
     def test_reverse_proxy_targets_app_port(self):
         self.assertIn("reverse_proxy 127.0.0.1:${port}", self.caddy_step)
 
+    def test_unit_template_runs_unconfined_on_selinux_hosts(self):
+        # /usr/bin/caddy is labeled httpd_exec_t; confined httpd_t may
+        # neither bind unreserved ports, nor connect to the app port, nor
+        # write the data dir since selinux-policy 20260914 (denials are
+        # dontaudit-hidden). unconfined_service_t fails the entrypoint
+        # check for httpd_exec_t (status 203/EXEC), so the unit must pin
+        # the unconfined exec domain (a no-op without SELinux).
+        directive = "SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0"
+        self.assertIn(directive, self.caddy_step)
+        self.assertLess(
+            self.caddy_step.index("[Service]"),
+            self.caddy_step.index(directive),
+        )
+        self.assertLess(
+            self.caddy_step.index(directive),
+            self.caddy_step.index("ExecStart="),
+        )
+
     def test_data_dir_guard_accepts_legacy_fxroute_owned_state(self):
         # A root-owned data dir predating the ownership flag must not block
         # the corrected path: the hard dir checks stay, and legacy-false is
