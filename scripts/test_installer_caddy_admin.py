@@ -103,6 +103,26 @@ class CaddyAdminEndpointTests(unittest.TestCase):
     def test_reverse_proxy_targets_app_port(self):
         self.assertIn("reverse_proxy 127.0.0.1:${port}", self.caddy_step)
 
+    def test_data_dir_guard_accepts_legacy_fxroute_owned_state(self):
+        # A root-owned data dir predating the ownership flag must not block
+        # the corrected path: the hard dir checks stay, and legacy-false is
+        # accepted only when the service/config ownership state exists.
+        self.assertEqual(
+            self.caddy_step.count("Refusing to use a pre-existing Caddy data directory"),
+            2,
+        )
+        self.assertIn(
+            '[[ -z "$CADDY_SERVICE_SHA256" || -z "$CADDY_CONFIG_SHA256" ]]',
+            self.caddy_step,
+        )
+        self.assertGreaterEqual(
+            self.caddy_step.count("CADDY_DATA_DIR_CREATED_BY_FXROUTE=1"), 2
+        )
+        # The hard checks keep their order: shape/owner before the flag.
+        shape = self.caddy_step.index('[[ ! -d "$caddy_data_dir"')
+        legacy = self.caddy_step.index('"$CADDY_DATA_DIR_CREATED_BY_FXROUTE" -ne 1')
+        self.assertLess(shape, legacy)
+
     def test_https_health_check_and_certificate_copy_preserved(self):
         # The rerun health check and the root-CA copy are what keeps the
         # Settings certificate download alive.

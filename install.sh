@@ -7088,11 +7088,22 @@ offer_optional_caddy_proxy() {
   if [[ ! -e "$caddy_data_dir" && ! -L "$caddy_data_dir" ]]; then
     CADDY_DATA_DIR_CREATED_BY_FXROUTE=1
   else
-    if [[ "$CADDY_DATA_DIR_CREATED_BY_FXROUTE" -ne 1 ]] \
-      || [[ ! -d "$caddy_data_dir" || -L "$caddy_data_dir" ]] \
+    if [[ ! -d "$caddy_data_dir" || -L "$caddy_data_dir" ]] \
       || [[ "$("${SUDO_CMD[@]}" stat -c '%u' "$caddy_data_dir" 2>/dev/null || true)" != "0" ]]; then
       warn "Refusing to use a pre-existing Caddy data directory"
       return 0
+    fi
+    if [[ "$CADDY_DATA_DIR_CREATED_BY_FXROUTE" -ne 1 ]]; then
+      # Installs older than the ownership flag leave it false even for the
+      # directory the installer itself created. The service/config/cert
+      # ownership guards above already proved this Caddy setup is
+      # FXRoute-owned, and the unit points Caddy at this directory, so a
+      # root-owned directory here is the installer's own; record the flag.
+      if [[ -z "$CADDY_SERVICE_SHA256" || -z "$CADDY_CONFIG_SHA256" ]]; then
+        warn "Refusing to use a pre-existing Caddy data directory"
+        return 0
+      fi
+      CADDY_DATA_DIR_CREATED_BY_FXROUTE=1
     fi
   fi
 
