@@ -9,6 +9,12 @@ fxroute-caddy.service with "bind: permission denied" whenever the admin
 endpoint is enabled. The tests also pin the surrounding contracts the
 corrected path must keep intact: health check, certificate copy, and the
 Settings certificate download endpoint.
+
+The unit must prefer the tight confined mode (stock policy plus the
+one-line fxroute_proxy module for the app-port connect and the
+httpd_var_lib_t file context for the Caddy state dir) and use the
+unconfined exec domain only as an explicit fallback when an enforcing
+host cannot be prepared.
 """
 
 from __future__ import annotations
@@ -67,6 +73,7 @@ class CaddyAdminEndpointTests(unittest.TestCase):
         cls.uninstall = UNINSTALL_SH.read_text()
         cls.session = SESSION_PY.read_text()
         cls.caddy_step = extract_function(cls.install, "offer_optional_caddy_proxy")
+        cls.prepare = extract_function(cls.install, "prepare_caddy_selinux_policy")
 
     def test_caddyfile_template_disables_admin_endpoint(self):
         # The rendered Caddyfile must open with a global options block
@@ -103,23 +110,93 @@ class CaddyAdminEndpointTests(unittest.TestCase):
     def test_reverse_proxy_targets_app_port(self):
         self.assertIn("reverse_proxy 127.0.0.1:${port}", self.caddy_step)
 
-    def test_unit_template_runs_unconfined_on_selinux_hosts(self):
-        # /usr/bin/caddy is labeled httpd_exec_t; confined httpd_t may
-        # neither bind unreserved ports, nor connect to the app port, nor
-        # write the data dir since selinux-policy 20260914 (denials are
-        # dontaudit-hidden). unconfined_service_t fails the entrypoint
-        # check for httpd_exec_t (status 203/EXEC), so the unit must pin
-        # the unconfined exec domain (a no-op without SELinux).
+    def test_unit_template_selinux_context_is_conditional_fallback(self):
+        # The unit template must not force an exec context: it
+        # interpolates the fallback variable, which the caller sets only
+        # when the tight policy preparation fails on an enforcing host.
         directive = "SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0"
-        self.assertIn(directive, self.caddy_step)
+        self.assertIn("${selinux_context_line}", self.caddy_step)
         self.assertLess(
             self.caddy_step.index("[Service]"),
-            self.caddy_step.index(directive),
+            self.caddy_step.index("${selinux_context_line}"),
         )
         self.assertLess(
-            self.caddy_step.index(directive),
+            self.caddy_step.index("${selinux_context_line}"),
             self.caddy_step.index("ExecStart="),
         )
+        # The directive itself appears exactly once: the fallback assignment.
+        self.assertEqual(self.caddy_step.count(directive), 1)
+        self.assertIn(f'selinux_context_line="{directive}"', self.caddy_step)
+        # Preparation runs before the unit template is rendered.
+        self.assertLess(
+            self.caddy_step.index("prepare_caddy_selinux_policy"),
+            self.caddy_step.index("[Service]"),
+        )
+        self.assertEqual(self.install.count(directive), 1)
+
+    def test_tight_selinux_policy_helper_covers_exact_needs(self):
+        # The preparation helper gates on an enforcing SELinux, builds and
+        # loads the one-line module for exactly the app-port connect, and
+        # adds the stock httpd_var_lib_t file context for the state dir
+        # (bind 80/443 needs nothing: stock http_port_t allows it).
+        self.assertIn("getenforce", self.prepare)
+        self.assertIn('"Enforcing"', self.prepare)
+        self.assertIn("module fxroute_proxy 1.0;", self.prepare)
+        self.assertIn(
+            "allow httpd_t soundd_port_t:tcp_socket name_connect;", self.prepare
+        )
+        self.assertIn("checkmodule", self.prepare)
+        self.assertIn("semodule_package", self.prepare)
+        self.assertIn("semodule -i", self.prepare)
+        self.assertIn("semanage fcontext -a -t httpd_var_lib_t", self.prepare)
+        self.assertIn('fcontext_rule="/var/lib/fxroute-caddy(/.*)?"', self.prepare)
+        self.assertIn("restorecon -R", self.prepare)
+        self.assertIn("ensure_selinux_policy_tools", self.prepare)
+        # Tight mode flag: reset first, set only on the success path.
+        self.assertIn("CADDY_SELINUX_TIGHT=0", self.prepare)
+        self.assertLess(
+            self.prepare.index("CADDY_SELINUX_TIGHT=0"),
+            self.prepare.rindex("CADDY_SELINUX_TIGHT=1"),
+        )
+        # Narrow by design: no stock boolean that opens all ports.
+        self.assertNotIn("httpd_can_network_connect", self.install)
+
+    def test_selinux_tool_packages_for_each_manager(self):
+        # Package names for the policy build tools differ per manager;
+        # every SELinux-capable manager must map to checkpolicy +
+        # policycoreutils plus its semanage package.
+        helper = extract_function(self.install, "selinux_packages_for_manager")
+        for manager, required in [
+            ("apt", ["checkpolicy", "policycoreutils", "python3-policycoreutils"]),
+            ("dnf", ["checkpolicy", "policycoreutils", "policycoreutils-python-utils"]),
+            (
+                "zypper",
+                [
+                    "checkpolicy",
+                    "policycoreutils",
+                    "policycoreutils-python-utils",
+                    "selinux-tools",
+                ],
+            ),
+            ("pacman", ["checkpolicy", "policycoreutils", "python3-policycoreutils"]),
+        ]:
+            line = next(
+                ln
+                for ln in helper.splitlines()
+                if ln.strip().startswith(manager + ")")
+            )
+            for pkg in required:
+                self.assertIn(pkg, line, f"{manager} mapping misses {pkg}")
+        ensure = extract_function(self.install, "ensure_selinux_policy_tools")
+        self.assertIn("package_installed", ensure)
+        self.assertIn("pkg_install", ensure)
+
+    def test_state_and_uninstall_track_selinux_mode(self):
+        # The installed state records the mode for diagnostics, and the
+        # uninstaller drops the module and the file context it added.
+        self.assertIn('"caddy_selinux_tight"', self.install)
+        self.assertIn("semodule -r fxroute_proxy", self.uninstall)
+        self.assertIn('semanage fcontext -d "/var/lib/fxroute-caddy(/.*)?"', self.uninstall)
 
     def test_data_dir_guard_accepts_legacy_fxroute_owned_state(self):
         # A root-owned data dir predating the ownership flag must not block

@@ -3311,6 +3311,22 @@ remove_optional_caddy_proxy() {
       return 0
     fi
   fi
+  # SELinux residue of the confined-proxy mode: drop the narrow module and
+  # the state-dir file context, and relabel a kept data dir back to stock.
+  if command -v semodule >/dev/null 2>&1 \
+    && "${sudo_cmd[@]}" semodule -l 2>/dev/null | grep -w fxroute_proxy >/dev/null; then
+    if ! "${sudo_cmd[@]}" semodule -r fxroute_proxy >/dev/null 2>&1; then
+      warn "Could not remove the fxroute_proxy SELinux module"
+    fi
+  fi
+  if command -v semanage >/dev/null 2>&1 \
+    && "${sudo_cmd[@]}" semanage fcontext -l 2>/dev/null | grep -F "/var/lib/fxroute-caddy(/.*)?" >/dev/null; then
+    if ! "${sudo_cmd[@]}" semanage fcontext -d "/var/lib/fxroute-caddy(/.*)?" >/dev/null 2>&1; then
+      warn "Could not remove the SELinux file context for the Caddy data directory"
+    elif [[ -d "$caddy_data_dir" ]]; then
+      "${sudo_cmd[@]}" restorecon -R "$caddy_data_dir" >/dev/null 2>&1 || true
+    fi
+  fi
   "${sudo_cmd[@]}" rmdir /etc/fxroute/certs >/dev/null 2>&1 || true
   "${sudo_cmd[@]}" rmdir /etc/fxroute >/dev/null 2>&1 || true
   "${sudo_cmd[@]}" systemctl daemon-reload >/dev/null 2>&1 || true

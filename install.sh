@@ -172,6 +172,7 @@ CADDY_SERVICE_WAS_ACTIVE_BEFORE=0
 CADDY_INSTALLED_BY_FXROUTE=0
 DEFAULT_CADDY_DISABLED_BY_FXROUTE=0
 CADDY_PROXY_ENABLED=0
+CADDY_SELINUX_TIGHT=0
 CADDY_CERT_PATH=""
 CADDY_SERVICE_SHA256=""
 CADDY_CONFIG_SHA256=""
@@ -2217,6 +2218,19 @@ smb_packages_for_manager() {
   esac
 }
 
+selinux_packages_for_manager() {
+  # Tools the confined-proxy SELinux preparation needs beyond a default
+  # install: checkmodule (checkpolicy), semodule/restorecon/getenforce,
+  # and semanage (per-manager python package name).
+  case "$1" in
+    apt) echo "checkpolicy policycoreutils python3-policycoreutils" ;;
+    dnf) echo "checkpolicy policycoreutils policycoreutils-python-utils" ;;
+    zypper) echo "checkpolicy policycoreutils policycoreutils-python-utils selinux-tools" ;;
+    pacman) echo "checkpolicy policycoreutils python3-policycoreutils" ;;
+    *) return 1 ;;
+  esac
+}
+
 ensure_smb_packages() {
   local packages=()
   local missing=()
@@ -2226,6 +2240,28 @@ ensure_smb_packages() {
     package_installed "$pkg" || missing+=("$pkg")
   done
   [[ ${#missing[@]} -eq 0 ]] || pkg_install "${missing[@]}"
+}
+
+ensure_selinux_policy_tools() {
+  # Best-effort install of the SELinux policy build tools, then verify the
+  # actual commands: package names for semanage differ per release.
+  local packages=()
+  local missing=()
+  local pkg=""
+
+  read -r -a packages <<<"$(selinux_packages_for_manager "$PACKAGE_MANAGER")" || return 1
+  [[ ${#packages[@]} -gt 0 ]] || return 1
+  for pkg in "${packages[@]}"; do
+    package_installed "$pkg" || missing+=("$pkg")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    pkg_install "${missing[@]}" || return 1
+  fi
+  command -v checkmodule >/dev/null 2>&1 \
+    && command -v semodule_package >/dev/null 2>&1 \
+    && command -v semodule >/dev/null 2>&1 \
+    && command -v semanage >/dev/null 2>&1 \
+    && command -v restorecon >/dev/null 2>&1
 }
 
 zypper_python_package() {
@@ -4921,6 +4957,7 @@ write_install_state() {
     "caddy_installed_by_fxroute": $( [[ $CADDY_INSTALLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "default_caddy_disabled_by_fxroute": $( [[ $DEFAULT_CADDY_DISABLED_BY_FXROUTE -eq 1 ]] && echo true || echo false ),
     "caddy_proxy_enabled": $( [[ $CADDY_PROXY_ENABLED -eq 1 ]] && echo true || echo false ),
+    "caddy_selinux_tight": $( [[ $CADDY_SELINUX_TIGHT -eq 1 ]] && echo true || echo false ),
     "caddy_cert_path": "${CADDY_CERT_PATH}",
     "caddy_service_sha256": "${CADDY_SERVICE_SHA256}",
     "caddy_config_sha256": "${CADDY_CONFIG_SHA256}",
@@ -6971,6 +7008,60 @@ configure_system_power_polkit_rule() {
   rm -f "$tmp_rule"
 }
 
+prepare_caddy_selinux_policy() {
+  # Tight SELinux mode for the FXRoute Caddy proxy. The stock targeted
+  # policy already lets httpd_t bind 80/443 (http_port_t) and hands files
+  # created under the state dir the writable httpd_var_lib_t label; the
+  # fcontext rule below extends that label to stores created while Caddy
+  # ran unconfined (they are var_lib_t, which httpd_t may only read, so
+  # autosave and TLS renewal fail with EACCES). Only the upstream connect
+  # to the app port needs the one-line fxroute_proxy module below
+  # (soundd_port_t is the stock label of the app ports). Returns 1 when
+  # SELinux is enforcing but the policy cannot be prepared; the caller
+  # then falls back to an unconfined unit. Denials are dontaudit-hidden,
+  # so a missed rule surfaces as proxy errors, not audit lines.
+  local data_dir="$1"
+  local te_dir=""
+  local fcontext_rule="/var/lib/fxroute-caddy(/.*)?"
+
+  CADDY_SELINUX_TIGHT=0
+  command -v getenforce >/dev/null 2>&1 || return 0
+  [[ "$(getenforce 2>/dev/null || true)" == "Enforcing" ]] || return 0
+  ensure_selinux_policy_tools || return 1
+
+  te_dir="$(mktemp -d)" || return 1
+  cat > "${te_dir}/fxroute_proxy.te" <<'TE'
+module fxroute_proxy 1.0;
+require {
+    type httpd_t;
+    type soundd_port_t;
+    class tcp_socket name_connect;
+}
+allow httpd_t soundd_port_t:tcp_socket name_connect;
+TE
+  if ! checkmodule -M -m -o "${te_dir}/fxroute_proxy.mod" "${te_dir}/fxroute_proxy.te" >/dev/null 2>&1 \
+    || ! semodule_package -o "${te_dir}/fxroute_proxy.pp" -m "${te_dir}/fxroute_proxy.mod" >/dev/null 2>&1 \
+    || ! "${SUDO_CMD[@]}" semodule -i "${te_dir}/fxroute_proxy.pp" >/dev/null 2>&1; then
+    rm -rf "$te_dir"
+    warn "Could not load the narrow fxroute_proxy SELinux module"
+    return 1
+  fi
+  rm -rf "$te_dir"
+
+  if ! "${SUDO_CMD[@]}" semanage fcontext -l 2>/dev/null | grep -F "$fcontext_rule" >/dev/null; then
+    if ! "${SUDO_CMD[@]}" semanage fcontext -a -t httpd_var_lib_t "$fcontext_rule" >/dev/null 2>&1; then
+      warn "Could not add the SELinux file context for the Caddy data directory"
+      return 1
+    fi
+  fi
+  if [[ -d "$data_dir" ]] && ! "${SUDO_CMD[@]}" restorecon -R "$data_dir" >/dev/null 2>&1; then
+    warn "Could not relabel the existing Caddy data directory for SELinux"
+    return 1
+  fi
+  CADDY_SELINUX_TIGHT=1
+  return 0
+}
+
 offer_optional_caddy_proxy() {
   local env_file="$INSTALL_ROOT/.env"
   local port="8000"
@@ -7107,6 +7198,15 @@ offer_optional_caddy_proxy() {
     fi
   fi
 
+  # SELinux: prefer the tight stock+module policy; only when an enforcing
+  # host cannot be prepared fall back to an unconfined exec domain for
+  # this root service.
+  local selinux_context_line=""
+  if ! prepare_caddy_selinux_policy "$caddy_data_dir"; then
+    warn "Tight SELinux policy could not be prepared; the proxy unit runs unconfined as a fallback"
+    selinux_context_line="SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0"
+  fi
+
   tmp_caddy="$(mktemp)"
   tmp_service="$(mktemp)"
   trap "trap - RETURN; rm -f '$tmp_caddy' '$tmp_service'" RETURN
@@ -7175,13 +7275,13 @@ https://${MDNS_HOSTNAME}.local {
 EOF
   fi
 
-  # SELinuxContext: /usr/bin/caddy carries the httpd_exec_t label, so the
-  # targeted policy runs it as httpd_t, which may bind no unreserved ports
-  # (admin endpoint), connect to no app port (proxy upstream), and write no
-  # caddy data dir (TLS renewal) since selinux-policy 20260914; the denials
-  # are dontaudit-hidden. unconfined_service_t fails the entrypoint check
-  # on httpd_exec_t (status 203/EXEC), so run this root service as
-  # unconfined_t. The directive is ignored on distros without SELinux.
+  # SELinux: with prepare_caddy_selinux_policy successful the unit stays
+  # confined (httpd_exec_t transitions the binary to httpd_t; bind 80/443
+  # is stock, the app-port connect is the fxroute_proxy module, and the
+  # state dir carries httpd_var_lib_t). Only the explicit fallback for an
+  # unpreparable enforcing host sets the context below: the entrypoint
+  # for httpd_exec_t must be unconfined_t (unconfined_service_t fails it,
+  # status 203/EXEC), and the directive is ignored without SELinux.
   cat > "$tmp_service" <<EOF
 [Unit]
 Description=FXRoute Caddy reverse proxy
@@ -7193,7 +7293,7 @@ Type=simple
 Environment=HOME=${caddy_data_dir}
 Environment=XDG_CONFIG_HOME=${caddy_data_dir}/config
 Environment=XDG_DATA_HOME=${caddy_data_dir}
-SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0
+${selinux_context_line}
 ExecStart=${caddy_bin} run --config ${config_path} --adapter caddyfile
 Restart=on-failure
 RestartSec=5
@@ -7205,6 +7305,12 @@ EOF
   if ! "${SUDO_CMD[@]}" install -d "$config_dir" "$caddy_data_dir" "${caddy_data_dir}/config" "$caddy_cert_dir"; then
     warn "Optional Caddy setup failed while creating ${config_dir}"
     return 0
+  fi
+  if [[ $CADDY_SELINUX_TIGHT -eq 1 ]]; then
+    # Label the freshly created state dirs for the confined proxy;
+    # existing stores were already relabeled in the preparation step.
+    "${SUDO_CMD[@]}" restorecon -R "$caddy_data_dir" >/dev/null 2>&1 || \
+      warn "Could not apply the SELinux label to ${caddy_data_dir}"
   fi
   if ! "${SUDO_CMD[@]}" install -m 644 "$tmp_caddy" "$config_path"; then
     warn "Optional Caddy setup failed while writing ${config_path}"
