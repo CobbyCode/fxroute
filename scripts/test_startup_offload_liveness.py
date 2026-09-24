@@ -201,6 +201,18 @@ def _lifespan_patches(slow_player, slow_effects):
 
 
 class StartupOffloadLivenessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_downloader_probe_failure_keeps_app_running_without_downloader(self):
+        with contextlib.ExitStack() as stack:
+            for startup_patch in _lifespan_patches(SlowPlayer([]), SlowDSPManager):
+                stack.enter_context(startup_patch)
+            stack.enter_context(mock.patch.object(
+                main, "Downloader", side_effect=RuntimeError("yt-dlp check failed")
+            ))
+            logger = stack.enter_context(mock.patch.object(main, "logger"))
+            async with main.lifespan(main.app):
+                self.assertIsNone(main.downloader)
+                logger.warning.assert_any_call("Downloader not available: %s", mock.ANY)
+
     async def test_lifespan_waits_for_offloaded_startup_while_loop_ticks(self):
         events = []
         SLOW_EFFECTS_EVENTS.clear()

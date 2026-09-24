@@ -228,6 +228,39 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.irs_dir / "ir-left.irs").read_bytes(), b"IRDATA" * 16)
         self.assertTrue(all(not Path(path).exists() for path in self.created_temps))
 
+    async def test_export_keeps_each_ir_once_with_its_original_extension(self):
+        preset_path = Path(self.temp_dir.name) / "Room.json"
+        preset_path.write_text('{"kernels": ["left", "right"]}')
+        self.irs_dir.mkdir()
+        (self.irs_dir / "left.irs").write_bytes(b"LEFT")
+        (self.irs_dir / "right.wav").write_bytes(b"RIGHT")
+
+        class ExportManager(FakeDspManager):
+            output_dir = preset_path.parent
+
+            def list_presets(self):
+                return [{"name": "Room", "path": str(preset_path)}]
+
+            def _extract_kernel_names_from_payload(self, payload):
+                return set(payload["kernels"])
+
+            def _find_ir_paths_for_kernel_name(self, name):
+                return [self.irs_dir / ("left.irs" if name == "left" else "right.wav")]
+
+        main.dsp_manager = ExportManager(self.irs_dir)
+        response = await dsp_api.download_dsp_preset_file("Room")
+        try:
+            with zipfile.ZipFile(response.path) as archive:
+                self.assertEqual(archive.namelist(), [
+                    "preset.json", "left.irs", "right.wav", "manifest.json",
+                ])
+                self.assertEqual(archive.read("left.irs"), b"LEFT")
+                self.assertEqual(archive.read("right.wav"), b"RIGHT")
+                self.assertEqual(json.loads(archive.read("manifest.json"))["irs"],
+                                 ["left.irs", "right.wav"])
+        finally:
+            Path(response.path).unlink(missing_ok=True)
+
     async def test_traversal_member_rejected(self):
         evil = write_zip([("preset.json", "{}"), ("../evil.irs", b"X" * 8)])
         with self.assertRaises(HTTPException) as ctx:

@@ -2453,8 +2453,12 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Library scanner initialized; initial scan running in background")
 
-        downloader = Downloader()
-        logger.info("Downloader initialized")
+        try:
+            downloader = Downloader()
+            logger.info("Downloader initialized")
+        except Exception as exc:
+            downloader = None
+            logger.warning("Downloader not available: %s", exc)
 
         dsp_manager = await _drain_worker(DSPManager)
         volume_read_monitor_task = start_volume_read_monitor()
@@ -2646,7 +2650,8 @@ async def lifespan(app: FastAPI):
         )
 
         runtime.player_instance.register_callbacks(_dispatch_player_state_change)
-        downloader.register_callback(on_download_progress, asyncio.get_running_loop())
+        if downloader is not None:
+            downloader.register_callback(on_download_progress, asyncio.get_running_loop())
         try:
             await streaming_api._sync_spotify_connect_name_best_effort()
         except Exception as exc:
@@ -5379,7 +5384,9 @@ async def cancel_download():
 @app.get("/api/download/status")
 async def download_status():
     global downloader
-    if downloader and downloader.active_download:
+    if downloader is None:
+        raise HTTPException(status_code=503, detail="Downloader not available")
+    if downloader.active_download:
         return downloader.active_download
     return {"status": "idle"}
 

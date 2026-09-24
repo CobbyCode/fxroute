@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
-import requests
+from safe_http import RADIO_METADATA_FETCH_MAX_BYTES, safe_get
 
 
 RP_CHANNELS = {"rp-main": 0, "rp-mellow": 1, "rp-rock": 2, "rp-global": 3}
@@ -155,7 +155,7 @@ class _Cache:
 
 
 class RadioMetadataService:
-    def __init__(self, *, http_get: Callable[..., Any] = requests.get, clock: Callable[[], float] = time.time):
+    def __init__(self, *, http_get: Callable[..., Any] = safe_get, clock: Callable[[], float] = time.time):
         self._http_get = http_get
         self._clock = clock
         self._cache: dict[str, _Cache] = {}
@@ -213,7 +213,10 @@ class RadioMetadataService:
             url, parser = f"https://somafm.com/songs/{arg}.json", lambda p: parse_somafm(station_id, p, now)
         else:
             url, parser = "https://api.kexp.org/v2/plays/?format=json&limit=3", lambda p: parse_kexp(station_id, p, now)
-        response = self._http_get(url, timeout=(2, 5), headers={"User-Agent": "FXRoute/RadioMetadata"})
+        response = self._http_get(
+            url, timeout=(2, 5), headers={"User-Agent": "FXRoute/RadioMetadata"},
+            max_bytes=RADIO_METADATA_FETCH_MAX_BYTES,
+        )
         response.raise_for_status()
         return parser(response.json())
 

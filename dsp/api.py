@@ -53,8 +53,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Preset bundle ZIP hardening limits (FXRoute bundles: manifest + preset
-# JSON + a few IR files, each IR stored twice by name variant).
+# Preset bundle ZIP hardening limits (manifest + preset JSON + IR files).
 PRESET_BUNDLE_MAX_MEMBERS = 512
 PRESET_BUNDLE_MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 PRESET_BUNDLE_MAX_MEMBER_BYTES = 256 * 1024 * 1024
@@ -523,7 +522,6 @@ async def download_dsp_preset_file(preset_name: str):
                 for ir_path in ir_paths:
                     if ir_path.is_file() and path_within_root(ir_path.resolve(), dsp_mgr.irs_dir):
                         archive.write(ir_path, arcname=zip_album.dedupe_archive_name(ir_path.name, used_names))
-                        archive.write(ir_path, arcname=zip_album.dedupe_archive_name(f"{ir_path.stem}.wav", used_names))
                 manifest = {
                     "type": "fxroute-preset-bundle",
                     "version": 1,

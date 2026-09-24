@@ -69,16 +69,18 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(owner.scanner)
         self.assertIsNone(owner.switch_lock)
 
-    async def test_startup_failure_is_raised_and_prior_player_is_stopped(self):
+    async def test_required_dsp_startup_failure_is_raised_and_prior_player_is_stopped(self):
         player = FakePlayer()
         settings = SimpleNamespace(MUSIC_ROOT=pathlib.Path("/music"), download_dir=pathlib.Path("/downloads"))
         with patch.object(main, "get_settings", return_value=settings), patch.object(
             main, "get_player", return_value=player
         ), patch.object(main, "LibraryScanner", FakeScanner), patch.object(
-            main, "Downloader", side_effect=RuntimeError("downloader failed")
+            main, "Downloader", FakeDownloader
+        ), patch.object(
+            main, "DSPManager", side_effect=RuntimeError("DSP failed")
         ):
             context = main.lifespan(main.app)
-            with self.assertRaisesRegex(RuntimeError, "downloader failed"):
+            with self.assertRaisesRegex(RuntimeError, "DSP failed"):
                 await context.__aenter__()
 
         player.stop.assert_called_once()

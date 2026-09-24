@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 import asyncio
+import io
+import json
+import socket
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from radio.metadata import (
     RadioMetadataService, parse_fip, parse_kexp, parse_radio_paradise, parse_somafm,
 )
+import safe_http
 
 
 NOW = 1_785_650_000.0
@@ -65,6 +72,41 @@ class FakeResponse:
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_fetch_rejects_private_provider_dns_without_requesting_it(self):
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b'[{"event": "1", "title": "Track"}]'
+        session = MagicMock()
+        with patch.object(safe_http.socket, "getaddrinfo", return_value=[
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 443)),
+        ]), patch.object(safe_http, "_build_public_session", return_value=session), \
+                patch("requests.api.request", return_value=response):
+            result = await RadioMetadataService(clock=lambda: NOW).get("rp-main")
+        self.assertTrue(result is None)
+        session.get.assert_not_called()
+
+    async def test_default_fetch_bounds_provider_json_and_preserves_soma_slug(self):
+        body = json.dumps({"songs": [{"title": "Now", "album": "X" * (5 * 1024 * 1024)}]}).encode()
+
+        def response():
+            result = requests.Response()
+            result.status_code = 200
+            result.raw = io.BytesIO(body)
+            return result
+
+        session = MagicMock()
+        session.get.side_effect = lambda *args, **kwargs: response()
+        with patch.object(safe_http.socket, "getaddrinfo", return_value=[
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 443)),
+        ]), patch.object(safe_http, "_build_public_session", return_value=session), \
+                patch("requests.api.request", side_effect=lambda *args, **kwargs: response()):
+            result = await RadioMetadataService(clock=lambda: NOW).get(
+                "custom", "https://ice5.somafm.com/lush-128-aac"
+            )
+        self.assertTrue(result is None)
+        self.assertTrue(session.get.called)
+        self.assertEqual(session.get.call_args.args[0], "https://somafm.com/songs/lush.json")
+
     async def test_cache_singleflight_and_failure_stale_expiry(self):
         calls = []
         now = [NOW]

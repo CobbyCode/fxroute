@@ -99,6 +99,18 @@ class DownloadApiSecurityTests(unittest.TestCase):
         self.assertGreaterEqual(response.status_code, 400)
         self.assertLess(response.status_code, 500)
 
+    def test_unavailable_downloader_returns_503_on_all_download_routes(self):
+        main.downloader = None
+        for method, path, payload in (
+            ("post", "/api/download", {"url": "https://example.com/audio.mp3"}),
+            ("post", "/api/download/cancel", None),
+            ("get", "/api/download/status", None),
+        ):
+            with self.subTest(path=path):
+                response = self.client.request(method.upper(), path, json=payload)
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(response.json()["detail"], "Downloader not available")
+
     def test_missing_url_is_a_client_error(self):
         self.use_real_downloader()
         response = self.client.post("/api/download", json={})

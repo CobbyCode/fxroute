@@ -36,6 +36,7 @@ DEFAULT_FETCH_READ_CHUNK_BYTES = 64 * 1024
 # Named, generous per-content-class response-body limits (legit responses
 # stay far below; the limits only stop unbounded body loading).
 RADIO_PLAYLIST_FETCH_MAX_BYTES = 1 * 1024 * 1024   # .pls / .m3u / .m3u8 playlist resolution
+RADIO_METADATA_FETCH_MAX_BYTES = 1 * 1024 * 1024   # RP / FIP / SomaFM / KEXP JSON
 SOMAFM_PAGE_FETCH_MAX_BYTES = 2 * 1024 * 1024      # somafm.com metadata page (HTML)
 SOMAFM_ARTWORK_FETCH_MAX_BYTES = 8 * 1024 * 1024   # station artwork image
 ENRICHMENT_JSON_MAX_BYTES = 4 * 1024 * 1024        # MusicBrainz / Wikidata / Wikipedia JSON
