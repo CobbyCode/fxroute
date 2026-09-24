@@ -211,7 +211,9 @@ function setupEffectsActions() {
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
     loadSavedEffectsExtras();
-    root.FXRouteBankUI.setupEffectsCompareActions();
+    // Compare controls bind through wireBankUi() above; binding them here a
+    // second time would duplicate every Compare/A/B listener (two identical
+    // POSTs per change, the second racing the first commit's revision).
     if (deps.getElements().effectsPeqDisclosure) {
         deps.getElements().effectsPeqDisclosure.addEventListener('toggle', () => {
             updateEffectsPeqDisclosureLabel();
@@ -937,6 +939,9 @@ async function _doSaveEffectsExtras() {
             tone_effect: { enabled: !!extras.toneEffectEnabled, mode: extras.toneEffectMode },
         };
         renderEffects();
+        // Success clears a previous failure label: the tile must never keep
+        // reporting "Failed" after the latest commit already fixed it.
+        setEffectsExtrasFeedback('', '');
     } catch (error) {
         setEffectsExtrasFeedback('Failed', 'error');
         deps.showToast(error.message || 'Failed to save output extras', 'error');

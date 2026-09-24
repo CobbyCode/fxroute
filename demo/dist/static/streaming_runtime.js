@@ -288,7 +288,9 @@ async function qobuzCommand(action) {
         const data = await deps.apiPostJson(`/api/streaming/qobuz/${action}`);
         window.__qobuzLastData = data;
         deps.reconcileFooterSource();
-        deps.updateFooterForStreamingOwner(data);
+        // Only paint when Qobuz actually owns the footer: a concurrent
+        // Spotify session keeps ownership and must not show Qobuz metadata.
+        if (window.__footerSource === 'qobuz') deps.updateFooterForStreamingOwner(data);
         if (action === 'play' || action === 'toggle') {
             deps.maybeShowStreamingQueueCue('qobuz', prev, data);
         }

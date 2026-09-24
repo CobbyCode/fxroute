@@ -676,6 +676,9 @@
             (error) => {
                 if (_subwooferSavePromise === run) _subwooferSavePromise = null;
                 releaseSubwooferLinkGuard();
+                // A failed payload must stay retryable: clear the dedup
+                // signature so requesting the same values again really saves.
+                if (_subwooferLastRequestedSignature === pending.signature) _subwooferLastRequestedSignature = null;
                 setSubwooferFeedback(error?.message || 'Subwoofer settings save failed', 'error');
             },
         );

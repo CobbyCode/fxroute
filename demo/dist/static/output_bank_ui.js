@@ -49,6 +49,7 @@
     }
 
     let effectsCompareLoadInFlight = false;
+    let effectsCompareActionsWired = false;
     let _bankImportChannelMode = null;
     let effectsImportInFlight = false;
 
@@ -834,6 +835,11 @@
     }
 
     function setupEffectsCompareActions() {
+        // Idempotent: setupEffectsActions() reaches this through wireBankUi(),
+        // so a second call must not stack duplicate Compare/A/B listeners
+        // (each would fire a second identical POST per change).
+        if (effectsCompareActionsWired) return;
+        effectsCompareActionsWired = true;
         if (deps.getElements().effectsCompareToggle) {
             deps.getElements().effectsCompareToggle.addEventListener('click', toggleComparePreset);
         }

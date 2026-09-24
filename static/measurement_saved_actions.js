@@ -168,6 +168,13 @@
             console.error('deleteSelectedMeasurements failed', error);
             deps.getState().measurement.statusText = error.message || 'Failed to delete selected measurements';
             deps.showToast(deps.getState().measurement.statusText, 'error');
+            // Partial success still refreshes the list: otherwise the
+            // server-deleted items linger as ghosts until an unrelated refresh.
+            try {
+                await deps.fetchMeasurements();
+            } catch (_) {
+                // List refresh is best-effort here; the error above stands.
+            }
         } finally {
             deps.getState().measurement.saveInFlight = false;
             deps.renderMeasurementPanel();

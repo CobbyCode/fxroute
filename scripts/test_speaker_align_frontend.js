@@ -86,6 +86,47 @@ async function main() {
     assert.match(measurementCss, /\.speaker-align-table\s*\{[^}]*min-width:\s*\d+px/);
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.021/);
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.250/);
+    // Saveable time-domain run: Before from planning, After from
+    // verification, no extra measurement; reopening renders the same view
+    // plus alignment data. Guards the accidental helper removal.
+    const runResult = { confirmed: true, committed_revision: 8, side: 'right', sample_rate_hz: 48000,
+        proposal: { start_revision: 7, processing_fingerprint: 'test-fingerprint',
+            arrival_ms: { right_low: 2, right_high: 5 }, added_delay_ms: { right_low: 3, right_high: 0 }, reference_role: 'right_high',
+            way_levels_db: { right_low: -12, right_high: -8 }, added_gain_db: { right_low: 2, right_high: -2 },
+            planning_isolation_db: { right_low: 18.5, right_high: 21.0 }, arrival_source: 'shared-planning-take' },
+        check: { confirmed: true, reasons: [], warnings: [], before_spread_ms: 3, max_residual_ms: 0.021, tolerance_ms: 0.25,
+            after_arrival_ms: { right_low: 5, right_high: 5.021 }, pairs: [],
+            gain_spread_db: 0.2, gain_tolerance_db: 1.0, after_way_levels_db: { right_low: -10, right_high: -10.2 },
+            way_isolation_db: { right_low: 19.0, right_high: 20.0 }, isolation_margin_db: 19.0 } };
+    const run = Speaker.buildSpeakerAlignRun(runResult, {
+        side: 'right', jobId: 'job-1', sampleRateHz: 48000, committedRevision: 8,
+        params: { input_id: 'mic-1' },
+        frequency: { right_low: { trusted_points: [[20, -12], [1000, -10]] } },
+    });
+    assert.equal(run.schema, 'speaker-align-run-v1');
+    assert.equal(run.before.source, 'planning-take');
+    assert.equal(run.after.source, 'verification-take');
+    assert.deepEqual(run.ways, ['right_high', 'right_low']);
+    assert.equal(run.corrections.added_delay_ms.right_low, 3);
+    assert.equal(run.metadata.params.input_id, 'mic-1');
+    assert.deepEqual(run.frequency.right_low.trusted_points, [[20, -12], [1000, -10]]);
+    const view = Speaker.timeDomainView(run);
+    assert.deepEqual(view.ways, ['right_high', 'right_low']);
+    assert.equal(view.lanes.before.source, 'planning-take');
+    assert.equal(view.lanes.after.source, 'verification-take');
+    assert.ok(view.window_ms[0] <= 2 && view.window_ms[1] >= 5.021);
+    const timeHtml = Speaker.renderSpeakerAlignTimeDomain(run, 'right');
+    assert.match(timeHtml, /planning take/);
+    assert.match(timeHtml, /verification take/);
+    assert.match(timeHtml, /shared ms axis/);
+    const measurement = Speaker.runToMeasurement(run, 'Right align');
+    assert.equal(measurement.measurement_kind, 'speaker-align-run-v1');
+    assert.ok(Array.isArray(measurement.traces) && measurement.traces.length === 1);
+    const reopened = Speaker.measurementToRun(measurement);
+    assert.deepEqual(reopened.ways, run.ways);
+    // Finished results render the time-domain view next to the table.
+    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-time/);
+    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /shared ms axis/);
     state.outputSystem.catalog.modes.stereo.selected_bank = 'all';
     flows.syncSpeakerAlignButton();
     await flows.startSpeakerAlign('left');

@@ -100,6 +100,9 @@ let playbackFooterResizeObserver = null;
 let playbackFooterSpaceFrame = null;
 let seekDragging = false;
 let seekPendingPos = null;
+// Slider value already sent for the current streaming seek gesture: the
+// slider's own mouseup+change pair must produce a single seek.
+let lastStreamingSeekValue = null;
 // Slow-VU holdover cache: a single dropped WS frame must not blank the meter.
 let lastValidVuSnapshot = null;
 const VU_HOLDOVER_MS = 2000;
@@ -1187,27 +1190,46 @@ function initSeek() {
     deps.getElements().seekSlider.addEventListener('touchstart', seekStart, { passive: true });
     deps.getElements().seekSlider.addEventListener('mouseup', seekEnd);
     deps.getElements().seekSlider.addEventListener('touchend', seekEnd);
+    // Keyboard seeks fire input + change but never mouseup: change is the
+    // commit event. Document-level releases end a drag whose release lands
+    // outside the slider (mouseup would otherwise never reach it and the
+    // position display would wedge with seekDragging stuck on).
+    deps.getElements().seekSlider.addEventListener('change', seekEnd);
+    if (typeof document !== 'undefined' && document.addEventListener) {
+        document.addEventListener('mouseup', seekEnd);
+        document.addEventListener('touchend', seekEnd);
+    }
 }
 
 function seekStart() {
     if (deps.getElements().playbackBar?.classList.contains('progress-readonly')) return;
     seekDragging = true;
+    lastStreamingSeekValue = null;
     if (deps.isStreamingFooterSource(window.__footerSource)) window.__streamingSeeking = true;
 }
 
-function seekEnd() {
+function seekEnd(event) {
     if (deps.getElements().playbackBar?.classList.contains('progress-readonly')) return;
+    // Commit only for a real gesture: an active drag, or a change event
+    // (keyboard seek). Idle document mouseup/touchend traffic must stay a
+    // no-op, and the slider's own mouseup+change pair must send one seek.
+    const commit = seekDragging || (event && event.type === 'change');
     seekDragging = false;
     if (deps.isStreamingFooterSource(window.__footerSource)) {
         window.__streamingSeeking = false;
+        if (!commit) return;
         const streamingData = deps.streamingFooterData();
         if (streamingData && streamingData.duration) {
-            const posSec = (parseInt(deps.getElements().seekSlider.value, 10) / 1000) * streamingData.duration;
+            const sliderValue = String(deps.getElements().seekSlider.value);
+            if (sliderValue === lastStreamingSeekValue) return;
+            lastStreamingSeekValue = sliderValue;
+            const posSec = (parseInt(sliderValue, 10) / 1000) * streamingData.duration;
             if (window.__footerSource === 'qobuz') deps.qobuzSeek(posSec);
             else deps.spotifySeek(posSec);
         }
         return;
     }
+    if (!commit) return;
     if (seekPendingPos !== null && deps.getState().playback.duration > 0) {
         deps.doSeek(seekPendingPos);
         seekPendingPos = null;

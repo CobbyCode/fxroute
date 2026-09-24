@@ -767,7 +767,7 @@ async function fetchAlbums() {
     albumsFetchInFlight = true;
     try {
         const res = await fetch('/api/albums');
-        if (!res.ok) return;
+        if (!res.ok) throw new Error('Failed to fetch albums');
         const albums = await res.json();
         deps.getState().library.albums = albums;
         // An empty list while the scan is still running is not an answer yet:
@@ -775,6 +775,7 @@ async function fetchAlbums() {
         // the scan finished stops the empty message from flashing while the
         // albums are still arriving.
         deps.getState().library.albumsLoaded = albums.length > 0 || !deps.getState().library.scanning;
+        deps.getState().library.albumsError = null;
         deps.getState().library.albumsCacheToken = Date.now();
         // Never clobber an open album/playlist detail with a background
         // re-render; the late init fetch would otherwise close the detail.
@@ -783,6 +784,13 @@ async function fetchAlbums() {
         }
     } catch (e) {
         console.warn('Failed to fetch albums', e);
+        // Surface the failure instead of looping: the albums view renders the
+        // error state and only retries on explicit navigation or refresh.
+        deps.getState().library.albumsError = e?.message || 'Failed to fetch albums';
+        deps.showToast(deps.getState().library.albumsError, 'error');
+        if (deps.getState().library.viewMode === 'albums' && !deps.getState().library.albumDetail && !deps.getState().library.playlistDetail) {
+            renderAlbums();
+        }
     } finally {
         albumsFetchInFlight = false;
     }
@@ -803,6 +811,13 @@ function renderAlbums() {
     if (deps.getElements().libraryFolderPath) deps.getElements().libraryFolderPath.classList.add('hidden');
 
     if (!deps.getState().library.albumsLoaded) {
+        // A failed fetch reports an error state instead of looping: the view
+        // only retries on explicit navigation or library refresh.
+        if (deps.getState().library.albumsError) {
+            window.FXRouteContentState.set(loadingEl, 'error', deps.getState().library.albumsError);
+            deps.getElements().albumsGrid.classList.add('hidden');
+            return;
+        }
         // Albums not yet loaded — show loading state and trigger fetch. A
         // running scan reports its progress here for the same reason as in
         // the tracks view: the albums arrive when it is done.
@@ -1655,6 +1670,7 @@ async function deleteLibraryFolder(folder) {
         deps.getState().library.currentFolder = parentFolder;
         deps.getState().library.selectedTrackIds = deps.getState().library.selectedTrackIds.filter(id => !tracks.some(track => track.id === id));
         deps.getState().library.albumsLoaded = false;
+        deps.getState().library.albumsError = null;
         deps.getState().library.albumDetail = null;
         deps.showToast(`Deleted ${tracks.length} track${tracks.length === 1 ? '' : 's'}`, 'success');
         await fetchTracks();
@@ -1901,6 +1917,7 @@ async function refreshLibrary() {
     deps.getState().library.scanning = true;
     deps.getState().library.scanStatus = { scanning: true, tracks_found: 0, files_seen: 0 };
     deps.getState().library.albumsLoaded = false;
+    deps.getState().library.albumsError = null;
     deps.getState().library.albums = [];
     renderTracks();
     try {
@@ -2093,7 +2110,7 @@ async function downloadSelectedTracks() {
 }
 
 async function deleteSelectedTracks() {
-    const trackIds = [...state.library.selectedTrackIds];
+    const trackIds = [...(deps.getState().library.selectedTrackIds || [])];
     if (trackIds.length === 0) {
         deps.showToast('Please select tracks first', 'error');
         return;

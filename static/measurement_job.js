@@ -118,7 +118,22 @@
         try {
             const resp = await deps.fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to cancel measurement'));
+            if (!resp.ok) {
+                // The job is already gone server-side: resolve into a cleared
+                // state so Cancel itself cannot leave the UI stuck.
+                if (resp.status === 404 || resp.status === 410) {
+                    if (deps.getState().measurement.jobGeneration !== jobGeneration || String(deps.getState().measurement.activeJobId || '') !== jobId) return;
+                    deps.getState().measurement.statusText = 'Measurement is no longer available.';
+                    deps.getState().measurement.activeJobId = '';
+                    deps.getState().measurement.startInFlight = false;
+                    deps.getState().measurement.activeMeasurementKind = '';
+                    deps.getState().measurement.cancelRequested = false;
+                    deps.getState().measurement.repeatJobActive = false;
+                    syncMeasurementStartButtonFallback();
+                    return;
+                }
+                throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to cancel measurement'));
+            }
             if (deps.getState().measurement.jobGeneration !== jobGeneration || String(deps.getState().measurement.activeJobId || '') !== jobId) return;
             deps.getState().measurement.statusText = String(data.job?.message || 'Measurement cancelled.');
             if (ui.MEASUREMENT_JOB_CANCELLED_STATES.has(deps.getMeasurementJobStatus(data.job || {}))) {
@@ -155,11 +170,69 @@
 
     async function pollMeasurementJob(jobId, jobGeneration = deps.getState().measurement.jobGeneration) {
         if (!jobId) return;
+        // Transport blips must not brick the sweep UI: tolerate consecutive
+        // fetch failures like the AutoSub/SpeakerAlign polls, and resolve a
+        // gone job (404/410) into a cleared state instead of a stuck one.
+        let consecutiveErrors = 0;
+        const maxConsecutiveErrors = 40;
         for (let attempt = 0; attempt < 360; attempt += 1) {
             if (deps.getState().measurement.jobGeneration !== jobGeneration || String(deps.getState().measurement.activeJobId || '') !== String(jobId)) return;
-            const resp = await deps.fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`);
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to fetch measurement job'));
+            let resp;
+            let data;
+            try {
+                resp = await deps.fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`);
+                data = await resp.json().catch(() => ({}));
+            } catch (error) {
+                if (deps.getState().measurement.jobGeneration !== jobGeneration || String(deps.getState().measurement.activeJobId || '') !== String(jobId)) return;
+                consecutiveErrors += 1;
+                console.warn('pollMeasurementJob error', error);
+                if (consecutiveErrors >= maxConsecutiveErrors) {
+                    deps.getState().measurement.statusText = error?.message || 'Measurement polling failed';
+                    deps.getState().measurement.activeJobId = '';
+                    deps.getState().measurement.startInFlight = false;
+                    deps.getState().measurement.cancelRequested = false;
+                    deps.getState().measurement.activeMeasurementKind = '';
+                    deps.getState().measurement.repeatJobActive = false;
+                    syncMeasurementStartButtonFallback();
+                    renderMeasurementPanelDefensively('measurement polling failure sync');
+                    deps.showToast(deps.getState().measurement.statusText, 'error');
+                    return;
+                }
+                await deps.sleep(800);
+                continue;
+            }
+            if (deps.getState().measurement.jobGeneration !== jobGeneration || String(deps.getState().measurement.activeJobId || '') !== String(jobId)) return;
+            if (!resp.ok) {
+                if (resp.status === 404 || resp.status === 410) {
+                    deps.getState().measurement.statusText = 'Measurement job is no longer available.';
+                    deps.getState().measurement.activeJobId = '';
+                    deps.getState().measurement.startInFlight = false;
+                    deps.getState().measurement.cancelRequested = false;
+                    deps.getState().measurement.activeMeasurementKind = '';
+                    deps.getState().measurement.repeatJobActive = false;
+                    syncMeasurementStartButtonFallback();
+                    renderMeasurementPanelDefensively('measurement gone-state sync');
+                    deps.showToast(deps.getState().measurement.statusText, 'error');
+                    return;
+                }
+                consecutiveErrors += 1;
+                console.warn('pollMeasurementJob error', deps.formatTransitionErrorDetail(data.detail, 'Failed to fetch measurement job'));
+                if (consecutiveErrors >= maxConsecutiveErrors) {
+                    deps.getState().measurement.statusText = deps.formatTransitionErrorDetail(data.detail, 'Failed to fetch measurement job');
+                    deps.getState().measurement.activeJobId = '';
+                    deps.getState().measurement.startInFlight = false;
+                    deps.getState().measurement.cancelRequested = false;
+                    deps.getState().measurement.activeMeasurementKind = '';
+                    deps.getState().measurement.repeatJobActive = false;
+                    syncMeasurementStartButtonFallback();
+                    renderMeasurementPanelDefensively('measurement polling failure sync');
+                    deps.showToast(deps.getState().measurement.statusText, 'error');
+                    return;
+                }
+                await deps.sleep(800);
+                continue;
+            }
+            consecutiveErrors = 0;
             const job = data.job || {};
             if (deps.getState().measurement.jobGeneration !== jobGeneration || String(deps.getState().measurement.activeJobId || '') !== String(jobId)) return;
             const jobStatus = deps.getMeasurementJobStatus(job);
