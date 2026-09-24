@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
 
 function extractFunction(source, name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -74,14 +74,19 @@ function renderWith({ track, queue }) {
     const loopBtn = makeButton();
     const sandbox = {
         window: { __footerSource: 'local' },
+        // renderFooterModeButtons reads state/DOM/ownership through deps.
+        deps: {
+            getState: () => sandbox.state,
+            getElements: () => ({ footerShuffleBtn: shuffleBtn, footerLoopBtn: loopBtn }),
+            isStreamingFooterSource: () => false,
+            streamingFooterData: () => ({}),
+            isLibraryModeRequestInFlight: () => false,
+            isSpotifyTransportInFlight: () => false,
+        },
         state: {
             playback: { current_track: track, queue },
             library: { shuffle: false, loop: false },
         },
-        libraryModeRequestInFlight: false,
-        isStreamingFooterSource: () => false,
-        streamingFooterData: () => ({}),
-        elements: { footerShuffleBtn: shuffleBtn, footerLoopBtn: loopBtn },
     };
     vm.createContext(sandbox);
     vm.runInContext(

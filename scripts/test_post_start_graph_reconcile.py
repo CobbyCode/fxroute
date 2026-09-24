@@ -207,7 +207,6 @@ def _paused_qobuz_output_mode_request(*, should_play=False) -> TransitionRequest
         output_mode_target={
             "output_mode": {"mode": "stereo", "effective_output_key": OUTPUT_KEY},
         },
-        output_mode_config={"mode": "stereo"},
     )
 
 

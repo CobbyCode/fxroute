@@ -19,6 +19,7 @@ const MeasurementUI = require('../static/measurement_ui.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+const setupSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_setup.js'), 'utf8');
 
 const WARNING_TEXT = 'The selected measurement microphone is currently unavailable. Reconnect it or deliberately select another input.';
 
@@ -123,22 +124,25 @@ function makeContext() {
     };
     vm.createContext(context);
     vm.runInContext(`
-        let measurementSettingsRevision = 0;
-        function getSelectedMeasurementInput() {
-            const measurementState = state.measurement || {};
-            return (measurementState.inputs || []).find(input => input.id === measurementState.selectedInputId) || null;
-        }
-        function normalizeMeasurementInputChannelSelections() {}
         ${extractFunction('describeMeasurementScope')}
         ${extractFunction('measurementModeNoteText')}
         ${extractFunction('measurementInputAvailabilityMessage')}
         ${extractFunction('measurementSetupStatusText')}
-        ${extractFunction('applyMeasurementSetupSettings')}
-        ${extractFunction('saveMeasurementSetupSettings')}
-        ${extractFunction('applyMeasurementInputSelection')}
-        ${extractFunction('fetchMeasurementInputs')}
-        this.getRevision = () => measurementSettingsRevision;
     `, context);
+    vm.runInContext(setupSource, context);
+    const setup = context.FXRouteMeasurementSetup;
+    setup.init({
+        getState: () => state,
+        fetch: context.fetch,
+        renderMeasurementPanel: context.renderMeasurementPanel,
+        measurementModeNoteText: () => context.measurementModeNoteText(),
+        describeMeasurementScope: (note) => context.describeMeasurementScope(note),
+    });
+    for (const name of ['applyMeasurementSetupSettings', 'saveMeasurementSetupSettings',
+        'applyMeasurementInputSelection', 'fetchMeasurementInputs']) {
+        context[name] = (...args) => setup[name](...args);
+    }
+    context.getRevision = () => setup.getMeasurementSettingsRevision();
     return { context, fetchCalls, inputsResolvers, state };
 }
 
@@ -276,6 +280,27 @@ async function main() {
         state.measurement.selectedInputUnavailable = true;
         const after = context.measurementSetupStatusText();
         assert.equal(after, WARNING_TEXT, 'reopen must reflect the actual state');
+    }
+
+    // 7. A slower older scan cannot replace a completed newer input topology.
+    {
+        const { context, inputsResolvers, state } = makeContext();
+        const older = context.fetchMeasurementInputs();
+        const newer = context.fetchMeasurementInputs();
+        assert.equal(inputsResolvers.length, 2);
+        inputsResolvers[1].resolve({ ok: true, json: async () => inputsPayload(
+            [OTHER('pw-source-70')],
+            { configured: true, unavailable: false, input_id: 'pw-source-70', persistent_id: OTHER().persistentId },
+        ) });
+        await newer;
+        inputsResolvers[0].resolve({ ok: true, json: async () => inputsPayload(
+            [UMIK('pw-source-65')],
+            { configured: true, unavailable: false, input_id: 'pw-source-65', persistent_id: UMIK().persistentId },
+        ) });
+        await older;
+        assert.equal(state.measurement.selectedInputId, 'pw-source-70');
+        assert.equal(state.measurement.inputs[0].id, 'pw-source-70');
+        assert.equal(state.measurement.inputsLoading, false);
     }
 
     console.log('measurement input availability frontend tests: ok');

@@ -48,7 +48,6 @@ class PlaybackRuntimeDependencies:
     get_samplerate_status: Callable[..., dict]
     get_audio_output_overview: Callable[..., dict]
     ensure_playback_samplerate_force: Callable[..., Awaitable[bool]]
-    persist_audio_output_mode: Callable[..., dict]
     trigger_idle_sink_renegotiation: Callable[..., Awaitable[bool]]
     recover_stale_samplerate_helper: Callable[..., Awaitable[bool]]
     reconcile_transition_sink_rate: Callable[..., Awaitable[bool]]
@@ -93,3 +92,5 @@ class PlaybackRuntimeDependencies:
     log_playback_graph_diagnosis: Callable[..., None]
     coordinator_reconcile_post_start_graph: Callable[..., Awaitable[dict]]
     audio_configuration_lock: Callable[[], Any] | None = None
+    # Authoritative output-state service for v2 transitions (main.py).
+    get_output_service: Callable[[], Any] | None = None

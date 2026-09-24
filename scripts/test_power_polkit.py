@@ -36,6 +36,7 @@ UNINSTALL_SH = ROOT / "uninstall.sh"
 POLKIT_TEMPLATE = ROOT / "assets" / "polkit" / "50-fxroute-power.rules"
 INDEX_HTML = ROOT / "static" / "index.html"
 APP_JS = ROOT / "static" / "app.js"
+SETTINGS_SYSTEM_JS = ROOT / "static" / "settings_system.js"
 STYLE_CSS = ROOT / "static" / "style.css"
 
 def _assert_node_available() -> str:
@@ -417,6 +418,7 @@ class FrontendPowerMenuTests(unittest.TestCase):
     def setUpClass(cls):
         cls.html = INDEX_HTML.read_text()
         cls.app_text = APP_JS.read_text()
+        cls.settings_system_text = SETTINGS_SYSTEM_JS.read_text()
         cls.css_text = STYLE_CSS.read_text()
 
     def test_asset_versions_have_been_bumped(self):
@@ -450,6 +452,8 @@ class FrontendPowerMenuTests(unittest.TestCase):
         self.assertIn('class="header-status"', self.html)
 
     def test_app_js_drives_power_menu(self):
+        # The power menu implementation lives in static/settings_system.js;
+        # app.js only boots it through the SettingsSystem alias.
         for needle in (
             "setupPowerMenu",
             "refreshPowerCapabilities",
@@ -459,13 +463,14 @@ class FrontendPowerMenuTests(unittest.TestCase):
             "POWER_CONFIRM_SUSPEND",
             "POWER_CONFIRM_SHUTDOWN",
         ):
-            self.assertIn(needle, self.app_text)
+            self.assertIn(needle, self.settings_system_text)
+        self.assertIn("SettingsSystem.setupPowerMenu()", self.app_text)
 
     def test_app_js_suspend_hidden_when_unsupported(self):
         # The frontend must inspect the suspend_supported boolean and
         # hide the menu item when logind reports no capability.
-        self.assertIn("suspendSupported", self.app_text)
-        self.assertIn("powerOffSupported", self.app_text)
+        self.assertIn("suspendSupported", self.settings_system_text)
+        self.assertIn("powerOffSupported", self.settings_system_text)
 
     def test_css_has_power_button_style(self):
         for needle in (

@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'settings_system.js'), 'utf8');
 
 function extractFunction(source, name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -62,9 +62,10 @@ function model(input) {
     const sandbox = {};
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
-    // escapeHtml is incidental to the select-model under test (plain labels
-    // below); stub it so the brace scanner never has to parse regex literals.
-    vm.runInContext(`function escapeHtml(text) { return String(text ?? ''); }\n${fns}\nthis.__out = musicLibrarySelectModel(${JSON.stringify(input)});`, sandbox);
+    // escapeHtml/deps are incidental to the select-model under test (plain labels
+    // below); stub them so the brace scanner never has to parse regex literals.
+    // The canonical module resolves HTML escaping through its injected deps.
+    vm.runInContext(`function escapeHtml(text) { return String(text ?? ''); }\nconst deps = { escapeHtml };\n${fns}\nthis.__out = musicLibrarySelectModel(${JSON.stringify(input)});`, sandbox);
     return vm.runInContext('__out', sandbox);
 }
 

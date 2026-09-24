@@ -8,18 +8,19 @@ const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const appSource = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(root, 'static', 'playback_ui.js'), 'utf8');
 const playbackCss = fs.readFileSync(path.join(root, 'static', 'css', '_playback.css'), 'utf8');
 
-function extractFunction(name) {
-    const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(appSource);
+function extractFunction(source, name) {
+    const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
     assert.ok(match, `missing ${name}`);
-    const brace = appSource.indexOf('{', match.index);
+    const brace = source.indexOf('{', match.index);
     assert.notEqual(brace, -1, `missing body ${name}`);
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = brace; index < appSource.length; index += 1) {
-        const character = appSource[index];
+    for (let index = brace; index < source.length; index += 1) {
+        const character = source[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (character === '\\') escaped = true;
@@ -28,7 +29,7 @@ function extractFunction(name) {
         }
         if (`'"\``.includes(character)) quote = character;
         else if (character === '{') depth += 1;
-        else if (character === '}' && --depth === 0) return appSource.slice(match.index, index + 1);
+        else if (character === '}' && --depth === 0) return source.slice(match.index, index + 1);
     }
     throw new Error(`unterminated ${name}`);
 }
@@ -90,28 +91,39 @@ const sandbox = {
     isStreamingFooterSource: () => false,
     streamingFooterData: () => null,
     responsiveMeterSegmentCount: () => 6,
+    // Meter/badge renderers read state/DOM through deps; the staying signal
+    // gate reaches ownership through the PlaybackCore namespace.
+    deps: {
+        getState: () => sandbox.state,
+        getElements: () => sandbox.elements,
+        isFooterSignalActive: (...args) => sandbox.isFooterSignalActive(...args),
+    },
+    PlaybackCore: {
+        isStreamingFooterSource: (...args) => sandbox.isStreamingFooterSource(...args),
+        streamingFooterData: (...args) => sandbox.streamingFooterData(...args),
+    },
 };
 
-function extractDeclaration(pattern) {
-    const match = appSource.match(pattern);
+function extractDeclaration(source, pattern) {
+    const match = source.match(pattern);
     assert.ok(match, `missing declaration ${pattern}`);
     return match[0];
 }
 
 vm.createContext(sandbox);
 vm.runInContext([
-    extractDeclaration(/let lastValidVuSnapshot = null;/),
-    extractDeclaration(/const VU_HOLDOVER_MS = \d+;/),
-    extractFunction('isFiniteVuDb'),
-    extractFunction('rememberValidVu'),
-    extractFunction('heldVuSnapshot'),
-    extractFunction('meterLitCount'),
-    extractFunction('renderMeterChannel'),
-    extractFunction('renderStereoMeter'),
-    extractFunction('nonAppSourceModeActive'),
-    extractFunction('isFooterSignalActive'),
-    extractFunction('formatOutputLevelBadgeDb'),
-    extractFunction('renderPeakWarningBadge'),
+    extractDeclaration(uiSource, /let lastValidVuSnapshot = null;/),
+    extractDeclaration(uiSource, /const VU_HOLDOVER_MS = \d+;/),
+    extractFunction(uiSource, 'isFiniteVuDb'),
+    extractFunction(uiSource, 'rememberValidVu'),
+    extractFunction(uiSource, 'heldVuSnapshot'),
+    extractFunction(uiSource, 'meterLitCount'),
+    extractFunction(uiSource, 'renderMeterChannel'),
+    extractFunction(uiSource, 'renderStereoMeter'),
+    extractFunction(appSource, 'nonAppSourceModeActive'),
+    extractFunction(appSource, 'isFooterSignalActive'),
+    extractFunction(uiSource, 'formatOutputLevelBadgeDb'),
+    extractFunction(uiSource, 'renderPeakWarningBadge'),
 ].join('\n'), sandbox);
 
 function renderWarning(warning) {

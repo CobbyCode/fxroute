@@ -535,12 +535,13 @@ class QobuzSetupCompletionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app_js = (ROOT / "static" / "app.js").read_text()
+        cls.provider_js = (ROOT / "static" / "provider_settings.js").read_text()
         cls.streaming_api_text = (ROOT / "streaming" / "api.py").read_text()
 
     def test_qobuz_offers_complete_setup_while_daemon_down(self):
         match = re.search(
             r"if \(!provider\.available\) \{(.*?)data-provider-service=\"restart\"",
-            self.app_js,
+            self.provider_js,
             re.DOTALL,
         )
         self.assertIsNotNone(match, "qobuz down-state must render recovery actions")
@@ -550,8 +551,9 @@ class QobuzSetupCompletionTests(unittest.TestCase):
     def test_complete_setup_reuses_provider_install_flow(self):
         # The button must use the same hook the Install wiring consumes, so
         # it rides runProviderInstall -> POST .../install -> providers-only.
-        self.assertIn("querySelectorAll('[data-provider-install]')", self.app_js)
-        self.assertIn("runProviderInstall(button.getAttribute(", self.app_js)
+        self.assertIn("querySelectorAll('[data-provider-install]')", self.provider_js)
+        self.assertIn("runProviderInstall(button.getAttribute(", self.provider_js)
+        self.assertIn("FXRouteProviderSettings", self.app_js)
 
     def test_install_endpoint_allows_completing_run_when_installed(self):
         body = self.streaming_api_text.split("async def api_streaming_provider_install")[1]
@@ -573,6 +575,7 @@ class TidalLoginParityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.index = (ROOT / "static" / "index.html").read_text()
         cls.app_js = (ROOT / "static" / "app.js").read_text()
+        cls.provider_js = (ROOT / "static" / "provider_settings.js").read_text()
         cls.streaming_js = (ROOT / "static" / "streaming.js").read_text()
         cls.streaming_api_text = (ROOT / "streaming" / "api.py").read_text()
 
@@ -613,34 +616,35 @@ class TidalLoginParityTests(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', self.index)
 
     def test_tidal_modal_uses_pkce_endpoints_with_qobuz_states(self):
-        self.assertIn("fetch('/api/streaming/tidal/auth/pkce'", self.app_js)
-        self.assertIn("fetch('/api/streaming/tidal/auth/pkce/finish'", self.app_js)
-        self.assertIn("body: JSON.stringify({ redirect_url: pasted })", self.app_js)
+        self.assertIn("fetch('/api/streaming/tidal/auth/pkce'", self.provider_js)
+        self.assertIn("fetch('/api/streaming/tidal/auth/pkce/finish'", self.provider_js)
+        self.assertIn("body: JSON.stringify({ redirect_url: pasted })", self.provider_js)
         for token in (
             "setTidalLoginStatus('Waiting for sign-in…')",
             "setTidalLoginStatus('Completing the TIDAL login…', 'busy')",
-            "showToast('TIDAL connected', 'success')",
-            "showToast('Sign-in link copied.', 'success')",
+            "deps.showToast('TIDAL connected', 'success')",
+            "deps.showToast('Sign-in link copied.', 'success')",
         ):
-            self.assertIn(token, self.app_js)
+            self.assertIn(token, self.provider_js)
         # Enter commits, Cancel/Close only close: PKCE keeps no cancelable
         # server listener, unlike the qbzd one-shot process.
-        self.assertIn("void finishTidalLoginFromModal()", self.app_js)
+        self.assertIn("void finishTidalLoginFromModal()", self.provider_js)
         self.assertIn(
-            "elements.tidalLoginCancelBtn?.addEventListener('click', () => closeTidalLoginModal())",
-            self.app_js,
+            "tidalLoginCancelBtn?.addEventListener('click', () => closeTidalLoginModal())",
+            self.provider_js,
         )
 
     def test_settings_connect_opens_tidal_modal(self):
         match = re.search(
             r"querySelectorAll\('\[data-provider-tidal-login\]'\)(.*?)querySelectorAll\('\[data-provider-tidal-logout\]'\)",
-            self.app_js,
+            self.provider_js,
             re.DOTALL,
         )
         self.assertIsNotNone(match)
         self.assertIn("void beginTidalLogin()", match.group(1))
         self.assertNotIn("switchTab('tidal')", match.group(1))
         self.assertIn("openTidalLogin: () => void beginTidalLogin()", self.app_js)
+        self.assertIn("FXRouteProviderSettings", self.app_js)
 
     def test_tab_primary_login_routes_to_modal_and_keeps_device_flow(self):
         self.assertIn("api.openTidalLogin", self.streaming_js)
@@ -673,13 +677,16 @@ class ProviderReinstallActivationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app_js = (ROOT / "static" / "app.js").read_text()
+        cls.provider_js = (ROOT / "static" / "provider_settings.js").read_text()
         cls.streaming_api_text = (ROOT / "streaming" / "api.py").read_text()
 
     @classmethod
     def _function_body(cls, name):
-        start = cls.app_js.index(f"async function {name}(")
-        rest = cls.app_js[start:]
-        for marker in re.finditer(r"^(async )?function \w+\(", rest, re.MULTILINE):
+        # Module functions are indented one level inside the UMD factory, so
+        # the boundary marker allows leading whitespace (app.js used column 0).
+        start = cls.provider_js.index(f"async function {name}(")
+        rest = cls.provider_js[start:]
+        for marker in re.finditer(r"^\s*(async )?function \w+\(", rest, re.MULTILINE):
             if marker.start() == 0:
                 continue
             return rest[:marker.start()]
@@ -717,18 +724,19 @@ class ProviderReinstallActivationTests(unittest.TestCase):
         # Both action buttons render from the same per-provider row template
         # and are wired to the shared handlers, so the activation fix applies
         # to every provider the UI can (re)install.
-        self.assertIn('data-provider-install="${provider.id}"', self.app_js)
-        self.assertIn('data-provider-uninstall="${provider.id}"', self.app_js)
+        self.assertIn('data-provider-install="${provider.id}"', self.provider_js)
+        self.assertIn('data-provider-uninstall="${provider.id}"', self.provider_js)
         self.assertIn(
             "runProviderInstall(button.getAttribute('data-provider-install'))",
-            self.app_js,
+            self.provider_js,
         )
         self.assertIn(
             "runProviderUninstall(button.getAttribute('data-provider-uninstall'))",
-            self.app_js,
+            self.provider_js,
         )
-        self.assertIn('fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/install`', self.app_js)
-        self.assertIn('fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/uninstall`', self.app_js)
+        self.assertIn('fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/install`', self.provider_js)
+        self.assertIn('fetch(`/api/streaming/providers/${encodeURIComponent(providerId)}/uninstall`', self.provider_js)
+        self.assertIn("FXRouteProviderSettings", self.app_js)
 
     def test_backend_ui_install_and_uninstall_cover_all_three_providers(self):
         body = self.streaming_api_text.split("async def api_streaming_provider_install")[1]
@@ -754,6 +762,7 @@ class ProviderTabOwnershipTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app_js = (ROOT / "static" / "app.js").read_text()
         cls.streaming_js = (ROOT / "static" / "streaming.js").read_text()
+        cls.runtime_js = (ROOT / "static" / "streaming_runtime.js").read_text()
 
     @staticmethod
     def _function_body(source: str, name: str) -> str:
@@ -815,7 +824,7 @@ class ProviderTabOwnershipTests(unittest.TestCase):
         self.assertNotIn("spotifyElements", self.app_js)
 
     def test_spotify_status_only_forwards_an_installed_transition(self):
-        body = self._function_body(self.app_js, "syncSpotifyTabAvailability")
+        body = self._function_body(self.runtime_js, "syncSpotifyTabAvailability")
         for forbidden in ("tabBtn", "style.display", "classList", "getElementById", "hidden"):
             self.assertNotIn(
                 forbidden,
@@ -828,7 +837,7 @@ class ProviderTabOwnershipTests(unittest.TestCase):
         # This runs on every incoming Spotify state, i.e. far more often than
         # provider discovery; a visibility write here is what re-showed a
         # disabled Spotify provider tab.
-        body = self._function_body(self.app_js, "handleIncomingSpotifyState")
+        body = self._function_body(self.runtime_js, "handleIncomingSpotifyState")
         self.assertIn("syncSpotifyTabAvailability(mergedData.installed === true);", body)
         for forbidden in ("style.display", "spotifyTab.hidden", "classList.toggle('hidden'"):
             self.assertNotIn(forbidden, body, f"incoming Spotify state must not write {forbidden}")

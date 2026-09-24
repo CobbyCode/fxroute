@@ -157,16 +157,20 @@
 }
 
 /* Workflow areas: quiet micro-labels group the action list into
-   measurement / subwoofer / calibration without adding cards. */
+   measurement / subwoofer / calibration without adding cards. One shared
+   0.75rem rhythm from heading to button row in every section. */
 .measurement-workflow-section {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.75rem;
 }
 
 .measurement-workflow-heading {
     display: flex;
-    align-items: center;
+    /* Tops flush: label and Setup share one top edge on desktop and
+       mobile; the row below (section gap) sets the uniform heading →
+       button distance in every section. */
+    align-items: flex-start;
     justify-content: space-between;
     gap: 0.75rem;
 }
@@ -283,8 +287,96 @@
     border-color: var(--accent-hover);
 }
 
-.measurement-workflow-menu-panel .measurement-channel-chip-row {
+/* Single-sweep side choice for stereo areas: three compact chips in one
+   row, same language as the other measurement chips. The side only narrows
+   within the selected area, so it can never contradict the bank selector.
+   Mono areas hide the whole row and sweep both inputs at once. */
+.measurement-sweep-side-row {
+    display: flex;
+    gap: 0.4rem;
+    min-width: 0;
+}
+
+.measurement-sweep-side-row .measurement-chip {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0.3rem 0.4rem;
+    font-size: 0.78rem;
+}
+
+/* Read-only measurement area: the A/B selector owns the scope, so the sweep
+   menu shows the selected area; the side chips only narrow a stereo area to
+   one side for the single sweep. */
+.measurement-workflow-menu-panel .measurement-area-row {
     padding: 0.1rem 0.1rem 0.15rem;
+}
+
+.measurement-area-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.measurement-area-label {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.measurement-area-indicator {
+    font-weight: 600;
+}
+
+/* Saved-list badge: the frozen area a result was captured in. */
+.measurement-area-badge {
+    margin-left: 0.45rem;
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+.measurement-area-badge.is-stale {
+    border-color: var(--warning, #b45309);
+    color: var(--warning, #b45309);
+}
+
+.speaker-align-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.speaker-align-table {
+    min-width: 420px;
+    width: 100%;
+    margin-top: 12px;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.speaker-align-table caption {
+    text-align: left;
+    padding: 6px 0;
+    font-weight: 600;
+}
+
+.speaker-align-table th,
+.speaker-align-table td {
+    padding: 6px 8px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+}
+
+.speaker-align-table th:first-child {
+    text-align: left;
 }
 
 .measurement-workflow-row {
@@ -295,6 +387,89 @@
     min-width: 0;
 }
 
+.measurement-workflow-speaker-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+.measurement-workflow-speaker-buttons .btn-secondary {
+    width: 190px;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 44px;
+}
+
+/* Same horizontal pattern as the other measurement actions: the compact
+   button pair sits left, the one-line note to its right. */
+.measurement-workflow-speaker-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+/* Idle speaker-align status/results collapse: without this the section's
+   flex gaps reserve two phantom rows below the buttons even while empty,
+   breaking the shared heading → buttons → divider rhythm. */
+#measurement-speaker-align-status:empty,
+#measurement-speaker-align-results:empty {
+    display: none;
+}
+
+.speaker-align-time {
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+
+.speaker-align-time figcaption {
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.speaker-align-time-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.speaker-align-time-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.9rem;
+    margin-top: 6px;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.speaker-align-time-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.speaker-align-time-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+}
+
+.speaker-align-run-row {
+    margin-top: 10px;
+}
+
+.speaker-align-run-select {
+    min-width: 190px;
+    max-width: 260px;
+}
+
+#measurement-sweep-start,
 #measurement-repeat-start,
 #measurement-hybrid-open {
     min-height: 42px;
@@ -308,9 +483,12 @@
 }
 
 /* Bottom status line: kept visually apart from the action blocks so
-   running/cancelled messages read as panel status, not as part of one row. */
+   running/cancelled messages read as panel status, not as part of one row.
+   The top margin sums the section list gap and the section divider margin
+   (0.5rem + 0.35rem), so Calibration above it keeps exactly the same
+   button → divider distance as the other three sections. */
 #measurement-setup-status {
-    margin-top: 0.6rem;
+    margin-top: calc(0.5rem + 0.35rem);
     padding-top: 0.6rem;
     border-top: 1px solid var(--border);
 }
@@ -525,7 +703,6 @@
 .hybrid-advanced-details summary { cursor: pointer; color: var(--text-secondary); }
 .hybrid-advanced-details p { margin: 0.5rem 0 0; line-height: 1.45; }
 
-.measurement-channel-chip-row,
 .measurement-smoothing-chips,
 .measurement-view-toggle {
     display: flex;
@@ -911,6 +1088,10 @@
 
 .measurement-list-title {
     font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
 }
 
 .measurement-list-meta,

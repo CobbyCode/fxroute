@@ -7,39 +7,8 @@ const path = require('path');
 const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '..', 'static', 'index.html'), 'utf8');
 const dspSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_dsp.js'), 'utf8');
-
-function extractFunction(name) {
-    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
-    assert.ok(match, `missing ${name}`);
-    let parenDepth = 1;
-    let brace = -1;
-    for (let index = match.index + match[0].length; index < source.length; index += 1) {
-        if (source[index] === '(') parenDepth += 1;
-        if (source[index] === ')') parenDepth -= 1;
-        if (parenDepth === 0) {
-            brace = source.indexOf('{', index);
-            break;
-        }
-    }
-    assert.notEqual(brace, -1, `missing body ${name}`);
-    let depth = 0, quote = '', escaped = false;
-    for (let index = brace; index < source.length; index += 1) {
-        const char = source[index];
-        if (quote) {
-            if (escaped) escaped = false;
-            else if (char === '\\') escaped = true;
-            else if (char === quote) quote = '';
-            continue;
-        }
-        if (`'\"\``.includes(char)) quote = char;
-        else if (char === '{') depth += 1;
-        else if (char === '}' && --depth === 0) return source.slice(match.index, index + 1);
-    }
-    throw new Error(`unterminated ${name}`);
-}
 
 class TestFile {
     constructor(parts, name, options) { this.parts = parts; this.name = name; this.type = options.type; }
@@ -66,11 +35,23 @@ async function main() {
         },
     };
     vm.createContext(context);
-    vm.runInContext([
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_calibration.js'), 'utf8'), context);
+    const calibration = context.FXRouteMeasurementCalibration;
+    calibration.init({
+        getState: () => state, getElements: () => context.elements,
+        getFileType: () => TestFile, getFormDataType: () => TestFormData,
+        fetch: context.fetch,
+        renderMeasurementPanel: context.renderMeasurementPanel,
+        scheduleMeasurementGraphRender: context.scheduleMeasurementGraphRender,
+        showToast: context.showToast,
+        updateMeasurementConvolverField: context.updateMeasurementConvolverField,
+        setMeasurementActiveEditor: () => {},
+    });
+    for (const name of [
         'applyMeasurementHouseCurveState', 'ensureCustomHouseCurveState', 'getCustomHouseCurveNameSuggestion',
         'addCustomHouseCurvePoint', 'updateCustomHouseCurvePoint', 'deleteCustomHouseCurvePoint',
         'serializeCustomHouseCurvePoints', 'createCustomHouseCurve',
-    ].map(extractFunction).join('\n'), context);
+    ]) context[name] = (...args) => calibration[name](...args);
 
     assert.equal(context.getCustomHouseCurveNameSuggestion(), 'Custom House Curve 2');
     const custom = context.ensureCustomHouseCurveState();
@@ -100,7 +81,8 @@ async function main() {
     assert.ok(state.measurement.houseCurveOptions.some((curve) => curve.id === 'new-Custom-House-Curve-2.txt'));
 
     assert.match(html, /Create Target Curve/);
-    assert.match(source, /Create Custom House Curve…/);
+    const panelSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_panel_ui.js'), 'utf8');
+    assert.match(panelSource, /Create Custom House Curve…/);
     assert.match(dspSource, /Math\.log10\(frequency\).*Math\.log10\(leftHz\)/s, 'existing target interpolation remains logarithmic');
     console.log('ok custom house curve: eight editable/deletable points, sorted compatible upload, collision-free name, immediate target selection');
 }

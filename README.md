@@ -37,14 +37,14 @@ The demo is the real FXRoute frontend — same UI — with simulated backend sta
 - A native DSP engine (`fxroute_dsp_sink`) built from source, in the same PipeWire session as playback
 - Presets with A/B compare, preset combining, and filter imports; two always-available presets: **Direct** (bypasses everything) and **Neutral** (clean chain, the default)
 - Global output helpers that apply on top of any preset: protection limiter, headroom, autogain, loudness contouring, bass enhancer, and tone effect
-- Stereo, 2.1, 2.2, and 2.2 Stereo Bass output modes with crossover, level, polarity, and alignment controls
+- Stereo and Stereo + Sub output modes with an independent crossover switch plus level, polarity, and alignment controls
 - Auto or fixed sample rate (up to 384 kHz, device permitting)
 
 **Measure and correct**
 
 - Host-microphone room and speaker measurement: single L/R/Stereo sweeps, same-position L/R Repeat, and a guided multi-position Advanced workflow
 - SPL calibration with UMIK-1/UMIK-2/Dayton UMM-6 support or a manual meter
-- Auto Sub Optimize for subwoofer alignment in subwoofer output modes
+- Auto Sub Optimize for subwoofer alignment in Stereo + Sub mode
 - Correction tools on the measurement graph: a 12-filter PEQ sketchpad, custom House Curves, and FIR convolver preset creation in linear, minimum-phase, and aligned modes
 
 **System**

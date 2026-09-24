@@ -10,40 +10,10 @@
 // reuses the old staged FIR.
 
 const assert = require('assert/strict');
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
 
-const MeasurementUI = require('../static/measurement_ui.js');
-
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
-
-function extractFunction(name) {
-    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
-    assert.ok(match, `missing ${name}`);
-    let parenDepth = 1;
-    let brace = -1;
-    for (let index = match.index + match[0].length; index < source.length; index += 1) {
-        if (source[index] === '(') parenDepth += 1;
-        if (source[index] === ')') parenDepth -= 1;
-        if (parenDepth === 0) { brace = source.indexOf('{', index); break; }
-    }
-    assert.notEqual(brace, -1, `missing body ${name}`);
-    let depth = 0, quote = '', escaped = false;
-    for (let index = brace; index < source.length; index += 1) {
-        const char = source[index];
-        if (quote) {
-            if (escaped) escaped = false;
-            else if (char === '\\') escaped = true;
-            else if (char === quote) quote = '';
-            continue;
-        }
-        if (`'"\``.includes(char)) quote = char;
-        else if (char === '{') depth += 1;
-        else if (char === '}' && --depth === 0) return source.slice(match.index, index + 1);
-    }
-    throw new Error(`unterminated ${name}`);
-}
+require('../static/measurement_dsp.js');
+require('../static/measurement_ui.js');
+const convolverEditor = require('../static/measurement_convolver_editor.js');
 
 function stagedDraft(targetCurve = 'neutral') {
     return {
@@ -76,38 +46,24 @@ function makeContext() {
         },
     };
     const feedback = [];
-    const context = {
-        MeasurementUI,
-        MeasurementDsp: require(path.join(__dirname, '..', 'static', 'measurement_dsp.js')),
-        measurementConvolverCurves: MeasurementUI.measurementConvolverCurves,
-        measurementConvolverPhaseModes: MeasurementUI.measurementConvolverPhaseModes,
-        measurementConvolverTapOptions: MeasurementUI.measurementConvolverTapOptions,
-        state,
-        feedback,
-        showMeasurementConvolverFeedback: (message) => { feedback.push(message); },
+    const feedbackElement = {
+        _text: '',
+        set textContent(value) { this._text = String(value); if (value) feedback.push(String(value)); },
+        get textContent() { return this._text; },
+        classList: { add: () => {}, remove: () => {} },
+    };
+    convolverEditor.init({
+        getState: () => state,
+        getElements: () => ({ measurementConvolverFeedback: feedbackElement }),
+        showToast: () => {},
         renderMeasurementPanel: () => {},
         scheduleMeasurementGraphRender: () => {},
         saveMeasurementSetupSettings: () => {},
-        clampMeasurementConvolverFrequency: MeasurementUI.clampMeasurementConvolverFrequency
-            || ((value, fallback = 20) => {
-                const numeric = Number(value);
-                return Math.min(20000, Math.max(20, Number.isFinite(numeric) ? numeric : fallback));
-            }),
-        getMeasurementConvolverTypeKeys: MeasurementUI.getMeasurementConvolverTypeKeys,
-        getMeasurementConvolverPhaseModeForType: MeasurementUI.getMeasurementConvolverPhaseModeForType,
-        getMeasurementConvolverFirLengthForType: MeasurementUI.getMeasurementConvolverFirLengthForType,
+    });
+    const context = {
+        state,
+        updateMeasurementConvolverField: (...args) => convolverEditor.updateMeasurementConvolverField(...args),
     };
-    vm.createContext(context);
-    vm.runInContext([
-        'clampMeasurementConvolverFrequency',
-        'getDefaultMeasurementConvolverState',
-        'getMeasurementConvolverCurveOptions',
-        'getMeasurementConvolverCurve',
-        'ensureMeasurementConvolverState',
-        'clearMeasurementConvolverDraftForPhaseChange',
-        'clearMeasurementConvolverDraftForSettingsChange',
-        'updateMeasurementConvolverField',
-    ].map(extractFunction).join('\n'), context);
     return { context, state, feedback };
 }
 

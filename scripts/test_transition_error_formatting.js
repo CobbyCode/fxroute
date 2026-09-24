@@ -6,7 +6,12 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const apiSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'api.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+assert.ok(/function\s+formatTransitionErrorDetail\s*\(/.test(apiSource), 'missing formatTransitionErrorDetail in api.js');
+assert.ok(/function\s+formatTransitionErrorDetail\s*\(/.test(appSource), 'app.js must keep a formatTransitionErrorDetail wrapper');
+assert.ok(/FXRouteApi/.test(appSource), 'app.js wrapper must delegate to api.js');
+const source = apiSource;
 const match = /function\s+formatTransitionErrorDetail\s*\(/.exec(source);
 assert.ok(match, 'missing formatTransitionErrorDetail');
 const brace = source.indexOf('{', match.index);

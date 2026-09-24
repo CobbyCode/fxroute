@@ -11,21 +11,23 @@ const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const appSource = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const coreSource = fs.readFileSync(path.join(root, 'static', 'playback_core.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(root, 'static', 'playback_ui.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 
-function extractFunction(name) {
-    const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(appSource);
+function extractFunction(name, from = appSource) {
+    const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(from);
     assert.ok(match, `missing ${name}`);
-    const brace = appSource.indexOf('{', match.index);
+    const brace = from.indexOf('{', match.index);
     assert.notEqual(brace, -1, `missing body ${name}`);
     let depth = 0;
     let quote = '';
     let escaped = false;
     let lineComment = false;
     let blockComment = false;
-    for (let index = brace; index < appSource.length; index += 1) {
-        const character = appSource[index];
-        const nextCharacter = appSource[index + 1];
+    for (let index = brace; index < from.length; index += 1) {
+        const character = from[index];
+        const nextCharacter = from[index + 1];
         if (lineComment) {
             if (character === '\n') lineComment = false;
             continue;
@@ -55,12 +57,23 @@ function extractFunction(name) {
         }
         if (`'"\``.includes(character)) quote = character;
         else if (character === '{') depth += 1;
-        else if (character === '}' && --depth === 0) return appSource.slice(match.index, index + 1);
+        else if (character === '}' && --depth === 0) return from.slice(match.index, index + 1);
     }
     throw new Error(`unterminated ${name}`);
 }
 
-const sandbox = { state: { settings: { sourceMode: { pending: false } } } };
+const sandbox = {
+    state: { settings: { sourceMode: { pending: false } } },
+    window: { FXRouteMeasurementJob: { hasActiveMeasurementJob: () => false } },
+    isStreamingFooterSource: () => false,
+    streamingFooterData: () => null,
+};
+// isFooterSignalActive reaches ownership through the PlaybackCore namespace
+// (mirrors app.js wiring); forward to the test-controlled stubs above.
+sandbox.PlaybackCore = {
+    isStreamingFooterSource: (...args) => sandbox.isStreamingFooterSource(...args),
+    streamingFooterData: (...args) => sandbox.streamingFooterData(...args),
+};
 vm.createContext(sandbox);
 vm.runInContext([
     extractFunction('shortSourcePairLabel'),
@@ -238,20 +251,34 @@ vm.createContext(renderSandbox);
 // escapeHtml is not extractor-safe (regex literal with a quote); the render
 // test only needs its identity behavior for plain labels, stubbed here.
 renderSandbox.escapeHtml = (text) => String(text ?? '');
+// setFooterProgressState lives in the playback UI module and reads DOM
+// through deps; isStreamingFooterSource lives in the playback core module.
+renderSandbox.deps = {
+    getState: () => renderSandbox.state,
+    getElements: () => renderSandbox.elements,
+};
 const selectSigDecl = /let _sourceSelectSignature = null;/.exec(appSource);
 assert.ok(selectSigDecl, 'missing _sourceSelectSignature module state');
+vm.runInContext(fs.readFileSync(path.join(root, 'static', 'measurement_job.js'), 'utf8'), renderSandbox);
+renderSandbox.FXRouteMeasurementJob.init({ getState: () => renderSandbox.state });
+renderSandbox.window.FXRouteMeasurementJob = renderSandbox.FXRouteMeasurementJob;
+renderSandbox.hasActiveMeasurementJob = (...args) => renderSandbox.FXRouteMeasurementJob.hasActiveMeasurementJob(...args);
 vm.runInContext([
     selectSigDecl[0],
-    extractFunction('isStreamingFooterSource'),
-    extractFunction('hasActiveMeasurementJob'),
+    extractFunction('isStreamingFooterSource', coreSource),
     extractFunction('nonAppSourceModeActive'),
     extractFunction('shortSourcePairLabel'),
     extractFunction('buildSourceSwitcherEntries'),
     extractFunction('findSourceSwitcherIndex'),
     extractFunction('sourceSwitcherGuardReason'),
-    extractFunction('setFooterProgressState'),
+    extractFunction('setFooterProgressState', uiSource),
     extractFunction('renderSourceModeFooter'),
 ].join('\n'), renderSandbox);
+// renderSourceModeFooter reaches the footer progress state through the
+// PlaybackUI namespace (mirrors app.js wiring).
+renderSandbox.PlaybackUI = {
+    setFooterProgressState: (...args) => renderSandbox.setFooterProgressState(...args),
+};
 
 vm.runInContext('renderSourceModeFooter()', renderSandbox);
 assert.equal(renderSandbox.elements.sourceSelect.writes, 1, 'first render builds the options');
@@ -272,7 +299,7 @@ renderSandbox.window.__footerSource = 'local';
 
 // reconcileFooterSource must force local ownership in source modes so the
 // streaming early-return in updatePlaybackUI never hijacks the footer.
-const reconcileSource = extractFunction('reconcileFooterSource');
+const reconcileSource = extractFunction('reconcileFooterSource', coreSource);
 assert.ok(reconcileSource.includes('nonAppSourceModeActive()'), 'reconcile must consult the source mode');
 assert.ok(reconcileSource.includes('source-mode-owns-footer'), 'reconcile must pin ownership in source modes');
 
@@ -281,11 +308,11 @@ assert.ok(reconcileSource.includes('source-mode-owns-footer'), 'reconcile must p
 // non-streaming body without a streaming-ownership gate — reconcile above
 // pinned ownership to local before the gate would even be evaluated, so any
 // streaming condition there only delays the first paint by one poll.
-const updateFnSource = extractFunction('updatePlaybackUI');
-const updateCallSite = updateFnSource.match(/if \(nonAppSourceModeActive\(\)\) \{\s*renderSourceModeFooter\(\);\s*\}/);
+const updateFnSource = extractFunction('updatePlaybackUI', uiSource);
+const updateCallSite = updateFnSource.match(/if \(deps\.nonAppSourceModeActive\(\)\) \{\s*deps\.renderSourceModeFooter\(\);\s*\}/);
 assert.ok(updateCallSite, 'updatePlaybackUI must render the source footer ungated by streaming ownership');
 assert.ok(
-    !/nonAppSourceModeActive\(\) && !isStreamingFooterSource/.test(updateFnSource),
+    !/nonAppSourceModeActive\(\) && !.*isStreamingFooterSource/.test(updateFnSource),
     'updatePlaybackUI must not gate the source footer on streaming ownership',
 );
 

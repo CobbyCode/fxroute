@@ -8,26 +8,146 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const index = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const libraryUi = fs.readFileSync(path.join(root, 'static', 'library_ui.js'), 'utf8');
+const panelUi = fs.readFileSync(path.join(root, 'static', 'measurement_panel_ui.js'), 'utf8');
+const savedUi = fs.readFileSync(path.join(root, 'static', 'measurement_saved_ui.js'), 'utf8');
+const editorsUi = fs.readFileSync(path.join(root, 'static', 'measurement_editors_ui.js'), 'utf8');
+const setupUi = fs.readFileSync(path.join(root, 'static', 'measurement_setup.js'), 'utf8');
+const calibrationUi = fs.readFileSync(path.join(root, 'static', 'measurement_calibration.js'), 'utf8');
+const peqEditor = fs.readFileSync(path.join(root, 'static', 'measurement_peq_editor.js'), 'utf8');
+const convolverEditor = fs.readFileSync(path.join(root, 'static', 'measurement_convolver_editor.js'), 'utf8');
+const capture = fs.readFileSync(path.join(root, 'static', 'measurement_capture.js'), 'utf8');
+const jobMod = fs.readFileSync(path.join(root, 'static', 'measurement_job.js'), 'utf8');
+const savedActions = fs.readFileSync(path.join(root, 'static', 'measurement_saved_actions.js'), 'utf8');
+const splMod = fs.readFileSync(path.join(root, 'static', 'measurement_spl_calibration.js'), 'utf8');
+assert.ok(index.indexOf('measurement_panel_ui.js?v=') < index.indexOf('measurement_saved_ui.js?v='));
+assert.ok(index.indexOf('measurement_saved_ui.js?v=') < index.indexOf('measurement_editors_ui.js?v='));
+assert.ok(index.indexOf('measurement_editors_ui.js?v=') < index.indexOf('measurement_setup.js?v='));
+assert.ok(index.indexOf('measurement_setup.js?v=') < index.indexOf('app.js?v='));
+assert.ok(index.indexOf('measurement_setup.js?v=') < index.indexOf('measurement_calibration.js?v='));
+assert.ok(index.indexOf('measurement_calibration.js?v=') < index.indexOf('measurement_peq_editor.js?v='));
+assert.ok(index.indexOf('measurement_peq_editor.js?v=') < index.indexOf('measurement_convolver_editor.js?v='));
+assert.ok(index.indexOf('measurement_convolver_editor.js?v=') < index.indexOf('measurement_capture.js?v='));
+assert.ok(index.indexOf('measurement_capture.js?v=') < index.indexOf('measurement_job.js?v='));
+assert.ok(index.indexOf('measurement_job.js?v=') < index.indexOf('measurement_saved_actions.js?v='));
+assert.ok(index.indexOf('measurement_saved_actions.js?v=') < index.indexOf('measurement_spl_calibration.js?v='));
+assert.ok(index.indexOf('measurement_spl_calibration.js?v=') < index.indexOf('app.js?v='));
+assert.match(calibrationUi, /function deleteSelectedMeasurementCalibration\(\) \{/);
+assert.match(convolverEditor, /function updateMeasurementConvolverField\(field, value\) \{/);
+assert.match(convolverEditor, /function takeMeasurementConvolverToDraft\(mode = 'both'\) \{/);
+assert.match(convolverEditor, /function createMeasurementConvolverPresetFromDraft\(\) \{/);
+assert.match(capture, /async function startHostMeasurement\(jobGeneration/);
+assert.match(capture, /async function startMeasurement\(\) \{/);
+assert.match(app, /window\.FXRouteMeasurementConvolverEditor\.updateMeasurementConvolverField\(field, value\)/);
+assert.doesNotMatch(app, /\n(?:async function|function) startHostMeasurement\(/, 'no app.js wrapper: startHostMeasurement lives in measurement_capture.js');
+assert.match(jobMod, /async function pollMeasurementJob\(jobId, jobGeneration/);
+assert.match(jobMod, /async function cancelMeasurement\(\) \{/);
+assert.match(savedActions, /async function saveCurrentMeasurement\(\) \{/);
+assert.match(savedActions, /async function mergeSelectedMeasurements\(\) \{/);
+assert.match(splMod, /function toggleSplCalibrationNoise\(\) \{/);
+assert.match(app, /window\.FXRouteMeasurementJob\.pollMeasurementJob\(jobId, generation\)/, 'capture wiring calls the canonical job module');
+assert.match(app, /window\.FXRouteMeasurementSavedActions\.saveCurrentMeasurement\(\)/);
+assert.doesNotMatch(app, /\n(?:async function|function) toggleSplCalibrationNoise\(/, 'no app.js wrapper: SPL noise lives in measurement_spl_calibration.js');
+assert.match(app, /FXRouteMeasurementSetup\.getMeasurementSettingsRevision\(\)/);
+assert.match(setupUi, /if \(!channelCountKnown\) \{/);
 const flows = fs.readFileSync(path.join(root, 'static', 'measurement_flows.js'), 'utf8');
 const measurementCss = fs.readFileSync(path.join(root, 'static', 'css', '_measurement.css'), 'utf8');
 const responsiveCss = fs.readFileSync(path.join(root, 'static', 'css', '_responsive.css'), 'utf8');
-
 assert.match(index, /<h4 class="measurement-workflow-label">Measurements<\/h4>/);
 assert.match(index, /id="measurement-sweep-toggle"[^>]*>Start Sweep<\/button>/);
 assert.match(index, /id="measurement-sweep-menu"[^>]*class="[^"]*hidden[^"]*"/);
 assert.doesNotMatch(index, /L \/ R \/ Stereo/);
 assert.doesNotMatch(index, /measurement-workflow-menu-label/);
-assert.match(index, /Run Single Sweep\./);
-assert.ok(index.indexOf('measurement-channel-chip-row') < index.indexOf('Run Single Sweep.'), 'single sweep help sits below the channel chips');
-assert.ok(!index.includes('class="measurement-chip is-active" data-measurement-channel='), 'channel chip active state is not hardcoded in markup');
-assert.match(index, /data-measurement-channel="right">R<\/button>/);
-assert.match(index, /data-measurement-channel="stereo">Stereo<\/button>/);
+assert.doesNotMatch(index, /data-measurement-channel/, 'the area selector owns the scope; no output-channel chips');
+assert.match(index, /id="measurement-area-row"[^>]*role="group"[^>]*aria-label="Selected measurement area"/);
+assert.match(index, /<span class="measurement-area-label">Measuring area<\/span>/);
+assert.match(index, /id="measurement-area-indicator"[^>]*aria-live="polite">Global<\/span>/);
+assert.match(index, /id="measurement-sweep-start"[^>]*class="btn-secondary"[^>]*>Run Single Sweep<\/button>/);
+assert.match(index, /id="measurement-sweep-side-row"[^>]*aria-label="Single sweep side"/);
+assert.match(index, /data-sweep-side="left"[^>]*>Left<\/button>/);
+assert.match(index, /data-sweep-side="stereo"[^>]*>Stereo<\/button>/);
+assert.match(index, /data-sweep-side="right"[^>]*>Right<\/button>/);
+assert.doesNotMatch(index, /data-measurement-channel/, 'sides are area-scoped, not output-channel chips');
+assert.ok(index.indexOf('measurement-area-row') < index.indexOf('id="measurement-sweep-start"'), 'the area line sits above the single sweep action');
+assert.match(capture, /const area = deps\.measurementAreaFromCatalog\(\);/);
+assert.match(capture, /area\.sides\.includes\(deps\.getState\(\)\.measurement\.sweepSide\)/);
+assert.match(capture, /formData\.append\('measurement_bank', area\.bank_id\)/);
+assert.doesNotMatch(app, /state\.measurement\.selectedChannel/, 'the area is the only sweep scope; the channel fallback is gone');
+assert.match(app, /elements\.measurementAreaIndicator\.textContent = area \? area\.label : 'Global'/);
+assert.doesNotMatch(app, /\[data-measurement-channel\]/, 'no leftover output-channel chip handlers');
+assert.match(app, /void ensureMeasurementAreaCatalog\(\);/, 'opening the panel loads the area catalog');
+assert.match(capture, /deps\.getState\(\)\.measurement\.sweepSide/, 'the single-sweep side persists in measurement state');
+assert.match(capture, /area\.sides\.includes\(deps\.getState\(\)\.measurement\.sweepSide\)/, 'a stored side only applies inside a stereo area');
+assert.match(app, /data-sweep-side/, 'side chips drive the single sweep');
+// Saved results show the frozen area they were captured in (legacy results
+// without a target stay unlabelled, never silently "Global").
+assert.match(savedUi, /function measurementAreaBadge\(measurement\) \{/);
+assert.match(savedUi, /target\.schema !== 'fxroute\.measurement-target'\) return null;/);
+assert.match(savedUi, /target\.legacy \|\| target\.schema/);
+assert.match(savedUi, /measurement-area-badge\$\{areaBadge\.stale \? ' is-stale' : ''\}/);
+assert.match(panelUi, /Measured area: \$\{areaBadge\.title\}/);
+// A summed-sub bank is mono on the preset side: per-side PEQ takes and a
+// Both convolver take cannot compile there, so the UI disables them.
+assert.match(app, /function measurementBankSumsBothInputs\(\) \{/);
+assert.match(editorsUi, /function syncMeasurementSummedSubTakeModes\(\) \{/);
+assert.match(app, /FXRouteMeasurementEditorsUI\.renderMeasurementPanelEditorsSection\(ctx\);\s+window\.FXRouteMeasurementEditorsUI\.renderMeasurementPanelConvolverSection\(ctx\);\s+window\.FXRouteMeasurementSavedUI\.renderMeasurementPanelSavedListSection\(ctx\);/);
+assert.match(app, /FXRouteMeasurementEditorsUI\.bindMeasurementEditorDelegation\(\);\s+window\.FXRouteMeasurementSavedUI\.bindMeasurementSavedListDelegation\(\);/);
+assert.match(peqEditor, /if \(mode !== 'both' && deps\.measurementBankSumsBothInputs\(\)\)/);
+assert.match(convolverEditor, /if \(mode === 'both' && deps\.measurementBankSumsBothInputs\(\)\)/);
 assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button>/);
-assert.match(index, /Repeated L\/R sweeps for more precision\./);
+assert.match(index, /id="measurement-repeat-note" class="measurement-repeat-help">Repeated L\/R sweeps for more precision\.<\/span>/);
+// A one-sided area (fed by one input only) must disable the repeat and explain
+// why in the note, while a running repeat stays cancellable.
+assert.match(app, /function measurementRepeatBlockedReason\(\) \{/);
+assert.match(app, /if \(!area \|\| area\.repeat_supported !== false\) return '';/);
+assert.match(capture, /const repeatBlockedReason = deps\.measurementRepeatBlockedReason\(\);/);
+assert.match(panelUi, /elements\.measurementRepeatStartBtn\.disabled = repeatBlockedReason && !lrActive/);
+assert.match(panelUi, /syncMeasurementRepeatNote\(lrActive, repeatBlockedReason\);/);
+assert.match(app, /elements\.measurementRepeatNote\.textContent = lrActive \|\| !blockedReason/);
+assert.match(capture, /deps\.showToast\(repeatBlockedReason, 'warning'\)/);
 assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);
 assert.match(index, /Combined Speaker and Room Measurement/);
 assert.match(index, /id="measurement-spl-calibration-open"[^>]*>SPL Calibration<\/button>/);
 assert.match(index, /Calibrate your loudness reference\./);
+// Speaker Auto Alignment is compact: two equal buttons side by side, one
+// short note below, status and results underneath. No sequence line and no
+// long explanation paragraphs.
+assert.match(index, /id="measurement-speaker-align-left"[^>]*>Align Left<\/button>/);
+assert.match(index, /id="measurement-speaker-align-right"[^>]*>Align Right<\/button>/);
+// Horizontal pattern like the other actions: button pair left, one-line
+// note to its right inside a speaker row wrapper.
+assert.match(index, /class="measurement-workflow-speaker-row"/);
+assert.ok(index.indexOf('measurement-workflow-speaker-buttons') < index.indexOf('Aligns each way of the selected speaker with the microphone fixed.'),
+    'the note sits right of the button pair');
+assert.match(index, /Aligns each way of the selected speaker with the microphone fixed\./);
+// The sentence lives exactly once in the static note; the status line stays
+// empty while idle so it never renders twice.
+assert.equal(index.split('Aligns each way of the selected speaker with the microphone fixed.').length - 1, 1);
+assert.doesNotMatch(flows, /Aligns each way of the selected speaker/);
+assert.doesNotMatch(app, /Aligns each way of the selected speaker/);
+assert.doesNotMatch(index, /measurement-speaker-align-sequence/);
+assert.doesNotMatch(index, /Place the mic in front/);
+assert.doesNotMatch(index, /then repeat to verify/);
+assert.doesNotMatch(flows, /measurementSpeakerAlignSequence/);
+assert.doesNotMatch(flows, /then repeat to verify/);
+assert.match(measurementCss, /\.measurement-workflow-speaker-buttons/);
+assert.match(measurementCss, /\.measurement-workflow-speaker-buttons[\s\S]*?width:\s*190px/);
+assert.match(measurementCss, /\.measurement-workflow-speaker-row[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+// Shared vertical rhythm (heading → buttons → divider): label and Setup
+// share one top edge, every section uses the same 0.75rem heading gap, and
+// idle speaker-align status/results collapse instead of reserving phantom
+// flex gaps below the buttons.
+assert.match(measurementCss, /\.measurement-workflow-heading[\s\S]*?align-items:\s*flex-start/);
+assert.match(measurementCss, /\.measurement-workflow-section[\s\S]*?gap:\s*0\.75rem/);
+assert.match(measurementCss, /#measurement-speaker-align-status:empty/);
+assert.match(measurementCss, /#measurement-speaker-align-results:empty/);
+// Calibration keeps the same button → divider distance as the other
+// sections: the status line margin sums the section list gap and the
+// section divider margin.
+assert.match(measurementCss, /#measurement-setup-status[\s\S]*?margin-top:\s*calc\(0\.5rem \+ 0\.35rem\)/);
+assert.match(responsiveCss, /\.measurement-workflow-speaker-row[\s\S]*?flex-direction:\s*column/);
+assert.match(responsiveCss, /\.measurement-workflow-speaker-buttons[\s\S]*?flex:\s*1 1 0/);
+assert.doesNotMatch(index, /measurement-workflow-speaker-cancel/);
 assert.ok(index.indexOf('id="measurement-repeat-start"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.ok(index.indexOf('id="measurement-hybrid-open"') > index.indexOf('id="measurement-sweep-menu"'));
 assert.doesNotMatch(index, /subwoofer alignment/i);
@@ -38,8 +158,12 @@ assert.doesNotMatch(index, /Advanced Measurement/);
 assert.doesNotMatch(flows, /Subwoofer Alignment/i);
 
 assert.match(index, /id="effects-toggle-import"[^>]*>Import<\/button>/);
-assert.match(app, /elements\.effectsToggleImportBtn\.textContent = shouldOpen \? 'Close Import' : 'Import';/);
-assert.match(app, /elements\.toggleImportBtn\.textContent = 'Close Import';/);
+const bankUi = fs.readFileSync(path.join(root, 'static', 'output_bank_ui.js'), 'utf8');
+assert.match(bankUi, /getElements\(\)\.effectsToggleImportBtn\.textContent = shouldOpen \? 'Close Import' : 'Import';/);
+assert.match(bankUi, /function setEffectsImportPanelOpen\(/, 'bank module owns the import panel toggle');
+assert.doesNotMatch(app, /\n(?:async function|function) setEffectsImportPanelOpen\(/, 'shim dropped from app.js');
+assert.match(libraryUi, /getElements\(\)\.toggleImportBtn\.textContent = 'Close Import';/,
+    'library module must flip the import button label');
 assert.ok(!app.includes(`textContent = '${String.fromCharCode(0x2212)} Close'`));
 assert.match(index, /id="toggle-import"[^>]*aria-expanded="false"[^>]*aria-controls="library-import-panel"/);
 assert.doesNotMatch(responsiveCss, /#toggle-import::before/);

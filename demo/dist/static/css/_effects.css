@@ -83,6 +83,40 @@
 }
 
 /* Preset compare A/B row */
+.effects-compare-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.65rem 1rem;
+}
+
+.effects-bank-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 100%;
+}
+
+.effects-bank-row label {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.effects-bank-row .url-input {
+    width: auto;
+    min-width: 8.5rem;
+    max-width: 12rem;
+    min-height: 36px;
+    padding-block: 0.35rem;
+    font-size: 0.85rem;
+    background-color: var(--bg-surface);
+}
+
+.effects-rew-dual-grid.is-mono {
+    grid-template-columns: 1fr;
+}
+
 .effects-compare-row {
     display: flex;
     flex-direction: column;
@@ -429,11 +463,18 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 .effects-subwoofer-controls {
     display: grid;
-    grid-template-columns: minmax(148px, 1.08fr) minmax(112px, 0.78fr) repeat(6, minmax(92px, 1fr));
-    align-items: stretch;
+    /* 2.1: Global + Sub as two equal-width cards. 2.2 (Dual-Mono and
+       Stereo) adds the third card via the is-subwoofer-22 rule. Cards hug
+       their own content (start): no forced equal height, no whitespace. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
     gap: 0.75rem;
     width: min(100%, 1100px);
     margin: 0 auto;
+}
+
+.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .effects-subwoofer-control-group {
@@ -447,40 +488,110 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-subwoofer-global-group {
-    grid-column: 1 / span 2;
+    grid-column: auto;
     display: grid;
     /* Same principle as the channel groups: tracks hug their content and
        the leftover width becomes even spacing, so controls can neither
-       overlap nor clip at any card width. */
-    grid-template-columns: repeat(2, auto);
-    justify-content: space-evenly;
+       overlap nor clip at any card width. One stacked column: the label and
+       the single crossover block (shared, or the selected side while a
+       Stereo pair is unlinked). */
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
     align-items: end;
     gap: 0.7rem;
 }
 
-.effects-subwoofer-channel-group {
-    grid-column: 3 / -1;
+/* Tab row above the graph, mirroring the speaker-way tabs: Link L/R plus,
+   while a Stereo pair is unlinked, the Sub L / Sub R selector. */
+.effects-subwoofer-tabrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.9rem;
+    width: min(100%, 1100px);
+    margin: 0 auto;
+}
+
+/* Same split as the crossover tab row: tabs left, link right. */
+.effects-subwoofer-tabrow > .effects-subwoofer-side-tabs {
+    flex: 1 1 auto;
+}
+.effects-subwoofer-tabrow > .crossover-link-label {
+    flex: 0 0 auto;
+}
+
+/* Sub L / Sub R selector for an unlinked Stereo pair. Same tab language as
+   the speaker-way tabs. */
+.effects-subwoofer-side-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.sub-side-tab {
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.sub-side-tab.is-active {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+/* Two-line crossover area: Frequency/Type on the first row, Slope/Main
+   highpass on the second. Shared and per-side blocks share the layout so
+   the card keeps its height when the tabs switch sides. */
+.effects-subwoofer-crossover-block {
+    grid-column: 1 / -1;
     display: grid;
-    /* One principle for every field: tracks hug their content (steppers and
-       selects keep their compact fixed sizes) and the leftover width becomes
-       even spacing between the columns. Nothing can overlap or clip, no
-       per-control track sizing, and Sub 1 / Sub 2 share the class and stay
-       symmetric. Headings and controls share one center axis (field-group
-       centering below). */
+    grid-template-columns: repeat(2, auto);
+    justify-content: space-evenly;
+    align-items: end;
+    gap: 0.7rem;
+    width: 100%;
+}
+
+.effects-subwoofer-crossover-block.is-side {
+    grid-template-columns: repeat(2, auto);
+}
+
+.effects-subwoofer-channel-group {
+    grid-column: auto;
+    display: grid;
+    /* Three columns like the speaker Trim group: one control per
+       auto-sized column (Level / Align / Polarity), evenly spread with a
+       calm horizontal gap so the steppers never touch. Sub 1 / Sub 2 share
+       the class and stay symmetric; headings and controls share one center
+       axis (field-group centering below). */
     grid-template-columns: repeat(3, auto);
     justify-content: space-evenly;
     align-items: end;
-    gap: 0.8rem;
+    gap: 0.55rem 0.9rem;
     background: rgba(8, 47, 73, 0.2);
     border-color: rgba(110, 231, 183, 0.26);
 }
 
-.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group {
-    grid-column: 3 / span 3;
-}
-
-.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
-    grid-column: 6 / span 3;
+/* Wide desktop is the tightest fit (three ~360px cards): trim the value
+   field and the polarity select inside the sub cards only, so the even
+   columns keep a real gap without touching or clipping. Touch layouts keep
+   their own sizing (max-width rules below stay untouched). */
+@media (min-width: 1101px) {
+    .effects-subwoofer-channel-group {
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
+    }
+    #tab-effects .effects-subwoofer-channel-group .stepper-control .stepper-input {
+        width: 2.9rem;
+    }
+    #tab-effects .effects-subwoofer-channel-group select.effects-subwoofer-polarity-select {
+        width: min(100%, 3.5rem);
+    }
 }
 
 .effects-subwoofer-sub2-group {
@@ -517,7 +628,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-subwoofer-derived-delays {
-    grid-column: 3 / -1;
+    /* Below the cards across the full width; on wide desktop tucked under
+       the sub cards instead (see the min-width rule below). */
+    grid-column: 1 / -1;
     align-self: stretch;
     min-width: 0;
     padding: 0.48rem 0.65rem;
@@ -529,6 +642,29 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     font-size: 0.74rem;
     font-weight: 600;
     line-height: 1.25;
+}
+
+/* Wide desktop, 2.2 only (the timing readout stays hidden in 2.1): the
+   sub cards are shorter than Global's 2x2 block, so the timing tucks into
+   that free space — under Sub 1 + Sub 2 with its bottom edge on Global's
+   bottom — instead of costing another full row. */
+@media (min-width: 1101px) {
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-global-group {
+        grid-row: 1 / span 2;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group {
+        grid-column: 2;
+        grid-row: 1;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
+        grid-column: 3;
+        grid-row: 1;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-derived-delays {
+        grid-column: 2 / -1;
+        grid-row: 2;
+        align-self: end;
+    }
 }
 
 .effects-subwoofer-derived-delays span {
@@ -546,21 +682,21 @@ select.url-input::-webkit-scrollbar-thumb:hover {
    Main highpass cap (5.2rem) fits the widest option ("On"/"Off") with room
    beside the native arrow on Android, where the narrower cap clipped "On".
    The polarity selects keep the tighter 4.2rem cap beside the single-letter
-   "N"/"I" values. Centered text keeps the boxes calm between heading and
-   native arrow. The select type selectors are load-bearing: #tab-effects
+   "N"/"I" values. Left-aligned text like every other app select, closed
+   and open. The select type selectors are load-bearing: #tab-effects
    .url-input (equal specificity, later in the file) would otherwise keep
    width:100% alive and stretch the selects back across their grid tracks. */
 #tab-effects select.effects-subwoofer-compact-select {
     width: min(100%, 5.2rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
 }
 #tab-effects select.effects-subwoofer-polarity-select {
     width: min(100%, 4.2rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
 }
 
 .effects-filter-import-area.is-busy {

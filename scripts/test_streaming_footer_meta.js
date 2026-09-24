@@ -16,16 +16,17 @@ const path = require('path');
 const vm = require('vm');
 
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const uiJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, '..', 'static', 'index.html'), 'utf8');
 
-function extractFunction(name) {
-    const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(appJs);
+function extractFunction(source, name) {
+    const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
     assert.ok(match, `missing ${name}`);
-    const brace = appJs.indexOf('{', match.index);
+    const brace = source.indexOf('{', match.index);
     assert.notEqual(brace, -1, `missing body ${name}`);
     let depth = 0, quote = '', escaped = false;
-    for (let index = brace; index < appJs.length; index += 1) {
-        const char = appJs[index];
+    for (let index = brace; index < source.length; index += 1) {
+        const char = source[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -34,18 +35,25 @@ function extractFunction(name) {
         }
         if (`'"\``.includes(char)) quote = char;
         else if (char === '{') depth += 1;
-        else if (char === '}' && --depth === 0) return appJs.slice(match.index, index + 1);
+        else if (char === '}' && --depth === 0) return source.slice(match.index, index + 1);
     }
     throw new Error(`unterminated ${name}`);
 }
 
 const sandbox = {
     state: { samplerate: { available: true, active_rate: 44100 } },
+    window: { FXRouteUiHelpers: require('../static/ui_helpers.js') },
+    // formatStreamingMetaLine reads samplerate state and the shared kHz
+    // formatter through deps (module owns no globals).
+    deps: {
+        getState: () => sandbox.state,
+        formatRateKhz: (...args) => sandbox.formatRateKhz(...args),
+    },
 };
 vm.createContext(sandbox);
-vm.runInContext(extractFunction('formatRadioStreamLine'), sandbox);
-vm.runInContext(extractFunction('formatRateKhz'), sandbox);
-vm.runInContext(extractFunction('formatStreamingMetaLine'), sandbox);
+vm.runInContext(extractFunction(uiJs, 'formatRadioStreamLine'), sandbox);
+vm.runInContext(extractFunction(appJs, 'formatRateKhz'), sandbox);
+vm.runInContext(extractFunction(uiJs, 'formatStreamingMetaLine'), sandbox);
 
 const format = sandbox.formatStreamingMetaLine;
 
@@ -82,15 +90,15 @@ check('undefined payload', undefined, '44.1kHz');
 // backend keeps the track's stream facts complete across transient gaps, so
 // the payload is authoritative (see playback/stream_info.StreamInfoLedger and
 // the Qobuz provider's sticky stream facts).
-assert.ok(appJs.includes("formatStreamingMetaLine(data)"),
+assert.ok(uiJs.includes("formatStreamingMetaLine(data)"),
     'updateFooterForStreamingOwner must render through the shared renderer');
-assert.ok(!appJs.includes('renderStreamingFooterMeta'),
+assert.ok(!appJs.includes('renderStreamingFooterMeta') && !uiJs.includes('renderStreamingFooterMeta'),
     'no UI-side remember-last-string caching of the footer meta tag');
-assert.ok(!appJs.includes('__streamingMetaStable'),
+assert.ok(!appJs.includes('__streamingMetaStable') && !uiJs.includes('__streamingMetaStable'),
     'no client-side stable-string cache for the footer meta tag');
 
 // TIDAL (native playback) shares the radio/local footer branch.
-const renderSamplerate = extractFunction('renderSamplerateUI');
+const renderSamplerate = extractFunction(uiJs, 'renderSamplerateUI');
 assert.ok(/activeSource === 'radio' \|\| activeSource === 'local' \|\| activeSource === 'tidal'/.test(renderSamplerate),
     'renderSamplerateUI must treat tidal like radio/local stream facts');
 // A general samplerate/rate refresh must never overwrite the footer pill

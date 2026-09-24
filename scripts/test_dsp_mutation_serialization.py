@@ -121,7 +121,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def get_status(self):
                 return {"status": "ok"}
 
-            def delete_preset(self, preset_name):
+            def delete_preset(self, preset_name, pinned_presets=()):
                 order.append("delete-entered")
                 return None
 
@@ -181,7 +181,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                     "format": "irs",
                 }
 
-            def create_convolver_preset(self, preset_name, ir_filename, extras=None):
+            def create_convolver_preset(self, preset_name, ir_filename, extras=None, bank=None):
                 order.append("convolver-entered")
                 return {"name": preset_name}
 
@@ -304,7 +304,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                     "format": "irs",
                 }
 
-            def delete_preset(self, preset_name):
+            def delete_preset(self, preset_name, pinned_presets=()):
                 order.append("delete-entered")
 
             def get_active_preset(self):
@@ -349,7 +349,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def get_active_preset(self):
                 return self.active
 
-            def delete_preset(self, preset_name):
+            def delete_preset(self, preset_name, pinned_presets=()):
                 self.deleted.append(preset_name)
                 if self.active == "Room":
                     # Mirror the real manager: deleting the active preset
@@ -386,7 +386,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def get_active_preset(self):
                 return "Other"
 
-            def delete_preset(self, preset_name):
+            def delete_preset(self, preset_name, pinned_presets=()):
                 self.deleted.append(preset_name)
 
             def get_status(self):

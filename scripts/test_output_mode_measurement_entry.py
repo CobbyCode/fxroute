@@ -221,7 +221,6 @@ def _request(
         rate_change=operation == "measurement-entry",
         reload_source=False,
         output_mode_target={"output_mode": {"mode": "subwoofer-2.1"}},
-        output_mode_config={"mode": "subwoofer-2.1", "subwoofer": {}},
     )
 
 
@@ -614,7 +613,6 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=False,
             output_mode_target=overview,
-            output_mode_config={"mode": "subwoofer-2.2"},
         )
         with patch.object(main.runtime, "dsp_runtime", SimpleNamespace()), patch.object(
             main, "dsp_manager", None
@@ -679,7 +677,6 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=False,
             output_mode_target=overview,
-            output_mode_config={"mode": "stereo"},
         )
         with patch.object(main.runtime, "dsp_runtime", None), patch.object(
             main, "dsp_manager", None
@@ -724,14 +721,11 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
             target_rate=88200,
             should_play=True,
             output_mode_target={"output_mode": {"mode": "stereo"}},
-            output_mode_config={"mode": "stereo"},
         )
         with patch.object(
             main, "get_samplerate_status", return_value={"active_rate": 88200}
         ), patch.object(
             main, "get_audio_output_overview", return_value={"output_mode": {"mode": "stereo"}}
-        ), patch.object(
-            samplerate, "_load_raw_audio_output_mode", return_value={"mode": "stereo"}
         ), patch.object(
             main, "get_spotify_ui_state", new=AsyncMock(return_value={"status": "Paused"})
         ), patch.object(
@@ -749,7 +743,6 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
             target_rate=88200,
             should_play=True,
             output_mode_target={"output_mode": {"mode": "stereo"}},
-            output_mode_config={"mode": "stereo"},
         )
         with patch.object(
             main, "qobuz_play", new=AsyncMock(return_value={"status": "Playing"})
@@ -773,7 +766,6 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
             should_play=True,
             target_track={"source": "qobuz"},
             output_mode_target={"output_mode": {"mode": "stereo"}},
-            output_mode_config={"mode": "stereo"},
         )
         diagnosis = {
             "links_complete": True,
@@ -802,92 +794,6 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_output_mode_endpoint_submits_target_to_coordinator(self):
-        class Request:
-            async def json(self):
-                return {"mode": "subwoofer-2.1", "subwoofer": {}}
-
-        target = {
-            "overview": {"output_mode": {"mode": "subwoofer-2.1"}},
-            "config": {"mode": "subwoofer-2.1", "subwoofer": {}},
-        }
-        run = AsyncMock(return_value=SimpleNamespace(committed=True))
-        with patch.object(main, "measurement_sr_session", SimpleNamespace(active=False, has_active_jobs=False)), patch.object(
-            main, "prepare_audio_output_mode", return_value=target
-        ), patch.object(
-            # Pin the persisted start mode: the route takes the coordinator
-            # path only when the target mode differs from the persisted one
-            # (same-mode requests use the direct DSP-param sync instead), so
-            # the test must not depend on host configuration.
-            main.samplerate, "_load_audio_output_mode", return_value={"mode": "stereo"}
-        ), patch.object(main, "_coordinator_current_playback_context", new=AsyncMock(return_value={
-            "source": "local",
-            "target_url": "/music/current.flac",
-            "target_track": {"source": "local", "url": "/music/current.flac"},
-            "should_play": True,
-        })), patch.object(main, "get_samplerate_status", return_value={"active_rate": 44100}), patch.object(
-            main, "_run_coordinated_transition", run
-        ), patch.object(main, "get_audio_output_overview", return_value=target["overview"]), patch.object(
-            main, "with_subwoofer_derived_delays", side_effect=lambda value: value
-        ), patch.object(main.runtime, "dsp_runtime", None), patch.object(
-            main.dsp_orchestrator, "refresh_peak_monitor_after_effects_change", new=AsyncMock()
-        ):
-            await main.save_audio_output_mode_route(Request())
-
-        run.assert_awaited_once()
-        request = run.await_args.args[0]
-        self.assertEqual(request.operation, "output-mode-switch")
-        self.assertEqual(request.output_mode_target, target["overview"])
-        self.assertEqual(request.output_mode_config, target["config"])
-
-    async def test_running_dsp_output_mode_switch_uses_coordinator(self):
-        class Request:
-            async def json(self):
-                return {"mode": "subwoofer-2.1", "subwoofer": {}}
-
-        target = {
-            "overview": {"output_mode": {"mode": "subwoofer-2.1"}},
-            "config": {"mode": "subwoofer-2.1", "subwoofer": {}},
-        }
-        run = AsyncMock(return_value=SimpleNamespace(committed=True))
-        dsp_runtime = SimpleNamespace(
-            guarded_rebuild=AsyncMock(),
-            snapshot=lambda: {},
-        )
-        with patch.object(
-            main, "measurement_sr_session", SimpleNamespace(active=False, has_active_jobs=False)
-        ), patch.object(
-            main, "prepare_audio_output_mode", return_value=target
-        ), patch.object(
-            main.samplerate, "_load_audio_output_mode", return_value={"mode": "stereo"}
-        ), patch.object(
-            main, "_coordinator_current_playback_context", new=AsyncMock(return_value={
-                "source": "local",
-                "target_url": "/music/current.flac",
-                "target_track": {"source": "local", "url": "/music/current.flac"},
-                "should_play": True,
-            })
-        ), patch.object(
-            main, "get_samplerate_status", return_value={"active_rate": 44100}
-        ), patch.object(
-            main, "_run_coordinated_transition", run
-        ), patch.object(
-            main, "get_audio_output_overview", return_value=target["overview"]
-        ), patch.object(
-            main, "persist_audio_output_mode"
-        ) as persist, patch.object(
-            main, "with_subwoofer_derived_delays", side_effect=lambda value: value
-        ), patch.object(
-            main.runtime, "dsp_runtime", dsp_runtime
-        ), patch.object(
-            main.dsp_orchestrator, "refresh_peak_monitor_after_effects_change", new=AsyncMock()
-        ):
-            await main.save_audio_output_mode_route(Request())
-
-        run.assert_awaited_once()
-        dsp_runtime.guarded_rebuild.assert_not_awaited()
-        persist.assert_not_called()
-
     async def test_measurement_session_entry_submits_rate_change_to_coordinator(self):
         session = main.MeasurementSampleRateSession()
         result = SimpleNamespace(committed=True, target_rate=48000)
@@ -1045,22 +951,10 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
             initial_graph=diagnosis,
         )
 
-    async def test_measurement_entry_and_output_mode_endpoint_sources_have_no_direct_graph_mutators(self):
-        output_mode_source = inspect.getsource(main.save_audio_output_mode_route)
+    async def test_measurement_entry_has_no_direct_graph_mutators(self):
         start_source = inspect.getsource(main.MeasurementSampleRateSession._start_locked)
-        # Every real mode switch must still enter the Coordinator's muted
-        # transition and must never load presets from the endpoint directly.
-        self.assertIn("_run_coordinated_transition", output_mode_source)
-        self.assertIn("prepare_audio_output_mode", output_mode_source)
-        self.assertNotIn("load_preset", output_mode_source)
-        self.assertNotIn("set_audio_output_mode(", output_mode_source)
-        # The sole exception: a same-mode request is a pure DSP parameter edit
-        # (crossover/level/alignment/polarity/highpass) that rebuilds no
-        # routing, samplerate or graph topology, so it restores the
-        # pre-coordinator direct sync without closing the output gate.
-        self.assertIn("target_mode == current_mode", output_mode_source)
-        self.assertIn("persist_audio_output_mode", output_mode_source)
-        self.assertIn("dsp_orchestrator.sync_runtime", output_mode_source)
+        # The measurement entry must still enter the Coordinator's muted
+        # transition for its rate change.
         self.assertIn("operation=\"measurement-entry\"", start_source)
         self.assertIn("_run_coordinated_transition", start_source)
         self.assertNotIn("_set_pipewire_force_rate", start_source)
@@ -1147,24 +1041,10 @@ class MeasurementSessionRuntimeReadbackTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
-class OutputModePersistenceSplitTests(unittest.TestCase):
-    def test_prepare_does_not_persist_and_commit_persists_validated_config(self):
-        with tempfile.TemporaryDirectory(prefix="fxroute-output-mode-test-") as directory:
-            path = pathlib.Path(directory) / "audio-output-mode.json"
-            overview = {
-                "output_mode": {
-                    "mode": "stereo",
-                    "available": True,
-                }
-            }
-            with patch.object(samplerate.overview, "_audio_output_mode_path", return_value=path), patch.object(
-                samplerate.overview, "get_audio_output_overview", return_value=overview
-            ):
-                target = samplerate.prepare_audio_output_mode("stereo")
-                self.assertFalse(path.exists())
-                samplerate.persist_audio_output_mode(target["config"])
-            self.assertTrue(path.exists())
-            self.assertEqual(path.read_text() and target["config"]["mode"], "stereo")
+        # NOTE (backend-v2 migration): OutputModePersistenceSplitTests pinned
+        # the deleted prepare/persist split. The v2 equivalent
+        # (prepare-then-commit-after-readback) is covered by the
+        # CommitV2Tests in test_output_state_coordinator.py.
 
 
 if __name__ == "__main__":

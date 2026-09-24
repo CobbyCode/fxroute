@@ -305,6 +305,37 @@ def _auto_sub_result_meta(
                 meta["final_polarities"] = pols
     return meta
 
+
+def _auto_sub_attach_result_meta(
+    job: dict[str, Any],
+    baseline_measurement: dict[str, Any] | None,
+    confirmation_measurement: dict[str, Any] | None,
+    *,
+    mode: str,
+    final_levels_db: dict[str, float],
+    final_delays_ms: dict[str, float] | None = None,
+    final_polarities: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build run meta and tag Before/After measurements.
+
+    Reads the run scored anchor offset and final sub state, then marks both
+    measurements as auto_sub with the same meta. Pure metadata preparation.
+    """
+    target_anchor = job.get("main_target_anchor") if isinstance(job.get("main_target_anchor"), dict) else None
+    tvo = target_anchor.get("target_vertical_offset_db") if target_anchor else None
+    meta = _auto_sub_result_meta(
+        job, mode, final_levels_db,
+        target_vertical_offset_db=float(tvo) if isinstance(tvo, (int, float)) else None,
+        final_delays_ms=final_delays_ms,
+        final_polarities=final_polarities,
+    )
+    for measurement in (baseline_measurement, confirmation_measurement):
+        if measurement is not None:
+            measurement["measurement_kind"] = "auto_sub"
+            measurement["autosub_meta"] = meta
+    return meta
+
+
 def _auto_sub_measurement_from_sweep(
     sweep_result: dict[str, Any],
     label: str,
@@ -937,6 +968,51 @@ def _auto_sub_score_single_channel_fallback(
     scoring["scored_candidates"] = candidates
     return scoring
 
+
+def _auto_sub_combined_lr_metrics(
+    left_result: dict[str, Any], right_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Shared L/R score metrics for one candidate pair.
+
+    Pure combination of two already scored sides: weighted combined score,
+    averaged band scores, max low-guard loss and weighted penalty. Both
+    combined and matrix scorers use it so their metrics cannot drift apart.
+    """
+    score_left = float(left_result.get("score", 0.0) or 0.0)
+    score_right = float(right_result.get("score", 0.0) or 0.0)
+    combined_score = 0.6 * min(score_left, score_right) + 0.4 * ((score_left + score_right) / 2.0)
+    low_guard_loss = max(
+        float(left_result.get("low_guard_loss_db", 0.0) or 0.0),
+        float(right_result.get("low_guard_loss_db", 0.0) or 0.0),
+    )
+    low_guard_penalty = 0.6 * max(
+        float(left_result.get("low_guard_penalty", 0.0) or 0.0),
+        float(right_result.get("low_guard_penalty", 0.0) or 0.0),
+    ) + 0.4 * (
+        (
+            float(left_result.get("low_guard_penalty", 0.0) or 0.0)
+            + float(right_result.get("low_guard_penalty", 0.0) or 0.0)
+        ) / 2.0
+    )
+    return {
+        "score": round(combined_score, 4),
+        "score_pct": round(combined_score * 100.0, 1),
+        "xo_score": round((float(left_result.get("xo_score", 0.0) or 0.0) + float(right_result.get("xo_score", 0.0) or 0.0)) / 2.0, 4),
+        "timing_band_score": round((float(left_result.get("timing_band_score", 0.0) or 0.0) + float(right_result.get("timing_band_score", 0.0) or 0.0)) / 2.0, 4),
+        "low_guard_loss_db": round(low_guard_loss, 2),
+        "low_guard_penalty": round(low_guard_penalty, 4),
+        "final_score": round(combined_score, 4),
+        "low_guard_loss_L_db": left_result.get("low_guard_loss_db"),
+        "low_guard_loss_R_db": right_result.get("low_guard_loss_db"),
+        "low_guard_penalty_L": left_result.get("low_guard_penalty"),
+        "low_guard_penalty_R": right_result.get("low_guard_penalty"),
+        "score_L": round(score_left, 4),
+        "score_L_pct": round(score_left * 100.0, 1),
+        "score_R": round(score_right, 4),
+        "score_R_pct": round(score_right * 100.0, 1),
+    }
+
+
 def _score_auto_sub_combined_candidates(
     candidates: list[dict[str, Any]],
     *,
@@ -982,40 +1058,11 @@ def _score_auto_sub_combined_candidates(
             right_result = right_by_delay.get(delay_key)
             if not left_result or not right_result:
                 continue
-            score_left = float(left_result.get("score", 0.0) or 0.0)
-            score_right = float(right_result.get("score", 0.0) or 0.0)
-            combined_score = 0.6 * min(score_left, score_right) + 0.4 * ((score_left + score_right) / 2.0)
-            low_guard_loss = max(
-                float(left_result.get("low_guard_loss_db", 0.0) or 0.0),
-                float(right_result.get("low_guard_loss_db", 0.0) or 0.0),
-            )
-            low_guard_penalty = 0.6 * max(
-                float(left_result.get("low_guard_penalty", 0.0) or 0.0),
-                float(right_result.get("low_guard_penalty", 0.0) or 0.0),
-            ) + 0.4 * (
-                (
-                    float(left_result.get("low_guard_penalty", 0.0) or 0.0)
-                    + float(right_result.get("low_guard_penalty", 0.0) or 0.0)
-                ) / 2.0
-            )
+            metrics = _auto_sub_combined_lr_metrics(left_result, right_result)
             combined_results.append({
                 "delay_ms": result["delay_ms"],
                 "name": result.get("name", str(result["delay_ms"])),
-                "score": round(combined_score, 4),
-                "score_pct": round(combined_score * 100.0, 1),
-                "xo_score": round((float(left_result.get("xo_score", 0.0) or 0.0) + float(right_result.get("xo_score", 0.0) or 0.0)) / 2.0, 4),
-                "timing_band_score": round((float(left_result.get("timing_band_score", 0.0) or 0.0) + float(right_result.get("timing_band_score", 0.0) or 0.0)) / 2.0, 4),
-                "low_guard_loss_db": round(low_guard_loss, 2),
-                "low_guard_penalty": round(low_guard_penalty, 4),
-                "final_score": round(combined_score, 4),
-                "low_guard_loss_L_db": left_result.get("low_guard_loss_db"),
-                "low_guard_loss_R_db": right_result.get("low_guard_loss_db"),
-                "low_guard_penalty_L": left_result.get("low_guard_penalty"),
-                "low_guard_penalty_R": right_result.get("low_guard_penalty"),
-                "score_L": round(score_left, 4),
-                "score_L_pct": round(score_left * 100.0, 1),
-                "score_R": round(score_right, 4),
-                "score_R_pct": round(score_right * 100.0, 1),
+                **metrics,
                 "scan": scan_by_delay.get(delay_key, "coarse"),
                 "score_source": "lr_combined",
             })
@@ -1207,22 +1254,7 @@ def _score_auto_sub_matrix_candidates(
             right_result = right_by_idx.get(idx)
             if not left_result or not right_result:
                 continue
-            score_left = float(left_result.get("score", 0.0) or 0.0)
-            score_right = float(right_result.get("score", 0.0) or 0.0)
-            combined_score = 0.6 * min(score_left, score_right) + 0.4 * ((score_left + score_right) / 2.0)
-            low_guard_loss = max(
-                float(left_result.get("low_guard_loss_db", 0.0) or 0.0),
-                float(right_result.get("low_guard_loss_db", 0.0) or 0.0),
-            )
-            low_guard_penalty = 0.6 * max(
-                float(left_result.get("low_guard_penalty", 0.0) or 0.0),
-                float(right_result.get("low_guard_penalty", 0.0) or 0.0),
-            ) + 0.4 * (
-                (
-                    float(left_result.get("low_guard_penalty", 0.0) or 0.0)
-                    + float(right_result.get("low_guard_penalty", 0.0) or 0.0)
-                ) / 2.0
-            )
+            metrics = _auto_sub_combined_lr_metrics(left_result, right_result)
             sub1_alignment = _auto_sub_clamped_delay(float(result.get("sub1_alignment_ms", 0.0) or 0.0))
             sub2_alignment = _auto_sub_clamped_delay(float(result.get("sub2_alignment_ms", 0.0) or 0.0))
             combined_results.append({
@@ -1231,24 +1263,10 @@ def _score_auto_sub_matrix_candidates(
                 "sub2_alignment_ms": sub2_alignment,
                 "incumbent_pair": _is_incumbent_pair(result),
                 "name": result.get("name") or _auto_sub_22_name(sub1_alignment, sub2_alignment),
-                "score": round(combined_score, 4),
-                "score_pct": round(combined_score * 100.0, 1),
-                "xo_score": round((float(left_result.get("xo_score", 0.0) or 0.0) + float(right_result.get("xo_score", 0.0) or 0.0)) / 2.0, 4),
-                "timing_band_score": round((float(left_result.get("timing_band_score", 0.0) or 0.0) + float(right_result.get("timing_band_score", 0.0) or 0.0)) / 2.0, 4),
-                "low_guard_loss_db": round(low_guard_loss, 2),
-                "low_guard_penalty": round(low_guard_penalty, 4),
-                "final_score": round(combined_score, 4),
-                "low_guard_loss_L_db": left_result.get("low_guard_loss_db"),
-                "low_guard_loss_R_db": right_result.get("low_guard_loss_db"),
-                "low_guard_penalty_L": left_result.get("low_guard_penalty"),
-                "low_guard_penalty_R": right_result.get("low_guard_penalty"),
+                **metrics,
                 "low_guard_reference": _combined_low_guard_reference(left_result, right_result),
                 "low_guard_reference_L": left_result.get("low_guard_reference"),
                 "low_guard_reference_R": right_result.get("low_guard_reference"),
-                "score_L": round(score_left, 4),
-                "score_L_pct": round(score_left * 100.0, 1),
-                "score_R": round(score_right, 4),
-                "score_R_pct": round(score_right * 100.0, 1),
                 "scan": result.get("scan", "combined_matrix"),
                 "score_source": "lr_combined",
             })

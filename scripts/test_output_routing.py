@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Persistent signal assignment and native physical-link behavior."""
+"""Signal-assignment defaults and native physical-link behavior.
 
-import os
+Backend-v2 migration: numeric routing persistence (save/restore) is
+deleted; the overview carries fixed default assignments and topology
+lives in the v2 output state. What remains is the read-only default
+payload, assignment validation, and the native link reconciliation.
+"""
+
 import sys
-import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -16,36 +19,29 @@ from dsp.runtime import CommandResult, DSPRuntime, DSPRuntimeConfig
 
 
 class RoutingTests(unittest.TestCase):
-    def setUp(self):
-        root = tempfile.TemporaryDirectory()
-        self.addCleanup(root.cleanup)
-        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": root.name})
-        env.start()
-        self.addCleanup(env.stop)
-
     def test_stereo_device_has_no_matrix(self):
         self.assertFalse(routing.routing_payload("stereo", 2)["available"])
 
-    def test_multichannel_defaults_and_device_isolation(self):
+    def test_multichannel_defaults_are_fixed(self):
+        # No persistence remains: every device reads the same defaults.
         self.assertEqual(routing.routing_payload("A", 6)["assignments"], [1, 2, 3, 4, 0, 0])
-        routing.save_assignments("A", [2, 1, 0, 1, 4, 3], 6)
-        self.assertEqual(routing.routing_payload("A", 6)["assignments"], [2, 1, 0, 1, 4, 3])
         self.assertEqual(routing.routing_payload("B", 6)["assignments"], [1, 2, 3, 4, 0, 0])
+        self.assertFalse(routing.routing_payload("A", 6)["customized"])
 
-    def test_smaller_tier_keeps_dormant_assignments(self):
+    def test_usb_device_key_collapses_profiles(self):
         key = "alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output"
-        routing.save_assignments(key, [1, 2, 3, 4, 1, 2], 6)
         pro = key.rsplit(".", 1)[0] + ".pro-output-0"
-        self.assertEqual(routing.routing_payload(pro, 4)["inactive_assignments"], [5, 6])
-        routing.save_assignments(pro, [2, 1, 3, 4], 4)
-        self.assertEqual(routing.routing_payload(key, 6)["assignments"], [2, 1, 3, 4, 1, 2])
+        self.assertEqual(routing.device_key(key), routing.device_key(pro))
+        self.assertEqual(routing.routing_payload(pro, 4)["device_key"],
+                         routing.routing_payload(key, 6)["device_key"])
 
-    def test_invalid_assignments_do_not_change_saved_routes(self):
-        routing.save_assignments("A", [1, 2, 3, 4], 4)
+    def test_invalid_assignments_are_rejected(self):
         for values in ([1, 2], [1, 2, 3, 5], [True, 2, 3, 4], [1, 2, 3, "4"]):
             with self.subTest(values=values), self.assertRaises(ValueError):
-                routing.save_assignments("A", values, 4)
-        self.assertEqual(routing.routing_payload("A", 4)["assignments"], [1, 2, 3, 4])
+                routing.validate_assignments(values, 4)
+        self.assertEqual(routing.validate_assignments([2, 1, 0, 1], 4), [2, 1, 0, 1])
+        with self.assertRaises(ValueError):
+            routing.validate_assignments([1, 2], 2)
 
 
 class NativeRoutingTests(unittest.IsolatedAsyncioTestCase):

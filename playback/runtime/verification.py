@@ -674,6 +674,14 @@ class _RuntimeVerificationMixin:
             if not request.should_play and qobuz_state.get("status") == "Playing":
                 raise RuntimeError("Qobuz was not left paused for output-mode commit")
 
+        v2_fingerprint = (request.output_state_transition or {}).get("fingerprint")
+        if v2_fingerprint:
+            runtime = self._dsp_runtime
+            staged = ((runtime.snapshot() or {}).get("config") or {}) if runtime is not None else {}
+            if staged.get("plan_fingerprint") != v2_fingerprint:
+                raise RuntimeError(
+                    "staged plan fingerprint mismatch: "
+                    f"expected={v2_fingerprint} actual={staged.get('plan_fingerprint')}")
         return {
             "committed": True,
             "output_mode_graph": True,
@@ -683,6 +691,7 @@ class _RuntimeVerificationMixin:
             "force_rate": rate.get("force_rate"),
             "spotify_stream_rate": spotify_stream_rate,
             "qobuz_stream_rate": qobuz_stream_rate,
+            "output_fingerprint": v2_fingerprint,
         }
 
     async def verify_committed_transition(self, request: TransitionRequest) -> dict[str, Any]:

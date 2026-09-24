@@ -9,21 +9,26 @@ const MeasurementUI = require('../static/measurement_ui.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+const editorsSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_editors_ui.js'), 'utf8');
+const peqSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_peq_editor.js'), 'utf8');
+const convolverSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_convolver_editor.js'), 'utf8');
+const apiSource = fs.readFileSync(path.join(repoRoot, 'static', 'api.js'), 'utf8');
+const controllerSource = fs.readFileSync(path.join(repoRoot, 'static', 'output_system_controller.js'), 'utf8');
 const htmlSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-function extractFunction(name) {
+function extractFrom(source, name) {
     const marker = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`);
-    const match = marker.exec(appSource);
+    const match = marker.exec(source);
     assert.ok(match, `missing function ${name}`);
     const start = match.index;
     let parenDepth = 1;
     let braceStart = -1;
-    for (let index = match.index + match[0].length; index < appSource.length; index += 1) {
-        if (appSource[index] === '(') parenDepth += 1;
-        if (appSource[index] === ')') parenDepth -= 1;
+    for (let index = match.index + match[0].length; index < source.length; index += 1) {
+        if (source[index] === '(') parenDepth += 1;
+        if (source[index] === ')') parenDepth -= 1;
         if (parenDepth === 0) {
-            braceStart = appSource.indexOf('{', index);
+            braceStart = source.indexOf('{', index);
             break;
         }
     }
@@ -31,8 +36,8 @@ function extractFunction(name) {
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = braceStart; index < appSource.length; index += 1) {
-        const char = appSource[index];
+    for (let index = braceStart; index < source.length; index += 1) {
+        const char = source[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -44,17 +49,32 @@ function extractFunction(name) {
         } else if (char === '{') {
             depth += 1;
         } else if (char === '}' && --depth === 0) {
-            return appSource.slice(start, index + 1);
+            return source.slice(start, index + 1);
         }
     }
     throw new Error(`unterminated function ${name}`);
 }
 
+const OutputStateModule = require('../static/output_state.js');
+require('../static/api.js');
+const BankUIModule = require('../static/output_bank_ui.js');
+
+function extractFunction(name) {
+    return extractFrom(appSource, name);
+}
+
+function extractControllerFunction(name) {
+    return extractFrom(controllerSource, name);
+}
+
 async function main() {
     const requests = [];
-    const state = { measurement: {}, dsp: {} };
+    const toasts = [];
+    let nextResponse = null;
+    const state = { measurement: { currentMeasurement: { id: 'measurement-1' } }, dsp: {} };
     const context = {
         MeasurementUI,
+        FXRouteMeasurementUI: MeasurementUI,
         state,
         measurementPeqPalette: ['#1', '#2', '#3', '#4'],
         MeasurementDsp: {
@@ -63,7 +83,7 @@ async function main() {
             clampMeasurementPeqQ: (value) => Math.max(0.1, Math.min(20, Number(value))),
         },
         elements: {},
-        showToast: () => {},
+        showToast: (message, kind) => toasts.push({ message, kind }),
         showMeasurementPeqTakeFeedback: () => {},
         renderMeasurementPanel: () => {},
         validatePeqBands: () => '',
@@ -72,34 +92,84 @@ async function main() {
         fetchEffects: async () => {},
         fetch: async (url, options) => {
             requests.push({ url, options });
-            return { ok: true, json: async () => ({ preset: { name: 'Twelve filters' } }) };
+            return nextResponse || { ok: true, json: async () => ({ preset: { name: 'Twelve filters' } }) };
         },
         console,
         Date,
         Math,
     };
+    context.FXRouteMeasurementDsp = context.MeasurementDsp;
     vm.createContext(context);
-    const functions = [
-        'getDefaultMeasurementPeqFilter',
-        'getDefaultMeasurementPeqState',
-        'ensureMeasurementPeqState',
-        'ensureCustomHouseCurveState',
-        'ensureMeasurementConvolverState',
+    // Bank-bound helpers run through the real bank module bridged into the
+    // sandbox; app.js keeps thin delegating wrappers.
+    BankUIModule.init({ getState: () => state, getElements: () => ({}),
+        showToast: (message, kind) => toasts.push({ message, kind }),
+        escapeHtml: (value) => String(value),
+        measurementArea: () => ({ available: true, channel_mode: 'stereo' }) });
+    context.window = { FXRouteBankUI: BankUIModule };
+    const appFunctions = [
         'getMeasurementActiveEditor',
-        'setMeasurementActiveEditor',
-        'clampMeasurementPeqFrequency',
-        'clampMeasurementPeqGain',
-        'clampMeasurementPeqQ',
-        'addMeasurementPeqFilter',
-        'measurementPeqFilterToBand',
-        'getMeasurementPeqNameSuffix',
-        'getMeasurementPeqDraftMode',
-        'getMeasurementPeqPresetName',
-        'resolveMeasurementPeqPresetName',
-        'takeMeasurementPeqToPreset',
-        'createMeasurementPeqPresetFromDraft',
+        'measurementCommitSourceId',
+        'ensureOutputSystemBoxes',
+        'outputSystemModule',
+        'measurementAreaFromCatalog',
     ].map(extractFunction).join('\n');
+    const apiFunctions = ['formatTransitionErrorDetail'].map((name) => extractFrom(apiSource, name)).join('\n');
+    // fetchOutputSystemCatalog is controller-owned; the app wrapper only
+    // delegates. Run the canonical implementation with injected deps.
+    const controllerFunctions = [
+        'fetchOutputSystemCatalog',
+    ].map(extractControllerFunction).join('\n');
+    // Bank-bound helpers run through the real bank module bridged into the
+    // sandbox; app.js keeps thin delegating wrappers.
+    const bankBridges = [
+        'outputSystemBankBinding',
+        'bankBindingJson',
+        'requireConcreteFilterBank',
+        'measurementPeqParams',
+    ].map((name) => `function ${name}() { return window.FXRouteBankUI.${name}(...arguments); }`).join('\n');
+    const functions = `${appFunctions}\n${apiFunctions}\n${controllerFunctions}\n${bankBridges}`;
+    context.deps = {
+        getState: () => state,
+        showToast: (message, kind) => toasts.push({ message, kind }),
+        ensureOutputBoxes: () => context.ensureOutputSystemBoxes(),
+        outputSystemModule: () => OutputStateModule,
+        renderOutputSection: () => {},
+        renderBankSelector: () => {},
+        renderCompare: () => {},
+        syncCrossover: () => {},
+        syncSpeakerAlign: () => {},
+        renderSubwoofer: () => {},
+        syncAutoSub: () => {},
+        reportMutationError: () => {},
+        syncCompareBusy: () => {},
+    };
     vm.runInContext(`let peqCreateInFlight = false;\n${functions}`, context);
+    vm.runInContext(fs.readFileSync(path.join(repoRoot, 'static', 'measurement_peq_editor.js'), 'utf8'), context);
+    const editor = context.FXRouteMeasurementPeqEditor;
+    editor.init({
+        getState: () => state, getElements: () => context.elements,
+        fetch: context.fetch, showToast: context.showToast,
+        renderMeasurementPanel: context.renderMeasurementPanel,
+        setMeasurementActiveEditor: (editorName) => { state.measurement.activeEditor = editorName; },
+        getMeasurementActiveEditor: () => context.getMeasurementActiveEditor(),
+        requireConcreteFilterBank: () => context.requireConcreteFilterBank(),
+        validatePeqBands: context.validatePeqBands,
+        normalizePeqEqMode: context.normalizePeqEqMode,
+        collectEffectsExtras: context.collectEffectsExtras,
+        bankBindingJson: () => context.bankBindingJson(),
+        measurementCommitSourceId: () => context.measurementCommitSourceId(),
+        measurementPeqParams: (...args) => context.measurementPeqParams(...args),
+        formatTransitionErrorDetail: (...args) => context.formatTransitionErrorDetail(...args),
+        fetchEffects: context.fetchEffects,
+        fetchOutputSystemCatalog: (...args) => context.fetchOutputSystemCatalog(...args),
+        isPeqCreateInFlight: () => vm.runInContext('peqCreateInFlight', context),
+        setPeqCreateInFlight: (active) => { context.nextPeqCreateInFlight = active; vm.runInContext('peqCreateInFlight = nextPeqCreateInFlight', context); },
+    });
+    for (const name of [
+        'ensureMeasurementPeqState', 'addMeasurementPeqFilter', 'takeMeasurementPeqToPreset',
+        'createMeasurementPeqPresetFromDraft',
+    ]) context[name] = (...args) => editor[name](...args);
 
     const inputs = Array.from({ length: 12 }, (_, index) => ({
         type: index % 2 ? 'bell' : 'notch',
@@ -123,17 +193,55 @@ async function main() {
     assert.deepEqual(plain(state.measurement.peqAssistant.draft.rightBands), expectedBands);
 
     await context.createMeasurementPeqPresetFromDraft();
-    assert.equal(requests.length, 1, 'preset creation must make one request');
-    const payload = JSON.parse(requests[0].options.body);
+    const presetPosts = requests.filter((request) => request.url === '/api/dsp/presets/create-peq');
+    assert.equal(presetPosts.length, 1, 'preset creation must make one request');
+    const payload = JSON.parse(presetPosts[0].options.body);
     assert.deepEqual(payload.peq.params.leftBands, expectedBands, 'left preset bands must be complete and ordered');
     assert.deepEqual(payload.peq.params.rightBands, expectedBands, 'right preset bands must be complete and ordered');
+    // The commit gate needs to know which measurement the bands came from.
+    assert.equal(payload.source_measurement_id, 'measurement-1', 'the source measurement id must travel with the commit');
 
-    assert.match(appSource, /peq\.filters\.length >= 12/, 'PEQ assistant guard must enforce the twelve-filter limit');
-    assert.match(appSource, /supports up to 12 filters/, 'limit toast must describe twelve filters');
-    assert.match(appSource, /Array\.from\(\{ length: 12 \}/, 'PEQ assistant must render twelve slots');
-    assert.match(appSource, /const filter = peq\.filters\[index\] \|\| null/, 'unpopulated slots, including F9-F12, must remain unset');
-    assert.match(appSource, /F1-F12[^<']*up to 12 temporary filters/, 'empty-state help must describe F1-F12');
-    assert.match(appSource, /\$\{peq\.filters\.length\}\/12 assistant filters/, 'counter must use the twelve-filter limit');
+    // Every measurement-derived commit names its source measurement, and only
+    // the measurement flows do: the effects-panel PEQ create stays unbound.
+    const convolverCommitSites = convolverSource.split("'source_measurement_id', deps.measurementCommitSourceId()").length - 1;
+    assert.equal(convolverCommitSites, 2, 'both measurement convolver commits must name their source measurement');
+    assert.match(peqSource, /source_measurement_id: deps\.measurementCommitSourceId\(\),/, 'the measurement PEQ commit must name its source measurement');
+    assert.equal(context.measurementCommitSourceId(), 'measurement-1', 'a loaded measurement supplies its stored id');
+    state.measurement.currentMeasurement = null;
+    assert.equal(context.measurementCommitSourceId(), '', 'an unsaved measurement keeps the pre-gate path');
+    state.measurement.currentMeasurement = { id: 'measurement-1' };
+
+    // A rejected commit carries a structured detail (the measurement-target
+    // gate answers with {code, message}); the feedback must show its message
+    // instead of stringifying the object.
+    toasts.length = 0;
+    context.takeMeasurementPeqToPreset('both');
+    nextResponse = {
+        ok: false,
+        status: 409,
+        json: async () => ({
+            detail: {
+                code: 'measurement-target-mismatch',
+                message: 'Measurement target no longer matches live processing: processing \'fp-1\' != \'fp-2\'',
+            },
+        }),
+    };
+    await context.createMeasurementPeqPresetFromDraft();
+    assert.equal(
+        toasts.at(-1).message,
+        'Measurement target no longer matches live processing: processing \'fp-1\' != \'fp-2\'',
+        'a structured commit conflict must surface its message',
+    );
+    assert.equal(toasts.at(-1).kind, 'error');
+    nextResponse = null;
+
+    assert.match(peqSource, /peq\.filters\.length >= 12/, 'PEQ assistant guard must enforce the twelve-filter limit');
+    assert.match(peqSource, /supports up to 12 filters/, 'limit toast must describe twelve filters');
+    assert.match(editorsSource, /Array\.from\(\{ length: 12 \}/, 'PEQ assistant must render twelve slots');
+    assert.match(editorsSource, /const filter = peq\.filters\[index\] \|\| null/, 'unpopulated slots, including F9-F12, must remain unset');
+    assert.match(editorsSource, /F1-F12[^<']*up to 12 temporary filters/, 'empty-state help must describe F1-F12');
+    const panelSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_panel_ui.js'), 'utf8');
+    assert.match(panelSource, /\$\{peq\.filters\.length\}\/12 assistant filters/, 'counter must use the twelve-filter limit');
     assert.match(htmlSource, /up to 12 temporary filters/, 'panel help must describe the twelve-filter limit');
 
     console.log('ok PEQ assistant: twelve slots accepted, thirteenth rejected; F1-F12 markers updated');

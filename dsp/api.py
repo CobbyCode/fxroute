@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from pydantic.fields import FieldInfo
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
@@ -33,6 +34,10 @@ from dsp.effects_extras import (
     parse_effects_extras_from_json,
 )
 from dsp.persistence import clean_name
+from audio.output_service import MeasurementActiveError
+from audio.filter_banks import resolve_bank
+from audio.output_state import referenced_presets, set_bank_preset
+from audio.output_state_store import StateConflictError
 from library.core import path_within_root
 from library.api import _cleanup_temp_file
 from uploads import (
@@ -74,6 +79,15 @@ class DspApiDeps:
     restore_volume_state: Callable[..., Awaitable[Any]]
     volume_state_for_manager: Callable[..., Awaitable[Any]]
     schedule_peak_monitor_refresh: Callable[[str], None]
+    get_output_service: Optional[Callable[[], Any]] = None
+    # Best-effort live sync after a bank preset assignment (import/create
+    # flows persist through OutputService without touching the runtime).
+    # Returns {"live_applied": bool, "live_reason": str | None}; never raises
+    # (the assignment stays committed when the sync fails). Absent in tests.
+    sync_v2_head_live: Optional[Callable[[], Awaitable[dict]]] = None
+    # Gates a generated-correction commit on the source measurement's frozen
+    # target still matching live processing; raises ValueError on mismatch.
+    verify_measurement_commit: Optional[Callable[[str, dict], None]] = None
 
 
 @dataclass
@@ -192,6 +206,173 @@ def _raise_dsp_http_error(exc: Exception) -> None:
         # Runtime state errors may carry internal detail; log fully, return generic.
         raise internal_error("DSP operation failed", exc) from exc
     raise exc
+
+
+def _output_state_service():
+    """Return the bound output service, or None when unwired (tests/legacy)."""
+    getter = _deps().get_output_service
+    return getter() if getter is not None else None
+
+
+def _require_output_state_service():
+    service = _output_state_service()
+    if service is None:
+        raise HTTPException(status_code=500, detail="Output state service is not configured")
+    return service
+
+
+def _parse_bank_binding(*, bank_mode: Any, bank_id: Any, expected_revision: Any) -> dict | None:
+    """Normalize an optional bank target; None means no binding requested.
+
+    FastAPI field markers (direct unit calls that omit form fields) count
+    as absent, so pre-existing callers without bank arguments keep working.
+    """
+    if isinstance(bank_mode, FieldInfo):
+        bank_mode = ""
+    if isinstance(bank_id, FieldInfo):
+        bank_id = ""
+    if isinstance(expected_revision, FieldInfo):
+        expected_revision = -1
+    mode = str(bank_mode or "").strip()
+    bank = str(bank_id or "").strip()
+    if not mode and not bank:
+        return None
+    if not mode or not bank:
+        raise HTTPException(status_code=400, detail="bank_mode and bank_id are required together")
+    if type(expected_revision) is bool or not isinstance(expected_revision, int) or expected_revision < 0:
+        raise HTTPException(status_code=400, detail="expected_revision must be a non-negative integer")
+    return {"mode": mode, "bank_id": bank, "expected_revision": expected_revision}
+
+
+def _validate_bank_target(service, binding: dict) -> str:
+    """Fail fast (400) when the requested bank does not exist yet.
+
+    Returns the canonical bank id (All Banks is rejected: it owns no
+    presets and only switches A/B jointly).
+    """
+    try:
+        state = service.load()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}") from exc
+    modes = state.get("modes") if isinstance(state, dict) else None
+    config = modes.get(binding["mode"]) if isinstance(modes, dict) else None
+    try:
+        if config is None:
+            raise ValueError("Unknown output mode")
+        if str(binding["bank_id"]).strip() == "all":
+            raise ValueError("All Banks owns no presets; select a concrete filterbank")
+        return resolve_bank(config, binding["bank_id"])["id"]
+    except ValueError as exc:
+        if "All Banks" in str(exc):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown bank {binding['bank_id']} for output mode {binding['mode']}") from exc
+
+
+def _optional_combine_bank(body: dict) -> str | None:
+    """Owning bank for a combined preset; None keeps legacy behavior.
+
+    Combine only tags the new file (it never auto-assigns A/B slots).
+    All Banks is rejected; absent fields mean no bank was requested.
+    """
+    if not isinstance(body, dict):
+        return None
+    if isinstance(body.get("bank_mode"), FieldInfo) or isinstance(body.get("bank_id"), FieldInfo):
+        return None
+    mode = str(body.get("bank_mode") or "").strip()
+    bank = str(body.get("bank_id") or "").strip()
+    if not mode and not bank:
+        return None
+    if not mode or not bank:
+        raise HTTPException(status_code=400, detail="bank_mode and bank_id are required together")
+    service = _output_state_service()
+    if service is None:
+        return bank
+    return _validate_bank_target(service, {"mode": mode, "bank_id": bank, "expected_revision": 0})
+
+
+async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) -> dict:
+    """Assign a just-created preset to its bank; conflicts report partial state.
+
+    The assignment persists through OutputService, which never touches the
+    runtime; without a follow-up sync the engine would keep serving the
+    previous bank content until the next unrelated edit.  The injected
+    live sync renders the current head afterwards (best-effort: the
+    assignment stays committed when the head cannot activate).
+    """
+    service = _require_output_state_service()
+    try:
+        service.validate_bank_preset(service.load(), binding["mode"], binding["bank_id"], created_name)
+        committed = await _deps().drain_worker(
+            service.apply,
+            lambda state: set_bank_preset(
+                state, binding["mode"], binding["bank_id"], preset=created_name),
+            expected_revision=binding["expected_revision"])
+    except MeasurementActiveError as exc:
+        raise HTTPException(status_code=423, detail={
+            "code": "bank-assign-locked", "message": str(exc),
+            "created": created_name, "assigned": False}) from exc
+    except StateConflictError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "bank-assign-conflict", "message": str(exc),
+            "created": created_name, "assigned": False}) from exc
+    response = {"assigned": True, "mode": binding["mode"],
+                "bank_id": binding["bank_id"], "revision": committed["revision"]}
+    sync = getattr(_deps(), "sync_v2_head_live", None)
+    if sync is None:
+        return {**response, "live_applied": False, "live_reason": "live-sync-unavailable"}
+    try:
+        live = await sync()
+    except Exception as exc:
+        logger.warning("Bank-assign live sync failed: %s", exc)
+        return {**response, "live_applied": False, "live_reason": "live-apply-failed"}
+    return {**response, "live_applied": bool(live.get("live_applied")),
+            "live_reason": live.get("live_reason")}
+
+
+def _verify_measurement_commit(source_measurement_id: object, binding: dict | None) -> None:
+    """Gate a generated PEQ/FIR commit on its source measurement still matching.
+
+    A commit without a bank binding is not a commit into an area, and a client
+    that sends no source measurement (imports, manual presets) is left to the
+    pre-existing path; both stay unchanged.  A mismatch is a conflict, not bad
+    input: the preset may still be created elsewhere from the same measurement
+    once the area or its processing is restored.
+    """
+    verifier = _deps().verify_measurement_commit
+    measurement_id = str(source_measurement_id or "").strip()
+    if verifier is None or binding is None or not measurement_id:
+        return
+    try:
+        verifier(measurement_id, binding)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "measurement-target-mismatch",
+            "message": str(exc),
+            "source_measurement_id": measurement_id,
+            "assigned": False,
+        }) from exc
+
+
+def _pinned_deletion_presets(dsp_mgr) -> set[str]:
+    """Presets referenced by output banks or legacy compare slots."""
+    pinned: set[str] = set()
+    service = _output_state_service()
+    if service is not None:
+        try:
+            pinned.update(referenced_presets(service.load()))
+        except ValueError:
+            logger.warning("Output state unavailable; bank-pinned preset guard skipped")
+    try:
+        compare = dsp_mgr.load_compare_state()
+    except Exception:
+        compare = {}
+    if isinstance(compare, dict):
+        for key in ("presetA", "presetB"):
+            if compare.get(key):
+                pinned.add(compare[key])
+    return pinned
 
 
 @router.get("/api/dsp/extras")
@@ -402,10 +583,11 @@ async def combine_dsp_presets(request: Request):
         raise HTTPException(status_code=400, detail="presetName is required")
     if not isinstance(preset_names, list):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
+    canonical_bank = _optional_combine_bank(body)
 
     try:
         async with _deps().dsp_mutation_lock():
-            created = dsp_mgr.combine_presets(preset_name, preset_names)
+            created = dsp_mgr.combine_presets(preset_name, preset_names, bank=canonical_bank)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -512,8 +694,20 @@ async def create_convolver_preset(
     delay_right_ms: float = Form(0.0),
     tone_effect_enabled: bool = Form(False),
     tone_effect_mode: str = Form("crystalizer"),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
+    source_measurement_id: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
+    binding = _parse_bank_binding(
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    canonical_bank = None
+    if binding is not None:
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        binding = {**binding, "bank_id": canonical_bank}
+    # The bank is known to exist now, so a target mismatch is a real conflict.
+    _verify_measurement_commit(source_measurement_id, binding)
 
     try:
         # The canonical loudness read inside _effects_extras_from_form must
@@ -533,18 +727,23 @@ async def create_convolver_preset(
                 tone_effect_enabled=tone_effect_enabled,
                 tone_effect_mode=tone_effect_mode,
             )
-            created = dsp_mgr.create_convolver_preset(preset_name, ir_filename, extras=extras)
+            created = dsp_mgr.create_convolver_preset(preset_name, ir_filename, extras=extras,
+                                                      bank=canonical_bank)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="create-convolver",
         )
-        return {
+        response = {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["name"], binding=binding)
+        return response
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
@@ -553,24 +752,37 @@ async def create_convolver_preset(
 async def import_dsp_preset_json(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
+    binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    canonical_bank = None
+    if binding is not None:
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        binding = {**binding, "bank_id": canonical_bank}
 
     try:
         content = (await read_upload(file, DSP_PRESET_TEXT_MAX_BYTES)).decode("utf-8-sig")
         async with _deps().dsp_mutation_lock():
-            created = dsp_mgr.import_preset_json(file.filename or "preset.json", content)
+            created = dsp_mgr.import_preset_json(file.filename or "preset.json", content,
+                                                 bank=canonical_bank)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="import-preset-json",
         )
-        return {
+        response = {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["name"], binding=binding)
+        return response
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except UnicodeDecodeError as e:
@@ -583,8 +795,16 @@ async def import_dsp_preset_json(
 async def import_dsp_preset_bundle(
     file: UploadFile = File(...),
     load_after_create: bool = Form(False),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
+    binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    canonical_bank = None
+    if binding is not None:
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        binding = {**binding, "bank_id": canonical_bank}
 
     temp_zip_path = None
     import_succeeded = False
@@ -698,20 +918,24 @@ async def import_dsp_preset_bundle(
                     raise HTTPException(status_code=400, detail=f"Preset bundle is missing IR file(s): {', '.join(missing_kernels)}")
 
                 preset_filename = preset_rel.name if preset_rel.name.lower() != "preset.json" else (Path(file.filename or "preset.json").stem + ".json")
-                created = dsp_mgr.import_preset_json(preset_filename, preset_text)
+                created = dsp_mgr.import_preset_json(preset_filename, preset_text, bank=canonical_bank)
             import_succeeded = True
             status = await _finish_dsp_preset_mutation(
                 load_after_create=load_after_create,
                 preset_name=created["name"],
                 refresh_reason="import-preset-bundle",
             )
-            return {
+            response = {
                 "status": "ok",
                 "preset": created,
                 "irs": imported_irs,
                 "loaded": bool(load_after_create),
                 "active_preset": status.get("active_preset"),
             }
+            if binding is not None:
+                response["bank"] = await _assign_created_preset_to_bank(
+                    created_name=created["name"], binding=binding)
+            return response
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except zip_album.ZipLimitError as e:
@@ -769,8 +993,21 @@ async def create_convolver_preset_with_ir(
     tone_effect_enabled: bool = Form(False),
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
+    source_measurement_id: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
+
+    binding = _parse_bank_binding(
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    canonical_bank = None
+    if binding is not None:
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        binding = {**binding, "bank_id": canonical_bank}
+    # The bank is known to exist now, so a target mismatch is a conflict.
+    _verify_measurement_commit(source_measurement_id, binding)
 
     tmp_path = None
     try:
@@ -807,19 +1044,27 @@ async def create_convolver_preset_with_ir(
                 tmp_path,
                 file.filename or tmp_path.name,
                 extras=extras,
+                bank=canonical_bank,
             )
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["preset"]["name"],
             refresh_reason="create-with-ir",
         )
-        return {
+        response = {
             "status": "ok",
             "ir": created["ir"],
             "preset": created["preset"],
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["preset"]["name"], binding=binding)
+        return response
+    except HTTPException:
+        # Already an HTTP outcome (for example the measurement-target gate).
+        raise
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except (FileNotFoundError, ValueError, RuntimeError) as e:
@@ -850,26 +1095,41 @@ async def create_peq_preset(request: Request):
     peq_definition = body.get("peq")
     load_after_create = bool(body.get("loadAfterCreate", body.get("load_after_create", False)))
     extras = _parse_effects_extras_from_json(body)
+    binding = _parse_bank_binding(
+        bank_mode=body.get("bank_mode"), bank_id=body.get("bank_id"),
+        expected_revision=body.get("expected_revision"))
+    source_measurement_id = body.get("source_measurement_id", body.get("sourceMeasurementId"))
 
     if not preset_name:
         raise HTTPException(status_code=400, detail="presetName is required")
     if peq_definition is None:
         raise HTTPException(status_code=400, detail="peq is required")
+    canonical_bank = None
+    if binding is not None:
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        binding = {**binding, "bank_id": canonical_bank}
+    # The bank is known to exist now, so a target mismatch is a real conflict.
+    _verify_measurement_commit(source_measurement_id, binding)
 
     try:
         async with _deps().dsp_mutation_lock():
-            created = dsp_mgr.create_peq_preset(preset_name, peq_definition, extras=extras)
+            created = dsp_mgr.create_peq_preset(preset_name, peq_definition, extras=extras,
+                                                bank=canonical_bank)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="create-peq",
         )
-        return {
+        response = {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["name"], binding=binding)
+        return response
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
@@ -891,8 +1151,21 @@ async def import_rew_peq_preset(
     tone_effect_enabled: bool = Form(False),
     tone_effect_mode: str = Form("crystalizer"),
     file: UploadFile = File(...),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
+
+    if not preset_name.strip():
+        raise HTTPException(status_code=400, detail="preset_name is required")
+
+    binding = _parse_bank_binding(
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    canonical_bank = None
+    if binding is not None:
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        binding = {**binding, "bank_id": canonical_bank}
 
     try:
         content = await read_upload(file, DSP_PRESET_TEXT_MAX_BYTES)
@@ -901,9 +1174,6 @@ async def import_rew_peq_preset(
         raise HTTPException(status_code=413, detail=str(e))
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="REW import file must be UTF-8 text")
-
-    if not preset_name.strip():
-        raise HTTPException(status_code=400, detail="preset_name is required")
 
     try:
         # Canonical extras resolution under the same mutation ownership as
@@ -924,18 +1194,23 @@ async def import_rew_peq_preset(
                 tone_effect_enabled=tone_effect_enabled,
                 tone_effect_mode=tone_effect_mode,
             )
-            created = dsp_mgr.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras)
+            created = dsp_mgr.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras,
+                                                             bank=canonical_bank)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="import-rew-peq",
         )
-        return {
+        response = {
             "status": "ok",
             "preset": created,
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created["name"], binding=binding)
+        return response
     except (ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
@@ -960,6 +1235,10 @@ async def import_dual_filter_preset(
     tone_effect_mode: str = Form("crystalizer"),
     left_file: Optional[UploadFile] = File(None),
     right_file: Optional[UploadFile] = File(None),
+    bank_mode: str = Form(""),
+    bank_id: str = Form(""),
+    expected_revision: int = Form(-1),
+    source_measurement_id: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
@@ -1000,6 +1279,15 @@ async def import_dual_filter_preset(
     if bool(left_kind) != bool(right_kind):
         raise HTTPException(status_code=400, detail="Provide both Left and Right files, or neither")
 
+    binding = _parse_bank_binding(
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    canonical_bank = None
+    if binding is not None:
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        binding = {**binding, "bank_id": canonical_bank}
+    # The bank is known to exist now, so a target mismatch is a real conflict.
+    _verify_measurement_commit(source_measurement_id, binding)
+
     tmp_paths = []
     try:
         if left_kind == "convolver" and right_kind == "convolver":
@@ -1030,6 +1318,7 @@ async def import_dual_filter_preset(
                     right_tmp,
                     right_file.filename or right_tmp.name,
                     extras=extras,
+                    bank=canonical_bank,
                 )
             import_kind = "dual-convolver"
         else:
@@ -1052,6 +1341,7 @@ async def import_dual_filter_preset(
                     left_text,
                     right_text,
                     extras=extras,
+                    bank=canonical_bank,
                 )
             import_kind = "dual-peq"
 
@@ -1061,7 +1351,7 @@ async def import_dual_filter_preset(
             preset_name=created_preset["name"],
             refresh_reason="import-filter-dual",
         )
-        return {
+        response = {
             "status": "ok",
             "import_kind": import_kind,
             "preset": created_preset,
@@ -1069,6 +1359,10 @@ async def import_dual_filter_preset(
             "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
+        if binding is not None:
+            response["bank"] = await _assign_created_preset_to_bank(
+                created_name=created_preset["name"], binding=binding)
+        return response
     except UploadTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
     except (ValueError, RuntimeError) as e:
@@ -1097,7 +1391,8 @@ async def delete_dsp_preset(request: Request):
     try:
         async with _deps().dsp_mutation_lock():
             deleted_active = dsp_mgr.get_active_preset() == clean_name(preset_name)
-            dsp_mgr.delete_preset(preset_name)
+            dsp_mgr.delete_preset(
+                preset_name, pinned_presets=_pinned_deletion_presets(dsp_mgr))
         if deleted_active:
             # The manager already moved the persisted active state to the
             # Neutral fallback; resync the running native engine through the

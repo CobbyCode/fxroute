@@ -35,16 +35,46 @@ MPV_VERSION_PROBE_ATTEMPTS = 3
 class MPVError(Exception):
     """Base exception for MPV-related errors."""
 
-
 class MPVNotInstalledError(MPVError):
     """MPV is not installed on the system."""
+
+
+class MPVDisabledError(MPVNotInstalledError):
+    """MPV playback is disabled via MPV_ENABLED for this instance.
+
+    Subclasses :class:`MPVNotInstalledError` so the existing startup and
+    HTTP handling (log-and-continue, per-playback 500 with install hint)
+    treats a disabled instance exactly like a missing binary.
+    """
+
+
+# MPV socket and enablement are environment-addressable so secondary app
+# instances (scratch deployments, view instances) can run alongside the
+# product service: a distinct MPV_SOCKET_PATH gives the instance its own IPC
+# socket and orphan-cleanup scope, and MPV_ENABLED=0 skips mpv entirely.
+# Unset variables preserve the product defaults exactly.
+_MPV_SOCKET_PATH_ENV = "MPV_SOCKET_PATH"
+_MPV_ENABLED_ENV = "MPV_ENABLED"
+_DEFAULT_MPV_SOCKET_PATH = "/tmp/mpv.sock"
+
+
+def _resolved_socket_path() -> str:
+    value = os.environ.get(_MPV_SOCKET_PATH_ENV, "").strip()
+    return value or _DEFAULT_MPV_SOCKET_PATH
+
+
+def _mpv_enabled() -> bool:
+    value = os.environ.get(_MPV_ENABLED_ENV)
+    if value is None or value.strip() == "":
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 class MPVWrapper:
     """Thread-safe wrapper around a single mpv instance using JSON IPC."""
 
     def __init__(self):
-        self.socket_path = "/tmp/mpv.sock"
+        self.socket_path = _resolved_socket_path()
         self.process: Optional[subprocess.Popen] = None
         self.lock = threading.RLock()
         self._start_lock = threading.Lock()
@@ -103,6 +133,9 @@ class MPVWrapper:
     def _start_locked(self):
         """MPV startup; callers hold _start_lock (see start)."""
 
+        if not _mpv_enabled():
+            raise MPVDisabledError("MPV playback is disabled via MPV_ENABLED")
+
         # A previous killed service run may have left FXRoute-owned mpv
         # processes behind; they would compete for the same IPC socket and
         # PipeWire node.  Clean them up before spawning the new instance.
@@ -129,7 +162,7 @@ class MPVWrapper:
                 raise MPVNotInstalledError("mpv is not installed or not in PATH") from e
         assert probed  # loop breaks only on success or by raising above
 
-        cmd = self._mpv_command()
+        cmd = self._mpv_command(self.socket_path)
         logger.info(f"Starting mpv: {' '.join(cmd)}")
         self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

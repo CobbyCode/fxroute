@@ -6,7 +6,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import main
+from audio.samplerate import (
+    OUTPUT_MODE_SUBWOOFER_21,
+    OUTPUT_MODE_SUBWOOFER_22,
+    OUTPUT_MODE_SUBWOOFER_22_STEREO,
+)
 from dsp.runtime import BassManagementConfig
 import measurement.autosub as autosub
 import measurement.autosub.jobs as autosub_jobs
@@ -31,18 +35,18 @@ class AutoGainApplyRevertTests(unittest.TestCase):
 
     def test_21_and_22_mono_use_same_common_delta(self):
         source = diagnostic(2.0, 4.0)
-        self.assertEqual(autosub_measurement._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_21), {"left": 3.0, "right": 3.0})
-        self.assertEqual(autosub_measurement._auto_sub_gain_deltas(source, main.OUTPUT_MODE_SUBWOOFER_22), {"left": 3.0, "right": 3.0})
+        self.assertEqual(autosub_measurement._auto_sub_gain_deltas(source, OUTPUT_MODE_SUBWOOFER_21), {"left": 3.0, "right": 3.0})
+        self.assertEqual(autosub_measurement._auto_sub_gain_deltas(source, OUTPUT_MODE_SUBWOOFER_22), {"left": 3.0, "right": 3.0})
 
     def test_22_stereo_preserves_separate_deltas(self):
         self.assertEqual(
-            autosub_measurement._auto_sub_gain_deltas(diagnostic(2.0, -1.0), main.OUTPUT_MODE_SUBWOOFER_22_STEREO),
+            autosub_measurement._auto_sub_gain_deltas(diagnostic(2.0, -1.0), OUTPUT_MODE_SUBWOOFER_22_STEREO),
             {"left": 2.0, "right": -1.0},
         )
 
     def test_second_feedback_step_is_limited_to_one_db(self):
         self.assertEqual(
-            autosub_measurement._auto_sub_gain_deltas(diagnostic(-9.0, -7.0), main.OUTPUT_MODE_SUBWOOFER_21, max_abs_db=1.0),
+            autosub_measurement._auto_sub_gain_deltas(diagnostic(-9.0, -7.0), OUTPUT_MODE_SUBWOOFER_21, max_abs_db=1.0),
             {"left": -1.0, "right": -1.0},
         )
 
@@ -55,31 +59,31 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         self.assertEqual(snapshot["subwoofers"]["sub1"]["level_db"], -5.0)
 
     def test_verification_accepts_improvement(self):
-        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(3.0, -2.0), diagnostic(0.4, -0.2), main.OUTPUT_MODE_SUBWOOFER_21)
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(3.0, -2.0), diagnostic(0.4, -0.2), OUTPUT_MODE_SUBWOOFER_21)
         self.assertTrue(verdict["accepted"])
 
     def test_verification_reverts_when_either_channel_is_worse(self):
-        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 2.1), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 2.1), OUTPUT_MODE_SUBWOOFER_22_STEREO)
         self.assertFalse(verdict["accepted"])
         self.assertFalse(verdict["channels"]["right"]["accepted"])
 
     def test_verification_tolerates_sub_noise_floor_residual_growth(self):
         # The residual metric's run-to-run spread is ~0.5 dB; growth below the
         # 1.0 dB tolerance is measurement noise, not a harmful Gain step.
-        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 1.4), main.OUTPUT_MODE_SUBWOOFER_22_STEREO)
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(0.2, 1.4), OUTPUT_MODE_SUBWOOFER_22_STEREO)
         self.assertTrue(verdict["accepted"])
-        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(1.24, 1.25), main.OUTPUT_MODE_SUBWOOFER_21)
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1.0, 1.0), diagnostic(1.24, 1.25), OUTPUT_MODE_SUBWOOFER_21)
         self.assertTrue(verdict["accepted"])
 
     def test_unavailable_diagnostics_never_apply(self):
-        self.assertEqual(autosub_measurement._auto_sub_gain_deltas(diagnostic(1, 1, calculated=False), main.OUTPUT_MODE_SUBWOOFER_21), {})
-        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1, 1, calculated=False), diagnostic(0, 0), main.OUTPUT_MODE_SUBWOOFER_21)
+        self.assertEqual(autosub_measurement._auto_sub_gain_deltas(diagnostic(1, 1, calculated=False), OUTPUT_MODE_SUBWOOFER_21), {})
+        verdict = autosub_measurement._auto_sub_gain_verdict(diagnostic(1, 1, calculated=False), diagnostic(0, 0), OUTPUT_MODE_SUBWOOFER_21)
         self.assertFalse(verdict["accepted"])
 
     def test_response_correction_uses_measured_sensitivity(self):
         correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-2.0, -2.4), diagnostic(-1.0, -1.2),
-            {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_21,
+            {"left": -2.0, "right": -2.0}, OUTPUT_MODE_SUBWOOFER_21,
         )
         self.assertTrue(correction["available"])
         self.assertAlmostEqual(correction["channels"]["left"]["response_change_per_db"], 0.5)
@@ -88,7 +92,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
     def test_response_correction_preserves_sub_two_db_value(self):
         correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-3.704, -3.704), diagnostic(-1.704, -1.704),
-            {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_21,
+            {"left": -2.0, "right": -2.0}, OUTPUT_MODE_SUBWOOFER_21,
         )
         self.assertTrue(correction["available"])
         self.assertEqual(correction["raw_deltas_db"], {"left": -1.704, "right": -1.704})
@@ -97,7 +101,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
     def test_response_correction_keeps_total_search_within_six_db(self):
         correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-5.725, -5.725), diagnostic(-3.725, -3.725),
-            {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_22,
+            {"left": -2.0, "right": -2.0}, OUTPUT_MODE_SUBWOOFER_22,
         )
         self.assertTrue(correction["available"])
         self.assertEqual(correction["raw_deltas_db"], {"left": -3.725, "right": -3.725})
@@ -106,7 +110,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
 
     def test_default_first_step_supports_full_six_db_range(self):
         self.assertEqual(
-            autosub_measurement._auto_sub_gain_deltas(diagnostic(9.0, 9.0), main.OUTPUT_MODE_SUBWOOFER_21),
+            autosub_measurement._auto_sub_gain_deltas(diagnostic(9.0, 9.0), OUTPUT_MODE_SUBWOOFER_21),
             {"left": 6.0, "right": 6.0},
         )
 
@@ -116,7 +120,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             "sweep_seconds": 0.1, "tail_seconds": 0.1,
         }
         safe_config = BassManagementConfig(
-            output_mode=main.OUTPUT_MODE_SUBWOOFER_21, output_key="test", output_label="test",
+            output_mode=OUTPUT_MODE_SUBWOOFER_21, output_key="test", output_label="test",
             output_channels=4, sample_rate=48000, crossover_frequency_hz=80,
             main_highpass_enabled=True, sub_level_db=0.0, sub_alignment_ms=2.0,
             sub_polarity="normal",
@@ -141,7 +145,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             "sweep_seconds": 0.1, "tail_seconds": 0.1,
         }
         config = BassManagementConfig(
-            output_mode=main.OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="test", output_label="test",
+            output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="test", output_label="test",
             output_channels=4, sample_rate=48000, crossover_frequency_hz=80,
             main_highpass_enabled=True, sub_level_db=0.0, sub_alignment_ms=0.0,
             sub_polarity="normal",
@@ -164,7 +168,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             "sweep_seconds": 0.1, "tail_seconds": 0.1,
         }
         config = BassManagementConfig(
-            output_mode=main.OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="test", output_label="test",
+            output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="test", output_label="test",
             output_channels=4, sample_rate=48000, crossover_frequency_hz=80,
             main_highpass_enabled=True, sub_level_db=2.0, sub_alignment_ms=0.0,
             sub_polarity="normal",
@@ -207,7 +211,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             "sweep_seconds": 0.1, "tail_seconds": 0.1,
         }
         config = BassManagementConfig(
-            output_mode=main.OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="test", output_label="test",
+            output_mode=OUTPUT_MODE_SUBWOOFER_22_STEREO, output_key="test", output_label="test",
             output_channels=4, sample_rate=48000, crossover_frequency_hz=80,
             main_highpass_enabled=True, sub_level_db=6.0, sub_alignment_ms=0.0,
             sub_polarity="normal",
@@ -264,7 +268,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
     def test_response_correction_still_rejects_values_above_six_db(self):
         correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-9.0, -9.0), diagnostic(-7.0, -7.0),
-            {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            {"left": -2.0, "right": -2.0}, OUTPUT_MODE_SUBWOOFER_22_STEREO,
         )
         self.assertFalse(correction["available"])
         self.assertEqual(correction["raw_deltas_db"], {"left": -7.0, "right": -7.0})
@@ -274,7 +278,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
     def test_response_correction_rejects_wrong_direction(self):
         correction = autosub_measurement._auto_sub_gain_response_correction(
             diagnostic(-2.0, -2.0), diagnostic(-3.0, -3.0),
-            {"left": -2.0, "right": -2.0}, main.OUTPUT_MODE_SUBWOOFER_21,
+            {"left": -2.0, "right": -2.0}, OUTPUT_MODE_SUBWOOFER_21,
         )
         self.assertFalse(correction["available"])
         self.assertIn("implausible", correction["reason"])

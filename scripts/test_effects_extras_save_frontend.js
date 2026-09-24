@@ -14,19 +14,19 @@ const path = require('path');
 const vm = require('vm');
 
 const repoRoot = path.resolve(__dirname, '..');
-const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+const effectSource = fs.readFileSync(path.join(repoRoot, 'static', 'output_effects_ui.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
 
 function extractFunction(name) {
-    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(appSource);
+    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(effectSource);
     assert.ok(match, `missing function ${name}`);
     let parenDepth = 1;
     let braceStart = -1;
-    for (let index = match.index + match[0].length; index < appSource.length; index += 1) {
-        if (appSource[index] === '(') parenDepth += 1;
-        if (appSource[index] === ')') parenDepth -= 1;
+    for (let index = match.index + match[0].length; index < effectSource.length; index += 1) {
+        if (effectSource[index] === '(') parenDepth += 1;
+        if (effectSource[index] === ')') parenDepth -= 1;
         if (parenDepth === 0) {
-            braceStart = appSource.indexOf('{', index);
+            braceStart = effectSource.indexOf('{', index);
             break;
         }
     }
@@ -34,8 +34,8 @@ function extractFunction(name) {
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = braceStart; index < appSource.length; index += 1) {
-        const char = appSource[index];
+    for (let index = braceStart; index < effectSource.length; index += 1) {
+        const char = effectSource[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -46,20 +46,20 @@ function extractFunction(name) {
         else if (char === '{') depth += 1;
         else if (char === '}') {
             depth -= 1;
-            if (depth === 0) return appSource.slice(match.index, index + 1);
+            if (depth === 0) return effectSource.slice(match.index, index + 1);
         }
     }
     throw new Error(`unterminated function ${name}`);
 }
 
 function extractConst(name) {
-    const match = new RegExp(`const ${name}\\s*=`).exec(appSource);
+    const match = new RegExp(`const ${name}\\s*=`).exec(effectSource);
     assert.ok(match, `missing const ${name}`);
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = match.index; index < appSource.length; index += 1) {
-        const char = appSource[index];
+    for (let index = match.index; index < effectSource.length; index += 1) {
+        const char = effectSource[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -69,7 +69,7 @@ function extractConst(name) {
         if (char === "'" || char === '"' || char === '`') quote = char;
         else if (char === '{' || char === '(' || char === '[') depth += 1;
         else if (char === '}' || char === ')' || char === ']') depth -= 1;
-        else if (char === ';' && depth === 0) return appSource.slice(match.index, index + 1);
+        else if (char === ';' && depth === 0) return effectSource.slice(match.index, index + 1);
     }
     throw new Error(`unterminated const ${name}`);
 }
@@ -123,6 +123,12 @@ function makeContext({ responses = [], stateDsp = null } = {}) {
         },
         showToast: (message) => { toasts.push(message); },
         renderEffects: () => {},
+        // The extracted effects functions read state/DOM/toast via deps.
+        deps: {
+            getState: () => state,
+            getElements: () => elements,
+            showToast: (message) => { toasts.push(message); },
+        },
     };
     vm.createContext(context);
     vm.runInContext(`

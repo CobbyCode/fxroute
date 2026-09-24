@@ -17,6 +17,7 @@ const path = require('path');
 
 const js = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming.js'), 'utf8');
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const libraryJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'library_ui.js'), 'utf8');
 const css = fs.readFileSync(path.join(__dirname, '..', 'static', 'style.css'), 'utf8');
 
 function extractFunction(source, name) {
@@ -39,12 +40,12 @@ function extractFunction(source, name) {
     throw new Error(`unterminated ${name}`);
 }
 
-// --- shared facts/about helpers are supplied by app.js ----------------------
-assert.ok(appJs.includes('function detailFactsHtml('),
-    'app.js must own the shared metadata-rows builder');
-assert.ok(appJs.includes('function detailAboutHtml('),
-    'app.js must own the shared About builder');
-assert.ok(appJs.includes('factsHtml: detailFactsHtml') && appJs.includes('aboutHtml: detailAboutHtml'),
+// --- shared facts/about helpers come from the library module ----------------
+assert.ok(libraryJs.includes('function detailFactsHtml('),
+    'library_ui.js must own the shared metadata-rows builder');
+assert.ok(libraryJs.includes('function detailAboutHtml('),
+    'library_ui.js must own the shared About builder');
+assert.ok(appJs.includes('factsHtml: LibraryUI.detailFactsHtml') && appJs.includes('aboutHtml: LibraryUI.detailAboutHtml'),
     'app.js must hand both shared builders to streaming.js');
 assert.ok(js.includes("if (typeof api.factsHtml === 'function') factsHtml = api.factsHtml"),
     'streaming.js must receive the shared facts builder');
@@ -84,7 +85,7 @@ assert.ok(css.includes('.tidal-artist-about'),
     'artist about container style must ship');
 
 // --- TIDAL album: directly visible About + TIDAL-primary facts --------------
-const sharedAbout = extractFunction(appJs, 'detailAboutHtml');
+const sharedAbout = extractFunction(libraryJs, 'detailAboutHtml');
 assert.ok(!sharedAbout.includes('<details') && !sharedAbout.includes('<summary'),
     'album descriptions must be readable without expanding the header');
 const albumRender = extractFunction(js, 'renderTidalAlbum');

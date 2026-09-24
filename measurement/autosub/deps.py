@@ -16,6 +16,8 @@ _AUTO_SUB_JOBS: dict[str, dict[str, Any]] = {}
 _auto_sub_lock: asyncio.Lock = asyncio.Lock()
 _AUTO_SUB_WORKER_TASKS: set[asyncio.Task[Any]] = set()
 _AUTO_SUB_CLEANUP_TASKS: set[asyncio.Task[Any]] = set()
+# Owner objects are keyed by job id and never stored inside the job dicts.
+_AUTO_SUB_CANDIDATE_OWNERS: dict[str, Any] = {}
 
 _autosub_deps: AutoSubDependencies | None = None
 
@@ -33,6 +35,9 @@ class AutoSubDependencies:
     get_measurement_store: Callable[[], Any]
     get_measurement_session: Callable[[], Any]
     get_dsp_manager: Callable[[], Any]
+    # Fail-closed optionals for consumers without output-state composition.
+    get_output_service: Callable[[], Any] | None = None
+    create_candidate_session: Callable[..., Any] | None = None
 
 def configure_dependencies(deps: AutoSubDependencies) -> None:
     """Bind the application services used by AutoSub."""
@@ -59,6 +64,44 @@ def _measurement_session() -> Any:
 def _dsp_manager() -> Any:
     """Resolve the DSP manager late-bound through the injected accessor."""
     return _autosub_dependencies().get_dsp_manager()
+
+def _output_service() -> Any:
+    """Resolve the authoritative output service late-bound through the injected accessor."""
+    accessor = _autosub_dependencies().get_output_service
+    if accessor is None:
+        raise RuntimeError("AutoSub output service dependency is not configured")
+    return accessor()
+
+def create_candidate_session(*args: Any, **kwargs: Any) -> Any:
+    """Create an AutoSub candidate session through the injected late-bound factory."""
+    factory = _autosub_dependencies().create_candidate_session
+    if factory is None:
+        raise RuntimeError("AutoSub candidate session factory is not configured")
+    return factory(*args, **kwargs)
+
+def register_candidate_owner(job_id: str, owner: Any) -> None:
+    """Attach a candidate session owner to a job, outside the job dict."""
+    _AUTO_SUB_CANDIDATE_OWNERS[job_id] = owner
+
+def _candidate_owner(job_id: str) -> Any:
+    """Return the registered owner; a missing owner is a programming error."""
+    owner = _AUTO_SUB_CANDIDATE_OWNERS.get(job_id)
+    if owner is None:
+        raise RuntimeError(f"No AutoSub candidate owner is registered for job {job_id!r}")
+    return owner
+
+def drop_candidate_owner(job_id: str) -> None:
+    """Forget a job's candidate owner; dropping twice stays idempotent."""
+    _AUTO_SUB_CANDIDATE_OWNERS.pop(job_id, None)
+
+def activate_candidate_owner(job: dict[str, Any], session: Any) -> int:
+    """Bind the frozen start only after guarded measurement entry owns the rate."""
+    job_id = job["id"]
+    if session is None or session.active_auto_sub_job_id != job_id:
+        raise RuntimeError("AutoSub candidate activation requires measurement session ownership")
+    rate = session.measurement_rate
+    _candidate_owner(job_id).activate(rate)
+    return rate
 
 def is_optimization_active() -> bool:
     return bool(_auto_sub_lock and _auto_sub_lock.locked())
@@ -118,4 +161,3 @@ async def shutdown() -> None:
         task.cancel()
     if cleanup_tasks:
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-

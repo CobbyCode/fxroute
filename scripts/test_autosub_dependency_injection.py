@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """AutoSub resolves all application dependencies through injection.
 
 Proves the measurement.autosub package no longer imports main.py: the native DSP runtime, the
@@ -88,32 +89,10 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
     def test_autosub_import_does_not_import_main(self):
         self.assertNotIn("main", sys.modules)
 
-    async def test_sync_uses_injected_dsp_runtime(self):
-        runtime = FakeDSPRuntime()
-        _configure(dsp_runtime=runtime)
-        persisted = overview_21()
-        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
-            await autosub_candidates._auto_sub_sync_dsp_runtime(
-                output_mode="subwoofer-2.1", persisted_overview=persisted)
-        runtime.sync.assert_awaited_once()
-
-    async def test_late_bound_accessor_observes_reconfiguration(self):
-        first = FakeDSPRuntime()
-        replacement = FakeDSPRuntime()
-        _configure(dsp_runtime=first)
-        _configure(dsp_runtime=replacement)
-        persisted = overview_21()
-        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
-            await autosub_candidates._auto_sub_sync_dsp_runtime(
-                output_mode="subwoofer-2.1", persisted_overview=persisted)
-        replacement.sync.assert_awaited_once()
-        first.sync.assert_not_awaited()
-
-    async def test_none_dsp_runtime_is_a_noop(self):
-        _configure(dsp_runtime=None)
-        with patch.object(autosub.candidates, "get_audio_output_overview", return_value=overview_21()):
-            await autosub_candidates._auto_sub_sync_dsp_runtime(
-                output_mode="subwoofer-2.1", persisted_overview=overview_21())
+    # NOTE (backend-v2 migration): the three _auto_sub_sync_dsp_runtime tests
+    # pinned the deleted legacy persist-then-sync helper. Late-bound
+    # dependency injection itself is still covered by the service suites
+    # configuring AutoSubDependencies (owner prearm, service start, runner IO).
 
     async def test_shutdown_uses_injected_measurement_store(self):
         store = FakeStore()
@@ -143,6 +122,80 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
         job = {"id": "j1", "status": "failed", "cancel_requested": False}
         await autosub_jobs._finish_auto_sub_worker(job, "j1")
         session.unregister_auto_sub.assert_awaited_once_with("j1")
+
+
+class CandidateDependencyInjectionTests(unittest.TestCase):
+    def setUp(self):
+        self.previous_dependencies = autosub_deps._autosub_deps
+        self.addCleanup(setattr, autosub_deps, "_autosub_deps", self.previous_dependencies)
+
+    def configure_candidate_dependencies(self, service_accessor, factory):
+        autosub.configure_dependencies(autosub.AutoSubDependencies(
+            get_dsp_runtime=lambda: None,
+            get_measurement_store=lambda: None,
+            get_measurement_session=lambda: None,
+            get_dsp_manager=lambda: None,
+            get_output_service=service_accessor,
+            create_candidate_session=factory))
+
+    def test_output_service_accessor_is_late_bound(self):
+        self.assertTrue(hasattr(autosub_deps, "_output_service"))
+        services = [object(), object()]
+        current = [services[0]]
+        self.configure_candidate_dependencies(lambda: current[0], lambda **kwargs: kwargs)
+        self.assertIs(autosub_deps._output_service(), services[0])
+        current[0] = services[1]
+        self.assertIs(autosub_deps._output_service(), services[1])
+        self.configure_candidate_dependencies(lambda: services[0], lambda **kwargs: kwargs)
+        self.assertIs(autosub_deps._output_service(), services[0])
+
+    def test_candidate_factory_is_late_bound_passthrough(self):
+        self.assertTrue(hasattr(autosub_deps, "create_candidate_session"))
+        first, second = object(), object()
+        received = []
+
+        def factory(*args, **kwargs):
+            received.append((args, kwargs))
+            return second
+
+        self.configure_candidate_dependencies(lambda: None, lambda **kwargs: first)
+        self.assertIs(autosub_deps.create_candidate_session(start_state={}), first)
+        self.configure_candidate_dependencies(lambda: None, factory)
+        state = {"revision": 7}
+        self.assertIs(autosub_deps.create_candidate_session("job", start_state=state), second)
+        self.assertEqual(received, [(("job",), {"start_state": state})])
+        self.assertIs(received[0][1]["start_state"], state)
+
+    def test_unconfigured_candidate_dependencies_fail_closed(self):
+        self.assertTrue(hasattr(autosub_deps, "_output_service"))
+        self.assertTrue(hasattr(autosub_deps, "create_candidate_session"))
+        for configured in (False, True):
+            if configured:
+                _configure()
+            else:
+                autosub_deps._autosub_deps = None
+            with self.subTest(configured=configured):
+                with self.assertRaises(RuntimeError):
+                    autosub_deps._output_service()
+                with self.assertRaises(RuntimeError):
+                    autosub_deps.create_candidate_session(start_state={})
+
+    def test_owner_registry_is_separate_and_has_no_missing_owner_fallback(self):
+        self.assertTrue(hasattr(autosub_deps, "_AUTO_SUB_CANDIDATE_OWNERS"))
+        self.addCleanup(autosub_deps._AUTO_SUB_CANDIDATE_OWNERS.clear)
+        self.addCleanup(autosub_deps._AUTO_SUB_JOBS.pop, "owner-test", None)
+        job = {"id": "owner-test", "status": "running"}
+        autosub_deps._AUTO_SUB_JOBS["owner-test"] = job
+        owner = object()
+        with self.assertRaises(RuntimeError):
+            autosub_deps._candidate_owner("owner-test")
+        autosub_deps.register_candidate_owner("owner-test", owner)
+        self.assertIs(autosub_deps._candidate_owner("owner-test"), owner)
+        self.assertEqual(job, {"id": "owner-test", "status": "running"})
+        autosub_deps.drop_candidate_owner("owner-test")
+        autosub_deps.drop_candidate_owner("owner-test")
+        with self.assertRaises(RuntimeError):
+            autosub_deps._candidate_owner("owner-test")
 
 
 if __name__ == "__main__":

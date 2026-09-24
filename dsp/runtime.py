@@ -46,6 +46,9 @@ HELPER_STDERR_TAIL_LIMIT = 64 * 1024
 # buffer, so the reader requests one extra byte and treats a full buffer as
 # truncation instead of parsing a partial payload.
 CONTROL_REPLY_MAX_BYTES = 4096
+# The engine prints its gain with %.9g, so two readings of the same level may
+# still differ in the last printed digit.
+OUTPUT_GAIN_TOLERANCE_DB = 1e-6
 logger = logging.getLogger(__name__)
 
 
@@ -256,12 +259,55 @@ class DSPRuntimeConfig:
     hardware_ports: tuple[str, ...]
     layout: tuple[dict[str, Any], ...]
     output_routes: tuple[tuple[int, str], ...] | None = None
+    plan_fingerprint: str | None = None
 
     @property
     def route_pairs(self) -> tuple[tuple[int, str], ...]:
         if self.output_routes is not None:
             return self.output_routes
         return tuple(enumerate(self.hardware_ports, 1))
+
+    @classmethod
+    def from_plan(cls, plan: Mapping[str, Any], *, layout: Sequence[dict[str, Any]],
+                  output_key: str, sample_rate_hz: int,
+                  hardware_ports: Sequence[str] | None,
+                  plan_fingerprint: str | None = None) -> "DSPRuntimeConfig":
+        """Build a runtime config from a compiled processing plan.
+
+        Unlike from_overview, no legacy mode strings are interpreted: the
+        plan carries explicit role-indexed physical edges, and only those
+        hardware channels are linked. Malformed plans fail instead of
+        falling back to semantic port names.
+        """
+        if type(sample_rate_hz) is not int or sample_rate_hz <= 0:
+            raise RuntimeError("Planned sample rate must be a positive integer")
+        ports = [str(port) for port in (hardware_ports or []) if str(port)]
+        if not ports:
+            raise RuntimeError("No hardware playback ports for planned output")
+        edges = plan.get("physical_routes") if isinstance(plan, Mapping) else None
+        if not isinstance(edges, list) or not edges:
+            raise RuntimeError("Processing plan has no physical routes")
+        rows = tuple(dict(entry) for entry in layout)
+        routes = []
+        for edge in edges:
+            if not isinstance(edge, Mapping):
+                raise RuntimeError("Processing plan has a malformed physical route")
+            output = edge.get("output")
+            channel = edge.get("channel")
+            if type(output) is not int or type(channel) is not int:
+                raise RuntimeError("Processing plan has a malformed physical route")
+            if output < 0 or channel < 0:
+                raise RuntimeError("Processing plan has a negative physical route")
+            if output >= len(rows):
+                raise RuntimeError("Processing plan routes an unknown logical output")
+            if channel >= len(ports):
+                raise RuntimeError(
+                    f"Processing plan needs hardware channel {channel}, "
+                    f"but {output_key or 'the selected output'} exposes {len(ports)}")
+            routes.append((output + 1, ports[channel]))
+        mode = plan.get("mode") if isinstance(plan, Mapping) else None
+        return cls(str(mode or ""), str(output_key or ""), sample_rate_hz,
+                   tuple(ports), rows, tuple(routes), plan_fingerprint)
 
     @classmethod
     def from_overview(cls, overview: dict[str, Any], *,
@@ -369,6 +415,13 @@ def config_route_pairs(config: Any) -> tuple[tuple[int, str], ...]:
         return routes
     return tuple(enumerate(getattr(config, "hardware_ports", ()), 1))
 
+
+@dataclass(frozen=True)
+class PlannedSyncTarget:
+    """Prebuilt v2 sync target: plan-derived config plus rendered engine text."""
+    config: DSPRuntimeConfig
+    text: str
+
 class DSPRuntime:
     def __init__(self, manager: Any, *, binary: str | Path | None = None,
                  command_runner: Callable[[Sequence[str]], Awaitable[CommandResult]] | None = None,
@@ -386,14 +439,22 @@ class DSPRuntime:
         self._lock = asyncio.Lock()
         self._measurement_scope_lock = asyncio.Lock()
         self._control_lock = asyncio.Lock()
+        # Serializes the whole ownership decision (state read, validation,
+        # engine command with its acknowledgement, state write) across the
+        # exact sub mute and output mask APIs. The plain control lock only
+        # serializes commands and replies, so overlapping calls could each
+        # decide ownership before either acknowledgement lands.
+        self._mute_ownership_lock = asyncio.Lock()
         self._error: str | None = None
         self._started_at: float | None = None
         self._control_socket: socket.socket | None = None
         self._control_path: Path | None = None
         self._control_client_path: Path | None = None
         self._exact_sub_mute = False
+        self._exact_sub_mute_mask = 0
         self._effect_bypass = False
         self._output_gain_db = 0.0
+        self._output_mask = 0
         self._stderr_drain_task: asyncio.Task | None = None
         self._stderr_tail = b""
 
@@ -496,19 +557,76 @@ class DSPRuntime:
                             "output_key": self._config.output_key,
                             "hardware_ports": list(self._config.hardware_ports),
                             "output_routes": list(config_route_pairs(self._config)),
+                            "plan_fingerprint": getattr(self._config, "plan_fingerprint", None),
                             "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
                 "last_error": self._error, "last_started_at": self._started_at,
                 "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
+                "output_mask": self._output_mask,
                 "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
                 "stderr_tail": self.stderr_tail()[:2048]}
 
-    async def set_exact_sub_mute(self, enabled: bool) -> bool:
-        previous = self._exact_sub_mute
-        if len(self._config.hardware_ports if self._config else ()) < 4:
-            raise RuntimeError("Sub outputs are unavailable")
-        await self._control(f"mute 12 {1 if enabled else 0}", reply=True)
-        self._exact_sub_mute = bool(enabled)
-        return previous
+    async def set_exact_sub_mute(self, enabled: bool, *, mask: int | None = None) -> bool:
+        """Set exact sub mute, returning its previously acknowledged enabled state.
+
+        Omitted masks retain legacy outputs 3/4. Explicit masks address engine
+        outputs in plan order. Restore with the returned boolean and the SAME
+        mask; changing an active mask is rejected because a boolean cannot
+        represent the old mask. Independent output-mask bits remain muted.
+        """
+        async with self._mute_ownership_lock:
+            if mask is None and len(self._config.hardware_ports if self._config else ()) < 4:
+                raise RuntimeError("Sub outputs are unavailable")
+            bits = self._validate_output_mask(12 if mask is None else mask)
+            layout = tuple(getattr(self._config, "layout", ()) or ())
+            output_count = len(layout) if layout else min(4, len(self._config.hardware_ports if self._config else ()))
+            if bits >= (1 << output_count):
+                raise ValueError("Output mute mask addresses an output the engine does not expose")
+            previous = self._exact_sub_mute
+            if previous and bits != self._exact_sub_mute_mask:
+                raise RuntimeError("Cannot change an active exact sub mute mask; restore it first")
+            control_bits = bits if enabled else bits & ~self._output_mask
+            if control_bits:
+                await self._control(f"mute {control_bits} {1 if enabled else 0}", reply=True)
+            self._exact_sub_mute = bool(enabled)
+            self._exact_sub_mute_mask = bits if enabled else 0
+            return previous
+
+    def _validate_output_mask(self, mask: object) -> int:
+        """Validate a role-derived engine output mute mask.
+
+        Bit ``n`` addresses engine output ``n`` in plan order.  A zero mask is
+        rejected instead of silently no-opping, so callers must state that no
+        masking is needed; the native engine owns one 32-bit mask.
+        """
+        if type(mask) is not int or mask <= 0 or mask >= (1 << 32):
+            raise ValueError("Output mute mask must be a non-zero 32-bit integer")
+        layout = tuple(getattr(self._config, "layout", ()) or ()) if self._config is not None else ()
+        if layout and mask >= (1 << len(layout)):
+            raise ValueError("Output mute mask addresses an output the engine does not expose")
+        return mask
+
+    async def apply_output_mask(self, mask: int) -> int:
+        """Mute the masked engine outputs; returns the previously applied mask.
+
+        Only the given bits are set: unrelated bits (for example the legacy
+        exact-sub mute) stay untouched, which is why clearing must repeat the
+        same mask rather than resetting the engine's whole mute state.
+        """
+        async with self._mute_ownership_lock:
+            bits = self._validate_output_mask(mask)
+            previous = self._output_mask
+            await self._control(f"mute {bits} 1", reply=True)
+            self._output_mask |= bits
+            return previous
+
+    async def clear_output_mask(self, mask: int) -> None:
+        """Release output-mask bits without clearing an active exact sub mute."""
+        async with self._mute_ownership_lock:
+            bits = self._validate_output_mask(mask)
+            control_bits = bits & ~self._exact_sub_mute_mask
+            if control_bits:
+                await self._control(f"mute {control_bits} 0", reply=True)
+            self._output_mask &= ~bits
 
     async def reset_output_peaks(self) -> None:
         await self._control("peaks reset", reply=True)
@@ -562,6 +680,32 @@ class DSPRuntime:
     async def set_output_gain_db(self, gain_db: float) -> float:
         value = max(-80.0, min(0.0, float(gain_db)))
         await self._control(f"gain db {value:.9g}", reply=True)
+        self._output_gain_db = value
+        return value
+
+    async def read_output_gain_db(self) -> float:
+        """Return the gain the engine really renders, and adopt it as ours.
+
+        ``gain db get`` is the engine's own readback.  Without it the recorded
+        gain can only ever echo what this process last sent, so a transition
+        that failed between its duck and its ramp would leave the guard behind
+        as the level every later transition reads as the operating gain.
+        """
+        reply = (await self._control("gain db get", reply=True)).strip()
+        try:
+            value = float(reply)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Native DSP gain readback is not a number: {reply!r}") from exc
+        if not math.isfinite(value) or not -80.0 <= value <= 0.0:
+            raise RuntimeError(
+                f"Native DSP gain readback is out of range: {reply!r}")
+        recorded = self._output_gain_db
+        if (type(recorded) not in (int, float) or not math.isfinite(recorded)
+                or abs(float(recorded) - value) > OUTPUT_GAIN_TOLERANCE_DB):
+            logger.warning(
+                "Native DSP engine gain %.9g dB differs from the recorded %s; "
+                "adopting the engine value", value, recorded)
         self._output_gain_db = value
         return value
 
@@ -642,6 +786,146 @@ class DSPRuntime:
                     logger.exception("Native DSP guarded transition rollback failed")
                 raise
 
+    async def _operating_output_gain_db(self) -> float:
+        """The level in effect before a transition ducks the output.
+
+        Read from the engine while it answers: the return level has to be the
+        gain the output really carries, not this process's record of what it
+        last sent, or a guard left behind by an earlier failed transition would
+        be ramped back to as if it were the operating level.
+        """
+        if self._control_socket is None:
+            return max(-80.0, min(0.0, float(self._output_gain_db)))
+        return await self.read_output_gain_db()
+
+    def _guard_return_gain_db(self, requested_db: float,
+                              operating_gain_db: float, name: str) -> float:
+        """Return the level a transition path should leave the output on.
+
+        The guard exists to keep the output quiet during the graph swap, so the
+        duck must not outlive the transition: a requested target below the gain
+        the engine already had is a stale reading (typically a caller that read
+        the guard back as the operating gain), and following it would pin the
+        output low for good.  The higher of the two wins.
+        """
+        requested = float(requested_db)
+        if requested < operating_gain_db - OUTPUT_GAIN_TOLERANCE_DB:
+            logger.warning(
+                "Native DSP %s %.9g dB is below the engine's operating gain %.9g dB; "
+                "returning to the operating gain", name, requested, operating_gain_db)
+            return operating_gain_db
+        return requested
+
+    async def _settle_output_gain_db(self, target_db: float) -> None:
+        """Put the output back on this path's return level and let the engine confirm it.
+
+        Runs on every exit of a guarded transition, success or failure, so the
+        duck can neither survive a failed rollback nor go unnoticed.  Never
+        raises: the caller may already be unwinding an error.
+        """
+        if self._control_socket is None:
+            self._output_gain_db = float(target_db)
+            return
+        try:
+            await self.set_output_gain_db(target_db)
+            actual = await self.read_output_gain_db()
+        except Exception:
+            logger.exception(
+                "Native DSP operating gain %.9g dB could not be confirmed by the engine",
+                target_db)
+            return
+        if abs(actual - float(target_db)) > OUTPUT_GAIN_TOLERANCE_DB:
+            logger.warning(
+                "Native DSP operating gain restore did not land: requested %.9g dB, "
+                "engine reports %.9g dB", target_db, actual)
+
+    async def _settle_output_gain_db_cancellation_safe(self, target_db: float) -> None:
+        """Restore the operating gain even while this task is being cancelled.
+
+        A cancellation that skipped the restore would leave the output at the
+        guard level, which is the state that must not survive.
+        """
+        settle = asyncio.create_task(self._settle_output_gain_db(target_db))
+        while not settle.done():
+            try:
+                await asyncio.shield(settle)
+            except asyncio.CancelledError:
+                continue
+        settle.result()
+
+    async def guarded_rebuild_rendered(self, new: PlannedSyncTarget, *,
+                                       previous: PlannedSyncTarget,
+                                       guard_db: float,
+                                       apply_candidate: Callable[[], Any],
+                                       apply_previous: Callable[[], Any],
+                                       settle_seconds: float = 0.35,
+                                       before_ramp: Callable[[], Awaitable[Any]] | None = None,
+                                       before_rollback_ramp: Callable[[], Awaitable[Any]] | None = None,
+                                       ramp_target_db: float = 0.0,
+                                       rollback_ramp_target_db: float = 0.0) -> None:
+        """guarded_rebuild for prebuilt plan targets, with rollback to previous.
+
+        Unlike the overview form, the previous target is an explicit
+        parameter: no durable source can re-derive it, so the caller owns
+        both documents.  ``ramp_target_db`` / ``rollback_ramp_target_db``
+        bound the post-transition operating gain (default 0 dB); a rollback
+        may restore a different gain than the candidate path intended.  Neither
+        may leave the output below the gain the engine reported before the
+        duck: that level is read back from the engine rather than taken from
+        this process's record, and every exit path returns to the higher of the
+        two and verifies it through the engine again.
+        """
+        for name, target in (("ramp_target_db", ramp_target_db),
+                             ("rollback_ramp_target_db", rollback_ramp_target_db)):
+            if (type(target) not in (int, float) or not math.isfinite(target)
+                    or not -80 <= target <= 0):
+                raise ValueError(f"{name} must be finite and between -80 and 0 dB")
+        guard = min(max(-80.0, min(0.0, float(guard_db))),
+                    float(ramp_target_db), float(rollback_ramp_target_db))
+        hot_update = self._can_hot_update(new.config)
+        settle_seconds = 0.0 if hot_update else settle_seconds
+        async with self._measurement_scope_lock:
+            # Read the real level before the duck; every exit path returns to it.
+            operating_gain = await self._operating_output_gain_db()
+            ramp_return = self._guard_return_gain_db(
+                ramp_target_db, operating_gain, "ramp_target_db")
+            rollback_return = self._guard_return_gain_db(
+                rollback_ramp_target_db, operating_gain, "rollback_ramp_target_db")
+            if self._control_socket is not None:
+                await self.set_output_gain_db(guard)
+            try:
+                async with self._lock:
+                    await self._run_sync(new.config, new.text,
+                                         initial_output_gain_db=guard)
+                if settle_seconds > 0:
+                    await asyncio.sleep(settle_seconds)
+                if before_ramp:
+                    await before_ramp()
+                await self.ramp_output_gain_db(guard, ramp_return)
+                await self._settle_output_gain_db(ramp_return)
+                apply_candidate()
+            except BaseException:
+                rollback_applied = False
+                try:
+                    apply_previous()
+                    rollback_applied = True
+                    async with self._lock:
+                        await self._run_sync(previous.config, previous.text,
+                                             initial_output_gain_db=guard)
+                    if settle_seconds > 0:
+                        await asyncio.sleep(settle_seconds)
+                    if before_rollback_ramp:
+                        await before_rollback_ramp()
+                    await self.ramp_output_gain_db(guard, rollback_return)
+                except BaseException:
+                    logger.exception("Native DSP guarded transition rollback failed")
+                finally:
+                    # A vetoed rollback (apply_previous raised) leaves the state
+                    # to its newer owner, including this gain.
+                    if rollback_applied:
+                        await self._settle_output_gain_db_cancellation_safe(rollback_return)
+                raise
+
     async def sync(self, overview: dict[str, Any], *, initial_output_gain_db: float = 0.0,
                    extras_override: dict[str, Any] | None = None) -> None:
         async with self._measurement_scope_lock:
@@ -681,88 +965,103 @@ class DSPRuntime:
         if not config.output_key:
             raise RuntimeError("Native DSP requires a selected hardware output")
         async with self._lock:
-            if not self.binary.is_file():
-                self._error = f"Native DSP binary is not available: {self.binary}"
-                raise RuntimeError(self._error)
-            await self._stop_orphan_helpers()
             text = self.manager.compile_engine_text(
                 list(config.layout), sample_rate_hz=config.sample_rate,
                 extras_override=extras_override)
-            fd, config_name = tempfile.mkstemp(prefix="fxroute-dsp-", suffix=".conf")
-            os.write(fd, text.encode("utf-8")); os.close(fd)
-            input_fd, input_name = tempfile.mkstemp(prefix="fxroute-dsp-input-", suffix=".f32")
-            output_fd, output_name = tempfile.mkstemp(prefix="fxroute-dsp-output-", suffix=".f32")
-            os.close(input_fd); os.close(output_fd)
-            try:
-                offline_binary = self.binary.with_name(f"{self.binary.name}-offline")
-                result = await self._run((str(offline_binary), config_name, input_name, output_name))
-                if result.returncode:
-                    raise RuntimeError(result.stderr or result.stdout or "Native DSP preflight failed")
-            except Exception:
-                Path(config_name).unlink(missing_ok=True)
-                raise
-            finally:
-                Path(input_name).unlink(missing_ok=True)
-                Path(output_name).unlink(missing_ok=True)
+            await self._run_sync(config, text, initial_output_gain_db=initial_output_gain_db)
 
-            if self._can_hot_update(config):
-                try:
-                    if await self._try_live_update(text):
-                        await self._reconcile_output_links(config)
-                        Path(config_name).unlink(missing_ok=True)
-                        self._config = config
-                        self._config_text = text
-                        self._error = None
-                        return
-                    await self._control(
-                        f"swap config {config_name} {max(-80.0, min(0.0, float(initial_output_gain_db))):.9g}",
-                        reply=True,
-                    )
+    async def sync_rendered(self, target: PlannedSyncTarget, *,
+                            initial_output_gain_db: float = 0.0) -> None:
+        """Sync a prebuilt plan target with the same contract as sync()."""
+        if not target.config.output_key:
+            raise RuntimeError("Native DSP requires a selected hardware output")
+        async with self._measurement_scope_lock:
+            async with self._lock:
+                await self._run_sync(target.config, target.text,
+                                     initial_output_gain_db=initial_output_gain_db)
+
+    async def _run_sync(self, config: DSPRuntimeConfig, text: str, *,
+                        initial_output_gain_db: float = 0.0) -> None:
+        """Preflight and commit one (config, text) pair; caller holds _lock."""
+        if not self.binary.is_file():
+            self._error = f"Native DSP binary is not available: {self.binary}"
+            raise RuntimeError(self._error)
+        await self._stop_orphan_helpers()
+        fd, config_name = tempfile.mkstemp(prefix="fxroute-dsp-", suffix=".conf")
+        os.write(fd, text.encode("utf-8")); os.close(fd)
+        input_fd, input_name = tempfile.mkstemp(prefix="fxroute-dsp-input-", suffix=".f32")
+        output_fd, output_name = tempfile.mkstemp(prefix="fxroute-dsp-output-", suffix=".f32")
+        os.close(input_fd); os.close(output_fd)
+        try:
+            offline_binary = self.binary.with_name(f"{self.binary.name}-offline")
+            result = await self._run((str(offline_binary), config_name, input_name, output_name))
+            if result.returncode:
+                raise RuntimeError(result.stderr or result.stdout or "Native DSP preflight failed")
+        except Exception:
+            Path(config_name).unlink(missing_ok=True)
+            raise
+        finally:
+            Path(input_name).unlink(missing_ok=True)
+            Path(output_name).unlink(missing_ok=True)
+
+        if self._can_hot_update(config):
+            try:
+                if await self._try_live_update(text):
                     await self._reconcile_output_links(config)
                     Path(config_name).unlink(missing_ok=True)
                     self._config = config
                     self._config_text = text
                     self._error = None
                     return
-                except Exception as exc:
-                    logger.warning("Native DSP hot update failed; falling back to process rebuild: %s", exc)
-
-            await self.stop()
-            self._config_path = Path(config_name)
-            try:
-                control_dir = Path(tempfile.mkdtemp(prefix="fxroute-dsp-control-"))
-                self._control_path = control_dir / "engine.sock"
-                self._control_client_path = control_dir / "client.sock"
-                self._control_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                self._control_socket.setblocking(False)
-                self._control_socket.bind(str(self._control_client_path))
-                self._process = await self._launch((str(self.binary), config_name, str(self._control_path)))
+                await self._control(
+                    f"swap config {config_name} {max(-80.0, min(0.0, float(initial_output_gain_db))):.9g}",
+                    reply=True,
+                )
+                await self._reconcile_output_links(config)
+                Path(config_name).unlink(missing_ok=True)
                 self._config = config
                 self._config_text = text
-                self._started_at = time.time()
-                self._start_stderr_drain(self._process)
-                await self._wait_for_ports(config)
-                await self.set_output_gain_db(initial_output_gain_db)
-                self._effect_bypass = bool(int(
-                    (await self._control("effects bypass get", reply=True)).strip()))
-                await self._remove_direct_source_links()
-                links = [
-                    PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[0]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[0]}"),
-                    PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[1]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[1]}"),
-                ]
-                self._links = links
-                for link in links:
-                    result = await self._run(("pw-link", link.source, link.target))
-                    if result.returncode and "exists" not in (result.stderr or "").lower():
-                        raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
-                await self._reconcile_output_links(config)
                 self._error = None
+                return
             except Exception as exc:
-                try:
-                    await self.stop()
-                finally:
-                    self._error = str(exc)
-                raise
+                logger.warning("Native DSP hot update failed; falling back to process rebuild: %s", exc)
+
+        await self.stop()
+        self._config_path = Path(config_name)
+        try:
+            control_dir = Path(tempfile.mkdtemp(prefix="fxroute-dsp-control-"))
+            self._control_path = control_dir / "engine.sock"
+            self._control_client_path = control_dir / "client.sock"
+            self._control_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self._control_socket.setblocking(False)
+            self._control_socket.bind(str(self._control_client_path))
+            self._process = await self._launch((str(self.binary), config_name, str(self._control_path)))
+            self._config = config
+            self._config_text = text
+            self._started_at = time.time()
+            self._start_stderr_drain(self._process)
+            await self._wait_for_ports(config)
+            await self.set_output_gain_db(initial_output_gain_db)
+            self._effect_bypass = bool(int(
+                (await self._control("effects bypass get", reply=True)).strip()))
+            await self._remove_direct_source_links()
+            links = [
+                PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[0]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[0]}"),
+                PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[1]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[1]}"),
+            ]
+            self._links = links
+            for link in links:
+                result = await self._run(("pw-link", link.source, link.target))
+                if result.returncode and "exists" not in (result.stderr or "").lower():
+                    raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
+            await self._reconcile_output_links(config)
+            self._error = None
+        except Exception as exc:
+            try:
+                await self.stop()
+            finally:
+                self._error = str(exc)
+            raise
 
     async def _wait_for_ports(self, config: DSPRuntimeConfig) -> None:
         expected = [f"{DSP_NODE_NAME}:input_1", f"{DSP_NODE_NAME}:input_2"]
@@ -833,6 +1132,14 @@ class DSPRuntime:
             elif kind == "output" and len(parts) == 5:
                 shape.append((kind, parts[1]))
                 values.append((kind, int(parts[1]), float(parts[2]), float(parts[3]), parts[4]))
+            elif kind in {"sos", "oconv"} and len(parts) >= 2:
+                # Output-bank lines join the shape with full content: any
+                # bank change forces a rebuild, while identical banks allow
+                # live updates of unrelated parameters. Live updates *for*
+                # bank coefficients arrive with the transaction integration;
+                # note peq live indices count peq lines per output, while sos
+                # lines share the native filter array in file order.
+                shape.append((kind, *parts[1:]))
             elif kind == "bypass":
                 shape.append((kind, parts[1:]))
         return shape, values
@@ -937,8 +1244,10 @@ class DSPRuntime:
                 pass
         self._control_path = self._control_client_path = None
         self._exact_sub_mute = False
+        self._exact_sub_mute_mask = 0
         self._effect_bypass = False
         self._output_gain_db = 0.0
+        self._output_mask = 0
         self._config_text = None
 
     async def verify(self) -> bool:

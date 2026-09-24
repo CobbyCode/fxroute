@@ -25,9 +25,8 @@ import tempfile
 from pathlib import Path
 
 
-def atomic_write_text(path: Path | str, text: str) -> None:
-    """Replace ``path`` with ``text`` without exposing partial content."""
-    path = Path(path)
+def _atomic_write(path: Path, payload: bytes | str, *, binary: bool) -> None:
+    """Replace ``path`` atomically while preserving the target mode."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = None
     try:
@@ -42,9 +41,13 @@ def atomic_write_text(path: Path | str, text: str) -> None:
                 existing_mode = None
             if existing_mode is not None and stat.S_ISREG(existing_mode):
                 os.fchmod(fd, stat.S_IMODE(existing_mode))
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            if binary:
+                handle = os.fdopen(fd, "wb")
+            else:
+                handle = os.fdopen(fd, "w", encoding="utf-8")
+            with handle:
                 fd = None
-                handle.write(text)
+                handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp_path, path)
@@ -61,3 +64,13 @@ def atomic_write_text(path: Path | str, text: str) -> None:
             except OSError:
                 pass
         raise
+
+
+def atomic_write_text(path: Path | str, text: str) -> None:
+    """Replace ``path`` with ``text`` without exposing partial content."""
+    _atomic_write(Path(path), text, binary=False)
+
+
+def atomic_write_bytes(path: Path | str, data: bytes) -> None:
+    """Replace ``path`` with binary data without exposing partial content."""
+    _atomic_write(Path(path), data, binary=True)

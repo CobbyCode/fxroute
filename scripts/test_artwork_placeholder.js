@@ -8,6 +8,8 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const appJs = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const libraryJs = fs.readFileSync(path.join(root, 'static', 'library_ui.js'), 'utf8');
+const uiHelpersJs = fs.readFileSync(path.join(root, 'static', 'ui_helpers.js'), 'utf8');
 const streamingJs = fs.readFileSync(path.join(root, 'static', 'streaming.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'static', 'style.css'), 'utf8');
@@ -27,11 +29,15 @@ assert.doesNotMatch(svg, /<text\b|[♫♪♬]/,
 assert.doesNotMatch(svg, /#(?:6ee7b7|4ade80|6366f1|8b5cf6)/i,
     'the artwork placeholder must stay neutral rather than use an accent color');
 
-assert.match(appJs, /function artworkPlaceholderUrl\(\)/,
-    'app.js must own the shared artwork placeholder URL');
-assert.match(appJs, /artwork-placeholder\.svg\?v=\d+/,
+assert.match(uiHelpersJs, /function artworkPlaceholderUrl\(\)/,
+    'ui_helpers.js must own the shared artwork placeholder URL');
+assert.match(uiHelpersJs, /artwork-placeholder\.svg\?v=\d+/,
     'the shared artwork placeholder URL must be cache-busted');
-assert.match(appJs, /function trackThumbHtml[\s\S]*artworkPlaceholderUrl\(\)/,
+assert.match(appJs, /function artworkPlaceholderUrl\(\)/,
+    'app.js must keep an artworkPlaceholderUrl wrapper');
+assert.match(appJs, /FXRouteUiHelpers/,
+    'app.js wrapper must delegate to ui_helpers.js');
+assert.match(libraryJs, /function trackThumbHtml[\s\S]*artworkPlaceholderUrl\(\)/,
     'library track thumbnails must use the shared artwork placeholder');
 assert.match(appJs, /function albumArtFallbackSvg[\s\S]*artworkPlaceholderUrl\(\)/,
     'library album artwork fallbacks must use the shared artwork placeholder');

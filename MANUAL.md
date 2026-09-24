@@ -129,18 +129,18 @@ Open **DSP** to shape the sound. The **Measure** button on this page opens the m
 
 Autogain and Loudness can run together; the limiter stays the final stage.
 
-### 5.3 Output modes and subwoofers
+### 5.3 Output modes, crossover and subwoofers
 
-**Technical settings → Output Mode** offers:
+**Technical settings → Mode** offers:
 
-- **Stereo** — mains only
-- **2.1 Subwoofer** — mains plus one mono subwoofer (Out 3/4)
-- **2.2 Subwoofer** — mains plus two mono subwoofers (Out 3 = Sub 1, Out 4 = Sub 2), configured independently
-- **2.2 Stereo Bass** — mains plus a left sub (Out 3) and a right sub (Out 4) driven from their own channels
+- **Stereo** — mains only (Main L/R, or Low/Low-Mid/Mid/High L/R when Crossover is On)
+- **Stereo + Sub** — mains plus subwoofers, derived from routing: one Sub role is one mono sub, two Sub roles (Sub 1+2) are two mono subs, Sub L+R is a stereo sub pair
 
-The **Crossover / Subwoofer** card on the DSP page shows the active routing, a crossover preview, the crossover frequency (40–200 Hz, LR24), the main highpass, and per-sub level, alignment, and polarity. In the 2.2 modes, Sub 1 and Sub 2 are set separately; the derived Main/Sub delays are shown for reference. Subwoofer modes need an output device with at least four channels.
+**Crossover** is an independent On/Off switch, not a mode. Off routes Main L/R; On replaces Main with Low / Low-Mid / Mid / High per side (2-, 3- or 4-way from routing). Sub roles stay available in both positions. Each way direction carries its own **Type** and **Slope**; **Type = Off** clears that filter and the way then runs without it — the setup stays active, the header names the open direction, and the preview draws the band the way really runs.
 
-On devices with more than two outputs, **Output Routing** assigns the logical signals Main L, Main R, Sub 1, and Sub 2 to hardware outputs. Each output carries one signal or stays silent (Off); one signal may feed several outputs. The default keeps Main L/R on Out 1/2 and Sub 1/2 on Out 3/4. Assignments are stored per device and survive tier changes: outputs that do not exist in the active tier keep their saved assignment and are marked inactive until the tier returns.
+The **Subwoofer** card on the DSP page shows the routed subs, a crossover preview, the crossover frequency (40–200 Hz) with filter type and slope, the main highpass, and per-sub level, alignment, and polarity. One shared crossover covers 2.1 and 2.2 Dual-Mono (Sub 1+2). A stereo sub pair (Sub L+R) follows the shared values while **Link L/R** is on; with the link off each side keeps its own frequency, type, and slope together with its own main highpass. Derived Main/Sub delays are shown for reference. Subwoofer routing needs an output device with enough channels.
+
+There is one **Output Routing**: it assigns Main, Crossover ways and Sub roles to hardware outputs. Each output carries one role or stays silent (Off); one role may feed several outputs. Assignments are stored per device and per mode (Stereo / Stereo + Sub) and survive tier changes: outputs that do not exist in the active tier keep their saved assignment and are marked inactive until the tier returns.
 
 ### 5.4 Sample rate
 

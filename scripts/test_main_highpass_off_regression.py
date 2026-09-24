@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
-"""Regression: DSP -> Crossover/Subwoofer -> Main highpass Off must stick.
+"""Regression: DSP -> Subwoofer tile -> Main highpass Off must stick.
 
-Covers the full path for 2.1 and 2.2:
-  UI draft (2.2 top-level sync) -> API payload build -> persisted state
-  -> BassManagementConfig/DSP runtime layout -> readback/render source.
-
-Root cause fixed here: for 2.2 the UI draft only updated
-`output_mode.subwoofer` + `output_mode.subwoofers`, leaving the stale
-top-level `main_highpass_enabled=true`. getSubwooferGlobalSettings() prefers
-the top-level field, so renderSubwooferPanel() snapped the select back to On
-on `input`, and the following `change` save re-read On. Off never reached
-the API. The draft now mirrors crossover/highpass to top-level (see
-applySubwooferDraftToOutputMode in static/app.js).
+Covers the overview payload path and the live UI save path: 2.1/2.2
+payloads keep main_highpass_enabled=false into
+BassManagementConfig/DSP runtime layout (no FL/FR highpass filters),
+while On still produces them; the sub tile saves through the single v2
+output state (set_subwoofers), never a legacy output-mode POST.
 """
 from __future__ import annotations
 
@@ -23,7 +17,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audio.samplerate import persistence as persistence
 from dsp.runtime import BassManagementConfig, DSPRuntimeConfig
 
 
@@ -49,12 +42,8 @@ def _check_21_off_roundtrip() -> None:
             "sub_alignment_ms": 0.0,
             "sub_polarity": "normal",
         }
-        built = persistence._build_audio_output_mode_payload("subwoofer-2.1", dict(sub_off), None)
-        assert built["subwoofer"]["main_highpass_enabled"] is False, built
-        path = persistence._audio_output_mode_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(built, indent=2) + "\n")
-        loaded = persistence._load_audio_output_mode()
+        loaded = {"mode": "subwoofer-2.1",
+                  "subwoofer": {**dict(sub_off), "slope": "LR24"}}
         assert loaded["subwoofer"]["main_highpass_enabled"] is False, loaded
 
         overview = {"output_mode": loaded, "selected_output": {"key": "k", "label": "l"},
@@ -66,10 +55,9 @@ def _check_21_off_roundtrip() -> None:
             if channel["name"] in ("FL", "FR"):
                 assert channel.get("filters", []) == [], channel
         # On must still produce highpass filters.
-        sub_on = dict(sub_off, main_highpass_enabled=True)
-        built_on = persistence._build_audio_output_mode_payload("subwoofer-2.1", sub_on, None)
-        assert built_on["subwoofer"]["main_highpass_enabled"] is True, built_on
-        overview_on = {"output_mode": {**loaded, "subwoofer": built_on["subwoofer"]},
+        sub_on = {**dict(sub_off), "main_highpass_enabled": True, "slope": "LR24"}
+        assert sub_on["main_highpass_enabled"] is True, sub_on
+        overview_on = {"output_mode": {**loaded, "subwoofer": sub_on},
                        "selected_output": {"key": "k"}, "current_output": {"key": "k"}}
         bass_on = BassManagementConfig.from_overview(overview_on)
         assert bass_on.main_highpass_enabled is True, bass_on
@@ -95,13 +83,9 @@ def _check_22_off_roundtrip() -> None:
             "sub1": {"level_db": 1.5, "alignment_ms": 0.5, "polarity": "normal"},
             "sub2": {"level_db": 0.0, "alignment_ms": 0.0, "polarity": "normal"},
         }
-        built = persistence._build_audio_output_mode_payload(
-            "subwoofer-2.2", dict(sub_off), dict(subwoofers))
-        assert built["main_highpass_enabled"] is False, built
-        path = persistence._audio_output_mode_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(built, indent=2) + "\n")
-        loaded = persistence._load_audio_output_mode()
+        loaded = {"mode": "subwoofer-2.2", "crossover_frequency_hz": 80,
+                  "slope": "LR24", "main_highpass_enabled": False,
+                  "subwoofers": dict(subwoofers)}
         assert loaded["main_highpass_enabled"] is False, loaded
         assert loaded["crossover_frequency_hz"] == 80, loaded
 
@@ -120,9 +104,7 @@ def _check_22_off_roundtrip() -> None:
 
         # On must still produce highpass filters.
         sub_on = dict(sub_off, main_highpass_enabled=True)
-        built_on = persistence._build_audio_output_mode_payload(
-            "subwoofer-2.2", sub_on, dict(subwoofers))
-        assert built_on["main_highpass_enabled"] is True, built_on
+        assert sub_on["main_highpass_enabled"] is True, sub_on
         overview_on = {"output_mode": {**loaded, "main_highpass_enabled": True},
                        "selected_output": {"key": "k"}, "current_output": {"key": "k"}}
         runtime_on = DSPRuntimeConfig.from_overview(overview_on)
@@ -135,18 +117,16 @@ def _check_22_off_roundtrip() -> None:
 
 def _check_frontend_draft_sync() -> None:
     root = Path(__file__).resolve().parents[1]
-    text = (root / "static" / "app.js").read_text()
-    assert "function applySubwooferDraftToOutputMode" in text, "draft helper missing"
-    # The helper must mirror the 2.2 globals to top-level; otherwise the
-    # 2.2 draft keeps a stale top-level true and the select snaps back to On.
-    assert "main_highpass_enabled: settings.subwoofer" in text or \
-        "main_highpass_enabled\" ] = settings.subwoofer" in text or \
-        "next.main_highpass_enabled = settings.subwoofer.main_highpass_enabled" in text, \
-        "draft helper does not sync main_highpass_enabled to top-level"
-    assert "crossover_frequency_hz" in text
-    # All three optimistic/draft sites must use the helper (no stale spread left).
-    assert text.count("applySubwooferDraftToOutputMode(") >= 3, text.count("applySubwooferDraftToOutputMode(")
-    print("frontend 2.2 draft sync helper present and wired: ok")
+    app = (root / "static" / "app.js").read_text()
+    text = (root / "static" / "subwoofer_ui.js").read_text()
+    # The sub tile saves through the single v2 state (no legacy output-mode POST):
+    # routed roles map to set_subwoofers with exact sub processing.
+    assert "set_subwoofers" in text, "sub tile must save via set_subwoofers"
+    assert "routedSubwooferView" in text, "sub tile must read routed subs"
+    assert "FXRouteSubwooferUI" in app, "app.js must delegate subwoofer UI to the module"
+    assert "subwooferView" in (root / "static" / "output_state.js").read_text(), \
+        "sub view adapter missing"
+    print("frontend sub save uses single v2 state: ok")
 
 
 def main() -> None:

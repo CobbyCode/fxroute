@@ -10,6 +10,7 @@ import logging
 import math
 import statistics
 import time
+from collections.abc import Callable
 from typing import Any
 
 from audio.samplerate import (
@@ -17,12 +18,9 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
-    get_audio_output_overview,
     get_samplerate_status,
-    set_audio_output_mode,
 )
 from audio.system_volume import get_output_volume_unclamped
-from dsp.runtime import BassManagementConfig
 
 from measurement.analyzer import measurement_level_reference_db
 from measurement.constants import LEVEL_REFERENCE_MAX_HZ, LEVEL_REFERENCE_MIN_HZ
@@ -37,14 +35,21 @@ from .candidates import (
     _auto_sub_cancelled_candidate,
     _auto_sub_clamped_delay,
     _auto_sub_snapshot_copy,
-    _auto_sub_sync_dsp_runtime,
 )
-from .deps import _auto_sub_cancel_requested, _dsp_runtime, _measurement_store
+from .candidate_session import AutoSubProposal
+from .deps import (
+    _auto_sub_cancel_requested,
+    _candidate_owner,
+    _dsp_runtime,
+    _measurement_store,
+    _output_service,
+)
+from .roles import autosub_scan_knobs, sub_mute_indices
 from .jobs import (
-    _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
     _append_auto_sub_sweep_timing,
     _auto_sub_job_playback_gain,
     _auto_sub_stage_peak_comparison,
+    _auto_sub_zero_sub_peaks,
     _predict_auto_sub_stage_peaks,
     auto_sub_sink_gain_from_master_percent,
     AutoSubPeakSafetyError,
@@ -188,6 +193,484 @@ async def _auto_sub_fresh_master_percent() -> int:
         return 100
 
 
+async def _stage_auto_sub_service_candidate(
+    job: dict[str, Any],
+    *,
+    delay_ms: float,
+    fc: int,
+    sub1_alignment_ms: float | None,
+    sub2_alignment_ms: float | None,
+    active_subs: tuple[str, ...],
+    sub1_polarity: str | None,
+    sub2_polarity: str | None,
+    original_level: float,
+    original_polarity: str,
+    original_highpass: bool,
+    original_config_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Stage one funnel candidate through the job's owner, returning its context.
+
+    Translates the legacy-shaped scan arguments into a complete start-relative
+    role-keyed proposal and stages it without persisting anything. The result
+    carries the staged state, plan, fingerprint and the trusted native layout
+    the sweep must validate against. Revision drift raises
+    ``StateConflictError``; the caller folds that into its config-failed path.
+    """
+    owner = _candidate_owner(job["id"])
+    service = _output_service()
+    context = job["output_state_context"]
+    proposal = AutoSubProposal(**autosub_scan_knobs(
+        service.load(), output_key=context["output_key"], channels=context["channels"],
+        sub_role_map=context["sub_role_map"], delay_ms=delay_ms,
+        sub1_alignment_ms=sub1_alignment_ms, sub2_alignment_ms=sub2_alignment_ms,
+        active_subs=tuple(active_subs), sub1_polarity=sub1_polarity,
+        sub2_polarity=sub2_polarity, crossover_hz=fc,
+        main_highpass_enabled=original_highpass,
+        original_level=original_level, original_polarity=original_polarity,
+        original_config_snapshot=original_config_snapshot))
+    return await owner.stage(proposal)
+
+
+async def _finish_auto_sub_capture(
+    *,
+    job: dict[str, Any],
+    channel: str,
+    service_job: bool,
+    sweep_id: str,
+    sweep_drained: bool,
+    exact_sub_mute_enabled: bool,
+    exact_sub_mute_mask: int | None,
+    previous_exact_sub_mute: bool,
+    measurement_store: Any,
+) -> None:
+    """Drain the child capture before restoring exact sub mute."""
+    async def finish_capture():
+        # Keep the local child id: early-return paths clear the public job
+        # field before arriving here. A terminal status is not a drained
+        # task; raw-scope cleanup must finish before releasing exact mute.
+        drain_error: BaseException | None = None
+        if service_job and sweep_id and not sweep_drained:
+            # drain_job surfaces a cancel-request persist error only
+            # AFTER the child task finished, so the restoration below
+            # always runs; the deferred error then fails the run.
+            try:
+                await measurement_store.drain_job(sweep_id)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                drain_error = exc
+                logger.error(
+                    "Auto-sub: drain after %s failed (%s); restoring exact mute before failing",
+                    channel, exc,
+                )
+        if exact_sub_mute_enabled and _dsp_runtime() is not None:
+            try:
+                if exact_sub_mute_mask is not None:
+                    await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute, mask=exact_sub_mute_mask)
+                elif service_job:
+                    await _dsp_runtime().set_exact_sub_mute(
+                        previous_exact_sub_mute,
+                        mask=job["output_state_context"]["sub_mute_mask"])
+                else:
+                    await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute)
+            except Exception as exc:
+                logger.exception("Auto-sub: failed to restore exact sub mute after %s reference", channel)
+                job["auto_gain"] = {
+                    "available": False,
+                    "reason": f"Exact sub mute restore failed after Main-only {channel}: {exc}",
+                }
+                raise RuntimeError(
+                    f"AutoSub stopped: exact sub mute restoration was not acknowledged after Main-only {channel}"
+                ) from exc
+        if drain_error is not None:
+            raise drain_error
+
+    if service_job:
+        cleanup = asyncio.create_task(finish_capture())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+    else:
+        await finish_capture()
+
+
+def _decode_auto_sub_capture_result(
+    *,
+    job: dict[str, Any],
+    channel: str,
+    delay_ms: float,
+    sweep_id: str,
+    measurement: dict[str, Any],
+) -> dict[str, Any]:
+    """Decode sweep points, calibration and chain health from a completed capture."""
+    points = []
+    for t in (measurement.get("traces") or []):
+        if t.get("kind") == "sweep-response":
+            points = t.get("points") or []
+            break
+    if not points:
+        for t in (measurement.get("review_traces") or []):
+            points = t.get("points") or []
+            if points:
+                break
+    if not points:
+        logger.warning("Auto-sub: no points in sweep result for delay %.2f ms", delay_ms)
+    if job.get("current_sweep_id") == sweep_id:
+        job["current_sweep_id"] = ""
+    analysis = measurement.get("analysis") if isinstance(measurement.get("analysis"), dict) else {}
+    normalized_by_db = analysis.get("normalized_by_db")
+    calibrated_points = None
+    if normalized_by_db is not None:
+        calibrated_points = _auto_sub_reconstruct_calibrated_points(points, normalized_by_db)
+    chain_health = _auto_sub_chain_health_check(
+        job, analysis.get("alignment_samples"), analysis.get("sample_rate"),
+    )
+    return {
+        "points": points,
+        "analysis": analysis,
+        "normalized_by_db": normalized_by_db,
+        "calibrated_points": calibrated_points,
+        "chain_health": chain_health,
+        "measurement_channel": str(measurement.get("channel") or channel),
+    }
+
+
+async def _prepare_auto_sub_capture(
+    *,
+    job: dict[str, Any],
+    delay_ms: float,
+    stage: str,
+    fc: int,
+    channel: str,
+    measure_channel: str | None,
+    auto_sub_rate: int,
+    auto_sub_sweep_profile: dict[str, Any],
+    output_mode: str,
+    original_config_snapshot: dict[str, Any] | None,
+    original_level: float,
+    original_polarity: str,
+    original_highpass: bool,
+    sub1_alignment_ms: float | None,
+    sub2_alignment_ms: float | None,
+    active_subs: tuple[str, ...],
+    sub1_polarity: str | None,
+    sub2_polarity: str | None,
+    service_job: bool,
+    exact_sub_mute: bool,
+    sub_indices: tuple[int, ...],
+    _marks: dict[str, float],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Stage, settle, pre-arm and peak-gate one candidate.
+
+    Returns ``(terminal_result, prepared)``; exactly one side is not None.
+    A terminal result still needs timing booking through the caller's
+    ``_return_candidate``. Gain and peak-safety errors propagate without a
+    result, as before.
+    """
+    from measurement.session import _sync_dsp_runtime_for_measurement_sweep
+
+    config_success = False
+    staged_layout: list[dict[str, Any]] | None = None
+    staged_fingerprint: str | None = None
+    staged_mode: str | None = None
+    config_fingerprint = _auto_sub_candidate_config_fingerprint(
+        output_mode=output_mode,
+        fc=fc,
+        delay_ms=delay_ms,
+        sub1_alignment_ms=sub1_alignment_ms,
+        sub2_alignment_ms=sub2_alignment_ms,
+        active_subs=active_subs,
+        sub1_polarity=sub1_polarity,
+        sub2_polarity=sub2_polarity,
+        original_level=original_level,
+        original_polarity=original_polarity,
+        original_highpass=original_highpass,
+        original_config_snapshot=original_config_snapshot,
+    )
+    config_reused = (
+        job.get(_AUTO_SUB_CONFIG_OK_KEY) is True
+        and job.get(_AUTO_SUB_CONFIG_FP_KEY) == config_fingerprint
+    )
+    try:
+        if service_job:
+            staged = await _stage_auto_sub_service_candidate(
+                job, delay_ms=delay_ms, fc=fc,
+                sub1_alignment_ms=sub1_alignment_ms,
+                sub2_alignment_ms=sub2_alignment_ms,
+                active_subs=active_subs,
+                sub1_polarity=sub1_polarity,
+                sub2_polarity=sub2_polarity,
+                original_level=original_level,
+                original_polarity=original_polarity,
+                original_highpass=original_highpass,
+                original_config_snapshot=original_config_snapshot,
+            )
+            now = time.monotonic()
+            _marks["config_set"] = now
+            if not config_reused:
+                await asyncio.sleep(0.5)
+                if _auto_sub_cancel_requested(job):
+                    return (_auto_sub_cancelled_candidate(delay_ms, stage), None)
+            _marks["config_verify"] = now
+            config_success = True
+            job[_AUTO_SUB_CONFIG_FP_KEY] = config_fingerprint
+            job[_AUTO_SUB_CONFIG_OK_KEY] = True
+            staged_layout = staged["expected_native_layout"]
+            staged_fingerprint = staged["fingerprint"]
+            staged_mode = staged["expected_native_output_mode"]
+        if not service_job:
+            raise RuntimeError("AutoSub candidate measurement requires a service job")
+    except Exception as exc:
+        logger.warning("Auto-sub: failed to configure delay %.2f ms: %s", delay_ms, exc)
+        job[_AUTO_SUB_CONFIG_OK_KEY] = False
+
+    if not config_success:
+        logger.warning("Auto-sub: skipping candidate %.2f ms — config sync failed", delay_ms)
+        job[_AUTO_SUB_CONFIG_OK_KEY] = False
+        return ({
+            "delay_ms": delay_ms,
+            "name": str(delay_ms),
+            "points": [],
+            "sweep_id": "",
+            "status": "config_failed",
+            "error": "Subwoofer config sync failed",
+            "scan": stage,
+        }, None)
+
+    prearm_fingerprint = f"{auto_sub_rate}|{config_fingerprint}"
+    prearm_reused = (
+        job.get(_AUTO_SUB_PREARM_OK_KEY) is True
+        and job.get(_AUTO_SUB_PREARM_FP_KEY) == prearm_fingerprint
+    )
+    try:
+        if service_job:
+            await _candidate_owner(job["id"]).ensure_ready(auto_sub_rate)
+            _marks["pre_arm"] = time.monotonic()
+            job[_AUTO_SUB_PREARM_FP_KEY] = prearm_fingerprint
+            job[_AUTO_SUB_PREARM_OK_KEY] = True
+        elif prearm_reused and await _auto_sub_prearm_reusable(auto_sub_rate):
+            _marks["pre_arm"] = time.monotonic()
+            logger.debug(
+                "Auto-sub: reusing settled DSP pre-arm at %s Hz for delay %.2f ms channel=%s",
+                auto_sub_rate, delay_ms, measure_channel or channel,
+            )
+        else:
+            await _sync_dsp_runtime_for_measurement_sweep(auto_sub_rate)
+            _marks["pre_arm"] = time.monotonic()
+            job[_AUTO_SUB_PREARM_FP_KEY] = prearm_fingerprint
+            job[_AUTO_SUB_PREARM_OK_KEY] = True
+        if _auto_sub_cancel_requested(job):
+            return (_auto_sub_cancelled_candidate(delay_ms, stage), None)
+    except Exception as exc:
+        logger.exception("Auto-sub: pre-arm failed for delay %.2f ms", delay_ms)
+        job[_AUTO_SUB_PREARM_OK_KEY] = False
+        return ({
+            "delay_ms": delay_ms,
+            "name": str(delay_ms),
+            "points": [],
+            "sweep_id": "",
+            "status": "pre_arm_failed",
+            "error": str(exc),
+            "scan": stage,
+        }, None)
+    playback_gain = _auto_sub_job_playback_gain(job)
+    master_percent = await _auto_sub_fresh_master_percent()
+    # The sink applies the master volume as a float-domain gain before the
+    # float→integer conversion; its transfer curve is the measured PA cubic
+    # (percent/100)**3, so the prediction folds in the resulting linear gain.
+    # clamp_upper=False keeps an externally raised >100% master from being
+    # under-estimated by the safety check.
+    sink_gain = auto_sub_sink_gain_from_master_percent(master_percent, clamp_upper=False)
+    runtime = _dsp_runtime()
+    if runtime is None:
+        raise RuntimeError("Native DSP runtime unavailable for service sweep prediction")
+    operating_gain = (runtime.snapshot() or {}).get("output_gain_db")
+    if (type(operating_gain) not in (int, float)
+            or not math.isfinite(operating_gain)
+            or not -80.0 <= operating_gain <= 0.0):
+        raise ValueError("Service sweep runtime output gain is unavailable")
+    stage_peak_prediction = await _predict_auto_sub_stage_peaks(
+        sweep_profile=auto_sub_sweep_profile,
+        sample_rate=auto_sub_rate,
+        channel=channel,
+        layout=staged_layout,
+        plan_fingerprint=staged_fingerprint,
+        output_gain_db=float(operating_gain),
+        playback_gain=playback_gain,
+        sink_gain=sink_gain,
+    )
+    if exact_sub_mute:
+        stage_peak_prediction = _auto_sub_zero_sub_peaks(stage_peak_prediction, sub_indices)
+    if not stage_peak_prediction["safe"]:
+        logger.error(
+            "Auto-sub: blocked unsafe sweep candidate stage=%s delay=%.2f predicted=%s",
+            stage, delay_ms, stage_peak_prediction["dbfs"],
+        )
+        job["message"] = (
+            f"AutoGain candidate blocked before sweep: predicted DAC peak "
+            f"{stage_peak_prediction['maximum_dbfs']:.2f} dBFS exceeds 0 dBFS "
+            f"(master volume {master_percent}%)"
+        )
+        peak_failure = {"predicted": stage_peak_prediction, "status": "headroom_blocked"}
+        job.setdefault("auto_gain", {})["stage_output_peaks"] = peak_failure
+        raise AutoSubPeakSafetyError(job["message"])
+    return (None, {
+        "config_reused": config_reused,
+        "staged_layout": staged_layout,
+        "staged_fingerprint": staged_fingerprint,
+        "staged_mode": staged_mode,
+        "playback_gain": playback_gain,
+        "sink_gain": sink_gain,
+        "stage_peak_prediction": stage_peak_prediction,
+    })
+
+
+async def _start_and_wait_auto_sub_capture(
+    *,
+    job: dict[str, Any],
+    delay_ms: float,
+    stage: str,
+    channel: str,
+    input_id: str,
+    mic_input_channel: str,
+    reference_input_channel: str,
+    calibration_ref: str,
+    calibration_filename: str | None,
+    calibration_bytes: bytes | None,
+    auto_sub_sweep_profile: dict[str, Any],
+    playback_gain: float,
+    config_reused: bool,
+    staged_layout: list[dict[str, Any]] | None,
+    staged_mode: str | None,
+    staged_fingerprint: str | None,
+    service_job: bool,
+    exact_sub_mute: bool,
+    exact_sub_mute_mask: int | None,
+    measurement_store: Any,
+    capture_state: dict[str, Any],
+    _marks: dict[str, float],
+) -> dict[str, Any] | None:
+    """Start the child sweep and poll it to a terminal state.
+
+    Enables exact mute, resets peaks and registers the child id, then
+    polls up to 300 times at 0.2 s with cooperative cancel checks. A
+    sweep that never reaches a terminal state is cancelled with a 0.5 s
+    settle; the caller then runs the existing drain path.
+
+    Mutates ``capture_state`` (plus ``job`` and ``_marks``) in place so
+    the outer cleanup sees every acquired resource even when this raises
+    or the task is cancelled. Returns a raw terminal candidate for the
+    cancel paths, still needing the caller's timing booking, else None.
+    """
+    if exact_sub_mute:
+        if _dsp_runtime() is None:
+            raise RuntimeError("Subwoofer runtime unavailable; exact digital mute cannot be enabled")
+        if exact_sub_mute_mask is not None:
+            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True, mask=exact_sub_mute_mask)
+        elif service_job:
+            service_mute_mask = job["output_state_context"]["sub_mute_mask"]
+            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True, mask=service_mute_mask)
+        else:
+            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True)
+        capture_state["previous_exact_sub_mute"] = previous_exact_sub_mute
+        capture_state["exact_sub_mute_enabled"] = True
+        if not _dsp_runtime().snapshot().get("exact_sub_mute"):
+            raise RuntimeError("Subwoofer helper did not retain exact digital mute state")
+    if _dsp_runtime() is None:
+        raise RuntimeError("Native DSP output peak capture unavailable")
+    await _dsp_runtime().reset_output_peaks()
+    # Per-side references travel on the job so the single sweep funnel
+    # stays signature-compatible with every Auto-Sub runner.
+    configured_reference_channels = job.get("reference_channels")
+    if isinstance(configured_reference_channels, dict):
+        sweep_reference_left = configured_reference_channels.get("left") or ""
+        sweep_reference_right = configured_reference_channels.get("right") or ""
+    else:
+        sweep_reference_left = sweep_reference_right = reference_input_channel
+    staged_sweep_context: dict[str, Any] = {}
+    if service_job:
+        staged_sweep_context = {
+            "expected_native_layout": staged_layout,
+            "expected_native_output_mode": staged_mode,
+            "expected_plan_fingerprint": staged_fingerprint,
+        }
+    sweep_job = await measurement_store.start_measurement(
+        input_id=input_id,
+        channel=channel,
+        mic_input_channel=mic_input_channel,
+        reference_input_channel=reference_input_channel,
+        reference_input_channel_left=sweep_reference_left,
+        reference_input_channel_right=sweep_reference_right,
+        calibration_ref=calibration_ref,
+        calibration_filename=calibration_filename,
+        calibration_bytes=calibration_bytes,
+        sweep_profile=auto_sub_sweep_profile,
+        measurement_scope="raw_helper",
+        playback_gain=playback_gain,
+        skip_pre_sweep_diagnostics=config_reused,
+        **staged_sweep_context,
+    )
+    capture_state["sweep_id"] = sweep_job["id"]
+    job["current_sweep_id"] = capture_state["sweep_id"]
+    _marks["sweep_start"] = time.monotonic()
+
+    if _auto_sub_cancel_requested(job):
+        try:
+            measurement_store.cancel_job(capture_state["sweep_id"])
+        except Exception:
+            pass
+        job["current_sweep_id"] = ""
+        return _auto_sub_cancelled_candidate(delay_ms, stage)
+
+    sweep_ok = False
+    poll_iters = 0
+    poll_late_total = 0.0
+    poll_late_max = 0.0
+    for _poll in range(300):
+        if _auto_sub_cancel_requested(job):
+            try:
+                measurement_store.cancel_job(capture_state["sweep_id"])
+            except Exception:
+                pass
+            if job.get("current_sweep_id") == capture_state["sweep_id"]:
+                job["current_sweep_id"] = ""
+            return _auto_sub_cancelled_candidate(delay_ms, stage)
+        _wake_at = time.monotonic() + 0.2
+        await asyncio.sleep(0.2)
+        _late = time.monotonic() - _wake_at
+        poll_late_total += _late
+        if _late > poll_late_max:
+            poll_late_max = _late
+        poll_iters += 1
+        try:
+            current = measurement_store.get_job(capture_state["sweep_id"])
+        except KeyError:
+            sweep_ok = True
+            break
+        if current.get("status") in ("completed", "failed", "cancelled"):
+            sweep_ok = True
+            break
+
+    if not sweep_ok:
+        logger.warning("Auto-sub: sweep %s timed out (delay %.2f ms), cancelling", capture_state["sweep_id"], delay_ms)
+        try:
+            measurement_store.cancel_job(capture_state["sweep_id"])
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+
+    capture_state["poll_iters"] = poll_iters
+    capture_state["poll_late_total"] = poll_late_total
+    capture_state["poll_late_max"] = poll_late_max
+    return None
+
+
 async def _measure_auto_sub_candidate(
     *,
     delay_ms: float,
@@ -220,12 +703,27 @@ async def _measure_auto_sub_candidate(
     sub1_polarity: str | None = None,
     sub2_polarity: str | None = None,
     exact_sub_mute: bool = False,
+    exact_sub_mute_mask: int | None = None,
     _pending_remeasure_allowed: bool = True,
 ) -> dict[str, Any]:
-    """Measure one AutoSub delay candidate with the standard safety checks."""
+    """Measure one AutoSub delay candidate with the standard safety checks.
+
+    Service jobs (carrying ``output_state_context``) stage the candidate
+    through their owner, pre-arm with ``owner.ensure_ready`` and predict
+    from the staged compiled layout. Legacy jobs keep the persisted-config
+    sync path. Exact-mute masks stay plumbing: service jobs without an
+    explicit mask use the context's role-derived sub mask.
+    """
+    if exact_sub_mute_mask is not None and not exact_sub_mute:
+        raise ValueError("An exact sub mute mask requires exact_sub_mute=True")
+    service_job = "output_state_context" in job
+    sub_indices = ()
+    if exact_sub_mute:
+        if service_job and exact_sub_mute_mask is None:
+            sub_indices = sub_mute_indices(job["output_state_context"]["sub_mute_mask"])
+        else:
+            sub_indices = sub_mute_indices(12 if exact_sub_mute_mask is None else exact_sub_mute_mask)
     measurement_store = _measurement_store()
-    from measurement.session import _sync_dsp_runtime_for_measurement_sweep
-    from audio.samplerate import _load_audio_output_mode
 
     _marks = {"start": time.monotonic()}
     _timing_written = False
@@ -267,288 +765,103 @@ async def _measure_auto_sub_candidate(
     if measure_channel:
         job["progress"]["channel"] = measure_channel
 
-    config_success = False
-    config_fingerprint = _auto_sub_candidate_config_fingerprint(
-        output_mode=output_mode,
-        fc=fc,
+    terminal_result, prepared = await _prepare_auto_sub_capture(
+        job=job,
         delay_ms=delay_ms,
+        stage=stage,
+        fc=fc,
+        channel=channel,
+        measure_channel=measure_channel,
+        auto_sub_rate=auto_sub_rate,
+        auto_sub_sweep_profile=auto_sub_sweep_profile,
+        output_mode=output_mode,
+        original_config_snapshot=original_config_snapshot,
+        original_level=original_level,
+        original_polarity=original_polarity,
+        original_highpass=original_highpass,
         sub1_alignment_ms=sub1_alignment_ms,
         sub2_alignment_ms=sub2_alignment_ms,
         active_subs=active_subs,
         sub1_polarity=sub1_polarity,
         sub2_polarity=sub2_polarity,
-        original_level=original_level,
-        original_polarity=original_polarity,
-        original_highpass=original_highpass,
-        original_config_snapshot=original_config_snapshot,
+        service_job=service_job,
+        exact_sub_mute=exact_sub_mute,
+        sub_indices=sub_indices,
+        _marks=_marks,
     )
-    config_reused = (
-        job.get(_AUTO_SUB_CONFIG_OK_KEY) is True
-        and job.get(_AUTO_SUB_CONFIG_FP_KEY) == config_fingerprint
-    )
-    try:
-        if config_reused:
-            verify = _load_audio_output_mode()
-            config_success = _auto_sub_verify_candidate_alignment(
-                verify,
-                output_mode=output_mode,
-                delay_ms=delay_ms,
-                sub1_alignment_ms=sub1_alignment_ms,
-                sub2_alignment_ms=sub2_alignment_ms,
-                original_config_snapshot=original_config_snapshot,
-            )
-            if config_success:
-                now = time.monotonic()
-                _marks["config_set"] = now
-                _marks["config_verify"] = now
-                logger.debug(
-                    "Auto-sub: reusing verified DSP config for delay %.2f ms channel=%s",
-                    delay_ms, measure_channel or channel,
-                )
-            else:
-                job[_AUTO_SUB_CONFIG_OK_KEY] = False
-                config_reused = False
-        if not config_reused:
-            if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-                snapshot = original_config_snapshot or {}
-                sub1_delay = _auto_sub_clamped_delay(sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms)
-                sub2_delay = _auto_sub_clamped_delay(sub2_alignment_ms if sub2_alignment_ms is not None else _auto_sub_22_sub(snapshot, "sub2").get("alignment_ms", 0.0))
-                sub_config = _auto_sub_22_global_config(snapshot)
-                subwoofers_config = _auto_sub_22_candidate_subwoofers(
-                    snapshot,
-                    sub1_alignment_ms=sub1_delay,
-                    sub2_alignment_ms=sub2_delay,
-                    active_subs=active_subs,
-                    sub1_polarity=sub1_polarity,
-                    sub2_polarity=sub2_polarity,
-                )
-                persisted_overview = await asyncio.to_thread(
-                    set_audio_output_mode, output_mode, sub_config, subwoofers_config,
-                )
-            else:
-                sub_config = {
-                    "crossover_frequency_hz": fc,
-                    "sub_alignment_ms": delay_ms,
-                    "sub_level_db": original_level,
-                    "sub_polarity": original_polarity,
-                    "main_highpass_enabled": original_highpass,
-                }
-                persisted_overview = await asyncio.to_thread(
-                    set_audio_output_mode, OUTPUT_MODE_SUBWOOFER_21, sub_config,
-                )
-            if _dsp_runtime() is not None:
-                await _auto_sub_sync_dsp_runtime(
-                    output_mode=output_mode,
-                    persisted_overview=persisted_overview,
-                )
-            _marks["config_set"] = time.monotonic()
-            await asyncio.sleep(0.5)
-            if _auto_sub_cancel_requested(job):
-                return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-            verify = _load_audio_output_mode()
-            if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-                config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
-            else:
-                config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
-            if not config_success:
-                await asyncio.sleep(0.15)
-                if _auto_sub_cancel_requested(job):
-                    return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-                verify = _load_audio_output_mode()
-                if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-                    config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
-                else:
-                    config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
-                if not config_success:
-                    await asyncio.sleep(0.5)
-                    if _auto_sub_cancel_requested(job):
-                        return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-                    verify = _load_audio_output_mode()
-                    if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-                        config_success = _auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay)
-                    else:
-                        config_success = float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
-            _marks["config_verify"] = time.monotonic()
-            job[_AUTO_SUB_CONFIG_FP_KEY] = config_fingerprint
-            job[_AUTO_SUB_CONFIG_OK_KEY] = bool(config_success)
-    except Exception as exc:
-        logger.warning("Auto-sub: failed to configure delay %.2f ms: %s", delay_ms, exc)
-        job[_AUTO_SUB_CONFIG_OK_KEY] = False
-
-    if not config_success:
-        logger.warning("Auto-sub: skipping candidate %.2f ms — config sync failed", delay_ms)
-        job[_AUTO_SUB_CONFIG_OK_KEY] = False
-        return _return_candidate({
-            "delay_ms": delay_ms,
-            "name": str(delay_ms),
-            "points": [],
-            "sweep_id": "",
-            "status": "config_failed",
-            "error": "Subwoofer config sync failed",
-            "scan": stage,
-        })
-
-    prearm_fingerprint = f"{auto_sub_rate}|{config_fingerprint}"
-    prearm_reused = (
-        job.get(_AUTO_SUB_PREARM_OK_KEY) is True
-        and job.get(_AUTO_SUB_PREARM_FP_KEY) == prearm_fingerprint
-    )
-    try:
-        if prearm_reused and await _auto_sub_prearm_reusable(auto_sub_rate):
-            _marks["pre_arm"] = time.monotonic()
-            logger.debug(
-                "Auto-sub: reusing settled DSP pre-arm at %s Hz for delay %.2f ms channel=%s",
-                auto_sub_rate, delay_ms, measure_channel or channel,
-            )
-        else:
-            await _sync_dsp_runtime_for_measurement_sweep(auto_sub_rate)
-            _marks["pre_arm"] = time.monotonic()
-            job[_AUTO_SUB_PREARM_FP_KEY] = prearm_fingerprint
-            job[_AUTO_SUB_PREARM_OK_KEY] = True
-        if _auto_sub_cancel_requested(job):
-            return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-    except Exception as exc:
-        logger.exception("Auto-sub: pre-arm failed for delay %.2f ms", delay_ms)
-        job[_AUTO_SUB_PREARM_OK_KEY] = False
-        return _return_candidate({
-            "delay_ms": delay_ms,
-            "name": str(delay_ms),
-            "points": [],
-            "sweep_id": "",
-            "status": "pre_arm_failed",
-            "error": str(exc),
-            "scan": stage,
-        })
-    playback_gain = _auto_sub_job_playback_gain(job)
-    master_percent = await _auto_sub_fresh_master_percent()
-    # The sink applies the master volume as a float-domain gain before the
-    # float→integer conversion; its transfer curve is the measured PA cubic
-    # (percent/100)**3, so the prediction folds in the resulting linear gain.
-    # clamp_upper=False keeps an externally raised >100% master from being
-    # under-estimated by the safety check.
-    sink_gain = auto_sub_sink_gain_from_master_percent(master_percent, clamp_upper=False)
-    peak_config = BassManagementConfig.from_overview(
-        await asyncio.to_thread(get_audio_output_overview),
-    )
-    stage_peak_prediction = await _predict_auto_sub_stage_peaks(
-        sweep_profile=auto_sub_sweep_profile,
-        sample_rate=auto_sub_rate,
-        channel=channel,
-        config=peak_config,
-        playback_gain=playback_gain,
-        sink_gain=sink_gain,
-    )
-    if exact_sub_mute:
-        for key in ("output_3", "output_4"):
-            stage_peak_prediction["linear"][key] = 0.0
-            stage_peak_prediction["dbfs"][key] = -240.0
-        stage_peak_prediction["maximum_dbfs"] = max(stage_peak_prediction["dbfs"].values())
-        stage_peak_prediction["safe"] = stage_peak_prediction["maximum_dbfs"] <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS
-    if not stage_peak_prediction["safe"]:
-        logger.error(
-            "Auto-sub: blocked unsafe sweep candidate stage=%s delay=%.2f predicted=%s",
-            stage, delay_ms, stage_peak_prediction["dbfs"],
-        )
-        job["message"] = (
-            f"AutoGain candidate blocked before sweep: predicted DAC peak "
-            f"{stage_peak_prediction['maximum_dbfs']:.2f} dBFS exceeds 0 dBFS "
-            f"(master volume {master_percent}%)"
-        )
-        peak_failure = {"predicted": stage_peak_prediction, "status": "headroom_blocked"}
-        job.setdefault("auto_gain", {})["stage_output_peaks"] = peak_failure
-        raise AutoSubPeakSafetyError(job["message"])
+    if terminal_result is not None:
+        return _return_candidate(terminal_result)
+    assert prepared is not None
+    config_reused = prepared["config_reused"]
+    staged_layout = prepared["staged_layout"]
+    staged_fingerprint = prepared["staged_fingerprint"]
+    staged_mode = prepared["staged_mode"]
+    playback_gain = prepared["playback_gain"]
+    sink_gain = prepared["sink_gain"]
+    stage_peak_prediction = prepared["stage_peak_prediction"]
     sweep_id = ""
+    sweep_drained = False
     stage_peak_comparison: dict[str, Any] | None = None
     previous_exact_sub_mute = False
     exact_sub_mute_enabled = False
+    capture_state = {
+        "sweep_id": sweep_id,
+        "sweep_drained": sweep_drained,
+        "previous_exact_sub_mute": previous_exact_sub_mute,
+        "exact_sub_mute_enabled": exact_sub_mute_enabled,
+    }
     try:
-        if exact_sub_mute:
-            if _dsp_runtime() is None:
-                raise RuntimeError("Subwoofer runtime unavailable; exact digital mute cannot be enabled")
-            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True)
-            exact_sub_mute_enabled = True
-            if not _dsp_runtime().snapshot().get("exact_sub_mute"):
-                raise RuntimeError("Subwoofer helper did not retain exact digital mute state")
-        if _dsp_runtime() is None:
-            raise RuntimeError("Native DSP output peak capture unavailable")
-        await _dsp_runtime().reset_output_peaks()
-        # Per-side references travel on the job so the single sweep funnel
-        # stays signature-compatible with every Auto-Sub runner.
-        configured_reference_channels = job.get("reference_channels")
-        if isinstance(configured_reference_channels, dict):
-            sweep_reference_left = configured_reference_channels.get("left") or ""
-            sweep_reference_right = configured_reference_channels.get("right") or ""
-        else:
-            sweep_reference_left = sweep_reference_right = reference_input_channel
-        sweep_job = await measurement_store.start_measurement(
-            input_id=input_id,
-            channel=channel,
-            mic_input_channel=mic_input_channel,
-            reference_input_channel=reference_input_channel,
-            reference_input_channel_left=sweep_reference_left,
-            reference_input_channel_right=sweep_reference_right,
-            calibration_ref=calibration_ref,
-            calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes,
-            sweep_profile=auto_sub_sweep_profile,
-            measurement_scope="raw_helper",
-            playback_gain=playback_gain,
-            skip_pre_sweep_diagnostics=config_reused,
-        )
-        sweep_id = sweep_job["id"]
-        job["current_sweep_id"] = sweep_id
-        _marks["sweep_start"] = time.monotonic()
-
-        if _auto_sub_cancel_requested(job):
-            try:
-                measurement_store.cancel_job(sweep_id)
-            except Exception:
-                pass
-            job["current_sweep_id"] = ""
-            return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-
-        sweep_ok = False
-        poll_iters = 0
-        poll_late_total = 0.0
-        poll_late_max = 0.0
-        for _poll in range(300):
-            if _auto_sub_cancel_requested(job):
-                try:
-                    measurement_store.cancel_job(sweep_id)
-                except Exception:
-                    pass
-                if job.get("current_sweep_id") == sweep_id:
-                    job["current_sweep_id"] = ""
-                return _return_candidate(_auto_sub_cancelled_candidate(delay_ms, stage))
-            _wake_at = time.monotonic() + 0.2
-            await asyncio.sleep(0.2)
-            _late = time.monotonic() - _wake_at
-            poll_late_total += _late
-            if _late > poll_late_max:
-                poll_late_max = _late
-            poll_iters += 1
-            try:
-                current = measurement_store.get_job(sweep_id)
-            except KeyError:
-                sweep_ok = True
-                break
-            if current.get("status") in ("completed", "failed", "cancelled"):
-                sweep_ok = True
-                break
-
-        if not sweep_ok:
-            logger.warning("Auto-sub: sweep %s timed out (delay %.2f ms), cancelling", sweep_id, delay_ms)
-            try:
-                measurement_store.cancel_job(sweep_id)
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
+        try:
+            cancelled_start = await _start_and_wait_auto_sub_capture(
+                job=job,
+                delay_ms=delay_ms,
+                stage=stage,
+                channel=channel,
+                input_id=input_id,
+                mic_input_channel=mic_input_channel,
+                reference_input_channel=reference_input_channel,
+                calibration_ref=calibration_ref,
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                auto_sub_sweep_profile=auto_sub_sweep_profile,
+                playback_gain=playback_gain,
+                config_reused=config_reused,
+                staged_layout=staged_layout,
+                staged_mode=staged_mode,
+                staged_fingerprint=staged_fingerprint,
+                service_job=service_job,
+                exact_sub_mute=exact_sub_mute,
+                exact_sub_mute_mask=exact_sub_mute_mask,
+                measurement_store=measurement_store,
+                capture_state=capture_state,
+                _marks=_marks,
+            )
+        except BaseException:
+            # The helper mutates capture_state in place; mirror it so the
+            # outer except/finally see acquired resources even when it raises
+            # or the task is cancelled inside start/polling.
+            sweep_id = capture_state["sweep_id"]
+            sweep_drained = capture_state["sweep_drained"]
+            previous_exact_sub_mute = capture_state["previous_exact_sub_mute"]
+            exact_sub_mute_enabled = capture_state["exact_sub_mute_enabled"]
+            raise
+        sweep_id = capture_state["sweep_id"]
+        sweep_drained = capture_state["sweep_drained"]
+        previous_exact_sub_mute = capture_state["previous_exact_sub_mute"]
+        exact_sub_mute_enabled = capture_state["exact_sub_mute_enabled"]
+        if cancelled_start is not None:
+            return _return_candidate(cancelled_start)
 
         _marks["sweep_poll_done"] = time.monotonic()
         logger.info(
             "AUTOSUB-POLL job=%s sweep=%s poll_iters=%d poll_late_total=%.2fs poll_late_max=%.2fs",
-            job.get("id") or "", sweep_id, poll_iters, poll_late_total, poll_late_max,
+            job.get("id") or "", sweep_id, capture_state["poll_iters"],
+            capture_state["poll_late_total"], capture_state["poll_late_max"],
         )
+        if service_job:
+            await measurement_store.drain_job(sweep_id)
+            sweep_drained = True
+            capture_state["sweep_drained"] = True
         measured_stage_peaks = await _dsp_runtime().read_output_peaks()
         stage_peak_comparison = _auto_sub_stage_peak_comparison(
             stage_peak_prediction, measured_stage_peaks, sink_gain=sink_gain,
@@ -586,28 +899,19 @@ async def _measure_auto_sub_candidate(
         if final.get("status") == "completed" and final.get("result"):
             result = final["result"]
             measurement = result.get("measurement") or {}
-            points = []
-            for t in (measurement.get("traces") or []):
-                if t.get("kind") == "sweep-response":
-                    points = t.get("points") or []
-                    break
-            if not points:
-                for t in (measurement.get("review_traces") or []):
-                    points = t.get("points") or []
-                    if points:
-                        break
-            if not points:
-                logger.warning("Auto-sub: no points in sweep result for delay %.2f ms", delay_ms)
-            if job.get("current_sweep_id") == sweep_id:
-                job["current_sweep_id"] = ""
-            analysis = measurement.get("analysis") if isinstance(measurement.get("analysis"), dict) else {}
-            normalized_by_db = analysis.get("normalized_by_db")
-            calibrated_points = None
-            if normalized_by_db is not None:
-                calibrated_points = _auto_sub_reconstruct_calibrated_points(points, normalized_by_db)
-            chain_health = _auto_sub_chain_health_check(
-                job, analysis.get("alignment_samples"), analysis.get("sample_rate"),
+            decoded = _decode_auto_sub_capture_result(
+                job=job,
+                channel=channel,
+                delay_ms=delay_ms,
+                sweep_id=sweep_id,
+                measurement=measurement,
             )
+            points = decoded["points"]
+            analysis = decoded["analysis"]
+            normalized_by_db = decoded["normalized_by_db"]
+            calibrated_points = decoded["calibrated_points"]
+            chain_health = decoded["chain_health"]
+            measurement_channel = decoded["measurement_channel"]
             if chain_health:
                 if chain_health.get("confirmed") or not _pending_remeasure_allowed:
                     logger.error(
@@ -661,6 +965,7 @@ async def _measure_auto_sub_candidate(
                     sub1_polarity=sub1_polarity,
                     sub2_polarity=sub2_polarity,
                     exact_sub_mute=exact_sub_mute,
+                    exact_sub_mute_mask=exact_sub_mute_mask,
                     _pending_remeasure_allowed=False,
                 )
             return _return_candidate({
@@ -674,7 +979,7 @@ async def _measure_auto_sub_candidate(
                 "calibrated_points": calibrated_points,
                 "exact_sub_mute": bool(exact_sub_mute),
                 "alignment_samples": analysis.get("alignment_samples"),
-                "measurement_channel": str(measurement.get("channel") or channel),
+                "measurement_channel": measurement_channel,
                 "sample_rate": analysis.get("sample_rate"),
                 "stage_output_peaks": stage_peak_comparison,
             })
@@ -711,18 +1016,17 @@ async def _measure_auto_sub_candidate(
             "scan": stage,
         })
     finally:
-        if exact_sub_mute_enabled and _dsp_runtime() is not None:
-            try:
-                await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute)
-            except Exception as exc:
-                logger.exception("Auto-sub: failed to restore exact sub mute after %s reference", channel)
-                job["auto_gain"] = {
-                    "available": False,
-                    "reason": f"Exact sub mute restore failed after Main-only {channel}: {exc}",
-                }
-                raise RuntimeError(
-                    f"AutoSub stopped: exact sub mute restoration was not acknowledged after Main-only {channel}"
-                ) from exc
+        await _finish_auto_sub_capture(
+            job=job,
+            channel=channel,
+            service_job=service_job,
+            sweep_id=sweep_id,
+            sweep_drained=sweep_drained,
+            exact_sub_mute_enabled=exact_sub_mute_enabled,
+            exact_sub_mute_mask=exact_sub_mute_mask,
+            previous_exact_sub_mute=previous_exact_sub_mute,
+            measurement_store=measurement_store,
+        )
 
 def _auto_sub_reconstruct_calibrated_points(
     normalized_points: list[list[float]], normalized_by_db: Any,
@@ -775,14 +1079,23 @@ def _auto_sub_log_interpolate_points(
 def _analyze_auto_sub_main_target_anchor(
     *, target_curve: dict[str, Any] | None, main_references: dict[str, Any] | None,
     crossover_hz: int, main_highpass_enabled: bool,
+    side_crossover_hz: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Build immutable Main/Target alignment diagnostics; never calculate Gain."""
+    """Build immutable Main/Target alignment diagnostics; never calculate Gain.
+
+    An unlinked Stereo sub pair crosses over per side, so ``side_crossover_hz``
+    carries each side's effective frequency and every reference is checked
+    against its own side instead of the shared job value.
+    """
+    frequencies = {side: int((side_crossover_hz or {}).get(side, crossover_hz))
+                   for side in ("left", "right")}
     diagnostics: dict[str, Any] = {
         "status": "unavailable",
         "reason": None,
         "method": "calibrated Main-only points with log-frequency Target interpolation",
         "gain_calculated": False,
         "crossover_frequency_hz": int(crossover_hz),
+        "side_crossover_frequency_hz": dict(frequencies),
         "main_highpass_enabled": bool(main_highpass_enabled),
         "reference_band_hz": [LEVEL_REFERENCE_MIN_HZ, LEVEL_REFERENCE_MAX_HZ],
         "criteria": {
@@ -819,12 +1132,12 @@ def _analyze_auto_sub_main_target_anchor(
             normalized_by_db = float(reference.get("normalized_by_db"))
             if not math.isfinite(normalized_by_db):
                 raise ValueError(f"Main-only {side} normalization metadata is invalid")
-            if int(reference.get("crossover_frequency_hz")) != int(crossover_hz):
+            if int(reference.get("crossover_frequency_hz")) != frequencies[side]:
                 raise ValueError(f"Main-only {side} crossover does not match the AutoSub job")
             if bool(reference.get("main_highpass_enabled")) != bool(main_highpass_enabled):
                 raise ValueError(f"Main-only {side} Main-HP state does not match the AutoSub job")
             sample_rate = float(reference.get("sample_rate"))
-            if not math.isfinite(sample_rate) or sample_rate <= 2.0 * float(crossover_hz):
+            if not math.isfinite(sample_rate) or sample_rate <= 2.0 * float(frequencies[side]):
                 raise ValueError(f"Main-only {side} sample-rate metadata is invalid")
             sample_rates[side] = sample_rate
             if not isinstance(points, list) or len(points) < 2:
@@ -996,9 +1309,13 @@ def _auto_sub_stereo_probe_plan(
     *, correction_plan: dict[str, Any], gain_after: dict[str, Any],
     gain_deltas: dict[str, float], accepted_step1_sides: dict[str, bool],
     after_points: dict[str, list[list[float]]], target_curve: dict[str, Any] | None,
-    anchor: dict[str, Any] | None, crossover_hz: int,
+    anchor: dict[str, Any] | None, crossover_hz: int | dict[str, int],
 ) -> dict[str, Any]:
-    """Plan one bounded Stereo-only probe when only the >6 dB correction limit failed."""
+    """Plan one bounded Stereo-only probe when only the >6 dB correction limit failed.
+
+    ``crossover_hz`` is the shared crossover, or a per-side mapping for an
+    unlinked Stereo sub pair, so each side's corridor band follows its own filter.
+    """
     result: dict[str, Any] = {"available": False, "deltas_db": {}, "channels": {}, "reason": None}
     if correction_plan.get("reason") != "Measured final Gain correction is implausible":
         result["reason"] = "Stereo probe requires only the >6 dB correction limit to have failed"
@@ -1019,7 +1336,9 @@ def _auto_sub_stereo_probe_plan(
             )
             corridor = _auto_sub_stereo_corridor_violation(
                 points=after_points.get(side) or [], target_curve=target_curve, anchor=anchor,
-                crossover_hz=crossover_hz, direction=raw_correction,
+                crossover_hz=(int(crossover_hz.get(side, crossover_hz.get("shared", 80)))
+                              if isinstance(crossover_hz, dict) else int(crossover_hz)),
+                direction=raw_correction,
             )
             eligible = bool(direction_clear and corridor.get("available") and corridor.get("relevant"))
             result["channels"][side] = {
@@ -1074,9 +1393,22 @@ def _auto_sub_target_residual_raw_db(
 
 def _calculate_auto_sub_gain(
     *, mode: str, target_curve: dict[str, Any] | None, anchor: dict[str, Any] | None,
-    winner_curves: dict[str, list[list[float]]], crossover_hz: int,
+    winner_curves: dict[str, list[list[float]]], crossover_hz: int | dict[str, int],
 ) -> dict[str, Any]:
-    """Calculate bounded diagnostic Gain from calibrated accepted-winner curves."""
+    """Calculate bounded diagnostic Gain from calibrated accepted-winner curves.
+
+    ``crossover_hz`` is the shared crossover, or a per-channel mapping (with a
+    ``shared`` fallback) for an unlinked Stereo sub pair whose sides cross over
+    at different frequencies.
+    """
+    def channel_crossover(channel: str) -> int:
+        if not isinstance(crossover_hz, dict):
+            return int(crossover_hz)
+        value = crossover_hz.get(channel, crossover_hz.get("shared"))
+        if value is None:
+            raise ValueError(f"AutoSub Gain requires a crossover frequency for {channel}")
+        return int(value)
+
     result: dict[str, Any] = {
         "available": False, "gain_calculated": False, "applied": False,
         "method": "fixed 1/1-octave moving-median smoothing of Winner and anchored Target; median Target-minus-Winner deviation",
@@ -1085,7 +1417,8 @@ def _calculate_auto_sub_gain(
     }
     try:
         for channel, points in winner_curves.items():
-            raw_gain, mad, usable = _auto_sub_target_residual_raw_db(points, target_curve, anchor, crossover_hz)
+            raw_gain, mad, usable = _auto_sub_target_residual_raw_db(
+                points, target_curve, anchor, channel_crossover(channel))
             bounded = min(6.0, max(-6.0, raw_gain))
             coverage_octaves = math.log2(usable[-1][0] / usable[0][0])
             confidence = "high" if len(usable) >= 24 and coverage_octaves >= 1.5 and mad <= 1.5 else (
@@ -1411,6 +1744,48 @@ def _auto_sub_dip_guard_should_veto(
     }
     return should_veto, diagnostics
 
+def _auto_sub_confirmation_diagnostics(
+    before_points: dict[str, list],
+    final_points: dict[str, list],
+    *,
+    band_low_hz: float,
+    band_high_hz: float,
+    tolerance_db: float = _AUTO_SUB_LOCAL_DIP_TOLERANCE_DB,
+    dip_db_fn: Callable[[list, float, float], float | None] = _auto_sub_local_dip_db,
+    veto_fn: Callable[
+        [dict[str, float | None], dict[str, float | None]], tuple[bool, dict[str, Any]]
+    ] = _auto_sub_dip_guard_should_veto,
+) -> tuple[dict[str, Any], bool]:
+    """Pure Before/After dip diagnostics with the initial gate verdict.
+
+    Computes per-side local dips, runs the dip-guard veto and assembles the
+    confirmation gate skeleton (action ``final_kept``). The metric and veto
+    resolve through the caller's functions so runner-level patching keeps
+    working. Band selection, recheck measurement and the fallback decision
+    stay per mode; the caller reads the stored dip maps back for them.
+    """
+    before_dips = {
+        "left": dip_db_fn(before_points.get("left") or [], band_low_hz, band_high_hz),
+        "right": dip_db_fn(before_points.get("right") or [], band_low_hz, band_high_hz),
+    }
+    final_dips = {
+        "left": dip_db_fn(final_points.get("left") or [], band_low_hz, band_high_hz),
+        "right": dip_db_fn(final_points.get("right") or [], band_low_hz, band_high_hz),
+    }
+    should_veto, veto_diag = veto_fn(
+        before_dips, final_dips, per_side_tolerance_db=tolerance_db,
+    )
+    gate = {
+        "band_hz": [band_low_hz, band_high_hz],
+        "tolerance_db": tolerance_db,
+        "before_local_dip_db": before_dips,
+        "final_local_dip_db": final_dips,
+        "failed_sides": list(veto_diag.get("failed_sides") or []),
+        "action": "final_kept",
+        "dip_guard": veto_diag,
+    }
+    return gate, should_veto
+
 def _auto_sub_local_dip_recheck_decision(
     before_dips: dict[str, float | None],
     final_dips: dict[str, float | None],
@@ -1603,8 +1978,14 @@ async def _capture_auto_sub_main_references(
     auto_sub_rate: int,
     output_mode: str,
     original_config_snapshot: dict[str, Any],
+    side_fc: dict[str, int] | None = None,
 ) -> None:
-    """Capture exactly one L and one R Main-only reference before candidate scans."""
+    """Capture exactly one L and one R Main-only reference before candidate scans.
+
+    Each side records and validates its own effective crossover frequency, so an
+    unlinked Stereo sub pair with different Left/Right crossovers stays valid.
+    """
+    frequencies = {side: int((side_fc or {}).get(side, fc)) for side in ("left", "right")}
     subwoofer = original_config_snapshot.get("subwoofer") if isinstance(original_config_snapshot.get("subwoofer"), dict) else {}
     sub1 = _auto_sub_22_sub(original_config_snapshot, "sub1")
     sub2 = _auto_sub_22_sub(original_config_snapshot, "sub2")
@@ -1620,11 +2001,16 @@ async def _capture_auto_sub_main_references(
         "status": "running",
         "exact_sub_mute": True,
         "crossover_frequency_hz": int(fc),
+        "side_crossover_frequency_hz": dict(frequencies),
         "main_highpass_enabled": main_highpass_enabled,
         "left": {"status": "pending"},
         "right": {"status": "pending"},
     }
     main_reference_sweep_profile = default_measurement_sweep_profile()
+    # Only mapped sub slots may be named active: a 2.1 system has one slot,
+    # so the reference sweeps must not claim a second sub that does not exist.
+    mapped_slots = ((job.get("output_state_context") or {}).get("sub_role_map") or {})
+    reference_active_subs = tuple(slot for slot in ("sub1", "sub2") if slot in mapped_slots) or ("sub1",)
     results: dict[str, dict[str, Any]] = {}
     for index, side in enumerate(("left", "right"), start=1):
         if _auto_sub_cancel_requested(job):
@@ -1637,7 +2023,7 @@ async def _capture_auto_sub_main_references(
             candidate_index=index,
             total=2,
             stage="main_reference",
-            fc=fc,
+            fc=frequencies[side],
             input_id=input_id,
             channel=side,
             mic_input_channel=mic_input_channel,
@@ -1656,7 +2042,7 @@ async def _capture_auto_sub_main_references(
             original_config_snapshot=original_config_snapshot,
             sub1_alignment_ms=left_delay,
             sub2_alignment_ms=right_delay,
-            active_subs=("sub1", "sub2"),
+            active_subs=reference_active_subs,
             exact_sub_mute=True,
         )
         results[side] = result
@@ -1668,7 +2054,7 @@ async def _capture_auto_sub_main_references(
             "channel": side,
             "measurement_channel": result.get("measurement_channel"),
             "sample_rate": result.get("sample_rate"),
-            "crossover_frequency_hz": int(fc),
+            "crossover_frequency_hz": frequencies[side],
             "main_highpass_enabled": main_highpass_enabled,
             "exact_sub_mute": bool(result.get("exact_sub_mute")),
         }
@@ -1689,6 +2075,7 @@ async def _capture_auto_sub_main_references(
         main_references=job.get("main_references"),
         crossover_hz=fc,
         main_highpass_enabled=main_highpass_enabled,
+        side_crossover_hz=frequencies,
     )
     if job["main_target_anchor"].get("status") == "ready":
         job["auto_gain"] = {

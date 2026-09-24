@@ -197,15 +197,18 @@ def _run():
             check(f"{name}: idle heart is outline only", case["fill"] == "none")
 
     app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    ui_helpers_js = (ROOT / "static" / "ui_helpers.js").read_text(encoding="utf-8")
     index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     check("app shares one heart helper", "favoriteHeartSvg" in app_js)
+    check("ui_helpers owns the heart helper", "function favoriteHeartSvg" in ui_helpers_js)
+    check("app delegates the heart helper", "FXRouteUiHelpers" in app_js)
     check("app ships no unicode heart glyph", "\u2665" not in app_js and "\u2665" not in index)
 
     # radio.js and streaming.js keep a standalone default (same pattern as
-    # escapeHtml) and take the app implementation through init(). Pin both to
-    # the app's path so the three copies can never drift apart visually.
-    path_match = re.search(r'<path d="([^"]+)"/>', app_js)
-    check("app heart is one inline svg path", path_match is not None)
+    # escapeHtml) and take the shared implementation through init(). Pin both to
+    # the canonical ui_helpers path so the copies can never drift apart visually.
+    path_match = re.search(r'<path d="([^"]+)"/>', ui_helpers_js)
+    check("shared heart is one inline svg path", path_match is not None)
     heart_path = path_match.group(1)
     for module in ("radio.js", "streaming.js"):
         module_js = (ROOT / "static" / module).read_text(encoding="utf-8")
@@ -214,10 +217,11 @@ def _run():
 
     dist_index = (ROOT / "demo" / "dist" / "index.html").read_text(encoding="utf-8")
     dist_app = (ROOT / "demo" / "dist" / "static" / "app.js").read_text(encoding="utf-8")
+    dist_helpers = (ROOT / "demo" / "dist" / "static" / "ui_helpers.js").read_text(encoding="utf-8")
     dist_css = (ROOT / "demo" / "dist" / "static" / "style.css").read_text(encoding="utf-8")
     dist_base = (ROOT / "demo" / "dist" / "static" / "css" / "_base.css").read_text(encoding="utf-8")
     check("demo ships the shared svg heart markup", 'svg class="fav-heart"' in dist_index)
-    check("demo ships the shared heart helper", "favoriteHeartSvg" in dist_app)
+    check("demo ships the shared heart helper", "favoriteHeartSvg" in dist_helpers)
     check("demo ships the heart CSS", ".fav-heart" in dist_css and ".fav-heart" in dist_base)
     check("demo ships no unicode heart glyph", "\u2665" not in dist_app and "\u2665" not in dist_index)
 

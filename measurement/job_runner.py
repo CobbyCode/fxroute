@@ -32,6 +32,8 @@ class MeasurementJobRunner:
         effect_bypass_setter: Callable[[bool], Any] | None = None,
         active_scope_enter: Callable[[], Any] | None = None,
         active_scope_exit: Callable[[bool], Any] | None = None,
+        output_mask_apply: Callable[[int], Any] | None = None,
+        output_mask_clear: Callable[[int], Any] | None = None,
     ):
         self._get_job = get_job
         self._persist_job = persist_job
@@ -45,6 +47,8 @@ class MeasurementJobRunner:
         self._effect_bypass_setter = effect_bypass_setter
         self._active_scope_enter = active_scope_enter
         self._active_scope_exit = active_scope_exit
+        self._output_mask_apply = output_mask_apply
+        self._output_mask_clear = output_mask_clear
         self.tasks: dict[str, asyncio.Task[Any]] = {}
         self.processes: dict[str, list[subprocess.Popen[str]]] = {}
         self.process_lock = threading.Lock()
@@ -69,6 +73,8 @@ class MeasurementJobRunner:
                 self._persist_job(job)
         previous_effect_bypass = None
         scope_owned = False
+        output_mask = job.get("output_mask")
+        mask_owned = False
         try:
             if was_cancelling_before:
                 raise RuntimeError("Measurement cancelled.")
@@ -84,6 +90,15 @@ class MeasurementJobRunner:
             elif callable(self._active_scope_enter):
                 previous_effect_bypass = await self._active_scope_enter()
                 scope_owned = True
+
+            # Area measurement: mute every unrelated logical output after the
+            # filters (the engine's final stage) so one physical speaker way is
+            # captured.  Global targets carry mask 0 and mute nothing.
+            if isinstance(output_mask, int) and output_mask > 0:
+                if not callable(self._output_mask_apply):
+                    raise RuntimeError("Native DSP output-mask control is unavailable")
+                await self._output_mask_apply(output_mask)
+                mask_owned = True
 
             _rm["scope_done"] = time.monotonic()
             worker_task = asyncio.create_task(asyncio.to_thread(executor, deepcopy(job)))
@@ -137,6 +152,11 @@ class MeasurementJobRunner:
                         job["result"] = None
                         job["error"] = {"detail": str(exc)}
         finally:
+            if mask_owned:
+                try:
+                    await self._output_mask_clear(deepcopy(output_mask))
+                except Exception:
+                    logger.exception("Failed to restore native DSP output mask after measurement")
             if scope_owned:
                 try:
                     if job.get("measurement_scope") == "raw_helper":
@@ -219,6 +239,27 @@ class MeasurementJobRunner:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self.processes.setdefault(job_id, []).append(process)
             return process
+
+    def forget_process(self, job_id: str,
+                       process: subprocess.Popen[str] | None = None) -> None:
+        """Drop already stopped and reaped children from the registry.
+
+        Measurement jobs clear their own key when the run ends, but a
+        long-lived owner such as the input keeper registers under
+        ``keeper:<node>`` and would otherwise keep a dead ``Popen``
+        reference for the life of the app. A key that owns no process is
+        removed entirely so the registry cannot grow.
+        """
+        with self.process_lock:
+            items = self.processes.get(job_id)
+            if items is None:
+                return
+            if process is None:
+                items.clear()
+            else:
+                self.processes[job_id] = [item for item in items if item is not process]
+            if not self.processes.get(job_id):
+                self.processes.pop(job_id, None)
 
     def _set_cancelled(self, job: dict[str, Any], *, status: str = "cancelled") -> None:
         job["status"] = status

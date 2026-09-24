@@ -12,6 +12,8 @@
 
     const ui = window.FXRouteMeasurementUI || {};
     const HybridMeasurement = window.FXRouteHybridMeasurement || {};
+    const SpeakerAlign = (typeof window !== 'undefined' && window.FXRouteSpeakerAlign)
+        || (typeof globalThis !== 'undefined' && globalThis.FXRouteSpeakerAlign) || {};
 
     let deps = {
         getState: () => ({ measurement: {}, settings: {} }),
@@ -26,6 +28,7 @@
         hasActiveMeasurementJob: () => false,
         measurementModeReady: () => false,
         normalizeMeasurementInputChannelSelections: () => {},
+        getSelectedMeasurementInputChannelCount: () => 1,
         getAutoSubTargetCurveSnapshot: () => null,
         flushSubwooferSettingsBeforeMeasurement: async () => {},
         postRuntimeDebugSnapshot: async () => {},
@@ -37,6 +40,9 @@
             formData.append('reference_input_channel', deps.getMeasurementReferenceWarning() ? '' : (deps.getState().measurement.selectedReferenceInputChannel || ''));
         },
         normalizeOutputModeName: (m) => m || 'stereo',
+        // Selected measurement area (bank id): every wizard step is an internal
+        // way sweep of the same frozen area.
+        measurementAreaBank: () => '',
         getMeasurementJobStatus: () => 'unknown',
         normalizeMeasurementEntry: (m) => m,
         getMeasurementJobResultMeasurement: () => null,
@@ -69,8 +75,9 @@ function syncSubwooferControlsDuringAutoSub() {
 function syncAutoSubButton() {
     if (!deps.getElements().measurementAutoSubStartBtn || !deps.getElements().measurementAutoSubGroup) return;
     const measurementState = deps.getState().measurement || {};
-    const outputMode = deps.getState().settings?.audioOutputs?.output_mode;
-    const isSubwooferMode = deps.isSubwooferModeName(outputMode?.mode || '');
+    const catalog = deps.getState().outputSystem?.catalog;
+    const topology = catalog?.modes?.[catalog.active_mode]?.topology;
+    const isSubwooferMode = ['mono', 'dual-mono', 'stereo'].includes(topology?.sub_mode);
     if (!isSubwooferMode) {
         deps.getElements().measurementAutoSubGroup.classList.add('hidden');
         return;
@@ -119,7 +126,8 @@ async function startAutoSubOptimize() {
         const formData = new FormData();
         formData.append('input_id', inputId);
         formData.append('input_key', measurementState.selectedInputKey || '');
-        formData.append('channel', measurementState.selectedChannel || 'left');
+        // No explicit channel: Auto-Sub sweeps the whole system, so the
+        // endpoint default of a left-side sweep applies.
         deps.normalizeMeasurementInputChannelSelections();
         formData.append('mic_input_channel', measurementState.selectedMicInputChannel || '1');
         deps.appendMeasurementReferenceFields(formData);
@@ -540,6 +548,485 @@ async function handleAutoSubResult(job) {
 }
 
 
+function speakerAlignCatalog() {
+    return deps.getState().outputSystem?.catalog || null;
+}
+
+function speakerAlignVisible() {
+    if (typeof SpeakerAlign.speakerAlignVisible === 'function') {
+        try {
+            return !!SpeakerAlign.speakerAlignVisible(speakerAlignCatalog());
+        } catch (e) {
+            return false;
+        }
+    }
+    return false;
+}
+
+function formatSpeakerStatus(job) {
+    if (typeof SpeakerAlign.formatSpeakerAlignStatus === 'function') {
+        return SpeakerAlign.formatSpeakerAlignStatus(job);
+    }
+    const record = job || {};
+    return String(record.message || `Speaker Align ${record.side || 'speaker'}: ${record.status || 'unknown'}.`);
+}
+
+function syncSpeakerAlignButton() {
+    const elements = deps.getElements();
+    if (!elements.measurementSpeakerAlignLeftBtn || !elements.measurementSpeakerAlignGroup) return;
+    const measurementState = deps.getState().measurement || {};
+    if (!speakerAlignVisible()) {
+        elements.measurementSpeakerAlignGroup.classList.add('hidden');
+        return;
+    }
+    elements.measurementSpeakerAlignGroup.classList.remove('hidden');
+    const activeKind = deps.getActiveMeasurementKind();
+    const speakerActive = activeKind === 'speaker_align' || !!measurementState.speakerAlignInFlight;
+    const speakerReadyToCancel = speakerActive && !!measurementState.speakerAlignJobId;
+    const disabled = speakerActive || measurementState.startInFlight || deps.hasActiveMeasurementJob() || !deps.measurementModeReady();
+    elements.measurementSpeakerAlignLeftBtn.disabled = disabled;
+    elements.measurementSpeakerAlignRightBtn.disabled = disabled;
+    elements.measurementSpeakerAlignCancelBtn.classList.toggle('hidden', !speakerActive);
+    elements.measurementSpeakerAlignCancelBtn.disabled = !speakerReadyToCancel;
+    // The static note below the buttons already carries the one-line
+    // description; the status line stays empty while idle so the sentence
+    // never renders twice. Progress, results and errors keep writing here.
+    if (!speakerActive && elements.measurementSpeakerAlignStatus && !measurementState.speakerAlignResult) {
+        elements.measurementSpeakerAlignStatus.textContent = '';
+    }
+    syncSpeakerAlignSaveOpen();
+}
+
+function readSpeakerAlignPayload(side) {
+    const measurementState = deps.getState().measurement || {};
+    deps.normalizeMeasurementInputChannelSelections();
+    const referenceChannel = deps.getMeasurementReferenceWarning() ? ''
+        : (measurementState.selectedReferenceInputChannel || '');
+    // Per-side loopback references, mirroring manual sweeps: a right sweep
+    // must record the right loopback (e.g. input 8), never the shared/left
+    // one, or the reference comes back silent and the run cannot qualify.
+    const splitReferences = typeof deps.getSelectedMeasurementInputChannelCount === 'function'
+        && deps.getSelectedMeasurementInputChannelCount() >= 3;
+    const referenceChannelLeft = splitReferences
+        ? (measurementState.selectedReferenceInputChannelLeft || '') : '';
+    const referenceChannelRight = splitReferences
+        ? (measurementState.selectedReferenceInputChannelRight || '') : '';
+    // The identity names the channel actually recorded for this side.
+    const sideReferenceChannel = (splitReferences && (referenceChannelLeft || referenceChannelRight))
+        ? (String(side) === 'right' ? referenceChannelRight : referenceChannelLeft)
+        : referenceChannel;
+    if (typeof SpeakerAlign.buildSpeakerAlignPayload !== 'function') {
+        throw new Error('Speaker Align support is unavailable');
+    }
+    return SpeakerAlign.buildSpeakerAlignPayload({
+        side,
+        inputId: measurementState.selectedInputId,
+        micChannel: measurementState.selectedMicInputChannel || '1',
+        referenceChannel,
+        referenceChannelLeft,
+        referenceChannelRight,
+        referenceId: SpeakerAlign.defaultReferenceId(measurementState.selectedInputId, sideReferenceChannel),
+        microphonePositionId: `${side}-fixed-${Date.now()}`,
+        dryRun: false,
+    });
+}
+
+async function startSpeakerAlign(side) {
+    if (!speakerAlignVisible()) return;
+    const measurementState = deps.getState().measurement || {};
+    if (measurementState.speakerAlignInFlight || measurementState.startInFlight
+        || measurementState.activeJobId || measurementState.autoSubInFlight) return;
+    const inputId = measurementState.selectedInputId;
+    if (!inputId) {
+        deps.showToast('No capture input selected', 'error');
+        return;
+    }
+    if (!deps.measurementModeReady()) {
+        deps.showToast('No usable host capture source is available', 'error');
+        return;
+    }
+    let payload;
+    try {
+        payload = readSpeakerAlignPayload(side);
+    } catch (error) {
+        measurementState.statusText = error?.message || 'Speaker Align failed to start';
+        deps.showToast(measurementState.statusText, 'error');
+        deps.renderMeasurementPanel();
+        return;
+    }
+    measurementState.speakerAlignInFlight = true;
+    measurementState.startInFlight = true;
+    measurementState.speakerAlignCancelRequested = false;
+    measurementState.activeMeasurementKind = 'speaker_align';
+    measurementState.speakerAlignJobId = '';
+    measurementState.speakerAlignResult = null;
+    syncSpeakerAlignButton();
+    deps.renderMeasurementPanel();
+    try {
+        measurementState.statusText = 'Speaker Align: starting…';
+        deps.renderMeasurementPanel();
+        await deps.postRuntimeDebugSnapshot('ui-before-speaker-align-start', {});
+        const resp = await api.startSpeakerAlign(payload);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to start Speaker Align'));
+        const job = data.job || {};
+        measurementState.speakerAlignJobId = String(job.id || '');
+        measurementState.statusText = job.message || 'Speaker Align: queued';
+        deps.renderMeasurementPanel();
+        if (measurementState.speakerAlignCancelRequested) await cancelSpeakerAlign();
+        if (!measurementState.speakerAlignJobId) throw new Error('Speaker Align did not return a job id');
+        await pollSpeakerAlignJob(measurementState.speakerAlignJobId);
+    } catch (error) {
+        console.error('startSpeakerAlign failed', error);
+        measurementState.statusText = error.message || 'Speaker Align failed';
+        deps.showToast(measurementState.statusText, 'error');
+    } finally {
+        measurementState.speakerAlignInFlight = false;
+        measurementState.startInFlight = false;
+        measurementState.activeMeasurementKind = '';
+        measurementState.speakerAlignJobId = '';
+        measurementState.speakerAlignCancelRequested = false;
+        deps.fetchAudioOutputOverview().catch(() => {});
+        deps.renderMeasurementPanel();
+    }
+}
+
+async function cancelSpeakerAlign() {
+    const jobId = String(deps.getState().measurement.speakerAlignJobId || '');
+    if (!jobId) {
+        if (deps.getState().measurement.speakerAlignInFlight) {
+            deps.getState().measurement.speakerAlignCancelRequested = true;
+            deps.getState().measurement.statusText = 'Cancelling Speaker Align…';
+            deps.renderMeasurementPanel();
+        }
+        return;
+    }
+    deps.getState().measurement.statusText = 'Cancelling Speaker Align…';
+    deps.renderMeasurementPanel();
+    try {
+        const resp = await api.cancelSpeakerAlignJob(jobId);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to cancel Speaker Align'));
+        deps.getState().measurement.statusText = String(data.job?.message || 'Cancelling Speaker Align…');
+    } catch (error) {
+        console.error('cancelSpeakerAlign failed', error);
+        deps.getState().measurement.statusText = error.message || 'Failed to cancel Speaker Align';
+        deps.showToast(deps.getState().measurement.statusText, 'error');
+    } finally {
+        deps.renderMeasurementPanel();
+    }
+}
+
+function isCurrentSpeakerAlignPoll(jobId, generation) {
+    const live = deps.getState().measurement || {};
+    return Number(live.jobGeneration || 0) === Number(generation || 0)
+        && (live.activeMeasurementKind === 'speaker_align' || !!live.speakerAlignInFlight)
+        && String(live.speakerAlignJobId || '') === String(jobId);
+}
+
+async function pollSpeakerAlignJob(jobId) {
+    const measurementState = deps.getState().measurement || {};
+    const pollGeneration = Number(measurementState.jobGeneration || 0);
+    const statusEl = deps.getElements().measurementSpeakerAlignStatus;
+    const startedAt = Date.now();
+    const longRunningAfterMs = 10 * 60 * 1000;
+    const maxRunningMs = 30 * 60 * 1000;
+    let consecutiveErrors = 0;
+    const maxConsecutiveErrors = 40;
+    while (true) {
+        if (!isCurrentSpeakerAlignPoll(jobId, pollGeneration)) return;
+        await deps.sleep(500);
+        if (Date.now() - startedAt >= maxRunningMs) {
+            measurementState.statusText = 'Speaker Align timed out while waiting for the job';
+            deps.showToast(measurementState.statusText, 'error');
+            return;
+        }
+        try {
+            const resp = await api.pollSpeakerAlignJob(jobId);
+            const data = await resp.json().catch(() => ({}));
+            if (!isCurrentSpeakerAlignPoll(jobId, pollGeneration)) return;
+            if (!resp.ok) {
+                if (resp.status === 404 || resp.status === 410) {
+                    measurementState.statusText = 'Speaker Align job is no longer available';
+                    deps.showToast(measurementState.statusText, 'error');
+                    return;
+                }
+                throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to poll Speaker Align job'));
+            }
+            consecutiveErrors = 0;
+            const job = data.job || {};
+            const status = job.status || 'unknown';
+            measurementState.statusText = job.message || formatSpeakerStatus(job);
+            if (Date.now() - startedAt >= longRunningAfterMs
+                && (status === 'queued' || status === 'acquiring' || status === 'confirming' || status === 'cancelling')) {
+                measurementState.statusText = `Speaker Align still running… ${measurementState.statusText}`;
+            }
+            if (statusEl) {
+                statusEl.textContent = measurementState.statusText;
+            }
+            if (status === 'committed' || status === 'trial-done' || status === 'unconfirmed'
+                || status === 'failed' || status === 'cancelled') {
+                await handleSpeakerAlignResult(job);
+                return;
+            }
+        } catch (error) {
+            if (!isCurrentSpeakerAlignPoll(jobId, pollGeneration)) return;
+            consecutiveErrors += 1;
+            console.warn('pollSpeakerAlignJob error', error);
+            if (consecutiveErrors >= maxConsecutiveErrors) {
+                measurementState.statusText = error?.message || 'Speaker Align polling failed';
+                deps.showToast(measurementState.statusText, 'error');
+                return;
+            }
+        }
+        deps.renderMeasurementPanel();
+    }
+}
+
+function speakerAlignRunLabel(measurement) {
+    const run = measurement?.speaker_align || measurement?.analysis?.speaker_align;
+    const side = run?.side || measurement?.channel || '';
+    const name = measurement?.name || '';
+    const created = measurement?.created_at || run?.created_at || '';
+    const verified = run?.confirmed ? 'verified' : 'not verified';
+    const sideLabel = side === 'right' ? 'Right' : side === 'left' ? 'Left' : 'Speaker';
+    return `${name || `${sideLabel} align run`} · ${verified}${created ? ` · ${created}` : ''}`;
+}
+
+function listSpeakerAlignRuns() {
+    const measurements = deps.getState().measurement?.measurements || [];
+    return measurements.filter(measurement => measurement
+        && (measurement.measurement_kind === 'speaker-align-run-v1'
+            || measurement.speaker_align
+            || measurement.analysis?.speaker_align));
+}
+
+function refreshSpeakerAlignSavedSelect() {
+    const elements = deps.getElements();
+    const select = elements.measurementSpeakerAlignSavedSelect;
+    if (!select) return;
+    const runs = listSpeakerAlignRuns();
+    const previous = String(select.value || '');
+    const escape = (value) => deps.escapeHtml(String(value ?? ''));
+    select.innerHTML = `<option value="">Saved align runs…</option>` + runs.map(measurement => {
+        const run = measurement.speaker_align || measurement.analysis?.speaker_align;
+        const label = speakerAlignRunLabel(measurement);
+        return `<option value="${escape(measurement.id)}">${escape(label)}</option>`;
+    }).join('');
+    if (runs.some(measurement => String(measurement.id) === previous)) {
+        select.value = previous;
+    }
+    void runs;
+}
+
+function syncSpeakerAlignSaveOpen() {
+    const elements = deps.getElements();
+    const measurementState = deps.getState().measurement || {};
+    refreshSpeakerAlignSavedSelect();
+    const saveBtn = elements.measurementSpeakerAlignSaveBtn;
+    const openBtn = elements.measurementSpeakerAlignOpenBtn;
+    const select = elements.measurementSpeakerAlignSavedSelect;
+    const hasResult = !!(measurementState.speakerAlignResult
+        || (measurementState.speakerAlignResults
+            && (measurementState.speakerAlignResults.left || measurementState.speakerAlignResults.right)));
+    const busy = !!(measurementState.speakerAlignInFlight || measurementState.startInFlight
+        || deps.hasActiveMeasurementJob());
+    if (saveBtn) saveBtn.disabled = busy || !hasResult;
+    const runsAvailable = listSpeakerAlignRuns().length > 0;
+    if (openBtn) openBtn.disabled = busy || !runsAvailable;
+    if (select) select.disabled = busy || !runsAvailable;
+}
+
+async function saveSpeakerAlignRun(side) {
+    const measurementState = deps.getState().measurement || {};
+    const results = measurementState.speakerAlignResults || {};
+    const wanted = side === 'left' || side === 'right' ? side : null;
+    const availableSides = ['left', 'right'].filter(key => results[key]?.proposal && results[key]?.check);
+    const chosen = wanted && results[wanted] ? wanted
+        : (measurementState.speakerAlignResult && availableSides.length === 1 ? availableSides[0]
+            : (results.right ? 'right' : results.left ? 'left' : null));
+    const result = (chosen && results[chosen]) || measurementState.speakerAlignResult;
+    if (!result?.proposal || !result?.check) {
+        deps.showToast('No align run to save yet', 'warning');
+        return;
+    }
+    const runSide = chosen || result.side || 'left';
+    if (typeof SpeakerAlign.buildSpeakerAlignRun !== 'function'
+        || typeof SpeakerAlign.runToMeasurement !== 'function') {
+        deps.showToast('Speaker Align save support is unavailable', 'error');
+        return;
+    }
+    let payload;
+    try {
+        const run = SpeakerAlign.buildSpeakerAlignRun(result, {
+            side: runSide,
+            jobId: measurementState.speakerAlignJobId || result.job_id || '',
+            sampleRateHz: Number.isInteger(result.sample_rate_hz) ? result.sample_rate_hz : null,
+            committedRevision: result.committed_revision ?? null,
+            confirmed: result.confirmed,
+            params: result.provenance ? {} : {},
+        });
+        payload = SpeakerAlign.runToMeasurement(run);
+    } catch (error) {
+        deps.showToast(error?.message || 'Speaker Align run is not saveable', 'error');
+        return;
+    }
+    try {
+        const resp = await api.saveSpeakerAlignMeasurement(payload);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to save align run'));
+        if (typeof deps.fetchSavedMeasurements === 'function') {
+            await deps.fetchSavedMeasurements().catch(() => {});
+        }
+        refreshSpeakerAlignSavedSelect();
+        syncSpeakerAlignSaveOpen();
+        deps.showToast('Align run saved', 'success');
+    } catch (error) {
+        deps.showToast(error?.message || 'Failed to save align run', 'error');
+    } finally {
+        deps.renderMeasurementPanel();
+    }
+}
+
+async function openSpeakerAlignRun() {
+    const elements = deps.getElements();
+    const measurementState = deps.getState().measurement || {};
+    const select = elements.measurementSpeakerAlignSavedSelect;
+    const measurementId = String(select?.value || '').trim();
+    if (!measurementId) {
+        deps.showToast('Select a saved align run first', 'warning');
+        return;
+    }
+    const measurement = listSpeakerAlignRuns().find(item => String(item.id) === measurementId);
+    if (!measurement) {
+        deps.showToast('Saved align run is no longer available', 'error');
+        return;
+    }
+    if (typeof SpeakerAlign.measurementToRun !== 'function') {
+        deps.showToast('Speaker Align open support is unavailable', 'error');
+        return;
+    }
+    let run;
+    try {
+        run = SpeakerAlign.measurementToRun(measurement);
+    } catch (error) {
+        deps.showToast(error?.message || 'Saved align run could not be opened', 'error');
+        return;
+    }
+    const result = {
+        confirmed: !!run.confirmed,
+        committed_revision: run.committed_revision ?? null,
+        dry_run: !!run.dry_run,
+        side: run.side,
+        sample_rate_hz: run.sample_rate_hz,
+        provenance: run.metadata?.provenance || {},
+        proposal: {
+            start_revision: run.metadata.start_revision,
+            processing_fingerprint: run.metadata.processing_fingerprint,
+            arrival_ms: { ...run.before.arrival_ms },
+            added_delay_ms: { ...run.corrections.added_delay_ms },
+            added_gain_db: { ...run.corrections.added_gain_db },
+            way_levels_db: { ...(run.before.way_levels_db || {}) },
+            planning_isolation_db: { ...(run.before.way_isolation_db || {}) },
+            reference_role: run.reference_role,
+            arrival_source: run.arrival_source || 'shared-planning-take',
+        },
+        check: {
+            confirmed: !!run.confirmed,
+            reasons: [...(run.qc.reasons || [])],
+            warnings: [...(run.qc.warnings || [])],
+            max_residual_ms: run.qc.max_residual_ms,
+            before_spread_ms: run.qc.before_spread_ms,
+            after_arrival_ms: { ...run.after.arrival_ms },
+            tolerance_ms: run.qc.tolerance_ms,
+            pairs: run.qc.pairs || [],
+            gain_spread_db: run.qc.gain_spread_db ?? null,
+            before_gain_spread_db: run.qc.before_gain_spread_db ?? null,
+            gain_tolerance_db: run.qc.gain_tolerance_db ?? null,
+            after_way_levels_db: { ...(run.after.way_levels_db || {}) },
+            way_isolation_db: { ...(run.after.way_isolation_db || {}) },
+            isolation_margin_db: run.qc.isolation_margin_db ?? null,
+        },
+    };
+    if (run.frequency) result.way_frequency = JSON.parse(JSON.stringify(run.frequency));
+    measurementState.speakerAlignResult = result;
+    measurementState.speakerAlignResults = { ...measurementState.speakerAlignResults, [run.side]: result };
+    const resultsEl = elements.measurementSpeakerAlignResults;
+    if (resultsEl) {
+        resultsEl.innerHTML = ['left', 'right'].map(side =>
+            SpeakerAlign.renderSpeakerAlignResult(measurementState.speakerAlignResults?.[side], side)).join('');
+    }
+    const statusEl = elements.measurementSpeakerAlignStatus;
+    const pseudoJob = {
+        side: run.side,
+        status: run.committed_revision !== null && run.committed_revision !== undefined ? 'committed'
+            : run.confirmed ? 'trial-done' : 'unconfirmed',
+        result,
+    };
+    const text = formatSpeakerStatus(pseudoJob);
+    measurementState.statusText = `${text} (saved run ${run.id})`;
+    if (statusEl) statusEl.textContent = measurementState.statusText;
+    deps.showToast(`Opened align run ${run.id}`, 'success');
+    deps.renderMeasurementPanel();
+}
+
+
+async function handleSpeakerAlignResult(job) {
+    const measurementState = deps.getState().measurement || {};
+    const statusEl = deps.getElements().measurementSpeakerAlignStatus;
+    const text = formatSpeakerStatus(job);
+    if (job.status === 'cancelled' || job.status === 'cancelling') {
+        measurementState.statusText = text;
+        measurementState.speakerAlignResult = null;
+        if (statusEl) statusEl.textContent = text;
+        deps.showToast(text, 'success');
+        return;
+    }
+    if (job.status === 'failed') {
+        measurementState.statusText = text;
+        measurementState.speakerAlignResult = null;
+        if (statusEl) statusEl.textContent = '';
+        deps.showToast(text, 'error');
+        return;
+    }
+    if (!job.result) {
+        measurementState.statusText = 'Speaker Align completed with no result';
+        if (statusEl) statusEl.textContent = '';
+        return;
+    }
+    measurementState.speakerAlignResult = job.result;
+    measurementState.speakerAlignResults = { ...measurementState.speakerAlignResults, [job.side]: job.result };
+    const resultsEl = deps.getElements().measurementSpeakerAlignResults;
+    if (resultsEl) {
+        resultsEl.innerHTML = ['left', 'right'].map(side =>
+            SpeakerAlign.renderSpeakerAlignResult(measurementState.speakerAlignResults[side], side)).join('');
+    }
+    measurementState.statusText = text;
+    if (statusEl) statusEl.textContent = text;
+    syncSpeakerAlignSaveOpen();
+    if (job.status === 'committed') {
+        deps.showToast(text, 'success');
+    } else if (job.status === 'trial-done') {
+        deps.showToast(text, job.result?.confirmed ? 'success' : 'warning');
+    } else {
+        deps.showToast(text, 'warning');
+    }
+    deps.renderMeasurementPanel();
+}
+
+
+function clearSpeakerAlignResult() {
+    const measurementState = deps.getState().measurement || {};
+    if (measurementState.speakerAlignInFlight || measurementState.speakerAlignJobId
+        || measurementState.activeMeasurementKind === 'speaker_align') return;
+    measurementState.speakerAlignResult = null;
+    measurementState.speakerAlignResults = null;
+    const elements = deps.getElements();
+    if (elements.measurementSpeakerAlignStatus) elements.measurementSpeakerAlignStatus.textContent = '';
+    if (elements.measurementSpeakerAlignResults) elements.measurementSpeakerAlignResults.innerHTML = '';
+}
+
+
 function getHybridWizardState() {
     if (!deps.getState().measurement.hybridWizard || typeof deps.getState().measurement.hybridWizard !== 'object') {
         deps.getState().measurement.hybridWizard = {
@@ -552,7 +1039,9 @@ function getHybridWizardState() {
 
 
 function getCurrentOutputModeName() {
-    return deps.normalizeOutputModeName(deps.getState().settings?.audioOutputs?.output_mode?.mode || 'stereo');
+    const catalog = deps.getState().outputSystem?.catalog;
+    const topology = catalog?.modes?.[catalog.active_mode]?.topology;
+    return { mono: 'subwoofer-2.1', 'dual-mono': 'subwoofer-2.2', stereo: 'subwoofer-2.2-stereo' }[topology?.sub_mode] || 'stereo';
 }
 
 
@@ -698,6 +1187,8 @@ function buildHybridMeasurementForm(step) {
     formData.append('input_key', deps.getState().measurement.selectedInputKey || '');
     formData.append('channel', step.channel);
     formData.append('measurement_role', step.role);
+    const areaBank = deps.measurementAreaBank();
+    if (areaBank) formData.append('measurement_bank', areaBank);
     formData.append('mic_input_channel', deps.getState().measurement.selectedMicInputChannel || '1');
     deps.appendMeasurementReferenceFields(formData);
     const calibrationFile = deps.getElements().measurementCalibrationFile?.files?.[0];
@@ -711,7 +1202,7 @@ async function runHybridWizardStep(step) {
     const wizard = getHybridWizardState();
     wizard.quality = null;
     wizard.phase = 'measuring';
-    wizard.status = `Measuring ${hybridSpeakerName(step.channel)}…`;
+    wizard.status = `Measuring ${ui.hybridSpeakerName(step.channel)}…`;
     renderHybridMeasurementWizard();
     const response = await api.startMeasurement(buildHybridMeasurementForm(step));
     const data = await response.json().catch(() => ({}));
@@ -758,7 +1249,7 @@ async function runHybridWizardStep(step) {
         wizard.phase = processing ? 'processing' : (wizard.cancelRequested ? 'cancelling' : 'measuring');
         wizard.status = wizard.cancelRequested
             ? 'Cancelling measurement…'
-            : (processing ? `Processing ${step.channel === 'stereo' ? 'measurement' : step.channel}…` : `Measuring ${hybridSpeakerName(step.channel)}…`);
+            : (processing ? `Processing ${step.channel === 'stereo' ? 'measurement' : step.channel}…` : `Measuring ${ui.hybridSpeakerName(step.channel)}…`);
         renderHybridMeasurementWizard();
         if (ui.MEASUREMENT_JOB_SUCCESS_STATES.has(status)) {
             if (wizard.cancelRequested) return false;
@@ -954,6 +1445,17 @@ function setupHybridMeasurementWizard() {
         cancelAutoSubOptimize,
         pollAutoSubJob,
         handleAutoSubResult,
+        syncSpeakerAlignButton,
+        startSpeakerAlign,
+        cancelSpeakerAlign,
+        pollSpeakerAlignJob,
+        handleSpeakerAlignResult,
+        clearSpeakerAlignResult,
+        listSpeakerAlignRuns,
+        refreshSpeakerAlignSavedSelect,
+        syncSpeakerAlignSaveOpen,
+        saveSpeakerAlignRun,
+        openSpeakerAlignRun,
         getHybridWizardState,
         getCurrentOutputModeName,
         openHybridMeasurementWizard,

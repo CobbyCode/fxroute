@@ -49,6 +49,13 @@ class AutoSub22StereoFinalPathTests(unittest.IsolatedAsyncioTestCase):
             "cancel_requested": False,
             "target_curve": {"label": "Neutral", "points": target_points},
             "main_target_anchor": {"status": "ready", "target_vertical_offset_db": 0.0},
+                    # Backend-v2 migration: runners are service-only (see final_path).
+            "output_state_context": {
+                "mode": "stereo", "revision": 0, "output_key": "dev",
+                "channels": 4, "optimizer_path": "stereo-subs",
+                "sub_role_map": {"sub1": "sub1", "sub2": "sub2"},
+                "sub_mute_mask": 12,
+            },
         }
         runner._AUTO_SUB_JOBS[job_id] = job
 
@@ -70,9 +77,9 @@ class AutoSub22StereoFinalPathTests(unittest.IsolatedAsyncioTestCase):
             })
             return overview()
 
-        async def apply_candidate(*, output_mode, global_config, subwoofers_config, verify, load_overview=None):
-            persist(output_mode, global_config, subwoofers_config)
-            return bool(verify((load_overview or (lambda: copy.deepcopy(state)))()))
+        async def apply_candidate(*, global_config, subwoofers_config, job=None):
+            persist("subwoofer-2.2-stereo", global_config, subwoofers_config)
+            return True
 
         async def measure_candidate(**kwargs):
             snapshot = kwargs["original_config_snapshot"]
@@ -129,10 +136,24 @@ class AutoSub22StereoFinalPathTests(unittest.IsolatedAsyncioTestCase):
         async def finish_worker(_job, _job_id):
             return None
 
+        async def stage_service_candidate(job, *, global_config, subwoofers_config=None):
+            persist(runner.OUTPUT_MODE_SUBWOOFER_22_STEREO, global_config, subwoofers_config)
+
+        async def restore_or_fail_job(job, snapshot, message):
+            persist(snapshot.get("mode", runner.OUTPUT_MODE_SUBWOOFER_22_STEREO),
+                    {"crossover_frequency_hz": snapshot.get("crossover_frequency_hz", 80),
+                     "main_highpass_enabled": snapshot.get("main_highpass_enabled", True)},
+                    copy.deepcopy(snapshot.get("subwoofers")))
+            return True
+
+        async def commit_service_winner(job):
+            job["output_state_context"]["committed_revision"] = 1
+            return {"revision": 1}
+
         try:
             with ExitStack() as stack:
                 stack.enter_context(patch.object(runner, "_measurement_session", return_value=None))
-                stack.enter_context(patch.object(runner, "_dsp_runtime", return_value=None))
+                stack.enter_context(patch.object(runner, "activate_candidate_owner", return_value=48000))
                 stack.enter_context(patch.object(runner, "_capture_auto_sub_main_references", new=AsyncMock()))
                 stack.enter_context(patch.object(runner, "_measure_auto_sub_candidate", side_effect=measure_candidate))
                 stack.enter_context(patch.object(runner, "_auto_sub_gate_candidate_rows", side_effect=lambda rows, *_a, **_k: (rows, [])))
@@ -151,10 +172,10 @@ class AutoSub22StereoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                 }))
                 stack.enter_context(patch.object(runner, "_auto_sub_local_dip_db", return_value=5.0))
                 stack.enter_context(patch.object(runner, "_auto_sub_apply_candidate", side_effect=apply_candidate))
+                stack.enter_context(patch.object(runner, "_stage_auto_sub_service_state", side_effect=stage_service_candidate))
+                stack.enter_context(patch.object(runner, "_restore_original_config_or_fail_job", side_effect=restore_or_fail_job))
+                stack.enter_context(patch.object(runner, "_commit_auto_sub_service_winner", side_effect=commit_service_winner))
                 stack.enter_context(patch.object(runner, "_finish_auto_sub_worker", side_effect=finish_worker))
-                stack.enter_context(patch.object(runner, "get_audio_output_overview", side_effect=overview))
-                stack.enter_context(patch.object(samplerate, "set_audio_output_mode", side_effect=persist))
-                stack.enter_context(patch.object(samplerate, "_load_audio_output_mode", side_effect=lambda: copy.deepcopy(state)))
                 stack.enter_context(patch("measurement.session._resolve_measurement_start_sample_rate", return_value=48000))
 
                 await runner._run_auto_sub_22_stereo_optimize(

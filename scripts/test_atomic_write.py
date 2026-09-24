@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from common.atomic_write import atomic_write_text
+from common.atomic_write import atomic_write_bytes, atomic_write_text
 
 import dsp.persistence
 import library.playlists
@@ -88,6 +88,14 @@ class AtomicWriteContractTests(unittest.TestCase):
                     ["store.json"],
                     "failed writes must clean up their temp file",
                 )
+
+    def test_binary_replace_is_atomic_and_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "curve.bin"
+            atomic_write_bytes(target, b"first")
+            atomic_write_bytes(target, b"second")
+            self.assertEqual(target.read_bytes(), b"second")
+            self.assertEqual(sorted(entry.name for entry in Path(tmp).iterdir()), ["curve.bin"])
 
     def test_new_file_gets_safe_default(self):
         for name, write in IMPLEMENTATIONS.items():

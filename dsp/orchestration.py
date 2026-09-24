@@ -102,6 +102,12 @@ class DspOrchestrationDeps:
     # early return before paying for the full samplerate status.  When absent
     # the repair keeps reading the full status first, as before.
     get_current_force_rate: Callable[[], Any] | None = None
+    # V2 plan renderer for the live helper sync.  Takes the authoritative
+    # rate plus the current overview (device/ports) and returns a prebuilt
+    # sync target, or None when the committed head cannot activate (then the
+    # legacy overview sync below keeps its previous behavior).  Injected by
+    # the composition root; absent in unit tests that cover the legacy path.
+    try_render_v2_target: Callable[[int, dict], Awaitable[Any | None]] | None = None
 
 
 def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
@@ -208,17 +214,37 @@ class DspOrchestrator:
                 repair_overview = samplerate.audio_output_overview_with_effective_rate(
                     target_overview or overview, requested_rate,
                 )
+                v2_target = await self._render_v2_target(requested_rate, repair_overview)
+                if v2_target is not None:
+                    await dsp_runtime.sync_rendered(v2_target)
+                    return repair_overview
                 await dsp_runtime.sync(repair_overview)
                 return repair_overview
 
             sink_rate = samplerate_status.get("active_rate")
-            if sink_rate != authoritative_rate:
+            try:
+                engine_alive = bool((dsp_runtime.snapshot() or {}).get("active"))
+            except Exception:
+                engine_alive = False
+            if engine_alive and sink_rate != authoritative_rate:
                 logger.info(
                     "Subwoofer runtime sync deferred until sink reaches authoritative rate: "
                     "reason=%s requested_rate=%s authoritative_rate=%s hardware_sink_rate=%s",
                     reason, requested_rate, authoritative_rate, sink_rate,
                 )
                 return overview
+            if not engine_alive:
+                # No running helper pins the sink: rebuilding is the only way
+                # to move it, so the sink-alignment gates below (which a live
+                # helper at the wrong rate could never pass either) are
+                # bypassed.  Without this a dead engine under a rate pin
+                # defers forever and never revives.
+                logger.warning(
+                    "Native DSP helper is down; rebuilding at authoritative rate "
+                    "despite sink misalignment: reason=%s authoritative_rate=%s "
+                    "hardware_sink_rate=%s",
+                    reason, authoritative_rate, sink_rate,
+                )
 
             if requested_rate is not None and requested_rate != authoritative_rate:
                 logger.info(
@@ -261,7 +287,7 @@ class DspOrchestrator:
             )
             pre_start_rate = samplerate.authoritative_sample_rate(pre_start_status)
             pre_start_sink_rate = pre_start_status.get("active_rate")
-            if pre_start_rate != authoritative_rate or pre_start_sink_rate != authoritative_rate:
+            if (pre_start_rate != authoritative_rate or pre_start_sink_rate != authoritative_rate) and engine_alive:
                 logger.info(
                     "Subwoofer runtime sync stale immediately before helper start; restart suppressed: "
                     "reason=%s requested_rate=%s authoritative_rate=%s pre_start_rate=%s pre_start_sink_rate=%s",
@@ -273,12 +299,24 @@ class DspOrchestrator:
             )
             final_status = await asyncio.to_thread(self._deps.get_samplerate_status)
             final_rate = samplerate.authoritative_sample_rate(final_status)
-            if final_rate != authoritative_rate:
+            if final_rate != authoritative_rate and engine_alive:
                 logger.info(
                     "Native DSP sync stale at start gate; restart suppressed: "
                     "reason=%s requested_rate=%s expected_rate=%s final_rate=%s",
                     reason, requested_rate, authoritative_rate, final_rate,
                 )
+                return current_overview
+            v2_target = await self._render_v2_target(authoritative_rate, current_overview)
+            if v2_target is not None:
+                await dsp_runtime.sync_rendered(v2_target)
+                return current_overview
+            if self._v2_renderer_present() and self._serving_v2_plan(dsp_runtime):
+                # The committed head cannot render (e.g. a hand-edited state
+                # file), but the helper still serves the last good v2 graph:
+                # keep it instead of wiping the topology back to legacy.
+                logger.error(
+                    "Committed output state cannot render; keeping running v2 graph "
+                    "instead of legacy fallback")
                 return current_overview
             await dsp_runtime.sync(current_overview)
             return current_overview
@@ -288,6 +326,36 @@ class DspOrchestrator:
             return await _sync_locked()
         async with measurement_sr_session.lock:
             return await _sync_locked()
+
+    async def _render_v2_target(self, rate: int, overview: dict) -> Any | None:
+        """Render the committed v2 head for one sync, or None to keep legacy.
+
+        A None renderer (tests), a renderer failure, or a head that cannot
+        activate all fall back to the legacy overview sync at the call site,
+        so unmigrated states keep their previous behavior byte for byte.
+        """
+        render = getattr(self._deps, "try_render_v2_target", None)
+        if render is None:
+            return None
+        try:
+            target = await render(rate, overview)
+        except Exception as exc:
+            logger.warning("V2 plan render for DSP sync failed, using legacy overview: %s", exc)
+            return None
+        return target
+
+    @staticmethod
+    def _serving_v2_plan(dsp_runtime: Any) -> bool:
+        """Return whether the running helper already serves a v2 plan graph."""
+        try:
+            snapshot = dsp_runtime.snapshot() or {}
+        except Exception:
+            return False
+        config = snapshot.get("config") or {}
+        return bool(snapshot.get("active") and config.get("plan_fingerprint"))
+
+    def _v2_renderer_present(self) -> bool:
+        return getattr(self._deps, "try_render_v2_target", None) is not None
 
     async def _sync_after_stale_settle(
         self,

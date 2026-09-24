@@ -100,6 +100,21 @@ class MeasurementServices:
     audio_output_overview_with_effective_rate: Callable[..., Any]
     spotify_prearm_sample_rate_hz: Any
     pipewire_handoff_poll_interval_ms: Any
+    # Optional factory for the AutoSub committed-plan release adapter.  When
+    # composed (main.py), the AutoSub finalizer builds one adapter per
+    # committed service job and registers it on the session before
+    # unregistering; the release then rebuilds the committed output plan at
+    # the restore rate instead of re-syncing the stale legacy overview.
+    # Uncomposed (None) keeps the legacy release path byte-identical.
+    build_autosub_release_adapter: Callable[..., Any] | None = None
+    # Optional factory staging the committed v2 plan context for a manual
+    # bank measurement.  Called as
+    # ``stage_bank_v2_context(measurement_bank=..., measurement_rate_hz=...)``;
+    # returns {"expected_native_layout", "expected_native_output_mode",
+    # "expected_plan_fingerprint"} or None when the head cannot activate.
+    # Without it (or on None) manual measurements keep the legacy overview
+    # route, whose mode/layout check then refuses any crossover/bank graph.
+    stage_bank_v2_context: Callable[..., Any] | None = None
 
 
 _services: MeasurementServices | None = None
@@ -121,6 +136,30 @@ def _dsp_runtime() -> Any:
     return _measurement_services().get_dsp_runtime()
 
 
+def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int) -> dict:
+    """Stage the committed v2 plan context for one manual bank measurement.
+
+    Returns kwargs for ``MeasurementStore.start_measurement`` (possibly
+    empty, preserving the legacy overview route).  Never raises: an
+    unresolvable bank or unrenderable head falls back to legacy, where the
+    store's own bank validation and the pre-sweep check still fail closed.
+    """
+    factory = getattr(_measurement_services(), "stage_bank_v2_context", None)
+    if factory is None or not str(measurement_bank or "").strip():
+        return {}
+    try:
+        staged = factory(measurement_bank=measurement_bank,
+                         measurement_rate_hz=measurement_rate_hz)
+    except Exception as exc:
+        logger.warning("Bank v2 staging failed, using legacy measurement route: %s", exc)
+        return {}
+    if not isinstance(staged, dict):
+        return {}
+    return {key: staged[key] for key in (
+        "expected_native_layout", "expected_native_output_mode",
+        "expected_plan_fingerprint") if key in staged}
+
+
 def _player() -> Any:
     """Resolve the player instance late-bound through the injected accessor."""
     return _measurement_services().get_player()
@@ -139,12 +178,15 @@ class MeasurementSampleRateSession:
         self.original_force_rate = 0
         self.active_manual_job_ids: set[str] = set()
         self.active_auto_sub_job_id: str | None = None
+        self.active_speaker_job_id: str | None = None
         self.active_spl_job_ids: set[str] = set()
         self.close_requested = False
         self.deferred_release_pending = False
         self.generation = 0
         self._entry_epoch = 0
         self.lock = asyncio.Lock()
+        self._autosub_release_adapter: Callable[[int], Awaitable[Any]] | None = None
+        self._speaker_align_release_adapter: Callable[[int], Awaitable[Any]] | None = None
         self._playback_captured = False
         self._rate_changed = False
 
@@ -164,6 +206,7 @@ class MeasurementSampleRateSession:
             self.active_manual_job_ids
             or self.active_spl_job_ids
             or self.active_auto_sub_job_id is not None
+            or self.active_speaker_job_id is not None
         )
 
     def blocks_playback_rate(self, expected_rate: Optional[int]) -> Optional[int]:
@@ -283,6 +326,7 @@ class MeasurementSampleRateSession:
         report_entry: bool = False,
     ) -> int | tuple[int, bool]:
         async with self.lock:
+            self._require_no_speaker_job()
             self._validate_entry_epoch(entry_epoch)
             entry_established = False
             if not self.active:
@@ -306,6 +350,7 @@ class MeasurementSampleRateSession:
 
     async def register_auto_sub(self, job_id: str, entry_epoch: int | None = None) -> int:
         async with self.lock:
+            self._require_no_speaker_job()
             self._validate_entry_epoch(entry_epoch)
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=auto-sub job_id=%s", job_id)
@@ -315,6 +360,7 @@ class MeasurementSampleRateSession:
 
     async def register_spl_job(self, job_id: str, entry_epoch: int | None = None) -> int:
         async with self.lock:
+            self._require_no_speaker_job()
             self._validate_entry_epoch(entry_epoch)
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=spl-meter job_id=%s", job_id)
@@ -332,6 +378,59 @@ class MeasurementSampleRateSession:
             if self.active_auto_sub_job_id == job_id:
                 self.active_auto_sub_job_id = None
             await self._check_release()
+
+    def _require_no_speaker_job(self) -> None:
+        if self.active_speaker_job_id is not None:
+            raise RuntimeError("Speaker Auto Alignment is in progress")
+
+    async def register_speaker_job(self, job_id: str, entry_epoch: int | None = None) -> tuple[int, bool]:
+        async with self.lock:
+            self._validate_entry_epoch(entry_epoch)
+            if self.has_active_jobs:
+                raise RuntimeError("Another measurement is already running")
+            entered = not self.active
+            if entered:
+                await self._start_locked(_resolve_measurement_start_sample_rate())
+            self.active_speaker_job_id = job_id
+            return self.generation, entered
+
+    async def unregister_speaker_job(self, job_id: str) -> None:
+        async with self.lock:
+            if self.active_speaker_job_id == job_id:
+                self.active_speaker_job_id = None
+            await self._check_release()
+
+    async def register_autosub_release_adapter(
+        self, adapter: Callable[[int], Awaitable[Any]],
+    ) -> None:
+        """Register the committed-plan rebuild for the pending AutoSub release.
+
+        The AutoSub finalizer registers one adapter per committed service job
+        before unregistering.  The adapter renders the current committed
+        output plan at the restore rate; the release invokes it instead of
+        the legacy overview sync and clears the slot when release completes.
+        At most one AutoSub job can hold the session, so a single slot
+        suffices; re-registration overwrites.
+        """
+        if not callable(adapter):
+            raise ValueError("AutoSub release adapter must be callable")
+        async with self.lock:
+            self._autosub_release_adapter = adapter
+
+    async def register_speaker_align_release_adapter(
+        self, adapter: Callable[[int], Awaitable[Any]],
+    ) -> None:
+        """Register the committed-plan rebuild for a pending Speaker release.
+
+        The Speaker Align finalizer registers one adapter per committed job.
+        The adapter renders the current committed output plan at the restore
+        rate; the release invokes it instead of the legacy overview sync and
+        clears the slot when release completes. Re-registration overwrites.
+        """
+        if not callable(adapter):
+            raise ValueError("Speaker Align release adapter must be callable")
+        async with self.lock:
+            self._speaker_align_release_adapter = adapter
 
     async def request_open(self) -> None:
         """Record a heartbeat without changing the audio sample rate."""
@@ -358,7 +457,7 @@ class MeasurementSampleRateSession:
     async def _check_release(self) -> bool:
         if not self.active or not self.close_requested:
             return False
-        if self.active_auto_sub_job_id is not None or self.active_manual_job_ids or self.active_spl_job_ids:
+        if self.has_active_jobs:
             return False
         await self._release()
         return True
@@ -455,6 +554,32 @@ class MeasurementSampleRateSession:
                         playback_source,
                         playback_target_rate,
                     )
+                    release_adapter = self._autosub_release_adapter
+                    if release_adapter is not None and playback_target_rate:
+                        try:
+                            rendered = await release_adapter(playback_target_rate)
+                        except Exception as exc:
+                            logger.warning(
+                                "Measurement release committed-plan rebuild failed: %s", exc
+                            )
+                        else:
+                            logger.info(
+                                "Measurement release rebuilt committed output plan: %s",
+                                rendered,
+                            )
+                    speaker_adapter = self._speaker_align_release_adapter
+                    if speaker_adapter is not None and playback_target_rate:
+                        try:
+                            rendered = await speaker_adapter(playback_target_rate)
+                        except Exception as exc:
+                            logger.warning(
+                                "Measurement release speaker committed-plan rebuild failed: %s", exc
+                            )
+                        else:
+                            logger.info(
+                                "Measurement release rebuilt speaker committed output plan: %s",
+                                rendered,
+                            )
             except Exception as exc:
                 logger.warning("Measurement restore through coordinator failed; retaining safe state: %s", exc)
             finally:
@@ -521,7 +646,22 @@ class MeasurementSampleRateSession:
 
                 measurement_only_restore = not playback_target_rate or playback_source not in {"local", "radio", "spotify", "tidal", "qobuz"}
                 if rate_ready and not coordinator_attempted and measurement_only_restore:
-                    await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
+                    release_adapter = self._autosub_release_adapter
+                    speaker_adapter = self._speaker_align_release_adapter
+                    if release_adapter is not None:
+                        rendered = await release_adapter(runtime_restore_rate)
+                        logger.info(
+                            "Measurement release rebuilt committed output plan: %s",
+                            rendered,
+                        )
+                    if speaker_adapter is not None:
+                        rendered = await speaker_adapter(runtime_restore_rate)
+                        logger.info(
+                            "Measurement release rebuilt speaker committed output plan: %s",
+                            rendered,
+                        )
+                    if release_adapter is None and speaker_adapter is None:
+                        await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
                 else:
                     logger.warning(
                         "Measurement sample-rate session runtime restore deferred until playback sink aligns: "
@@ -536,6 +676,8 @@ class MeasurementSampleRateSession:
             self.active_manual_job_ids.clear()
             self.active_auto_sub_job_id = None
             self.active_spl_job_ids.clear()
+            self._autosub_release_adapter = None
+            self._speaker_align_release_adapter = None
             self.close_requested = False
             self.deferred_release_pending = False
             self._playback_captured = False
@@ -1125,60 +1267,49 @@ def _measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[s
 
 def _read_measurement_setup_settings() -> dict[str, Any]:
     measurement_store = _measurement_services().get_store()
-    path = getattr(measurement_store, "settings_path", None)
-    if not path:
+    if not getattr(measurement_store, "settings_path", None):
         return _measurement_setup_settings_from_payload({})
-    try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        settings = payload if isinstance(payload, dict) else {}
-    except Exception:
-        settings = {}
+    settings = measurement_store.read_settings()
     return _measurement_setup_settings_from_payload(settings)
 
 
 def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
     measurement_store = _measurement_services().get_store()
-    path = getattr(measurement_store, "settings_path", None)
-    if not path:
+    if not getattr(measurement_store, "settings_path", None):
         return _measurement_setup_settings_from_payload({})
-    settings_path = Path(path)
-    try:
-        payload = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
-        settings = payload if isinstance(payload, dict) else {}
-    except Exception:
-        settings = {}
-    measure_settings = settings.setdefault("measure", {})
-    if not isinstance(measure_settings, dict):
-        measure_settings = {}
-        settings["measure"] = measure_settings
 
-    if "selectedInputId" in patch or "input_id" in patch:
-        measure_settings["selectedInputId"] = str(patch.get("selectedInputId", patch.get("input_id")) or "").strip()
-    if "selectedInputKey" in patch or "input_key" in patch:
-        measure_settings["selectedInputKey"] = str(patch.get("selectedInputKey", patch.get("input_key")) or "").strip()
-    if "selectedMicInputChannel" in patch or "mic_input_channel" in patch:
-        raw_mic = patch.get("selectedMicInputChannel", patch.get("mic_input_channel"))
-        measure_settings["selectedMicInputChannel"] = _normalize_measurement_optional_input_channel(raw_mic) or "1"
-    if "selectedReferenceInputChannel" in patch or "reference_input_channel" in patch:
-        raw_reference = patch.get("selectedReferenceInputChannel", patch.get("reference_input_channel"))
-        measure_settings["selectedReferenceInputChannel"] = _normalize_measurement_optional_input_channel(raw_reference)
-    if "selectedReferenceInputChannelLeft" in patch or "reference_input_channel_left" in patch:
-        raw_reference_left = patch.get("selectedReferenceInputChannelLeft", patch.get("reference_input_channel_left"))
-        measure_settings["selectedReferenceInputChannelLeft"] = _normalize_measurement_optional_input_channel(raw_reference_left)
-    if "selectedReferenceInputChannelRight" in patch or "reference_input_channel_right" in patch:
-        raw_reference_right = patch.get("selectedReferenceInputChannelRight", patch.get("reference_input_channel_right"))
-        measure_settings["selectedReferenceInputChannelRight"] = _normalize_measurement_optional_input_channel(raw_reference_right)
-    if "measurementSampleRate" in patch or "measurement_sample_rate" in patch:
-        try:
-            rate = int(patch.get("measurementSampleRate", patch.get("measurement_sample_rate")))
-        except (TypeError, ValueError):
-            rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
-        if rate <= 0:
-            rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
-        measure_settings["measurementSampleRate"] = rate
+    def update(settings: dict[str, Any]) -> None:
+        measure_settings = settings.setdefault("measure", {})
+        if not isinstance(measure_settings, dict):
+            measure_settings = {}
+            settings["measure"] = measure_settings
 
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if "selectedInputId" in patch or "input_id" in patch:
+            measure_settings["selectedInputId"] = str(patch.get("selectedInputId", patch.get("input_id")) or "").strip()
+        if "selectedInputKey" in patch or "input_key" in patch:
+            measure_settings["selectedInputKey"] = str(patch.get("selectedInputKey", patch.get("input_key")) or "").strip()
+        if "selectedMicInputChannel" in patch or "mic_input_channel" in patch:
+            raw_mic = patch.get("selectedMicInputChannel", patch.get("mic_input_channel"))
+            measure_settings["selectedMicInputChannel"] = _normalize_measurement_optional_input_channel(raw_mic) or "1"
+        if "selectedReferenceInputChannel" in patch or "reference_input_channel" in patch:
+            raw_reference = patch.get("selectedReferenceInputChannel", patch.get("reference_input_channel"))
+            measure_settings["selectedReferenceInputChannel"] = _normalize_measurement_optional_input_channel(raw_reference)
+        if "selectedReferenceInputChannelLeft" in patch or "reference_input_channel_left" in patch:
+            raw_reference_left = patch.get("selectedReferenceInputChannelLeft", patch.get("reference_input_channel_left"))
+            measure_settings["selectedReferenceInputChannelLeft"] = _normalize_measurement_optional_input_channel(raw_reference_left)
+        if "selectedReferenceInputChannelRight" in patch or "reference_input_channel_right" in patch:
+            raw_reference_right = patch.get("selectedReferenceInputChannelRight", patch.get("reference_input_channel_right"))
+            measure_settings["selectedReferenceInputChannelRight"] = _normalize_measurement_optional_input_channel(raw_reference_right)
+        if "measurementSampleRate" in patch or "measurement_sample_rate" in patch:
+            try:
+                rate = int(patch.get("measurementSampleRate", patch.get("measurement_sample_rate")))
+            except (TypeError, ValueError):
+                rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
+            if rate <= 0:
+                rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
+            measure_settings["measurementSampleRate"] = rate
+
+    settings = measurement_store.update_settings(update)
     return _measurement_setup_settings_from_payload(settings)
 
 
@@ -1426,6 +1557,7 @@ async def start_measurement(
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
     measurement_role: str = Form(""),
+    measurement_bank: str = Form(""),
 ):
     services = _measurement_services()
     measurement_store = services.get_store()
@@ -1466,6 +1598,9 @@ async def start_measurement(
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
                 measurement_role=measurement_role,
+                measurement_bank=measurement_bank,
+                **_stage_bank_v2_context(measurement_bank=measurement_bank,
+                                         measurement_rate_hz=measurement_rate),
             ),
             entry_epoch=entry_epoch,
         )
@@ -1491,6 +1626,7 @@ async def start_lr_repeat_measurement(
     reference_input_channel_right: str = Form(""),
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
+    measurement_bank: str = Form(""),
 ):
     services = _measurement_services()
     measurement_store = services.get_store()
@@ -1530,6 +1666,7 @@ async def start_lr_repeat_measurement(
                 calibration_filename=calibration_filename,
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
+                measurement_bank=measurement_bank,
             ),
             entry_epoch=entry_epoch,
         )

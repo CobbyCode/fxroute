@@ -8,7 +8,7 @@ import wave
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import numpy as np
@@ -353,6 +353,27 @@ class MeasurementRepeatRunner:
             if trim < signal.shape[0]:
                 result[:signal.shape[0] - trim] = signal[trim:]
         return result
+    def _run_internal_way_sweep(self, job: dict[str, Any], channel: str, run: Callable[[], Any]) -> Any:
+        """Run one internal sweep with the frozen area's mask for that side.
+
+        The store freezes the area once for the whole repeat job, but each
+        two-sided sweep is its own internal way sweep: it keeps the measured
+        roles of its side audible and mutes every unrelated output for its
+        duration.  Without a frozen target (legacy store) the sweep runs
+        unchanged.
+        """
+        masks = job.get("sweep_output_masks")
+        mask = masks.get(channel) if isinstance(masks, dict) else None
+        apply_mask = getattr(self._store, "output_mask_apply_sync", None)
+        clear_mask = getattr(self._store, "output_mask_clear_sync", None)
+        if type(mask) is not int or mask <= 0 or not callable(apply_mask) or not callable(clear_mask):
+            return run()
+        apply_mask(mask)
+        try:
+            return run()
+        finally:
+            clear_mask(mask)
+
     def _execute_lr_repeat_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job["id"])
         repeat_count = int(job.get("repeat_count") or 1)
@@ -395,7 +416,9 @@ class MeasurementRepeatRunner:
                 capture_job["_owner_job_id"] = job_id
                 capture_job["channel"] = channel
                 capture_job["capture_profile"] = "lr-repeat"
-                result = self._store._execute_capture_job(capture_job)
+                result = self._run_internal_way_sweep(
+                    job, channel, lambda: self._store._execute_capture_job(capture_job)
+                )
                 captures[channel].append(result["measurement"])
                 raw_meta[channel].append({
                     "capture_path": result.get("_capture_path"),

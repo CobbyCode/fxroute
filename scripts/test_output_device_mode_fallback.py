@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Focused tests: output device switch auto-falls back the output mode.
+"""Focused tests: output device switches are selection-only.
 
-A deliberate switch to a stereo-only device while a subwoofer mode is active
-must succeed by falling back to Stereo instead of refusing the switch, and
-the last valid mode per output device must be remembered so a later switch
-back restores it.  Only valid, capability-checked combinations are stored.
+A deliberate device switch changes the selection (and the default sink) and
+nothing else: topology and DSP state live in the v2 output state and follow
+explicitly through its own apply path. There is no per-device mode memory;
+stale device_modes entries in old mode files are ignored and mode files are
+never written by a device switch.
 """
 
 from __future__ import annotations
@@ -69,20 +70,22 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
             return {}
         return json.loads(path.read_text())
 
-    def _device_modes(self) -> dict[str, str]:
-        return samplerate._load_device_output_modes()
+    def _seed_mode_file(self, payload: dict) -> None:
+        path = self.config_home / "fxroute" / "audio-output-mode.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n")
 
     def _persist_mode(self, mode: str) -> None:
-        samplerate.persist_audio_output_mode(
-            samplerate._build_audio_output_mode_payload(mode)
-        )
+        # Legacy persist helpers are deleted; seed a representative stale
+        # file directly. The selection path must leave it byte-identical.
+        self._seed_mode_file({"mode": mode})
 
     def _select(self, key: str, channels_by_key: dict[str, int]) -> dict:
         def live_overview() -> dict:
             return {
                 "outputs": _outputs(channels_by_key),
                 "available": True,
-                "output_mode": dict(samplerate._load_audio_output_mode()),
+                "output_mode": {"mode": "stereo"},
             }
 
         with mock.patch(
@@ -94,40 +97,32 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
 
     # -- scenarios ----------------------------------------------------------
 
-    def test_fallback_to_stereo_on_stereo_only_device(self) -> None:
+    def test_switch_to_stereo_only_device_keeps_selection_only(self) -> None:
         samplerate._save_audio_output_selection(UMC)
         self._persist_mode("subwoofer-2.2")
-        self.assertEqual(self._device_modes().get(UMC), "subwoofer-2.2")
 
         result = self._select(SMSL, {UMC: 4, SMSL: 2})
 
-        file_payload = self._read_mode_file()
-        self.assertEqual(file_payload["mode"], "stereo")
-        self.assertEqual(self._device_modes().get(UMC), "subwoofer-2.2")
-        self.assertEqual(self._device_modes().get(SMSL), "stereo")
+        # The mode file is untouched by the switch: no fallback persist,
+        # no device memory written.
+        self.assertEqual(self._read_mode_file()["mode"], "subwoofer-2.2")
         self.assertEqual(
             samplerate._load_audio_output_selection()["selected_key"], SMSL
         )
-        adjustment = result["output_mode"]["mode_adjustment"]
-        self.assertTrue(adjustment["adjusted"])
-        self.assertEqual(adjustment["reason"], "device-channel-capacity")
-        self.assertEqual(adjustment["previous_mode"], "subwoofer-2.2")
-        self.assertIn("Stereo", adjustment["message"])
-        self.assertIn("2 channels", adjustment["message"])
+        self.assertNotIn("mode_adjustment", result["output_mode"])
 
-    def test_restores_remembered_mode_on_return(self) -> None:
+    def test_return_switch_has_no_mode_memory(self) -> None:
         samplerate._save_audio_output_selection(UMC)
         self._persist_mode("subwoofer-2.2")
-        self._select(SMSL, {UMC: 4, SMSL: 2})  # fallback to stereo on SMSL
-        self.assertEqual(self._device_modes().get(SMSL), "stereo")
+        self._select(SMSL, {UMC: 4, SMSL: 2})
 
         result = self._select(UMC, {UMC: 4, SMSL: 2})
 
         self.assertEqual(self._read_mode_file()["mode"], "subwoofer-2.2")
-        self.assertEqual(self._device_modes().get(UMC), "subwoofer-2.2")
-        adjustment = result["output_mode"]["mode_adjustment"]
-        self.assertEqual(adjustment["reason"], "device-remembered-mode")
-        self.assertIn("2.2", adjustment["message"])
+        self.assertEqual(
+            samplerate._load_audio_output_selection()["selected_key"], UMC
+        )
+        self.assertNotIn("mode_adjustment", result["output_mode"])
 
     def test_stereo_to_other_stereo_device_no_mode_change(self) -> None:
         samplerate._save_audio_output_selection(SMSL)
@@ -136,11 +131,10 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
         result = self._select(OTHER, {SMSL: 2, OTHER: 2})
 
         self.assertEqual(self._read_mode_file()["mode"], "stereo")
-        self.assertNotIn(OTHER, self._device_modes())
         self.assertNotIn("mode_adjustment", result["output_mode"])
 
-    def test_multichannel_device_uses_remembered_mode(self) -> None:
-        # MULTI previously ran 2.1; current persisted mode is stereo.
+    def test_multichannel_switch_ignores_stale_device_memory(self) -> None:
+        # MULTI was once remembered as 2.1; current persisted mode is stereo.
         samplerate._save_audio_output_selection(SMSL)
         self._persist_mode("stereo")
         payload = self._read_mode_file()
@@ -151,13 +145,14 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
 
         result = self._select(MULTI, {MULTI: 4, SMSL: 2})
 
-        self.assertEqual(self._read_mode_file()["mode"], "subwoofer-2.1")
-        adjustment = result["output_mode"]["mode_adjustment"]
-        self.assertEqual(adjustment["reason"], "device-remembered-mode")
-        self.assertIn("2.1", adjustment["message"])
+        self.assertEqual(self._read_mode_file()["mode"], "stereo")
+        self.assertEqual(
+            samplerate._load_audio_output_selection()["selected_key"], MULTI
+        )
+        self.assertNotIn("mode_adjustment", result["output_mode"])
 
-    def test_stale_remembered_mode_falls_back_to_capability(self) -> None:
-        # SMSL was (incorrectly) remembered as 2.1; it only supports 2 channels.
+    def test_bogus_device_memory_is_ignored(self) -> None:
+        # SMSL was (incorrectly) remembered as 2.1; the memory is ignored.
         samplerate._save_audio_output_selection(UMC)
         self._persist_mode("subwoofer-2.2")
         payload = self._read_mode_file()
@@ -168,42 +163,16 @@ class OutputDeviceModeFallbackTest(unittest.TestCase):
 
         result = self._select(SMSL, {UMC: 4, SMSL: 2})
 
-        self.assertEqual(self._read_mode_file()["mode"], "stereo")
-        self.assertEqual(self._device_modes().get(SMSL), "stereo")
-        adjustment = result["output_mode"]["mode_adjustment"]
-        self.assertEqual(adjustment["reason"], "device-channel-capacity")
-
-    def test_persist_audio_output_mode_records_current_device(self) -> None:
-        samplerate._save_audio_output_selection(OTHER)
-        self._persist_mode("stereo")
-        self.assertEqual(self._device_modes().get(OTHER), "stereo")
-
-        # No selected device -> nothing recorded, no device_modes key added.
-        path = self.config_home / "fxroute" / "audio-output-mode.json"
-        payload = json.loads(path.read_text())
-        del payload["device_modes"]
-        path.write_text(json.dumps(payload, indent=2) + "\n")
-        os.remove(self.config_home / "fxroute" / "audio-output-selection.json")
-        self._persist_mode("stereo")
-        self.assertNotIn("device_modes", self._read_mode_file())
-
-    def test_load_device_output_modes_filters_invalid(self) -> None:
-        path = self.config_home / "fxroute" / "audio-output-mode.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "mode": "stereo",
-            "device_modes": {
-                UMC: "subwoofer-2.2",
-                "bad-mode": "bogus",
-                "empty": "",
-                "numeric": 42,
-                "valid-21": "subwoofer-2.1",
-            },
-        }, indent=2) + "\n")
+        self.assertEqual(self._read_mode_file()["mode"], "subwoofer-2.2")
         self.assertEqual(
-            self._device_modes(),
-            {UMC: "subwoofer-2.2", "valid-21": "subwoofer-2.1"},
+            samplerate._load_audio_output_selection()["selected_key"], SMSL
         )
+        self.assertNotIn("mode_adjustment", result["output_mode"])
+
+    # NOTE (backend-v2 migration): per-device mode memory and its loader
+    # are deleted with the persistence helpers; stale device_modes
+    # entries in old files are ignored (covered above).
+
 
     def test_unknown_and_non_selectable_outputs_still_error(self) -> None:
         with self.assertRaises(ValueError):

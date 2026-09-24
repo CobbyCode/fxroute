@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
 
 function extractFunction(source, name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -86,7 +86,7 @@ function runHighlight({ footerSource = 'local', currentTrack = null, rows = [] }
                 return bySelector.get(selector);
             },
         },
-        pendingOptimisticTrack: null,
+        deps: { getState: () => sandbox.state, getPendingOptimisticTrack: () => null },
         state: { playback: { current_track: currentTrack } },
     };
     vm.createContext(sandbox);

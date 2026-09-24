@@ -167,8 +167,10 @@ class LimiterCanonicalBoundsTests(unittest.TestCase):
         from dsp.manager import DSPManager
 
         app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        matches = re.findall(r"releaseMs:\s*([0-9.]+)", app_js)
-        self.assertTrue(matches, "no releaseMs fallback found in static/app.js")
+        effects_js = (ROOT / "static" / "output_effects_ui.js").read_text(encoding="utf-8")
+        matches = re.findall(r"releaseMs:\s*([0-9.]+)", app_js + effects_js)
+        self.assertTrue(matches,
+                        "no releaseMs fallback found in static/app.js or output_effects_ui.js")
         canonical = DSPManager.LIMITER_DEFAULTS["params"]["releaseMs"]
         for value in matches:
             self.assertEqual(

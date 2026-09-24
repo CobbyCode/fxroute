@@ -4,20 +4,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from typing import Any, Callable
+from typing import Any
 
-from audio.samplerate import (
-    OUTPUT_MODE_SUBWOOFER_22_MODES,
-    _load_audio_output_mode,
-    get_audio_output_overview,
-    set_audio_output_mode,
+from audio.samplerate import OUTPUT_MODE_SUBWOOFER_22_MODES
+
+from .deps import (
+    _auto_sub_cancel_requested,
+    _candidate_owner,
+    _output_service,
 )
-from dsp.runtime import BassManagementConfig
-
-from .deps import _dsp_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -41,80 +38,6 @@ def _auto_sub_cancelled_candidate(delay_ms: float, stage: str) -> dict[str, Any]
         "scan": stage,
     }
 
-def _auto_sub_21_verify_restored(mode_state: dict[str, Any], snapshot: dict[str, Any]) -> bool:
-    """Verify a restored 2.1 subwoofer state matches the start snapshot."""
-    try:
-        if str(mode_state.get("mode") or "") != str(snapshot.get("mode") or ""):
-            return False
-        expected = snapshot.get("subwoofer") or {}
-        actual = mode_state.get("subwoofer") or {}
-        if not isinstance(actual, dict) or not isinstance(expected, dict):
-            return False
-        if abs(float(actual.get("sub_alignment_ms", -9999)) - _auto_sub_clamped_delay(float(expected.get("sub_alignment_ms", 0.0) or 0.0))) > 0.001:
-            return False
-        if abs(round(float(actual.get("sub_level_db", -9999)), 1) - round(float(expected.get("sub_level_db", 0.0) or 0.0), 1)) > 0.05:
-            return False
-        if str(actual.get("sub_polarity") or "normal") != str(expected.get("sub_polarity") or "normal"):
-            return False
-        if int(actual.get("crossover_frequency_hz", -9999)) != int(expected.get("crossover_frequency_hz", 80)):
-            return False
-        if bool(actual.get("main_highpass_enabled")) != bool(expected.get("main_highpass_enabled", True)):
-            return False
-        return True
-    except (TypeError, ValueError):
-        return False
-
-async def _restore_auto_sub_original_config(original_config_snapshot: dict[str, Any]) -> bool:
-    """Restore the start-of-run config and verify the live state matches.
-
-    The restore runs through the same persist -> DSP sync -> settle ->
-    read-back -> verify path the candidate configurations use, instead of a
-    blind write: every AutoSub mode (2.1, 2.2 mono, 2.2 stereo) ends the run
-    with the exact topology it began with. When the first read-back does not
-    match, the restore is applied a second time and re-verified; only a
-    persisting mismatch returns False so the runner can fail the job instead
-    of leaving a silently different config active.
-    """
-    try:
-        mode = str(original_config_snapshot.get("mode", "stereo") or "stereo")
-        if mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-            sub1 = _auto_sub_22_sub(original_config_snapshot, "sub1")
-            sub2 = _auto_sub_22_sub(original_config_snapshot, "sub2")
-            global_config = _auto_sub_22_global_config(original_config_snapshot)
-            subwoofers_config = _auto_sub_22_candidate_subwoofers(
-                original_config_snapshot,
-                sub1_alignment_ms=sub1["alignment_ms"],
-                sub2_alignment_ms=sub2["alignment_ms"],
-                active_subs=("sub1", "sub2"),
-                sub1_polarity=sub1["polarity"],
-                sub2_polarity=sub2["polarity"],
-            )
-            verify = lambda overview: _auto_sub_22_verify_subwoofers(  # noqa: E731
-                overview, subwoofers_config, mode,
-            )
-        else:
-            global_config = dict(original_config_snapshot.get("subwoofer") or {})
-            subwoofers_config = None
-            verify = lambda overview: _auto_sub_21_verify_restored(  # noqa: E731
-                overview, original_config_snapshot,
-            )
-        for attempt in (1, 2):
-            restored = await _auto_sub_apply_candidate(
-                output_mode=mode,
-                global_config=global_config,
-                subwoofers_config=subwoofers_config,
-                verify=verify,
-                load_overview=_load_audio_output_mode,
-            )
-            if restored:
-                return True
-            if attempt == 1:
-                logger.warning("Auto-sub: original config restore verification failed; re-applying once")
-        return False
-    except Exception:
-        logger.exception("Auto-sub: failed to restore original config from snapshot")
-        return False
-
 
 async def _restore_original_config_or_fail_job(
     job: dict[str, Any],
@@ -124,13 +47,21 @@ async def _restore_original_config_or_fail_job(
     """Restore the start-of-run config and fail *job* when it cannot be verified.
 
     Shared body of the runners' ``_restore_original_config`` closures: the
-    verified restore re-applies the original state and reads it back (with
-    one re-apply on a transient mismatch); a persisting mismatch means the
-    run would end with a different topology than it began with, so the job
-    is marked failed instead. *message* names the mode for the user-visible
-    job message and differs per runner by design.
+    retained start state is restored through the job's owner; an unrestorable
+    rollback means the run would end with a different topology than it began
+    with, so the job is marked failed instead. *message* names the mode for
+    the user-visible job message and differs per runner by design.
     """
-    restored = await _restore_auto_sub_original_config(original_config_snapshot)
+    if "output_state_context" not in job:
+        raise RuntimeError("AutoSub original-config restore requires a service job")
+    try:
+        owner = _candidate_owner(job["id"])
+        if not owner.committed:
+            await owner.restore()
+        restored = True
+    except Exception:
+        logger.exception("Auto-sub: candidate owner restore failed")
+        restored = False
     if not restored:
         prior_detail = str((job.get("error") or {}).get("detail") or "")
         restore_detail = "original config restore verification failed"
@@ -142,100 +73,108 @@ async def _restore_original_config_or_fail_job(
     return restored
 
 
-async def _auto_sub_sync_dsp_runtime(
-    *,
-    output_mode: str,
-    persisted_overview: dict[str, Any],
+async def _translate_and_stage_service_candidate(
+    job: dict[str, Any], *, global_config: dict[str, Any] | None,
+    subwoofers_config: dict[str, Any] | None,
 ) -> None:
-    """Sync the native DSP runtime to the exact candidate/winner state.
+    """Translate one retained legacy candidate triplet and stage it.
 
-    ``persisted_overview`` is the overview returned by the candidate
-    ``set_audio_output_mode`` call, which persists the mode file synchronously
-    and reads it back.  The live overview is re-read here and its derived
-    bass configuration must match the persisted candidate on mode, sub
-    alignments, levels, polarities, crossover and main high-pass.  A mismatch
-    (for example a concurrent writer replacing the candidate with the
-    incumbent state) raises instead of silently syncing the wrong topology,
-    so every AutoSub sweep runs with exactly the gain/delay/polarity/
-    crossover state the caller intends to evaluate.
+    Service jobs only. Translation and render failures raise ``ValueError``;
+    revision drift raises ``StateConflictError`` and unrestorable rollback
+    raises ``CandidateRestoreError`` — both run-fatal by contract.
     """
-    if _dsp_runtime() is None:
-        return
-    overview = await asyncio.to_thread(get_audio_output_overview)
-    expected = BassManagementConfig.from_overview(persisted_overview)
-    actual = BassManagementConfig.from_overview(overview)
-    mismatches: list[str] = []
-    if actual.output_mode != output_mode:
-        mismatches.append(f"mode={actual.output_mode} (expected {output_mode})")
-    if abs(actual.sub_alignment_ms - expected.sub_alignment_ms) > 0.05:
-        mismatches.append(
-            f"sub1 alignment={actual.sub_alignment_ms:.2f} ms "
-            f"(expected {expected.sub_alignment_ms:.2f} ms)"
-        )
-    if actual.crossover_frequency_hz != expected.crossover_frequency_hz:
-        mismatches.append(
-            f"crossover={actual.crossover_frequency_hz} Hz "
-            f"(expected {expected.crossover_frequency_hz} Hz)"
-        )
-    if bool(actual.main_highpass_enabled) != bool(expected.main_highpass_enabled):
-        mismatches.append(
-            f"main high-pass={actual.main_highpass_enabled} "
-            f"(expected {expected.main_highpass_enabled})"
-        )
-    if abs(round(actual.sub_level_db, 1) - round(expected.sub_level_db, 1)) > 0.05:
-        mismatches.append(
-            f"sub1 level={actual.sub_level_db:.1f} dB "
-            f"(expected {expected.sub_level_db:.1f} dB)"
-        )
-    if actual.sub_polarity != expected.sub_polarity:
-        mismatches.append(
-            f"sub1 polarity={actual.sub_polarity} (expected {expected.sub_polarity})"
-        )
-    if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-        if abs(actual.sub2_alignment_ms - expected.sub2_alignment_ms) > 0.05:
-            mismatches.append(
-                f"sub2 alignment={actual.sub2_alignment_ms:.2f} ms "
-                f"(expected {expected.sub2_alignment_ms:.2f} ms)"
-            )
-        if abs(round(actual.sub2_level_db, 1) - round(expected.sub2_level_db, 1)) > 0.05:
-            mismatches.append(
-                f"sub2 level={actual.sub2_level_db:.1f} dB "
-                f"(expected {expected.sub2_level_db:.1f} dB)"
-            )
-        if actual.sub2_polarity != expected.sub2_polarity:
-            mismatches.append(
-                f"sub2 polarity={actual.sub2_polarity} (expected {expected.sub2_polarity})"
-            )
-    if mismatches:
-        raise RuntimeError(
-            "AutoSub candidate state changed before DSP sync: " + "; ".join(mismatches)
-        )
-    await _dsp_runtime().sync(overview)
+    # Deferred: candidate_session reaches back through roles into this
+    # module, so a top-level import would close a cycle.
+    from .candidate_session import AutoSubProposal
+    from .roles import autosub_apply_knobs
+
+    owner = _candidate_owner(job["id"])
+    service = _output_service()
+    context = job["output_state_context"]
+    proposal = AutoSubProposal(**autosub_apply_knobs(
+        service.load(), output_key=context["output_key"], channels=context["channels"],
+        sub_role_map=context["sub_role_map"],
+        global_config=global_config, subwoofers_config=subwoofers_config))
+    await owner.stage(proposal)
+
+
+async def _stage_auto_sub_service_state(
+    job: dict[str, Any], *, global_config: dict[str, Any] | None,
+    subwoofers_config: dict[str, Any] | None = None,
+) -> None:
+    """Stage one retained runner state; any failure is run-fatal.
+
+    Fire-and-forget runner sites call this instead of persisting legacy
+    mode state: translation/render problems raise ``RuntimeError`` (like a
+    failed legacy persist would abort the run), revision drift and
+    unrestorable rollback propagate unchanged.
+    """
+    from audio.output_state_store import StateConflictError
+
+    if "output_state_context" not in job:
+        raise RuntimeError("AutoSub service staging requires a service job")
+    try:
+        await _translate_and_stage_service_candidate(
+            job, global_config=global_config, subwoofers_config=subwoofers_config)
+    except StateConflictError:
+        raise
+    except RuntimeError:
+        raise
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(f"AutoSub failed to stage retained state: {exc}") from exc
+
+
+async def _commit_auto_sub_service_winner(job: dict[str, Any]) -> dict[str, Any]:
+    """Commit the final verified staged state once; any failure is run-fatal.
+
+    Called by the runners immediately before completing a service job, after
+    every acoustic gate has retained the final state. The owner re-verifies
+    runtime and frozen revision inside its lock and retires afterwards, so
+    cleanup can never restore through it. A committed owner returning here
+    again is a programming error and raises.
+    """
+    if "output_state_context" not in job:
+        raise RuntimeError("AutoSub winner commit requires a service job")
+    if _auto_sub_cancel_requested(job):
+        raise RuntimeError("AutoSub winner commit skipped: cancellation requested")
+    owner = _candidate_owner(job["id"])
+    try:
+        committed = await owner.commit_staged(
+            cancel_requested=lambda: _auto_sub_cancel_requested(job))
+    except Exception as exc:
+        raise RuntimeError(f"AutoSub winner commit failed: {exc}") from exc
+    job["output_state_context"]["committed_revision"] = committed["revision"]
+    return committed
+
 
 async def _auto_sub_apply_candidate(
     *,
-    output_mode: str,
     global_config: dict[str, Any],
     subwoofers_config: dict[str, Any] | None,
-    verify: Callable[[dict[str, Any]], bool],
-    load_overview: Callable[[], dict[str, Any]] | None = None,
+    job: dict[str, Any] | None = None,
 ) -> bool:
-    """Persist, live-sync, settle, and verify one mode-owned candidate."""
+    """Stage one service candidate through its owner.
+
+    Service jobs (``job`` carrying ``output_state_context``) stage the
+    retained state through their owner: True once staged and verified,
+    False only for recoverable translation/render failures. Revision drift
+    and unrestorable rollback raise run-fatal.
+    """
+    from audio.output_state_store import StateConflictError
+
+    if job is None or "output_state_context" not in job:
+        raise RuntimeError("AutoSub candidate apply requires a service job")
     try:
-        persisted_overview = await asyncio.to_thread(
-            set_audio_output_mode, output_mode, global_config, subwoofers_config,
-        )
-        if _dsp_runtime() is not None:
-            await _auto_sub_sync_dsp_runtime(
-                output_mode=output_mode,
-                persisted_overview=persisted_overview,
-            )
-        await asyncio.sleep(0.3)
-        overview = await asyncio.to_thread(load_overview or get_audio_output_overview)
-        return bool(verify(overview))
-    except Exception:
-        logger.exception("Auto-sub: candidate apply or verification failed")
+        await _translate_and_stage_service_candidate(
+            job, global_config=global_config, subwoofers_config=subwoofers_config)
+    except StateConflictError:
+        raise
+    except RuntimeError:
+        raise
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning("Auto-sub: service candidate staging failed: %s", exc)
         return False
+    return True
 
 def _auto_sub_step_ms(fc: int) -> float:
     return (1000.0 / float(fc)) / 16.0

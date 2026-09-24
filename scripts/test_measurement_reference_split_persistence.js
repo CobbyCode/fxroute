@@ -20,39 +20,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const repoRoot = path.join(__dirname, '..');
-const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
-
-function extractFunction(name) {
-    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(appSource);
-    assert.ok(match, `missing function ${name}`);
-    let parenDepth = 1;
-    let braceStart = -1;
-    for (let index = match.index + match[0].length; index < appSource.length; index += 1) {
-        if (appSource[index] === '(') parenDepth += 1;
-        if (appSource[index] === ')') parenDepth -= 1;
-        if (parenDepth === 0) {
-            braceStart = appSource.indexOf('{', index);
-            break;
-        }
-    }
-    assert.notEqual(braceStart, -1, `missing function body ${name}`);
-    let depth = 0;
-    let quote = '';
-    let escaped = false;
-    for (let index = braceStart; index < appSource.length; index += 1) {
-        const char = appSource[index];
-        if (quote) {
-            if (escaped) escaped = false;
-            else if (char === '\\') escaped = true;
-            else if (char === quote) quote = '';
-            continue;
-        }
-        if (char === "'" || char === '"' || char === '`') quote = char;
-        else if (char === '{') depth += 1;
-        else if (char === '}' && --depth === 0) return appSource.slice(match.index, index + 1);
-    }
-    throw new Error(`unterminated function ${name}`);
-}
+const setupSource = fs.readFileSync(path.join(repoRoot, 'static', 'measurement_setup.js'), 'utf8');
 
 const EXTRACTED = [
     'getSelectedMeasurementInput',
@@ -90,7 +58,10 @@ function makeContext() {
     };
     const context = { state, console, Math, Number, Object, String, Boolean, FormData };
     vm.createContext(context);
-    vm.runInContext(EXTRACTED.map(extractFunction).join('\n'), context);
+    vm.runInContext(setupSource, context);
+    const setup = context.FXRouteMeasurementSetup;
+    setup.init({ getState: () => state });
+    for (const name of EXTRACTED) context[name] = (...args) => setup[name](...args);
     return context;
 }
 

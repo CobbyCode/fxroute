@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
 
 function extractFunction(name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -69,11 +69,19 @@ const sandbox = {
         },
     },
     window: { __footerSource: 'local' },
-    playbackActionInFlight: false,
-    libraryModeRequestInFlight: false,
-    footerSingleTrackStartLockActive: () => false,
-    isStreamingFooterSource: (source) => source === 'spotify' || source === 'qobuz',
-    renderLibraryModeButtons: () => {},
+    // Footer mode renderers read state/DOM/ownership through deps.
+    deps: {
+        getState: () => sandbox.state,
+        getElements: () => sandbox.elements,
+        isStreamingFooterSource: (source) => source === 'spotify' || source === 'qobuz',
+        streamingFooterData: () => null,
+        isLibraryModeRequestInFlight: () => false,
+        isSpotifyTransportInFlight: () => false,
+        isPlaybackActionInFlight: () => false,
+        footerSingleTrackStartLockActive: () => false,
+        renderLibraryModeButtons: () => {},
+        setLibraryModeSyncArmed: () => {},
+    },
 };
 
 vm.createContext(sandbox);

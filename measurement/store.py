@@ -25,10 +25,12 @@ from measurement.audio import MeasurementAudioAdapter
 from measurement.file_store import MeasurementFileStore
 from measurement.host_capture import HostCaptureRunner
 from measurement.capture_policy import MeasurementCapturePolicyRunner
+from measurement.capture_evidence import CaptureEvidence
 from measurement.persistence import MeasurementPersistence
-from measurement.routing import MeasurementRouting
+from measurement.routing import MeasurementRouting, freeze_expected_native_context
 from measurement.signal import _write_wav, write_sweep_file
 from measurement.job_runner import MeasurementJobRunner
+from measurement.target import sweep_output_masks, target_output_mask
 from measurement.repeat_runner import MeasurementRepeatRunner
 from measurement.analyzer import MeasurementAnalyzer
 from measurement.constants import (
@@ -119,7 +121,11 @@ class MeasurementStore:
                  raw_scope_enter: Callable[[], Any] | None = None,
                  raw_scope_exit: Callable[[bool], Any] | None = None,
                  active_scope_enter: Callable[[], Any] | None = None,
-                 active_scope_exit: Callable[[bool], Any] | None = None):
+                 active_scope_exit: Callable[[bool], Any] | None = None,
+                 output_mask_apply: Callable[[int], Any] | None = None,
+                 output_mask_clear: Callable[[int], Any] | None = None,
+                 output_mask_apply_sync: Callable[[int], Any] | None = None,
+                 output_mask_clear_sync: Callable[[int], Any] | None = None):
         self.home = Path(home or Path.home())
         self.runtime_snapshot_provider = runtime_snapshot_provider
         self.effect_bypass_setter = effect_bypass_setter
@@ -127,6 +133,17 @@ class MeasurementStore:
         self.raw_scope_exit = raw_scope_exit
         self.active_scope_enter = active_scope_enter
         self.active_scope_exit = active_scope_exit
+        self.output_mask_apply = output_mask_apply
+        self.output_mask_clear = output_mask_clear
+        # Synchronous twins for the sequential capture runners (L/R repeat),
+        # which drive several sweeps inside one synchronous worker instead of
+        # letting the job runner mask a whole job.
+        self.output_mask_apply_sync = output_mask_apply_sync
+        self.output_mask_clear_sync = output_mask_clear_sync
+        # Optional application hook: freezes the measurement target (mode,
+        # bank, revision, fingerprint, reference tap) and returns it.  Without
+        # it the store behaves exactly as before the frozen-target era.
+        self.measurement_target_provider: Callable[[str, int], dict[str, Any]] | None = None
         self.config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (self.home / ".config"))
         self.state_root = Path(os.environ.get("XDG_STATE_HOME") or (self.home / ".local" / "state"))
         self.measurements_dir = self.config_root / "fxroute" / "measurements"
@@ -172,6 +189,8 @@ class MeasurementStore:
             effect_bypass_setter=self.effect_bypass_setter,
             active_scope_enter=self.active_scope_enter,
             active_scope_exit=self.active_scope_exit,
+            output_mask_apply=self.output_mask_apply,
+            output_mask_clear=self.output_mask_clear,
         )
         self._repeat_runner = MeasurementRepeatRunner(self)
         self._analyzer = MeasurementAnalyzer(self, CaptureQualityError)
@@ -222,6 +241,10 @@ class MeasurementStore:
 
     def list_measurements(self) -> dict[str, Any]:
         return self._persistence.list_measurements()
+
+    def get_measurement(self, measurement_id: str) -> dict[str, Any]:
+        """Return one stored measurement by id; unknown ids raise KeyError."""
+        return self._persistence.load_measurement(measurement_id)
 
     def save_measurement(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._persistence.save_measurement(payload)
@@ -296,6 +319,7 @@ class MeasurementStore:
         calibration_filename: str | None,
         reference_input_channel_left: str | int | None = None,
         reference_input_channel_right: str | int | None = None,
+        reference_candidate_channels: list[str | int] | tuple[str | int, ...] | None = None,
         calibration_bytes: bytes | None,
         calibration_ref: str | None,
         measurement_scope: str,
@@ -400,6 +424,31 @@ class MeasurementStore:
             )
         )
 
+        # Opt-in multi-channel reference capture: every configured loopback
+        # candidate is recorded in one take and the capture evidence decides
+        # which one carries the sweep.  The list is never filtered by side, and
+        # the legacy single fields keep mirroring its first entry so older
+        # readers still see one primary channel.
+        reference_candidate_input_channels: list[int] = []
+        for value in (reference_candidate_channels or ()):
+            raw_candidate = str(value if value is not None else "").strip()
+            if not raw_candidate:
+                continue
+            candidate_index = self._parse_optional_input_channel_index(
+                raw_candidate,
+                channel_count=input_channel_count,
+                field_name="reference_candidate_channels",
+            )
+            if candidate_index is None or candidate_index == mic_input_channel_index:
+                continue
+            if candidate_index + 1 not in reference_candidate_input_channels:
+                reference_candidate_input_channels.append(candidate_index + 1)
+        if reference_candidate_input_channels:
+            if reference_input_channel_left_index is None:
+                reference_input_channel_left_index = reference_candidate_input_channels[0] - 1
+            if reference_input_channel_right_index is None:
+                reference_input_channel_right_index = reference_candidate_input_channels[0] - 1
+
         calibration_meta = self._file_store.resolve_calibration_meta(
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
@@ -408,6 +457,25 @@ class MeasurementStore:
         normalized_scope = self._normalize_measurement_scope(measurement_scope)
         now = self._utc_now()
         job_id = f"{job_prefix}{uuid4().hex[:12]}"
+        job_input_channels: dict[str, Any] = {
+            "mic": mic_input_channel_index + 1,
+            "electrical_reference": (
+                reference_input_channel_left_index + 1
+                if reference_input_channel_left_index is not None
+                else (reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None)
+            ),
+            "electrical_reference_left": (
+                reference_input_channel_left_index + 1 if reference_input_channel_left_index is not None else None
+            ),
+            "electrical_reference_right": (
+                reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None
+            ),
+            "reference_disabled_reason": reference_disabled_reason,
+            "reference_disabled_reason_left": reference_disabled_reason_left,
+            "reference_disabled_reason_right": reference_disabled_reason_right,
+        }
+        if reference_candidate_input_channels:
+            job_input_channels["electrical_reference_candidates"] = reference_candidate_input_channels
         job = {
             "id": job_id,
             "status": "queued",
@@ -423,23 +491,7 @@ class MeasurementStore:
                 "measurement_sample_rate": selected_input.get("measurement_sample_rate"),
                 "supported_rates": selected_input.get("supported_rates", []),
             },
-            "input_channels": {
-                "mic": mic_input_channel_index + 1,
-                "electrical_reference": (
-                    reference_input_channel_left_index + 1
-                    if reference_input_channel_left_index is not None
-                    else (reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None)
-                ),
-                "electrical_reference_left": (
-                    reference_input_channel_left_index + 1 if reference_input_channel_left_index is not None else None
-                ),
-                "electrical_reference_right": (
-                    reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None
-                ),
-                "reference_disabled_reason": reference_disabled_reason,
-                "reference_disabled_reason_left": reference_disabled_reason_left,
-                "reference_disabled_reason_right": reference_disabled_reason_right,
-            },
+            "input_channels": job_input_channels,
             "calibration": calibration_meta or {"filename": "", "applied": False},
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "measurement_scope": normalized_scope,
@@ -447,6 +499,65 @@ class MeasurementStore:
             "error": None,
         }
         return {"job": job, "channel": normalized_channel}
+
+    def _freeze_measurement_job_target(self, job: dict[str, Any], measurement_bank: str,
+                                       target: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Freeze the area target and derive its output mute mask at job creation.
+
+        Without an injected provider the job keeps its legacy shape (no target,
+        no masking).  With one, a missing or unrouted area fails the request
+        before any sweep is played instead of capturing the wrong outputs.
+
+        ``target`` is an owner-internal pre-frozen document (one speaker side's
+        shared verification sweep).  It replaces the provider resolution but
+        still has to describe this job's own input chain, so a rate mismatch
+        fails the request before any sweep is played.
+
+        Raw helper sweeps (Auto-Sub optimize, SPL calibration) are exempt: they
+        bypass the active chain and drive their own isolation, so an editing
+        area must never mute the outputs they are about to measure.
+        """
+        provider = self.measurement_target_provider
+        if not callable(provider):
+            return {}
+        if self._normalize_measurement_scope(job.get("measurement_scope")) != MEASUREMENT_SCOPE_ACTIVE_CHAIN:
+            return {}
+        input_info = job.get("input") if isinstance(job.get("input"), dict) else {}
+        rate = input_info.get("measurement_sample_rate") or input_info.get("sample_rate")
+        if target is not None:
+            # Validates the measured-role shape on the way to the mask the
+            # capture path consumes, and pins the target to this input.
+            mask = target_output_mask(target, roles=target.get("roles") or [])
+            bank_id = target.get("bank_id")
+            if not isinstance(bank_id, str) or not bank_id:
+                raise ValueError("Frozen measurement target carries no bank id")
+            target_rate = target.get("sample_rate_hz")
+            if type(rate) is int and target_rate != rate:
+                raise ValueError(
+                    f"Frozen measurement target rate {target_rate!r} is not this input's rate {rate!r}"
+                )
+            return {"measurement_bank": bank_id, "measurement_target": target, "output_mask": mask}
+        target = provider(str(measurement_bank or ""), int(rate) if type(rate) is int else 0)
+        return {
+            "measurement_bank": target["bank_id"],
+            "measurement_target": target,
+            # Bit n mutes engine output n (plan/role order); Global needs none.
+            "output_mask": target_output_mask(target, roles=target["roles"]),
+        }
+
+    def _freeze_repeat_job_target(self, job: dict[str, Any], measurement_bank: str) -> dict[str, Any]:
+        """Freeze the area plus the per-sweep masks of a two-sided capture.
+
+        An L/R repeat is a sequence of internal way sweeps over the same
+        frozen area, so every sweep gets its own mask instead of the job-wide
+        one the single-sweep path uses.
+        """
+        frozen = self._freeze_measurement_job_target(job, measurement_bank)
+        target = frozen.get("measurement_target")
+        if not isinstance(target, dict) or target.get("legacy"):
+            return frozen
+        frozen["sweep_output_masks"] = sweep_output_masks(target, roles=target["roles"])
+        return frozen
 
     def _register_measurement_job(
         self,
@@ -459,6 +570,8 @@ class MeasurementStore:
         self._job_runner._effect_bypass_setter = self.effect_bypass_setter
         self._job_runner._active_scope_enter = self.active_scope_enter
         self._job_runner._active_scope_exit = self.active_scope_exit
+        self._job_runner._output_mask_apply = self.output_mask_apply
+        self._job_runner._output_mask_clear = self.output_mask_clear
         self._jobs[job_id] = job
         self._persistence._persist_job(job)
         self._job_runner.start(job_id, job, executor)
@@ -474,6 +587,7 @@ class MeasurementStore:
         reference_input_channel: str | int | None = "",
         reference_input_channel_left: str | int | None = None,
         reference_input_channel_right: str | int | None = None,
+        reference_candidate_channels: list[str | int] | tuple[str | int, ...] | None = None,
         calibration_filename: str | None = None,
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
@@ -482,7 +596,26 @@ class MeasurementStore:
         playback_gain: float | None = None,
         measurement_role: str = "",
         skip_pre_sweep_diagnostics: bool = False,
+        measurement_bank: str = "",
+        frozen_target: dict[str, Any] | None = None,
+        expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        expected_native_output_mode: str | None = None,
+        expected_plan_fingerprint: str | None = None,
+        capture_evidence: CaptureEvidence | None = None,
     ) -> dict[str, Any]:
+        if capture_evidence is not None:
+            if (not isinstance(capture_evidence, CaptureEvidence)
+                    or self._normalize_measurement_scope(measurement_scope) != MEASUREMENT_SCOPE_ACTIVE_CHAIN
+                    or str(measurement_role or "").strip()):
+                raise ValueError("Capture evidence requires an owner and a single active-chain capture")
+        # Internal owner-only context: detach before setup's first await so a
+        # staged plan cannot be rebased by subsequent caller mutations.
+        expected = freeze_expected_native_context(
+            measurement_scope=self._normalize_measurement_scope(measurement_scope),
+            expected_native_layout=expected_native_layout,
+            expected_native_output_mode=expected_native_output_mode,
+            expected_plan_fingerprint=expected_plan_fingerprint,
+        )
         setup = await self._prepare_measurement_job_setup(
             input_id=input_id,
             input_key=input_key,
@@ -490,6 +623,7 @@ class MeasurementStore:
             reference_input_channel=reference_input_channel,
             reference_input_channel_left=reference_input_channel_left,
             reference_input_channel_right=reference_input_channel_right,
+            reference_candidate_channels=reference_candidate_channels,
             calibration_filename=calibration_filename,
             calibration_bytes=calibration_bytes,
             calibration_ref=calibration_ref,
@@ -518,6 +652,19 @@ class MeasurementStore:
             "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
             "_skip_pre_sweep_diagnostics": bool(skip_pre_sweep_diagnostics),
         })
+        job.update(self._freeze_measurement_job_target(job, measurement_bank, frozen_target))
+        job.update({f"_{key}": value for key, value in expected.items()})
+        if capture_evidence is not None:
+            capture_evidence._bind(job["id"])
+            try:
+                result = self._register_measurement_job(
+                    job, lambda current: self._execute_capture_job(current, capture_evidence=capture_evidence),
+                )
+            except BaseException:
+                capture_evidence._discard()
+                raise
+            capture_evidence._attach(self._job_tasks[job["id"]], job)
+            return result
         return self._register_measurement_job(job, self._execute_capture_job)
 
     async def start_lr_repeat_measurement(
@@ -534,6 +681,7 @@ class MeasurementStore:
         calibration_bytes: bytes | None = None,
         calibration_ref: str | None = None,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
+        measurement_bank: str = "",
     ) -> dict[str, Any]:
         normalized_repeat_count = 3
         setup = await self._prepare_measurement_job_setup(
@@ -558,6 +706,7 @@ class MeasurementStore:
             "channel": "stereo",
             "message": "L/R repeat queued.",
         })
+        job.update(self._freeze_repeat_job_target(job, measurement_bank))
         return self._register_measurement_job(job, self._execute_lr_repeat_job)
 
     @staticmethod
@@ -622,6 +771,44 @@ class MeasurementStore:
         )
         return cancelled
 
+    async def drain_job(self, job_id: str) -> None:
+        """Stop a live capture and wait through its task's mask/scope cleanup.
+
+        Terminal status is published before runner finalization. Shield the
+        actual task, not status polling, and defer caller cancellation until
+        its cleanup has completed. A failing cancel request (e.g. a persist
+        error) is remembered and raised only after the child was actually
+        drained; this does not shut down other store jobs.
+        """
+        job = self.get_job(job_id)
+        cancel_error: BaseException | None = None
+        if str(job.get("status") or "") not in {"completed", "failed", "cancelled"}:
+            try:
+                self.cancel_job(job_id)
+            except BaseException as exc:
+                logger.exception(
+                    "MEASUREMENT-DRAIN cancel request failed; draining child anyway: job_id=%s",
+                    job_id,
+                )
+                cancel_error = exc
+        task = self._job_tasks.get(job_id)
+        if task is None:
+            if cancel_error is not None:
+                raise cancel_error
+            return
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        if not task.cancelled():
+            task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        if cancel_error is not None:
+            raise cancel_error
+
     def has_active_measurement_job(self) -> bool:
         self._normalize_stale_jobs()
         return any(
@@ -641,6 +828,11 @@ class MeasurementStore:
 
     def _start_job_process(self, job_id: str, command: list[str]) -> subprocess.Popen[str]:
         return self._job_runner.start_process(job_id, command)
+
+    def _forget_job_process(self, job_id: str,
+                            process: subprocess.Popen[str] | None = None) -> None:
+        """Drop a stopped/reaped child so no dead Popen stays registered."""
+        self._job_runner.forget_process(job_id, process)
 
     def _measurement_job_task_done(self, job_id: str, task: asyncio.Task[Any]) -> None:
         self._job_runner._task_done(job_id, task)
@@ -673,6 +865,12 @@ class MeasurementStore:
     def set_active_calibration_file_id(self, calibration_ref: str | None) -> dict[str, Any]:
         return self._file_store.set_active_calibration_file_id(calibration_ref)
 
+    def update_settings(self, update: Callable[[dict[str, Any]], Any]) -> Any:
+        return self._file_store.update_settings(update)
+
+    def read_settings(self) -> dict[str, Any]:
+        return self._file_store.read_settings()
+
     def get_active_calibration_file_id(self, files: list[dict[str, Any]] | None = None) -> str:
         return self._file_store.get_active_calibration_file_id(files)
 
@@ -687,6 +885,8 @@ class MeasurementStore:
         self._job_runner._effect_bypass_setter = self.effect_bypass_setter
         self._job_runner._active_scope_enter = self.active_scope_enter
         self._job_runner._active_scope_exit = self.active_scope_exit
+        self._job_runner._output_mask_apply = self.output_mask_apply
+        self._job_runner._output_mask_clear = self.output_mask_clear
         await self._job_runner.run(job_id, job, executor)
 
     def _execute_lr_repeat_job(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -744,7 +944,7 @@ class MeasurementStore:
                         section.pop(path_key, None)
         return public
 
-    def _execute_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
+    def _execute_capture_job(self, job: dict[str, Any], *, capture_evidence: CaptureEvidence | None = None) -> dict[str, Any]:
         job_id = str(job["id"])
         cj: dict[str, float] = {"enter": time.monotonic()}
         owner_job_id = str(job.get("_owner_job_id") or job_id)
@@ -757,7 +957,10 @@ class MeasurementStore:
 
         sample_rate = int(selected_input.get("measurement_sample_rate") or selected_input.get("sample_rate") or MEASUREMENT_DEFAULT_SAMPLE_RATE)
         repeat_profile = job.get("capture_profile") == "lr-repeat"
-        resolved_electrical_reference_input_channel = self._resolve_electrical_reference_input_channel(input_channels, channel)
+        resolved_electrical_reference_input_channels = self._resolve_electrical_reference_input_channels(input_channels, channel)
+        resolved_electrical_reference_input_channel = (
+            resolved_electrical_reference_input_channels[0] if resolved_electrical_reference_input_channels else None
+        )
         er_preavg_requested = repeat_profile and resolved_electrical_reference_input_channel is not None
         # Default L/R Repeat intentionally uses the same full sweep profile as
         # Single Sweep. This keeps Acoustic-only Repeat, ER Repeat, and Single
@@ -794,7 +997,26 @@ class MeasurementStore:
             else None
         )
         use_electrical_reference = electrical_reference_channel_index is not None and electrical_reference_channel_index != mic_input_channel_index
-        capture_channels = max(2, mic_input_channel_index + 1, (electrical_reference_channel_index + 1) if use_electrical_reference else 2)
+        # One simultaneous take can carry several configured loopback channels;
+        # the store's electrical-reference evaluation then admits the channel
+        # that actually carries the sweep. Outside that mode the list holds the
+        # legacy single per-side reference and nothing changes.
+        electrical_reference_channel_indexes = (
+            [
+                channel_index
+                for channel_index in (
+                    max(0, candidate - 1) for candidate in resolved_electrical_reference_input_channels
+                )
+                if channel_index != mic_input_channel_index
+            ]
+            if use_electrical_reference
+            else []
+        )
+        capture_channels = max(
+            2,
+            mic_input_channel_index + 1,
+            (max(electrical_reference_channel_indexes) + 1) if electrical_reference_channel_indexes else 2,
+        )
         capture_path = self.captures_dir / f"{job_id}.wav"
         playback_path = self.playbacks_dir / f"{job_id}.wav"
         source_node_name = str(selected_input.get("node_name") or "").strip()
@@ -810,6 +1032,10 @@ class MeasurementStore:
             mic_source_node_name=source_node_name,
             requested_channel=playback_channel,
         )
+        # A bank measurement plays one deliberately band-limited way, so its
+        # reference timing has to be judged on the registers that way actually
+        # plays; a single sweep plays the whole band and stays unchanged.
+        band_limited_reference = bool(str(job.get("measurement_bank") or "").strip())
         electrical_reference = None
         if use_electrical_reference:
             electrical_reference = {
@@ -820,6 +1046,9 @@ class MeasurementStore:
                 "mic_channel_label": f"input_{mic_input_channel_index + 1}_mic",
                 "mic_input_channel": mic_input_channel_index + 1,
                 "electrical_reference_input_channel": electrical_reference_channel_index + 1,
+                "channel_indexes": list(electrical_reference_channel_indexes),
+                "channels": [channel_index + 1 for channel_index in electrical_reference_channel_indexes],
+                "band_limited_reference": band_limited_reference,
             }
         sweep_meta = self._write_sweep_file(
             playback_path,
@@ -866,6 +1095,7 @@ class MeasurementStore:
                 "job_id": job_id,
                 "owner_job_id": owner_job_id,
                 "mic_source_node_name": source_node_name,
+                "select_reference_candidate": self._select_electrical_reference_candidate,
                 "channel": playback_channel,
                 "capture_path": capture_path,
                 "playback_path": playback_path,
@@ -885,6 +1115,12 @@ class MeasurementStore:
                 "calibration_curve": calibration_curve,
                 "mic_input_channel_index": mic_input_channel_index,
                 "skip_pre_sweep_diagnostics": bool(job.get("_skip_pre_sweep_diagnostics", False)),
+                **{
+                    key: job[f"_{key}"]
+                    for key in ("expected_native_layout", "expected_native_output_mode", "expected_plan_fingerprint")
+                    if f"_{key}" in job
+                },
+                **({"capture_evidence": capture_evidence} if capture_evidence is not None else {}),
             },
         )
         analysis = policy_result.analysis
@@ -910,7 +1146,12 @@ class MeasurementStore:
             calibration=calibration_result,
             input_channels={
                 "mic": mic_input_channel_index + 1,
-                "electrical_reference": electrical_reference_channel_index + 1 if use_electrical_reference else None,
+                "electrical_reference": (
+                    capture_info.get("electrical_reference_input_channel")
+                    if isinstance(capture_info, dict)
+                    and capture_info.get("electrical_reference_input_channel") is not None
+                    else (electrical_reference_channel_index + 1 if use_electrical_reference else None)
+                ),
                 "electrical_reference_left": input_channels.get("electrical_reference_left"),
                 "electrical_reference_right": input_channels.get("electrical_reference_right"),
                 "reference_disabled_reason": self._electrical_reference_disabled_reason(input_channels, channel),
@@ -918,6 +1159,7 @@ class MeasurementStore:
                 "reference_disabled_reason_right": str(input_channels.get("reference_disabled_reason_right") or ""),
             },
             measurement_role=str(job.get("measurement_role") or ""),
+            measurement_target=job.get("measurement_target"),
         )
         cj["measured"] = time.monotonic()
         try:
@@ -942,6 +1184,9 @@ class MeasurementStore:
         completion_message = f"Measurement finished. {timing_summary}" if timing_summary else "Measurement finished. Trusted trace is ready."
         if final_capture_level_low:
             completion_message += " Volume was low."
+
+        if capture_evidence is not None:
+            capture_evidence._select(analysis, job=job, capture=capture_info)
 
         return {
             "measurement": measurement,
@@ -1008,8 +1253,12 @@ class MeasurementStore:
         reference_capture: dict[str, Any],
         capture_channels: int,
         electrical_reference_channel_index: int | None,
+        capture_evidence: CaptureEvidence | None = None,
         **kwargs,
     ):
+        if capture_evidence is not None:
+            capture_evidence._begin_attempt()
+            kwargs["timing_ir_receiver"] = capture_evidence._receive_ir
         if capture_path.exists():
             capture_path.unlink()
         return self._host_capture_runner.execute(
@@ -1119,6 +1368,96 @@ class MeasurementStore:
         reference_path["stability"] = "stable"
         analysis["reference_path"] = reference_path
         return {"usable": True, "warning": ""}
+
+    @staticmethod
+    def _reference_candidate_rank(candidate: dict[str, Any]) -> tuple[float, float, float, float]:
+        """Order usable reference candidates by the evidence they carry.
+
+        Confidence is the store's own blend (min of alignment and
+        sharpness/60) and therefore the primary criterion; alignment, IR
+        sharpness and reference level are the tie-breakers.  Equal tuples keep
+        the first candidate, i.e. the lower input channel.
+        """
+        reference = (candidate.get("analysis") or {}).get("reference_path") or {}
+
+        def _number(value: Any, default: float) -> float:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return default
+            return number if math.isfinite(number) else default
+
+        return (
+            _number(reference.get("confidence"), 0.0),
+            min(_number(reference.get("start_score"), 0.0), _number(reference.get("end_score"), 0.0)),
+            _number(reference.get("ir_sharpness_db"), 0.0),
+            _number(reference.get("peak_dbfs"), -120.0),
+        )
+
+    @staticmethod
+    def _reference_candidate_evidence(candidate: dict[str, Any]) -> dict[str, Any]:
+        """Describe one judged reference candidate as JSON-safe evidence."""
+        analysis = candidate.get("analysis") if isinstance(candidate.get("analysis"), dict) else {}
+        reference = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
+
+        def _rounded(value: Any) -> float | None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return round(number, 6) if math.isfinite(number) else None
+
+        return {
+            "input_channel": int(candidate.get("channel_index") or 0) + 1,
+            "usable": bool(candidate.get("usable")),
+            "warning": str(candidate.get("warning") or ""),
+            "analysis_error": str(candidate.get("error") or "") or None,
+            "confidence": _rounded(reference.get("confidence")),
+            "alignment_score": _rounded(reference.get("alignment_score")),
+            "ir_sharpness_db": _rounded(reference.get("ir_sharpness_db")),
+            "peak_dbfs": _rounded(reference.get("peak_dbfs")),
+            "clipped": bool(reference.get("clipped")),
+        }
+
+    def _select_electrical_reference_candidate(self, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        """Admit the electrical reference channel of one simultaneous take.
+
+        Every candidate is judged by ``_evaluate_electrical_reference_status``,
+        the same evaluation a single-reference capture has always used, so a
+        take recording several configured loopback channels is admitted exactly
+        as if each channel had been captured alone.  The usable candidate with
+        the best reference evidence wins; without a usable candidate the first
+        analyzed one is returned unchanged, so the existing rejection and host
+        monitor fallback stay in charge.  The chosen channel stays visible
+        through its own analysis and capture info, and every sibling's verdict
+        is recorded next to it for the job record.
+        """
+        judged: list[dict[str, Any]] = []
+        for candidate in candidates:
+            analysis = candidate.get("analysis")
+            if not isinstance(analysis, dict):
+                judged.append({
+                    **candidate, "usable": False,
+                    "warning": str(candidate.get("error") or "candidate analysis unavailable"),
+                })
+                continue
+            status = self._evaluate_electrical_reference_status(analysis)
+            judged.append({
+                **candidate, "usable": bool(status["usable"]),
+                "warning": str(status.get("warning") or ""),
+            })
+        usable = [candidate for candidate in judged if candidate["usable"]]
+        if usable:
+            chosen = max(usable, key=self._reference_candidate_rank)
+        else:
+            analyzed = [candidate for candidate in judged if isinstance(candidate.get("analysis"), dict)]
+            chosen = analyzed[0] if analyzed else judged[0]
+        reference_path = (chosen.get("analysis") or {}).get("reference_path")
+        if isinstance(reference_path, dict):
+            reference_path["electrical_reference_candidates"] = [
+                self._reference_candidate_evidence(candidate) for candidate in judged
+            ]
+        return chosen
 
     def _should_keep_active_22_dsp_electrical_reference(
         self,
@@ -1457,6 +1796,34 @@ class MeasurementStore:
         except (TypeError, ValueError):
             return None
         return parsed if parsed >= 1 else None
+
+    @classmethod
+    def _resolve_electrical_reference_input_channels(
+        cls,
+        input_channels: dict[str, Any],
+        channel: str | None,
+    ) -> list[int]:
+        """Return the ordered 1-based electrical reference candidates of one capture.
+
+        An explicit candidate list (one simultaneous take over several configured
+        loopback channels) wins and is de-duplicated, never filtered by side: the
+        channel that carries the sweep is decided from the capture evidence, not
+        from the speaker side.  Every other job keeps the legacy single per-side
+        reference, so the manual sweep path is unchanged.
+        """
+        configured = input_channels.get("electrical_reference_candidates")
+        if isinstance(configured, (list, tuple)) and configured:
+            candidates: list[int] = []
+            for value in configured:
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed >= 1 and parsed not in candidates:
+                    candidates.append(parsed)
+            return candidates
+        single = cls._resolve_electrical_reference_input_channel(input_channels, channel)
+        return [single] if single is not None else []
 
     @classmethod
     def _electrical_reference_disabled_reason(

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
 import subprocess
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from dsp.runtime import DSPRuntimeConfig
+from audio.output_topology import MODES
 from audio.tool_env import c_locale_env
 from measurement.constants import (
     MEASUREMENT_SCOPE_ACTIVE_CHAIN,
@@ -18,6 +21,94 @@ from measurement.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Record links must be observed before the sweep plays: creation is async
+# and a link that never materializes records silence on that channel.
+LINK_VERIFY_TIMEOUT_SECONDS = 3.0
+LINK_VERIFY_POLL_SECONDS = 0.05
+# Fixed settle after both links verified so first data quanta are stable.
+LINK_SETTLE_SECONDS = 0.25
+
+
+def iter_pw_link_pairs(listing: str) -> list[tuple[str, str]]:
+    """Parse `pw-link -l` into ``(source_port, target_port)`` pairs.
+
+    Current PipeWire lists a tree: a header port line followed by
+    ``|-> target`` (outgoing) or ``|<- source`` (incoming) lines. Older
+    versions print single ``source -> target (id: N)`` lines; both shapes
+    are accepted so verification works across hosts.
+    """
+    pairs: list[tuple[str, str]] = []
+    current = ""
+    for raw_line in (listing or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("|->"):
+            target = line[3:].strip()
+            if current and target:
+                pairs.append((current, target))
+        elif line.startswith("|<-"):
+            source = line[3:].strip()
+            if current and source:
+                pairs.append((source, current))
+        elif "->" in line:
+            left, _, right = line.partition("->")
+            right = right.split("(id:")[0].strip()
+            if left.strip() and right:
+                pairs.append((left.strip(), right))
+        else:
+            current = line.split("(id:")[0].strip()
+    return pairs
+
+
+def freeze_expected_native_context(
+    *,
+    measurement_scope: str,
+    expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    expected_native_output_mode: str | None = None,
+    expected_plan_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    """Validate and detach an internal, already compiled planned-output context.
+
+    Engine filter/route semantics remain the compiler/manager's responsibility;
+    this boundary checks the envelope, not a second native-layout dialect.
+    """
+    values = (expected_native_layout, expected_native_output_mode, expected_plan_fingerprint)
+    if all(value is None for value in values):
+        return {}
+    if any(value is None for value in values):
+        raise ValueError("Expected native layout, output mode and plan fingerprint are required together")
+    if measurement_scope not in (MEASUREMENT_SCOPE_RAW_HELPER, MEASUREMENT_SCOPE_ACTIVE_CHAIN):
+        raise ValueError("Expected native context is only supported for raw_helper and active_chain measurements")
+    if not isinstance(expected_native_output_mode, str) or expected_native_output_mode not in MODES:
+        raise ValueError("expected_native_output_mode must be a known planned output mode")
+    if not isinstance(expected_plan_fingerprint, str) or not expected_plan_fingerprint.strip():
+        raise ValueError("expected_plan_fingerprint must be a non-empty token")
+    if not isinstance(expected_native_layout, (list, tuple)) or not expected_native_layout:
+        raise ValueError("expected_native_layout must be a non-empty output layout")
+    layout = deepcopy(list(expected_native_layout))
+    if any(not isinstance(row, dict) or not isinstance(row.get("name"), str)
+           or not row["name"].strip() for row in layout):
+        raise ValueError("expected_native_layout requires named output objects")
+    for row in layout:
+        routes = row.get("routes")
+        # Match the manager's legacy source shorthand as well as compiled
+        # route arrays; numeric/filter semantics were checked when staged.
+        if routes is None:
+            if not isinstance(row.get("source"), int) or row["source"] < 0:
+                raise ValueError("expected_native_layout requires output routes or a source")
+        elif not isinstance(routes, list) or not routes or any(not isinstance(route, dict) for route in routes):
+            raise ValueError("expected_native_layout requires non-empty output route arrays")
+    try:
+        json.dumps(layout, allow_nan=False)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("expected_native_layout must contain finite JSON data") from exc
+    return {
+        "expected_native_layout": layout,
+        "expected_native_output_mode": expected_native_output_mode,
+        "expected_plan_fingerprint": expected_plan_fingerprint,
+    }
 
 
 class MeasurementRouting:
@@ -79,6 +170,37 @@ class MeasurementRouting:
             "channel": monitor_channel,
             "channel_label": f"monitor_{'FR' if monitor_channel == 'right' else 'FL'}",
         }
+
+    def _verify_record_links(
+        self,
+        expected: list[tuple[str, str, str]],
+        *,
+        timeout_seconds: float = LINK_VERIFY_TIMEOUT_SECONDS,
+    ) -> dict[str, float | None]:
+        """Poll `pw-link -l` until every expected pair appears, or time out.
+
+        ``expected`` holds ``(source_port, target_port, label)`` triples,
+        matched exactly against parsed link pairs. Returns
+        ``{label: elapsed_seconds}`` with ``None`` for pairs never observed.
+        Never raises: the caller owns mic-fatal versus reference-lenient.
+        """
+        pending = {label: (src, dst) for src, dst, label in expected}
+        found: dict[str, float] = {}
+        start = time.monotonic()
+        while pending and time.monotonic() - start < timeout_seconds:
+            try:
+                completed = self._run(["pw-link", "-l"], capture_output=True,
+                                      text=True, timeout=3)
+                pairs = iter_pw_link_pairs(completed.stdout) if completed.returncode == 0 else []
+            except Exception:
+                pairs = []
+            for label, (src, dst) in list(pending.items()):
+                if (src, dst) in pairs:
+                    found[label] = round(time.monotonic() - start, 3)
+                    del pending[label]
+            if pending:
+                time.sleep(LINK_VERIFY_POLL_SECONDS)
+        return {label: found.get(label) for _, _, label in expected}
 
     def _link_host_reference_capture(
         self,
@@ -178,7 +300,20 @@ class MeasurementRouting:
                 raise RuntimeError(
                     "Measurement audio path could not be prepared. Please retry."
                 )
-        time.sleep(0.15)
+        verified = self._verify_record_links([
+            (reference_port, input_left, "reference-to-record-left"),
+            (mic_port, input_right, "microphone-to-record-right"),
+        ])
+        if verified["microphone-to-record-right"] is None:
+            raise RuntimeError(
+                "Measurement audio path could not be prepared: microphone link "
+                "never appeared. Please retry."
+            )
+        if verified["reference-to-record-left"] is None:
+            warning = "reference-to-record-left: link never appeared in listing"
+            link_errors.append(warning)
+            logger.warning("Host-reference link issues: %s", warning)
+        time.sleep(LINK_SETTLE_SECONDS)
         result = {
             "reference_source_node": reference_source_node_name,
             "microphone_source_node": mic_source_node_name,
@@ -193,6 +328,7 @@ class MeasurementRouting:
         }
         if link_errors and not any("microphone-to-record" in err for err in link_errors):
             result["link_warning"] = " ".join(link_errors)
+        result["link_verified"] = verified
         return result
 
     def _link_capture_channels_to_record_stream(
@@ -251,13 +387,24 @@ class MeasurementRouting:
                 }
             )
 
-        time.sleep(0.15)
+        verified = self._verify_record_links([
+            (entry["source_port"], entry["target_port"],
+             f"channel-{entry['input_channel']}-to-record")
+            for entry in links
+        ])
+        missing = [label for label, seen in verified.items() if seen is None]
+        if missing:
+            raise RuntimeError(
+                "Measurement audio links never appeared: " + ", ".join(sorted(missing))
+            )
+        time.sleep(LINK_SETTLE_SECONDS)
         return {
             "source_node": source_node_name,
             "record_node": record_node_name,
             "links": links,
             "source_ports": source_ports,
             "record_inputs": record_inputs,
+            "link_verified": verified,
         }
 
     def _list_source_output_ports(self, source_node_name: str) -> list[str]:
@@ -278,8 +425,27 @@ class MeasurementRouting:
         *,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
         overview: dict[str, Any] | None = None,
+        expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        expected_native_output_mode: str | None = None,
+        expected_plan_fingerprint: str | None = None,
     ) -> dict[str, Any]:
         measurement_scope = self._store._normalize_measurement_scope(measurement_scope)
+        expected = freeze_expected_native_context(
+            measurement_scope=measurement_scope,
+            expected_native_layout=expected_native_layout,
+            expected_native_output_mode=expected_native_output_mode,
+            expected_plan_fingerprint=expected_plan_fingerprint,
+        )
+        if expected:
+            return {
+                "route": "direct-sink",
+                "measurement_scope": measurement_scope,
+                "output_mode": expected["expected_native_output_mode"],
+                "play_node_name": play_node_name,
+                "playback_target_name": str(playback_target.get("target_name") or ""),
+                "expected_native_layout": expected["expected_native_layout"],
+                "expected_plan_fingerprint": expected["expected_plan_fingerprint"],
+            }
         overview = overview or self._get_output_overview()
         output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
         mode = str(output_mode.get("mode") or "")
@@ -554,13 +720,17 @@ class MeasurementRouting:
                 failures.append(f"native DSP rate {config.get('sample_rate')} != measurement rate {sample_rate}")
             if str(config.get("output_mode") or "") != output_mode:
                 failures.append(f"native DSP output mode {config.get('output_mode')} != measurement mode {output_mode}")
+            if "expected_plan_fingerprint" in playback_route:
+                expected_fingerprint = playback_route["expected_plan_fingerprint"]
+                if not expected_fingerprint or config.get("plan_fingerprint") != expected_fingerprint:
+                    failures.append("native DSP plan fingerprint does not match expected staged plan")
             runtime_layout = config.get("layout") or []
             expected_layout = playback_route.get("expected_native_layout") or []
             # The native engine always runs the full 2.x topology: stereo mode
             # keeps the two sub channels in the layout muted (route gain 0), so
             # the expected output count follows the expected layout for the
             # mode instead of a bare stereo pair.  The expected layout is
-            # always derived from the output overview by the route builder;
+            # supplied by a trusted owner or derived from the output overview;
             # when it is missing the sweep must fail closed rather than guess
             # an output count.
             if not expected_layout:
@@ -763,38 +933,24 @@ class MeasurementRouting:
                 nodes_of_interest.add(node[: -len(".monitor")])
             else:
                 nodes_of_interest.add(f"{node}.monitor")
-        for line in (completed.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
+        for src_port, dst_port in iter_pw_link_pairs(completed.stdout):
+            in_node = src_port.rsplit(":", 1)[0] if ":" in src_port else ""
+            out_node = dst_port.rsplit(":", 1)[0] if ":" in dst_port else ""
+            # Only links incident to this record node are stale candidates;
+            # taps to other nodes (keeper streams, user monitors) survive.
+            # The far side must be a measurement source: the mic source, a
+            # monitor tap, or their .monitor variants.
+            far_nodes = {node for node in (in_node, out_node) if node != record_node_name}
+            if len(far_nodes) != 1:
                 continue
-            parts = line.split("->")
-            if len(parts) != 2:
+            far_node = next(iter(far_nodes))
+            if record_node_name not in (in_node, out_node):
                 continue
-            in_port = parts[0].strip()
-            out_port = parts[1].strip()
-            # strip optional (id: ...)
-            link_id = None
-            if "(id:" in out_port:
-                out_port, link_id_part, _ = out_port.partition("(id:")
-                out_port = out_port.strip()
-                link_id = link_id_part.strip().rstrip(")").strip()
-            in_node = in_port.rsplit(":", 1)[0] if ":" in in_port else ""
-            out_node = out_port.rsplit(":", 1)[0] if ":" in out_port else ""
-            if in_node not in nodes_of_interest and out_node not in nodes_of_interest:
+            if (far_node not in nodes_of_interest
+                    and not far_node.endswith(".monitor")):
                 continue
-            unlinked = False
-            if link_id and link_id.isdigit():
-                try:
-                    self._run(
-                        ["pw-link", "-d", link_id],
-                        capture_output=True, text=True, timeout=3,
-                    )
-                    unlinked = True
-                except Exception:
-                    pass
-            if not unlinked:
-                self._store._disconnect_link(out_port, in_port)
-            removed.append(f"{out_port} -> {in_port}")
+            self._store._disconnect_link(dst_port, src_port)
+            removed.append(f"{dst_port} -> {src_port}")
         if removed:
             logger.info("Cleaned up %d stale fxroute link(s)", len(removed))
             time.sleep(0.1)

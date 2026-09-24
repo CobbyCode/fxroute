@@ -9,26 +9,27 @@
 const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
-
-const MeasurementUI = require('../static/measurement_ui.js');
+require('../static/measurement_dsp.js');
+require('../static/measurement_ui.js');
+const peqEditor = require('../static/measurement_peq_editor.js');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const editorsSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_editors_ui.js'), 'utf8');
 
-function extractFunction(name) {
-    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
+function extractFunction(name, from = source) {
+    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(from);
     assert.ok(match, `missing ${name}`);
     let parenDepth = 1;
     let brace = -1;
-    for (let index = match.index + match[0].length; index < source.length; index += 1) {
-        if (source[index] === '(') parenDepth += 1;
-        if (source[index] === ')') parenDepth -= 1;
-        if (parenDepth === 0) { brace = source.indexOf('{', index); break; }
+    for (let index = match.index + match[0].length; index < from.length; index += 1) {
+        if (from[index] === '(') parenDepth += 1;
+        if (from[index] === ')') parenDepth -= 1;
+        if (parenDepth === 0) { brace = from.indexOf('{', index); break; }
     }
     assert.notEqual(brace, -1, `missing body ${name}`);
     let depth = 0, quote = '', escaped = false;
-    for (let index = brace; index < source.length; index += 1) {
-        const char = source[index];
+    for (let index = brace; index < from.length; index += 1) {
+        const char = from[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -37,38 +38,21 @@ function extractFunction(name) {
         }
         if (`'"\``.includes(char)) quote = char;
         else if (char === '{') depth += 1;
-        else if (char === '}' && --depth === 0) return source.slice(match.index, index + 1);
+        else if (char === '}' && --depth === 0) return from.slice(match.index, index + 1);
     }
     throw new Error(`unterminated ${name}`);
 }
 
 function makeContext() {
     const state = { measurement: {} };
-    const context = {
-        MeasurementUI,
-        state,
-        getMeasurementPeqNameSuffix: (...args) => MeasurementUI.getMeasurementPeqNameSuffix(...args),
-        measurementPeqFilterToBand: (filter = {}) => ({
-            filterType: filter.type || 'bell',
-            frequencyHz: Number(filter.freqHz) || 1000,
-            gainDb: Number(filter.gainDb) || 0,
-            q: Number(filter.q) || 1,
-            delayMs: 0,
-        }),
+    peqEditor.init({
+        getState: () => state,
         showToast: () => {},
-        showMeasurementPeqTakeFeedback: () => {},
+        getElements: () => ({}),
+        setTimeout: () => 1,
         renderMeasurementPanel: () => {},
-    };
-    vm.createContext(context);
-    vm.runInContext([
-        'getDefaultMeasurementPeqState',
-        'ensureMeasurementPeqState',
-        'getMeasurementPeqDraftMode',
-        'getMeasurementPeqPresetName',
-        'resolveMeasurementPeqPresetName',
-        'takeMeasurementPeqToPreset',
-    ].map(extractFunction).join('\n'), context);
-    return context;
+    });
+    return { ...peqEditor, state };
 }
 
 function peqWithFilters(ctx, count = 2) {
@@ -134,11 +118,11 @@ console.log('peq preset name edit tests: ok');
 // (no empty value), is editable from that moment (no !hasDraft gate),
 // and Take still respects a touched name.
 {
-    const renderFn = extractFunction('renderMeasurementPanelEditorsSection');
-    assert.match(renderFn, /const nameValue = peq\.draft\?\.presetName \|\| getMeasurementPeqPresetName\(/);
-    assert.match(renderFn, /measurementPeqPresetName\.disabled = peqCreateInFlight/);
+    const renderFn = extractFunction('renderMeasurementPanelEditorsSection', editorsSource);
+    assert.match(renderFn, /const nameValue = peq\.draft\?\.presetName \|\| deps\.getMeasurementPeqPresetName\(/);
+    assert.match(renderFn, /measurementPeqPresetName\.disabled = deps\.isPeqCreateInFlight\(\)/);
     assert.doesNotMatch(renderFn, /measurementPeqPresetName\.disabled = !hasDraft/);
-    const takeFn = extractFunction('takeMeasurementPeqToPreset');
+    const takeFn = extractFunction('takeMeasurementPeqToPreset', fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_peq_editor.js'), 'utf8'));
     assert.match(takeFn, /if\s*\(!peq\.draft\.nameTouched\)\s*peq\.draft\.presetName\s*=/);
     console.log('peq preset name field-availability contract: ok');
 }

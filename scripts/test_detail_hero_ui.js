@@ -8,6 +8,7 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const appJs = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const libraryJs = fs.readFileSync(path.join(root, 'static', 'library_ui.js'), 'utf8');
 const streamingJs = fs.readFileSync(path.join(root, 'static', 'streaming.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'static', 'style.css'), 'utf8');
@@ -45,8 +46,8 @@ assert.ok(html.includes('id="playlist-detail" class="album-detail album-detail--
 assert.ok(html.includes('id="playlist-detail-backdrop"'),
     'local playlist detail must carry a backdrop image anchor');
 
-const openAlbum = extractFunction(appJs, 'openAlbumDetail');
-const openTopTracks = extractFunction(appJs, 'openSmartTopTracks');
+const openAlbum = extractFunction(libraryJs, 'openAlbumDetail');
+const openTopTracks = extractFunction(libraryJs, 'openSmartTopTracks');
 assert.ok(openAlbum.includes('setAlbumDetailBackdrop('),
     'local album open must synchronize the artwork backdrop');
 assert.ok(openTopTracks.includes('setAlbumDetailBackdrop('),
@@ -54,10 +55,10 @@ assert.ok(openTopTracks.includes('setAlbumDetailBackdrop('),
 // The library tab shares the window scroll (no inner scroll container), so
 // opening a detail must reset it after showing the detail — otherwise the
 // detail inherits the grid position and starts mid-page at the tracks.
-const scrollReset = extractFunction(appJs, 'scrollLibraryDetailToTop');
+const scrollReset = extractFunction(libraryJs, 'scrollLibraryDetailToTop');
 assert.ok(scrollReset.includes('window.scrollTo(0, 0)'),
     'the detail scroll reset must return the window scroll to exactly the top');
-const openPlaylist = extractFunction(appJs, 'openPlaylistDetail');
+const openPlaylist = extractFunction(libraryJs, 'openPlaylistDetail');
 for (const [fn, label] of [[openAlbum, 'openAlbumDetail'], [openTopTracks, 'openSmartTopTracks'], [openPlaylist, 'openPlaylistDetail']]) {
     assert.ok(fn.includes('scrollLibraryDetailToTop()'),
         `${label} must reset the scroll when opening the detail view`);
@@ -74,7 +75,7 @@ assert.ok(appJs.includes('albumDetailBackdrop:'),
     'app.js must retain a dedicated local album backdrop element');
 assert.ok(appJs.includes('playlistDetailBackdrop:'),
     'app.js must carry a dedicated local playlist backdrop element');
-assert.ok(appJs.includes('renderPlaylistDetailInfo'),
+assert.ok(libraryJs.includes('renderPlaylistDetailInfo'),
     'local playlist detail must render a header info line');
 
 const detailBackdrop = extractFunction(streamingJs, 'detailBackdropHtml');

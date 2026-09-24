@@ -263,25 +263,62 @@ def build_complex_response(
     sample_rate: int,
     *,
     calibration_curve: tuple[np.ndarray, np.ndarray] | None = None,
+    frequencies_hz: list[float] | np.ndarray | None = None,
+    reference_sample: int | None = None,
+    direct_arrival_sample: int | None = None,
 ) -> dict[str, Any]:
-    """Persist a compact common-time-reference response for vector sums."""
+    """Persist a compact common-time-reference response for vector sums.
+
+    Explicit frequencies use the DTFT at the requested frequencies rather than
+    relabeling nearby FFT bins. Speaker alignment also supplies the upstream
+    reference peak, removing capture-origin differences without zeroing each
+    way's acoustic arrival. An explicit direct arrival prevents a stronger late
+    reflection from cropping that event out of the response evidence. The
+    default hybrid grid, window and origin stay unchanged.
+    """
     ir = np.asarray(impulse_response, dtype=np.float64)
+    if frequencies_hz is not None:
+        centers = np.asarray(frequencies_hz, dtype=np.float64)
+        if (centers.ndim != 1 or not centers.size or not np.all(np.isfinite(centers))
+                or np.any(centers <= 0) or np.any(centers >= sample_rate / 2)
+                or np.any(np.diff(centers) <= 0)):
+            raise ValueError("Complex response frequencies must increase between zero and Nyquist")
+    elif reference_sample is not None:
+        raise ValueError("An explicit reference origin requires exact response frequencies")
+    if reference_sample is not None and (
+        type(reference_sample) is not int or not 0 <= reference_sample < ir.size
+    ):
+        raise ValueError("Complex response reference sample must be inside the IR")
+    if direct_arrival_sample is not None and (
+        frequencies_hz is None or type(direct_arrival_sample) is not int
+        or not 0 <= direct_arrival_sample < ir.size
+    ):
+        raise ValueError("An explicit direct arrival requires exact frequencies and an index inside the IR")
     post_samples = min(ir.size, max(64, int(round(sample_rate * 0.50))))
     peak = int(np.argmax(np.abs(ir))) if ir.size else 0
     start = max(0, peak - int(round(sample_rate * 0.004)))
     end = min(ir.size, max(start + 64, peak + post_samples))
+    if direct_arrival_sample is not None:
+        start = min(start, max(0, direct_arrival_sample - int(round(sample_rate * 0.004))))
+        end = max(end, min(ir.size, direct_arrival_sample + post_samples))
     segment = np.array(ir[start:end], copy=True)
     fade = min(max(16, int(round(sample_rate * 0.012))), max(1, segment.size // 3))
     if fade > 1:
         segment[-fade:] *= 0.5 + 0.5 * np.cos(np.linspace(0.0, math.pi, fade))
-    fft_size = 1 << max(12, int(math.ceil(math.log2(max(sample_rate, segment.size * 2)))))
-    spectrum = np.fft.rfft(segment, n=fft_size)
-    # Restore the phase origin removed by slicing the IR.
-    frequencies = np.fft.rfftfreq(fft_size, 1.0 / sample_rate)
-    spectrum *= np.exp(-1j * 2.0 * math.pi * frequencies * start / sample_rate)
-    centers = np.geomspace(COMPLEX_RESPONSE_MIN_HZ, min(COMPLEX_RESPONSE_MAX_HZ, sample_rate * 0.45), COMPLEX_RESPONSE_POINTS)
-    indices = np.clip(np.searchsorted(frequencies, centers), 0, spectrum.size - 1)
-    values = spectrum[indices]
+    if frequencies_hz is None:
+        fft_size = 1 << max(12, int(math.ceil(math.log2(max(sample_rate, segment.size * 2)))))
+        spectrum = np.fft.rfft(segment, n=fft_size)
+        # Restore the phase origin removed by slicing the IR.
+        frequencies = np.fft.rfftfreq(fft_size, 1.0 / sample_rate)
+        spectrum *= np.exp(-1j * 2.0 * math.pi * frequencies * start / sample_rate)
+        centers = np.geomspace(COMPLEX_RESPONSE_MIN_HZ, min(COMPLEX_RESPONSE_MAX_HZ, sample_rate * 0.45), COMPLEX_RESPONSE_POINTS)
+        indices = np.clip(np.searchsorted(frequencies, centers), 0, spectrum.size - 1)
+        values = spectrum[indices]
+    else:
+        # One vector at a time bounds memory for full-resolution capture IRs.
+        times = (np.arange(segment.size) + start - (reference_sample or 0)) / sample_rate
+        values = np.array([np.sum(segment * np.exp(-2j * math.pi * frequency * times))
+                           for frequency in centers])
     if calibration_curve is not None:
         cal_hz, cal_db = calibration_curve
         offsets = np.interp(
@@ -294,14 +331,15 @@ def build_complex_response(
         gain = 10.0 ** (-offsets / 20.0)
         values *= gain
     points = [
-        [round(float(frequency), 3), round(float(value.real), 9), round(float(value.imag), 9)]
+        [round(float(frequency), 3) if frequencies_hz is None else float(frequency),
+         round(float(value.real), 9), round(float(value.imag), 9)]
         for frequency, value in zip(centers, values)
     ]
     return {
         "schema": "fxroute.complex-response.v1",
         "points": points,
         "sample_rate": int(sample_rate),
-        "time_reference": "deconvolved-sweep-origin",
+        "time_reference": "deconvolved-sweep-origin" if reference_sample is None else "upstream-reference-peak",
         "normalization": "none",
         "window_seconds": round((end - start) / sample_rate, 6),
         "max_frequency_hz": round(float(centers[-1]), 3),

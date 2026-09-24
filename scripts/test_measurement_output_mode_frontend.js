@@ -6,21 +6,31 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
+const SubwooferUI = require('../static/subwoofer_ui.js');
+const BankUIModule = require('../static/output_bank_ui.js');
+const SavedUIModule = require('../static/measurement_saved_ui.js');
+const EditorsUIModule = require('../static/measurement_editors_ui.js');
+require('../static/output_state.js');
+
+if (typeof globalThis.window === 'undefined') globalThis.window = {};
+globalThis.window.setTimeout = globalThis.window.setTimeout || setTimeout;
+globalThis.window.clearTimeout = globalThis.window.clearTimeout || clearTimeout;
 
 const repoRoot = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(repoRoot, 'static', 'app.js'), 'utf8');
+const apiSource = fs.readFileSync(path.join(repoRoot, 'static', 'api.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
 
-function extractFunction(name) {
-    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(appSource);
+function extractFrom(source, name) {
+    const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
     assert.ok(match, `missing function ${name}`);
     let parenDepth = 1;
     let braceStart = -1;
-    for (let index = match.index + match[0].length; index < appSource.length; index += 1) {
-        if (appSource[index] === '(') parenDepth += 1;
-        if (appSource[index] === ')') parenDepth -= 1;
+    for (let index = match.index + match[0].length; index < source.length; index += 1) {
+        if (source[index] === '(') parenDepth += 1;
+        if (source[index] === ')') parenDepth -= 1;
         if (parenDepth === 0) {
-            braceStart = appSource.indexOf('{', index);
+            braceStart = source.indexOf('{', index);
             break;
         }
     }
@@ -28,8 +38,8 @@ function extractFunction(name) {
     let depth = 0;
     let quote = '';
     let escaped = false;
-    for (let index = braceStart; index < appSource.length; index += 1) {
-        const char = appSource[index];
+    for (let index = braceStart; index < source.length; index += 1) {
+        const char = source[index];
         if (quote) {
             if (escaped) escaped = false;
             else if (char === '\\') escaped = true;
@@ -38,15 +48,25 @@ function extractFunction(name) {
         }
         if (char === "'" || char === '"' || char === '`') quote = char;
         else if (char === '{') depth += 1;
-        else if (char === '}' && --depth === 0) return appSource.slice(match.index, index + 1);
+        else if (char === '}' && --depth === 0) return source.slice(match.index, index + 1);
     }
     throw new Error(`unterminated function ${name}`);
 }
 
-function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {}) {
+function extractFunction(name) {
+    return extractFrom(appSource, name);
+}
+
+function extractApiFunction(name) {
+    return extractFrom(apiSource, name);
+}
+
+function makeMeasurementContext({ fetchResponse = null, subSaveGate = null } = {}) {
     const fetchCalls = [];
     const saveCalls = [];
+    const toasts = [];
     let releaseDebugSnapshot = null;
+    let capturedStartForm = null;
     const state = {
         settings: {
             audioOutputs: {
@@ -56,7 +76,6 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         measurement: {
             hostCaptureAvailable: true,
             selectedInputId: 'pw-source-54',
-            selectedChannel: 'left',
             selectedMicInputChannel: '1',
             selectedReferenceInputChannel: '',
             selectedCalibrationRef: '',
@@ -70,15 +89,47 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         append(name, value) {
             this.fields.push([name, value]);
         }
+
+        get(name) {
+            const entry = this.fields.filter(([key]) => key === name).at(-1);
+            return entry ? entry[1] : undefined;
+        }
     }
     const context = {
         MeasurementUI,
         state,
-        elements: { measurementCalibrationFile: null },
-        FormData: TestFormData,
+        // Area contract: the sweep side and bank come from the A/B catalog.
+        // Banks are grouped (stereo pairs share one bank, mono roles stand
+        // alone); the catalog carries the projected compare slots.
+        OutputState: require('../static/output_state.js'),
+        outputCatalog: {
+            active_mode: 'stereo',
+            revision: 4,
+            modes: { stereo: { selected_bank: 'main',
+                banks: {
+                    global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' },
+                    main: { id: 'main', label: 'Main L/R', roles: ['main_l', 'main_r'], channel_mode: 'stereo' },
+                } } },
+        },
+        elements: {
+            measurementCalibrationFile: null,
+            measurementPeqTakeLeftBtn: null,
+            measurementPeqTakeRightBtn: null,
+            measurementConvolverTakeBothBtn: null,
+        },
+        showToast: (message) => { toasts.push(message); },
+        showMeasurementPeqTakeFeedback: () => {},
+        showMeasurementConvolverFeedback: () => {},
+        FormData: class extends TestFormData {
+            append(name, value) {
+                super.append(name, value);
+                if (name === 'channel' || name === 'measurement_bank') capturedStartForm = this;
+            }
+        },
         console,
         setTimeout,
         clearTimeout,
+        SubwooferUI,
         fetch: async (url) => {
             fetchCalls.push(url);
             return fetchResponse || {
@@ -87,14 +138,46 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
             };
         },
     };
+    // The real subwoofer save queue: a 2.1 tile whose commit the gate holds.
+    const subState = { outputSystem: { catalog: {
+        active_mode: 'stereo-sub', revision: 4,
+        modes: { 'stereo-sub': {
+            topology: { sub_mode: 'mono', sub_roles: ['sub1'] },
+            bass_management: {},
+            processing: { sub1: {} },
+        } },
+    } } };
+    const subInput = (value) => ({ value });
+    const subElements = {
+        effectsSubwooferFrequencyNumber: subInput('80'),
+        effectsSubwooferFamily: subInput('linkwitz-riley'),
+        effectsSubwooferSlope: subInput('24'),
+        effectsSubwooferLink: { checked: true },
+        effectsSubwooferMainHighpass: subInput('on'),
+        effectsSubwooferLevel: subInput('0'),
+        effectsSubwooferDelay: subInput('0'),
+        effectsSubwooferPolarity: subInput('normal'),
+    };
+    SubwooferUI.init({ getState: () => subState, getElements: () => subElements,
+        getActiveEditing: () => new Set(),
+        applyMutation: (...args) => {
+            saveCalls.push(args);
+            return subSaveGate ? subSaveGate.promise : Promise.resolve({ saved: true });
+        } });
     vm.createContext(context);
+    // Bank gating runs through the real bank module bridged into the
+    // sandbox; app.js keeps a thin delegating wrapper.
+    BankUIModule.init({ getState: () => state, getElements: () => ({}),
+        showToast: (message) => { toasts.push(message); },
+        escapeHtml: (value) => String(value),
+        measurementArea: () => require('../static/output_state.js').measurementArea(context.outputCatalog) });
+    context.window = { FXRouteBankUI: BankUIModule };
     vm.runInContext(`
-        let _subwooferPendingSave = null;
-        let _subwooferSavePromise = null;
-        function isSubwooferModeName(mode) {
-            return ['subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode);
+        function requireConcreteFilterBank() { return window.FXRouteBankUI.requireConcreteFilterBank(); }
+        function setPendingSave() { SubwooferUI.saveSubwooferDebounced(5); }
+        function flushSubwooferSettingsBeforeMeasurement() {
+            return SubwooferUI.flushSubwooferSettingsBeforeMeasurement();
         }
-        function setPendingSave(value) { _subwooferPendingSave = value; }
         function normalizeMeasurementInputChannelSelections() {}
         function getMeasurementReferenceWarning() { return false; }
         function appendMeasurementReferenceFields(formData) {
@@ -107,20 +190,62 @@ function makeMeasurementContext({ pendingSave = null, fetchResponse = null } = {
         }
         function releaseSnapshot() { if (releaseDebugSnapshot) releaseDebugSnapshot(); }
         function renderMeasurementPanel() {}
+        function measurementAreaFromCatalog() {
+            return OutputState.measurementArea(outputCatalog);
+        }
+        function outputSystemModule() {
+            return OutputState;
+        }
         async function pollMeasurementJob() {}
-        ${extractFunction('formatTransitionErrorDetail')}
-        ${extractFunction('flushSubwooferSettingsBeforeMeasurement')}
-        ${extractFunction('startHostMeasurement')}
-        ${extractFunction('startLrRepeatMeasurement')}
+        ${extractApiFunction('formatTransitionErrorDetail')}
+        ${extractFunction('measurementBankSumsBothInputs')}
     `, context);
-    context.setPendingSave(pendingSave);
-    return { context, fetchCalls, saveCalls, state };
+    vm.runInContext(fs.readFileSync(path.join(repoRoot, 'static', 'measurement_capture.js'), 'utf8'), context);
+    context.FXRouteMeasurementCapture.init({
+        getState: () => state,
+        getElements: () => context.elements,
+        getFormDataType: () => context.FormData,
+        fetch: (...args) => context.fetch(...args),
+        showToast: (message) => { toasts.push(message); },
+        renderMeasurementPanel: () => context.renderMeasurementPanel(),
+        requireConcreteFilterBank: () => context.requireConcreteFilterBank(),
+        measurementModeReady: () => true,
+        measurementRepeatBlockedReason: () => '',
+        flushSubwooferSettingsBeforeMeasurement: () => context.flushSubwooferSettingsBeforeMeasurement(),
+        measurementAreaFromCatalog: () => context.measurementAreaFromCatalog(),
+        appendMeasurementReferenceFields: (formData) => context.appendMeasurementReferenceFields(formData),
+        postRuntimeDebugSnapshot: () => context.postRuntimeDebugSnapshot(),
+        formatTransitionErrorDetail: (...args) => context.formatTransitionErrorDetail(...args),
+        normalizeMeasurementKind: (...args) => context.normalizeMeasurementKind(...args),
+        formatMeasurementJobStatusText: (...args) => context.formatMeasurementJobStatusText(...args),
+        pollMeasurementJob: (...args) => context.pollMeasurementJob(...args),
+        cancelMeasurement: async () => {},
+    });
+    context.startHostMeasurement = (...args) => context.FXRouteMeasurementCapture.startHostMeasurement(...args);
+    context.startLrRepeatMeasurement = (...args) => context.FXRouteMeasurementCapture.startLrRepeatMeasurement(...args);
+    context.measurementAreaBadge = (measurement) => {
+        SavedUIModule.init({ getOutputSystemModule: () => context.OutputState });
+        return SavedUIModule.measurementAreaBadge(measurement);
+    };
+    context.syncMeasurementSummedSubTakeModes = () => {
+        EditorsUIModule.init({ getElements: () => context.elements,
+            measurementBankSumsBothInputs: () => context.measurementBankSumsBothInputs() });
+        return EditorsUIModule.syncMeasurementSummedSubTakeModes();
+    };
+    return {
+        context, fetchCalls, saveCalls, state, toasts,
+        get startForm() { return capturedStartForm; },
+    };
 }
 
 async function main() {
+    assert.ok(/function\s+formatTransitionErrorDetail/.test(appSource), 'app.js must keep a formatTransitionErrorDetail wrapper');
+    assert.ok(/FXRouteApi/.test(appSource), 'app.js wrapper must delegate to api.js');
+    assert.ok(/function\s+flushSubwooferSettingsBeforeMeasurement/.test(appSource), 'app.js must keep a flush wrapper');
+    assert.ok(/FXRouteSubwooferUI/.test(appSource), 'app.js flush must delegate to subwoofer_ui.js');
     const formatterContext = {};
     vm.createContext(formatterContext);
-    vm.runInContext(extractFunction('formatTransitionErrorDetail'), formatterContext);
+    vm.runInContext(extractApiFunction('formatTransitionErrorDetail'), formatterContext);
     assert.equal(
         formatterContext.formatTransitionErrorDetail('plain failure', 'fallback'),
         'plain failure',
@@ -148,6 +273,42 @@ async function main() {
     assert.deepEqual(committed.fetchCalls, ['/api/measurements/start']);
     committed.context.releaseSnapshot();
     await committedStart;
+    // The selected area decides the sweep side and the frozen bank target.
+    // A stereo pair measures through both inputs together.
+    const committedStartForm = committed.startForm;
+    assert.equal(committedStartForm.get('channel'), 'stereo');
+    assert.equal(committedStartForm.get('measurement_bank'), 'main');
+
+    // A stereo area also offers per-side single sweeps; the side only
+    // narrows within the selected bank and never contradicts it.
+    const sided = makeMeasurementContext();
+    sided.state.measurement.sweepSide = 'left';
+    const sidedStart = sided.context.startHostMeasurement();
+    await new Promise(resolve => setImmediate(resolve));
+    sided.context.releaseSnapshot();
+    await sidedStart;
+    assert.equal(sided.startForm.get('channel'), 'left');
+    assert.equal(sided.startForm.get('measurement_bank'), 'main');
+
+    // A mono bank has no sides: the stored choice is ignored and the sweep
+    // stays on both inputs at operating level.
+    const mono = makeMeasurementContext();
+    mono.context.outputCatalog = {
+        active_mode: 'stereo',
+        revision: 4,
+        modes: { stereo: { selected_bank: 'sub1',
+            banks: {
+                global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' },
+                sub1: { id: 'sub1', label: 'Sub 1', roles: ['sub1'], channel_mode: 'mono' },
+            } } },
+    };
+    mono.state.measurement.sweepSide = 'right';
+    const monoStart = mono.context.startHostMeasurement();
+    await new Promise(resolve => setImmediate(resolve));
+    mono.context.releaseSnapshot();
+    await monoStart;
+    assert.equal(mono.startForm.get('channel'), 'stereo');
+    assert.equal(mono.startForm.get('measurement_bank'), 'sub1');
 
     const repeat = makeMeasurementContext();
     const repeatStart = repeat.context.startLrRepeatMeasurement();
@@ -155,19 +316,96 @@ async function main() {
     assert.deepEqual(repeat.fetchCalls, ['/api/measurements/lr-repeat/start']);
     repeat.context.releaseSnapshot();
     await repeatStart;
+    // The repeat freezes the same selected area for its internal way sweeps.
+    assert.equal(repeat.startForm.get('measurement_bank'), 'main');
+    assert.equal(repeat.startForm.get('channel'), undefined);
 
-    // A still-debounced subwoofer edit is started exactly once and awaited
-    // before the measurement endpoint is reached.
-    let pendingStarts = 0;
-    const pending = {
-        start: () => {
-            pendingStarts += 1;
-            return Promise.resolve({ saved: true });
-        },
+    // A mono bank (one output role) takes the single-sided flow: the take
+    // helpers disable the takes that cannot compile there and say why.
+    const summedContext = makeMeasurementContext();
+    summedContext.context.outputCatalog = {
+        active_mode: 'stereo',
+        revision: 4,
+        modes: { stereo: { selected_bank: 'sub1',
+            banks: {
+                global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' },
+                sub1: { id: 'sub1', label: 'Sub 1', roles: ['sub1'], channel_mode: 'mono' },
+            } } },
     };
-    const pendingContext = makeMeasurementContext({ pendingSave: pending });
-    await pendingContext.context.startHostMeasurement();
-    assert.equal(pendingStarts, 1);
+    assert.equal(summedContext.context.measurementBankSumsBothInputs(), true);
+    const makeButton = () => ({ disabled: false, title: '', dataset: {} });
+    const peqLeft = makeButton();
+    const peqRight = makeButton();
+    const convBoth = makeButton();
+    summedContext.context.elements.measurementPeqTakeLeftBtn = peqLeft;
+    summedContext.context.elements.measurementPeqTakeRightBtn = peqRight;
+    summedContext.context.elements.measurementConvolverTakeBothBtn = convBoth;
+    summedContext.context.syncMeasurementSummedSubTakeModes();
+    assert.equal(peqLeft.disabled, true);
+    assert.equal(peqRight.disabled, true);
+    assert.match(peqLeft.title, /take Both/);
+    assert.equal(convBoth.disabled, true);
+    assert.match(convBoth.title, /mono IR/);
+    // A side-fed bank clears the markers and leaves disabled to the render.
+    const sidedContext = makeMeasurementContext();
+    assert.equal(sidedContext.context.measurementBankSumsBothInputs(), false);
+    const sidedPeqLeft = makeButton();
+    sidedPeqLeft.disabled = true;
+    sidedPeqLeft.dataset.summedSub = 'true';
+    sidedPeqLeft.title = 'stale reason';
+    sidedContext.context.elements.measurementPeqTakeLeftBtn = sidedPeqLeft;
+    sidedContext.context.syncMeasurementSummedSubTakeModes();
+    assert.equal(sidedPeqLeft.disabled, true, 'render pass owns disabled when not summed');
+    assert.equal(sidedPeqLeft.dataset.summedSub, 'false');
+    assert.equal(sidedPeqLeft.title, '');
+    assert.equal(sidedContext.toasts.length, 0);
+
+    // Saved results carry the frozen area they were captured in; legacy
+    // results without a target stay unlabelled.
+    const badgeTarget = {
+        schema: 'fxroute.measurement-target', version: 1, mode: 'stereo-sub',
+        bank_id: 'left_low', legacy: false,
+    };
+    const badge = committed.context.measurementAreaBadge({ measurement_target: badgeTarget });
+    assert.deepEqual({ ...badge }, {
+        label: 'Low L', mode: 'stereo-sub', stale: false,
+        title: 'Low L · Stereo + Sub · measured area only',
+    });
+    assert.equal(
+        committed.context.measurementAreaBadge({ measurement_target: { ...badgeTarget, bank_id: 'global' } }).title,
+        'Global · Stereo + Sub · measured whole system',
+    );
+    assert.deepEqual(
+        committed.context.measurementAreaBadge({ measurement_target: { legacy: true } }), null,
+        'legacy results are not silently labelled Global',
+    );
+    assert.equal(committed.context.measurementAreaBadge({}), null);
+    assert.equal(committed.context.measurementAreaBadge(undefined), null);
+    assert.equal(
+        committed.context.measurementAreaBadge({
+            measurement_target: { ...badgeTarget, bank_id: 'left_mid' },
+            measurement_target_stale: true,
+        }).stale, true,
+        'a result whose processing moved on is marked stale',
+    );
+
+    // A still-debounced subwoofer edit is committed exactly once through the
+    // real save queue, and the measurement endpoint is reached only after
+    // that commit landed.
+    let gateResolve = null;
+    const subSaveGate = { promise: new Promise((resolve) => { gateResolve = resolve; }) };
+    const pendingContext = makeMeasurementContext({ subSaveGate });
+    pendingContext.context.setPendingSave();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(pendingContext.saveCalls.length, 1, 'the debounced edit starts its commit');
+    assert.equal(pendingContext.saveCalls[0][0], 'set_subwoofers');
+    const started = pendingContext.context.startHostMeasurement();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(pendingContext.fetchCalls, [], 'measurement waits for the subwoofer commit');
+    gateResolve({ saved: true });
+    await started;
+    pendingContext.context.releaseSnapshot();
     assert.deepEqual(pendingContext.fetchCalls, ['/api/measurements/start']);
 
     // The actual measurement-start path must expose a structured transition

@@ -9,6 +9,7 @@ import copy
 import json
 import logging
 import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -18,8 +19,10 @@ import audio.volume_contract as volume_contract
 from audio.system_volume import volume_percent_to_linear_gain
 from fastapi import APIRouter, HTTPException
 
+from dsp.manager import ensure_kernel_supported_ir, parse_wav_frames
 from dsp.runtime import BassManagementConfig
 
+from .candidates import _restore_original_config_or_fail_job
 from .deps import (
     _AUTO_SUB_CLEANUP_TASKS,
     _AUTO_SUB_JOBS,
@@ -27,6 +30,7 @@ from .deps import (
     _dsp_manager,
     _measurement_session,
     _measurement_store,
+    drop_candidate_owner,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +66,19 @@ _AUTO_SUB_SNAPSHOT_KEEP = 40
 # dict (exact-sub-mute peak zeroing) without poisoning the cached entry.
 _AUTO_SUB_PEAK_PREDICTION_CACHE_KEY: tuple | None = None
 _AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT: dict[str, Any] | None = None
+
+# Same single-slot pattern for the compiled-layout model below. The key
+# carries the model tag, the plan fingerprint, the canonical layout
+# signature, the IR content identity of every convolver, the rate, the sweep,
+# the channel and every gain, so any audible change recomputes.
+_AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY: tuple | None = None
+_AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_RESULT: dict[str, Any] | None = None
+
+# Native per-output PEQ types (native_dsp/dsp.c design()), mirrored by the
+# layout predictor so its biquads match the engine coefficients.
+_AUTO_SUB_PLAN_PEAK_FILTER_TYPES = frozenset({
+    "bell", "notch", "lowpass", "highpass", "lowshelf", "highshelf",
+})
 
 
 def _auto_sub_peak_prediction_cache_key(
@@ -199,9 +216,385 @@ def auto_sub_sink_gain_from_master_percent(percent: int | float, *, clamp_upper:
     """
     return volume_percent_to_linear_gain(percent, clamp_upper=clamp_upper)
 
+def _auto_sub_sweep_input_pcm(
+    sweep_profile: dict[str, Any], sample_rate: int,
+) -> np.ndarray:
+    """Synthesize the unit measurement sweep both predictor models share.
+
+    Log chirp with edge fades, normalized to 0.8 peak. Callers scale it by
+    their source gain and assign it to the driven input channels.
+    """
+    rate = int(sample_rate)
+    duration = float(sweep_profile["sweep_seconds"])
+    count = max(2048, int(round(rate * duration)))
+    t = np.arange(count, dtype=np.float64) / rate
+    start_hz = float(sweep_profile["sweep_start_hz"])
+    end_hz = float(sweep_profile["sweep_end_hz"])
+    log_ratio = math.log(end_hz / start_hz)
+    phase = 2.0 * math.pi * start_hz * duration / log_ratio * (np.exp(t * log_ratio / duration) - 1.0)
+    sweep = np.sin(phase)
+    fade_len = min(count // 8, max(64, int(round(rate * 0.01))))
+    if fade_len > 1:
+        sweep[:fade_len] *= np.linspace(0.0, 1.0, fade_len)
+        sweep[-fade_len:] *= np.linspace(1.0, 0.0, fade_len)
+    sweep *= 0.8 / max(float(np.max(np.abs(sweep))), 1e-12)
+    return sweep
+
+
+def _auto_sub_native_peq_coefficients(
+    filter_type: str, frequency_hz: float, sample_rate: int,
+    q: float, gain_db: float,
+) -> tuple[float, float, float, float, float]:
+    """Mirror the native engine's PEQ biquad design (RBJ cookbook, S=1 shelves).
+
+    Returns normalized ``(b0, b1, b2, a1, a2)`` exactly as native_dsp/dsp.c
+    ``design()`` computes them, so the predictor and the engine agree on
+    every bank PEQ response.
+    """
+    frequency = float(frequency_hz)
+    rate = float(int(sample_rate))
+    quality = float(q)
+    gain = float(gain_db)
+    if not quality > 0.0:
+        raise ValueError("PEQ q must be positive")
+    a = 10.0 ** (gain / 40.0)
+    w = 2.0 * math.pi * frequency / rate
+    cs, sn = math.cos(w), math.sin(w)
+    alpha = sn / (2.0 * quality)
+    beta = 2.0 * math.sqrt(a) * alpha
+    if filter_type == "bell":
+        b0, b1, b2, a0, a1, a2 = (1 + alpha * a, -2 * cs, 1 - alpha * a,
+                                  1 + alpha / a, -2 * cs, 1 - alpha / a)
+    elif filter_type == "notch":
+        b0, b1, b2, a0, a1, a2 = (1, -2 * cs, 1, 1 + alpha, -2 * cs, 1 - alpha)
+    elif filter_type == "lowpass":
+        b0, b1, b2, a0, a1, a2 = ((1 - cs) / 2, 1 - cs, (1 - cs) / 2,
+                                  1 + alpha, -2 * cs, 1 - alpha)
+    elif filter_type == "highpass":
+        b0, b1, b2, a0, a1, a2 = ((1 + cs) / 2, -(1 + cs), (1 + cs) / 2,
+                                  1 + alpha, -2 * cs, 1 - alpha)
+    elif filter_type == "lowshelf":
+        b0, b1, b2, a0, a1, a2 = (a * ((a + 1) - (a - 1) * cs + beta),
+                                  2 * a * ((a - 1) - (a + 1) * cs),
+                                  a * ((a + 1) - (a - 1) * cs - beta),
+                                  (a + 1) + (a - 1) * cs + beta,
+                                  -2 * ((a - 1) + (a + 1) * cs),
+                                  (a + 1) + (a - 1) * cs - beta)
+    elif filter_type == "highshelf":
+        b0, b1, b2, a0, a1, a2 = (a * ((a + 1) + (a - 1) * cs + beta),
+                                  -2 * a * ((a - 1) + (a + 1) * cs),
+                                  a * ((a + 1) + (a - 1) * cs - beta),
+                                  (a + 1) - (a - 1) * cs + beta,
+                                  2 * ((a - 1) - (a + 1) * cs),
+                                  (a + 1) - (a - 1) * cs - beta)
+    else:
+        raise ValueError(f"Unsupported PEQ filter type: {filter_type}")
+    return b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0
+
+
+def _auto_sub_run_plan_biquad(
+    values: np.ndarray, coefficients: tuple[float, float, float, float, float],
+) -> np.ndarray:
+    """Run one biquad with the native engine's state-variable structure."""
+    b0, b1, b2, a1, a2 = coefficients
+    output = np.empty_like(values)
+    z1 = 0.0
+    z2 = 0.0
+    for index, value in enumerate(values):
+        filtered = b0 * value + z1
+        z1 = b1 * value - a1 * filtered + z2
+        z2 = b2 * value - a2 * filtered
+        output[index] = filtered
+    return output
+
+
+def _auto_sub_read_mono_ir(path: str, channel: int) -> np.ndarray:
+    """Read one IR channel as float64 samples, failing closed on bad files.
+
+    Uses the same WAV parsing and kernel-support gate as the manager, so the
+    predictor only ever models IR files the native convolver would load.
+    """
+    if type(channel) is not int or channel < 0:
+        raise ValueError("IR channel must be a non-negative integer")
+    name = str(path) or ""
+    try:
+        params = parse_wav_frames(Path(name))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"IR file is not readable: {name or path}") from exc
+    try:
+        ensure_kernel_supported_ir(params, Path(name).name)
+    except ValueError as exc:
+        raise ValueError(f"IR file has an unsupported encoding: {name}") from exc
+    if channel >= params["channels"]:
+        raise ValueError(
+            f"IR channel {channel} exceeds the {params['channels']} channels of {name}")
+    data = params["data"]
+    if params["format"] == 3:
+        samples = np.frombuffer(data, dtype="<f4").astype(np.float64)
+    elif params["bits"] == 16:
+        samples = np.frombuffer(data, dtype="<i2").astype(np.float64) / 32768.0
+    elif params["bits"] == 32:
+        samples = np.frombuffer(data, dtype="<i4").astype(np.float64) / 2147483648.0
+    else:
+        raw = np.frombuffer(data, dtype=np.uint8).astype(np.int32).reshape(-1, 3)
+        signed = (raw[:, 0] | (raw[:, 1] << 8) | (raw[:, 2] << 16)).astype(np.float64)
+        signed -= 16777216.0 * (signed >= 8388608.0)
+        samples = signed / 8388608.0
+    frames = params["frames"]
+    if samples.size != frames * params["channels"]:
+        raise ValueError(f"IR file has truncated frames: {name}")
+    return np.ascontiguousarray(samples.reshape(frames, params["channels"])[:, channel])
+
+
+def _auto_sub_convolve_mono(signal: np.ndarray, taps: np.ndarray) -> np.ndarray:
+    """Causal FIR convolution of one block from zero state, truncated to it."""
+    size = 1
+    while size < signal.size + taps.size - 1:
+        size *= 2
+    full = np.fft.irfft(
+        np.fft.rfft(signal, size) * np.fft.rfft(taps, size), size)
+    return np.ascontiguousarray(full[:signal.size])
+
+
+def _auto_sub_plan_peak_cache_key(
+    *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,
+    layout_signature: str, plan_fingerprint: str, ir_identity: tuple,
+    output_gain_db: float, playback_gain: float, sink_gain: float,
+) -> tuple:
+    """Immutable key over every input the layout prediction reads."""
+    return (
+        "compiled-layout-v1",
+        str(plan_fingerprint),
+        str(layout_signature),
+        tuple(ir_identity),
+        round(float(sweep_profile["sweep_start_hz"]), 6),
+        round(float(sweep_profile["sweep_end_hz"]), 6),
+        round(float(sweep_profile["sweep_seconds"]), 6),
+        int(sample_rate),
+        str(channel),
+        round(float(output_gain_db), 6),
+        round(float(playback_gain), 8),
+        round(float(sink_gain), 8),
+    )
+
+
+def _auto_sub_validated_layout_output(
+    entry: dict[str, Any], index: int, sample_rate: int,
+) -> dict[str, Any]:
+    """Normalize one compiled layout output, failing closed on garbage."""
+    prefix = f"layout output {index + 1}"
+    if not isinstance(entry, dict):
+        raise ValueError(f"{prefix} must be an object")
+    routes = entry.get("routes")
+    if not isinstance(routes, list) or not routes:
+        raise ValueError(f"{prefix} requires a non-empty routes array")
+    normalized_routes = []
+    for route in routes:
+        source = route.get("input") if isinstance(route, dict) else None
+        gain = route.get("gain", 1.0) if isinstance(route, dict) else None
+        if type(source) is not int or source not in (0, 1):
+            raise ValueError(f"{prefix} routes must address stereo input 0 or 1")
+        try:
+            gain_value = float(gain)
+        except (TypeError, ValueError):
+            raise ValueError(f"{prefix} route gain must be numeric") from None
+        if not math.isfinite(gain_value):
+            raise ValueError(f"{prefix} route gain must be finite")
+        normalized_routes.append((source, gain_value))
+    try:
+        gain_db = float(entry.get("gain_db", 0.0))
+        delay_ms = float(entry.get("delay_ms", 0.0))
+    except (TypeError, ValueError):
+        raise ValueError(f"{prefix} gain_db/delay_ms must be numeric") from None
+    if not math.isfinite(gain_db) or not -80.0 <= gain_db <= 24.0:
+        raise ValueError(f"{prefix} gain_db must be between -80 and 24")
+    if not math.isfinite(delay_ms) or not 0.0 <= delay_ms <= 500.0:
+        raise ValueError(f"{prefix} delay_ms must be between 0 and 500")
+    filters = entry.get("filters", [])
+    if not isinstance(filters, list):
+        raise ValueError(f"{prefix} filters must be an array")
+    biquads: list[tuple[float, float, float, float, float]] = []
+    for position, raw in enumerate(filters):
+        if not isinstance(raw, dict) or raw.get("type") not in _AUTO_SUB_PLAN_PEAK_FILTER_TYPES:
+            raise ValueError(f"{prefix} filters[{position}] has an unsupported type")
+        try:
+            frequency = float(raw["frequency_hz"])
+            quality = float(raw.get("q", 0.70710678))
+            band_gain = float(raw.get("gain_db", 0.0))
+            stages_number = float(raw.get("stages", 1))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"{prefix} filters[{position}] has non-numeric parameters") from None
+        if not math.isfinite(frequency) or not 20.0 <= frequency <= 20000.0:
+            raise ValueError(f"{prefix} filters[{position}] frequency is out of range")
+        if not frequency < sample_rate / 2:
+            raise ValueError(f"{prefix} filters[{position}] frequency must be below Nyquist")
+        if not math.isfinite(quality) or not 0.1 <= quality <= 20.0:
+            raise ValueError(f"{prefix} filters[{position}] q is out of range")
+        if not math.isfinite(band_gain) or not -24.0 <= band_gain <= 24.0:
+            raise ValueError(f"{prefix} filters[{position}] gain is out of range")
+        if (not math.isfinite(stages_number) or not stages_number.is_integer()
+                or not 1 <= int(stages_number) <= 32):
+            raise ValueError(f"{prefix} filters[{position}] stages must be a whole number 1..32")
+        stages = int(stages_number)
+        coefficients = _auto_sub_native_peq_coefficients(
+            raw["type"], frequency, sample_rate, quality, band_gain)
+        biquads.extend([coefficients] * stages)
+    sos = entry.get("sos", [])
+    if not isinstance(sos, list):
+        raise ValueError(f"{prefix} sos must be an array")
+    for position, section in enumerate(sos):
+        if (not isinstance(section, (list, tuple)) or len(section) != 5
+                or not all(type(value) in (int, float) and math.isfinite(value)
+                           for value in section)):
+            raise ValueError(f"{prefix} sos[{position}] must be five finite numbers")
+        _, _, _, a1, a2 = (float(value) for value in section)
+        if not (abs(a2) < 1.0 and abs(a1) < 1.0 + a2):
+            raise ValueError(f"{prefix} sos[{position}] has poles outside the unit circle")
+        biquads.append(tuple(float(value) for value in section))
+    oconv = entry.get("oconv")
+    convolver = None
+    if oconv is not None:
+        if not isinstance(oconv, dict) or set(oconv) != {
+                "path", "channel", "wet_db", "dry_db",
+                "input_gain_db", "output_gain_db"}:
+            raise ValueError(f"{prefix} oconv requires path, channel and four gains")
+        try:
+            gains = {key: float(oconv[key]) for key in (
+                "wet_db", "dry_db", "input_gain_db", "output_gain_db")}
+        except (TypeError, ValueError):
+            raise ValueError(f"{prefix} oconv gains must be numeric") from None
+        if not all(math.isfinite(value) for value in gains.values()):
+            raise ValueError(f"{prefix} oconv gains must be finite")
+        taps = _auto_sub_read_mono_ir(str(oconv["path"] or ""), oconv["channel"])
+        convolver = {"taps": taps, **gains}
+    return {"routes": normalized_routes, "gain_db": gain_db, "delay_ms": delay_ms,
+            "invert": bool(entry.get("invert", False)),
+            "biquads": biquads, "convolver": convolver}
+
+
+def _auto_sub_layout_peak_prediction(
+    *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,
+    layout: list[dict[str, Any]], plan_fingerprint: str | None,
+    output_gain_db: float, playback_gain: float = 1.0,
+    sink_gain: float = 1.0,
+) -> dict[str, Any]:
+    """Run the known measurement PCM through one compiled output layout.
+
+    Per output, in native engine order: route sums → PEQ/crossover biquads →
+    mono convolver → delay/trim/polarity → runtime output gain → sink gain.
+    Only the per-output chain is modeled; the global bank chain holds
+    arbitrary LV2 plugins the predictor cannot evaluate, so callers must run
+    this against a neutral global path (as staged AutoSub candidates do).
+    Peaks are keyed ``output_1..N`` in layout order, matching the native
+    peak meter.
+    """
+    rate = int(sample_rate)
+    if rate <= 0:
+        raise ValueError("sample_rate must be a positive integer")
+    if channel not in ("left", "right", "stereo"):
+        raise ValueError("channel must be left, right or stereo")
+    if not isinstance(plan_fingerprint, str) or not plan_fingerprint:
+        raise ValueError("Layout peak prediction requires the compiled plan fingerprint")
+    try:
+        runtime_gain = float(output_gain_db)
+        source_gain = float(playback_gain)
+        sink_linear = float(sink_gain)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("output_gain_db, playback_gain and sink_gain must be numeric") from exc
+    for value, label in ((runtime_gain, "output_gain_db"), (source_gain, "playback_gain"),
+                         (sink_linear, "sink_gain")):
+        if not math.isfinite(value):
+            raise ValueError(f"{label} must be finite")
+    if not -80.0 <= runtime_gain <= 0.0:
+        raise ValueError("output_gain_db must be between -80 and 0")
+    if source_gain < 0.0 or sink_linear < 0.0:
+        raise ValueError("playback_gain and sink_gain must be non-negative")
+    if not isinstance(layout, list) or not layout:
+        raise ValueError("Layout peak prediction requires a non-empty layout")
+    validated = [_auto_sub_validated_layout_output(entry, index, rate)
+                 for index, entry in enumerate(layout)]
+    try:
+        layout_signature = json.dumps(layout, sort_keys=True, separators=(",", ":"),
+                                      allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Layout peak prediction requires a JSON-serializable layout") from exc
+    ir_identity = []
+    for entry, stage in zip(layout, validated):
+        convolver = stage["convolver"]
+        if convolver is None:
+            ir_identity.append(None)
+            continue
+        path = str((entry.get("oconv") or {}).get("path") or "")
+        try:
+            stat = os.stat(path)
+        except OSError as exc:
+            raise ValueError(f"IR file is not readable: {path}") from exc
+        ir_identity.append((path, stat.st_size, stat.st_mtime_ns))
+    global _AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY, _AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_RESULT
+    cache_key = _auto_sub_plan_peak_cache_key(
+        sweep_profile=sweep_profile, sample_rate=rate, channel=channel,
+        layout_signature=layout_signature, plan_fingerprint=plan_fingerprint,
+        ir_identity=tuple(ir_identity), output_gain_db=runtime_gain,
+        playback_gain=source_gain, sink_gain=sink_linear,
+    )
+    if (_AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY == cache_key
+            and _AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_RESULT is not None):
+        return copy.deepcopy(_AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_RESULT)
+    sweep = _auto_sub_sweep_input_pcm(sweep_profile, rate) * source_gain
+    zeros = np.zeros_like(sweep)
+    inputs = (sweep if channel in ("left", "stereo") else zeros,
+              sweep if channel in ("right", "stereo") else zeros)
+    runtime_linear = 10.0 ** (runtime_gain / 20.0)
+
+    def shifted(signal: np.ndarray, delay_ms: float) -> np.ndarray:
+        samples = int(float(delay_ms) * rate / 1000.0 + 0.5)
+        if samples <= 0:
+            return signal
+        return np.concatenate((np.zeros(samples), signal))[:signal.size]
+
+    peaks = {}
+    for position, stage in enumerate(validated):
+        signal = sum(gain * inputs[source] for source, gain in stage["routes"])
+        for coefficients in stage["biquads"]:
+            signal = _auto_sub_run_plan_biquad(np.ascontiguousarray(signal), coefficients)
+        convolver = stage["convolver"]
+        if convolver is not None:
+            driven = signal * 10.0 ** (convolver["input_gain_db"] / 20.0)
+            wet = _auto_sub_convolve_mono(driven, convolver["taps"])
+            signal = (10.0 ** (convolver["output_gain_db"] / 20.0)
+                      * (10.0 ** (convolver["dry_db"] / 20.0) * driven
+                         + 10.0 ** (convolver["wet_db"] / 20.0) * wet))
+        signal = shifted(np.ascontiguousarray(signal), stage["delay_ms"])
+        signal = signal * 10.0 ** (stage["gain_db"] / 20.0)
+        if stage["invert"]:
+            signal = -signal
+        signal = signal * runtime_linear * sink_linear
+        peaks[f"output_{position + 1}"] = float(np.max(np.abs(signal))) if signal.size else 0.0
+    peak_dbfs = {key: round(20.0 * math.log10(max(value, 1e-12)), 3) for key, value in peaks.items()}
+    result = {
+        "model": "compiled-layout-v1",
+        "plan_fingerprint": plan_fingerprint,
+        "linear": peaks,
+        "dbfs": peak_dbfs,
+        "maximum_dbfs": max(peak_dbfs.values()),
+        "limit_dbfs": _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
+        "safe": max(peak_dbfs.values()) <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
+        "playback_gain": source_gain,
+        "sink_gain": sink_linear,
+        "output_gain_db": runtime_gain,
+    }
+    _AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY = cache_key
+    _AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_RESULT = copy.deepcopy(result)
+    return result
+
+
 def _auto_sub_stage_peak_prediction(
     *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,
-    config: BassManagementConfig, playback_gain: float = 1.0,
+    config: BassManagementConfig | None = None,
+    layout: list[dict[str, Any]] | None = None,
+    plan_fingerprint: str | None = None,
+    output_gain_db: float = 0.0,
+    playback_gain: float = 1.0,
     sink_gain: float = 1.0,
 ) -> dict[str, Any]:
     """Run the known measurement PCM through the native DSP topology.
@@ -212,7 +605,20 @@ def _auto_sub_stage_peak_prediction(
     percent to this linear gain. The engine chain is linear, so folding it
     into the sweep yields the true DAC-level peaks without touching the
     Mono/Stereo routing.
+
+    Exactly one of ``config`` (legacy four-output bass management) or
+    ``layout`` (compiled multichannel output layout, with ``plan_fingerprint``
+    and the runtime ``output_gain_db`` in [-80, 0]) selects the model.
     """
+    if (config is None) == (layout is None):
+        raise ValueError("Peak prediction requires exactly one of config or layout")
+    if layout is not None:
+        return _auto_sub_layout_peak_prediction(
+            sweep_profile=sweep_profile, sample_rate=sample_rate, channel=channel,
+            layout=layout, plan_fingerprint=plan_fingerprint,
+            output_gain_db=output_gain_db,
+            playback_gain=playback_gain, sink_gain=sink_gain,
+        )
     rate = int(sample_rate)
     duration = float(sweep_profile["sweep_seconds"])
     try:
@@ -321,7 +727,10 @@ async def _predict_auto_sub_stage_peaks(
     sweep_profile: dict[str, Any],
     sample_rate: int,
     channel: str,
-    config: BassManagementConfig,
+    config: BassManagementConfig | None = None,
+    layout: list[dict[str, Any]] | None = None,
+    plan_fingerprint: str | None = None,
+    output_gain_db: float = 0.0,
     playback_gain: float = 1.0,
     sink_gain: float = 1.0,
 ) -> dict[str, Any]:
@@ -340,9 +749,38 @@ async def _predict_auto_sub_stage_peaks(
         sample_rate=sample_rate,
         channel=channel,
         config=config,
+        layout=layout,
+        plan_fingerprint=plan_fingerprint,
+        output_gain_db=output_gain_db,
         playback_gain=playback_gain,
         sink_gain=sink_gain,
     )
+
+def _auto_sub_zero_sub_peaks(
+    prediction: dict[str, Any], sub_indices: tuple[int, ...],
+) -> dict[str, Any]:
+    """Fold a Main-only capture's muted subs into the stage peak prediction.
+
+    Returns a deep copy with every sub engine output's predicted peak zeroed,
+    exactly as the exact sub mute will silence them during the sweep, then
+    recomputes the maximum and the safety verdict. The input prediction is
+    not mutated. Outputs the model does not expose fail closed instead of
+    silently extending the prediction.
+    """
+    for index in sub_indices:
+        if type(index) is not int or index < 0:
+            raise ValueError("Sub output indices must be non-negative integers")
+        key = f"output_{index + 1}"
+        if key not in prediction["linear"] or key not in prediction["dbfs"]:
+            raise ValueError(f"Exact sub mute output {key} is absent from the peak prediction")
+    result = copy.deepcopy(prediction)
+    for index in sub_indices:
+        result["linear"][f"output_{index + 1}"] = 0.0
+        result["dbfs"][f"output_{index + 1}"] = -240.0
+    result["maximum_dbfs"] = max(result["dbfs"].values())
+    result["safe"] = result["maximum_dbfs"] <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS
+    return result
+
 
 def _auto_sub_stage_peak_comparison(
     predicted: dict[str, Any], measured_linear: dict[str, float],
@@ -354,6 +792,12 @@ def _auto_sub_stage_peak_comparison(
         raise ValueError("sink_gain must be a finite non-negative number") from exc
     if not math.isfinite(sink_linear) or sink_linear < 0.0:
         raise ValueError("sink_gain must be a finite non-negative number")
+    predicted_keys = set((predicted.get("dbfs") or {}))
+    measured_keys = set(measured_linear or {})
+    if predicted_keys != measured_keys:
+        raise ValueError(
+            "Peak comparison output sets differ: "
+            f"predicted={sorted(predicted_keys)} measured={sorted(measured_keys)}")
     # The meter reads the engine output (before the sink volume); fold the
     # sink gain in so predicted and measured are both at the DAC stage.
     folded_linear = {key: float(value) * sink_linear for key, value in measured_linear.items()}
@@ -479,6 +923,7 @@ def _persist_auto_sub_job_snapshot(job: dict[str, Any], job_id: str) -> None:
             "status": job.get("status"),
             "message": job.get("message"),
             "crossover_hz": job.get("crossover_hz"),
+            "crossover_hz_by_side": job.get("crossover_hz_by_side"),
             "step_ms": job.get("step_ms"),
             "original_alignment_ms": job.get("original_alignment_ms"),
             "original_sub1_alignment_ms": job.get("original_sub1_alignment_ms"),
@@ -556,6 +1001,64 @@ def _finalize_autosub_job(job: dict[str, Any] | None, job_id: str) -> None:
     logger.info("AUTOSUB job=%s cleanup complete state=%s", job_id, job.get("status") or "idle")
 
 async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> None:
+    """Drain service-owner cleanup even if the worker is cancelled repeatedly."""
+    if job is None or "output_state_context" not in job:
+        await _finish_auto_sub_worker_cleanup(job, job_id)
+        return
+    cleanup = asyncio.create_task(_finish_auto_sub_worker_cleanup(job, job_id))
+    cancelled = False
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            cancelled = True
+    cleanup.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _register_autosub_release_adapter(job: dict[str, Any]) -> None:
+    """Register the committed-plan release adapter before session unregister.
+
+    Committed service jobs only: the adapter renders the current committed
+    output plan at the restore rate so the session release rebuilds it
+    instead of the stale legacy overview.  Anything unconfigured (no
+    services, no factory, no session) or uncommitted skips quietly and the
+    release keeps the legacy path; registration failure never fails the job
+    or blocks the unregister (see the cleanup contract below).
+    """
+    context = job.get("output_state_context") or {}
+    if "committed_revision" not in context:
+        return
+    try:
+        from measurement.session import _measurement_services
+        services = _measurement_services()
+    except RuntimeError:
+        logger.warning(
+            "AUTOSUB job=%s release adapter skipped: measurement services are not configured",
+            job.get("id") or "",
+        )
+        return
+    if services.build_autosub_release_adapter is None:
+        logger.warning(
+            "AUTOSUB job=%s release adapter skipped: factory is not composed; "
+            "release keeps the legacy overview sync",
+            job.get("id") or "",
+        )
+        return
+    session = _measurement_session()
+    if session is None:
+        logger.warning(
+            "AUTOSUB job=%s release adapter skipped: measurement session is unavailable",
+            job.get("id") or "",
+        )
+        return
+    adapter = services.build_autosub_release_adapter(
+        output_key=context["output_key"], channels=context["channels"])
+    await session.register_autosub_release_adapter(adapter)
+
+
+async def _finish_auto_sub_worker_cleanup(job: dict[str, Any] | None, job_id: str) -> None:
     """Release the shared AutoSub lock, finalize the job and schedule its cleanup task.
 
     Ownership structure: the lock is released unconditionally in the outer
@@ -567,6 +1070,16 @@ async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> No
     """
     measurement_sr_session = _measurement_session()
     try:
+        if job is not None and "output_state_context" in job:
+            await _restore_original_config_or_fail_job(
+                job, {}, "Auto Sub Optimize failed to restore its output-state owner")
+        if job is not None:
+            try:
+                await _register_autosub_release_adapter(job)
+            except Exception:
+                logger.exception(
+                    "AUTOSUB job=%s release adapter registration failed", job_id
+                )
         if measurement_sr_session is not None:
             try:
                 await measurement_sr_session.unregister_auto_sub(job_id)
@@ -574,6 +1087,7 @@ async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> No
                 logger.exception(
                     "AUTOSUB job=%s measurement sample-rate session unregister failed", job_id
                 )
+        drop_candidate_owner(job_id)
         try:
             _finalize_autosub_job(job, job_id)
         except Exception:
@@ -592,4 +1106,3 @@ async def _finish_auto_sub_worker(job: dict[str, Any] | None, job_id: str) -> No
     cleanup_task = asyncio.create_task(_cleanup_autosub_job())
     _AUTO_SUB_CLEANUP_TASKS.add(cleanup_task)
     cleanup_task.add_done_callback(_AUTO_SUB_CLEANUP_TASKS.discard)
-

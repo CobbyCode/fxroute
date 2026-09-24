@@ -10,6 +10,7 @@ const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'static', 'style.css'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const modalJs = fs.readFileSync(path.join(root, 'static', 'modal.js'), 'utf8');
 const radioJs = fs.readFileSync(path.join(root, 'static', 'radio.js'), 'utf8');
 
 let passed = 0;
@@ -29,11 +30,12 @@ check('viewport does not disable user zoom', !/user-scalable\s*=\s*["']no["']/i.
 check('viewport does not cap zoom at one', !/maximum-scale\s*=\s*["']1(?:\.0)?["']/i.test(html));
 
 // All dialog ownership and background inerting should be centralized.
-check('shared modal manager is exposed', /window\.FXRouteModal\s*=/.test(appJs));
-check('modal manager uses inert background state', /\.inert\s*=/.test(appJs));
+check('shared modal manager is exposed', /FXRouteModal\s*=/.test(modalJs));
+check('modal manager uses inert background state', /\.inert\s*=/.test(modalJs));
+check('app uses the shared modal manager', /FXRouteModal/.test(appJs));
 check('settings uses the shared modal manager', /settingsPanel[\s\S]*?FXRouteModal/.test(appJs));
 check('radio management uses the shared modal manager', /radioManagePanel[\s\S]*?FXRouteModal/.test(radioJs));
-check('modal manager restores focus on close', /opener[\s\S]*?\.focus\(\)/.test(appJs));
+check('modal manager restores focus on close', /opener[\s\S]*?\.focus\(\)/.test(modalJs));
 
 // The visible FXRoute brand remains the settings trigger, while its function
 // has one consistent accessible name and tooltip label.

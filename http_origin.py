@@ -8,11 +8,11 @@ same-origin defence: effective scheme/host/port resolution (honoring the
 single trusted ``X-Forwarded-*`` hop of the optional LAN reverse proxy)
 and the cross-site verdict for ``Origin``/``Referer`` headers.
 
-It is pure request classification: no application state, no locks, no I/O.
-Malformed ports fail closed (untrusted) instead of raising, and headerless
-CLI/systemd callers stay allowed. All consumers (update/restore routes,
-device-name route, streaming provider admin, power API) share these
-predicates instead of reimplementing the comparison.
+The classification is pure request handling: no application state, locks, or
+I/O. Malformed ports fail closed (untrusted) instead of raising, and headerless
+CLI/systemd callers stay allowed. ``TrustedOriginMiddleware`` applies the
+predicate centrally to every unsafe HTTP method; privileged routes may retain
+their local checks as defense in depth.
 """
 
 from __future__ import annotations
@@ -21,6 +21,11 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import Request
+from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+UNSAFE_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 def effective_request_scheme(request: Request) -> str:
@@ -68,6 +73,28 @@ def effective_request_port(request: Request) -> Optional[int]:
         return -1
 
 
+class TrustedOriginMiddleware:
+    """Reject cross-origin unsafe HTTP requests before route dispatch."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") == "http"
+            and str(scope.get("method") or "").upper() in UNSAFE_HTTP_METHODS
+        ):
+            request = Request(scope, receive=receive)
+            if not is_request_origin_trusted(request):
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "Cross-site request rejected"},
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 def is_request_origin_trusted(request: Request) -> bool:
     """Cross-site defence for state-changing endpoints.
 
@@ -76,9 +103,9 @@ def is_request_origin_trusted(request: Request) -> bool:
     a foreign web page in the same browser are *not* a trusted caller, so
     we cannot rely solely on the LAN assumption.
 
-    The routine therefore refuses a POST whose ``Origin`` or ``Referer``
-    header points to a different scheme + host + port than the one the
-    request is actually reaching -- the cheap, no-cookie CSRF defence
+    The routine therefore refuses an unsafe request whose ``Origin`` or
+    ``Referer`` header points to a different scheme + host + port than the one
+    the request is actually reaching -- the cheap, no-cookie CSRF defence
     recommended when an application cannot introduce a new auth surface.
     Requests without either header (the legitimate CLI / curl / systemd
     path) are allowed so existing LAN operators do not lose their

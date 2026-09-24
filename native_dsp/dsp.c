@@ -39,6 +39,13 @@ typedef struct {
     float *delay_line;
     biquad filters[MAX_BIQUADS];
     unsigned filter_count;
+    /* Per-output correction bank: raw SOS biquads share filters[] in file
+     * order (live_peq addresses array positions); at most one convolver. */
+    int has_conv;
+    convolution conv;
+    char conv_path[1024];
+    unsigned conv_channel;
+    float conv_wet, conv_dry, conv_in_gain, conv_out_gain;
     float peak, square_sum;
     uint64_t meter_frames;
 } output_state;
@@ -317,6 +324,11 @@ static float run_biquad(biquad *b, float value) {
     return output;
 }
 
+static int sos_stable(float a1, float a2) {
+    /* Poles of 1 + a1 z^-1 + a2 z^-2 strictly inside the unit circle. */
+    return fabsf(a2) < 1.0f && fabsf(a1) < 1.0f + a2;
+}
+
 static char *trim_value(char *value) {
     char *end;
     while (*value == ' ' || *value == '\t') value++;
@@ -512,12 +524,23 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
             else if (!strcmp(type, "native") && !strcmp(kind, "autogain")) current->kind = STAGE_AUTOGAIN;
             else if (!strcmp(type, "native") && !strcmp(kind, "crystalizer")) current->kind = STAGE_CRYSTALIZER;
             else goto invalid;
-        } else { float x,y,z,route_gain; int enabled;
+        } else { float x,y,z,route_gain; int enabled; float b0,b1,b2,a1,a2; int consumed;
             if (!stage_section && !post_section && sscanf(p,"rate %u %c",&d->rate,&extra)==1) {}
             else if (!stage_section && !post_section && sscanf(p,"inputs %u %c",&d->inputs,&extra)==1) {}
             else if (!stage_section && !post_section && sscanf(p,"outputs %u %c",&d->outputs,&extra)==1) {}
             else if (!stage_section && !post_section && sscanf(p,"matrix %u %u %f %c",&out,&in,&route_gain,&extra)==3 && d->route_count<MAX_ROUTES) { d->routes[d->route_count].out=out; d->routes[d->route_count].in=in; d->routes[d->route_count++].gain=route_gain; }
             else if (!stage_section && !post_section && sscanf(p,"peq %u %31s %f %f %f %c",&out,type,&x,&y,&z,&extra)==5 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && !design(&d->out[out].filters[d->out[out].filter_count],type,d->rate,x,y,z)) d->out[out].filter_count++;
+            else if (!stage_section && !post_section && sscanf(p,"sos %u %f %f %f %f %f %c",&out,&b0,&b1,&b2,&a1,&a2,&extra)==6 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && isfinite(b0) && isfinite(b1) && isfinite(b2) && isfinite(a1) && isfinite(a2) && sos_stable(a1,a2)) { biquad *target=&d->out[out].filters[d->out[out].filter_count++]; target->b0=b0; target->b1=b1; target->b2=b2; target->a1=a1; target->a2=a2; target->z1=target->z2=0.0f; }
+            else if (!stage_section && !post_section && sscanf(p,"oconv %u %u %f %f %f %f %n",&out,&in,&x,&y,&z,&route_gain,&consumed)==6 && out<FXDSP_MAX_CHANNELS && !d->out[out].has_conv) {
+                char *conv_path = trim_value(p + consumed);
+                output_state *conv_state = &d->out[out];
+                if (!*conv_path || !isfinite(x) || !isfinite(y) || !isfinite(z) || !isfinite(route_gain) || strlen(conv_path) >= sizeof conv_state->conv_path) goto invalid;
+                snprintf(conv_state->conv_path, sizeof conv_state->conv_path, "%s", conv_path);
+                conv_state->conv_channel = in;
+                conv_state->conv_wet = powf(10.0f, x / 20.0f); conv_state->conv_dry = powf(10.0f, y / 20.0f);
+                conv_state->conv_in_gain = powf(10.0f, z / 20.0f); conv_state->conv_out_gain = powf(10.0f, route_gain / 20.0f);
+                conv_state->has_conv = 1;
+            }
             else if (sscanf(p,"output %u %f %f %31s %c",&out,&x,&y,arg,&extra)==4 && out<FXDSP_MAX_CHANNELS && y>=0.0f && (!strcmp(arg,"normal") || !strcmp(arg,"invert"))) { post_section=1; d->out[out].gain=powf(10,x/20); d->out[out].delay=(size_t)llround(y*d->rate/1000); d->out[out].polarity=!strcmp(arg,"invert")?-1:1; }
             else if (post_section && sscanf(p,"bypass %d %c",&enabled,&extra)==1) atomic_store_explicit(&d->effect_bypass,!!enabled,memory_order_relaxed);
             else { invalid: snprintf(line,sizeof line,"invalid config line %u",line_no); fail(error,error_size,line); goto bad; }
@@ -544,6 +567,15 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     for(unsigned i=0;i<CONV_BLOCK*2;i++){unsigned value=i,reversed=0;for(unsigned bit=0;bit<9;bit++){reversed=(reversed<<1)|(value&1);value>>=1;}d->fft_reverse[i]=reversed;}
     for(unsigned i=0;i<CONV_BLOCK;i++){double angle=-2*PI*i/(CONV_BLOCK*2);d->fft_roots[i].re=cos(angle);d->fft_roots[i].im=sin(angle);}
     for(out=0;out<d->outputs;out++) { output_state *s=&d->out[out]; s->delay_size=(size_t)llround(500.0*d->rate/1000.0)+1U; s->delay_line=calloc(s->delay_size,sizeof(float)); if(!s->delay_line){fail(error,error_size,"out of memory");goto bad;} }
+    for(out=0;out<d->outputs;out++) {
+        output_state *s=&d->out[out];
+        if(!s->has_conv) continue;
+        float *taps=NULL; size_t count=0;
+        if(load_wav(s->conv_path,s->conv_channel,&taps,&count,d->rate)||prepare_convolution(d,&s->conv,taps,count)) {
+            free(taps); fail(error,error_size,"cannot load output convolver path"); goto bad;
+        }
+        free(taps);
+    }
     for(out=0;out<(d->inputs>d->outputs?d->inputs:d->outputs);out++) for(unsigned b=0;b<2;b++){d->scratch[b][out]=calloc(PROCESS_BLOCK,sizeof(float));if(!d->scratch[b][out]){fail(error,error_size,"out of memory");goto bad;}}
     for (unsigned stage = 0; stage < d->stage_count; stage++) if (initialize_stage(d, &d->stages[stage], error, error_size)) goto bad;
     return d;
@@ -563,6 +595,7 @@ void fxdsp_free(fxdsp *d) {
     if(!d)return;
     for(unsigned i=0;i<FXDSP_MAX_CHANNELS;i++) {
         free(d->out[i].delay_line); free(d->scratch[0][i]); free(d->scratch[1][i]);
+        free_convolution(&d->out[i].conv);
     }
     for(unsigned index=0;index<d->stage_count;index++) {
         dsp_stage *stage=&d->stages[index];
@@ -856,7 +889,12 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                 const route *r=&d->routes[d->route_order[order]];
                 value+=d->scratch[source][r->in][n]*r->gain;
             }
-            for(unsigned filter=0;filter<d->out[channel].filter_count;filter++) value=run_biquad(&d->out[channel].filters[filter],value);
+            output_state *state=&d->out[channel];
+            for(unsigned filter=0;filter<state->filter_count;filter++) value=run_biquad(&state->filters[filter],value);
+            if(state->has_conv) {
+                float driven=value*state->conv_in_gain;
+                value=state->conv_out_gain*(state->conv_dry*driven+state->conv_wet*convolve(d,&state->conv,driven));
+            }
             d->scratch[routed][channel][n]=isfinite(value)?value:0.0f;
         }
         for(unsigned channel=0;channel<d->outputs;channel++) {

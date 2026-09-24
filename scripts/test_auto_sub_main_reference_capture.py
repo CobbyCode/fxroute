@@ -13,11 +13,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+from audio.samplerate import (
+    OUTPUT_MODE_SUBWOOFER_21,
+    OUTPUT_MODE_SUBWOOFER_22,
+    OUTPUT_MODE_SUBWOOFER_22_STEREO,
+)
 import measurement.session as measurement_session
 import measurement.autosub as autosub
 import measurement.autosub.candidates as autosub_candidates
 import measurement.autosub.jobs as autosub_jobs
 import measurement.autosub.measurement as autosub_measurement
+from measurement.autosub import deps as autosub_deps
 from dsp.runtime import DSPRuntime, BassManagementConfig
 
 
@@ -45,7 +51,7 @@ def runtime_config() -> BassManagementConfig:
 
 
 def original_snapshot(mode: str) -> dict:
-    if mode == main.OUTPUT_MODE_SUBWOOFER_21:
+    if mode == OUTPUT_MODE_SUBWOOFER_21:
         return {"subwoofer": {"sub_alignment_ms": 2.0, "sub_level_db": -3.0, "sub_polarity": "normal", "main_highpass_enabled": True}}
     return {
         "main_highpass_enabled": True,
@@ -85,9 +91,9 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_exactly_two_structurally_identical_references_for_all_modes(self):
         for mode in (
-            main.OUTPUT_MODE_SUBWOOFER_21,
-            main.OUTPUT_MODE_SUBWOOFER_22,
-            main.OUTPUT_MODE_SUBWOOFER_22_STEREO,
+            OUTPUT_MODE_SUBWOOFER_21,
+            OUTPUT_MODE_SUBWOOFER_22,
+            OUTPUT_MODE_SUBWOOFER_22_STEREO,
         ):
             calls = []
 
@@ -101,7 +107,17 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                     "measurement_channel": side, "sample_rate": 48_000,
                 }
 
-            job = {"auto_gain": {"available": False, "reason": "gain not implemented"}}
+            # Service jobs map only the slots the mode actually has: a 2.1
+            # system has one sub slot, so references must not claim sub2.
+            role_map = {"sub1": "left"} if mode == OUTPUT_MODE_SUBWOOFER_21 else {"sub1": "left", "sub2": "right"}
+            job = {
+                "auto_gain": {"available": False, "reason": "gain not implemented"},
+                "output_state_context": {
+                    "mode": mode, "revision": 1, "output_key": "mock", "channels": 4,
+                    "sub_role_map": role_map, "sub_mute_mask": [1] * len(role_map),
+                },
+            }
+            expected_slots = tuple(slot for slot in ("sub1", "sub2") if slot in role_map)
             with patch.object(autosub.measurement, "_measure_auto_sub_candidate", side_effect=fake_measure):
                 await autosub_measurement._capture_auto_sub_main_references(
                     job=job, fc=80, input_id="mic", mic_input_channel="1",
@@ -112,7 +128,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(calls), 2)
             self.assertEqual([call["channel"] for call in calls], ["left", "right"])
             self.assertTrue(all(call["exact_sub_mute"] for call in calls))
-            self.assertTrue(all(call["active_subs"] == ("sub1", "sub2") for call in calls))
+            self.assertTrue(all(call["active_subs"] == expected_slots for call in calls))
             self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_start_hz"] == 10.0 for call in calls))
             self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_end_hz"] == 22_000.0 for call in calls))
             self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_seconds"] == 11.0 for call in calls))
@@ -140,8 +156,8 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 job=job, fc=80, input_id="mic", mic_input_channel="1", reference_input_channel="",
                 calibration_ref="", calibration_filename=None, calibration_bytes=None,
                 auto_sub_rate=48_000,
-                output_mode=main.OUTPUT_MODE_SUBWOOFER_21,
-                original_config_snapshot=original_snapshot(main.OUTPUT_MODE_SUBWOOFER_21),
+                output_mode=OUTPUT_MODE_SUBWOOFER_21,
+                original_config_snapshot=original_snapshot(OUTPUT_MODE_SUBWOOFER_21),
             )
         self.assertEqual(job["main_references"]["status"], "unavailable")
         self.assertIn("left", job["auto_gain"]["reason"])
@@ -162,10 +178,10 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             sweep_profile=sweep_profile, sample_rate=48_000, channel="left",
             config=runtime_config(),
         )
-        # exact_sub_mute zeroes the sub outputs; measured peaks must match that.
+        # exact_sub_mute zeroes the muted sub outputs; measured peaks must
+        # match that (single-sub mask mutes output_3 only).
         measured_peaks = dict(prediction["linear"])
         measured_peaks["output_3"] = 0.0
-        measured_peaks["output_4"] = 0.0
 
         class FakeRuntime:
             def __init__(self, fail_restore=False):
@@ -176,7 +192,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             async def sync(self, _config):
                 return None
 
-            async def set_exact_sub_mute(self, enabled):
+            async def set_exact_sub_mute(self, enabled, mask=None):
                 previous = self.muted
                 self.calls.append(bool(enabled))
                 if not enabled and self.fail_restore:
@@ -191,7 +207,16 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 return dict(measured_peaks)
 
             def snapshot(self):
-                return {"exact_sub_mute": self.muted}
+                return {"exact_sub_mute": self.muted, "output_gain_db": 0.0}
+
+        class FakeOwner:
+            committed = False
+
+            async def ensure_ready(self, _rate):
+                return None
+
+            async def restore(self):
+                return None
 
         class FakeStore:
             def __init__(self, outcome, job):
@@ -204,6 +229,9 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 if self.outcome == "cancel":
                     self.job["cancel_requested"] = True
                 return {"id": "ref-sweep"}
+
+            async def drain_job(self, _sweep_id):
+                return None
 
             def cancel_job(self, _sweep_id):
                 return None
@@ -221,38 +249,70 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
         async def no_sleep(_seconds):
             return None
 
+        async def _config_prediction(**kwargs):
+            return await autosub_jobs._predict_auto_sub_stage_peaks(
+                sweep_profile=kwargs["sweep_profile"],
+                sample_rate=kwargs["sample_rate"],
+                channel=kwargs["channel"],
+                config=runtime_config(),
+                playback_gain=kwargs.get("playback_gain", 1.0),
+                sink_gain=kwargs.get("sink_gain", 1.0),
+            )
+
         for outcome in ("success", "error", "cancel", "restore_error"):
-            job = {"cancel_requested": False, "_sweep_timings": [], "auto_gain": {"available": False, "reason": "pending"}}
+            job = {"id": f"ref-{outcome}", "cancel_requested": False,
+                   "_sweep_timings": [], "auto_gain": {"available": False, "reason": "pending"},
+                   # Backend-v2 migration: the funnel requires a service job.
+                   "output_state_context": {
+                       "mode": "stereo", "revision": 0, "output_key": "dev",
+                       "channels": 4, "optimizer_path": "single-sub",
+                       "sub_role_map": {"sub1": "sub1"}, "sub_mute_mask": 4,
+                   }}
             runtime = FakeRuntime(fail_restore=outcome == "restore_error")
             store = FakeStore("success" if outcome == "restore_error" else outcome, job)
+            owner = FakeOwner()
+            autosub_jobs_module = autosub.jobs
             with (
                 patch.object(main.runtime, "dsp_runtime", runtime),
                 patch.object(main, "measurement_store", store),
-                patch.object(autosub.measurement, "set_audio_output_mode"),
-                patch.object(autosub.measurement, "get_audio_output_overview", return_value={}),
+                # Staging itself is covered by the owner-prearm suite; the
+                # exact-mute restore contract under test needs only a staged
+                # triple, and peaks predict from the equivalent config.
+                patch.object(
+                    autosub.measurement, "_stage_auto_sub_service_candidate",
+                    new=AsyncMock(return_value={
+                        "expected_native_layout": [],
+                        "fingerprint": "fp-test",
+                        "expected_native_output_mode": "subwoofer-2.1",
+                    }),
+                ),
+                patch.object(
+                    autosub.measurement, "_predict_auto_sub_stage_peaks",
+                    side_effect=_config_prediction,
+                ),
                 # The pre-sweep safety decision uses a fresh unclamped live
                 # master read off the loop; pin it so the candidate stays hermetic.
                 patch.object(autosub.measurement, "get_output_volume_unclamped", return_value=100),
-                patch.object(BassManagementConfig, "from_overview", return_value=runtime_config()),
-                # Pre-arm responsibility moved to _sync_dsp_runtime_for_measurement_sweep.
-                patch.object(measurement_session, "_sync_dsp_runtime_for_measurement_sweep", new_callable=AsyncMock, return_value=None),
                 patch.object(main.asyncio, "sleep", side_effect=no_sleep),
-                patch("audio.samplerate._load_audio_output_mode", return_value={"subwoofer": {"sub_alignment_ms": 2.0}}),
             ):
-                call = autosub_measurement._measure_auto_sub_candidate(
-                        delay_ms=2.0, job=job, candidate_index=1, total=2,
-                        stage="main_reference", fc=80, input_id="mic", channel="left",
-                        mic_input_channel="1", reference_input_channel="", calibration_ref="",
-                        calibration_filename=None, calibration_bytes=None, auto_sub_sweep_profile=sweep_profile,
-                        auto_sub_rate=48_000, original_level=-3.0, original_polarity="normal",
-                        original_highpass=True, exact_sub_mute=True,
-                    )
-                if outcome == "restore_error":
-                    with self.assertRaisesRegex(RuntimeError, "AutoSub stopped"):
-                        await call
-                    self.assertIn("restore failed", job["auto_gain"]["reason"].lower())
-                    continue
-                result = await call
+                autosub_deps.register_candidate_owner(job["id"], owner)
+                try:
+                    call = autosub_measurement._measure_auto_sub_candidate(
+                            delay_ms=2.0, job=job, candidate_index=1, total=2,
+                            stage="main_reference", fc=80, input_id="mic", channel="left",
+                            mic_input_channel="1", reference_input_channel="", calibration_ref="",
+                            calibration_filename=None, calibration_bytes=None, auto_sub_sweep_profile=sweep_profile,
+                            auto_sub_rate=48_000, original_level=-3.0, original_polarity="normal",
+                            original_highpass=True, exact_sub_mute=True,
+                        )
+                    if outcome == "restore_error":
+                        with self.assertRaisesRegex(RuntimeError, "AutoSub stopped"):
+                            await call
+                        self.assertIn("restore failed", job["auto_gain"]["reason"].lower())
+                        continue
+                    result = await call
+                finally:
+                    autosub_deps.drop_candidate_owner(job["id"])
             self.assertFalse(runtime.muted, outcome)
             self.assertEqual(runtime.calls, [True, False], outcome)
             self.assertIn(result["status"], {"completed", "error", "cancelled"})

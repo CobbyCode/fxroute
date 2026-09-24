@@ -6,6 +6,7 @@ import http.server
 import pathlib
 import sys
 import threading
+import traceback
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PORT = 8216
@@ -35,9 +36,54 @@ def _serve():
 
 STUB = """
 const realFetch = window.fetch.bind(window);
+// There is no websocket server behind the static test host: a real socket
+// would close, pop the "Disconnected from server" banner over the toolbar and
+// make later clicks fail. Report a healthy connection instead.
+window.WebSocket = class {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    constructor() {
+        this.readyState = 1;
+        this.listeners = {};
+        setTimeout(() => {
+            if (typeof this.onopen === 'function') this.onopen({});
+            (this.listeners.open || []).forEach(handler => handler({}));
+        }, 0);
+    }
+    addEventListener(type, handler) {
+        (this.listeners[type] = this.listeners[type] || []).push(handler);
+    }
+    removeEventListener(type, handler) {
+        this.listeners[type] = (this.listeners[type] || []).filter(item => item !== handler);
+    }
+    send() {}
+    close() {}
+};
 const measurementJobs = new Map();
 let measurementSequence = 0;
 window.__measurementCalls = [];
+// Saved results carrying frozen area targets (one current, one legacy).
+const savedMeasurements = [
+    {
+        id: 'area-mid', name: 'Left mid area', created_at: '2026-09-16T10:00:00Z',
+        channel: 'left', measurement_kind: 'single',
+        input_device: { id: 'mic-1', label: 'Test microphone' },
+        traces: [{ kind: 'sweep-response', role: 'trusted', label: 'Left mid area', points: [[20, 0], [1000, 6], [20000, 1]] }],
+        measurement_target: { schema: 'fxroute.measurement-target', version: 1, mode: 'crossover',
+            device_key: 'default', bank_id: 'left_mid', preset: 'Neutral', revision: 2,
+            processing_fingerprint: 'fp-1', sample_rate_hz: 48000, channels: 6,
+            roles: ['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high'],
+            measured_roles: ['left_mid'], reference_tap: 'fxroute_dsp_sink.monitor' },
+    },
+    {
+        id: 'legacy-global', name: 'Legacy sweep', created_at: '2026-09-15T10:00:00Z',
+        channel: 'stereo', measurement_kind: 'single',
+        input_device: { id: 'mic-1', label: 'Test microphone' },
+        traces: [{ kind: 'sweep-response', role: 'trusted', label: 'Legacy sweep', points: [[20, 0], [1000, 6], [20000, 1]] }],
+    },
+];
 window.__measurementControls = {
     completionDebugResolvers: [],
     delayCompletionDebug: false,
@@ -75,7 +121,8 @@ window.fetch = (url, opts) => {
             message: 'Measurement running…',
         };
         measurementJobs.set(job.id, job);
-        window.__measurementCalls.push({ type: 'start', path, id: job.id, channel: body?.get?.('channel') || '' });
+        window.__measurementCalls.push({ type: 'start', path, id: job.id, channel: body?.get?.('channel') || '',
+            bank: body?.get?.('measurement_bank') || '' });
         return json({ job });
     };
     if (u.includes('/api/measurements/lr-repeat/start') && opts?.method === 'POST') {
@@ -98,6 +145,53 @@ window.fetch = (url, opts) => {
         }
         const job = measurementJobs.get(finalPart) || { id: finalPart, status: 'running', job_kind: 'single', message: 'Measurement running…' };
         return json({ job });
+    }
+    const outputState = { revision: 1, active_mode: 'stereo', selected_bank: 'global' };
+    const groupedBank = (id, label, roles, channel_mode) => ({ id, label, roles, channel_mode,
+        preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A', can_a: true, can_b: false });
+    const modeCatalog = (mode) => {
+        const banks = mode === 'stereo'
+            ? { global: groupedBank('global', 'Global', ['global'], 'stereo'),
+                main: groupedBank('main', 'Main L/R', ['main_l', 'main_r'], 'stereo'),
+                sub1: groupedBank('sub1', 'Sub 1', ['sub1'], 'mono') }
+            : { global: groupedBank('global', 'Global', ['global'], 'stereo') };
+        return {
+            // Mono-bank checks boot the page with an init-script override.
+            selected_bank: mode === outputState.active_mode
+                ? (window.__stubSelectedBank || outputState.selected_bank) : 'global',
+            banks,
+            all_banks: { preset: null, preset_a: 'Neutral', preset_b: null,
+                active_side: null, can_a: true, can_b: false },
+            processing: {},
+            bass_management: { frequency_hz: 80, main_highpass_enabled: true },
+            extras: {},
+            topology: {
+                mode,
+                roles: mode === 'stereo' ? ['main_l', 'main_r', 'sub1'] : [],
+                sub_roles: mode === 'stereo' ? ['sub1'] : [],
+                sub_mode: mode === 'stereo' ? 'mono' : 'none',
+                left_ways: [], right_ways: [], way_count: null, issues: [],
+            },
+        };
+    };
+    if (u.includes('/api/audio/output-state')) {
+        return json({
+            status: 'ok',
+            revision: outputState.revision,
+            active_mode: outputState.active_mode,
+            device: { key: 'default', channels: 4, routing: { stereo: ['main_l', 'main_r', 'sub1', 'sub1'], crossover: [] } },
+            modes: { stereo: modeCatalog('stereo'), crossover: modeCatalog('crossover') },
+            capabilities: {
+                modes: ['stereo', 'crossover'],
+                roles: {
+                    stereo: ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2'],
+                    crossover: ['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high'],
+                },
+                filter_families: { 'linkwitz-riley': [12, 24, 36, 48, 60, 72], butterworth: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72], bessel: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72] },
+                max_slope_db_oct: 72,
+                max_biquads_per_output: 32,
+            },
+        });
     }
     if (u.includes('/api/audio/samplerate')) {
         return json({ available: true, active_rate: 44100, supported_rates: [44100, 48000] });
@@ -124,7 +218,7 @@ window.fetch = (url, opts) => {
             capture_available: true,
         });
     }
-    if (u.includes('/api/measurements')) return json({ measurements: [] });
+    if (u.includes('/api/measurements')) return json({ measurements: savedMeasurements });
     if (u.includes('/api/library/')) return json({ tracks: [], albums: [], folders: [] });
     if (u.includes('/api/streaming/providers')) return json({ providers: [] });
     if (u.includes('/api/streaming/')) return json({ installed: false, available: false });
@@ -175,7 +269,8 @@ def _run():
                 assert abs(setup_box['width'] - reset_box['width']) < 1, 'Setup and Reset widths differ'
                 assert abs(setup_box['height'] - reset_box['height']) < 1, 'Setup and Reset heights differ'
                 assert abs(setup_box['x'] + setup_box['width'] - reset_box['x'] - reset_box['width']) < 1
-                assert abs(setup_box['y'] + setup_box['height'] / 2 - label_box['y'] - label_box['height'] / 2) < 1
+                # Shared headline: label and Setup tops sit on one edge.
+                assert abs(setup_box['y'] - label_box['y']) < 1, 'heading label and Setup tops are not flush'
                 page.evaluate("""() => {
                     window.__setupNodes = [...document.querySelectorAll('#measurement-setup-card input, #measurement-setup-card select')];
                     window.__assistantNode = document.querySelector('#measurement-panel [role=dialog]');
@@ -216,22 +311,32 @@ def _run():
                 assert not page.locator("#measurement-sweep-menu").is_visible()
                 page.locator("#measurement-auto-sub-group").evaluate("element => element.classList.remove('hidden')")
                 labels = page.locator(".measurement-workflow-label").all_text_contents()
-                assert labels[:3] == ["Measurements", "Subwoofer", "Calibration"]
+                assert labels[:4] == ["Measurements", "Subwoofer", "Speaker Auto Alignment", "Calibration"], (
+                    f"unexpected measurement workflow labels at {width}x{height}: {labels[:4]!r}"
+                )
                 checks += 4
 
                 page.locator("#measurement-sweep-toggle").click()
                 menu = page.locator("#measurement-sweep-menu")
                 assert menu.is_visible()
                 assert [
-                    page.locator("[data-measurement-channel='left']").inner_text(),
-                    page.locator("[data-measurement-channel='right']").inner_text(),
-                    page.locator("[data-measurement-channel='stereo']").inner_text(),
+                    page.locator("#measurement-area-indicator").inner_text(),
+                    page.locator("#measurement-sweep-start").inner_text(),
                     page.locator("#measurement-repeat-start").inner_text(),
                     page.locator("#measurement-hybrid-open").inner_text(),
-                ] == ["L", "R", "Stereo", "Start LR Repeat", "Advanced"]
+                ] == ["Global", "Run Single Sweep", "Start LR Repeat", "Advanced"]
                 first_choice = page.locator(".measurement-workflow-menu-choice").nth(0).inner_text()
-                assert "Run Single Sweep." in first_choice
+                # The label is uppercased by CSS; compare case-insensitively.
+                assert "measuring area" in first_choice.lower()
+                assert "Run Single Sweep" in first_choice
                 assert "L / R / Stereo" not in first_choice
+                assert page.locator("[data-measurement-channel]").count() == 0
+                # Stereo areas offer an area-scoped side choice for the single
+                # sweep; mono areas hide it (covered below).
+                assert page.locator("#measurement-sweep-side-row").is_visible()
+                assert page.locator("#measurement-sweep-side-row").inner_text().split() == [
+                    "Left", "Stereo", "Right"]
+                assert page.locator('[data-sweep-side="stereo"]').get_attribute("aria-pressed") == "true"
                 assert page.locator(".measurement-workflow-menu-choice").nth(1).inner_text() == (
                     "Start LR Repeat\nRepeated L/R sweeps for more precision."
                 )
@@ -256,15 +361,35 @@ def _run():
                 assert page.evaluate("document.activeElement?.id") == "measurement-sweep-toggle"
                 checks += 2
 
-                for channel in ("left", "right", "stereo"):
+                def start_sweep(expected_channel, expected_bank):
                     page.locator("#measurement-sweep-toggle").click()
-                    page.wait_for_function(f"() => !document.querySelector(\"[data-measurement-channel='{channel}']\")?.disabled")
-                    page.locator(f"[data-measurement-channel='{channel}']").click()
-                    _wait_for_call(page, "start", "/api/measurements/start", channel)
+                    page.wait_for_function("() => !document.getElementById('measurement-sweep-start')?.disabled")
+                    page.locator("#measurement-sweep-start").click()
+                    _wait_for_call(page, "start", "/api/measurements/start", expected_channel)
+                    last = page.evaluate("() => window.__measurementCalls.filter(c => c.type === 'start').at(-1)")
+                    assert last["bank"] == expected_bank, last
                     _cancel_from_sweep_button(page)
-                checks += 6
 
+                # The demo starts on Global: whole system, both inputs.
+                start_sweep("stereo", "global")
+                checks += 2
+
+                # A stereo area also offers per-side single sweeps; the side
+                # only narrows within the selected bank.
                 page.locator("#measurement-sweep-toggle").click()
+                page.locator('[data-sweep-side="left"]').click()
+                assert page.locator('[data-sweep-side="left"]').get_attribute("aria-pressed") == "true"
+                page.locator("#measurement-sweep-start").click()
+                _wait_for_call(page, "start", "/api/measurements/start", "left")
+                last = page.evaluate("() => window.__measurementCalls.filter(c => c.type === 'start').at(-1)")
+                assert last["bank"] == "global", last
+                _cancel_from_sweep_button(page)
+                page.locator("#measurement-sweep-toggle").click()
+                page.locator('[data-sweep-side="stereo"]').click()
+                checks += 4
+
+                # The side chips keep the menu open (selection, not action),
+                # so the toggle click above left it open for the repeat run.
                 page.locator("#measurement-repeat-start").click()
                 _wait_for_call(page, "start", "/api/measurements/lr-repeat/start")
                 _cancel_from_sweep_button(page)
@@ -272,15 +397,15 @@ def _run():
 
                 page.evaluate("window.__fxDebugRuntimeSnapshots = true; window.__measurementControls.delayCompletionDebug = true")
                 page.locator("#measurement-sweep-toggle").click()
-                page.locator("[data-measurement-channel='left']").click()
-                _wait_for_call(page, "start", "/api/measurements/start", "left")
+                page.locator("#measurement-sweep-start").click()
+                _wait_for_call(page, "start", "/api/measurements/start", "stereo")
                 page.evaluate("window.__measurementControls.completeLast()")
                 page.wait_for_function("() => document.getElementById('measurement-sweep-toggle')?.textContent === 'Start Sweep'")
                 page.wait_for_function("() => window.__measurementControls.completionDebugResolvers.length > 0")
                 page.locator("#measurement-sweep-toggle").click()
-                page.wait_for_function("() => !document.querySelector(\"[data-measurement-channel='right']\")?.disabled")
-                page.locator("[data-measurement-channel='right']").click()
-                _wait_for_call(page, "start", "/api/measurements/start", "right")
+                page.wait_for_function("() => !document.getElementById('measurement-sweep-start')?.disabled")
+                page.locator("#measurement-sweep-start").click()
+                _wait_for_call(page, "start", "/api/measurements/start", "stereo")
                 assert page.locator("#measurement-sweep-toggle").inner_text() == "Cancel"
                 page.evaluate("window.__measurementControls.releaseCompletionDebug()")
                 page.wait_for_timeout(50)
@@ -329,6 +454,53 @@ def _run():
                 checks += 3
                 effects_import.click()
                 page.close()
+
+            # A mono bank has no second side to compare: the repeat action
+            # must be disabled and the note must say why.
+            page = browser.new_page(viewport={"width": VIEWPORTS[0][0], "height": VIEWPORTS[0][1]})
+            page.add_init_script(STUB)
+            page.add_init_script("window.__stubSelectedBank = 'sub1';")
+            _open_measurement(page)
+            page.locator("#measurement-sweep-toggle").click()
+            page.wait_for_function(
+                "() => document.getElementById('measurement-area-indicator')?.textContent === 'Sub 1'")
+            assert page.locator("#measurement-repeat-start").is_disabled(), (
+                "a mono bank must not offer an L/R repeat")
+            assert page.locator("#measurement-repeat-note").inner_text() == (
+                "Sub 1 is a mono target. Use a single sweep.")
+            assert page.locator("#measurement-repeat-start").get_attribute("title") == (
+                "Sub 1 is a mono target. Use a single sweep.")
+            # A single sweep of the same area stays available.
+            assert not page.locator("#measurement-sweep-start").is_disabled()
+            # A mono bank has no sides: the side row hides and the sweep
+            # stays on both inputs at operating level.
+            assert not page.locator("#measurement-sweep-side-row").is_visible()
+            checks += 5
+
+            # Saved results show the frozen area they were captured in; a legacy
+            # result without a target stays unlabelled.
+            saved_summary = page.locator(".measurement-saved-group summary")
+            if saved_summary.count() and "Open saved" in saved_summary.first.inner_text():
+                saved_summary.first.click()
+            page.wait_for_selector("[data-measurement-toggle='area-mid']")
+            area_badge = page.locator("[data-measurement-toggle='area-mid'] ~ .measurement-area-badge")
+            assert area_badge.inner_text() == "Mid L"
+            assert "is-stale" not in (area_badge.get_attribute("class") or "")
+            assert page.locator("[data-measurement-toggle='legacy-global'] ~ .measurement-area-badge").count() == 0, (
+                "a legacy result without a target must not be labelled as an area")
+            checks += 3
+            saved_summary.first.click()
+            page.wait_for_function("() => document.querySelector('.measurement-saved-group summary')?.textContent === 'Open saved (2)'")
+            saved_summary.first.click()
+            page.wait_for_function("() => document.querySelector('.measurement-saved-group summary')?.textContent === 'Close saved (2)'")
+            saved_toggle = page.locator("[data-measurement-toggle='area-mid']")
+            was_checked = saved_toggle.is_checked()
+            saved_toggle.click()
+            assert saved_toggle.is_checked() != was_checked
+            saved_toggle.click()
+            assert saved_toggle.is_checked() == was_checked
+            checks += 4
+            page.close()
             browser.close()
     finally:
         server.shutdown()
@@ -340,5 +512,6 @@ if __name__ == "__main__":
         _run()
     except Exception as exc:  # noqa: BLE001 - report browser failures clearly
         print("FAIL  scripts/test_measurement_ui_responsive.py")
-        print(f"  {exc}")
+        print(f"  {type(exc).__name__}: {exc}")
+        traceback.print_exc()
         sys.exit(1)

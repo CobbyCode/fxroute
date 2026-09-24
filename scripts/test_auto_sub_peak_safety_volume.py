@@ -21,7 +21,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
-import measurement.session as measurement_session
 import measurement.autosub as autosub
 import measurement.autosub.jobs as autosub_jobs
 import measurement.autosub.measurement as autosub_measurement
@@ -79,18 +78,39 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
         return [
             patch.object(main.runtime, "dsp_runtime", runtime),
             patch.object(main, "measurement_store", store),
-            patch.object(autosub.measurement, "set_audio_output_mode"),
-            patch.object(autosub.measurement, "get_audio_output_overview", return_value={}),
-            patch.object(BassManagementConfig, "from_overview", return_value=runtime_config()),
+            # Backend-v2 migration: the funnel stages service candidates
+            # through the owner (faked here — staging itself is covered by
+            # the owner-prearm suite); peaks predict from the staged layout.
             patch.object(
-                measurement_session, "_sync_dsp_runtime_for_measurement_sweep",
-                new_callable=AsyncMock, return_value=None,
+                autosub.measurement, "_stage_auto_sub_service_candidate",
+                new=AsyncMock(return_value={
+                    "expected_native_layout": [],
+                    "fingerprint": "fp-test",
+                    "expected_native_output_mode": "subwoofer-2.1",
+                }),
+            ),
+            patch.object(
+                autosub.measurement, "_predict_auto_sub_stage_peaks",
+                side_effect=self._config_prediction,
             ),
             patch.object(main.asyncio, "sleep", side_effect=lambda _seconds: None),
-            patch("audio.samplerate._load_audio_output_mode", return_value={
-                "subwoofer": {"sub_alignment_ms": 2.0},
-            }),
         ]
+
+    async def _config_prediction(self, **kwargs):
+        """Predict from the legacy-equivalent config, not the canned layout.
+
+        This suite pins the fresh-master safety decision, not the staging
+        input; predicting from the same config as the oracle keeps every
+        safe/unsafe assertion exact.
+        """
+        return await autosub_jobs._predict_auto_sub_stage_peaks(
+            sweep_profile=kwargs["sweep_profile"],
+            sample_rate=kwargs["sample_rate"],
+            channel=kwargs["channel"],
+            config=runtime_config(),
+            playback_gain=kwargs.get("playback_gain", 1.0),
+            sink_gain=kwargs.get("sink_gain", 1.0),
+        )
 
     def _completed_job_result(self):
         return {
@@ -105,7 +125,23 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
     async def _run_candidate(
         self, master_percent=None, *, master_error=None, sweep_profile=None, measured_peaks=None,
     ):
-        job = {"cancel_requested": False, "_sweep_timings": [], "auto_gain": {"available": False, "reason": "pending"}}
+        job = {"id": "safety-job", "cancel_requested": False, "_sweep_timings": [],
+               "auto_gain": {"available": False, "reason": "pending"},
+               # Backend-v2 migration: the funnel requires a service job.
+               "output_state_context": {
+                   "mode": "stereo", "revision": 0, "output_key": "dev",
+                   "channels": 4, "optimizer_path": "single-sub",
+                   "sub_role_map": {"sub1": "sub1"}, "sub_mute_mask": 4,
+               }}
+
+        class FakeOwner:
+            committed = False
+
+            async def ensure_ready(self, _rate):
+                return None
+
+            async def restore(self):
+                return None
 
         class FakeRuntime:
             def __init__(self):
@@ -114,7 +150,7 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
             async def sync(self, _config):
                 return None
 
-            async def set_exact_sub_mute(self, enabled):
+            async def set_exact_sub_mute(self, enabled, mask=None):
                 previous = self.muted
                 self.muted = bool(enabled)
                 return previous
@@ -126,11 +162,14 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
                 return dict(measured_peaks)
 
             def snapshot(self):
-                return {"exact_sub_mute": self.muted}
+                return {"exact_sub_mute": self.muted, "output_gain_db": 0.0}
 
         class FakeStore:
             async def start_measurement(self, **_kwargs):
                 return {"id": "safety-sweep"}
+
+            async def drain_job(self, _sweep_id):
+                return None
 
             def cancel_job(self, _sweep_id):
                 return None
@@ -157,6 +196,10 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
             ))
             for patcher in self._harness(job, runtime, store, sweep_profile):
                 stack.enter_context(patcher)
+            from measurement.autosub import deps as autosub_deps
+            owner = FakeOwner()
+            autosub_deps.register_candidate_owner(job["id"], owner)
+            stack.callback(autosub_deps.drop_candidate_owner, job["id"])
             self.last_job = job
             return job, await autosub_measurement._measure_auto_sub_candidate(
                         delay_ms=2.0, job=job, candidate_index=1, total=2,

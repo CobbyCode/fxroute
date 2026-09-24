@@ -77,6 +77,7 @@ function load(code, scope) {
 }
 
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const apiSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'api.js'), 'utf8');
 const streamingSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming.js'), 'utf8');
 
 const transitionFailure = {
@@ -95,13 +96,13 @@ const validationDetail = [
 ];
 
 function appFetchScope(payload, formatter) {
-    return load(extractFunction(appSource, 'apiFetchJson', 'app.js'), {
+    return load(extractFunction(apiSource, 'apiFetchJson', 'api.js'), {
         formatTransitionErrorDetail: formatter,
         fetch: async () => ({ ok: false, status: 500, json: async () => payload }),
     });
 }
 
-const appFormatterCode = extractFunction(appSource, 'formatTransitionErrorDetail', 'app.js');
+const appFormatterCode = extractFunction(apiSource, 'formatTransitionErrorDetail', 'api.js');
 const streamingFormatterCode = extractAssignedFunction(streamingSource, 'formatTransitionErrorDetail', 'streaming.js');
 
 function loadFormatter(code, warnings) {
@@ -124,8 +125,12 @@ function loadFormatter(code, warnings) {
     assert.ok(streamingSource.includes("formatTransitionErrorDetail(data.detail, 'Failed to update favorite')"),
         'favorite error path must use the shared formatter');
     // Neither formatter may serialize message-less details into the UI.
+    assert.ok(/function\s+formatTransitionErrorDetail/.test(appSource),
+        'app.js must keep a formatTransitionErrorDetail wrapper');
+    assert.ok(/FXRouteApi/.test(appSource),
+        'app.js wrapper must delegate to api.js');
     assert.ok(!/JSON\.stringify\(detail\)/.test(appFormatterCode),
-        'app.js formatter must not JSON-serialize details into UI text');
+        'api.js formatter must not JSON-serialize details into UI text');
     assert.ok(!/JSON\.stringify\(detail\)/.test(streamingFormatterCode),
         'streaming.js formatter must not JSON-serialize details into UI text');
     // The whitespace-bypassing raw fallback must be gone.
@@ -189,7 +194,7 @@ function loadFormatter(code, warnings) {
             return true;
         },
     );
-    console.log('ok — app.js renders structured transition errors');
+    console.log('ok — api.js renders structured transition errors');
 
     // -----------------------------------------------------------------------
     // streaming.js: provider-facing normalization (TIDAL play and toggles).
@@ -232,7 +237,7 @@ function loadFormatter(code, warnings) {
 
     // -----------------------------------------------------------------------
     // Drift coverage: the streaming.js default must behave like the canonical
-    // app.js formatter, standalone and after injection.
+    // api.js formatter, standalone and after injection.
     // -----------------------------------------------------------------------
     const driftCases = [
         ['  Playback failed  ', 'fallback'],

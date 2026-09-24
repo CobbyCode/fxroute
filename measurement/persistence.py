@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from measurement.target import measurement_target_from_context, targets_compatible
 from measurement.constants import (
     DISPLAY_DEFAULTS,
     IR_DEBUG_SEGMENT_RETENTION_SEGMENTS,
@@ -60,6 +61,17 @@ class MeasurementPersistence:
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "measurements": measurements,
         }
+
+    def load_measurement(self, measurement_id: str) -> dict[str, Any]:
+        """Read one stored measurement by id; unknown ids raise KeyError."""
+        measurement_id = str(measurement_id or "").strip()
+        if not measurement_id or Path(measurement_id).name != measurement_id:
+            raise ValueError("Invalid measurement id")
+        path = self._store.measurements_dir / f"{measurement_id}.json"
+        if not path.exists():
+            raise KeyError(measurement_id)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return self._normalize_measurement(payload, source_path=path)
 
     def save_measurement(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = self._normalize_measurement(payload)
@@ -114,6 +126,14 @@ class MeasurementPersistence:
             except Exception as exc:
                 raise ValueError(f"Saved measurement could not be loaded: {measurement_id}") from exc
 
+        targets = [measurement_target_from_context(measurement) for measurement in measurements]
+        for target in targets[1:]:
+            if not targets_compatible(targets[0], target):
+                raise ValueError(
+                    "Selected measurements capture different areas or processing; "
+                    "merge one area at a time"
+                )
+
         merged_name = str(name or "").strip() or f"Merged {len(measurements)} measurements"
         trusted_traces = [
             self._select_merge_trace(measurement, "traces", preferred_role="trusted")
@@ -165,6 +185,10 @@ class MeasurementPersistence:
                 "direct_arrival_timing_available": False,
             },
         }
+        if all(not target.get("legacy") for target in targets):
+            # Compatible sources share one area context; keep it so the merged
+            # result still names the bank and processing it was averaged from.
+            payload["measurement_target"] = deepcopy(targets[0])
         if all(review_traces):
             payload["review_traces"] = [
                 self._average_merge_traces(
@@ -397,6 +421,7 @@ class MeasurementPersistence:
         calibration: dict[str, Any],
         input_channels: dict[str, Any] | None = None,
         measurement_role: str = "",
+        measurement_target: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         timestamp = datetime.now(timezone.utc).replace(microsecond=0)
         created_at = timestamp.isoformat().replace("+00:00", "Z")
@@ -464,6 +489,10 @@ class MeasurementPersistence:
         }
         if measurement_role:
             payload["measurement_role"] = measurement_role
+        if isinstance(measurement_target, dict):
+            # Frozen at job creation: mode, area bank, revision, processing
+            # fingerprint and reference tap the sweep actually ran through.
+            payload["measurement_target"] = deepcopy(measurement_target)
         if measurement_role == "direct" and analysis.get("direct_response") is not None:
             payload["analysis"]["direct_response"] = deepcopy(analysis["direct_response"])
         if measurement_role in {"direct", "mlp", "integration"} and analysis.get("complex_response") is not None:
@@ -480,7 +509,18 @@ class MeasurementPersistence:
         measurement_id = self._slugify(payload.get("id") or payload.get("name") or f"measurement-{uuid4().hex[:8]}")
         traces = self._normalize_traces(payload.get("traces") or [])
         review_traces = self._normalize_traces(payload.get("review_traces") or [])
-        if not traces:
+        measurement_kind = str(payload.get("measurement_kind") or "")
+        speaker_run = payload.get("speaker_align")
+        if speaker_run is None and isinstance(payload.get("analysis"), dict):
+            speaker_run = payload["analysis"].get("speaker_align")
+        # Time-domain Speaker Align runs carry no frequency obligation: the
+        # Before/After arrivals are the measurement. Frequency traces stay
+        # optional passthrough and are preserved when present.
+        is_speaker_run = (
+            measurement_kind == "speaker-align-run-v1"
+            and isinstance(speaker_run, dict)
+        )
+        if not traces and not is_speaker_run:
             raise ValueError("Measurement must include at least one trace with points")
 
         name = str(payload.get("name") or measurement_id).strip() or measurement_id
@@ -558,8 +598,13 @@ class MeasurementPersistence:
             result["analysis"] = payload["analysis"]
         if payload.get("autosub_meta") and isinstance(payload.get("autosub_meta"), dict):
             result["autosub_meta"] = payload["autosub_meta"]
+        if payload.get("speaker_align") and isinstance(payload.get("speaker_align"), dict):
+            from measurement.speaker_runs import validate_speaker_align_run
+            result["speaker_align"] = validate_speaker_align_run(payload["speaker_align"])
         if payload.get("audio_output_context") and isinstance(payload.get("audio_output_context"), dict):
             result["audio_output_context"] = payload["audio_output_context"]
+        if isinstance(payload.get("measurement_target"), dict):
+            result["measurement_target"] = payload["measurement_target"]
         if source_path is not None:
             result["storage_path"] = str(source_path)
         return result

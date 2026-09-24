@@ -11,6 +11,9 @@ const path = require('path');
 const vm = require('vm');
 
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const coreJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_core.js'), 'utf8');
+const uiJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
+const rtJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming_runtime.js'), 'utf8');
 const streamingJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'streaming.js'), 'utf8');
 
 function extractFunction(source, name) {
@@ -182,16 +185,18 @@ function runStreaming({ fetchImpl, cueCalls }) {
     vm.createContext(sandbox);
     vm.runInContext(streamingJs, sandbox);
     // The queue-started cue decision and its metadata mapping are owned by
-    // app.js and injected into streaming.js. Run the verbatim app.js functions
-    // here so the tab transport is exercised through the real implementation.
+    // the playback UI module and injected into streaming.js. Run the
+    // verbatim module functions here so the tab transport is exercised
+    // through the real implementation.
     sandbox.showNowPlayingCue = (...a) => { cueCalls.push(a); };
-    // The native (Library/Radio/TIDAL) track-change decision is owned by app.js
-    // too; run it verbatim so an explicit TIDAL play goes through the same state
-    // machine as the WebSocket playback frame reporting that same start.
+    // The native (Library/Radio/TIDAL) track-change decision is owned by the
+    // playback UI module too; run it verbatim so an explicit TIDAL play goes
+    // through the same state machine as the WebSocket playback frame
+    // reporting that same start.
     for (const name of ['streamingCueTrack', 'streamingCueTrackId', 'streamingCueKey',
         'lastPlayingQueueKey', 'recordPlayingQueueKey', 'showStreamingQueueStarted', 'maybeShowStreamingQueueCue',
         'nativeTrackCueKey', 'maybeShowNativeTrackCue']) {
-        vm.runInContext(extractFunction(appJs, name), sandbox);
+        vm.runInContext(extractFunction(uiJs, name), sandbox);
     }
     const api = {
         showToast() {},
@@ -212,8 +217,8 @@ function runStreaming({ fetchImpl, cueCalls }) {
 (async () => {
     // 1. Local regression anchor: playLocal still uses the canonical cue.
     await run('local playLocal keeps the canonical queue-started cue', async () => {
-        assert.ok(appJs.includes('async function playLocal('), 'missing playLocal');
-        assert.ok(appJs.includes("maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing')"),
+        assert.ok(coreJs.includes('async function playLocal('), 'missing playLocal');
+        assert.ok(coreJs.includes("maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing')"),
             'playLocal must keep the Queue started / Now playing cue');
     });
 
@@ -223,7 +228,8 @@ function runStreaming({ fetchImpl, cueCalls }) {
             'streaming must declare the injected native track-change cue');
         assert.ok(streamingJs.includes("if (typeof api.maybeShowNativeTrackCue === 'function') maybeShowNativeTrackCue = api.maybeShowNativeTrackCue;"),
             'streaming must accept the injected native cue');
-        assert.ok(appJs.includes('maybeShowNativeTrackCue,'), 'app.js must inject the native track-change cue into streaming');
+        assert.ok(appJs.includes('maybeShowNativeTrackCue: (...args) => PlaybackUI.maybeShowNativeTrackCue'),
+            'app.js must inject the native track-change cue into streaming');
         assert.ok(!streamingJs.includes('showNowPlayingCue = api.showNowPlayingCue'),
             'streaming must not wire the cue component directly: one decision per source');
         assert.ok(!/function\s+showSpotify.*Toast|function\s+showQobuz.*Toast|function\s+showTidal.*Toast/.test(streamingJs),
@@ -244,25 +250,26 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // 4. Spotify wiring in app.js: the incoming-state path cues (covers the
     // FXRoute transport response, poll refreshes and out-of-band starts).
     await run('spotify incoming state reuses the shared cue on queue start', async () => {
-        assert.ok(appJs.includes('function handleIncomingSpotifyState('), 'missing handleIncomingSpotifyState');
-        assert.ok(appJs.includes("maybeShowStreamingQueueCue('spotify'"), 'spotify incoming state must call the shared streaming cue');
-        assert.ok(appJs.includes('async function spotifyCommand('), 'missing spotifyCommand');
-        assert.ok(appJs.includes('handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true })'),
+        assert.ok(rtJs.includes('function handleIncomingSpotifyState('), 'missing handleIncomingSpotifyState');
+        assert.ok(rtJs.includes("maybeShowStreamingQueueCue('spotify'"), 'spotify incoming state must call the shared streaming cue');
+        assert.ok(rtJs.includes('async function spotifyCommand('), 'missing spotifyCommand');
+        assert.ok(rtJs.includes('handleIncomingSpotifyState(data, { renderTab: true, renderFooter: true })'),
             'spotifyCommand must route responses through the incoming-state path');
-        assert.ok(appJs.includes('function showStreamingQueueStarted('), 'missing showStreamingQueueStarted helper');
-        assert.ok(appJs.includes('function maybeShowStreamingQueueCue('), 'missing maybeShowStreamingQueueCue decision');
-        assert.ok(appJs.includes('__lastPlayingQueueKey'), 'resume check must use the last playing key');
+        assert.ok(uiJs.includes('function showStreamingQueueStarted('), 'missing showStreamingQueueStarted helper');
+        assert.ok(uiJs.includes('function maybeShowStreamingQueueCue('), 'missing maybeShowStreamingQueueCue decision');
+        assert.ok(uiJs.includes('__lastPlayingQueueKey'), 'resume check must use the last playing key');
     });
 
     // 5. Qobuz wiring: footer command, tab transport and incoming state reuse
     // the shared cue (immediate command feedback + poll/out-of-band starts).
     await run('qobuz command, tab transport and incoming state reuse the shared cue', async () => {
-        assert.ok(appJs.includes('async function qobuzCommand('), 'missing qobuzCommand');
-        assert.ok(appJs.includes("maybeShowStreamingQueueCue('qobuz'"), 'qobuz paths must call the shared cue decision');
-        assert.ok(appJs.includes('function handleIncomingQobuzState('), 'missing handleIncomingQobuzState');
+        assert.ok(rtJs.includes('async function qobuzCommand('), 'missing qobuzCommand');
+        assert.ok(rtJs.includes("maybeShowStreamingQueueCue('qobuz'"), 'qobuz paths must call the shared cue decision');
+        assert.ok(rtJs.includes('function handleIncomingQobuzState('), 'missing handleIncomingQobuzState');
         assert.ok(streamingJs.includes("maybeShowStreamingQueueCue('qobuz'"), 'qobuz tab transport must call the shared cue decision');
-        assert.ok(appJs.includes('maybeShowStreamingQueueCue,'), 'app.js must inject the shared cue decision into streaming');
-        assert.ok(appJs.includes('Number(data?.queue_len || 0)'), 'the cue must use the real queue_len');
+        assert.ok(appJs.includes('maybeShowStreamingQueueCue: (...args) => PlaybackUI.maybeShowStreamingQueueCue'),
+            'app.js must inject the shared cue decision into streaming');
+        assert.ok(uiJs.includes('Number(data?.queue_len || 0)'), 'the cue must use the real queue_len');
         // One state machine only: the tab transport must not carry its own copy.
         assert.ok(!streamingJs.includes('function maybeShowProviderQueueStarted('),
             'streaming must not keep a second cue state machine');
@@ -280,7 +287,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
         vm.createContext(sandbox);
         sandbox.showStreamingQueueStarted = (...a) => { sandbox.showStreamingQueueStartedCalls.push(a); };
         for (const name of ['streamingCueTrackId', 'streamingCueKey', 'lastPlayingQueueKey', 'recordPlayingQueueKey', 'maybeShowStreamingQueueCue']) {
-            vm.runInContext(extractFunction(appJs, name), sandbox);
+            vm.runInContext(extractFunction(uiJs, name), sandbox);
         }
         const playing = (over = {}) => ({ ...SPOTIFY_FIXTURE, ...over });
         const cues = () => sandbox.showStreamingQueueStartedCalls.length;
@@ -431,8 +438,8 @@ function runStreaming({ fetchImpl, cueCalls }) {
         const sandbox = { showNowPlayingCueCalls: [] };
         vm.createContext(sandbox);
         sandbox.showNowPlayingCue = (...a) => { sandbox.showNowPlayingCueCalls.push(a); };
-        vm.runInContext(extractFunction(appJs, 'streamingCueTrack'), sandbox);
-        vm.runInContext(extractFunction(appJs, 'showStreamingQueueStarted'), sandbox);
+        vm.runInContext(extractFunction(uiJs, 'streamingCueTrack'), sandbox);
+        vm.runInContext(extractFunction(uiJs, 'showStreamingQueueStarted'), sandbox);
         sandbox.showStreamingQueueStarted('spotify', SPOTIFY_FIXTURE);
         assert.equal(sandbox.showNowPlayingCueCalls.length, 1);
         const [track, message] = sandbox.showNowPlayingCueCalls[0];
@@ -449,7 +456,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
         vm.createContext(sandbox);
         sandbox.showStreamingQueueStarted = (...a) => { sandbox.showStreamingQueueStartedCalls.push(a); };
         for (const name of ['streamingCueTrackId', 'streamingCueKey', 'lastPlayingQueueKey', 'recordPlayingQueueKey', 'maybeShowStreamingQueueCue']) {
-            vm.runInContext(extractFunction(appJs, name), sandbox);
+            vm.runInContext(extractFunction(uiJs, name), sandbox);
         }
         const playing = (over = {}) => ({ ...SPOTIFY_FIXTURE, ...over });
         // First snapshot after page load anchors the key and stays silent.
@@ -482,7 +489,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
         vm.createContext(sandbox);
         sandbox.showStreamingQueueStarted = (...a) => { sandbox.showStreamingQueueStartedCalls.push(a); };
         for (const name of ['streamingCueTrackId', 'streamingCueKey', 'lastPlayingQueueKey', 'recordPlayingQueueKey', 'maybeShowStreamingQueueCue']) {
-            vm.runInContext(extractFunction(appJs, name), sandbox);
+            vm.runInContext(extractFunction(uiJs, name), sandbox);
         }
         sandbox.cues = () => sandbox.showStreamingQueueStartedCalls.length;
         sandbox.last = () => sandbox.showStreamingQueueStartedCalls[sandbox.showStreamingQueueStartedCalls.length - 1];
@@ -614,7 +621,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
         vm.createContext(sandbox);
         sandbox.showNowPlayingCue = (...a) => { sandbox.showNowPlayingCueCalls.push(a); };
         for (const name of ['nativeTrackCueKey', 'maybeShowNativeTrackCue', 'seedNativeTrackCueKey', 'maybeCueNativePlaybackTrack']) {
-            vm.runInContext(extractFunction(appJs, name), sandbox);
+            vm.runInContext(extractFunction(uiJs, name), sandbox);
         }
         sandbox.cues = () => sandbox.showNowPlayingCueCalls.length;
         sandbox.last = () => sandbox.showNowPlayingCueCalls[sandbox.showNowPlayingCueCalls.length - 1];
@@ -675,16 +682,16 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // 18. Wiring: the authoritative playback frame feeds the native decision, and
     //     attaching to an already running player stays silent.
     await run('native cue is wired to the authoritative playback frames', async () => {
-        assert.ok(appJs.includes('function maybeCueNativePlaybackTrack('), 'missing native playback cue gate');
+        assert.ok(uiJs.includes('function maybeCueNativePlaybackTrack('), 'missing native playback cue gate');
         assert.ok(appJs.includes('maybeCueNativePlaybackTrack(data, previousNativePlayback)'),
             'WS playback frames must feed the native cue');
         assert.ok(appJs.includes('const previousNativePlayback = { ...state.playback };'),
             'the previous playback state must be captured before merging');
         assert.ok(appJs.includes('seedNativeTrackCueKey(data.player.state.current_track)'),
             'WS init must adopt the session track silently');
-        assert.ok(appJs.includes('seedNativeTrackCueKey(playback.current_track)'),
+        assert.ok(coreJs.includes('seedNativeTrackCueKey(playback.current_track)'),
             'reconnect resync must adopt the session track silently');
-        assert.ok(appJs.includes("['local', 'radio', 'tidal'].includes(track.source)"),
+        assert.ok(uiJs.includes("['local', 'radio', 'tidal'].includes(track.source)"),
             'only the native sources may use the native cue');
     });
 

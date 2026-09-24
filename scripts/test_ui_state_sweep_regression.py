@@ -14,50 +14,33 @@
 
 from __future__ import annotations
 
-import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from audio.samplerate import persistence as persistence
 from dsp.runtime import DSPRuntimeConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _with_temp_home(fn) -> None:
-    with tempfile.TemporaryDirectory() as raw:
-        old = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = str(raw)
-        try:
-            fn()
-        finally:
-            if old is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
-            else:
-                os.environ["XDG_CONFIG_HOME"] = old
-
-
 def _check_sub_mute_minus80() -> None:
-    text = (ROOT / "static" / "app.js").read_text()
+    text = (ROOT / "static" / "subwoofer_ui.js").read_text()
+    app = (ROOT / "static" / "app.js").read_text()
+    assert "FXRouteSubwooferUI" in app, "app.js must delegate subwoofer UI to the module"
     assert "Math.max(-80, Math.min(12, Number(input.level_db" in text, \
         "normalizeSingleSubwooferSettings must keep the -80 mute floor"
     assert "Math.max(-80, Math.min(12, Number(input.sub_level_db" in text, \
         "normalizeSubwooferSettings must keep the -80 mute floor for the 2.2 global display"
 
     def run() -> None:
-        path = persistence._audio_output_mode_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
         sub = {"crossover_frequency_hz": 80, "main_highpass_enabled": True,
                "sub_level_db": 0.0, "sub_alignment_ms": 0.0, "sub_polarity": "normal"}
         subs = {"sub1": {"level_db": -80.0, "alignment_ms": 0.0, "polarity": "normal"},
                 "sub2": {"level_db": 2.9, "alignment_ms": -0.2, "polarity": "normal"}}
-        built = persistence._build_audio_output_mode_payload("subwoofer-2.2", dict(sub), dict(subs))
-        path.write_text(json.dumps(built, indent=2) + "\n")
-        loaded = persistence._load_audio_output_mode()
+        loaded = {"mode": "subwoofer-2.2", "crossover_frequency_hz": 80,
+                  "slope": "LR24", "main_highpass_enabled": True,
+                  "subwoofers": dict(subs)}
         assert loaded["subwoofers"]["sub1"]["level_db"] == -80.0, loaded
         ov = {"output_mode": loaded, "selected_output": {"key": "k"}, "current_output": {"key": "k"}}
         rt = DSPRuntimeConfig.from_overview(ov)
@@ -65,14 +48,14 @@ def _check_sub_mute_minus80() -> None:
         assert by_name["SUB1"].get("gain_db") == -80.0, by_name["SUB1"]
         assert by_name["SUB2"].get("gain_db") == 2.9, by_name["SUB2"]
 
-    _with_temp_home(run)
+    run()
     print("2.2 sub mute -80 dB persists backend+runtime, frontend keeps floor: ok")
 
 
 def _check_convolver_invalidation() -> None:
-    text = (ROOT / "static" / "app.js").read_text()
+    text = (ROOT / "static" / "measurement_convolver_editor.js").read_text()
     assert "const previousIrLength = String(conv.irLength" in text
-    assert "const previousSampleRate = String(state.measurement?.measurementSampleRate" in text
+    assert "const previousSampleRate = String(deps.getState().measurement?.measurementSampleRate" in text
     assert "Sample rate changed. Take L/R again." in text
     assert "Convolver taps changed. Take L/R again." in text
     # Taps check must run after the legacy quality remap (which sets irLength
@@ -84,7 +67,7 @@ def _check_convolver_invalidation() -> None:
 
 
 def _check_headroom_range() -> None:
-    app = (ROOT / "static" / "app.js").read_text()
+    app = (ROOT / "static" / "output_effects_ui.js").read_text()
     # -1..-9 are offered when headroom is enabled ("no headroom" is the
     # checkbox's job, so 0 dB is not offered). 0 stays accepted in the
     # allow-list so a previously stored 0 round-trips through

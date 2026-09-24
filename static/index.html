@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.226">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.259">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -106,39 +106,34 @@
                             </select>
                         </div>
                         <div class="field-group settings-field-group">
-                            <label for="settings-output-mode-select">Output Mode</label>
-                            <select id="settings-output-mode-select" class="url-input">
-                                <option value="stereo">Stereo</option>
-                                <option value="subwoofer-2.1">2.1 Subwoofer</option>
-                                <option value="subwoofer-2.2">2.2 Subwoofer</option>
-                            </select>
-                            <p id="settings-output-mode-hint" class="settings-inline-note">Stereo output mode active.</p>
-                        </div>
-                        <div class="field-group settings-field-group">
                             <label for="settings-samplerate-select">Sample Rate</label>
                             <select id="settings-samplerate-select" class="url-input">
                                 <option value="auto">Auto</option>
                             </select>
                             <p id="settings-samplerate-hint" class="settings-inline-note">Follows the effective playback sample rate.</p>
                         </div>
-                        <div class="field-group settings-field-group hidden" id="settings-routing-group">
+                        <div class="field-group settings-field-group" id="settings-mode-group">
+                            <label for="settings-output-mode-select">Mode</label>
+                            <select id="settings-output-mode-select" class="url-input">
+                                <option value="stereo">Stereo</option>
+                                <option value="stereo-sub">Stereo + Sub</option>
+                            </select>
+                            <p id="settings-output-mode-hint" class="settings-inline-note">Stereo output mode active.</p>
+                        </div>
+                        <div class="field-group settings-field-group" id="settings-crossover-group">
+                            <label for="settings-crossover-select">Crossover</label>
+                            <select id="settings-crossover-select" class="url-input" disabled>
+                                <option value="off">Off</option>
+                                <option value="on">On</option>
+                            </select>
+                        </div>
+                        <div class="field-group settings-field-group" id="settings-routing-group">
                             <span class="settings-routing-label" id="settings-routing-label">Output Routing</span>
                             <div id="settings-routing-grid" class="settings-routing-grid" role="group" aria-labelledby="settings-routing-label"></div>
                             <p id="settings-routing-hint" class="settings-inline-note"></p>
                         </div>
-                    </section>
-
-                    <section class="radio-manage-section settings-section">
-                        <div class="radio-manage-section-header">
-                            <h3>Music Library</h3>
-                        </div>
-                        <div class="field-group settings-field-group">
-                            <label for="settings-music-library-select">Library</label>
-                            <select id="settings-music-library-select" class="url-input" disabled>
-                                <option value="local">Loading…</option>
-                            </select>
-                            <p id="settings-music-library-hint" class="settings-inline-note"></p>
-                        </div>
+                        <p id="os-topology" class="settings-inline-note"></p>
+                        <div id="os-feedback" class="effects-extras-feedback" aria-live="polite"></div>
                     </section>
 
                     <section class="radio-manage-section settings-section">
@@ -157,6 +152,19 @@
 
                     <section class="radio-manage-section settings-section">
                         <div class="radio-manage-section-header">
+                            <h3>Music Library</h3>
+                        </div>
+                        <div class="field-group settings-field-group">
+                            <label for="settings-music-library-select">Library</label>
+                            <select id="settings-music-library-select" class="url-input" disabled>
+                                <option value="local">Loading…</option>
+                            </select>
+                            <p id="settings-music-library-hint" class="settings-inline-note"></p>
+                        </div>
+                    </section>
+
+                    <section class="radio-manage-section settings-section">
+                        <div class="radio-manage-section-header">
                             <h3>Device Name</h3>
                             <p id="settings-device-name-hint">Address of this FXRoute box on the LAN.</p>
                         </div>
@@ -168,7 +176,7 @@
                         </div>
                     </section>
 
-                    <section class="radio-manage-section settings-section">
+                    <section class="radio-manage-section settings-section hidden">
                         <div class="radio-manage-section-header">
                             <h3>Amplifier Controller</h3>
                             <p id="settings-hardware-summary">Controller not detected.</p>
@@ -507,23 +515,23 @@
                         <div class="effects-card-header effects-import-card-header">
                             <div>
                                 <h3>Import filter</h3>
-                                <p>Stereo goes to both channels; Left and Right stay separate.</p>
+                                <p id="effects-import-bank-target">Target: Global · Stereo L/R</p>
                             </div>
                         </div>
                         <div class="effects-stack">
-                            <div class="effects-import-section-head">
-                                <span class="effects-import-section-title">Stereo → both</span>
-                                <span class="effects-import-section-meta">Main path</span>
+                            <div id="effects-import-file-head" class="effects-import-section-head">
+                                <span id="effects-import-file-title" class="effects-import-section-title">Stereo file</span>
+                                <span id="effects-import-file-meta" class="effects-import-section-meta">One file for both channels</span>
                             </div>
                             <div id="effects-import-area" class="upload-area upload-area-file-primary effects-filter-import-area">
                                 <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></span>
                                 <span class="upload-area-text">Drop stereo file or <u>browse</u></span>
-                                <span id="effects-import-filename" class="upload-area-filename">Stereo convolver .irs/.wav or Preset .json</span>
-                                <input type="file" id="effects-import-file" class="upload-area-input" accept=".irs,.wav,.json,audio/wav,application/json">
+                                <span id="effects-import-filename" class="upload-area-filename">Stereo .irs/.wav IR · preset .json · bundle .zip</span>
+                                <input type="file" id="effects-import-file" class="upload-area-input" accept=".irs,.wav,.json,.zip,audio/wav,application/json,application/zip">
                             </div>
-                            <div class="effects-import-section-head effects-import-section-head-secondary">
-                                <span class="effects-import-section-title">Left / Right</span>
-                                <span class="effects-import-section-meta">Channel specific</span>
+                            <div id="effects-import-split-head" class="effects-import-section-head effects-import-section-head-secondary">
+                                <span id="effects-import-split-title" class="effects-import-section-title">Left / Right</span>
+                                <span id="effects-import-split-meta" class="effects-import-section-meta">Mono .irs/.wav or REW .txt per side</span>
                             </div>
                             <div class="effects-rew-dual-grid">
                                 <div class="effects-rew-pane">
@@ -532,11 +540,11 @@
                                     </div>
                                     <div id="effects-rew-left-area" class="upload-area upload-area-file-primary effects-rew-upload-area">
                                         <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
-                                        <span class="upload-area-text">Drop Left file or <u>browse</u></span>
+                                        <span class="upload-area-text">Drop Left .irs/.wav/.txt or <u>browse</u></span>
                                         <span id="effects-rew-left-filename" class="upload-area-filename"></span>
                                         <input type="file" id="effects-rew-left-file" class="upload-area-input" accept=".irs,.wav,.txt,text/plain,audio/wav">
                                     </div>
-                                    <textarea id="effects-rew-left-text" class="url-input effects-rew-textarea" placeholder="Paste Left REW filter"></textarea>
+                                    <textarea id="effects-rew-left-text" class="url-input effects-rew-textarea" placeholder="Paste Left REW text"></textarea>
                                 </div>
                                 <div class="effects-rew-pane">
                                     <div class="effects-rew-pane-header">
@@ -544,11 +552,11 @@
                                     </div>
                                     <div id="effects-rew-right-area" class="upload-area upload-area-file-primary effects-rew-upload-area">
                                         <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
-                                        <span class="upload-area-text">Drop Right file or <u>browse</u></span>
+                                        <span class="upload-area-text">Drop Right .irs/.wav/.txt or <u>browse</u></span>
                                         <span id="effects-rew-right-filename" class="upload-area-filename"></span>
                                         <input type="file" id="effects-rew-right-file" class="upload-area-input" accept=".irs,.wav,.txt,text/plain,audio/wav">
                                     </div>
-                                    <textarea id="effects-rew-right-text" class="url-input effects-rew-textarea" placeholder="Paste Right REW filter"></textarea>
+                                    <textarea id="effects-rew-right-text" class="url-input effects-rew-textarea" placeholder="Paste Right REW text"></textarea>
                                 </div>
                             </div>
                             <div class="effects-actions-row effects-actions-right effects-actions-rew-dual">
@@ -561,44 +569,208 @@
                     </section>
 
                     <div class="effects-grid">
+                        <section class="effects-card effects-card-crossover hidden" id="effects-crossover-card">
+                            <div class="effects-card-header">
+                                <h3>Crossover / Speaker</h3>
+                                <p id="effects-crossover-summary">Configure speaker ways.</p>
+                            </div>
+                            <div class="effects-stack">
+                                <div class="crossover-tabrow">
+                                    <div id="effects-crossover-tabs" class="crossover-tabs" role="tablist" aria-label="Speaker ways"></div>
+                                    <label class="crossover-link-label" for="effects-crossover-link">
+                                        <input type="checkbox" id="effects-crossover-link"> Link L/R
+                                    </label>
+                                </div>
+                                <div class="effects-subwoofer-preview-wrap">
+                                    <canvas id="effects-crossover-graph" class="crossover-graph effects-subwoofer-preview" width="600" height="136" role="img" aria-label="Crossover filter response"></canvas>
+                                </div>
+                                <div class="crossover-control-groups">
+                                    <div class="effects-subwoofer-control-group crossover-trio-group" id="effects-crossover-highpass-group">
+                                        <div class="effects-subwoofer-group-label">High-pass</div>
+                                        <div class="field-group" id="effects-crossover-frequency-highpass-group">
+                                            <label for="effects-crossover-frequency-highpass">Frequency</label>
+                                            <div class="stepper-control">
+                                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease high-pass frequency">&minus;</button>
+                                                <input type="number" id="effects-crossover-frequency-highpass" class="url-input delay-number-input stepper-input stepper-input-freq" min="20" max="20000" step="1">
+                                                <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase high-pass frequency">+</button>
+                                            </div>
+                                        </div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-family-highpass">Type</label>
+                                            <select id="effects-crossover-family-highpass" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                        </div>
+                                        <div class="field-group" id="effects-crossover-slope-highpass-group">
+                                            <label for="effects-crossover-slope-highpass">Slope dB/oct</label>
+                                            <select id="effects-crossover-slope-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                        </div>
+                                    </div>
+                                    <div class="effects-subwoofer-control-group crossover-trio-group" id="effects-crossover-lowpass-group">
+                                        <div class="effects-subwoofer-group-label">Low-pass</div>
+                                        <div class="field-group" id="effects-crossover-frequency-lowpass-group">
+                                            <label for="effects-crossover-frequency-lowpass">Frequency</label>
+                                            <div class="stepper-control">
+                                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease low-pass frequency">&minus;</button>
+                                                <input type="number" id="effects-crossover-frequency-lowpass" class="url-input delay-number-input stepper-input stepper-input-freq" min="20" max="20000" step="1">
+                                                <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase low-pass frequency">+</button>
+                                            </div>
+                                        </div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-family-lowpass">Type</label>
+                                            <select id="effects-crossover-family-lowpass" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                        </div>
+                                        <div class="field-group" id="effects-crossover-slope-lowpass-group">
+                                            <label for="effects-crossover-slope-lowpass">Slope dB/oct</label>
+                                            <select id="effects-crossover-slope-lowpass" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                        </div>
+                                    </div>
+                                    <div class="effects-subwoofer-control-group crossover-trio-group" id="effects-crossover-trim-group">
+                                        <div class="effects-subwoofer-group-label">Trim</div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-level">Level</label>
+                                            <div class="stepper-control">
+                                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease way level">&minus;</button>
+                                                <input type="number" id="effects-crossover-level" class="url-input delay-number-input stepper-input" min="-80" max="24" step="0.5">
+                                                <span class="stepper-unit" aria-hidden="true">dB</span>
+                                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase way level">+</button>
+                                            </div>
+                                        </div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-delay">Align</label>
+                                            <div class="stepper-control">
+                                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease way alignment">&minus;</button>
+                                                <input type="number" id="effects-crossover-delay" class="url-input delay-number-input stepper-input" min="-40" max="40" step="0.5">
+                                                <span class="stepper-unit" aria-hidden="true">ms</span>
+                                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase way alignment">+</button>
+                                            </div>
+                                        </div>
+                                        <div class="field-group">
+                                            <label for="effects-crossover-polarity">Polarity</label>
+                                            <select id="effects-crossover-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
+                                                <option value="normal">N</option>
+                                                <option value="invert">I</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
                         <section class="effects-card effects-card-create effects-card-subwoofer hidden">
                             <div class="effects-card-header effects-card-subwoofer-header">
                                 <div>
-                                    <h3>Crossover / Subwoofer</h3>
-                                    <p id="effects-subwoofer-routing">Out 1/2 Main · Out 3/4 Sub</p>
+                                    <h3>Subwoofer</h3>
+                                    <p id="effects-subwoofer-routing"></p>
                                 </div>
                                 <span id="effects-subwoofer-mode-badge" class="effects-subwoofer-mode-badge">Stereo</span>
                             </div>
                             <div class="effects-stack effects-subwoofer-stack">
+                                <div class="effects-subwoofer-tabrow hidden" id="effects-subwoofer-tabrow">
+                                    <div class="effects-subwoofer-side-tabs hidden" id="effects-subwoofer-side-tabs" role="tablist" aria-label="Sub side">
+                                        <button type="button" class="sub-side-tab is-active" id="effects-subwoofer-tab-left" data-sub-side="left" role="tab" aria-selected="true">Sub L</button>
+                                        <button type="button" class="sub-side-tab" id="effects-subwoofer-tab-right" data-sub-side="right" role="tab" aria-selected="false">Sub R</button>
+                                        <button type="button" class="sub-side-tab hidden" id="effects-subwoofer-tab-both" role="tab" aria-selected="false">Sub L/R</button>
+                                    </div>
+                                    <label class="crossover-link-label hidden" id="effects-subwoofer-link-wrap" for="effects-subwoofer-link">
+                                        <input type="checkbox" id="effects-subwoofer-link" checked> Link L/R
+                                    </label>
+                                </div>
                                 <div class="effects-subwoofer-preview-wrap">
                                     <canvas id="effects-subwoofer-preview" class="effects-subwoofer-preview" width="560" height="160" role="img" aria-label="Crossover preview"></canvas>
                                 </div>
                                 <div class="effects-subwoofer-controls">
-                                    <div class="effects-subwoofer-control-group effects-subwoofer-global-group">
-                                        <div class="effects-subwoofer-group-label">Global</div>
-                                        <div class="field-group">
-                                            <label for="effects-subwoofer-frequency-number">Crossover</label>
-                                            <div class="delay-input-wrap">
-                                                <div class="stepper-control">
-                                                    <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease crossover frequency">&minus;</button>
-                                                    <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
-                                                    <span class="stepper-unit" aria-hidden="true">Hz</span>
-                                                    <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase crossover frequency">+</button>
+                                    <div class="effects-subwoofer-control-group effects-subwoofer-global-group" id="effects-subwoofer-global-group">
+                                        <div class="effects-subwoofer-group-label" id="effects-subwoofer-global-label">Global</div>
+                                        <div class="effects-subwoofer-crossover-block" id="effects-subwoofer-shared-crossover">
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-frequency-number">Crossover</label>
+                                                <div class="delay-input-wrap">
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease crossover frequency">&minus;</button>
+                                                        <input type="number" id="effects-subwoofer-frequency-number" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
+                                                        <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase crossover frequency">+</button>
+                                                    </div>
                                                 </div>
                                             </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-family">Type</label>
+                                                <select id="effects-subwoofer-family" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-slope">Slope dB/oct</label>
+                                                <select id="effects-subwoofer-slope" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                            </div>
+                                            <div class="field-group effects-subwoofer-highpass-field">
+                                                <label for="effects-subwoofer-main-highpass">Main highpass</label>
+                                                <select id="effects-subwoofer-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
+                                                    <option value="on" selected>On</option>
+                                                    <option value="off">Off</option>
+                                                </select>
+                                            </div>
                                         </div>
-                                        <div class="field-group effects-subwoofer-highpass-field">
-                                            <label for="effects-subwoofer-main-highpass">Main highpass</label>
-                                            <select id="effects-subwoofer-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
-                                                <option value="on" selected>On</option>
-                                                <option value="off">Off</option>
-                                            </select>
+                                        <div class="effects-subwoofer-crossover-block is-side hidden" id="effects-subwoofer-left-crossover">
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-left-frequency">Crossover</label>
+                                                <div class="delay-input-wrap">
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease left sub crossover frequency">&minus;</button>
+                                                        <input type="number" id="effects-subwoofer-left-frequency" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
+                                                        <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase left sub crossover frequency">+</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-left-family">Type</label>
+                                                <select id="effects-subwoofer-left-family" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-left-slope">Slope dB/oct</label>
+                                                <select id="effects-subwoofer-left-slope" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                            </div>
+                                            <div class="field-group effects-subwoofer-highpass-field">
+                                                <label for="effects-subwoofer-left-main-highpass">Main highpass</label>
+                                                <select id="effects-subwoofer-left-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
+                                                    <option value="on" selected>On</option>
+                                                    <option value="off">Off</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div class="effects-subwoofer-crossover-block is-side hidden" id="effects-subwoofer-right-crossover">
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-right-frequency">Crossover</label>
+                                                <div class="delay-input-wrap">
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease right sub crossover frequency">&minus;</button>
+                                                        <input type="number" id="effects-subwoofer-right-frequency" class="url-input delay-number-input stepper-input" min="40" max="200" step="1" value="80">
+                                                        <span class="stepper-unit" aria-hidden="true">Hz</span>
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase right sub crossover frequency">+</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-right-family">Type</label>
+                                                <select id="effects-subwoofer-right-family" class="url-input effects-headroom-select effects-crossover-type-select"></select>
+                                            </div>
+                                            <div class="field-group">
+                                                <label for="effects-subwoofer-right-slope">Slope dB/oct</label>
+                                                <select id="effects-subwoofer-right-slope" class="url-input effects-headroom-select effects-subwoofer-compact-select"></select>
+                                            </div>
+                                            <div class="field-group effects-subwoofer-highpass-field">
+                                                <label for="effects-subwoofer-right-main-highpass">Main highpass</label>
+                                                <select id="effects-subwoofer-right-main-highpass" class="url-input effects-headroom-select effects-subwoofer-compact-select">
+                                                    <option value="on" selected>On</option>
+                                                    <option value="off">Off</option>
+                                                </select>
+                                            </div>
                                         </div>
                                     </div>
                                     <div class="effects-subwoofer-control-group effects-subwoofer-channel-group effects-subwoofer-sub1-group">
                                         <div id="effects-subwoofer-sub1-group-label" class="effects-subwoofer-group-label">Subwoofer</div>
                                         <div class="field-group">
-                                            <label id="effects-subwoofer-level-label" for="effects-subwoofer-level">Sub level</label>
+                                            <label id="effects-subwoofer-level-label" for="effects-subwoofer-level">Level</label>
                                             <div class="delay-input-wrap">
                                                 <div class="stepper-control">
                                                     <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease sub level">&minus;</button>
@@ -609,7 +781,7 @@
                                             </div>
                                         </div>
                                         <div class="field-group">
-                                            <label id="effects-subwoofer-delay-label" for="effects-subwoofer-delay">Sub alignment</label>
+                                            <label id="effects-subwoofer-delay-label" for="effects-subwoofer-delay">Align</label>
                                             <div class="delay-input-wrap">
                                                 <div class="stepper-control">
                                                     <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease sub alignment">&minus;</button>
@@ -620,7 +792,7 @@
                                             </div>
                                         </div>
                                         <div class="field-group effects-subwoofer-polarity-field">
-                                            <label id="effects-subwoofer-polarity-label" for="effects-subwoofer-polarity">Sub polarity</label>
+                                            <label id="effects-subwoofer-polarity-label" for="effects-subwoofer-polarity">Polarity</label>
                                             <select id="effects-subwoofer-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
                                                 <option value="normal">N</option>
                                                 <option value="invert">I</option>
@@ -630,7 +802,7 @@
                                     <div class="effects-subwoofer-control-group effects-subwoofer-channel-group effects-subwoofer-sub2-group effects-subwoofer-sub2-field hidden">
                                         <div class="effects-subwoofer-group-label">Sub 2</div>
                                         <div class="field-group">
-                                            <label for="effects-subwoofer-sub2-level">Sub 2 level</label>
+                                            <label for="effects-subwoofer-sub2-level">Level</label>
                                             <div class="delay-input-wrap">
                                                 <div class="stepper-control">
                                                     <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease sub 2 level">&minus;</button>
@@ -641,7 +813,7 @@
                                             </div>
                                         </div>
                                         <div class="field-group">
-                                            <label for="effects-subwoofer-sub2-delay">Sub 2 alignment</label>
+                                            <label for="effects-subwoofer-sub2-delay">Align</label>
                                             <div class="delay-input-wrap">
                                                 <div class="stepper-control">
                                                     <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease sub 2 alignment">&minus;</button>
@@ -652,7 +824,7 @@
                                             </div>
                                         </div>
                                         <div class="field-group effects-subwoofer-polarity-field">
-                                            <label for="effects-subwoofer-sub2-polarity">Sub 2 polarity</label>
+                                            <label for="effects-subwoofer-sub2-polarity">Polarity</label>
                                             <select id="effects-subwoofer-sub2-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
                                                 <option value="normal">N</option>
                                                 <option value="invert">I</option>
@@ -670,9 +842,15 @@
                         </section>
 
                         <section class="effects-card effects-card-manage effects-card-manage-order">
-                            <div class="effects-card-header">
-                                <h3>A/B compare</h3>
-                                <p>Compare two presets.</p>
+                            <div class="effects-card-header effects-compare-header">
+                                <div>
+                                    <h3>A/B compare</h3>
+                                    <p>Compare two presets.</p>
+                                </div>
+                                <div class="effects-bank-row hidden">
+                                    <label for="effects-bank-select">Bank</label>
+                                    <select id="effects-bank-select" class="url-input" aria-label="Filter bank"></select>
+                                </div>
                             </div>
                             <div class="effects-stack">
                                 <div id="effects-compare-row" class="effects-compare-row" style="display:none">
@@ -927,16 +1105,21 @@
                                                 <button id="measurement-sweep-toggle" class="btn-primary" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="measurement-sweep-menu">Start Sweep</button>
                                                 <div id="measurement-sweep-menu" class="measurement-workflow-menu-panel hidden" tabindex="-1" aria-labelledby="measurement-sweep-toggle">
                                                     <div class="measurement-workflow-menu-choice measurement-workflow-channel-choice">
-                                                        <div class="measurement-channel-chip-row" id="measurement-channel-chip-row" role="group" aria-label="Single sweep speaker selection">
-                                                            <button type="button" class="measurement-chip" data-measurement-channel="left">L</button>
-                                                            <button type="button" class="measurement-chip" data-measurement-channel="right">R</button>
-                                                            <button type="button" class="measurement-chip" data-measurement-channel="stereo">Stereo</button>
+                                                        <div class="measurement-area-row" id="measurement-area-row" role="group" aria-label="Selected measurement area">
+                                                            <span class="measurement-area-label">Measuring area</span>
+                                                            <span id="measurement-area-indicator" class="measurement-area-indicator" aria-live="polite">Global</span>
                                                         </div>
-                                                        <span class="measurement-repeat-help">Run Single Sweep.</span>
+                                                        <div class="measurement-sweep-side-row hidden" id="measurement-sweep-side-row" role="group" aria-label="Single sweep side">
+                                                            <button type="button" class="measurement-chip" data-sweep-side="left" aria-pressed="false">Left</button>
+                                                            <button type="button" class="measurement-chip" data-sweep-side="stereo" aria-pressed="true">Stereo</button>
+                                                            <button type="button" class="measurement-chip" data-sweep-side="right" aria-pressed="false">Right</button>
+                                                        </div>
+                                                        <button id="measurement-sweep-start" class="btn-secondary" type="button">Run Single Sweep</button>
+                                                        <span id="measurement-area-note" class="measurement-repeat-help">Whole system: Global plus every area bank stay audible for this sweep.</span>
                                                     </div>
                                                     <div class="measurement-workflow-menu-choice">
                                                         <button id="measurement-repeat-start" class="btn-secondary" type="button">Start LR Repeat</button>
-                                                        <span class="measurement-repeat-help">Repeated L/R sweeps for more precision.</span>
+                                                        <span id="measurement-repeat-note" class="measurement-repeat-help">Repeated L/R sweeps for more precision.</span>
                                                     </div>
                                                     <div class="measurement-workflow-menu-choice">
                                                         <button id="measurement-hybrid-open" class="btn-secondary" type="button">Advanced</button>
@@ -951,6 +1134,29 @@
                                         <div class="measurement-workflow-row">
                                             <button id="measurement-auto-sub-start" class="btn-secondary" type="button">Auto Sub Optimize</button>
                                             <span id="measurement-auto-sub-status" class="measurement-repeat-help">Scans sub delay around crossover, picks best alignment.</span>
+                                        </div>
+                                    </div>
+                                    <div class="measurement-workflow-section measurement-workflow-speaker-align hidden" id="measurement-speaker-align-group">
+                                        <h4 class="measurement-workflow-label">Speaker Auto Alignment</h4>
+                                        <div class="measurement-workflow-speaker-row">
+                                            <div class="measurement-workflow-speaker-buttons">
+                                                <button id="measurement-speaker-align-left" class="btn-secondary" type="button">Align Left</button>
+                                                <button id="measurement-speaker-align-right" class="btn-secondary" type="button">Align Right</button>
+                                                <button id="measurement-speaker-align-cancel" class="btn-secondary hidden" type="button">Cancel Alignment</button>
+                                            </div>
+                                            <span class="measurement-repeat-help">Aligns each way of the selected speaker with the microphone fixed.</span>
+                                        </div>
+                                        <p id="measurement-speaker-align-status" class="measurement-repeat-help" aria-live="polite"></p>
+                                        <div id="measurement-speaker-align-results"></div>
+                                        <div class="measurement-workflow-speaker-row speaker-align-run-row">
+                                            <div class="measurement-workflow-speaker-buttons">
+                                                <button id="measurement-speaker-align-save" class="btn-secondary" type="button">Save align run</button>
+                                                <select id="measurement-speaker-align-saved" class="url-input speaker-align-run-select" aria-label="Saved align runs">
+                                                    <option value="">Saved align runs…</option>
+                                                </select>
+                                                <button id="measurement-speaker-align-open" class="btn-secondary" type="button">Open run</button>
+                                            </div>
+                                            <span class="measurement-repeat-help">Before: planning take · After: verification take · no extra sweep.</span>
                                         </div>
                                     </div>
                                     <div class="measurement-workflow-section">
@@ -1533,11 +1739,40 @@
     <script src="/static/measurement_dsp.js?v=0.9.16"></script>
     <script src="/static/autosub_target.js?v=0.9.18"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.15"></script>
-    <script src="/static/measurement_ui.js?v=0.9.17"></script>
+    <script src="/static/measurement_ui.js?v=0.9.19"></script>
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
-    <script src="/static/measurement_flows.js?v=0.9.21"></script>
+    <script src="/static/speaker_align.js?v=0.9.7"></script>
+    <script src="/static/measurement_flows.js?v=0.9.31"></script>
+    <script src="/static/output_state.js?v=0.9.12"></script>
+    <script src="/static/crossover.js?v=0.9.7"></script>
+    <script src="/static/crossover_view.js?v=0.9.1"></script>
+    <script src="/static/crossover_ui.js?v=0.9.1"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
-    <script src="/static/app.js?v=0.9.165"></script>
+    <script src="/static/api.js?v=0.9.1"></script>
+    <script src="/static/ui_helpers.js?v=0.9.1"></script>
+    <script src="/static/modal.js?v=0.9.1"></script>
+    <script src="/static/provider_settings.js?v=0.9.1"></script>
+    <script src="/static/settings_system.js?v=0.9.1"></script>
+    <script src="/static/subwoofer_ui.js?v=0.9.1"></script>
+    <script src="/static/output_system_controller.js?v=0.9.1"></script>
+    <script src="/static/output_bank_ui.js?v=0.9.1"></script>
+    <script src="/static/output_effects_ui.js?v=0.9.1"></script>
+    <script src="/static/measurement_panel_ui.js?v=0.9.3"></script>
+    <script src="/static/measurement_saved_ui.js?v=0.9.2"></script>
+    <script src="/static/measurement_editors_ui.js?v=0.9.2"></script>
+    <script src="/static/measurement_setup.js?v=0.9.1"></script>
+    <script src="/static/measurement_calibration.js?v=0.9.1"></script>
+    <script src="/static/measurement_peq_editor.js?v=0.9.1"></script>
+    <script src="/static/measurement_convolver_editor.js?v=0.9.1"></script>
+    <script src="/static/measurement_capture.js?v=0.9.1"></script>
+    <script src="/static/measurement_job.js?v=0.9.1"></script>
+    <script src="/static/measurement_saved_actions.js?v=0.9.1"></script>
+    <script src="/static/measurement_spl_calibration.js?v=0.9.1"></script>
+    <script src="/static/library_ui.js?v=0.9.1"></script>
+    <script src="/static/playback_core.js?v=0.9.1"></script>
+    <script src="/static/playback_ui.js?v=0.9.2"></script>
+    <script src="/static/streaming_runtime.js?v=0.9.1"></script>
+    <script src="/static/app.js?v=0.9.234"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

@@ -7,10 +7,11 @@ import logging
 import math
 import re
 import shutil
+import struct
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from dsp.persistence import DSPPresetStore, DSPStateStore, clean_name, kernel_name
+from dsp.persistence import DSPPresetStore, DSPStateStore, clean_bank, clean_name, kernel_name, preset_bank
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,9 @@ def parse_wav_frames(path: Path) -> Dict[str, Any]:
     (native_dsp/dsp.c ``load_wav``) supports: PCM 16/24/32 bit and IEEE
     float 32 bit. Python's ``wave`` module is not usable here because it
     rejects IEEE float WAVs (format tag 3) — the measurement FIR export
-    writes exactly that.
+    writes exactly that. The parse is encoding-preserving; imports that
+    accept more (IEEE float 64 bit) normalize through
+    ``normalize_ir_frames`` before the kernel check.
     """
     raw = path.read_bytes()
     if len(raw) < 12 or raw[0:4] != b"RIFF" or raw[8:12] != b"WAVE":
@@ -77,6 +80,39 @@ def ensure_kernel_supported_ir(params: Dict[str, Any], name: str) -> None:
             f"IR WAV encoding is not kernel-supported: format {fmt} "
             f"with {bits} bits (need PCM 16/24/32 bit or IEEE float 32 bit): {name}"
         )
+
+
+def normalize_ir_frames(params: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """Downconvert an IEEE float64 WAV parse to the kernel's float32 encoding.
+
+    The native engine computes in float32 throughout, so a float64 import
+    carries no usable extra precision into playback; converting on import
+    keeps every stored kernel directly loadable. The conversion itself is a
+    plain IEEE round-to-nearest per sample (no gain/level change). Other
+    encodings pass through untouched. Returns a new dict when converting
+    (with ``converted`` set), otherwise the input dict.
+    """
+    if params.get("format") != 3 or params.get("bits") != 64:
+        return params
+    data = params.get("data") or b""
+    if len(data) % 8:
+        raise ValueError(f"IR WAV data is truncated: {name}")
+    count = len(data) // 8
+    if count <= 0:
+        raise ValueError(f"IR WAV file contains no audio frames: {name}")
+    doubles = struct.unpack(f"<{count}d", data)
+    try:
+        converted = struct.pack(f"<{count}f", *doubles)
+    except (struct.error, OverflowError) as exc:
+        raise ValueError(f"IR WAV samples exceed IEEE float32 range: {name}") from exc
+    normalized = dict(params)
+    normalized["format"] = 3
+    normalized["bits"] = 32
+    normalized["data"] = converted
+    normalized["samples"] = count
+    normalized["frames"] = count // params["channels"]
+    normalized["converted"] = True
+    return normalized
 
 
 def build_wav_bytes(channels: int, rate: int, bits: int, format_tag: int, data: bytes) -> bytes:
@@ -411,12 +447,57 @@ class DSPManager:
 
     @staticmethod
     def _native_preset(chain: Optional[List[dict]] = None,
-                       source_presets: Optional[List[str]] = None) -> Dict[str, Any]:
-        metadata = {}
+                       source_presets: Optional[List[str]] = None,
+                       bank: Optional[str] = None) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
         if source_presets:
             metadata["source_presets"] = list(source_presets)
+        cleaned = clean_bank(bank) if bank is not None else None
+        if bank is not None and cleaned is None and str(bank).strip():
+            raise ValueError(f"Invalid preset bank: {bank!r}")
+        if cleaned is not None:
+            metadata["bank"] = cleaned
         return {"schema": DSPPresetStore.SCHEMA, "version": DSPPresetStore.VERSION,
                 "chain": list(chain or []), "metadata": metadata}
+
+    @staticmethod
+    def _normalize_bank_arg(bank: Any) -> Optional[str]:
+        """Owning bank for a new preset; None leaves the stored tag untouched."""
+        if bank is None:
+            return None
+        if isinstance(bank, str) and not bank.strip():
+            return None
+        cleaned = clean_bank(bank)
+        if cleaned is None:
+            raise ValueError(f"Invalid preset bank: {bank!r}")
+        return cleaned
+
+    def _bank_for_create(self, name: str, bank: Any) -> Optional[str]:
+        """Resolve the stored owning bank, refusing cross-bank overwrites.
+
+        A preset belongs to exactly one concrete bank (or Global); built-ins
+        stay universal. Rewriting a bank-owned preset from another bank is
+        rejected instead of hijacking it. Legacy files without a tag adopt
+        the requesting bank; callers without a bank keep the stored tag.
+        """
+        requested = self._normalize_bank_arg(bank)
+        try:
+            existing = self.preset_store.read(clean_name(name))
+        except (FileNotFoundError, RuntimeError):
+            return requested
+        stored = preset_bank(existing)
+        if requested is None:
+            return stored
+        if stored is None:
+            return requested
+        if stored != requested:
+            raise ValueError(
+                f'Preset "{clean_name(name)}" belongs to bank "{stored}", not "{requested}"')
+        return requested
+
+    def preset_bank(self, preset_name: str) -> Optional[str]:
+        """Owning bank tag of one preset (None for built-ins/legacy)."""
+        return preset_bank(self.preset_store.read(clean_name(preset_name)))
 
     def _bootstrap(self) -> None:
         direct = self._native_preset()
@@ -425,10 +506,37 @@ class DSPManager:
             path = self.output_dir / f"{name}.json"
             if not path.exists():
                 self.preset_store.write(name, payload)
+        self._migrate_legacy_preset_banks()
         active = self.state_store.read("active.json", {})
         if not isinstance(active, dict) or active.get("preset") not in {p["name"] for p in self.preset_store.list()}:
             self.state_store.write("active.json", {"schema": "fxroute.dsp.active", "version": 1,
                                                    "preset": "Neutral"})
+
+    def _migrate_legacy_preset_banks(self) -> None:
+        """Tag once untagged presets as Global, where they historically lived.
+
+        Before per-bank ownership the preset library was shared with Global
+        as the default surface, so a file without a bank tag is a former
+        global preset. Built-ins stay universal and tagged files are left
+        untouched; the rewrite is idempotent.
+        """
+        if not self.output_dir.exists():
+            return
+        for path in sorted(self.output_dir.glob("*.json")):
+            if path.stem in self.PROTECTED_PRESETS:
+                continue
+            try:
+                payload = self.preset_store.read(path.stem)
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                logger.warning("Legacy bank migration skipped %s: %s", path.name, exc)
+                continue
+            if preset_bank(payload) is not None:
+                continue
+            payload["metadata"] = {**(payload.get("metadata") or {}), "bank": "global"}
+            try:
+                self.preset_store.write(path.stem, payload)
+            except ValueError as exc:
+                logger.warning("Legacy bank migration failed for %s: %s", path.name, exc)
 
     def list_presets(self) -> List[dict]:
         return self.preset_store.list(("Direct", "Neutral"))
@@ -624,6 +732,71 @@ class DSPManager:
                 f"{self.OUTPUT_FILTER_MAX_BIQUADS} biquad stages")
         return validated
 
+    @staticmethod
+    def _sos_stable(a1: float, a2: float) -> bool:
+        """Mirror the native engine's pole-inside-unit-circle check."""
+        return abs(a2) < 1.0 and abs(a1) < 1.0 + a2
+
+    def _validate_output_sos(self, sos: Any, output_index: int,
+                             filters: List[dict]) -> List[list]:
+        """Validate raw second-order sections sharing the biquad budget."""
+        if sos is None:
+            return []
+        if not isinstance(sos, list):
+            raise ValueError(f"output_layout[{output_index}].sos must be an array")
+        used = sum(item["stages"] for item in filters)
+        validated = []
+        for position, section in enumerate(sos):
+            prefix = f"output_layout[{output_index}].sos[{position}]"
+            if not isinstance(section, (list, tuple)) or len(section) != 5:
+                raise ValueError(f"{prefix} must be [b0, b1, b2, a1, a2]")
+            try:
+                coefficients = [float(value) for value in section]
+            except (TypeError, ValueError):
+                raise ValueError(f"{prefix} coefficients must be numeric") from None
+            if not all(math.isfinite(value) for value in coefficients):
+                raise ValueError(f"{prefix} coefficients must be finite")
+            if not self._sos_stable(coefficients[3], coefficients[4]):
+                raise ValueError(f"{prefix} has poles outside the unit circle")
+            validated.append(coefficients)
+        if used + len(validated) > self.OUTPUT_FILTER_MAX_BIQUADS:
+            raise ValueError(
+                f"output_layout[{output_index}] exceeds "
+                f"{self.OUTPUT_FILTER_MAX_BIQUADS} biquad stages")
+        return validated
+
+    def _validate_output_oconv(self, oconv: Any, output_index: int) -> Optional[dict]:
+        """Validate one per-output convolver against its resolved IR file."""
+        if oconv is None:
+            return None
+        prefix = f"output_layout[{output_index}].oconv"
+        if not isinstance(oconv, dict) or set(oconv) != {
+                "path", "channel", "wet_db", "dry_db", "input_gain_db", "output_gain_db"}:
+            raise ValueError(
+                f"{prefix} requires path, channel, wet_db, dry_db, "
+                "input_gain_db and output_gain_db")
+        path = Path(str(oconv["path"] or ""))
+        if not path.is_file():
+            raise ValueError(f"{prefix}.path is not a readable IR file: {oconv['path']}")
+        try:
+            params = parse_wav_frames(path)
+            ensure_kernel_supported_ir(params, path.name)
+        except ValueError as exc:
+            raise ValueError(f"{prefix} has an invalid IR file: {exc}") from exc
+        channel = oconv["channel"]
+        if type(channel) is not int or not 0 <= channel < params["channels"]:
+            raise ValueError(
+                f"{prefix}.channel must select one of the "
+                f"{params['channels']} IR channels")
+        try:
+            gains = {key: float(oconv[key]) for key in (
+                "wet_db", "dry_db", "input_gain_db", "output_gain_db")}
+        except (TypeError, ValueError):
+            raise ValueError(f"{prefix} gains must be numeric") from None
+        if not all(math.isfinite(value) for value in gains.values()):
+            raise ValueError(f"{prefix} gains must be finite")
+        return {"path": str(path), "channel": channel, **gains}
+
     def compile_engine_config(self, output_layout: List[Dict[str, Any]], *,
                                preset_name: Optional[str] = None,
                                sample_rate_hz: int = 48000,
@@ -665,11 +838,16 @@ class DSPManager:
                 raise ValueError(f"output_layout[{index}].gain_db must be between -80 and 24")
             if not math.isfinite(delay_ms) or not 0 <= delay_ms <= 500:
                 raise ValueError(f"output_layout[{index}].delay_ms must be between 0 and 500")
+            validated_filters = self._validate_output_filters(
+                channel.get("filters", []), index, sample_rate_hz)
             outputs.append({"name": channel["name"], "routes": normalized_routes,
                              "gain_db": gain_db, "delay_ms": delay_ms,
                              "invert": bool(channel.get("invert", False)),
-                             "filters": self._validate_output_filters(
-                                 channel.get("filters", []), index, sample_rate_hz)})
+                             "filters": validated_filters,
+                             "sos": self._validate_output_sos(
+                                 channel.get("sos", []), index, validated_filters),
+                             "oconv": self._validate_output_oconv(
+                                 channel.get("oconv"), index)})
         active = clean_name(preset_name or self.get_active_preset())
         payload = self.preset_store.read(active)
         chain = copy.deepcopy(payload["chain"])
@@ -700,6 +878,18 @@ class DSPManager:
                     lines.append("peq %d %s %.9g %.9g %.9g" % (
                         output_index, filter_def["type"], float(filter_def["frequency_hz"]),
                         float(filter_def["q"]), float(filter_def["gain_db"])))
+            # Output biquads are LTI, so emitting bank PEQ above and crossover
+            # SOS here matches the processing plan response exactly even though
+            # the plan orders crossover before the area bank.
+            for section in output.get("sos", []):
+                lines.append("sos %d %.9g %.9g %.9g %.9g %.9g" % (
+                    output_index, *[float(value) for value in section]))
+            oconv = output.get("oconv")
+            if oconv is not None:
+                lines.append("oconv %d %d %.9g %.9g %.9g %.9g %s" % (
+                    output_index, int(oconv["channel"]), float(oconv["wet_db"]),
+                    float(oconv["dry_db"]), float(oconv["input_gain_db"]),
+                    float(oconv["output_gain_db"]), json.dumps(oconv["path"])))
 
         def number(value: Any) -> str:
             return format(float(value), ".9g")
@@ -1009,7 +1199,7 @@ class DSPManager:
             "channelMode": "stereo-linked", "eqMode": "IIR", "bands": bands}}}
 
     def create_peq_preset(self, preset_name: str, peq_definition: Dict[str, Any],
-                          extras: Optional[Dict[str, Any]] = None) -> dict:
+                          extras: Optional[Dict[str, Any]] = None, bank: Any = None) -> dict:
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:
@@ -1019,17 +1209,18 @@ class DSPManager:
                   "enabled": normalized["enabled"],
                   "params": copy.deepcopy(normalized["params"]),
                   "mix": copy.deepcopy(normalized["mix"])}
-        path = self.preset_store.write(name, self._native_preset([plugin]))
+        bank_id = self._bank_for_create(name, bank)
+        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id))
         if normalized["params"].get("channelMode") == "dual":
             band_count = (len(normalized["params"].get("leftBands", []))
                           + len(normalized["params"].get("rightBands", [])))
         else:
             band_count = len(normalized["params"].get("bands", []))
-        return {"name": name, "filename": path.name, "path": str(path),
+        return {"name": name, "filename": path.name, "path": str(path), "bank": bank_id,
                 "band_count": band_count, "channel_mode": normalized["params"]["channelMode"]}
 
     def create_convolver_preset(self, preset_name: str, ir_filename: str,
-                                extras: Optional[Dict[str, Any]] = None) -> dict:
+                                extras: Optional[Dict[str, Any]] = None, bank: Any = None) -> dict:
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:
@@ -1047,8 +1238,9 @@ class DSPManager:
         plugin = {"id": "convolver#0", "type": "convolver", "enabled": True,
                   "params": {"kernel": kernel, "wet_db": 0.0, "dry_db": -100.0,
                              "input_gain_db": 0.0, "output_gain_db": 0.0}}
-        path = self.preset_store.write(name, self._native_preset([plugin]))
-        return {"name": name, "filename": path.name,
+        bank_id = self._bank_for_create(name, bank)
+        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id))
+        return {"name": name, "filename": path.name, "bank": bank_id,
                 "path": str(path), "kernel_name": kernel}
 
     @staticmethod
@@ -1060,7 +1252,7 @@ class DSPManager:
         return name
 
     def combine_presets(self, preset_name: str, source_presets: List[str],
-                        extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                        extras: Optional[Dict[str, Any]] = None, bank: Any = None) -> Dict[str, Any]:
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:
@@ -1082,24 +1274,32 @@ class DSPManager:
                 chain.append(item)
         self._validate_supported_chain(chain)
         self._clamp_chain_limiter_params(chain)
-        path = self.preset_store.write(name, self._native_preset(chain, sources))
-        return {"name": name, "filename": path.name, "path": str(path),
+        bank_id = self._bank_for_create(name, bank)
+        path = self.preset_store.write(name, self._native_preset(chain, sources, bank=bank_id))
+        return {"name": name, "filename": path.name, "path": str(path), "bank": bank_id,
                 "source_presets": sources, "plugin_count": len(chain)}
 
-    def import_preset_json(self, preset_filename: str, preset_text: str) -> Dict[str, Any]:
+    def import_preset_json(self, preset_filename: str, preset_text: str, bank: Any = None) -> Dict[str, Any]:
         try:
             source = json.loads(preset_text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"Preset JSON is invalid: {exc}") from exc
         if isinstance(source, dict) and source.get("schema") == self.PRESET_SCHEMA:
-            payload = self.preset_store.validate(source)
+            payload = copy.deepcopy(self.preset_store.validate(source))
             self._validate_supported_chain(payload["chain"])
             self._clamp_chain_limiter_params(payload["chain"])
         else:
             payload = self._translate_legacy_preset(source)
         name = self._ensure_overwritable_name(preset_filename)
+        bank_id = self._bank_for_create(name, bank)
+        metadata = dict(payload.get("metadata") or {})
+        if bank_id is not None:
+            metadata["bank"] = bank_id
+        elif "bank" in metadata and preset_bank(payload) is None:
+            metadata.pop("bank", None)
+        payload["metadata"] = metadata
         path = self.preset_store.write(name, payload)
-        return {"name": name, "filename": path.name, "path": str(path),
+        return {"name": name, "filename": path.name, "path": str(path), "bank": preset_bank(payload),
                 "source_presets": payload.get("metadata", {}).get("source_presets", [])}
 
     def export_preset_json(self, preset_name: str) -> str:
@@ -1201,10 +1401,13 @@ class DSPManager:
                            "q": float(band.get("q", 1.0))})
         return result
 
-    def delete_preset(self, preset_name: str) -> None:
+    def delete_preset(self, preset_name: str, *,
+                      pinned_presets: tuple[str, ...] | frozenset[str] | set[str] | list[str] = ()) -> None:
         name = clean_name(preset_name)
         if name in self.PROTECTED_PRESETS:
             raise ValueError(f'Preset "{name}" is a built-in preset and cannot be deleted')
+        if name in {clean_name(pinned) for pinned in pinned_presets}:
+            raise ValueError(f'Preset "{name}" is used by an output bank and cannot be deleted')
         payload = self.preset_store.read(name)
         kernels = self.preset_store.kernels(payload)
         self.preset_store.path(name).unlink()
@@ -1243,9 +1446,13 @@ class DSPManager:
 
     @staticmethod
     def _validate_ir_file(path: Path) -> None:
-        """Ensure an IR file is a non-empty kernel-supported WAV."""
+        """Ensure an IR file is a non-empty kernel-supported WAV.
+
+        IEEE float64 counts as valid: it converts cleanly to float32 on
+        import, so anything passing here is (after conversion) loadable.
+        """
         try:
-            params = parse_wav_frames(path)
+            params = normalize_ir_frames(parse_wav_frames(path), path.name)
         except ValueError as exc:
             raise ValueError(f"Invalid IR file {path.name}: {exc}") from exc
         try:
@@ -1262,10 +1469,21 @@ class DSPManager:
         if not name.lower().endswith((".irs", ".wav")):
             raise ValueError("IR file must be .irs or .wav")
         # Validate before storing so invalid content never lands in irs_dir
-        # and can never reach the native convolver.
-        self._validate_ir_file(source)
+        # and can never reach the native convolver. Float64 sources are
+        # stored as float32 so the stored kernel is directly loadable.
+        try:
+            params = normalize_ir_frames(parse_wav_frames(source), name)
+            ensure_kernel_supported_ir(params, name)
+        except ValueError as exc:
+            raise ValueError(f"Invalid IR file {name}: {exc}") from exc
         destination = self.irs_dir / name
-        shutil.copyfile(source, destination)
+        if params.get("converted"):
+            destination.write_bytes(build_wav_bytes(
+                params["channels"], params["rate"], params["bits"],
+                params["format"], params["data"],
+            ))
+        else:
+            shutil.copyfile(source, destination)
         try:
             self._validate_ir_file(destination)
         except ValueError:
@@ -1275,23 +1493,30 @@ class DSPManager:
                 "path": str(destination), "size": destination.stat().st_size}
 
     def create_convolver_preset_with_upload(self, preset_name: str, source_path: Path,
-                                            filename: str, extras=None) -> dict:
+                                            filename: str, extras=None, bank: Any = None) -> dict:
         # Guard before the IR is written so a protected or empty name can
         # never leave an unreferenced IR file behind.
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
+        # Refuse cross-bank overwrites before staging any IR file.
+        self._bank_for_create(name, bank)
         uploaded = self.upload_ir(source_path, filename,
                                   f"{name}{Path(filename).suffix}")
         return {"ir": uploaded,
-                "preset": self.create_convolver_preset(name, uploaded["name"], extras)}
+                "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank)}
 
     def upload_ir_pair(self, left_source_path: Path, left_filename: str,
                        right_source_path: Path, right_filename: str,
                        merged_name: str) -> dict:
         del left_filename, right_filename
-        left = parse_wav_frames(left_source_path)
-        right = parse_wav_frames(right_source_path)
+        # Both sides normalize to the kernel encoding first, so float64
+        # sources (or mixed float64/float32 pairs) interleave into a plain
+        # float32 stereo kernel. Rate/channel matching still applies.
+        left = normalize_ir_frames(parse_wav_frames(left_source_path),
+                                   Path(left_source_path).name)
+        right = normalize_ir_frames(parse_wav_frames(right_source_path),
+                                    Path(right_source_path).name)
         if left["format"] != right["format"] or left["bits"] != right["bits"] \
                 or left["rate"] != right["rate"]:
             raise ValueError("Dual IR WAV formats must match")
@@ -1323,34 +1548,35 @@ class DSPManager:
 
     def create_convolver_preset_with_dual_uploads(
         self, preset_name: str, left_source_path: Path, left_filename: str,
-        right_source_path: Path, right_filename: str, extras=None,
+        right_source_path: Path, right_filename: str, extras=None, bank: Any = None,
     ) -> dict:
         # Guard before the merged IR is written so a protected or empty name
         # can never leave an unreferenced IR file behind.
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
+        self._bank_for_create(name, bank)
         merged_name = f"{name}.irs"
         uploaded = self.upload_ir_pair(left_source_path, left_filename,
                                        right_source_path, right_filename, merged_name)
         return {"ir": uploaded,
-                "preset": self.create_convolver_preset(name, uploaded["name"], extras)}
+                "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank)}
 
     def create_peq_preset_from_rew_text(self, preset_name: str, rew_text: str,
-                                        extras=None) -> Dict[str, Any]:
+                                        extras=None, bank: Any = None) -> Dict[str, Any]:
         imported = self.import_rew_peq_text(rew_text)
-        return {**self.create_peq_preset(preset_name, imported["peq"], extras),
+        return {**self.create_peq_preset(preset_name, imported["peq"], extras, bank=bank),
                 "import_source": imported["source"]}
 
     def create_dual_peq_preset_from_rew_texts(self, preset_name: str,
                                               left_rew_text: str, right_rew_text: str,
-                                              extras=None) -> Dict[str, Any]:
+                                              extras=None, bank: Any = None) -> Dict[str, Any]:
         left = self.import_rew_peq_text(left_rew_text)
         right = self.import_rew_peq_text(right_rew_text)
         definition = {"enabled": True, "params": {"channelMode": "dual",
                       "leftBands": left["peq"]["params"]["bands"],
                       "rightBands": right["peq"]["params"]["bands"]}}
-        return {**self.create_peq_preset(preset_name, definition, extras),
+        return {**self.create_peq_preset(preset_name, definition, extras, bank=bank),
                 "import_source": {"left": left["source"], "right": right["source"]}}
 
     def get_status(self) -> dict:

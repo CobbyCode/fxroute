@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from audio.output_ports import (
     channel_suffix_for_position,
@@ -18,6 +18,140 @@ from audio.output_ports import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Late-bound v2 output-state head for the derived overview mode payload.
+# The composition root (main.py) installs a total getter (None on any
+# failure); while unset, or when it yields no usable head, the overview
+# degrades to stereo.
+_output_state_head_loader: Callable[[], dict[str, Any] | None] | None = None
+
+
+def configure_output_state_head(
+    loader: Callable[[], dict[str, Any] | None] | None,
+) -> None:
+    """Install (or clear) the v2 head source for the derived mode payload."""
+    global _output_state_head_loader
+    _output_state_head_loader = loader
+
+
+def _finite_or(value: Any, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number or number in (float("inf"), float("-inf")):
+        return default
+    return number
+
+
+def _derived_sub_settings(processing: Mapping[str, Any], role: str) -> dict[str, Any]:
+    entry = processing.get(role) if isinstance(processing, Mapping) else None
+    entry = entry if isinstance(entry, Mapping) else {}
+    level = max(-80.0, min(12.0, _finite_or(entry.get("level_db"), 0.0)))
+    alignment = max(-40.0, min(40.0, round(_finite_or(entry.get("alignment_ms"), 0.0), 2)))
+    polarity = "invert" if str(entry.get("polarity") or "").lower() in {"invert", "inverted", "180"} else "normal"
+    return {"level_db": level, "alignment_ms": alignment, "polarity": polarity}
+
+
+def _derived_output_mode(
+    head: Mapping[str, Any] | None, output_key: str
+) -> dict[str, Any] | None:
+    """Translate a v2 output-state head into the legacy mode payload shape.
+
+    Returns None when the head is unusable (the overview then degrades to
+    stereo).  Slot mapping is deterministic: zero sub roles read stereo, one
+    reads 2.1, two or more read 2.2 (stereo-bass label for sub_l/sub_r).
+    """
+    if not isinstance(head, Mapping):
+        return None
+    try:
+        from audio.output_routing import device_key
+        from audio.output_state import (bass_crossover_for_side, filter_label,
+                                        routing_for_device, shared_bass_crossover)
+    except ImportError:
+        return None
+    mode = head.get("active_mode")
+    modes = head.get("modes")
+    if not isinstance(mode, str) or not isinstance(modes, Mapping):
+        return None
+    spec = modes.get(mode)
+    if not isinstance(spec, Mapping):
+        return None
+    routing = spec.get("routing")
+    routing = routing if isinstance(routing, Mapping) else {}
+    if routing and not any(key for key in (output_key, device_key(output_key or "")) if key in routing):
+        # A device with no routing entry cannot be attributed roles; callers
+        # degrade to stereo instead of misreporting a subwoofer mode.
+        return None
+    try:
+        assignments = routing_for_device(head, mode, output_key or "")
+    except (ValueError, KeyError, TypeError):
+        return None
+    subs = sorted({role for role in assignments
+                   if role and role not in ("off", "main_l", "main_r")})
+    processing = spec.get("processing")
+    processing = processing if isinstance(processing, Mapping) else {}
+    bass = spec.get("bass_management")
+    bass = bass if isinstance(bass, Mapping) else {}
+    highpass = bool(bass.get("main_highpass_enabled", True))
+    stereo_pair = bool(set(subs) & {"sub_l", "sub_r"})
+
+    def crossover(side: str) -> dict[str, Any]:
+        """Effective crossover of one side; only a Stereo pair resolves per side."""
+        try:
+            if stereo_pair:
+                definition = bass_crossover_for_side(dict(bass), side)
+            else:
+                definition = shared_bass_crossover(dict(bass))
+            frequency = max(40, min(200, int(round(_finite_or(definition["frequency_hz"], 80)))))
+        except (KeyError, TypeError, ValueError):
+            return {"crossover_frequency_hz": 80, "slope": "LR24"}
+        return {"crossover_frequency_hz": frequency,
+                "slope": filter_label(definition["family"], definition["slope_db_oct"])}
+
+    left, right = crossover("left"), crossover("right")
+    if not subs:
+        return {"mode": OUTPUT_MODE_STEREO,
+                "subwoofer": _normalize_subwoofer_config(None)}
+    if len(subs) == 1:
+        settings = _derived_sub_settings(processing, subs[0])
+        return {
+            "mode": OUTPUT_MODE_SUBWOOFER_21,
+            "subwoofer": {
+                **left,
+                "main_highpass_enabled": highpass,
+                "sub_level_db": max(-24.0, min(12.0, settings["level_db"])),
+                "sub_alignment_ms": settings["alignment_ms"],
+                "sub_polarity": settings["polarity"],
+            },
+        }
+    label = OUTPUT_MODE_SUBWOOFER_22_STEREO if stereo_pair else OUTPUT_MODE_SUBWOOFER_22
+    first, second = subs[0], subs[1]
+    return {
+        "mode": label,
+        **left,
+        "main_highpass_enabled": highpass,
+        "subwoofers": {
+            "sub1": {**_derived_sub_settings(processing, first), **left},
+            "sub2": {**_derived_sub_settings(processing, second), **right},
+        },
+    }
+
+
+def _derived_output_mode_from_head(selection_state: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Best-effort derived mode payload; None degrades to stereo."""
+    loader = _output_state_head_loader
+    if loader is None:
+        return None
+    try:
+        head = loader()
+    except Exception:
+        return None
+    try:
+        key = str(((selection_state or {}).get("selected_key")) or "")
+        return _derived_output_mode(head, key)
+    except Exception:
+        return None
 
 from .bluetooth import get_bluetooth_audio_overview
 from .constants import (
@@ -29,7 +163,6 @@ from .constants import (
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
     OUTPUT_MODE_SUBWOOFER_MODES,
-    OUTPUT_MODES,
     PIPEWIRE_DEFAULT_RATE_OPTIONS,
     SAMPLE_RATE_CANDIDATES,
     SOURCE_MODE_APP_PLAYBACK,
@@ -57,13 +190,10 @@ from .parsing import (
     _run_command,
 )
 from .persistence import (
-    _audio_output_mode_path,
-    _build_audio_output_mode_payload,
-    _load_audio_output_mode,
     _load_audio_output_selection,
     _load_audio_source_selection,
-    _load_device_output_modes,
     _load_pipewire_clock_rate_config,
+    _normalize_subwoofer_config,
     _save_audio_output_selection,
     _save_audio_source_selection,
     load_sample_rate_policy,
@@ -245,7 +375,13 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
         default_sink = status.get("sink") or {"id": None, "name": None, "description": None}
         relevant_sink = status.get("relevant_sink") or {}
         selection_state = _load_audio_output_selection()
-        output_mode = _load_audio_output_mode()
+        # The v2 output state is the only source of truth; without a usable
+        # head the overview degrades to stereo exactly like a missing file.
+        output_mode = (
+            _derived_output_mode_from_head(selection_state)
+            or {"mode": OUTPUT_MODE_STEREO,
+                "subwoofer": _normalize_subwoofer_config(None)}
+        )
 
         sinks: list[dict[str, Any]] = []
         sink_details: dict[str, dict[str, Any]] = {}
@@ -630,14 +766,6 @@ def get_audio_source_overview() -> dict[str, Any]:
         "notes": notes,
     }
 
-def _output_mode_label(mode: str) -> str:
-    if mode == OUTPUT_MODE_SUBWOOFER_21:
-        return "2.1"
-    if mode == OUTPUT_MODE_SUBWOOFER_22_STEREO:
-        return "2.2 Stereo Bass"
-    if mode == OUTPUT_MODE_SUBWOOFER_22:
-        return "2.2"
-    return "Stereo"
 
 def set_audio_output_selection(key: str) -> dict[str, Any]:
     normalized_key = (key or "").strip()
@@ -659,121 +787,13 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
     ):
         raise ValueError("Selected output does not support the configured fixed sample rate")
 
-    # A deliberate device switch wins over the current output mode: derive the
-    # mode this device can actually carry instead of refusing the switch.  A
-    # subwoofer mode on a stereo-only device falls back to Stereo, and a mode
-    # remembered for this device is restored when the device can carry it.
-    valid_modes = OUTPUT_MODES
-    channels = int(selected_output.get("channels") or 0)
-    current_mode = _load_audio_output_mode()
-    current_mode_name = str(current_mode.get("mode") or OUTPUT_MODE_STEREO).strip()
-    candidate_mode = (_load_device_output_modes().get(normalized_key) or current_mode_name)
-    if candidate_mode not in valid_modes:
-        candidate_mode = OUTPUT_MODE_STEREO
-    effective_mode = candidate_mode
-    if effective_mode in OUTPUT_MODE_SUBWOOFER_MODES and channels < 4:
-        effective_mode = OUTPUT_MODE_STEREO
-    mode_changed = effective_mode != current_mode_name
-
+    # A deliberate device switch only changes the selection. Topology and
+    # DSP state live in the v2 output state and follow explicitly through
+    # its own apply path; there is no per-device mode memory anymore.
     _set_default_sink(selected_output["name"])
     _save_audio_output_selection(selected_output["key"])
-    if mode_changed:
-        persist_audio_output_mode(_build_audio_output_mode_payload(effective_mode))
-
-    overview = get_audio_output_overview()
-    if mode_changed:
-        reason = (
-            "device-channel-capacity"
-            if candidate_mode in OUTPUT_MODE_SUBWOOFER_MODES and channels < 4
-            else "device-remembered-mode"
-        )
-        if reason == "device-channel-capacity":
-            message = (
-                f"Output mode switched to {_output_mode_label(effective_mode)} — "
-                f"selected device supports {channels} channels."
-            )
-        else:
-            message = (
-                f"Output mode restored to {_output_mode_label(effective_mode)} — "
-                "last used with this device."
-            )
-        overview["output_mode"]["mode_adjustment"] = {
-            "adjusted": True,
-            "previous_mode": current_mode_name,
-            "mode": effective_mode,
-            "reason": reason,
-            "message": message,
-        }
-    return overview
-
-def prepare_audio_output_mode(
-    mode: str,
-    subwoofer: dict[str, Any] | None = None,
-    subwoofers: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Validate and build an output-mode target without persisting it.
-
-    The returned ``config`` is the exact durable payload that may be written
-    only after the Coordinator has committed the corresponding runtime graph.
-    ``overview`` is a live hardware overview with the target mode overlaid so
-    the guarded runtime can stage the new topology before persistence.
-    """
-    normalized_mode = (mode or OUTPUT_MODE_STEREO).strip()
-    valid_modes = OUTPUT_MODES
-    if normalized_mode not in valid_modes:
-        raise ValueError(f"Unknown output mode: {mode}")
-    if normalized_mode in OUTPUT_MODE_SUBWOOFER_MODES:
-        overview = get_audio_output_overview()
-        output_mode = overview.get("output_mode") or {}
-        if not output_mode.get("available"):
-            label = (
-                "2.1"
-                if normalized_mode == OUTPUT_MODE_SUBWOOFER_21
-                else "2.2 Stereo Bass"
-                if normalized_mode == OUTPUT_MODE_SUBWOOFER_22_STEREO
-                else "2.2"
-            )
-            raise ValueError(f"{label} Subwoofer requires a selected multichannel output with at least 4 channels")
-    saved = _build_audio_output_mode_payload(normalized_mode, subwoofer, subwoofers)
-    overview = get_audio_output_overview()
-    overview["output_mode"] = {
-        **(overview.get("output_mode") or {}),
-        **saved,
-    }
-    return {"overview": overview, "config": saved}
-
-def persist_audio_output_mode(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Persist a previously validated output-mode target after graph commit.
-
-    The mode is also remembered as the last valid mode of the currently
-    selected output device so a later device switch can restore it.
-    """
-    payload = dict(config or {})
-    mode = str(payload.get("mode") or "").strip()
-    if mode not in OUTPUT_MODES:
-        raise ValueError(f"Unknown output mode: {mode}")
-    device_key = (_load_audio_output_selection() or {}).get("selected_key")
-    if device_key:
-        device_modes = dict(_load_device_output_modes())
-        device_modes[device_key] = mode
-        payload["device_modes"] = device_modes
-    path = _audio_output_mode_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
     return get_audio_output_overview()
 
-def set_audio_output_mode(
-    mode: str,
-    subwoofer: dict[str, Any] | None = None,
-    subwoofers: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Compatibility wrapper for non-playback configuration callers.
-
-    Playback-facing API routes must use ``prepare_audio_output_mode`` and let
-    the Coordinator call ``persist_audio_output_mode`` after its graph commit.
-    """
-    target = prepare_audio_output_mode(mode, subwoofer, subwoofers)
-    return persist_audio_output_mode(target["config"])
 
 def set_audio_source_selection(mode: str, input_key: str | None = None) -> dict[str, Any]:
     normalized_mode = (mode or "").strip()

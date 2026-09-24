@@ -1,65 +1,44 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-only
 // Regression coverage for the global footer master slider mapping.
+//
+// The volume curve and send-state live in static/playback_core.js (single
+// owner); the streaming-owner footer renderer lives in
+// static/playback_ui.js. This drives both real modules through their init
+// deps instead of poking module internals.
 
 const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
 
 const root = path.join(__dirname, '..');
-const appSource = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+const coreSource = fs.readFileSync(path.join(root, 'static', 'playback_core.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(root, 'static', 'playback_ui.js'), 'utf8');
+const UiHelpers = require('../static/ui_helpers.js');
 
-function extractFunction(name) {
-    const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(appSource);
-    assert.ok(match, `missing ${name}`);
-    const brace = appSource.indexOf('{', match.index);
-    assert.notEqual(brace, -1, `missing body ${name}`);
-    let depth = 0;
-    let quote = '';
-    let escaped = false;
-    let lineComment = false;
-    let blockComment = false;
-    for (let index = brace; index < appSource.length; index += 1) {
-        const character = appSource[index];
-        const nextCharacter = appSource[index + 1];
-        if (lineComment) {
-            if (character === '\n') lineComment = false;
-            continue;
-        }
-        if (blockComment) {
-            if (character === '*' && nextCharacter === '/') {
-                blockComment = false;
-                index += 1;
-            }
-            continue;
-        }
-        if (quote) {
-            if (escaped) escaped = false;
-            else if (character === '\\') escaped = true;
-            else if (character === quote) quote = '';
-            continue;
-        }
-        if (character === '/' && nextCharacter === '/') {
-            lineComment = true;
-            index += 1;
-            continue;
-        }
-        if (character === '/' && nextCharacter === '*') {
-            blockComment = true;
-            index += 1;
-            continue;
-        }
-        if (`'"\``.includes(character)) quote = character;
-        else if (character === '{') depth += 1;
-        else if (character === '}' && --depth === 0) return appSource.slice(match.index, index + 1);
-    }
-    throw new Error(`unterminated ${name}`);
+// Volume curve constants live in the core module (single owner).
+assert.ok(/const\s+VOLUME_CURVE_GAMMA\s*=\s*[^;]+;/.test(coreSource), 'missing VOLUME_CURVE_GAMMA');
+assert.ok(/const\s+VOLUME_SYNC_GRACE_MS\s*=\s*[^;]+;/.test(coreSource), 'missing VOLUME_SYNC_GRACE_MS');
+
+global.window = { __footerSource: 'spotify' };
+global.document = { getElementById: () => null, hidden: false };
+
+const PlaybackCore = require('../static/playback_core.js');
+const PlaybackUI = require('../static/playback_ui.js');
+
+function makeClassList() {
+    const values = new Set();
+    return {
+        toggle: (name, force) => {
+            const on = force === undefined ? !values.has(name) : !!force;
+            if (on) values.add(name);
+            else values.delete(name);
+        },
+        add: (name) => values.add(name),
+        remove: (name) => values.delete(name),
+        contains: (name) => values.has(name),
+    };
 }
-
-const gammaDeclaration = /const\s+VOLUME_CURVE_GAMMA\s*=\s*[^;]+;/.exec(appSource);
-assert.ok(gammaDeclaration, 'missing VOLUME_CURVE_GAMMA');
-const volumeGraceDeclaration = /const\s+VOLUME_SYNC_GRACE_MS\s*=\s*[^;]+;/.exec(appSource);
-assert.ok(volumeGraceDeclaration, 'missing VOLUME_SYNC_GRACE_MS');
 
 const volumeSlider = {
     value: 0,
@@ -71,94 +50,111 @@ const volumeSlider = {
     },
 };
 const volumeDisplay = { textContent: '' };
-let sentVolume = null;
-const sandbox = {
-    elements: { volumeSlider, volumeDisplay },
-    state: { playback: { volume: 0 } },
-    queueVolumeSend(volume) { sentVolume = volume; },
-    showVolumeDisplayTemporarily() {},
-    window: { __footerSource: 'spotify' },
-    isStreamingFooterSource() { return true; },
-    footerContentFreezeActive() { return false; },
-    renderTrackFavoriteButton() {},
-    updatePlaybackCover() {},
-    renderFooterModeButtons() {},
-    setFooterProgressState() {},
-    renderPeakWarningBadge() {},
-    document: { getElementById() { return null; } },
+const elements = {
+    volumeSlider,
+    volumeDisplay,
+    playbackBar: { classList: makeClassList() },
+    seekRow: { classList: makeClassList() },
+};
+const state = {
+    playback: { volume: 0, current_track: null, playing: false, paused: false },
+    library: {},
+    samplerate: {},
+    settings: {},
 };
 
-vm.createContext(sandbox);
-vm.runInContext([
-    gammaDeclaration[0],
-    volumeGraceDeclaration[0],
-    extractFunction('clampVolumeValue'),
-    extractFunction('sliderVolumeToActualVolume'),
-    extractFunction('actualVolumeToSliderValue'),
-    extractFunction('setRangeProgress'),
-    extractFunction('renderVolumeControlsFromActualVolume'),
-    extractFunction('setLocalVolume'),
-    extractFunction('applyRemoteVolume'),
-    extractFunction('handleVolumeChange'),
-    extractFunction('updateFooterForStreamingOwner'),
-].join('\n'), sandbox);
+const sentVolumes = [];
+const toasts = [];
+PlaybackCore.init({
+    getState: () => state,
+    getElements: () => elements,
+    fetchFn: async (url, options) => {
+        const body = JSON.parse(options.body);
+        sentVolumes.push(body.volume);
+        return { ok: true, json: async () => ({ volume: body.volume }) };
+    },
+    showToast: (message) => { toasts.push(message); },
+    setRangeProgress: (...args) => UiHelpers.setRangeProgress(...args),
+    updatePlaybackUI: () => {},
+    showVolumeDisplayTemporarily: () => {},
+});
+PlaybackUI.init({
+    getState: () => state,
+    getElements: () => elements,
+    formatTime: () => '0:00',
+    setRangeProgress: (...args) => UiHelpers.setRangeProgress(...args),
+    isStreamingFooterSource: (...args) => PlaybackCore.isStreamingFooterSource(...args),
+    streamingFooterData: () => null,
+    footerContentFreezeActive: () => false,
+    footerDebug: () => {},
+    applyRemoteVolume: (...args) => PlaybackCore.applyRemoteVolume(...args),
+    renderVolumeControlsFromActualVolume: (...args) => PlaybackCore.renderVolumeControlsFromActualVolume(...args),
+    isVolumeGestureActive: () => PlaybackCore.isVolumeGestureActive(),
+    isVolumeRequestInFlight: () => PlaybackCore.isVolumeRequestInFlight(),
+    getPendingVolume: () => PlaybackCore.getPendingVolume(),
+    renderTrackFavoriteButton: () => {},
+});
 
-for (const value of [0, 25, 50, 75, 100]) {
-    assert.equal(
-        sandbox.sliderVolumeToActualVolume(value),
-        value,
-        `footer slider ${value}% must set master to ${value}%`,
-    );
-    assert.equal(
-        sandbox.actualVolumeToSliderValue(value),
-        value,
-        `master ${value}% must render as footer slider ${value}%`,
-    );
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    sentVolume = null;
-    sandbox.handleVolumeChange({ target: { value: String(value) } });
-    assert.equal(sandbox.state.playback.volume, value, `footer set must store master ${value}%`);
-    assert.equal(sentVolume, value, `footer set must send master ${value}%`);
-    assert.equal(volumeSlider.value, value, `footer slider must stay at ${value}% after setting`);
-    assert.equal(volumeDisplay.textContent, `${value}%`, `footer must display ${value}% after setting`);
+(async () => {
+    // Neutral 1:1 mapping (gamma 1.0): slider, master, send and display agree.
+    for (const value of [0, 25, 50, 75, 100]) {
+        assert.equal(PlaybackCore.sliderVolumeToActualVolume(value), value, `footer slider ${value}% must set master to ${value}%`);
+        assert.equal(PlaybackCore.actualVolumeToSliderValue(value), value, `master ${value}% must render as footer slider ${value}%`);
 
-    sandbox.renderVolumeControlsFromActualVolume(value);
-    assert.equal(volumeSlider.value, value, `external master ${value}% must set footer slider`);
-    assert.equal(volumeDisplay.textContent, `${value}%`, `external master ${value}% must set footer display`);
-    assert.equal(volumeSlider.style.progress, `${value}%`, `footer progress must match ${value}%`);
-}
+        sentVolumes.length = 0;
+        const masterBefore = state.playback.volume;
+        PlaybackCore.handleVolumeChange({ target: { value: String(value) } });
+        assert.equal(state.playback.volume, value, `footer set must store master ${value}%`);
+        assert.equal(volumeSlider.value, value, `footer slider must stay at ${value}% after setting`);
+        assert.equal(volumeDisplay.textContent, `${value}%`, `footer must display ${value}% after setting`);
+        await sleep(250); // volume send debounce (120ms) + fetch round-trip
+        if (value !== masterBefore) {
+            assert.ok(sentVolumes.includes(value), `footer set must send master ${value}% (sent: ${sentVolumes})`);
+        } else {
+            assert.equal(sentVolumes.length, 0, `unchanged master ${value}% must not resend (sent: ${sentVolumes})`);
+        }
 
-function setVolumeSyncState({ requestInFlight, graceActive, pending = null }) {
-    vm.runInContext(`
-        volumeGestureActive = false;
-        volumeRequestInFlight = ${requestInFlight};
-        pendingVolume = ${pending};
-        optimisticVolume = 75;
-        lastConfirmedVolume = 25;
-        volumeSyncGraceUntil = ${graceActive ? 'Date.now() + VOLUME_SYNC_GRACE_MS' : '0'};
-        state.playback.volume = 75;
-        renderVolumeControlsFromActualVolume(75);
-    `, sandbox);
-}
+        PlaybackCore.renderVolumeControlsFromActualVolume(value);
+        assert.equal(volumeSlider.value, value, `external master ${value}% must set footer slider`);
+        assert.equal(volumeDisplay.textContent, `${value}%`, `external master ${value}% must set footer display`);
+        assert.equal(volumeSlider.style.progress, `${value}%`, `footer progress must match ${value}%`);
+        // End the gesture like the slider change handler does, and let the
+        // sync grace expire before the next value.
+        PlaybackCore.setVolumeGestureActive(false);
+        await sleep(750);
+    }
 
-setVolumeSyncState({ requestInFlight: true, graceActive: false });
-sandbox.updateFooterForStreamingOwner({ available: false, volume: 25 });
-assert.equal(sandbox.state.playback.volume, 75, 'streaming poll must not replace a pending local volume');
-assert.equal(volumeSlider.value, 75, 'streaming poll must not move the slider during a volume request');
+    // Streaming poll must not replace a pending local volume (send in flight).
+    PlaybackCore.handleVolumeChange({ target: { value: '75' } });
+    PlaybackUI.updateFooterForStreamingOwner({ available: false, volume: 25 });
+    assert.equal(state.playback.volume, 75, 'streaming poll must not replace a pending local volume');
+    assert.equal(volumeSlider.value, 75, 'streaming poll must not move the slider during a volume request');
+    await sleep(250);
+    PlaybackCore.setVolumeGestureActive(false);
 
-setVolumeSyncState({ requestInFlight: false, graceActive: true });
-sandbox.updateFooterForStreamingOwner({ available: false, volume: 25 });
-assert.equal(sandbox.state.playback.volume, 75, 'streaming poll must not replace a locally confirmed volume during grace');
-assert.equal(volumeSlider.value, 75, 'streaming poll must not move the slider during volume sync grace');
+    // Streaming poll must not replace a locally confirmed volume during grace.
+    PlaybackUI.updateFooterForStreamingOwner({ available: false, volume: 25 });
+    assert.equal(state.playback.volume, 75, 'streaming poll must not replace a locally confirmed volume during grace');
+    assert.equal(volumeSlider.value, 75, 'streaming poll must not move the slider during volume sync grace');
 
-setVolumeSyncState({ requestInFlight: false, graceActive: false, pending: 75 });
-sandbox.updateFooterForStreamingOwner({ available: false, volume: 25 });
-assert.equal(sandbox.state.playback.volume, 75, 'streaming poll must not replace a queued local volume');
-assert.equal(volumeSlider.value, 75, 'streaming poll must not move the slider while a volume send is queued');
+    // Streaming poll must not replace a queued local volume.
+    PlaybackCore.handleVolumeChange({ target: { value: '75' } });
+    PlaybackUI.updateFooterForStreamingOwner({ available: false, volume: 25 });
+    assert.equal(state.playback.volume, 75, 'streaming poll must not replace a queued local volume');
+    assert.equal(volumeSlider.value, 75, 'streaming poll must not move the slider while a volume send is queued');
+    await sleep(250);
+    PlaybackCore.setVolumeGestureActive(false);
+    await sleep(750);
 
-setVolumeSyncState({ requestInFlight: false, graceActive: false });
-sandbox.updateFooterForStreamingOwner({ available: false, volume: 25 });
-assert.equal(sandbox.state.playback.volume, 25, 'streaming poll must apply a remote volume outside local sync');
-assert.equal(volumeSlider.value, 25, 'streaming poll must render a remote volume outside local sync');
+    // Outside local sync the remote volume applies and renders.
+    PlaybackUI.updateFooterForStreamingOwner({ available: false, volume: 25 });
+    assert.equal(state.playback.volume, 25, 'streaming poll must apply a remote volume outside local sync');
+    assert.equal(volumeSlider.value, 25, 'streaming poll must render a remote volume outside local sync');
 
-console.log('PASS  scripts/test_footer_volume_curve.js (neutral footer master mapping)');
+    console.log('PASS  scripts/test_footer_volume_curve.js (neutral footer master mapping)');
+})().catch((error) => {
+    console.error(error);
+    process.exit(1);
+});

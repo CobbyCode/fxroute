@@ -51,9 +51,9 @@ function makeFlowsContext({ state, api, toasts }) {
             MEASUREMENT_JOB_SUCCESS_STATES: new Set(['completed']),
             MEASUREMENT_JOB_FAILED_STATES: new Set(['failed']),
             MEASUREMENT_JOB_CANCELLED_STATES: new Set(['cancelled']),
+            hybridSpeakerName: () => 'speaker',
         },
         FXRouteHybridMeasurement: { getDiagramState: () => ({ speakers: {} }) },
-        hybridSpeakerName: () => 'speaker',
     };
     ctx.window = ctx;
     vm.createContext(ctx);
@@ -176,7 +176,6 @@ async function testStaleHybridPollDoesNotClobberNewJob() {
             jobGeneration: 5,
             selectedInputId: 'in1',
             selectedInputKey: 'k',
-            selectedChannel: 'left',
             selectedMicInputChannel: '1',
             selectedReferenceInputChannel: '',
         },

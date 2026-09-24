@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+"""Browser smoke check for the Output System UI (settings, bank, tile).
+
+Serves the live worktree demo (scripts/serve_demo.py) and drives it in
+headless Chromium: opens settings, selects the multichannel device,
+switches to Crossover, then verifies the bank selector and the Crossover
+tile (tabs, graph, controls) on the DSP tab. Fails on uncaught page
+errors or console errors from the new modules.
+
+Run manually after output-system UI changes; not part of the test suite:
+
+    python3 scripts/check_output_system_ui.py [--shots DIR]
+"""
+
+import argparse
+import pathlib
+import subprocess
+import sys
+import time
+import urllib.request
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+PORT = 8765
+
+
+def wait_for_server(timeout_s: float = 20.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(f"http://localhost:{PORT}/", timeout=2)
+            return
+        except Exception:
+            time.sleep(0.3)
+    raise RuntimeError("demo server did not come up")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--shots", default="/tmp/opencode/fxroute-output-shots")
+    args = parser.parse_args()
+    shots = pathlib.Path(args.shots)
+    shots.mkdir(parents=True, exist_ok=True)
+
+    from playwright.sync_api import sync_playwright
+
+    server = subprocess.Popen(
+        [sys.executable, "scripts/serve_demo.py"],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    failures: list[str] = []
+    problems: list[str] = []
+    try:
+        wait_for_server()
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            page.on("pageerror", lambda error: problems.append(f"pageerror: {error}"))
+            page.on("console", lambda message: problems.append(f"console.{message.type}: {message.text}")
+                    if message.type == "error" else None)
+            page.goto(f"http://localhost:{PORT}/", wait_until="networkidle")
+            page.wait_for_selector("#playback-bar", state="visible", timeout=15000)
+
+            def check(name: str, condition: bool) -> None:
+                print(("ok   " if condition else "FAIL ") + name)
+                if not condition:
+                    failures.append(name)
+
+            # One mode, independent crossover, one hardware routing editor.
+            page.evaluate("toggleSettingsPanel(true)")
+            page.wait_for_selector("#settings-output-mode-select:not([disabled])", state="visible", timeout=5000)
+            check("one routing editor", page.locator(".settings-routing-grid").count() == 1)
+            check("mode choices", page.locator("#settings-output-mode-select option").all_text_contents() == ['Stereo', 'Stereo + Sub'])
+            check("independent crossover visible", page.locator("#settings-crossover-select").is_visible())
+
+            # Multichannel device, then Crossover mode.
+            # NOTE: Playwright select_option races the settings re-render
+            # (rebuilt <option> nodes detach mid-action and the change is
+            # lost); value+dispatch exercises the same app listener.
+            def pick(selector, value):
+                page.evaluate(
+                    """([sel, val]) => {
+                        const el = document.querySelector(sel);
+                        el.value = val;
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""",
+                    [selector, value])
+
+            scarlett_value = page.evaluate(
+                """Array.from(document.querySelectorAll('#settings-output-select option'))
+                    .find(o => o.textContent.includes('Scarlett'))?.value || ''""")
+            check("scarlett device offered", bool(scarlett_value))
+            if not scarlett_value:
+                return 1
+            pick("#settings-output-select", scarlett_value)
+            page.wait_for_timeout(1500)
+            pick("#settings-output-mode-select", "stereo-sub")
+            page.wait_for_timeout(700)
+            check("one row per hardware port", page.locator("#settings-routing-grid select").count() == 18)
+            options = page.locator("#settings-routing-out-1 option").all_text_contents()
+            check("full-band and sub roles", 'Main L' in options and 'Sub L' in options and 'Sub 2' in options and 'Low L' not in options)
+            pick("#settings-crossover-select", "on")
+            page.wait_for_timeout(700)
+            options = page.locator("#settings-routing-out-1 option").all_text_contents()
+            check("crossover replaces Main and keeps subs", 'Main L' not in options and 'Low L' in options and 'Low-Mid R' in options and 'Sub L' in options)
+            for index, role in enumerate(['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high', 'sub_l', 'sub_r'], 1):
+                pick(f"#settings-routing-out-{index}", role)
+                page.wait_for_timeout(250)
+            page.wait_for_timeout(1500)
+            topology = page.locator("#os-topology").inner_text()
+            check(f"topology follows routing ({topology})", "3-Way" in topology and "Stereo subs" in topology)
+            page.screenshot(path=str(shots / "os-settings.png"))
+
+            # DSP tab: bank selector and crossover tile.
+            page.evaluate("toggleSettingsPanel(false)")
+            page.evaluate("document.getElementById('tab-btn-effects').click()")
+            page.wait_for_selector("#effects-bank-select", state="visible", timeout=5000)
+            bank_options = page.locator("#effects-bank-select option").all_inner_texts()
+            check("bank selector groups stereo ways", bank_options == ['Global', 'All Banks', 'Low L/R', 'Mid L/R', 'High L/R', 'Sub L/R'])
+            check("no redundant bank status", page.locator("#effects-bank-info").count() == 0)
+            card = page.locator("#effects-crossover-card")
+            check("crossover card visible", card.is_visible())
+            order = page.evaluate(
+                """[...document.querySelectorAll('#tab-effects .effects-grid > section')]
+                    .map(el => el.id || el.querySelector('h3')?.textContent)""")
+            check(f"dsp card order ({order})",
+                  order == ['effects-crossover-card', 'Subwoofer', 'A/B compare',
+                            'Output extras', 'Combine', 'Create PEQ preset'])
+            tops = page.evaluate(
+                """Object.fromEntries([...document.querySelectorAll('#tab-effects .effects-grid > section')]
+                    .map(el => [el.id || el.querySelector('h3')?.textContent, Math.round(el.getBoundingClientRect().top)]))""")
+            check(f"crossover visually between create-preset and subwoofer ({tops})",
+                  tops['A/B compare'] < tops['Combine'] < tops['effects-crossover-card'] < tops['Subwoofer'])
+            span = page.evaluate(
+                "getComputedStyle(document.getElementById('effects-crossover-card')).gridColumn")
+            check(f"crossover spans full width ({span})", span == '1 / -1')
+            # Starter values applied themselves once the routing first became
+            # a valid 3-way config: no click needed before the way tabs show.
+            # Link L/R is off by default: separate L/R tabs, Trim visible.
+            page.wait_for_timeout(1200)
+            tabs = page.locator("#effects-crossover-tabs button")
+            check(f"six way tabs ({tabs.count()} found)", tabs.count() == 6)
+            check("link L/R off by default",
+                  not page.locator("#effects-crossover-link").is_checked())
+            check("unlinked shows side-specific trim",
+                  page.locator("#effects-crossover-trim-group").is_visible()
+                  and page.locator("#effects-crossover-level").is_visible()
+                  and page.locator("#effects-crossover-delay").is_visible()
+                  and page.locator("#effects-crossover-polarity").is_visible())
+            check("crossover graph is a canvas",
+                  page.evaluate("document.getElementById('effects-crossover-graph')?.tagName") == 'CANVAS')
+            graph_box = page.locator("#effects-crossover-graph").bounding_box()
+            check(f"graph height compact ({graph_box['height']:.0f}px)", 120 <= graph_box['height'] <= 220)
+            variance = page.evaluate(
+                """(() => {
+                    const c = document.getElementById('effects-crossover-graph');
+                    if (!c || c.tagName !== 'CANVAS') return -1;
+                    const x = c.getContext('2d');
+                    const d = x.getImageData(0, 0, c.width, c.height).data;
+                    let s = 0, n = 0;
+                    for (let i = 0; i < d.length; i += 401 * 4) { s += (d[i] + d[i + 1] + d[i + 2]) / 3; n += 1; }
+                    const mean = s / Math.max(1, n);
+                    let v = 0;
+                    for (let i = 0; i < d.length; i += 401 * 4) { const g = (d[i] + d[i + 1] + d[i + 2]) / 3; v += (g - mean) ** 2; }
+                    return v / Math.max(1, n);
+                })()""")
+            check("crossover graph painted", variance > 0)
+            backing = page.evaluate(
+                """(() => { const c = document.getElementById('effects-crossover-graph');
+                    const r = c.getBoundingClientRect();
+                    return { w: c.width, cssW: Math.round(r.width), dpr: window.devicePixelRatio || 1 }; })()""")
+            check(f"graph backing matches display ({backing})",
+                  abs(backing['w'] - backing['cssW'] * backing['dpr']) <= 2)
+            page.set_viewport_size({"width": 1000, "height": 900})
+            page.wait_for_timeout(600)
+            backing2 = page.evaluate(
+                """(() => { const c = document.getElementById('effects-crossover-graph');
+                    const r = c.getBoundingClientRect();
+                    return { w: c.width, cssW: Math.round(r.width), dpr: window.devicePixelRatio || 1 }; })()""")
+            check(f"graph follows viewport resize ({backing2})",
+                  abs(backing2['w'] - backing2['cssW'] * backing2['dpr']) <= 2)
+            page.set_viewport_size({"width": 1440, "height": 900})
+            page.wait_for_timeout(600)
+            check("group labels span full row",
+                  page.evaluate("getComputedStyle(document.querySelector('#effects-crossover-card .crossover-trio-group > .effects-subwoofer-group-label')).flexBasis") == "100%")
+            steppers = page.locator("#effects-crossover-card .crossover-control-groups .stepper-control")
+            check(f"crossover uses sub-style steppers ({steppers.count()} found)", steppers.count() == 4)
+            units = page.locator("#effects-crossover-card .crossover-control-groups .stepper-unit").all_text_contents()
+            check(f"stepper units ({units})", units == ['Hz', 'Hz', 'dB', 'ms'])
+            groups = page.locator("#effects-crossover-card .crossover-control-groups > div").all_text_contents()
+            check(f"three control groups ({len(groups)} found)", len(groups) == 3)
+            pol_cls = page.locator("#effects-crossover-polarity").get_attribute("class") or ""
+            check("polarity select shares sub-tile style", "effects-subwoofer-polarity-select" in pol_cls)
+            overflowing = page.evaluate(
+                """(() => {
+                    const card = document.getElementById('effects-crossover-card').getBoundingClientRect();
+                    return [...document.querySelectorAll('#effects-crossover-card .crossover-control-groups .url-input')]
+                        .filter((el) => el.getBoundingClientRect().width > 0)
+                        .filter(el => { const r = el.getBoundingClientRect();
+                            return r.left < card.left - 1 || r.right > card.right + 1; }).length;
+                })()""")
+            check(f"no control overflows the card ({overflowing} found)", overflowing == 0)
+            check("family select populated",
+                  page.locator("#effects-crossover-family-highpass option").count() >= 3)
+            check("slope select populated",
+                  page.locator("#effects-crossover-slope-highpass option").count() >= 2)
+            page.screenshot(path=str(shots / "os-crossover.png"))
+
+            # Switch the bank and the way tab; both must update without errors.
+            pick("#effects-bank-select", "mid")
+            page.wait_for_timeout(800)
+            check("bank selection follows pair", page.locator("#effects-bank-select").input_value() == 'mid')
+            check("measurement follows pair", page.evaluate("measurementAreaFromCatalog().label") == 'Mid L/R')
+            # A bank roundtrip must leave the A/B selects usable: the busy
+            # disable during the switch has to be lifted afterwards.
+            for target in ('all', 'global'):
+                pick("#effects-bank-select", target)
+                page.wait_for_timeout(900)
+            check("compare A/B usable after bank roundtrip",
+                  page.locator("#effects-bank-select").input_value() == 'global'
+                  and page.locator("#effects-compare-a").is_enabled()
+                  and page.locator("#effects-compare-b").is_enabled()
+                  and page.locator("#effects-compare-a option").count() > 1)
+            # Linked pairs share one tab per way (canonical left data role):
+            # the merged L/R tab activates like a single tab. Enabling Link
+            # hides the side-specific Trim (Level/Align/Polarity): only the
+            # shared crossover parameters stay visible.
+            page.evaluate(
+                """(() => {
+                    const link = document.getElementById('effects-crossover-link');
+                    if (link && !link.checked) {
+                        link.checked = true;
+                        link.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                })()""")
+            page.wait_for_timeout(500)
+            check("linked hides side-specific trim",
+                  not page.locator("#effects-crossover-trim-group").is_visible()
+                  and page.locator("#effects-crossover-frequency-highpass").is_visible())
+            page.locator("[data-crossover-way='left_high']").click()
+            page.wait_for_timeout(400)
+            check("merged way tab activates",
+                  page.locator("[data-crossover-way='left_high']").get_attribute("class")
+                  is not None
+                  and "is-active" in (page.locator("[data-crossover-way='left_high']").get_attribute("class") or ""))
+            check("linked pairs collapse to one tab per way",
+                  page.locator("[data-crossover-way='right_high']").count() == 0
+                  and "L/R" in (page.locator("[data-crossover-way='left_high']").inner_text() or ""))
+
+            # Starter values apply automatically to the first valid
+            # configuration: routing the six ways already seeded every
+            # filter, so no starter button exists anymore.
+            check("no starter button",
+                  page.locator("#effects-crossover-starter").count() == 0)
+            starter_state = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => JSON.stringify(j.modes[j.active_mode].processing.left_mid))""")
+            check(f"first valid config already carries starters ({starter_state})",
+                  '"frequency_hz":300' in starter_state and '"frequency_hz":2500' in starter_state)
+            summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"speaker header is compact ({summary})",
+                  summary.startswith("3-Way Stereo System"))
+            # Filter type offers Off; Link was enabled above for the merged
+            # tabs, so disable it again for the per-side filter edits below.
+            page.evaluate(
+                """(() => {
+                    const link = document.getElementById('effects-crossover-link');
+                    if (link && link.checked) {
+                        link.checked = false;
+                        link.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                })()""")
+            page.wait_for_timeout(500)
+            check("unlinked shows side-specific trim again",
+                  page.locator("#effects-crossover-trim-group").is_visible())
+            check("link L/R off after explicit unlink",
+                  not page.locator("#effects-crossover-link").is_checked())
+            families = page.locator("#effects-crossover-family-highpass option").all_text_contents()
+            check(f"type offers Off first ({families})",
+                  [t.strip() for t in families][:1] == ["Off"])
+            sub_header = page.locator("#effects-subwoofer-routing").inner_text()
+            check(f"sub header is compact ({sub_header})",
+                  "Out 1" not in sub_header and "Hz" in sub_header)
+
+            # Clearing one filter leaves it cleared: partial edits are manual
+            # and never refilled.
+            page.evaluate(
+                "applyOutputSystemMutation('set_processing',"
+                " { mode: 'stereo-sub', role: 'left_mid', lowpass: null }, false, { quiet: true })")
+            page.wait_for_timeout(1200)
+            cleared = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => JSON.stringify(j.modes[j.active_mode].processing.left_mid.lowpass))""")
+            check(f"cleared filter stays cleared ({cleared})",
+                  cleared == "null")
+
+            # Editing a way control persists to the backend state.
+            page.evaluate(
+                """(() => {
+                    const slope = document.getElementById('effects-crossover-slope-highpass');
+                    slope.value = '48';
+                    slope.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            slope_back = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => {
+                        const active = document.querySelector('.crossover-tab.is-active')
+                            ?.dataset.crossoverWay || 'left_low';
+                        const entry = j.modes[j.active_mode].processing[active];
+                        return JSON.stringify((entry.highpass || entry.lowpass || {}).slope_db_oct);
+                    })""")
+            check(f"way slope edit persists ({slope_back})", slope_back == "48")
+
+            # High-pass and low-pass keep independent type/slope per filter.
+            page.locator("[data-crossover-way='left_mid']").click()
+            page.wait_for_timeout(400)
+            # Off is a valid operating state: it is named in the header and the
+            # way keeps its real (here: unrealized) band instead of the plan
+            # refusing to compile.
+            off_summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"cleared direction is named in the header ({off_summary})",
+                  off_summary.endswith("Low-pass off"))
+            # Off hides only its own Frequency/Slope rows; the other
+            # direction stays independently usable.
+            check("Off low-pass hides its frequency/slope rows",
+                  not page.locator("#effects-crossover-frequency-lowpass-group").is_visible()
+                  and not page.locator("#effects-crossover-slope-lowpass-group").is_visible()
+                  and page.locator("#effects-crossover-frequency-highpass-group").is_visible()
+                  and page.locator("#effects-crossover-slope-highpass-group").is_visible()
+                  and page.locator("#effects-crossover-family-lowpass").is_visible())
+            off_way = page.evaluate(
+                """fetch('/api/audio/output-state/crossover-response')
+                    .then(r => r.json())
+                    .then(j => JSON.stringify({ complete: j.ways.left_mid.complete,
+                        points: (j.ways.left_mid.points || []).length }))""")
+            check(f"cleared way stays evaluated ({off_way})",
+                  '"complete":false' in off_way.replace(" ", "") and
+                  int(off_way.split('"points":')[1].rstrip("}")) > 100)
+            page.evaluate(
+                """(() => {
+                    const hi = document.getElementById('effects-crossover-slope-highpass');
+                    hi.value = '48'; hi.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            # The cleared low-pass is Off, so its Frequency/Slope controls are
+            # disabled: picking a type is what re-enables it, and the starter
+            # frequency fills the still empty cutoff. Only then the slope is
+            # edited, proving the two filters keep independent settings.
+            page.evaluate(
+                """(() => {
+                    const fam = document.getElementById('effects-crossover-family-lowpass');
+                    fam.value = 'linkwitz-riley'; fam.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            rebuilt = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => JSON.stringify(j.modes[j.active_mode].processing.left_mid.lowpass))""")
+            check(f"type pick re-enables the cleared low-pass ({rebuilt})",
+                  '"frequency_hz":2500' in rebuilt)
+            page.evaluate(
+                """(() => {
+                    const lo = document.getElementById('effects-crossover-slope-lowpass');
+                    lo.value = '12'; lo.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            both_back = page.evaluate(
+                """fetch('/api/audio/output-state').then(r => r.json())
+                    .then(j => JSON.stringify([
+                        j.modes[j.active_mode].processing.left_mid.highpass.slope_db_oct,
+                        j.modes[j.active_mode].processing.left_mid.lowpass.slope_db_oct,
+                    ]))""")
+            check(f"per-filter slopes persist independently ({both_back})", both_back == "[48,12]")
+            check("re-enabled low-pass shows its frequency/slope rows again",
+                  page.locator("#effects-crossover-frequency-lowpass-group").is_visible()
+                  and page.locator("#effects-crossover-slope-lowpass-group").is_visible())
+
+            # Both Off leave the way unfiltered (flat): header names both
+            # directions and the response still evaluates a flat curve.
+            page.evaluate(
+                "applyOutputSystemMutation('set_processing',"
+                " { mode: 'stereo-sub', role: 'left_mid', highpass: null, lowpass: null }, false, { quiet: true })")
+            page.wait_for_timeout(1200)
+            flat_summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"both Off leave the way flat ({flat_summary})",
+                  "High-pass off" in flat_summary and "Low-pass off" in flat_summary)
+            check("both Off hide both frequency/slope rows, Type stays",
+                  not page.locator("#effects-crossover-frequency-highpass-group").is_visible()
+                  and not page.locator("#effects-crossover-slope-highpass-group").is_visible()
+                  and not page.locator("#effects-crossover-frequency-lowpass-group").is_visible()
+                  and not page.locator("#effects-crossover-slope-lowpass-group").is_visible()
+                  and page.locator("#effects-crossover-family-highpass").is_visible()
+                  and page.locator("#effects-crossover-family-lowpass").is_visible())
+            flat_way = page.evaluate(
+                """fetch('/api/audio/output-state/crossover-response')
+                    .then(r => r.json())
+                    .then(j => JSON.stringify({ complete: j.ways.left_mid.complete,
+                        points: (j.ways.left_mid.points || []).length }))""")
+            check(f"flat way stays evaluated ({flat_way})",
+                  '"complete":false' in flat_way.replace(" ", "") and
+                  int(flat_way.split('"points":')[1].rstrip("}")) > 100)
+            # Restore the mid band so later sections keep a filtered way.
+            page.evaluate(
+                """(() => {
+                    const hi = document.getElementById('effects-crossover-family-highpass');
+                    hi.value = 'linkwitz-riley'; hi.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            page.evaluate(
+                """(() => {
+                    const fam = document.getElementById('effects-crossover-family-lowpass');
+                    fam.value = 'linkwitz-riley'; fam.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+
+            # Cutoff changes must not move the layout: card width is identical
+            # for a 3-digit and a 5-digit frequency.
+            card_width = lambda: page.locator("#effects-crossover-card").bounding_box()["width"]
+            width_before = card_width()
+            page.evaluate(
+                """(() => {
+                    const input = document.getElementById('effects-crossover-frequency-lowpass');
+                    input.value = '200'; input.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            page.evaluate(
+                """(() => {
+                    const input = document.getElementById('effects-crossover-frequency-lowpass');
+                    input.value = '2000'; input.dispatchEvent(new Event('change', { bubbles: true }));
+                })()""")
+            page.wait_for_timeout(1500)
+            width_after = card_width()
+            check(f"card width stable across cutoff change ({width_before} vs {width_after})",
+                  width_before == width_after)
+
+            # Existing sub tile edits the same role processing in v2.
+            check("stereo sub labels", page.locator('.effects-card-subwoofer').is_visible())
+            page.evaluate("""() => {
+                const input = document.getElementById('effects-subwoofer-level');
+                input.value = '-6'; input.dispatchEvent(new Event('change', {bubbles: true}));
+            }""")
+            page.wait_for_timeout(1300)
+            level = page.evaluate("fetch('/api/audio/output-state').then(r => r.json()).then(j => j.modes[j.active_mode].processing.sub_l.level_db)")
+            check("sub tile saves routed Sub L", level == -6)
+
+            # An unlinked stereo sub pair gives every way its own side of the
+            # bass high-pass: the header must show the active way's side.
+            page.evaluate("""(async () => {
+                const j = await fetch('/api/audio/output-state').then(r => r.json());
+                const mode = j.active_mode;
+                const processing = {};
+                for (const role of ['sub_l', 'sub_r']) {
+                    const s = j.modes[mode].processing[role];
+                    processing[role] = { level_db: s.level_db, alignment_ms: s.alignment_ms,
+                                         polarity: s.polarity };
+                }
+                return applyOutputSystemMutation('set_subwoofers', {
+                    mode, frequency_hz: 80, main_highpass_enabled: true,
+                    family: 'linkwitz-riley', slope_db_oct: 24, sub_link: false,
+                    sub_filters: { left: { family: 'butterworth', slope_db_oct: 12, frequency_hz: 60 },
+                                   right: { family: 'linkwitz-riley', slope_db_oct: 48, frequency_hz: 120 } },
+                    processing,
+                }, false, { quiet: true });
+            })()""")
+            page.wait_for_timeout(1300)
+            page.locator("[data-crossover-way='left_low']").click()
+            page.wait_for_timeout(500)
+            left_summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"left way shows its own sub HPF ({left_summary})", left_summary.endswith("Sub HPF 60 Hz"))
+            # Unlinking the crossover splits the merged pair tabs again, so
+            # the right side becomes directly selectable.
+            page.evaluate(
+                """(() => {
+                    const link = document.getElementById('effects-crossover-link');
+                    if (link && link.checked) {
+                        link.checked = false;
+                        link.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                })()""")
+            page.wait_for_timeout(500)
+            check("unlink splits the pair tabs",
+                  page.locator("[data-crossover-way='right_low']").count() == 1)
+            page.locator("[data-crossover-way='right_low']").click()
+            page.wait_for_timeout(500)
+            right_summary = page.locator("#effects-crossover-summary").inner_text()
+            check(f"right way shows its own sub HPF ({right_summary})", right_summary.endswith("Sub HPF 120 Hz"))
+
+            page.evaluate("toggleSettingsPanel(true)")
+            pick('#settings-crossover-select', 'off')
+            page.wait_for_timeout(700)
+            check("crossover Off removes way options", 'Low L' not in page.locator('#settings-routing-out-1 option').all_text_contents())
+            pick('#settings-output-mode-select', 'stereo')
+            page.wait_for_timeout(700)
+            check("Stereo uses only stereo roles", page.locator('#settings-routing-out-1 option').all_text_contents() == ['Off', 'Main L', 'Main R'])
+            page.set_viewport_size({'width': 390, 'height': 844})
+            page.screenshot(path=str(shots / 'output-mobile.png'))
+
+            browser.close()
+    finally:
+        server.terminate()
+    relevant = [p for p in problems if "output" in p.lower() or "crossover" in p.lower()
+                or "bank" in p.lower() or "pageerror" in p.lower()]
+    for problem in problems:
+        print("console:", problem[:220])
+    if relevant:
+        print(f"FAILED: {len(relevant)} relevant page/console errors")
+        return 1
+    if failures:
+        print(f"FAILED: {len(failures)} checks")
+        return 1
+    print("output-system UI browser check: ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

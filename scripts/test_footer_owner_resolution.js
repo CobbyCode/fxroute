@@ -17,7 +17,9 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const coreSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_core.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 
 function extractFunction(source, name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -57,10 +59,10 @@ function extractFunction(source, name) {
 // --- structural guards ---------------------------------------------------------
 // Live qobuz truth must participate in the shared ownership resolution ...
 assert.ok(
-    /function\s+qobuzPlayingOwnsFooter\s*\(/.test(src),
-    'app.js must define qobuzPlayingOwnsFooter (live-qobuz ownership branch)',
+    /function\s+qobuzPlayingOwnsFooter\s*\(/.test(coreSource),
+    'playback_core.js must define qobuzPlayingOwnsFooter (live-qobuz ownership branch)',
 );
-const reconcileSrc = extractFunction(src, 'reconcileFooterSource');
+const reconcileSrc = extractFunction(coreSource, 'reconcileFooterSource');
 assert.ok(
     reconcileSrc.includes('qobuzPlayingOwnsFooter'),
     'reconcileFooterSource must consult live qobuz state',
@@ -69,7 +71,7 @@ assert.ok(
 // streaming footer renderer stays provider-identity free. (Sliced by
 // top-level function boundaries: the brace scanner cannot see regex
 // literals inside the renderer body.)
-const appLines = src.split('\n');
+const appLines = uiSource.split('\n');
 const rendererStart = appLines.findIndex((l) => l.startsWith('function updateFooterForStreamingOwner('));
 assert.ok(rendererStart >= 0, 'missing updateFooterForStreamingOwner');
 let rendererEnd = appLines.findIndex((l, i) => i > rendererStart && l.startsWith('function '));
@@ -82,7 +84,6 @@ const FNAMES = [
     'getBackendFooterOwner',
     'getEffectivePlaybackControlSource',
     'setFooterSource',
-    'nonAppSourceModeActive',
     'spotifyPlayingOwnsFooter',
     'spotifyPausedHasFooterContext',
     'qobuzPlayingOwnsFooter',
@@ -94,7 +95,9 @@ const FNAMES = [
     'reconcileFooterSource',
     'syncFooterOwnershipFromPlayback',
 ];
-const fns = FNAMES.map((n) => extractFunction(src, n)).join('\n');
+// nonAppSourceModeActive stays in app.js (source-mode area); the core reads
+// it through deps, so the sandbox provides the app-playback stub directly.
+const fns = FNAMES.map((n) => extractFunction(coreSource, n)).join('\n');
 
 function runCase({ ownerCache, spotify, qobuz, playback, entry }) {
     const sandbox = {
@@ -124,6 +127,14 @@ function runCase({ ownerCache, spotify, qobuz, playback, entry }) {
         stopPlaybackPositionPoll: () => {},
         startSpotifyPoll: () => {},
         shouldPollSpotify: () => false,
+        // Module deps: state/window-backed getters plus the app-owned
+        // callbacks the extracted ownership functions reach through deps.
+        deps: {
+            getState: () => sandbox.state,
+            nonAppSourceModeActive: () => false,
+            stopSpotifyPoll: () => {},
+            bumpSpotifyPollGeneration: () => {},
+        },
         console,
     };
     sandbox.globalThis = sandbox;

@@ -73,11 +73,13 @@ assert.ok(!js.includes('.streaming-quality'),
 assert.ok(!js.includes('formatQuality'),
     'streaming module must not own a quality formatter');
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
-assert.ok(appJs.includes('function formatStreamingMetaLine('),
-    'app.js must host the shared streaming footer meta renderer');
-assert.ok(appJs.includes("formatStreamingMetaLine(data)"),
+const playbackUiJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'playback_ui.js'), 'utf8');
+const libraryJs = fs.readFileSync(path.join(__dirname, '..', 'static', 'library_ui.js'), 'utf8');
+assert.ok(playbackUiJs.includes('function formatStreamingMetaLine('),
+    'playback_ui.js must host the shared streaming footer meta renderer');
+assert.ok(playbackUiJs.includes("formatStreamingMetaLine(data)"),
     'streaming footer must render through the shared meta-tag renderer');
-assert.ok(!appJs.includes('renderStreamingFooterMeta'),
+assert.ok(!playbackUiJs.includes('renderStreamingFooterMeta'),
     'no UI-side remember-last-string caching of the footer meta tag');
 
 // --- queue continuation line is data-driven ----------------------------------
@@ -484,18 +486,18 @@ assert.ok(browseRender.includes('applyCatalogStatusLine'),
     'navigating into/out of detail views must sync the status line immediately');
 
 // --- one shared detail track row for library and Tidal ----------------------
-// The shared row builder lives in app.js and is handed to streaming.js via
-// the init api, so both render the same index/play/title/sub/fav/duration row.
-assert.ok(appJs.includes('function detailTrackRowHtml('),
-    'app.js must host the shared detail track-row builder');
-assert.ok(appJs.includes('trackRowHtml: detailTrackRowHtml'),
+// The shared row builder lives in library_ui.js and is handed to streaming.js
+// via the init api, so both render the same index/play/title/sub/fav/duration row.
+assert.ok(libraryJs.includes('function detailTrackRowHtml('),
+    'library_ui.js must host the shared detail track-row builder');
+assert.ok(appJs.includes('trackRowHtml: LibraryUI.detailTrackRowHtml'),
     'app.js must pass the shared row builder to streaming.js');
 assert.ok(js.includes('trackRowHtml({'), 'streaming.js must render detail rows via the shared builder');
 assert.ok(js.includes("favoriteButtonHtml('tracks', item.id, 'track-fav')"),
     'Tidal detail rows must use the shared track-fav favorite class');
 // Library album detail rows: track number, round play button, artist-only sub
 // line in album context, shared favorite class.
-const albumTracksRender = extractFunction(appJs, 'renderAlbumDetailTracks');
+const albumTracksRender = extractFunction(libraryJs, 'renderAlbumDetailTracks');
 assert.ok(albumTracksRender.includes('detailTrackRowHtml({'),
     'library album rows must render via the shared row builder');
 assert.ok(albumTracksRender.includes('index: index + 1'),

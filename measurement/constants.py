@@ -109,6 +109,18 @@ SWEEP_TIMING_ANCHOR_LAYOUT = (
     ("end-body", 0.82),
     ("end-inner", 0.94),
 )
+SWEEP_TIMING_START_REGION_ANCHORS = {"start-inner", "start-body", "mid-low"}
+SWEEP_TIMING_END_REGION_ANCHORS = {"mid-high", "end-body", "end-inner"}
+# A sweep register counts as reproduced by a capture when its anchor both
+# correlates with the sweep template and carries sweep level.  A register a way
+# deliberately does not play leaves only noise there (measured: absent
+# registers score ~0.0), and a register attenuated far below the rest of the
+# take is not part of the played band either even when the remaining residue is
+# still coherent.  Band-limited way captures therefore judge their start/end
+# alignment on the registers they actually play.
+SWEEP_TIMING_BAND_PRESENT_MIN_SCORE = 0.5
+SWEEP_TIMING_BAND_PRESENT_RELATIVE_DB = -40.0
+SWEEP_TIMING_BAND_REGION_ANCHORS = 2
 
 # Analyzer impulse-response windowing thresholds.
 IR_WINDOW_PRE_SECONDS = 0.004

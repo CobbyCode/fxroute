@@ -61,12 +61,12 @@ window.fetch = (url, opts) => {{
 
 def _run():
     html = (ROOT / "static" / "index.html").read_text()
-    app_js = (ROOT / "static" / "app.js").read_text()
+    library_js = (ROOT / "static" / "library_ui.js").read_text()
     css = (ROOT / "static" / "style.css").read_text()
     assert 'id="library-folder-path"' in html, "Library folder path markup is missing"
-    render_path_start = app_js.index("function renderLibraryFolderPath()")
-    render_path_end = app_js.index("function formatLibraryScanStatus()", render_path_start)
-    render_path = app_js[render_path_start:render_path_end]
+    render_path_start = library_js.index("function renderLibraryFolderPath()")
+    render_path_end = library_js.index("function formatLibraryScanStatus()", render_path_start)
+    render_path = library_js[render_path_start:render_path_end]
     assert "library-folder-back" in render_path, "Folder renderer has no Back button"
     assert "slice(0, -1).join('/')" in render_path, "Back must remove exactly one folder level"
     assert ".library-folder-back" in css, "Folder Back button has no scoped style"
