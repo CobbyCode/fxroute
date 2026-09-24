@@ -301,13 +301,17 @@ class RenderedMainHighpassTests(unittest.TestCase):
     ROLES = ("right_low", "right_high")
     LOW_BEHIND_HIGH_MS = 0.354
 
-    def take(self):
+    def take(self, low_behind_high_ms=None, *, woofer_hz=100.0, woofer_q=0.7):
+        if low_behind_high_ms is None:
+            low_behind_high_ms = self.LOW_BEHIND_HIGH_MS
         frequencies = np.fft.rfftfreq(TAKE_SAMPLES, 1.0 / RATE)
-        woofer = np.divide((1j * frequencies / 100.0) ** 2,
-                           (1j * frequencies / 100.0) ** 2 + 1j * frequencies / (100.0 * 0.7) + 1.0)
+        woofer = 1.0
+        if woofer_hz is not None:
+            corner = 1j * frequencies / woofer_hz
+            woofer = corner ** 2 / (corner ** 2 + corner / woofer_q + 1.0)
         spectrum = np.zeros_like(frequencies, dtype=complex)
         for role, arrival_ms, gain_db, driver in (
-                ("right_low", self.LOW_BEHIND_HIGH_MS, 0.0, woofer),
+                ("right_low", low_behind_high_ms, 0.0, woofer),
                 ("right_high", 0.0, 11.0, 1.0)):
             delay = ORIGIN_SAMPLES + int(round(arrival_ms * RATE / 1000.0))
             spectrum += (10.0 ** (gain_db / 20.0) * driver * way_response(self.RENDERED, role)
@@ -335,6 +339,73 @@ class RenderedMainHighpassTests(unittest.TestCase):
     def test_rendered_list_wins_over_the_ways_own_filters(self):
         both = {role: {**self.OWN_FILTERS_ONLY[role], **self.RENDERED[role]} for role in self.ROLES}
         self.assertEqual(self.confirm(both)["arrival_ms"], self.confirm(self.RENDERED)["arrival_ms"])
+
+    def test_an_arrival_inside_the_leading_flank_is_the_same_lobe(self):
+        """The woofer's roll-off stretches the low band's leading flank.
+
+        With the tweeter 20 samples ahead, the tweeter's index lies past the
+        low lobe's trailing extent but inside its leading one: the low band's
+        energy there is its own lobe, not a leak, so it reports no margin
+        instead of a failing one.
+        """
+        document = confirm_take(self.take(0.526, woofer_hz=200.0, woofer_q=1.2),
+                                processing=self.RENDERED, roles=self.ROLES)
+        low = document["bands"]["right_low"]
+        ahead = low["arrival_index"] - document["bands"]["right_high"]["arrival_index"]
+        self.assertGreater(low["lead_samples"], low["lobe_samples"])
+        self.assertGreater(ahead, low["lobe_samples"])
+        self.assertLessEqual(ahead, low["lead_samples"])
+        band = way_band_impulse_response(
+            self.take(0.526, woofer_hz=200.0, woofer_q=1.2), self.RENDERED["right_low"],
+            sample_rate_hz=RATE, foreign=[self.RENDERED["right_high"]])
+        energy = np.square(band)
+        own_flank_db = 10.0 * math.log10(energy[low["arrival_index"]] / energy[low["arrival_index"] - ahead])
+        self.assertLess(own_flank_db, MIN_WAY_ISOLATION_DB)
+        self.assertIsNone(document["way_isolation_db"]["right_low"])
+
+    def test_an_arrival_past_the_leading_flank_is_judged(self):
+        document = confirm_take(self.take(0.610, woofer_hz=200.0, woofer_q=1.2),
+                                processing=self.RENDERED, roles=self.ROLES)
+        low = document["bands"]["right_low"]
+        ahead = low["arrival_index"] - document["bands"]["right_high"]["arrival_index"]
+        self.assertGreater(ahead, low["lead_samples"])
+        self.assertGreaterEqual(document["way_isolation_db"]["right_low"], MIN_WAY_ISOLATION_DB)
+
+    def test_band_levels_read_the_way_level_through_the_rendered_crossover(self):
+        # The band filter leaves |H|^3 and the owned share on each way; the
+        # level removes that weighting, so a 1 kHz / 3 kHz crossover reads the
+        # 11 dB the ways really differ by, not the band shapes' difference.
+        document = confirm_take(self.take(woofer_hz=None), processing=self.RENDERED, roles=self.ROLES)
+        self.assertAlmostEqual(document["way_levels_db"]["right_low"], -11.0, delta=0.15)
+
+    MICROPHONE = {"frequencies_hz": [20.0, 1000.0, 3000.0, 20000.0],
+                  "offsets_db": [0.0, 0.0, 1.0, 3.0]}
+
+    def through_microphone(self, take):
+        frequencies = np.fft.rfftfreq(TAKE_SAMPLES, 1.0 / RATE)
+        offsets = np.interp(np.log(np.clip(frequencies, 1e-9, None)),
+                            np.log(self.MICROPHONE["frequencies_hz"]), self.MICROPHONE["offsets_db"],
+                            left=0.0, right=3.0)
+        return np.fft.irfft(np.fft.rfft(take) * 10.0 ** (offsets / 20.0), n=TAKE_SAMPLES)
+
+    def test_band_levels_are_read_through_the_microphone_calibration(self):
+        """The per-way levels the gain is planned from are calibrated; so is this one."""
+        take = self.through_microphone(self.take(woofer_hz=None))
+        calibrated = confirm_take(take, processing=self.RENDERED, roles=self.ROLES,
+                                  calibration_curve=self.MICROPHONE)
+        raw = confirm_take(take, processing=self.RENDERED, roles=self.ROLES)
+        self.assertAlmostEqual(calibrated["way_levels_db"]["right_low"], -11.0, delta=0.15)
+        # Uncalibrated, the microphone's own treble rise reads as tweeter level.
+        self.assertLess(raw["way_levels_db"]["right_low"], -13.0)
+
+    def test_malformed_calibration_curve_is_rejected(self):
+        for curve in ({"frequencies_hz": [1000.0], "offsets_db": [0.0]},
+                      {"frequencies_hz": [1000.0, 20.0], "offsets_db": [0.0, 1.0]},
+                      {"frequencies_hz": [20.0, 1000.0], "offsets_db": [0.0]},
+                      [[20.0, 0.0], [1000.0, 0.0]]):
+            with self.subTest(curve=curve), self.assertRaises(ValueError):
+                confirm_take(self.take(), processing=self.RENDERED, roles=self.ROLES,
+                             calibration_curve=curve)
 
     def test_malformed_rendered_list_is_rejected(self):
         for crossover in ({"kind": "lowpass"}, [{"family": "linkwitz-riley"}], ["lowpass"]):
@@ -392,6 +463,16 @@ class ArrivalEstimatorTests(unittest.TestCase):
         for index in range(1000, 1058):
             values[index] = 0.9 + 0.1 * (index - 1000) / 57.0
         self.assertEqual(band_arrival(values, sample_rate_hz=RATE)["arrival_index"], 1057)
+
+    def test_lobe_extent_is_reported_on_both_sides(self):
+        values = np.zeros(8192)
+        values[980:1000] = np.linspace(0.4, 0.9, 20)
+        values[1000] = 1.0
+        values[1001:1006] = 0.9
+        arrival = band_arrival(values, sample_rate_hz=RATE)
+        self.assertEqual(arrival["arrival_index"], 1000)
+        self.assertEqual(arrival["lead_samples"], 21)
+        self.assertEqual(arrival["lobe_samples"], 6)
 
     def test_a_leading_lobe_outside_the_lobe_window_keeps_the_peak(self):
         reach = int(ARRIVAL_LOBE_MAX_MS * RATE / 1000.0)

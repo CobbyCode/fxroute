@@ -12,6 +12,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from scripts.test_speaker_align import alignment_for, captures_for, planning_for, state_for
 from measurement.speaker_apply import verify_confirmation
 
@@ -133,10 +135,9 @@ class GainVerificationTests(unittest.TestCase):
         self.assertEqual(check["warnings"], [])
 
     def test_gain_spread_does_not_veto_the_timing_verdict(self):
-        # A shared take measures both ways inside one take, while the planning
-        # levels are calibrated per take: their reference moves by more than
-        # 10 dB between takes, so an unexpected spread is reported next to the
-        # verdict instead of failing a take whose timing did measure aligned.
+        # The check reads its levels from another take than the plan did, so
+        # an unexpected spread is reported next to the verdict instead of
+        # failing a take whose timing did measure aligned.
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
         baseline = alignment.propose(
@@ -162,6 +163,50 @@ class GainVerificationTests(unittest.TestCase):
         check = verify_confirmation(baseline, confirmation)
         self.assertFalse(check["confirmed"])
         self.assertIn("residual", check["reasons"][0])
+
+
+class GainLandsTests(unittest.TestCase):
+    """The post-apply level check compares the quantity the gain was planned from.
+
+    Planned gains come from calibrated per-way levels; the verification take is
+    read through the same microphone calibration and without its band
+    weighting, so a correction that landed reads as landed.
+    """
+
+    MICROPHONE = {"frequencies_hz": [20.0, 1000.0, 3000.0, 20000.0],
+                  "offsets_db": [0.0, 0.0, 1.0, 3.0]}
+
+    def verification(self, alignment, levels_db, *, calibrated):
+        import speaker_take_test_support as takes
+        frequencies = np.fft.rfftfreq(takes.TAKE_SAMPLES, 1.0 / takes.RATE)
+        roles = alignment.verification_request()["roles"]
+        take = takes.shared_take({role: 5.0 for role in roles}, processing=alignment.way_models(),
+                                 roles=roles, gains_db=levels_db)
+        offsets = np.interp(np.log(np.clip(frequencies, 1e-9, None)),
+                            np.log(self.MICROPHONE["frequencies_hz"]), self.MICROPHONE["offsets_db"],
+                            left=0.0, right=3.0)
+        heard = np.fft.irfft(np.fft.rfft(take) * 10.0 ** (offsets / 20.0), n=takes.TAKE_SAMPLES)
+        document = takes.take_document(alignment, alignment.verification_request(), heard)
+        document["calibration_curve"] = self.MICROPHONE if calibrated else None
+        return alignment.confirmation(document)
+
+    def test_a_landed_gain_correction_reads_as_landed(self):
+        state, channels = state_for()
+        alignment, live = alignment_for(state, channels)
+        proposal = alignment.propose(
+            with_levels(alignment, captures_for(alignment), (-12.0, -8.0)),
+            planning=planning_for(alignment), live_target=live)
+        self.assertEqual(proposal["added_gain_db"], {"left_low": 2.0, "left_high": -2.0})
+        # The drivers after the apply: both ways at the median level.
+        landed = {"left_low": -12.0 + 2.0, "left_high": -8.0 - 2.0}
+        check = verify_confirmation(proposal, self.verification(alignment, landed, calibrated=True))
+        self.assertTrue(check["confirmed"])
+        self.assertLess(check["gain_spread_db"], 0.5)
+        self.assertEqual(check["warnings"], [])
+        # Read without the calibration, the microphone's treble rise would be
+        # reported as a correction that did not land.
+        raw = verify_confirmation(proposal, self.verification(alignment, landed, calibrated=False))
+        self.assertGreater(raw["gain_spread_db"], 2.0)
 
 
 if __name__ == "__main__":

@@ -155,6 +155,7 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
             return result
 
         self.store._host_capture_runner.execute = execute
+        self.base_execute = execute
 
     @staticmethod
     def record_channel_count(command):
@@ -593,6 +594,76 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.store._jobs), 1)
         job_id = next(iter(self.store._jobs))
         self.assertTrue(self.store._job_tasks[job_id].done())
+
+    def activate_calibration(self, name, high_offset_db):
+        text = f"20 0.0\n1000 0.0\n20000 {high_offset_db}\n".encode()
+        return self.store._file_store.resolve_calibration_meta(
+            calibration_filename=name, calibration_bytes=text)
+
+    async def test_side_take_carries_the_applied_microphone_calibration(self):
+        meta = self.activate_calibration("mic.txt", 3.0)
+        seen = []
+        planning = self.alignment.planning
+        self.alignment.planning = lambda take: (seen.append(take), planning(take))[1]
+        result = await self.acquire()
+        curve = seen[0]["calibration_curve"]
+        self.assertEqual(curve["frequencies_hz"], [20.0, 1000.0, 20000.0])
+        self.assertEqual(curve["offsets_db"], [0.0, 0.0, 3.0])
+        self.assertEqual(result["provenance"]["microphone_calibration"], meta["path"])
+
+    async def test_side_take_without_calibration_carries_none(self):
+        seen = []
+        planning = self.alignment.planning
+        self.alignment.planning = lambda take: (seen.append(take), planning(take))[1]
+        result = await self.acquire()
+        self.assertIsNone(seen[0]["calibration_curve"])
+        self.assertEqual(result["provenance"]["microphone_calibration"], "")
+
+    async def test_changed_microphone_calibration_between_takes_fails(self):
+        self.activate_calibration("first.txt", 3.0)
+        calls = {"n": 0}
+
+        def switch(analysis):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                self.activate_calibration("second.txt", 1.0)
+
+        self.after_attempt = switch
+        with self.assertRaisesRegex(RuntimeError, "microphone_calibration"):
+            await self.acquire()
+        self.assertEqual(self.captures_started, 2)
+
+    def boost_on_capture(self, index):
+        calls = {"n": 0}
+        base_execute = self.store._host_capture_runner.execute
+
+        def boosted(**kwargs):
+            calls["n"] += 1
+            analysis, capture, playback = base_execute(**kwargs)
+            if calls["n"] == index:
+                capture = dict(capture)
+                capture["mic_auto_boosted"] = True
+            return analysis, capture, playback
+
+        self.store._host_capture_runner.execute = boosted
+
+    async def test_raised_microphone_gain_after_the_first_way_fails(self):
+        # Planning take, first way, then the second way raises the gain: the
+        # first way was captured quieter, so the way levels cannot compare.
+        self.boost_on_capture(3)
+        with self.assertRaisesRegex(RuntimeError, "microphone input volume was raised"):
+            await self.acquire()
+
+    async def test_raised_microphone_gain_before_the_way_levels_is_accepted(self):
+        # A raise during the planning take or the first way reaches every
+        # later way take as well: all way levels share one input gain.
+        for index in (1, 2):
+            with self.subTest(capture=index):
+                self.captures_started = 0
+                self.store._host_capture_runner.execute = self.base_execute
+                self.boost_on_capture(index)
+                result = await self.acquire()
+                self.assertEqual(len(result["captures"]), 2)
 
     async def test_missing_observed_field_fails_closed(self):
         base_execute = self.store._host_capture_runner.execute

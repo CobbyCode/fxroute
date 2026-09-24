@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import copy
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
@@ -58,6 +58,8 @@ __all__ = [
     "MIN_WAY_ISOLATION_DB",
     "band_arrival",
     "band_level",
+    "band_response_db",
+    "calibration_offsets_db",
     "side_confirmation",
     "way_band_impulse_response",
 ]
@@ -172,6 +174,22 @@ def way_band_impulse_response(
         raise ValueError("Speaker verification take IR must be finite, non-silent and full resolution")
     if type(sample_rate_hz) is not int or sample_rate_hz <= 0:
         raise ValueError("Speaker verification sample rate must be a positive integer")
+    # Linear convolution of two full-length responses: the isolated band stays
+    # on the same sample origin as the take's IR.
+    size = 1 << (2 * ir.size - 1).bit_length()
+    spectrum = np.fft.rfft(ir, n=size)
+    frequencies = np.fft.rfftfreq(size, 1.0 / sample_rate_hz)
+    weight, _ = _isolation_weight(processing, frequencies, sample_rate_hz=sample_rate_hz,
+                                  isolation_power=isolation_power, foreign=foreign)
+    isolated = np.fft.irfft(spectrum * weight, n=size)
+    return np.array(isolated[: ir.size], dtype=np.float64)
+
+
+def _isolation_weight(processing: object, frequencies: np.ndarray | None, *, sample_rate_hz: int,
+                      isolation_power: float, foreign: Sequence[object]) -> tuple[np.ndarray, np.ndarray]:
+    """The band filter of one way and the way's own rendered response."""
+    if type(sample_rate_hz) is not int or sample_rate_hz <= 0:
+        raise ValueError("Speaker verification sample rate must be a positive integer")
     power = _finite(isolation_power, "isolation power")
     if not 1.0 <= power <= 6.0:
         raise ValueError("Speaker verification isolation power must be between 1 and 6")
@@ -179,11 +197,6 @@ def way_band_impulse_response(
     if isinstance(foreign, (dict, str)) or not isinstance(foreign, Sequence):
         raise ValueError("Speaker verification foreign ways must be a sequence of ways")
     foreign_sections = [_crossover_sections(way, sample_rate_hz) for way in foreign]
-    # Linear convolution of two full-length responses: the isolated band stays
-    # on the same sample origin as the take's IR.
-    size = 1 << (2 * ir.size - 1).bit_length()
-    spectrum = np.fft.rfft(ir, n=size)
-    frequencies = np.fft.rfftfreq(size, 1.0 / sample_rate_hz)
     response = _sections_response(sections, frequencies, sample_rate_hz)
     magnitude = np.abs(response)
     weight = np.conj(response) * magnitude ** (power - 1.0)
@@ -193,8 +206,49 @@ def way_band_impulse_response(
             foreign_power = foreign_power + np.square(
                 np.abs(_sections_response(sections_other, frequencies, sample_rate_hz)))
         weight = weight * _own_share(np.square(magnitude), foreign_power)
-    isolated = np.fft.irfft(spectrum * weight, n=size)
-    return np.array(isolated[: ir.size], dtype=np.float64)
+    return weight, response
+
+
+def band_response_db(
+    processing: object,
+    frequencies: object,
+    *,
+    sample_rate_hz: int,
+    isolation_power: float = ISOLATION_POWER,
+    foreign: Sequence[object] = (),
+) -> np.ndarray:
+    """Magnitude, in dB, the rendering plus band isolation leave on a way's own sound.
+
+    The take carries the way through its rendered crossover and the band filter
+    applies the matched, share-weighted copy of it, so the way's own
+    contribution reaches the isolated band scaled by ``|H * W|``. Subtracting
+    this from the band level leaves the way's driver level, the quantity the
+    per-way level estimate measures after its crossover correction.
+    """
+    grid = np.asarray(frequencies, dtype=np.float64)
+    weight, response = _isolation_weight(processing, grid, sample_rate_hz=sample_rate_hz,
+                                         isolation_power=isolation_power, foreign=foreign)
+    return 20.0 * np.log10(np.maximum(np.abs(weight * response), 1e-12))
+
+
+def calibration_offsets_db(calibration_curve: object, frequencies: object) -> np.ndarray:
+    """Microphone calibration offsets at ``frequencies``, as the analyzer applies them.
+
+    ``calibration_curve`` is the capture evidence's ``{"frequencies_hz",
+    "offsets_db"}``; the offsets interpolate in log frequency and hold their end
+    values outside the curve, exactly like the calibrated response points.
+    """
+    if not isinstance(calibration_curve, dict):
+        raise ValueError("Speaker verification calibration curve must be an object")
+    curve_hz = np.asarray(calibration_curve.get("frequencies_hz"), dtype=np.float64)
+    offsets = np.asarray(calibration_curve.get("offsets_db"), dtype=np.float64)
+    if (curve_hz.ndim != 1 or curve_hz.shape != offsets.shape or curve_hz.size < 2
+            or not np.all(np.isfinite(curve_hz)) or not np.all(np.isfinite(offsets))
+            or not np.all(curve_hz > 0.0) or not np.all(np.diff(curve_hz) > 0.0)):
+        raise ValueError("Speaker verification calibration curve must hold increasing finite points")
+    grid = np.asarray(frequencies, dtype=np.float64)
+    return np.interp(np.log(np.clip(grid, 1e-9, None)), np.log(curve_hz), offsets,
+                     left=float(offsets[0]), right=float(offsets[-1]))
 
 
 def _leading_lobe(energy: np.ndarray, peak_index: int, reach: int) -> int:
@@ -242,7 +296,10 @@ def band_arrival(
     a leading reflection or a leaked neighbour lobe, which is exactly why it
     does not decide the arrival. ``lobe_samples`` is how long the strongest
     energy stays above the same threshold, i.e. the time resolution of this
-    arrival: two arrivals closer than that are the same event.
+    arrival after it; ``lead_samples`` is how far the arrival's own lobe
+    reaches back before it. A band's lobe is rarely symmetric (a woofer's own
+    roll-off stretches its leading flank), so each direction keeps its own
+    resolution: another arrival inside either extent is the same event.
     """
     values = np.abs(np.asarray(band, dtype=np.float64))
     if values.ndim != 1 or values.size < 64 or not np.all(np.isfinite(values)):
@@ -263,19 +320,29 @@ def band_arrival(
     reach = max(1, int(round(sample_rate_hz * ARRIVAL_LOBE_MAX_MS / 1000.0)))
     stop = min(values.size, peak_index + reach)
     trailing = np.flatnonzero(energy[peak_index:stop] < threshold * peak_energy)
+    arrival_index = _leading_lobe(energy, peak_index, reach)
+    start = max(0, arrival_index - reach)
+    below = np.flatnonzero(energy[start:arrival_index + 1] < threshold * float(energy[arrival_index]))
     return {
-        "arrival_index": _leading_lobe(energy, peak_index, reach),
+        "arrival_index": arrival_index,
         "onset_index": int(crossings[0]) if crossings.size else peak_index,
         "lobe_samples": int(trailing[0]) if trailing.size else stop - peak_index,
+        "lead_samples": (arrival_index - (start + int(below[-1])) if below.size
+                         else arrival_index - start),
     }
 
 
-def band_level(band: object, passband: Sequence[float], *, sample_rate_hz: int) -> dict:
+def band_level(band: object, passband: Sequence[float], *, sample_rate_hz: int,
+               correction_db: Callable[[np.ndarray], np.ndarray] | None = None) -> dict:
     """Robust passband level of one isolated band (median, never a single point).
 
     Mirrors the shared alignment level estimate: log-spaced points inside the
     way's own flat passband, one-octave smoothing, median and MAD stability
-    gate. The result is only meaningful relative to the take's other ways.
+    gate. ``correction_db`` maps the level grid's frequencies to the dB the
+    band carries on top of the way's own level (band weighting, microphone
+    calibration); it is subtracted before smoothing, like the per-way
+    estimate's crossover correction and calibration. The result is only
+    meaningful relative to the take's other ways.
     """
     values = np.asarray(band, dtype=np.float64)
     if values.ndim != 1 or values.size < 64 or not np.all(np.isfinite(values)):
@@ -295,11 +362,14 @@ def band_level(band: object, passband: Sequence[float], *, sample_rate_hz: int) 
     spectrum = np.abs(np.fft.rfft(values, n=size))
     bin_hz = sample_rate_hz / size
     levels_db = 20.0 * np.log10(np.maximum(spectrum, 1e-12))
-    inside = []
-    for frequency in grid:
-        if low_hz <= float(frequency) <= high_hz:
-            inside.append((float(frequency), float(np.interp(frequency, np.arange(size // 2 + 1) * bin_hz,
-                                                             levels_db))))
+    grid = grid[(grid >= low_hz) & (grid <= high_hz)]
+    grid_db = np.interp(grid, np.arange(size // 2 + 1) * bin_hz, levels_db)
+    if correction_db is not None:
+        correction = np.asarray(correction_db(grid), dtype=np.float64)
+        if correction.shape != grid.shape or not np.all(np.isfinite(correction)):
+            raise ValueError("Speaker verification level correction must be finite per frequency")
+        grid_db = grid_db - correction
+    inside = [(float(frequency), float(level)) for frequency, level in zip(grid, grid_db)]
     if len(inside) < MIN_PASSBAND_POINTS:
         raise ValueError(
             f"Speaker verification way has {len(inside)} passband points; {MIN_PASSBAND_POINTS} required")
@@ -327,6 +397,7 @@ def side_confirmation(
     start_revision: int,
     processing_fingerprint: str,
     isolation_power: float = ISOLATION_POWER,
+    calibration_curve: dict | None = None,
 ) -> dict:
     """Judge one shared take and return the confirmation document.
 
@@ -337,8 +408,12 @@ def side_confirmation(
     what the side's other ways leave in the same isolated band, or ``None``
     when no other way arrives outside this way's own lobe.
     ``way_levels_db`` holds the same take's isolated passband levels relative to
-    the loudest way; only their spread is a criterion, and the raw medians stay
-    in ``bands`` for diagnosis.
+    the loudest way; only their spread is a criterion, and the medians stay in
+    ``bands`` for diagnosis. The levels measure what the per-way level estimate
+    measures: the band weighting (``band_response_db``) is removed and the take's
+    ``calibration_curve`` (the microphone calibration its capture applied, or
+    ``None``) corrects the microphone, so a post-apply level spread compares
+    like with like.
     """
     if type(start_revision) is not int:
         raise ValueError("Speaker verification confirmation needs a start revision")
@@ -361,8 +436,16 @@ def side_confirmation(
             ir, processing[role], sample_rate_hz=sample_rate_hz,
             isolation_power=isolation_power, foreign=others)
         arrival = band_arrival(isolated, sample_rate_hz=sample_rate_hz)
+
+        def correction(frequencies: np.ndarray, role: str = role, others: list = others) -> np.ndarray:
+            total = band_response_db(processing[role], frequencies, sample_rate_hz=sample_rate_hz,
+                                     isolation_power=isolation_power, foreign=others)
+            if calibration_curve is not None:
+                total = total + calibration_offsets_db(calibration_curve, frequencies)
+            return total
+
         level = band_level(isolated, way_passband(processing[role], sample_rate_hz=sample_rate_hz),
-                           sample_rate_hz=sample_rate_hz)
+                           sample_rate_hz=sample_rate_hz, correction_db=correction)
         bands[role] = {**arrival, **level}
         energy[role] = np.square(np.abs(isolated))
     earliest = min(band["arrival_index"] for band in bands.values())
@@ -372,16 +455,21 @@ def side_confirmation(
     }
     # Isolation is only meaningful against a *different* arrival: two arrivals
     # inside this way's own lobe are one event, which is the state the trial
-    # wants anyway, so there is nothing to isolate. The lobe width is the
-    # resolution of the estimate itself, never a fixed distance.
+    # wants anyway, so there is nothing to isolate. The lobe extent on the
+    # other arrival's side is the resolution of the estimate itself, never a
+    # fixed distance: inside it the band's energy is its own lobe, not a leak.
     isolation_db: dict[str, float | None] = {}
     for role, band in bands.items():
         own_index = band["arrival_index"]
-        coincidence = int(band["lobe_samples"])
+
+        def apart(other_index: int, band: dict = band, own_index: int = own_index) -> bool:
+            if other_index < own_index:
+                return own_index - other_index > int(band["lead_samples"])
+            return other_index - own_index > int(band["lobe_samples"])
+
         distinct = [float(energy[role][other["arrival_index"]])
                     for other_role, other in bands.items()
-                    if other_role != role
-                    and abs(other["arrival_index"] - own_index) > coincidence]
+                    if other_role != role and apart(other["arrival_index"])]
         own = float(energy[role][own_index])
         isolation_db[role] = (round(10.0 * math.log10(max(own, 1e-300) / max(max(distinct), 1e-300)), 3)
                               if distinct else None)

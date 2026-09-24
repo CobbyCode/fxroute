@@ -56,7 +56,19 @@ class CaptureEvidence:
             # Identity prevents pairing one retry's samples with another result.
             self._analysis = analysis
 
-    def _select(self, analysis: dict, *, job: dict, capture: dict) -> None:
+    def _select(self, analysis: dict, *, job: dict, capture: dict,
+                calibration_curve: tuple | None = None) -> None:
+        """Pin the final attempt's IR, analysis and microphone calibration.
+
+        ``calibration_curve`` is the ``(frequencies_hz, offsets_db)`` pair the
+        analysis applied to its response points, or ``None`` when none was
+        applied: a consumer judging levels from the raw IR needs the same one.
+        """
+        curve = None
+        if calibration_curve is not None:
+            frequencies, offsets = calibration_curve
+            curve = {"frequencies_hz": [float(value) for value in frequencies],
+                     "offsets_db": [float(value) for value in offsets]}
         with self._lock:
             if (self._state != "pending" or job["id"] != self._job_id
                     or self._ir is None or self._analysis is not analysis):
@@ -68,6 +80,7 @@ class CaptureEvidence:
                                       if not key.startswith("_")}),
                 "measurement_target": deepcopy(job.get("measurement_target")),
                 "capture": deepcopy(capture),
+                "calibration_curve": curve,
             }
 
     def _discard(self) -> None:

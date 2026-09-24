@@ -1186,7 +1186,8 @@ class MeasurementStore:
             completion_message += " Volume was low."
 
         if capture_evidence is not None:
-            capture_evidence._select(analysis, job=job, capture=capture_info)
+            capture_evidence._select(analysis, job=job, capture=capture_info,
+                                     calibration_curve=calibration_curve if calibration_applied else None)
 
         return {
             "measurement": measurement,

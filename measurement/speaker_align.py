@@ -215,7 +215,11 @@ class SpeakerAlignment:
         require_timing_reference(analysis, take.get("reference_node"))
 
     def _side_arrivals(self, take: dict) -> dict:
-        """Band-limited way arrivals of one shared take, on its one time base."""
+        """Band-limited way arrivals of one shared take, on its one time base.
+
+        The take's microphone calibration corrects its band levels, so they
+        compare with the per-way levels the gain proposal reads.
+        """
         return side_confirmation(
             impulse_response=take.get("impulse_response"),
             processing=self._way_models,
@@ -223,6 +227,7 @@ class SpeakerAlignment:
             sample_rate_hz=self._rate,
             start_revision=self._target["revision"],
             processing_fingerprint=self._target["processing_fingerprint"],
+            calibration_curve=take.get("calibration_curve"),
         )
 
     def planning(self, take: dict) -> dict:

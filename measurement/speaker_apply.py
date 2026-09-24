@@ -80,12 +80,11 @@ def verify_confirmation(
 
     The time residual and the way isolation are the criteria: the ways must
     measure time-aligned, and the take must be able to tell them apart. The
-    level spread is reported as evidence only, because the two documents carry
-    different quantities: a shared take measures every way's level inside one
-    take with one normalization, while the planning levels are calibrated per
-    take and their per-take reference moves by more than 10 dB between the
-    takes of the same session. Comparing those against one gain tolerance
-    would veto a trial whose levels the take cannot be blamed for.
+    level spread is reported as evidence only. Both sides read the same
+    quantity (microphone-calibrated driver level, crossover and band weighting
+    removed), but from different takes: the planning levels from each way's
+    own windowed take, the check from the shared take's full response, whose
+    room reflections still move a passband median by a fraction of a dB.
     ``max_gain_spread_db`` names the tolerance the reported spread is shown
     against. Malformed or rebased input raises ``ValueError``; a merely
     unconvincing measurement returns ``confirmed: False``.

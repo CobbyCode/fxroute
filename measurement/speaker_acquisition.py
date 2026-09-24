@@ -101,7 +101,8 @@ def input_chain_key(provenance: object) -> tuple:
     The admitted loopback channel is deliberately excluded: a two-way speaker
     can carry its low way on one loopback half and its high way on the other,
     so only the microphone, the configured reference candidates, the reference
-    node and the rate have to stay identical between takes.
+    node, the rate and the microphone calibration (every level is read through
+    it) have to stay identical between takes.
     """
     if not isinstance(provenance, dict):
         raise ValueError("Speaker Align requires observed capture provenance")
@@ -113,6 +114,7 @@ def input_chain_key(provenance: object) -> tuple:
         tuple(candidates) if isinstance(candidates, (list, tuple)) else candidates,
         provenance.get("reference_node"),
         provenance.get("sample_rate_hz"),
+        provenance.get("microphone_calibration"),
     )
 
 
@@ -124,6 +126,7 @@ def _observed_input_chain(
     analysis: dict[str, Any],
     reference_candidate_channels: list[str],
     electrical_requested: bool,
+    microphone_calibration: str,
 ) -> dict[str, Any]:
     """Observed input chain of one take, complete or loudly absent.
 
@@ -143,6 +146,7 @@ def _observed_input_chain(
         "electrical_reference_channel": capture_info.get("electrical_reference_input_channel"),
         "reference_node": capture_info.get("reference_node"),
         "sample_rate_hz": analysis.get("sample_rate"),
+        "microphone_calibration": microphone_calibration,
     }
     missing = [name for name, value in observed.items() if value is None
                and (name not in ("electrical_reference_channel", "electrical_reference_candidates")
@@ -153,6 +157,27 @@ def _observed_input_chain(
             "refusing to attest an incomplete input chain"
         )
     return observed
+
+
+def _applied_calibration(finished: dict[str, Any]) -> str:
+    """The microphone calibration file a take's levels were read through, or ``""``."""
+    calibration = finished.get("calibration") if isinstance(finished.get("calibration"), dict) else {}
+    return str(calibration.get("path") or "") if calibration.get("applied") is True else ""
+
+
+def _require_unboosted_levels(capture_info: dict[str, Any], *, role: str) -> None:
+    """Refuse a way take whose microphone gain was raised after an earlier way take.
+
+    The store raises a quiet microphone's input volume once and keeps it
+    raised. The gain proposal compares the ways' absolute levels across their
+    takes, so a raise between two way takes would read as a level difference
+    of the ways themselves.
+    """
+    if capture_info.get("mic_auto_boosted") is True:
+        raise RuntimeError(
+            f"Speaker Align microphone input volume was raised while capturing {role}; "
+            "the way levels are no longer comparable, start Speaker Align again"
+        )
 
 
 async def _await_measurement_job(store: Any, job_id: str, *, label: str) -> dict[str, Any]:
@@ -294,7 +319,8 @@ async def _run_side_take(
     observed = _observed_input_chain(
         role=f"{side} ways", capture_info=capture_info, finished_input=finished_input,
         analysis=analysis, reference_candidate_channels=reference_candidate_channels,
-        electrical_requested=electrical_requested)
+        electrical_requested=electrical_requested,
+        microphone_calibration=_applied_calibration(finished))
     take = {
         "measurement_target": evidence["measurement_target"],
         "reference_id": reference_id,
@@ -304,6 +330,7 @@ async def _run_side_take(
         "time_reference": evidence["time_reference"],
         "impulse_response": evidence["impulse_response"],
         "analysis": analysis,
+        "calibration_curve": evidence.get("calibration_curve"),
     }
     return take, {**observed, "job_id": job_id}, input_key
 
@@ -433,6 +460,8 @@ async def acquire_speaker_captures(
         if analysis.get("sample_rate") != request["measurement_target"].get("sample_rate_hz"):
             raise RuntimeError(f"Speaker Align capture sample rate changed for {role}")
         capture_info = evidence.get("capture") if isinstance(evidence.get("capture"), dict) else {}
+        if way_index > 0:
+            _require_unboosted_levels(capture_info, role=role)
         _admit_reference(analysis, capture_info.get("reference_node"),
                          electrical_requested=electrical_requested,
                          label=f"Speaker Align {role}")
@@ -440,7 +469,8 @@ async def acquire_speaker_captures(
         observed = _observed_input_chain(
             role=role, capture_info=capture_info, finished_input=finished_input,
             analysis=analysis, reference_candidate_channels=reference_candidate_channels,
-            electrical_requested=electrical_requested)
+            electrical_requested=electrical_requested,
+            microphone_calibration=_applied_calibration(finished))
         if observed["electrical_reference_channel"] is not None:
             channels_by_role[role] = observed["electrical_reference_channel"]
         # The chosen loopback channel is per-take evidence, not an identity: a
