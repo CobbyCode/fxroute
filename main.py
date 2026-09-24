@@ -35,11 +35,16 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from config import get_settings
 from http_errors import bad_request, internal_error
-from http_origin import effective_request_scheme, is_request_origin_trusted
+from http_origin import (
+    TrustedOriginMiddleware,
+    effective_request_scheme,
+    is_request_origin_trusted,
+)
 from connection_manager import ConnectionManager
 import system_update as update_lifecycle
 from library.sources import MusicLibraryManager
 from radio.metadata import RadioMetadataService
+from safe_http import BlockedUrlError
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -2954,6 +2959,7 @@ class _SkipPrecompressedAssetsForGZip:
 app = FastAPI(
     lifespan=lifespan,
     middleware=[
+        Middleware(TrustedOriginMiddleware),
         Middleware(_SkipPrecompressedAssetsForGZip),
         Middleware(GZipMiddleware, minimum_size=1024),
     ],
@@ -5292,22 +5298,33 @@ async def refresh_library():
 @app.post("/api/download")
 async def start_download(request: Request):
     global downloader
-    if not downloader:
+    active_downloader = downloader
+    if not active_downloader:
         raise HTTPException(status_code=503, detail="Downloader not available")
     try:
         body = await request.json()
-        url = body.get("url")
-        if not url:
-            raise HTTPException(status_code=400, detail="URL is required")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    url = body.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status_code=400, detail="URL is required")
+    try:
+        # Validation resolves DNS and must not block the FastAPI event loop.
+        await asyncio.to_thread(active_downloader.download, url)
         # No fabricated name up front: the real saved filename is only known
         # once yt-dlp reports it, and /api/download/status serves it as it
         # becomes available (active_download["filename"]).
-        downloader.download(url)
         return {"status": "started", "filename": None}
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        raise internal_error("Download start failed", e)
+    except HTTPException:
+        raise
+    except BlockedUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise internal_error("Download start failed", exc)
 
 @app.post("/api/download/cancel")
 async def cancel_download():

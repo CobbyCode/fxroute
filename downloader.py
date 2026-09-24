@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from config import get_settings
+from safe_http import BlockedUrlError, validate_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,15 @@ class Downloader:
 
     def download(self, url: str) -> None:
         """
-        Start download of a YouTube URL.
+        Start download of a public HTTP(S) media URL.
         Returns None: the real saved filename is only known once yt-dlp
         reports it during the run and is exposed through the status payload
         (``active_download["filename"]``), never guessed up front.
         Raises RuntimeError if another download is active or yt-dlp missing.
         """
+        if not isinstance(url, str) or not url.strip():
+            raise BlockedUrlError("URL is required")
+        url = validate_public_url(url)
         with self._lock:
             if self._active_download:
                 raise RuntimeError("Download already in progress")
@@ -119,29 +123,28 @@ class Downloader:
                 return urllib.parse.urlunparse(parsed._replace(query="", fragment=""))
         return url
 
+    def _build_ytdlp_command(self, url: str) -> list[str]:
+        output_template = str(self.download_dir / "%(title)s.%(ext)s")
+        cmd = [
+            self._ytdlp_bin(),
+            "-f", "bestaudio",
+            "-o", output_template,
+            "--progress",
+            "--newline",
+            "--no-playlist",
+        ]
+        transcode_format = self.settings.download_transcode_format
+        if transcode_format:
+            cmd[1:1] = ["-x", "--audio-format", transcode_format, "--audio-quality", "0"]
+            cmd.extend(["--postprocessor-args", "ffmpeg:-nostats -loglevel error"])
+        cmd.extend(["--", url])
+        return cmd
+
     def _download_thread(self, url: str):
         """Background thread executing yt-dlp."""
         process = None
         try:
-            # Construct output template
-            output_template = str(self.download_dir / "%(title)s.%(ext)s")
-
-            # yt-dlp command: prefer native audio downloads and keep the source format whenever possible.
-            # Optional transcoding can still be requested explicitly through DOWNLOAD_TRANSCODE_FORMAT.
-            cmd = [
-                self._ytdlp_bin(),
-                "-f", "bestaudio",
-                "-o", output_template,
-                "--progress",
-                "--newline",
-                "--no-playlist",
-                url,
-            ]
-
-            transcode_format = self.settings.download_transcode_format
-            if transcode_format:
-                cmd[1:1] = ["-x", "--audio-format", transcode_format, "--audio-quality", "0"]
-                cmd.extend(["--postprocessor-args", "ffmpeg:-nostats -loglevel error"])
+            cmd = self._build_ytdlp_command(url)
 
             logger.info(f"Starting yt-dlp: {' '.join(cmd)}")
             self._update_status("downloading", 0.0)
