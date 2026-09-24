@@ -121,7 +121,7 @@
         const proposal = result.proposal;
         const number = value => Number.isFinite(value) ? value.toFixed(3) : '—';
         const rows = Object.keys(proposal.arrival_ms).map(role => `<tr><th scope="row">${wayLabel(role)}${role === proposal.reference_role ? ' · ref' : ''}</th><td>${number(proposal.arrival_ms[role])}</td><td>+${number(proposal.added_delay_ms[role])}</td><td>${number(result.check.after_arrival_ms?.[role])}</td></tr>`).join('');
-        return `<table class="speaker-align-table"><caption>${side === 'right' ? 'Right' : 'Left'} speaker · ${result.confirmed ? 'Verified' : 'Not verified'} · ms</caption><thead><tr><th scope="col">Way</th><th scope="col">Before</th><th scope="col">Delay added</th><th scope="col">After</th></tr></thead><tbody>${rows}</tbody></table>`;
+        return `<div class="speaker-align-table-wrap"><table class="speaker-align-table"><caption>${side === 'right' ? 'Right' : 'Left'} speaker · ${result.confirmed ? 'Verified' : 'Not verified'} · ms</caption><thead><tr><th scope="col">Way</th><th scope="col">Before</th><th scope="col">Delay added</th><th scope="col">After</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     }
 
     return {
