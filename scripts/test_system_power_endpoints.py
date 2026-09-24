@@ -25,6 +25,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import sys
 import unittest
@@ -492,9 +493,11 @@ class CrossSiteDefenseTests(unittest.TestCase):
         self.assertEqual(self._runner.calls, [])
 
     def test_suspend_rejects_x_forwarded_host_mismatch(self):
-        # X-Forwarded-Host/Port/Proto from the trusted reverse proxy
-        # must override the test client's base URL.  Origin sent at the
-        # FXRoute LAN hostname on the frontend port must be accepted.
+        # X-Forwarded-Host/Port/Proto from a trusted reverse proxy must
+        # override the test client's base URL.  Origin sent at the FXRoute
+        # LAN hostname on the frontend port must be accepted.  Forwarded
+        # headers are honored only from trusted proxy peers, so the
+        # TestClient peer is configured via FXROUTE_TRUSTED_PROXIES.
         client = TestClient(
             main_module.app,
             base_url="http://10.0.0.5:8000",
@@ -505,12 +508,14 @@ class CrossSiteDefenseTests(unittest.TestCase):
                 "x-forwarded-proto": "http",
             },
         )
-        resp = client.post("/api/system/power/suspend")
+        with mock.patch.dict(os.environ, {"FXROUTE_TRUSTED_PROXIES": "testclient"}):
+            resp = client.post("/api/system/power/suspend")
         self.assertEqual(resp.status_code, 200)
 
     def test_suspend_rejects_x_forwarded_host_distinct_from_origin(self):
         # A reverse proxy that misroutes (or a forged X-Forwarded-Host)
-        # must not let the cross-origin request reach the action.
+        # must not let the cross-origin request reach the action, even
+        # when the peer supplying the headers is a trusted proxy.
         client = TestClient(
             main_module.app,
             base_url="http://10.0.0.5:8000",
@@ -521,7 +526,8 @@ class CrossSiteDefenseTests(unittest.TestCase):
                 "x-forwarded-proto": "https",
             },
         )
-        resp = client.post("/api/system/power/suspend")
+        with mock.patch.dict(os.environ, {"FXROUTE_TRUSTED_PROXIES": "testclient"}):
+            resp = client.post("/api/system/power/suspend")
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self._runner.calls, [])
 

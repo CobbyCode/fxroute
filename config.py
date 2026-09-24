@@ -25,8 +25,10 @@ INSTALLER_MANAGED_ENV_KEYS = frozenset({
 # the Settings model) that may also legitimately appear in .env, where
 # systemd's EnvironmentFile injects them for the app.
 DIRECT_ENV_KEYS = frozenset({
+    "FXROUTE_ALLOWED_HOSTS",
     "FXROUTE_DSP_BINARY",
     "FXROUTE_RADIO_BROWSER_URL",
+    "FXROUTE_TRUSTED_PROXIES",
     "MUSIC_LIBRARY_SMB_HOSTS",
 })
 
