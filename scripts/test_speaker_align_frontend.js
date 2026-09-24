@@ -126,6 +126,17 @@ async function main() {
     assert.match(timeHtml, /planning take/);
     assert.match(timeHtml, /verification take/);
     assert.match(timeHtml, /shared ms axis/);
+    // Gain evidence (known-good display): per-way gain/level columns and
+    // the advisory post-check spread in the committed status line.
+    const gainHtml = Speaker.renderSpeakerAlignResult(runResult, 'right');
+    assert.match(gainHtml, /Gain added/);
+    assert.match(gainHtml, /Before level/);
+    assert.match(gainHtml, /\+2\.00 dB/);
+    assert.match(gainHtml, /-12\.0/);
+    const committedText = Speaker.formatSpeakerAlignStatus(
+        { side: 'right', status: 'committed', result: { ...runResult, committed_revision: 8 } });
+    assert.match(committedText, /Timing spread 3\.000 → 0\.021 ms/);
+    assert.match(committedText, /Post-check level spread 0\.20 dB/);
     const measurement = Speaker.runToMeasurement(run, 'Right align');
     assert.equal(measurement.measurement_kind, 'speaker-align-run-v1');
     assert.ok(Array.isArray(measurement.traces) && measurement.traces.length === 1);
