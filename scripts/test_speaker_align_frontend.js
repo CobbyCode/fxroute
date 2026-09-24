@@ -60,14 +60,15 @@ async function main() {
     }
     const flows = context.window.FXRouteMeasurementFlows;
     const response = job => ({ ok: true, json: async () => ({ job }) });
+    const speakerApi = { startSpeakerAlign: async payload => {
+        calls.push(payload);
+        assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, true);
+        assert.equal(elements.measurementSpeakerAlignRightBtn.disabled, true);
+        return response({ id: 'alignment', side: payload.side, status: 'queued' });
+    }, pollSpeakerAlignJob: async () => response({ id: 'alignment', side: 'right', status: 'committed', result }) };
     flows.init({ getState: () => state, getElements: () => elements, measurementModeReady: () => true,
         getActiveMeasurementKind: () => state.measurement.activeMeasurementKind,
-        api: { startSpeakerAlign: async payload => {
-            calls.push(payload);
-            assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, true);
-            assert.equal(elements.measurementSpeakerAlignRightBtn.disabled, true);
-            return response({ id: 'alignment', side: payload.side, status: 'queued' });
-        }, pollSpeakerAlignJob: async () => response({ id: 'alignment', side: 'right', status: 'committed', result }) },
+        api: speakerApi,
     });
     flows.syncSpeakerAlignButton();
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), false);
@@ -84,6 +85,8 @@ async function main() {
     assert.match(elements.measurementSpeakerAlignResults.innerHTML, /3\.000/);
     assert.match(measurementCss, /\.speaker-align-table-wrap\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/);
     assert.match(measurementCss, /\.speaker-align-table\s*\{[^}]*min-width:\s*\d+px/);
+    assert.match(measurementCss, /\.speaker-align-time\s*\{[^}]*border:\s*1px solid var\(--border\)/);
+    assert.match(measurementCss, /\.speaker-align-time-svg\s*\{[^}]*width:\s*100%/);
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.021/);
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.250/);
     // Saveable time-domain run: Before from planning, After from
@@ -127,11 +130,60 @@ async function main() {
     // Finished results render the time-domain view next to the table.
     assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-time/);
     assert.match(elements.measurementSpeakerAlignResults.innerHTML, /shared ms axis/);
+    // Per-side loopback references: a right run carries the right loopback
+    // in the start payload, never only the shared/left one.
+    state.measurement.selectedReferenceInputChannel = '7';
+    state.measurement.selectedReferenceInputChannelLeft = '7';
+    state.measurement.selectedReferenceInputChannelRight = '8';
+    state.measurement.speakerAlignInFlight = false;
+    state.measurement.startInFlight = false;
+    state.measurement.activeMeasurementKind = '';
+    state.measurement.activeJobId = '';
+    flows.init({ getSelectedMeasurementInputChannelCount: () => 18, api: speakerApi });
+    await flows.startSpeakerAlign('right');
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].reference_input_channel, '7');
+    assert.equal(calls[1].reference_input_channel_left, '7');
+    assert.equal(calls[1].reference_input_channel_right, '8');
+    assert.equal(calls[1].reference_id, 'mic-1:ch8:upstream');
     state.outputSystem.catalog.modes.stereo.selected_bank = 'all';
     flows.syncSpeakerAlignButton();
     await flows.startSpeakerAlign('left');
-    assert.equal(calls.length, 1, 'Hidden alignment must not be startable');
+    assert.equal(calls.length, 2, 'Hidden alignment must not be startable');
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), true);
+    // Save/Open run through the flows module: seeded result saves a
+    // speaker-align-run-v1 payload, reopening restores the same view data.
+    state.outputSystem.catalog.modes.stereo.selected_bank = 'global';
+    state.measurement.speakerAlignResults = { right: runResult };
+    state.measurement.speakerAlignResult = runResult;
+    const saveCalls = [];
+    elements.measurementSpeakerAlignSaveBtn = element();
+    elements.measurementSpeakerAlignOpenBtn = element();
+    elements.measurementSpeakerAlignSavedSelect = { value: '', innerHTML: '', disabled: false };
+    flows.init({
+        showToast: (message, kind) => calls.push(['toast', message, kind]),
+        renderMeasurementPanel: () => {},
+        formatTransitionErrorDetail: (detail, fallback) => (typeof detail === 'string' ? detail : fallback),
+        fetchSavedMeasurements: async () => calls.push('reload-measurements'),
+        api: { ...speakerApi,
+            saveSpeakerAlignMeasurement: async payload => {
+                saveCalls.push(payload);
+                return { ok: true, json: async () => ({}) };
+            } },
+    });
+    await flows.saveSpeakerAlignRun('right');
+    assert.equal(saveCalls.length, 1, 'save posts one run payload');
+    assert.equal(saveCalls[0].measurement_kind, 'speaker-align-run-v1');
+    assert.ok(saveCalls[0].speaker_align, 'payload carries the run');
+    state.measurement.measurements = [{ id: saveCalls[0].id, name: 'Right align',
+        measurement_kind: 'speaker-align-run-v1', speaker_align: saveCalls[0].speaker_align,
+        analysis: saveCalls[0].analysis, traces: saveCalls[0].traces || [] }];
+    elements.measurementSpeakerAlignSavedSelect.value = saveCalls[0].id;
+    await flows.openSpeakerAlignRun();
+    assert.ok(state.measurement.speakerAlignResult?.proposal, 'reopened result restored');
+    assert.deepEqual(Object.keys(state.measurement.speakerAlignResult.proposal.arrival_ms).sort(),
+        ['right_high', 'right_low']);
+    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-time/);
     console.log('Speaker alignment UI flow: passed');
 }
 
