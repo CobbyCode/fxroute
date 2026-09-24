@@ -36,6 +36,7 @@
     --danger:        #f87171;
     --danger-dim:    rgba(248, 113, 113, 0.12);
     --success:       #34d399;
+    --warning:       #b45309;
     --border:        rgba(255, 255, 255, 0.06);
     --border-strong: rgba(255, 255, 255, 0.10);
     --scrollbar:     var(--bg-hover);
@@ -65,6 +66,9 @@
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
+    /* Playback footer height used by the live-banner offset; the phone
+       layout overrides it on .live-banner (taller stacked footer). */
+    --footer-height: 92px;
     /* Stacking-order tokens: semantic names for the layering the stylesheet
        already implements. Values are the historical literal z-index numbers,
        preserved exactly so the visible order is unchanged; the tokens only
@@ -74,6 +78,7 @@
     --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
     --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
     --z-tabs:            4;      /* tab bar (header) */
+    --z-live-banner:    60;      /* live-mode notice pill above the footer */
     --z-playback-bar:    100;    /* fixed playback footer */
     --z-banner:          1002;   /* offline/disconnect banner */
     --z-toast:           1005;   /* transient toasts */
@@ -200,9 +205,9 @@ body {
 .live-banner {
     position: fixed;
     left: 50%;
-    bottom: calc(var(--footer-height, 92px) + 12px);
+    bottom: calc(var(--footer-height) + 12px);
     transform: translateX(-50%);
-    z-index: 60;
+    z-index: var(--z-live-banner);
     display: flex;
     align-items: center;
     gap: 6px;
@@ -247,7 +252,8 @@ body {
         justify-content: center;
         text-align: center;
         flex-wrap: wrap;
-        bottom: calc(var(--footer-height, 150px) + 10px);
+        --footer-height: 150px;
+        bottom: calc(var(--footer-height) + 10px);
         gap: 4px 10px;
         padding: 7px 12px;
         border-radius: 14px;
@@ -311,7 +317,7 @@ body {
 .streaming-result:hover,
 .album-detail-tracks .track-item:hover{background:var(--bg-hover);border-color:var(--border-strong)}
 /* Selected TIDAL rows mirror the library .track-item.selected highlight. */
-.streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,255,.08)}
+.streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,183,.08)}
 /* Playing TIDAL row mirrors the library .track-item.active highlight. */
 .streaming-result.active{background:var(--accent-dim);border-color:rgba(110,231,183,.45)}
 .streaming-result.active .track-title{color:#f0fff8}
@@ -1071,7 +1077,7 @@ select.url-input {
 }
 .crossover-tab.is-active {
     border-color: var(--accent);
-    color: var(--text);
+    color: var(--text-primary);
 }
 /* Control groups reuse the subwoofer group visuals; tracks hug their
    content and leftover width becomes even spacing, like the sub tile. */
@@ -2539,7 +2545,7 @@ select.url-input {
 }
 .track-item:last-child { border-bottom:none; }
 .track-item:hover { background: var(--bg-hover); }
-.track-item.selected { background: rgba(110, 231, 255, 0.08); }
+.track-item.selected { background: rgba(110, 231, 183, 0.08); }
 .track-item.active {
     background: var(--accent-dim);
     box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.32);
@@ -3480,20 +3486,9 @@ select.url-input {
         touch-action: manipulation;
     }
 }
-.station-card.active::after {
-    content: '♫';
-    position: absolute;
-    top: 0.7rem;
-    right: 0.8rem;
-    font-size: 0.96rem;
-    color: var(--accent);
-    animation: pulse 1.5s ease-in-out infinite;
-    display: none;
-}
-@keyframes pulse {
-    0%, 100% { opacity: 0.6; }
-    50% { opacity: 1; }
-}
+/* Active station indicator: the mint border/background highlight on
+   .station-card.active (end of file). The former corner-note pseudo-rule
+   was permanently display:none and would collide with .station-card-fav. */
 .station-name {
     font-weight: 600;
     font-size: .95rem;
@@ -4744,8 +4739,8 @@ select.url-input {
 }
 
 .measurement-area-badge.is-stale {
-    border-color: var(--warning, #b45309);
-    color: var(--warning, #b45309);
+    border-color: var(--warning);
+    color: var(--warning);
 }
 
 .speaker-align-table-wrap {
@@ -6136,7 +6131,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 .sub-side-tab.is-active {
     border-color: var(--accent);
-    color: var(--text);
+    color: var(--text-primary);
 }
 
 /* Two-line crossover area: Frequency/Type on the first row, Slope/Main
@@ -7166,6 +7161,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .btn-primary,
 .btn-secondary,
+.btn-danger,
 .btn-ghost {
     border-radius: 11px;
 }

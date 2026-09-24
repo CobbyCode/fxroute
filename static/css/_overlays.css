@@ -215,7 +215,7 @@
 }
 .crossover-tab.is-active {
     border-color: var(--accent);
-    color: var(--text);
+    color: var(--text-primary);
 }
 /* Control groups reuse the subwoofer group visuals; tracks hug their
    content and leftover width becomes even spacing, like the sub tile. */

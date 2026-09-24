@@ -343,8 +343,8 @@
 }
 
 .measurement-area-badge.is-stale {
-    border-color: var(--warning, #b45309);
-    color: var(--warning, #b45309);
+    border-color: var(--warning);
+    color: var(--warning);
 }
 
 .speaker-align-table-wrap {

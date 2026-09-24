@@ -390,20 +390,9 @@
         touch-action: manipulation;
     }
 }
-.station-card.active::after {
-    content: '♫';
-    position: absolute;
-    top: 0.7rem;
-    right: 0.8rem;
-    font-size: 0.96rem;
-    color: var(--accent);
-    animation: pulse 1.5s ease-in-out infinite;
-    display: none;
-}
-@keyframes pulse {
-    0%, 100% { opacity: 0.6; }
-    50% { opacity: 1; }
-}
+/* Active station indicator: the mint border/background highlight on
+   .station-card.active (end of file). The former corner-note pseudo-rule
+   was permanently display:none and would collide with .station-card-fav. */
 .station-name {
     font-weight: 600;
     font-size: .95rem;

@@ -541,7 +541,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 .sub-side-tab.is-active {
     border-color: var(--accent);
-    color: var(--text);
+    color: var(--text-primary);
 }
 
 /* Two-line crossover area: Frequency/Type on the first row, Slope/Main
@@ -1571,6 +1571,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .btn-primary,
 .btn-secondary,
+.btn-danger,
 .btn-ghost {
     border-radius: 11px;
 }

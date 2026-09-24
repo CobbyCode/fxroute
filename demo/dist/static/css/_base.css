@@ -102,9 +102,9 @@ body {
 .live-banner {
     position: fixed;
     left: 50%;
-    bottom: calc(var(--footer-height, 92px) + 12px);
+    bottom: calc(var(--footer-height) + 12px);
     transform: translateX(-50%);
-    z-index: 60;
+    z-index: var(--z-live-banner);
     display: flex;
     align-items: center;
     gap: 6px;
@@ -149,7 +149,8 @@ body {
         justify-content: center;
         text-align: center;
         flex-wrap: wrap;
-        bottom: calc(var(--footer-height, 150px) + 10px);
+        --footer-height: 150px;
+        bottom: calc(var(--footer-height) + 10px);
         gap: 4px 10px;
         padding: 7px 12px;
         border-radius: 14px;
@@ -213,7 +214,7 @@ body {
 .streaming-result:hover,
 .album-detail-tracks .track-item:hover{background:var(--bg-hover);border-color:var(--border-strong)}
 /* Selected TIDAL rows mirror the library .track-item.selected highlight. */
-.streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,255,.08)}
+.streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,183,.08)}
 /* Playing TIDAL row mirrors the library .track-item.active highlight. */
 .streaming-result.active{background:var(--accent-dim);border-color:rgba(110,231,183,.45)}
 .streaming-result.active .track-title{color:#f0fff8}

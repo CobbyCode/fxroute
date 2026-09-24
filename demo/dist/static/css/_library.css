@@ -1117,7 +1117,7 @@
 }
 .track-item:last-child { border-bottom:none; }
 .track-item:hover { background: var(--bg-hover); }
-.track-item.selected { background: rgba(110, 231, 255, 0.08); }
+.track-item.selected { background: rgba(110, 231, 183, 0.08); }
 .track-item.active {
     background: var(--accent-dim);
     box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.32);
