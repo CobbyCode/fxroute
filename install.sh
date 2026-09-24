@@ -7100,7 +7100,16 @@ offer_optional_caddy_proxy() {
   tmp_service="$(mktemp)"
   trap "trap - RETURN; rm -f '$tmp_caddy' '$tmp_service'" RETURN
 
+  # Disabled admin endpoint: nothing in FXRoute uses the Caddy admin API
+  # (the only former consumer was the unit's reload verb; config changes
+  # apply via restart), and SELinux httpd_t denies the admin-endpoint bind
+  # on unreserved ports since selinux-policy 20260914, which crash-loops
+  # the unit otherwise.
   cat > "$tmp_caddy" <<EOF
+{
+    admin off
+}
+
 (fxroute_pna_headers) {
     header {
         Access-Control-Allow-Origin "*"
@@ -7167,7 +7176,6 @@ Environment=HOME=${caddy_data_dir}
 Environment=XDG_CONFIG_HOME=${caddy_data_dir}/config
 Environment=XDG_DATA_HOME=${caddy_data_dir}
 ExecStart=${caddy_bin} run --config ${config_path} --adapter caddyfile
-ExecReload=${caddy_bin} reload --config ${config_path} --adapter caddyfile
 Restart=on-failure
 RestartSec=5
 
