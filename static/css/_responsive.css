@@ -1634,8 +1634,7 @@
 
         /* Mobile: both crossover blocks wrap into two columns, so the single
            visible side block never overflows the single-column stack. */
-        .effects-subwoofer-crossover-block,
-        .effects-subwoofer-crossover-block.is-side {
+        .effects-subwoofer-crossover-block {
             grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 

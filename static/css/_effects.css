@@ -557,10 +557,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     width: 100%;
 }
 
-.effects-subwoofer-crossover-block.is-side {
-    grid-template-columns: repeat(2, auto);
-}
-
 .effects-subwoofer-channel-group {
     grid-column: auto;
     display: grid;
