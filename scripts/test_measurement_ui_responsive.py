@@ -6,6 +6,7 @@ import http.server
 import pathlib
 import sys
 import threading
+import traceback
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PORT = 8216
@@ -309,7 +310,9 @@ def _run():
                 assert not page.locator("#measurement-sweep-menu").is_visible()
                 page.locator("#measurement-auto-sub-group").evaluate("element => element.classList.remove('hidden')")
                 labels = page.locator(".measurement-workflow-label").all_text_contents()
-                assert labels[:4] == ["Measurements", "Subwoofer", "Speaker Align", "Calibration"]
+                assert labels[:4] == ["Measurements", "Subwoofer", "Speaker Auto Alignment", "Calibration"], (
+                    f"unexpected measurement workflow labels at {width}x{height}: {labels[:4]!r}"
+                )
                 checks += 4
 
                 page.locator("#measurement-sweep-toggle").click()
@@ -473,5 +476,6 @@ if __name__ == "__main__":
         _run()
     except Exception as exc:  # noqa: BLE001 - report browser failures clearly
         print("FAIL  scripts/test_measurement_ui_responsive.py")
-        print(f"  {exc}")
+        print(f"  {type(exc).__name__}: {exc}")
+        traceback.print_exc()
         sys.exit(1)
