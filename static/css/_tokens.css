@@ -27,6 +27,9 @@
     --bg-elevated:   #1e1e22;
     --bg-hover:      #26262b;
     --bg-input:      #1c1c20;
+    /* Sticky header / tab-strip surface: also the fade target of the
+       scroll-edge gradient on .tabs.can-scroll. */
+    --bg-header:     rgba(14, 14, 17, 0.94);
     --text-primary:   #ececf0;
     --text-secondary: #a0a0ac;
     --text-muted:     #848490;
@@ -57,6 +60,9 @@
     --arrow-width: 0.68rem;
     --arrow-offset: 0.55rem;
     --arrow-reserve: 1.55rem;
+    /* The chevron glyph itself: one data-URI for every carrier (global
+       selects, effects selects, source pill, details summary). */
+    --arrow-uri: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
        surfaces keep one tile rhythm across breakpoints. Radio reads a
@@ -64,6 +70,28 @@
     --tile-min: 208px;
     --tile-min-radio: 164px;
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
+    /* Slate/Blue palette: every remaining raw slate/blue literal lives
+       here once. The semantic Sub1/Sub2/info accents alias into it so the
+       effects and measurement cards keep their role names at use sites. */
+    --slate-900-a22: rgba(15, 23, 42, 0.22);
+    --slate-900-a28: rgba(15, 23, 42, 0.28);
+    --slate-900-a38: rgba(15, 23, 42, 0.38);
+    --slate-900-a56: rgba(15, 23, 42, 0.56);
+    --slate-800-a44: rgba(30, 41, 59, 0.44);
+    --slate-400-a10: rgba(148, 163, 184, 0.10);
+    --slate-400-a14: rgba(148, 163, 184, 0.14);
+    --slate-400-a16: rgba(148, 163, 184, 0.16);
+    --slate-400-a18: rgba(148, 163, 184, 0.18);
+    --slate-400-a22: rgba(148, 163, 184, 0.22);
+    --slate-400-a24: rgba(148, 163, 184, 0.24);
+    --slate-200:     #d1d5db;
+    --canvas-deep:   #08111f;
+    --sub1-tint:     rgba(8, 47, 73, 0.2);
+    --sub2-tint:     var(--slate-800-a44);
+    --sub2-line:     rgba(147, 197, 253, 0.24);
+    --info-tint:     rgba(96, 165, 250, 0.06);
+    --info-line:     rgba(96, 165, 250, 0.22);
+    --accent-ink:    #08110d;
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
     /* Playback footer height used by the live-banner offset; the phone

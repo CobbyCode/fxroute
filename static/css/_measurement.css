@@ -458,6 +458,32 @@
     border-top: none;
 }
 
+.measurement-calibration-select-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.5rem;
+    align-items: stretch;
+}
+
+.measurement-calibration-select-row .btn-secondary,
+.measurement-calibration-select-row .btn-danger {
+    min-width: 92px;
+    padding-left: 0.9rem;
+    padding-right: 0.9rem;
+}
+
+/* Scoped to the Setup card so the upload beats the generic .upload-area
+   primitive (equal specificity) regardless of source order — same pattern
+   as .library-import-option .upload-area. */
+.measurement-card-setup .measurement-calibration-upload-area {
+    min-height: 64px;
+    padding: 0.9rem 1rem;
+}
+
+.measurement-calibration-upload-area .upload-area-icon {
+    font-size: 1.1rem;
+}
+
 .spl-calibration-dialog {
     position: relative;
     width: min(560px, 100%);
@@ -798,7 +824,7 @@
 }
 
 .measurement-peq-chip.is-active {
-    color: #08110d;
+    color: var(--accent-ink);
     border-color: transparent;
     box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset;
 }
@@ -946,8 +972,8 @@
     gap: 0.75rem;
     padding: 0.9rem;
     border-radius: var(--radius-md);
-    border: 1px solid rgba(96, 165, 250, 0.22);
-    background: rgba(96, 165, 250, 0.06);
+    border: 1px solid var(--info-line);
+    background: var(--info-tint);
 }
 
 .measurement-convolver-grid .field-group {
@@ -1041,8 +1067,8 @@
 }
 
 .measurement-swatch-inactive {
-    background: rgba(148, 163, 184, 0.18);
-    box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.22);
+    background: var(--slate-400-a18);
+    box-shadow: 0 0 0 1px var(--slate-400-a22);
 }
 
 .measurement-list-title {
@@ -1095,7 +1121,7 @@
     width: var(--arrow-width);
     height: 0.45rem;
     margin-top: -0.225rem;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: var(--arrow-uri);
     background-repeat: no-repeat;
     background-size: contain;
     transition: transform 0.15s var(--ease);

@@ -1,26 +1,3 @@
-.measurement-calibration-select-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    gap: 0.5rem;
-    align-items: stretch;
-}
-
-.measurement-calibration-select-row .btn-secondary,
-.measurement-calibration-select-row .btn-danger {
-    min-width: 92px;
-    padding-left: 0.9rem;
-    padding-right: 0.9rem;
-}
-
-.measurement-calibration-upload-area {
-    min-height: 64px;
-    padding: 0.9rem 1rem;
-}
-
-.measurement-calibration-upload-area .upload-area-icon {
-    font-size: 1.1rem;
-}
-
 /* ============================================================
    Playback Bar (fixed bottom)
    ============================================================ */
@@ -185,7 +162,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); padding: .08rem .36rem; }
+.samplerate-status { background: var(--slate-400-a10); color: var(--text-secondary); padding: .08rem .36rem; }
 /* The queue pill is text-only: no leading icon, so longer track numbers
    cost less width and the gap to the seek time stays untouched. */
 .queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
@@ -282,11 +259,16 @@
        below only switch the shared desktop size to the shared phone size;
        both sliders always move together. */
     height: 4px;
-    background: linear-gradient(to right,
+    /* Shared fill for every repaint of this track: the responsive media
+       blocks re-apply it to the track pseudo through this token.
+       --range-progress is set per slider element, so the gradient has to
+       compute here on the slider itself. */
+    --slider-track: linear-gradient(to right,
         var(--accent) 0%,
         var(--accent) var(--range-progress),
         rgba(255,255,255,.10) var(--range-progress),
         rgba(255,255,255,.10) 100%);
+    background: var(--slider-track);
     background-clip: content-box;
     box-shadow: none;
 }
@@ -442,7 +424,7 @@
     appearance: none;
     -webkit-appearance: none;
     padding-right: var(--arrow-reserve);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: var(--arrow-uri);
     background-repeat: no-repeat;
     background-position: right var(--arrow-offset) center;
     background-size: var(--arrow-width) auto;
@@ -562,27 +544,3 @@
 /* Hidden meter segments (JS-driven via .meter-segment-hidden): must win
    over the base .meter-segments i { display: block } row rule. */
 .meter-segments .meter-segment-hidden { display: none; }
-
-/* Tablet / compact desktop: give the transport real vertical breathing room,
-   keep the album/queue chip inside the track-copy column, and preserve a
-   compact right-side meter/volume stack. */
-
-/* Phone: keep the six-segment stereo meter, but give transport/seek/volume
-   more air. Seek and volume use identical outer gutters so both slider tracks
-   share the same center line and width. */
-
-/* ============================================================
-   Playback footer refinement v7 — desktop/tablet vertical compacting
-   ============================================================ */
-/* Preserve the four-zone layout and control sizing; only reclaim vertical
-   breathing room above and below the existing content. Desktop rules live
-   in the consolidated ≥1181px block above; this block covers tablets. */
-
-/* ============================================================
-   Playback footer refinement v8 — quieter desktop/tablet sliders
-   ============================================================ */
-/* Keep the input box unchanged for pointer/touch behavior. Only the native
-   track paint and thumb are made slightly lighter than the volume control. */
-
-/* Phone: soften only the visible range paint; the input box remains the
-   existing size so pointer and touch targeting do not change. */

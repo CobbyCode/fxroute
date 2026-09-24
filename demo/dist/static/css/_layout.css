@@ -1,5 +1,5 @@
 .header {
-    background: rgba(14, 14, 17, 0.94);
+    background: var(--bg-header);
     min-height: 72px;
     padding: .85rem clamp(1rem, 2.1vw, 2rem);
     display: flex;
@@ -244,7 +244,7 @@
     display: flex;
     position: relative;
     z-index: var(--z-tabs);
-    background: rgba(14, 14, 17, 0.94);
+    background: var(--bg-header);
     padding: .42rem clamp(.7rem, 1.4vw, 1.2rem);
     gap: .25rem;
     border-top: 0;
@@ -262,7 +262,7 @@
     align-self: stretch;
     width: 44px;
     pointer-events: none;
-    background: linear-gradient(90deg, transparent, var(--bg-surface));
+    background: linear-gradient(90deg, transparent, var(--bg-header));
 }
 .tabs::-webkit-scrollbar { display: none; }
 /* ARIA tablist wrapper inside the nav landmark; inherits the responsive

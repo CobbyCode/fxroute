@@ -40,7 +40,8 @@ PORT = 8211
 # Covers the full set of historically-grown media-query boundaries, including
 # the exact breakpoint pairs the CSS cleanup must not disturb:
 #   599/600/601 · 699/700/701 · 760/761/768 · 899/900/940 ·
-#   1024/1099/1100/1101 · 1180/1181/1199/1200 · desktop 1440 · mobile 390/360/320
+#   1024/1099/1100/1101 (1099 shares the unified ≤1100 side of the
+#   1100/1101 edge) · 1180/1181/1199/1200 · desktop 1440 · mobile 390/360/320
 VIEWPORTS = [
     (1440, 900),
     (1200, 900),

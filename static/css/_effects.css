@@ -91,11 +91,13 @@
     gap: 0.65rem 1rem;
 }
 
+/* Bank selector row: sits in the A/B card header, flush with no gap below. */
 .effects-bank-row {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     max-width: 100%;
+    margin-bottom: 0;
 }
 
 .effects-bank-row label {
@@ -410,6 +412,94 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     max-width: 42ch;
 }
 
+/* Crossover / Speaker tile: way tabs, response graph, control grid. */
+.effects-card-crossover {
+    /* Full-width band directly above the subwoofer band (order 20). */
+    grid-column: 1 / -1;
+    order: 19;
+}
+.crossover-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+}
+/* Way tabs and the L/R link share one row above the graph; the link stays
+   right-aligned and wraps below the tabs on narrow screens. */
+.crossover-tabrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.9rem;
+    margin-bottom: 0.6rem;
+}
+.crossover-tabrow > .crossover-tabs {
+    flex: 1 1 auto;
+    margin-bottom: 0;
+}
+.crossover-tabrow > .crossover-link-label {
+    flex: 0 0 auto;
+}
+.crossover-tab {
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.crossover-tab.is-active {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+/* Control groups reuse the subwoofer group visuals; tracks hug their
+   content and leftover width becomes even spacing, like the sub tile. */
+.crossover-control-groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    width: min(100%, 1100px);
+    margin: 0 auto 0.6rem;
+}
+.crossover-trio-group {
+    flex: 1 1 auto;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-evenly;
+    align-items: end;
+    gap: 0.7rem 0.8rem;
+}
+#tab-effects .crossover-trio-group {
+    /* Beats the shared group min-width: 0 so a group wraps as a whole
+       instead of squeezing its controls onto two lines. */
+    min-width: min-content;
+}
+.crossover-trio-group > .effects-subwoofer-group-label {
+    flex: 1 1 100%;
+}
+#tab-effects .crossover-control-groups .stepper-input-freq {
+    /* Five-digit crossover frequencies need more room than the compact
+       sub-tile value field. */
+    width: 3.9rem;
+}
+#tab-effects select.effects-crossover-type-select {
+    width: min(100%, 9rem);
+    min-width: 0;
+    max-width: 100%;
+    /* Left-aligned like every other app select, closed and open. */
+    text-align: left;
+}
+.crossover-link-label {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+.crossover-link-label input {
+    accent-color: var(--accent);
+}
 .effects-card-subwoofer {
     grid-column: 1 / -1;
     order: 20;
@@ -447,7 +537,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     margin: 0 auto;
     border: 1px solid rgba(110, 231, 183, 0.18);
     border-radius: var(--radius-md);
-    background: #08111f;
+    background: var(--canvas-deep);
     overflow: hidden;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
@@ -456,7 +546,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     display: block;
     width: 100%;
     height: 136px;
-    background: #08111f;
+    background: var(--canvas-deep);
     touch-action: pan-y;
     cursor: ew-resize;
 }
@@ -481,9 +571,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 0;
     overflow: hidden;
     padding: 0.7rem;
-    border: 1px solid rgba(148, 163, 184, 0.18);
+    border: 1px solid var(--slate-400-a18);
     border-radius: var(--radius-sm);
-    background: rgba(15, 23, 42, 0.38);
+    background: var(--slate-900-a38);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
@@ -569,7 +659,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     justify-content: space-evenly;
     align-items: end;
     gap: 0.55rem 0.9rem;
-    background: rgba(8, 47, 73, 0.2);
+    background: var(--sub1-tint);
     border-color: rgba(110, 231, 183, 0.26);
 }
 
@@ -591,8 +681,8 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-subwoofer-sub2-group {
-    background: rgba(30, 41, 59, 0.44);
-    border-color: rgba(147, 197, 253, 0.24);
+    background: var(--sub2-tint);
+    border-color: var(--sub2-line);
 }
 
 .effects-subwoofer-group-label {
@@ -630,9 +720,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     align-self: stretch;
     min-width: 0;
     padding: 0.48rem 0.65rem;
-    border: 1px solid rgba(148, 163, 184, 0.14);
+    border: 1px solid var(--slate-400-a14);
     border-radius: var(--radius-sm);
-    background: rgba(15, 23, 42, 0.28);
+    background: var(--slate-900-a28);
     text-align: center;
     color: var(--text-secondary);
     font-size: 0.74rem;
@@ -1077,7 +1167,7 @@ input[type="number"]::-webkit-outer-spin-button {
     appearance: none;
     -webkit-appearance: none;
     padding-right: var(--arrow-reserve);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: var(--arrow-uri);
     background-repeat: no-repeat;
     background-position: right var(--arrow-offset) center;
     background-size: var(--arrow-width) auto;

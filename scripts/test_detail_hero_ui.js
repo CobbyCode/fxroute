@@ -119,7 +119,7 @@ for (const selector of [
 }
 assert.ok(css.includes('@media (max-width: 600px)'),
     'detail heroes must define a phone composition');
-assert.ok(css.includes('@media (min-width: 601px) and (max-width: 1099px)'),
+assert.ok(css.includes('@media (min-width: 601px) and (max-width: 1100px)'),
     'detail heroes must define a tablet composition');
 assert.ok(css.includes('grid-template-columns: clamp(200px, 22vw, 280px)'),
     'desktop detail heroes must use a restrained cover column');
