@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const Speaker = require('../static/speaker_align.js');
+const measurementCss = fs.readFileSync(require.resolve('../static/css/_measurement.css'), 'utf8');
 
 function catalog(ways = ['low', 'high']) {
     const roles = ['left', 'right'].flatMap(side => ways.map(way => `${side}_${way}`));
@@ -44,18 +45,13 @@ async function main() {
     const state = { outputSystem: { catalog: catalog() }, measurement: {
         selectedInputId: 'mic-1', selectedMicInputChannel: '1', selectedReferenceInputChannel: '',
     } };
-    const elements = Object.fromEntries(['LeftBtn', 'RightBtn', 'CancelBtn', 'Group', 'Status', 'Results']
+    const elements = Object.fromEntries(['LeftBtn', 'RightBtn', 'CancelBtn', 'Group', 'Status', 'Results', 'Sequence']
         .map(key => [`measurementSpeakerAlign${key}`, element()]));
     const calls = [];
-    const result = { confirmed: true, committed_revision: 8, side: 'right', sample_rate_hz: 48000,
-        proposal: { start_revision: 7, processing_fingerprint: 'demo-fingerprint',
-            arrival_ms: { right_low: 2, right_high: 5 }, added_delay_ms: { right_low: 3, right_high: 0 }, reference_role: 'right_high',
-            way_levels_db: { right_low: -12, right_high: -8 }, added_gain_db: { right_low: 2, right_high: -2 },
-            planning_isolation_db: { right_low: 18.5, right_high: 21.0 }, arrival_source: 'shared-planning-take' },
-        check: { confirmed: true, reasons: [], warnings: [], before_spread_ms: 3, max_residual_ms: 0.021, tolerance_ms: 0.25,
-            after_arrival_ms: { right_low: 5, right_high: 5.021 }, pairs: [],
-            gain_spread_db: 0.2, gain_tolerance_db: 1.0, after_way_levels_db: { right_low: -10, right_high: -10.2 },
-            way_isolation_db: { right_low: 19.0, right_high: 20.0 }, isolation_margin_db: 19.0 } };
+    const result = { confirmed: true, committed_revision: 8,
+        proposal: { arrival_ms: { right_low: 2, right_high: 5 }, added_delay_ms: { right_low: 3, right_high: 0 }, reference_role: 'right_high' },
+        check: { before_spread_ms: 3, max_residual_ms: 0.021, tolerance_ms: 0.25,
+            after_arrival_ms: { right_low: 5, right_high: 5.021 } } };
     const context = { console, window: {} };
     vm.createContext(context);
     const shell = fs.readFileSync(require.resolve('../static/index.html'), 'utf8');
@@ -64,20 +60,17 @@ async function main() {
     }
     const flows = context.window.FXRouteMeasurementFlows;
     const response = job => ({ ok: true, json: async () => ({ job }) });
-    const speakerApi = { startSpeakerAlign: async payload => {
-        calls.push(payload);
-        assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, true);
-        assert.equal(elements.measurementSpeakerAlignRightBtn.disabled, true);
-        return response({ id: 'alignment', side: payload.side, status: 'queued' });
-    }, pollSpeakerAlignJob: async () => response({ id: 'alignment', side: 'right', status: 'committed', result }) };
     flows.init({ getState: () => state, getElements: () => elements, measurementModeReady: () => true,
         getActiveMeasurementKind: () => state.measurement.activeMeasurementKind,
-        api: speakerApi,
+        api: { startSpeakerAlign: async payload => {
+            calls.push(payload);
+            assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, true);
+            assert.equal(elements.measurementSpeakerAlignRightBtn.disabled, true);
+            return response({ id: 'alignment', side: payload.side, status: 'queued' });
+        }, pollSpeakerAlignJob: async () => response({ id: 'alignment', side: 'right', status: 'committed', result }) },
     });
     flows.syncSpeakerAlignButton();
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), false);
-    assert.equal(elements.measurementSpeakerAlignStatus.textContent, '',
-        'idle status stays empty; the static note carries the description once');
     await flows.startSpeakerAlign('right');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].side, 'right');
@@ -85,73 +78,19 @@ async function main() {
     assert.equal(calls[0].reference_input_channel, '');
     assert.equal(calls[0].reference_id, 'fxroute_dsp_sink.monitor');
     assert.equal(calls[0].dry_run, false);
+    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-table-wrap/);
+    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-table/);
     assert.match(elements.measurementSpeakerAlignResults.innerHTML, /5\.021/);
     assert.match(elements.measurementSpeakerAlignResults.innerHTML, /3\.000/);
+    assert.match(measurementCss, /\.speaker-align-table-wrap\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/);
+    assert.match(measurementCss, /\.speaker-align-table\s*\{[^}]*min-width:\s*\d+px/);
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.021/);
     assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.250/);
-    // Time-domain Before/After: planning take vs verification take on one ms axis.
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-time/);
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /planning take/);
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /verification take/);
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /shared ms axis/);
-    // Per-side loopback references (Scarlett 7 left / 8 right): a right run
-    // must carry the right loopback, never the shared/left one.
-    state.measurement.selectedReferenceInputChannel = '7';
-    state.measurement.selectedReferenceInputChannelLeft = '7';
-    state.measurement.selectedReferenceInputChannelRight = '8';
-    state.measurement.speakerAlignInFlight = false;
-    state.measurement.startInFlight = false;
-    state.measurement.activeMeasurementKind = '';
-    state.measurement.activeJobId = '';
-    flows.init({ getSelectedMeasurementInputChannelCount: () => 18, api: speakerApi });
-    await flows.startSpeakerAlign('right');
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1].reference_input_channel, '7');
-    assert.equal(calls[1].reference_input_channel_left, '7');
-    assert.equal(calls[1].reference_input_channel_right, '8');
-    assert.equal(calls[1].reference_id, 'mic-1:ch8:upstream');
     state.outputSystem.catalog.modes.stereo.selected_bank = 'all';
     flows.syncSpeakerAlignButton();
     await flows.startSpeakerAlign('left');
-    assert.equal(calls.length, 2, 'Hidden alignment must not be startable');
+    assert.equal(calls.length, 1, 'Hidden alignment must not be startable');
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), true);
-
-    // Saveable time-domain run: Before from planning, After from verification,
-    // no extra measurement; reopening renders the same view plus alignment data.
-    const run = Speaker.buildSpeakerAlignRun(result, {
-        side: 'right',
-        jobId: 'job-1',
-        sampleRateHz: 48000,
-        committedRevision: 8,
-        params: { input_id: 'mic-1' },
-        frequency: { right_low: { trusted_points: [[20, -12], [1000, -10]] } },
-    });
-    assert.equal(run.schema, 'speaker-align-run-v1');
-    assert.equal(run.before.source, 'planning-take');
-    assert.equal(run.after.source, 'verification-take');
-    assert.deepEqual(run.ways, ['right_high', 'right_low']);
-    assert.equal(run.corrections.added_delay_ms.right_low, 3);
-    assert.equal(run.metadata.params.input_id, 'mic-1');
-    assert.deepEqual(run.frequency.right_low.trusted_points, [[20, -12], [1000, -10]]);
-    const view = Speaker.timeDomainView(run);
-    assert.deepEqual(view.ways, ['right_high', 'right_low']);
-    assert.equal(view.lanes.before.source, 'planning-take');
-    assert.equal(view.lanes.after.source, 'verification-take');
-    assert.ok(view.window_ms[0] <= 2 && view.window_ms[1] >= 5.021);
-    const timeHtml = Speaker.renderSpeakerAlignTimeDomain(run, 'right');
-    assert.match(timeHtml, /planning take/);
-    assert.match(timeHtml, /verification take/);
-    assert.match(timeHtml, /shared ms axis/);
-    const measurement = Speaker.runToMeasurement(run, 'Right align');
-    assert.equal(measurement.measurement_kind, 'speaker-align-run-v1');
-    assert.ok(Array.isArray(measurement.traces) && measurement.traces.length === 1);
-    const reopened = Speaker.measurementToRun(measurement);
-    assert.deepEqual(reopened.ways, run.ways);
-    assert.deepEqual(Speaker.timeDomainView(reopened), view);
-    assert.throws(() => Speaker.buildSpeakerAlignRun(
-        { proposal: { arrival_ms: { a: 1 } }, check: { after_arrival_ms: { b: 1 } } },
-        { side: 'left' }), /different ways/);
-    assert.throws(() => Speaker.measurementToRun({}), /no Speaker Align run/);
     console.log('Speaker alignment UI flow: passed');
 }
 

@@ -347,7 +347,14 @@
     color: var(--warning, #b45309);
 }
 
+.speaker-align-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
 .speaker-align-table {
+    min-width: 420px;
     width: 100%;
     margin-top: 12px;
     border-collapse: collapse;
