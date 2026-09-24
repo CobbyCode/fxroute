@@ -338,8 +338,11 @@ class VerifyThreeWayTests(unittest.TestCase):
     def setUp(self):
         self.state = crossover_state_3way()
         self.alignment, self.live = alignment_and_live_3way(self.state)
-        self.baseline = planned(self.alignment, self.live, (96, 144, 240),
-                                captures_for_3way(self.alignment, (96, 144, 240)))
+        # The routed sub renders a Main high-pass on every way, so the low way
+        # is an 80-300 Hz band: its planning arrivals must stand further apart
+        # than that band's own lobe for the shared take to separate them.
+        self.baseline = planned(self.alignment, self.live, (96, 336, 576),
+                                captures_for_3way(self.alignment, (96, 336, 576)))
 
     def test_three_way_aligned_confirmation_confirms(self):
         confirmation = confirmation_from(self.alignment, (500, 500, 500))

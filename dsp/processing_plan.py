@@ -71,6 +71,30 @@ def _crossover_filters(role: str, processing: dict, bass: dict,
     return filters
 
 
+def _rendered_crossover(config: dict, topology) -> dict[str, list[dict]]:
+    return {role: _crossover_filters(role, config["processing"][role], config["bass_management"],
+                                     bool(topology.sub_roles), topology.sub_mode)
+            for role in topology.roles}
+
+
+def rendered_crossover_filters(state: dict, *, output_key: str, channels: int) -> dict[str, list[dict]]:
+    """Crossover filters every active role renders, keyed by role.
+
+    The same list ``compile_processing_plan`` puts into each output: the way's
+    own highpass/lowpass plus, with subs routed, the bass-management filter the
+    role inherits (sub low-pass, Main high-pass). A model of a way's rendered
+    response has to read it here: the role's own processing alone misses the
+    Main high-pass.
+    """
+    state = validate_output_state(state)
+    mode = state["active_mode"]
+    config = state["modes"][mode]
+    topology = derive_topology(mode, routing_for_device(state, mode, output_key), channels=channels,
+                               crossover_enabled=config["crossover_enabled"])
+    topology.require_activatable()
+    return copy.deepcopy(_rendered_crossover(config, topology))
+
+
 def compile_processing_plan(state: dict, *, output_key: str, channels: int,
                             sample_rate_hz: int, preset_loader: Callable[[str], dict],
                             neutralize_banks: bool = False) -> dict:
@@ -98,12 +122,11 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
     global_bank = _bank_plan("global", config["banks"]["global"], preset_loader,
                              neutralized=neutralize_banks)
     global_bank["extras"] = {} if (global_bank["bypass"] or neutralize_banks) else copy.deepcopy(config["extras"])
+    crossover = _rendered_crossover(config, topology)
     outputs = []
     for role in topology.roles:
         settings = processing[role]
-        filters = _crossover_filters(role, settings,
-                                     config["bass_management"], bool(topology.sub_roles),
-                                     topology.sub_mode)
+        filters = crossover[role]
         if any(item["frequency_hz"] >= sample_rate_hz / 2 for item in filters):
             raise ValueError(f"Crossover frequency for {role} must be below Nyquist")
         outputs.append({

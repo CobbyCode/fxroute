@@ -30,6 +30,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dsp.crossover import design_crossover
+from measurement.alignment_backend import way_crossover_specs
 from measurement.speaker_verification import (
     MIN_WAY_ISOLATION_DB,
     ARRIVAL_LOBE_MAX_MS,
@@ -61,15 +62,12 @@ QUIET_WAY_DB = -12.0
 
 
 def way_response(processing, role):
-    """Causal frequency response of one way's own crossover filters."""
+    """Causal frequency response of one way's crossover (``way_crossover_specs``)."""
     frequencies = np.fft.rfftfreq(TAKE_SAMPLES, 1.0 / RATE)
     z = np.exp(-2j * np.pi * frequencies / RATE)
     response = np.ones_like(frequencies, dtype=complex)
-    for kind in ("highpass", "lowpass"):
-        spec = processing[role].get(kind)
-        if spec is None:
-            continue
-        for b0, b1, b2, _, a1, a2 in design_crossover({**spec, "kind": kind}, RATE):
+    for spec in way_crossover_specs(processing[role]):
+        for b0, b1, b2, _, a1, a2 in design_crossover(spec, RATE):
             response *= (b0 + b1 * z + b2 * z * z) / (1.0 + a1 * z + a2 * z * z)
     return response
 
@@ -276,6 +274,72 @@ class BandIsolationTests(unittest.TestCase):
         low_level = band_level(low, (40.0, 1200.0), sample_rate_hz=RATE)
         high_level = band_level(high, (5000.0, 16000.0), sample_rate_hz=RATE)
         self.assertAlmostEqual(low_level["level_db"] - high_level["level_db"], QUIET_WAY_DB, delta=1.0)
+
+
+class RenderedMainHighpassTests(unittest.TestCase):
+    """The band model has to carry every filter the engine renders on a way.
+
+    With subs routed, the plan adds the bass-management Main high-pass to every
+    speaker way. The real right side on the test machine: LR24 1 kHz / 3 kHz
+    ways, an LR24 82 Hz Main high-pass, the tweeter 0.354 ms ahead of the
+    woofer and 11 dB louder, and a woofer with its own low-frequency roll-off.
+    A matched filter built from the way's own filters leaves the Main
+    high-pass phase in the low band, whose rebound lobe then outweighs the
+    real arrival: the plan lands about 1 ms late and the take reads as
+    unseparable (6.9 dB on the real take, below the 10 dB gate).
+    """
+
+    LOW = {"lowpass": {"family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 1000.0}}
+    HIGH = {"highpass": {"family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 3000.0}}
+    MAIN_HIGHPASS = {"kind": "highpass", "family": "linkwitz-riley", "slope_db_oct": 24,
+                     "frequency_hz": 82.0}
+    RENDERED = {
+        "right_low": {"crossover": [{"kind": "lowpass", **LOW["lowpass"]}, MAIN_HIGHPASS]},
+        "right_high": {"crossover": [{"kind": "highpass", **HIGH["highpass"]}, MAIN_HIGHPASS]},
+    }
+    OWN_FILTERS_ONLY = {"right_low": LOW, "right_high": HIGH}
+    ROLES = ("right_low", "right_high")
+    LOW_BEHIND_HIGH_MS = 0.354
+
+    def take(self):
+        frequencies = np.fft.rfftfreq(TAKE_SAMPLES, 1.0 / RATE)
+        woofer = np.divide((1j * frequencies / 100.0) ** 2,
+                           (1j * frequencies / 100.0) ** 2 + 1j * frequencies / (100.0 * 0.7) + 1.0)
+        spectrum = np.zeros_like(frequencies, dtype=complex)
+        for role, arrival_ms, gain_db, driver in (
+                ("right_low", self.LOW_BEHIND_HIGH_MS, 0.0, woofer),
+                ("right_high", 0.0, 11.0, 1.0)):
+            delay = ORIGIN_SAMPLES + int(round(arrival_ms * RATE / 1000.0))
+            spectrum += (10.0 ** (gain_db / 20.0) * driver * way_response(self.RENDERED, role)
+                         * np.exp(-2j * np.pi * frequencies * delay / RATE))
+        return np.fft.irfft(spectrum, n=TAKE_SAMPLES)
+
+    def confirm(self, processing):
+        return confirm_take(self.take(), processing=processing, roles=self.ROLES)
+
+    def test_rendered_model_plans_the_real_offset(self):
+        document = self.confirm(self.RENDERED)
+        offset = document["arrival_ms"]["right_low"] - document["arrival_ms"]["right_high"]
+        # The woofer's own roll-off is not modelled; it may pull the band by
+        # a few samples, never by a lobe.
+        self.assertAlmostEqual(offset, self.LOW_BEHIND_HIGH_MS, delta=0.1)
+        for margin in document["way_isolation_db"].values():
+            self.assertTrue(margin is None or margin >= MIN_WAY_ISOLATION_DB, margin)
+
+    def test_own_filters_alone_land_on_the_rebound_and_cannot_separate(self):
+        document = self.confirm(self.OWN_FILTERS_ONLY)
+        offset = document["arrival_ms"]["right_low"] - document["arrival_ms"]["right_high"]
+        self.assertGreater(offset, self.LOW_BEHIND_HIGH_MS + 0.5)
+        self.assertLess(document["way_isolation_db"]["right_low"], MIN_WAY_ISOLATION_DB)
+
+    def test_rendered_list_wins_over_the_ways_own_filters(self):
+        both = {role: {**self.OWN_FILTERS_ONLY[role], **self.RENDERED[role]} for role in self.ROLES}
+        self.assertEqual(self.confirm(both)["arrival_ms"], self.confirm(self.RENDERED)["arrival_ms"])
+
+    def test_malformed_rendered_list_is_rejected(self):
+        for crossover in ({"kind": "lowpass"}, [{"family": "linkwitz-riley"}], ["lowpass"]):
+            with self.subTest(crossover=crossover), self.assertRaises(ValueError):
+                way_band_impulse_response(self.take(), {"crossover": crossover}, sample_rate_hz=RATE)
 
 
 class ArrivalEstimatorTests(unittest.TestCase):

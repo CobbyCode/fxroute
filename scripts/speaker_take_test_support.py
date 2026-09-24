@@ -18,6 +18,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from dsp.crossover import design_crossover
+from measurement.alignment_backend import way_crossover_specs
 
 RATE = 48000
 TAKE_SAMPLES = 32768
@@ -25,9 +26,12 @@ ORIGIN_SAMPLES = 8192
 
 
 def side_processing(alignment: Any) -> dict:
-    """The active mode's processing for the frozen state of one alignment."""
-    state = alignment._state
-    return state["modes"][state["active_mode"]]["processing"]
+    """What the engine renders on every way of one alignment's side.
+
+    The plan's filter list, not the way's own settings: with subs routed it
+    carries the bass-management Main high-pass, exactly like a real take.
+    """
+    return alignment.way_models()
 
 
 def side_roles(alignment: Any) -> list[str]:
@@ -36,15 +40,12 @@ def side_roles(alignment: Any) -> list[str]:
 
 def way_response(processing: dict, role: str, *, sample_rate_hz: int = RATE,
                  size: int = TAKE_SAMPLES) -> np.ndarray:
-    """Causal frequency response of one way's own crossover filters."""
+    """Causal frequency response of one way's crossover (``way_crossover_specs``)."""
     frequencies = np.fft.rfftfreq(size, 1.0 / sample_rate_hz)
     z = np.exp(-2j * np.pi * frequencies / sample_rate_hz)
     response = np.ones_like(frequencies, dtype=complex)
-    for kind in ("highpass", "lowpass"):
-        spec = processing[role].get(kind)
-        if spec is None:
-            continue
-        for b0, b1, b2, _, a1, a2 in design_crossover({**spec, "kind": kind}, sample_rate_hz):
+    for spec in way_crossover_specs(processing[role]):
+        for b0, b1, b2, _, a1, a2 in design_crossover(spec, sample_rate_hz):
             response *= (b0 + b1 * z + b2 * z * z) / (1.0 + a1 * z + a2 * z * z)
     return response
 

@@ -80,22 +80,30 @@ def _flat_band(sections: list, *, sample_rate_hz: int, threshold_db: float) -> t
     return best
 
 
-def way_passband(processing: dict, *, sample_rate_hz: int) -> tuple[float, float]:
-    """Return the usable flat passband of one crossover way in Hz.
+def way_crossover_specs(processing: object) -> list[dict]:
+    """Crossover filter specs of one way, each carrying its ``kind``.
 
-    The band covers frequencies where the way's own crossover filters stay
-    within PASSBAND_FLAT_DB of flat, intersected with the measurement range
-    and Nyquist. Narrow mids whose overlap never reaches -1 dB fall back to
-    -3 dB; a way without any flat region fails closed instead of guessing.
+    ``processing`` is either the way's rendered filter list (``crossover``, as
+    ``dsp.processing_plan.rendered_crossover_filters`` returns it, including a
+    bass-management Main high-pass) or the way's own ``highpass``/``lowpass``
+    settings. The rendered list wins: with subs routed, the way's own filters
+    alone miss the Main high-pass the engine applies.
     """
-    if type(sample_rate_hz) is not int or sample_rate_hz <= 0:
-        raise ValueError("Alignment sample rate must be a positive integer")
-    highpass = processing.get("highpass")
-    lowpass = processing.get("lowpass")
-    if highpass is None and lowpass is None:
-        raise ValueError("Alignment way has no crossover filters")
+    if not isinstance(processing, dict):
+        raise ValueError("Alignment way carries no processing")
+    rendered = processing.get("crossover")
+    if rendered is not None:
+        if not isinstance(rendered, list):
+            raise ValueError("Alignment rendered crossover must be a list of filters")
+        specs = []
+        for spec in rendered:
+            if not isinstance(spec, dict) or spec.get("kind") not in ("highpass", "lowpass"):
+                raise ValueError("Alignment rendered crossover filter must name its kind")
+            specs.append(dict(spec))
+        return specs
     specs = []
-    for kind, spec in (("highpass", highpass), ("lowpass", lowpass)):
+    for kind in ("highpass", "lowpass"):
+        spec = processing.get(kind)
         if spec is None:
             continue
         if not isinstance(spec, dict):
@@ -103,6 +111,23 @@ def way_passband(processing: dict, *, sample_rate_hz: int) -> tuple[float, float
         full = dict(spec)
         full["kind"] = kind
         specs.append(full)
+    return specs
+
+
+def way_passband(processing: dict, *, sample_rate_hz: int) -> tuple[float, float]:
+    """Return the usable flat passband of one crossover way in Hz.
+
+    The band covers frequencies where the way's crossover filters (see
+    ``way_crossover_specs``) stay within PASSBAND_FLAT_DB of flat, intersected
+    with the measurement range and Nyquist. Narrow mids whose overlap never
+    reaches -1 dB fall back to -3 dB; a way without any flat region fails
+    closed instead of guessing.
+    """
+    if type(sample_rate_hz) is not int or sample_rate_hz <= 0:
+        raise ValueError("Alignment sample rate must be a positive integer")
+    specs = way_crossover_specs(processing)
+    if not specs:
+        raise ValueError("Alignment way has no crossover filters")
     sections = []
     for spec in specs:
         sections.extend(design_crossover(spec, sample_rate_hz))
@@ -156,14 +181,7 @@ def _crossover_correction_db(processing: dict | None, frequency_hz: float,
     """
     if processing is None or sample_rate_hz is None:
         return 0.0
-    specs = []
-    for kind in ("highpass", "lowpass"):
-        spec = processing.get(kind)
-        if spec is None:
-            continue
-        full = dict(spec)
-        full["kind"] = kind
-        specs.append(full)
+    specs = way_crossover_specs(processing)
     if not specs:
         return 0.0
     total = 1.0 + 0.0j

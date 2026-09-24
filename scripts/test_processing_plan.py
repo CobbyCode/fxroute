@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audio.output_state import (default_output_state, select_bank, set_bass_management,
                                 set_crossover, set_mode_routing, switch_mode)
 from dsp.persistence import DSPPresetStore
-from dsp.processing_plan import compile_processing_plan
+from dsp.processing_plan import compile_processing_plan, rendered_crossover_filters
 
 
 def crossover_filter(frequency):
@@ -158,6 +158,29 @@ class ProcessingPlanTests(unittest.TestCase):
             self.assertIn({"kind": "lowpass" if role.startswith("sub") else "highpass", **shared},
                           filters[role])
         self.assertNotIn("bessel", [definition["family"] for definition in filters["sub2"]])
+
+    def test_rendered_crossover_filters_are_the_plan_filters(self):
+        """Consumers modelling a way's response read exactly what the plan renders."""
+        for state in (self.crossover_state(),
+                      self.sub_crossover_state(["sub1", "sub2"], frequency_hz=82),
+                      self.sub_crossover_state(["sub_l", "sub_r"], sub_link=False,
+                                               sub_filters={"left": crossover_filter(60),
+                                                            "right": crossover_filter(120)})):
+            with self.subTest(roles=state["modes"]["stereo-sub"]["routing"]["A"]):
+                self.assertEqual(rendered_crossover_filters(state, output_key="A", channels=8),
+                                 self.crossover_by_role(state))
+
+    def test_rendered_crossover_carries_the_main_highpass_only_when_rendered(self):
+        with_subs = self.sub_crossover_state(["sub1", "sub2"], frequency_hz=82)
+        main_highpass = {"kind": "highpass", **crossover_filter(82)}
+        filters = rendered_crossover_filters(with_subs, output_key="A", channels=8)
+        self.assertEqual(filters["right_low"], [{"kind": "lowpass", **crossover_filter(300)}, main_highpass])
+        self.assertEqual(filters["right_high"], [{"kind": "highpass", **crossover_filter(2500)}, main_highpass])
+        without_highpass = set_bass_management(with_subs, "stereo-sub", main_highpass_enabled=False)
+        filters = rendered_crossover_filters(without_highpass, output_key="A", channels=8)
+        self.assertEqual(filters["right_low"], [{"kind": "lowpass", **crossover_filter(300)}])
+        filters = rendered_crossover_filters(self.crossover_state(), output_key="A", channels=8)
+        self.assertEqual(filters["right_low"], [{"kind": "lowpass", **crossover_filter(300)}])
 
     def test_cleared_way_direction_stays_a_valid_plan(self):
         """Type Off is an operating state: the way runs without that filter."""

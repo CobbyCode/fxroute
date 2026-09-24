@@ -44,6 +44,7 @@ from measurement.alignment_backend import (
     MIN_PASSBAND_OCTAVES,
     MIN_PASSBAND_POINTS,
     octave_smooth,
+    way_crossover_specs,
     way_passband,
 )
 
@@ -105,19 +106,21 @@ def _finite(value: object, label: str) -> float:
 
 
 def _crossover_sections(processing: object, sample_rate_hz: int) -> list[list[float]]:
-    """Sections of one way's own crossover filters, in highpass/lowpass order."""
+    """Sections of every crossover filter the way renders (``way_crossover_specs``).
+
+    The matched filter only removes the phase it models: a rendered filter
+    missing here, such as the bass-management Main high-pass, stays in the
+    isolated band and can make the way's rebound lobe its strongest energy.
+    """
     if not isinstance(processing, dict):
         raise ValueError("Speaker verification way carries no processing")
+    try:
+        specs = way_crossover_specs(processing)
+    except ValueError as exc:
+        raise ValueError(f"Speaker verification crossover filter is malformed: {exc}") from exc
     sections: list[list[float]] = []
-    for kind in ("highpass", "lowpass"):
-        spec = processing.get(kind)
-        if spec is None:
-            continue
-        if not isinstance(spec, dict):
-            raise ValueError("Speaker verification crossover filter must be an object")
-        full = dict(spec)
-        full["kind"] = kind
-        sections.extend(design_crossover(full, sample_rate_hz))
+    for spec in specs:
+        sections.extend(design_crossover(spec, sample_rate_hz))
     if not sections:
         raise ValueError("Speaker verification way has no crossover filters")
     return sections

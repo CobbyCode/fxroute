@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 import numpy as np
 
 from audio.output_state import validate_output_state
+from dsp.processing_plan import rendered_crossover_filters
 from measurement.constants import CAPTURE_CLIP_FAIL_DBFS
 from measurement.speaker_verification import side_confirmation
 from measurement.target import (
@@ -124,10 +125,18 @@ class SpeakerAlignment:
                 raise ValueError("Speaker Align requires adjacent lowpass and highpass filters")
             if max(lowpass["frequency_hz"], highpass["frequency_hz"]) >= sample_rate_hz / 2:
                 raise ValueError("Speaker Align crossover must be below Nyquist")
+        # Band isolation and passband levels model each way with every filter
+        # the plan renders on it, the bass-management Main high-pass included.
+        rendered = rendered_crossover_filters(self._state, output_key=output_key, channels=channels)
+        self._way_models = {role: {"crossover": rendered[role]} for role in self._roles}
 
     def capture_requests(self) -> list[dict]:
         """Serial per-way requests in configured low-to-high role order."""
         return copy.deepcopy(self._requests)
+
+    def way_models(self) -> dict:
+        """Rendered crossover of every way of this side, keyed by role."""
+        return copy.deepcopy(self._way_models)
 
     def _side_take_request(self, label: str) -> dict:
         """One shared take of this side: every way of the side plays at once.
@@ -207,10 +216,9 @@ class SpeakerAlignment:
 
     def _side_arrivals(self, take: dict) -> dict:
         """Band-limited way arrivals of one shared take, on its one time base."""
-        processing = self._state["modes"][self._state["active_mode"]]["processing"]
         return side_confirmation(
             impulse_response=take.get("impulse_response"),
-            processing=processing,
+            processing=self._way_models,
             roles=self._roles,
             sample_rate_hz=self._rate,
             start_revision=self._target["revision"],
@@ -358,7 +366,6 @@ class SpeakerAlignment:
         for role, delay in delays.items():
             candidate["modes"][candidate["active_mode"]]["processing"][role]["alignment_ms"] += delay
         mode = candidate["active_mode"]
-        processing = self._state["modes"][mode]["processing"]
         point_shapes = []
         for role in self._roles:
             analysis = (by_role[role].get("analysis") or {})
@@ -373,9 +380,9 @@ class SpeakerAlignment:
             measured = {}
             for role in self._roles:
                 _check_cancel(cancel_requested)
-                passband = way_passband(processing[role], sample_rate_hz=self._rate)
-                estimate = estimate_way_level(by_role[role], passband,
-                                              processing=processing[role],
+                model = self._way_models[role]
+                passband = way_passband(model, sample_rate_hz=self._rate)
+                estimate = estimate_way_level(by_role[role], passband, processing=model,
                                               sample_rate_hz=self._rate)
                 measured[role] = estimate["level_db"]
             way_levels = dict(measured)

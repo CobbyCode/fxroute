@@ -15,9 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import speaker_take_test_support as takes
-from audio.output_state import default_output_state, set_mode_routing, switch_mode, set_crossover
+from audio.output_state import (default_output_state, set_bass_management, set_crossover,
+                                set_mode_routing, switch_mode)
 from dsp.crossover import design_crossover
 from measurement.hybrid import build_complex_response
+from measurement.alignment_backend import way_crossover_specs
 from measurement.analyzer import MeasurementAnalyzer
 from measurement.speaker_align import SpeakerAlignment, require_timing_reference
 from measurement.target import (
@@ -168,7 +170,7 @@ def shared_take(alignment, state, arrivals_ms=None, *, rates=None, level_spread_
     Each way contributes the causal crossover response the engine renders,
     placed at its own total arrival; way level differences come from an IR gain.
     """
-    processing = state["modes"]["stereo-sub"]["processing"]
+    processing = alignment.way_models()
     roles = [request["role"] for request in alignment.capture_requests()]
     arrivals_ms = arrivals_ms or {role: float(index) for index, role in enumerate(roles)}
     rates = rates or {}
@@ -191,11 +193,8 @@ def shared_take(alignment, state, arrivals_ms=None, *, rates=None, level_spread_
 
 def way_spectrum(processing, role, z, frequencies, arrival_ms, rate_factor):
     response = np.ones_like(frequencies, dtype=complex)
-    for kind in ("highpass", "lowpass"):
-        spec = processing[role].get(kind)
-        if spec is None:
-            continue
-        for b0, b1, b2, _, a1, a2 in design_crossover({**spec, "kind": kind}, RATE):
+    for spec in way_crossover_specs(processing[role]):
+        for b0, b1, b2, _, a1, a2 in design_crossover(spec, RATE):
             response = response * (b0 + b1 * z + b2 * z * z) / (1 + a1 * z + a2 * z * z)
     delay = int(round(arrival_ms * RATE / 1000.0))
     return rate_factor * response * np.exp(-2j * np.pi * frequencies * delay / RATE)
@@ -346,6 +345,68 @@ class SideConfirmationTests(unittest.TestCase):
         self.assertAlmostEqual(levels["left_high"], -6.0, delta=1.0)
         spread = max(document["arrival_ms"].values()) - min(document["arrival_ms"].values())
         self.assertLessEqual(spread, 0.02)
+
+
+class RenderedCrossoverTests(unittest.TestCase):
+    """Speaker Align models each way with every filter the plan renders on it.
+
+    The configuration of the real right-side failure: stereo-sub with two subs
+    routed, LR24 1 kHz / 3 kHz ways and an LR24 82 Hz Main high-pass. The
+    woofer's own low-frequency roll-off is part of the take, not of the model.
+    """
+
+    ROUTES = ["left_low", "right_low", "sub1", "sub2", "left_high", "right_high"]
+    LOW_BEHIND_HIGH_MS = 0.354
+
+    def state(self, *, main_highpass_enabled=True):
+        state, _ = state_for(cutoffs=(1000,))
+        state = set_mode_routing(state, "stereo-sub", "dev", self.ROUTES)
+        state = set_bass_management(state, "stereo-sub", frequency_hz=82,
+                                    main_highpass_enabled=main_highpass_enabled)
+        for side in ("left", "right"):
+            state["modes"]["stereo-sub"]["processing"][f"{side}_high"]["highpass"]["frequency_hz"] = 3000
+        return state
+
+    def alignment(self, state):
+        return alignment_for(state, len(self.ROUTES), side="right")
+
+    def test_way_models_carry_the_rendered_main_highpass(self):
+        alignment, _ = self.alignment(self.state())
+        main_highpass = {"kind": "highpass", "family": "linkwitz-riley", "slope_db_oct": 24,
+                         "frequency_hz": 82}
+        models = alignment.way_models()
+        self.assertEqual(set(models), {"right_low", "right_high"})
+        for role in models:
+            self.assertIn(main_highpass, models[role]["crossover"])
+        models["right_low"]["crossover"].clear()
+        self.assertIn(main_highpass, alignment.way_models()["right_low"]["crossover"])
+        alignment, _ = self.alignment(self.state(main_highpass_enabled=False))
+        self.assertEqual(alignment.way_models()["right_low"]["crossover"],
+                         [{"kind": "lowpass", "family": "linkwitz-riley", "slope_db_oct": 24,
+                           "frequency_hz": 1000}])
+
+    def test_right_side_with_main_highpass_plans_the_real_offset(self):
+        alignment, live = self.alignment(self.state())
+        frequencies = np.fft.rfftfreq(takes.TAKE_SAMPLES, 1.0 / RATE)
+        corner = 1j * frequencies / 100.0
+        woofer = corner ** 2 / (corner ** 2 + corner / 0.7 + 1.0)
+        spectrum = np.zeros_like(frequencies, dtype=complex)
+        models = alignment.way_models()
+        for role, arrival_ms, gain_db, driver in (
+                ("right_low", self.LOW_BEHIND_HIGH_MS, 0.0, woofer),
+                ("right_high", 0.0, 11.0, 1.0)):
+            delay = takes.ORIGIN_SAMPLES + int(round(arrival_ms * RATE / 1000.0))
+            spectrum += (10.0 ** (gain_db / 20.0) * driver * takes.way_response(models, role)
+                         * np.exp(-2j * np.pi * frequencies * delay / RATE))
+        request = alignment.planning_request()
+        planning = alignment.planning(takes.take_document(
+            alignment, request, np.fft.irfft(spectrum, n=takes.TAKE_SAMPLES)))
+        proposal = alignment.propose(captures_for(alignment, cutoffs=(1000,)),
+                                     planning=planning, live_target=live)
+        self.assertEqual(proposal["reference_role"], "right_low")
+        self.assertEqual(proposal["added_delay_ms"]["right_low"], 0.0)
+        self.assertAlmostEqual(proposal["added_delay_ms"]["right_high"],
+                               self.LOW_BEHIND_HIGH_MS, delta=0.1)
 
 
 class ComplexOriginTests(unittest.TestCase):

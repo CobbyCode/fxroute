@@ -26,20 +26,12 @@ def points_at(level_db: float, count: int = 96):
 
 
 def shaped_points(alignment, role: str, level_db: float, rate: int = 48000, count: int = 96):
-    """Synthetic way response including its own crossover shape (like real captures)."""
+    """Synthetic way response including its rendered crossover shape (like real captures)."""
     from dsp.crossover import crossover_response, design_crossover
+    from measurement.alignment_backend import way_crossover_specs
     import math
-    processing = alignment._state["modes"][alignment._state["active_mode"]]["processing"][role]
-    specs = []
-    for kind in ("highpass", "lowpass"):
-        spec = processing.get(kind)
-        if spec is None:
-            continue
-        full = dict(spec)
-        full["kind"] = kind
-        specs.append(full)
     sections = []
-    for spec in specs:
+    for spec in way_crossover_specs(alignment.way_models()[role]):
         sections.extend(design_crossover(spec, rate))
     points = []
     for index in range(count):
