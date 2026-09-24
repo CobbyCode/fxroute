@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
 import numpy as np
+
+from common.atomic_write import atomic_write_bytes, atomic_write_text
 
 
 class MeasurementFileStore:
@@ -22,6 +25,7 @@ class MeasurementFileStore:
         self.house_curves_dir = self.jobs_dir / "house_curves"
         self.settings_path = self.jobs_dir / "settings.json"
         self._has_active_job = has_active_job
+        self._settings_lock = threading.RLock()
         for directory in (self.calibrations_dir, self.house_curves_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -47,7 +51,7 @@ class MeasurementFileStore:
         points = self._parse_house_curve_bytes(data)
         safe_name = self._safe_filename(filename or "house-curve.txt")
         target_path = self.house_curves_dir / f"{uuid4().hex[:10]}-{safe_name}"
-        target_path.write_bytes(data)
+        atomic_write_bytes(target_path, data)
         return {
             "status": "ok",
             "house_curves": self._list_house_curve_files(),
@@ -94,10 +98,15 @@ class MeasurementFileStore:
         ref = Path(str(calibration_ref or "")).name.strip()
         if ref and not self._lookup_calibration_file(ref):
             ref = ""
-        settings = self._read_settings()
-        measure_settings = settings.setdefault("measure", {})
-        measure_settings["activeCalibrationFileId"] = ref
-        self._write_settings(settings)
+
+        def update(settings: dict[str, Any]) -> None:
+            measure_settings = settings.setdefault("measure", {})
+            if not isinstance(measure_settings, dict):
+                measure_settings = {}
+                settings["measure"] = measure_settings
+            measure_settings["activeCalibrationFileId"] = ref
+
+        self.update_settings(update)
         return self.get_calibration_state()
 
     def get_active_calibration_file_id(self, files: list[dict[str, Any]] | None = None) -> str:
@@ -128,10 +137,25 @@ class MeasurementFileStore:
     def _store_calibration_file(self, filename: str, data: bytes) -> dict[str, Any]:
         safe_name = self._safe_filename(filename or "calibration.txt")
         target_path = self.calibrations_dir / f"{uuid4().hex[:10]}-{safe_name}"
-        target_path.write_bytes(data)
+        atomic_write_bytes(target_path, data)
         return {"id": target_path.name, "filename": safe_name, "path": str(target_path), "applied": False}
 
+    def update_settings(self, update: Callable[[dict[str, Any]], Any]) -> dict[str, Any]:
+        """Apply a read-modify-write settings update as one critical section."""
+        with self._settings_lock:
+            settings = self._read_settings_unlocked()
+            update(settings)
+            self._write_settings_unlocked(settings)
+            return settings
+
+    def read_settings(self) -> dict[str, Any]:
+        with self._settings_lock:
+            return self._read_settings_unlocked()
+
     def _read_settings(self) -> dict[str, Any]:
+        return self.read_settings()
+
+    def _read_settings_unlocked(self) -> dict[str, Any]:
         if not self.settings_path.exists():
             return {}
         try:
@@ -141,7 +165,14 @@ class MeasurementFileStore:
             return {}
 
     def _write_settings(self, settings: dict[str, Any]) -> None:
-        self.settings_path.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        with self._settings_lock:
+            self._write_settings_unlocked(settings)
+
+    def _write_settings_unlocked(self, settings: dict[str, Any]) -> None:
+        atomic_write_text(
+            self.settings_path,
+            json.dumps(settings, indent=2, sort_keys=True) + "\n",
+        )
 
     def resolve_calibration_meta(
         self,

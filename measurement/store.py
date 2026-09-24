@@ -865,6 +865,12 @@ class MeasurementStore:
     def set_active_calibration_file_id(self, calibration_ref: str | None) -> dict[str, Any]:
         return self._file_store.set_active_calibration_file_id(calibration_ref)
 
+    def update_settings(self, update: Callable[[dict[str, Any]], Any]) -> Any:
+        return self._file_store.update_settings(update)
+
+    def read_settings(self) -> dict[str, Any]:
+        return self._file_store.read_settings()
+
     def get_active_calibration_file_id(self, files: list[dict[str, Any]] | None = None) -> str:
         return self._file_store.get_active_calibration_file_id(files)
 

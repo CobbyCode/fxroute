@@ -70,8 +70,8 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = RuntimeBoundary()
         self.session = SimpleNamespace(capture_entry_epoch=lambda: 42,
                                        measurement_rate=96000,
-                                       has_active_jobs=False,
-                                       active_auto_sub_job_id=None)
+                                       active_auto_sub_job_id=None,
+                                       has_active_jobs=False)
         self.overview = {
             "selected_output": {"key": "dev", "channels": 4, "active_rate": 44100},
             # Deliberately incompatible legacy configuration: only the device

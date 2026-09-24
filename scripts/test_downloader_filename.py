@@ -24,7 +24,9 @@ class DownloaderFilenameTests(unittest.TestCase):
     def _downloader(self):
         with patch.object(Downloader, "_verify_ytdlp"), patch(
             "downloader.get_settings"
-        ) as settings:
+        ) as settings, patch(
+            "downloader.validate_public_url", side_effect=lambda url: url.strip()
+        ):
             settings.return_value.download_dir.mkdir = lambda **_kwargs: None
             return Downloader()
 
@@ -67,7 +69,9 @@ class DownloaderProgressPayloadTests(unittest.TestCase):
     def _downloader(self):
         with patch.object(Downloader, "_verify_ytdlp"), patch(
             "downloader.get_settings"
-        ) as settings:
+        ) as settings, patch(
+            "downloader.validate_public_url", side_effect=lambda url: url.strip()
+        ):
             settings.return_value.download_dir.mkdir = lambda **_kwargs: None
             return Downloader()
 

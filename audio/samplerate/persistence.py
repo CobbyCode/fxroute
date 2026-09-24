@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from common.atomic_write import atomic_write_text
+
 from .constants import (
     SAMPLE_RATE_CANDIDATES,
     SOURCE_MODE_APP_PLAYBACK,
@@ -242,8 +244,7 @@ def _save_audio_output_selection(selected_key: str) -> None:
 
 def _save_audio_source_selection(mode: str, selected_input_key: str | None) -> None:
     path = _audio_source_selection_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
+    atomic_write_text(path, json.dumps({
         "mode": mode,
         "selected_input_key": selected_input_key,
     }, indent=2) + "\n")

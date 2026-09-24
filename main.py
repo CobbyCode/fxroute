@@ -35,11 +35,16 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from config import get_settings
 from http_errors import bad_request, internal_error
-from http_origin import effective_request_scheme, is_request_origin_trusted
+from http_origin import (
+    TrustedOriginMiddleware,
+    effective_request_scheme,
+    is_request_origin_trusted,
+)
 from connection_manager import ConnectionManager
 import system_update as update_lifecycle
 from library.sources import MusicLibraryManager
 from radio.metadata import RadioMetadataService
+from safe_http import BlockedUrlError
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -610,6 +615,12 @@ def _canonical_volume_write_lock() -> asyncio.Lock:
     if runtime.canonical_volume_write_lock is None:
         runtime.canonical_volume_write_lock = asyncio.Lock()
     return runtime.canonical_volume_write_lock
+
+
+def _source_transition_lock() -> asyncio.Lock:
+    if runtime.source_transition_lock is None:
+        runtime.source_transition_lock = asyncio.Lock()
+    return runtime.source_transition_lock
 
 
 async def _drain_worker(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -2982,6 +2993,7 @@ class _SkipPrecompressedAssetsForGZip:
 app = FastAPI(
     lifespan=lifespan,
     middleware=[
+        Middleware(TrustedOriginMiddleware),
         Middleware(_SkipPrecompressedAssetsForGZip),
         Middleware(GZipMiddleware, minimum_size=1024),
     ],
@@ -5129,43 +5141,30 @@ async def save_audio_source_selection_route(request: Request):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "inputKey": <string?>}')
 
     try:
-        try:
-            previous_source_selection = samplerate._audio_source_selection_path().read_bytes()
-        except OSError:
-            previous_source_selection = None
-        previous_source_state = samplerate._load_audio_source_selection()
-        result = set_audio_source_selection(mode, input_key)
-        try:
-            result = await external_input.sync(result)
-            result = await bluetooth_input.sync(result)
-        except Exception:
+        async with _source_transition_lock():
+            previous_source_state = samplerate._load_audio_source_selection()
             try:
-                if previous_source_selection is None:
-                    try:
-                        samplerate._audio_source_selection_path().unlink(missing_ok=True)
-                    except OSError:
-                        logger.exception("Failed to remove persisted source mode after routing failure")
-                elif samplerate._audio_source_selection_path().read_bytes() != previous_source_selection:
-                    samplerate._audio_source_selection_path().write_bytes(previous_source_selection)
-            except OSError:
-                logger.exception("Failed to restore persisted source mode after routing failure")
-            try:
-                restored = set_audio_source_selection(
-                    str(previous_source_state.get("mode") or SOURCE_MODE_APP_PLAYBACK),
-                    previous_source_state.get("selected_input_key"),
-                )
+                result = set_audio_source_selection(mode, input_key)
+                result = await external_input.sync(result)
+                result = await bluetooth_input.sync(result)
+            except BaseException:
                 try:
-                    restored = await external_input.sync(restored)
-                    restored = await bluetooth_input.sync(restored)
-                except Exception:
-                    logger.exception("Failed to re-sync routing after source-mode rollback")
-            except Exception:
-                logger.exception("Failed to restore previous source selection after routing failure")
-            raise
-        if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
-            await _pause_all_app_playback_for_external_input()
-        await peak_monitor_coordinator.sync_source_mode_state(result)
-        return result
+                    restored = set_audio_source_selection(
+                        str(previous_source_state.get("mode") or SOURCE_MODE_APP_PLAYBACK),
+                        previous_source_state.get("selected_input_key"),
+                    )
+                    try:
+                        restored = await external_input.sync(restored)
+                        restored = await bluetooth_input.sync(restored)
+                    except BaseException:
+                        logger.exception("Failed to re-sync routing after source-mode rollback")
+                except BaseException:
+                    logger.exception("Failed to restore previous source selection after routing failure")
+                raise
+            if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
+                await _pause_all_app_playback_for_external_input()
+            await peak_monitor_coordinator.sync_source_mode_state(result)
+            return result
     except ValueError as exc:
         raise bad_request(exc)
     except RuntimeError as exc:
@@ -5341,22 +5340,33 @@ async def refresh_library():
 @app.post("/api/download")
 async def start_download(request: Request):
     global downloader
-    if not downloader:
+    active_downloader = downloader
+    if not active_downloader:
         raise HTTPException(status_code=503, detail="Downloader not available")
     try:
         body = await request.json()
-        url = body.get("url")
-        if not url:
-            raise HTTPException(status_code=400, detail="URL is required")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    url = body.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status_code=400, detail="URL is required")
+    try:
+        # Validation resolves DNS and must not block the FastAPI event loop.
+        await asyncio.to_thread(active_downloader.download, url)
         # No fabricated name up front: the real saved filename is only known
         # once yt-dlp reports it, and /api/download/status serves it as it
         # becomes available (active_download["filename"]).
-        downloader.download(url)
         return {"status": "started", "filename": None}
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        raise internal_error("Download start failed", e)
+    except HTTPException:
+        raise
+    except BlockedUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise internal_error("Download start failed", exc)
 
 @app.post("/api/download/cancel")
 async def cancel_download():

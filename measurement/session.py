@@ -1267,60 +1267,49 @@ def _measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[s
 
 def _read_measurement_setup_settings() -> dict[str, Any]:
     measurement_store = _measurement_services().get_store()
-    path = getattr(measurement_store, "settings_path", None)
-    if not path:
+    if not getattr(measurement_store, "settings_path", None):
         return _measurement_setup_settings_from_payload({})
-    try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        settings = payload if isinstance(payload, dict) else {}
-    except Exception:
-        settings = {}
+    settings = measurement_store.read_settings()
     return _measurement_setup_settings_from_payload(settings)
 
 
 def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
     measurement_store = _measurement_services().get_store()
-    path = getattr(measurement_store, "settings_path", None)
-    if not path:
+    if not getattr(measurement_store, "settings_path", None):
         return _measurement_setup_settings_from_payload({})
-    settings_path = Path(path)
-    try:
-        payload = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
-        settings = payload if isinstance(payload, dict) else {}
-    except Exception:
-        settings = {}
-    measure_settings = settings.setdefault("measure", {})
-    if not isinstance(measure_settings, dict):
-        measure_settings = {}
-        settings["measure"] = measure_settings
 
-    if "selectedInputId" in patch or "input_id" in patch:
-        measure_settings["selectedInputId"] = str(patch.get("selectedInputId", patch.get("input_id")) or "").strip()
-    if "selectedInputKey" in patch or "input_key" in patch:
-        measure_settings["selectedInputKey"] = str(patch.get("selectedInputKey", patch.get("input_key")) or "").strip()
-    if "selectedMicInputChannel" in patch or "mic_input_channel" in patch:
-        raw_mic = patch.get("selectedMicInputChannel", patch.get("mic_input_channel"))
-        measure_settings["selectedMicInputChannel"] = _normalize_measurement_optional_input_channel(raw_mic) or "1"
-    if "selectedReferenceInputChannel" in patch or "reference_input_channel" in patch:
-        raw_reference = patch.get("selectedReferenceInputChannel", patch.get("reference_input_channel"))
-        measure_settings["selectedReferenceInputChannel"] = _normalize_measurement_optional_input_channel(raw_reference)
-    if "selectedReferenceInputChannelLeft" in patch or "reference_input_channel_left" in patch:
-        raw_reference_left = patch.get("selectedReferenceInputChannelLeft", patch.get("reference_input_channel_left"))
-        measure_settings["selectedReferenceInputChannelLeft"] = _normalize_measurement_optional_input_channel(raw_reference_left)
-    if "selectedReferenceInputChannelRight" in patch or "reference_input_channel_right" in patch:
-        raw_reference_right = patch.get("selectedReferenceInputChannelRight", patch.get("reference_input_channel_right"))
-        measure_settings["selectedReferenceInputChannelRight"] = _normalize_measurement_optional_input_channel(raw_reference_right)
-    if "measurementSampleRate" in patch or "measurement_sample_rate" in patch:
-        try:
-            rate = int(patch.get("measurementSampleRate", patch.get("measurement_sample_rate")))
-        except (TypeError, ValueError):
-            rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
-        if rate <= 0:
-            rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
-        measure_settings["measurementSampleRate"] = rate
+    def update(settings: dict[str, Any]) -> None:
+        measure_settings = settings.setdefault("measure", {})
+        if not isinstance(measure_settings, dict):
+            measure_settings = {}
+            settings["measure"] = measure_settings
 
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if "selectedInputId" in patch or "input_id" in patch:
+            measure_settings["selectedInputId"] = str(patch.get("selectedInputId", patch.get("input_id")) or "").strip()
+        if "selectedInputKey" in patch or "input_key" in patch:
+            measure_settings["selectedInputKey"] = str(patch.get("selectedInputKey", patch.get("input_key")) or "").strip()
+        if "selectedMicInputChannel" in patch or "mic_input_channel" in patch:
+            raw_mic = patch.get("selectedMicInputChannel", patch.get("mic_input_channel"))
+            measure_settings["selectedMicInputChannel"] = _normalize_measurement_optional_input_channel(raw_mic) or "1"
+        if "selectedReferenceInputChannel" in patch or "reference_input_channel" in patch:
+            raw_reference = patch.get("selectedReferenceInputChannel", patch.get("reference_input_channel"))
+            measure_settings["selectedReferenceInputChannel"] = _normalize_measurement_optional_input_channel(raw_reference)
+        if "selectedReferenceInputChannelLeft" in patch or "reference_input_channel_left" in patch:
+            raw_reference_left = patch.get("selectedReferenceInputChannelLeft", patch.get("reference_input_channel_left"))
+            measure_settings["selectedReferenceInputChannelLeft"] = _normalize_measurement_optional_input_channel(raw_reference_left)
+        if "selectedReferenceInputChannelRight" in patch or "reference_input_channel_right" in patch:
+            raw_reference_right = patch.get("selectedReferenceInputChannelRight", patch.get("reference_input_channel_right"))
+            measure_settings["selectedReferenceInputChannelRight"] = _normalize_measurement_optional_input_channel(raw_reference_right)
+        if "measurementSampleRate" in patch or "measurement_sample_rate" in patch:
+            try:
+                rate = int(patch.get("measurementSampleRate", patch.get("measurement_sample_rate")))
+            except (TypeError, ValueError):
+                rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
+            if rate <= 0:
+                rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
+            measure_settings["measurementSampleRate"] = rate
+
+    settings = measurement_store.update_settings(update)
     return _measurement_setup_settings_from_payload(settings)
 
 
