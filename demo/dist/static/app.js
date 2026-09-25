@@ -930,6 +930,7 @@ let measurementsLoadErrorText = '';
 let measurementGraphResizeObserver = null;
 let measurementGraphPointerId = null;
 let measurementWindowHeartbeatTimer = null;
+let measurementWindowSessionEpoch = null;
 // Seek - globals
 const MEASUREMENT_PEQ_HANDLE_HIT_RADIUS_PX = 14;
 const MEASUREMENT_PEQ_TOUCH_HANDLE_HIT_RADIUS_PX = 24;
@@ -3949,13 +3950,25 @@ function isMeasurementPanelOpen() {
 }
 
 function sendMeasurementWindowHeartbeat(open, keepalive = false) {
+    const payload = { open: !!open };
+    if (measurementWindowSessionEpoch !== null && measurementWindowSessionEpoch !== undefined) {
+        payload.session_epoch = measurementWindowSessionEpoch;
+    }
     const options = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ open: !!open }),
+        body: JSON.stringify(payload),
     };
     if (keepalive) options.keepalive = true;
-    return fetch('/api/power/measurement-heartbeat', options).catch((error) => {
+    return fetch('/api/power/measurement-heartbeat', options).then((response) => {
+        if (!response || !response.ok) return null;
+        return response.json().catch(() => null);
+    }).then((data) => {
+        if (data && Number.isInteger(data.measurement_session_epoch)) {
+            measurementWindowSessionEpoch = data.measurement_session_epoch;
+        }
+        return null;
+    }).catch((error) => {
         if (!keepalive) console.warn('measurement heartbeat failed', error);
     });
 }

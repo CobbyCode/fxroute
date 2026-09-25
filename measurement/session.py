@@ -432,9 +432,25 @@ class MeasurementSampleRateSession:
         async with self.lock:
             self._speaker_align_release_adapter = adapter
 
-    async def request_open(self) -> None:
-        """Record a heartbeat without changing the audio sample rate."""
+    async def request_open(self, entry_epoch: int | None = None) -> None:
+        """Record a heartbeat without changing the audio sample rate.
+
+        Heartbeats carry the entry epoch the sending tab last observed. A
+        heartbeat from an older context (for example a tab whose timers
+        were suspended across a close) must not cancel a newer pending
+        close, so a mismatched epoch is ignored. Heartbeats without a
+        context (older clients) keep the legacy behavior.
+        """
         async with self.lock:
+            if entry_epoch is not None and entry_epoch != self._entry_epoch:
+                logger.info(
+                    "Measurement sample-rate session heartbeat ignored: caller=measurement-window-open "
+                    "active=%s stale_epoch=%s current_epoch=%s",
+                    self.active,
+                    entry_epoch,
+                    self._entry_epoch,
+                )
+                return
             logger.info(
                 "Measurement sample-rate session heartbeat: caller=measurement-window-open active=%s action=state-only",
                 self.active,

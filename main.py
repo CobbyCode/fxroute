@@ -221,6 +221,22 @@ def _is_measurement_window_open() -> bool:
     return (time.monotonic() - last_measurement_window_seen_at) <= MEASUREMENT_WINDOW_TTL_SECONDS
 
 
+def _heartbeat_session_epoch(value: object) -> int | None:
+    """Return the heartbeat's measurement-session context, if it carries one.
+
+    Tabs echo the ``measurement_session_epoch`` of the last heartbeat
+    response so a stale tab cannot extend a newer measurement context.
+    Missing or invalid values keep the legacy context-free behavior.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        epoch = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return epoch if epoch >= 0 else None
+
+
 def _active_line_source_for_power() -> str | None:
     """Routed line source keeping the amp hint on, if any.
 
@@ -4228,10 +4244,16 @@ async def measurement_window_heartbeat(request: Request):
     else:
         last_measurement_window_seen_at = time.monotonic()
         if measurement_sr_session is not None:
-            await measurement_sr_session.request_open()
+            await measurement_sr_session.request_open(
+                _heartbeat_session_epoch(body.get("session_epoch")))
+    session_epoch = (
+        measurement_sr_session.capture_entry_epoch()
+        if measurement_sr_session is not None else None
+    )
     return {
         "status": "ok",
         "measurement_window_open": _is_measurement_window_open(),
+        "measurement_session_epoch": session_epoch,
     }
 
 

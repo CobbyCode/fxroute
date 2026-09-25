@@ -175,6 +175,12 @@ class MeasurementStore:
         # and handed over to the registered job atomically.
         self._start_slot_lock = threading.Lock()
         self._start_slot_reserved = False
+        # Last successfully determined alignment lag. This is only a
+        # tie-break within the measurement run that determined it: a new
+        # run starts a fresh lag scope (see _begin_measurement_lag_scope),
+        # and competing reference candidates of one take are evaluated in
+        # isolation, so an independent run or candidate never blindly
+        # adopts a stale lag.
         self._last_successful_lag: int | None = None
         # Short-lived input inventory: discovery shells out to wpctl/pactl
         # per source, so back-to-back sweeps reuse a fresh listing instead of
@@ -581,6 +587,9 @@ class MeasurementStore:
                     )
             self._jobs[job_id] = job
             self._start_slot_reserved = False
+            # A new independent run must not adopt the previous run's
+            # alignment lag: continuity only applies within this run.
+            self._begin_measurement_lag_scope()
         try:
             self._persistence._persist_job(job)
             self._job_runner.start(job_id, job, executor)
@@ -1410,6 +1419,15 @@ class MeasurementStore:
         """Release a held start reservation (preparation failure path)."""
         with self._start_slot_lock:
             self._start_slot_reserved = False
+
+    def _begin_measurement_lag_scope(self) -> None:
+        """Start a fresh lag-continuity scope for one independent measurement run.
+
+        The stored alignment lag may only break ties within the run that
+        determined it. Every newly registered run therefore discards the
+        previous run's lag instead of adopting it unverified.
+        """
+        self._last_successful_lag = None
 
     def _normalize_stale_jobs(self) -> None:
         """Promote non-terminal jobs without a live worker to a terminal state.

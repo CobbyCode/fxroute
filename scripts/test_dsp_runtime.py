@@ -529,6 +529,65 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_repeated_cancel_keeps_raw_scope_until_restore_completes(self):
+        restore_started = asyncio.Event()
+        restore_may_finish = asyncio.Event()
+        restore_finished = asyncio.Event()
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+
+            async def fake_set_bypass(enabled):
+                restore_started.set()
+                await restore_may_finish.wait()
+                restore_finished.set()
+                return False
+
+            runtime.set_effect_bypass = fake_set_bypass
+            await runtime._measurement_scope_lock.acquire()
+            task = asyncio.create_task(runtime.exit_raw_measurement(False))
+            await restore_started.wait()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            self.assertTrue(runtime._measurement_scope_lock.locked())
+            contender = asyncio.create_task(runtime._measurement_scope_lock.acquire())
+            await asyncio.sleep(0.05)
+            # No second measurement path may take the scope while the old
+            # restore is still in flight.
+            self.assertFalse(contender.done())
+            contender.cancel()
+            try:
+                await contender
+            except asyncio.CancelledError:
+                pass
+            task.cancel()
+            await asyncio.sleep(0.05)
+            self.assertTrue(runtime._measurement_scope_lock.locked())
+            restore_may_finish.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            await asyncio.sleep(0)
+            self.assertTrue(restore_finished.is_set())
+            self.assertFalse(runtime._measurement_scope_lock.locked())
+
+        asyncio.run(exercise())
+
+    def test_failed_raw_scope_restore_releases_scope_and_raises(self):
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+
+            async def failing_set_bypass(enabled):
+                raise RuntimeError("engine unreachable")
+
+            runtime.set_effect_bypass = failing_set_bypass
+            await runtime._measurement_scope_lock.acquire()
+            with self.assertRaises(RuntimeError):
+                await runtime.exit_raw_measurement(False)
+            self.assertFalse(runtime._measurement_scope_lock.locked())
+
+        asyncio.run(exercise())
+
     def test_guarded_rebuild_starts_candidate_at_guard_and_ramps(self):
         events = []
 

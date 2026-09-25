@@ -687,12 +687,17 @@ class DSPRuntime:
             raise
 
     async def exit_raw_measurement(self, previous: bool) -> None:
+        """Restore the pre-measurement bypass state and release the scope.
+
+        The engine exchange and the recorded state finish as one unit: a
+        cancel received meanwhile is re-raised only after the restoration
+        has landed, so the scope lock is never released while an old
+        restore is still in flight and no second measurement path can take
+        over the scope early.
+        """
         restoration = asyncio.create_task(self.set_effect_bypass(previous))
         try:
-            await asyncio.shield(restoration)
-        except BaseException:
-            await restoration
-            raise
+            await run_to_completion(restoration)
         finally:
             self._measurement_scope_lock.release()
 

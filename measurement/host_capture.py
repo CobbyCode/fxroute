@@ -98,6 +98,43 @@ class HostCaptureRunner:
             )
         return select_reference_candidate(candidates)
 
+    @staticmethod
+    def _select_reference_candidate_isolated(
+        store,
+        analyze: Callable[[int, str], dict[str, Any]],
+        indexes: list[int],
+        select_reference_candidate: Callable[[list[dict[str, Any]]], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Admit one reference candidate without cross-candidate lag continuity.
+
+        Competing candidates of one take are independent measurement
+        contexts: no candidate may adopt another candidate's (or a previous
+        run's) alignment lag. Every candidate is evaluated unverified; only
+        the winner's lag continues the run's continuity scope. A failed
+        selection restores the run's previous lag.
+        """
+        saved_lag = store._last_successful_lag
+        store._begin_measurement_lag_scope()
+
+        def _analyze_isolated_candidate(candidate_channel_index: int, candidate_label: str) -> dict[str, Any]:
+            store._last_successful_lag = None
+            return analyze(candidate_channel_index, candidate_label)
+
+        try:
+            chosen = HostCaptureRunner._select_reference_candidate(
+                _analyze_isolated_candidate, indexes, select_reference_candidate
+            )
+        except BaseException:
+            store._last_successful_lag = saved_lag
+            raise
+        winner_analysis = chosen.get("analysis")
+        winner_clock = (winner_analysis.get("clock") if isinstance(winner_analysis, dict) else None) or {}
+        winner_lag = winner_clock.get("selected_lag")
+        store._last_successful_lag = (
+            int(winner_lag) if winner_lag is not None else saved_lag
+        )
+        return chosen
+
     def execute(
         self,
         *,
@@ -471,8 +508,9 @@ class HostCaptureRunner:
 
         try:
             if len(capture_reference_channel_indexes) > 1 and callable(select_reference_candidate):
-                chosen_reference = self._select_reference_candidate(
-                    _analyze_reference, capture_reference_channel_indexes, select_reference_candidate
+                chosen_reference = self._select_reference_candidate_isolated(
+                    store, _analyze_reference,
+                    capture_reference_channel_indexes, select_reference_candidate,
                 )
             else:
                 chosen_reference = {
