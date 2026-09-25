@@ -28,6 +28,20 @@ class _ServiceProcess:
         return b"", b""
 
 
+def _readiness_reports_active():
+    """Stub the post-op service-state readback as active.
+
+    The guard tests exercise mutual exclusion with a stubbed installer, not
+    readiness gating; without this the completing op would fail closed on
+    the real (inactive) test-host service state.
+    """
+    return mock.patch.object(
+        streaming_api,
+        "_read_user_service_active_state",
+        new=mock.AsyncMock(return_value="active"),
+    )
+
+
 class ProviderAdminGuardTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.client = httpx.AsyncClient(
@@ -52,7 +66,8 @@ class ProviderAdminGuardTests(unittest.IsolatedAsyncioTestCase):
             raise AssertionError("systemctl spawned while provider install is active")
 
         with mock.patch.object(streaming_api, "_run_provider_installer_op", new=installer), \
-             mock.patch.object(streaming_api.asyncio, "create_subprocess_exec", new=forbidden_exec):
+              mock.patch.object(streaming_api.asyncio, "create_subprocess_exec", new=forbidden_exec), \
+              _readiness_reports_active():
             first = asyncio.create_task(self.client.post(INSTALL))
             try:
                 await asyncio.wait_for(entered.wait(), 2)
@@ -76,7 +91,8 @@ class ProviderAdminGuardTests(unittest.IsolatedAsyncioTestCase):
             return _ServiceProcess()
 
         with mock.patch.object(streaming_api.asyncio, "create_subprocess_exec", new=service_exec), \
-             mock.patch.object(streaming_api, "_run_provider_installer_op", new=mock.AsyncMock(return_value={"stdout": "", "stderr": "", "returncode": 0})) as installer:
+              mock.patch.object(streaming_api, "_run_provider_installer_op", new=mock.AsyncMock(return_value={"stdout": "", "stderr": "", "returncode": 0})) as installer, \
+              _readiness_reports_active():
             first = asyncio.create_task(self.client.post(SERVICE))
             try:
                 await asyncio.wait_for(entered.wait(), 2)
@@ -102,7 +118,8 @@ class ProviderAdminGuardTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("installer failed")
             return {"stdout": "", "stderr": "", "returncode": 0}
 
-        with mock.patch.object(streaming_api, "_run_provider_installer_op", new=failing_uninstall):
+        with mock.patch.object(streaming_api, "_run_provider_installer_op", new=failing_uninstall), \
+              _readiness_reports_active():
             first = asyncio.create_task(self.client.post(UNINSTALL))
             try:
                 await asyncio.wait_for(entered.wait(), 2)
@@ -130,7 +147,8 @@ class ProviderAdminGuardTests(unittest.IsolatedAsyncioTestCase):
             first.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await first
-        with mock.patch.object(streaming_api, "_run_provider_installer_op", new=mock.AsyncMock(return_value={"stdout": "", "stderr": "", "returncode": 0})):
+        with mock.patch.object(streaming_api, "_run_provider_installer_op", new=mock.AsyncMock(return_value={"stdout": "", "stderr": "", "returncode": 0})), \
+              _readiness_reports_active():
             response = await self.client.post(INSTALL)
         self.assertEqual(response.status_code, 200, response.text)
 
@@ -151,7 +169,8 @@ class ProviderAdminGuardTests(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(system_update, "run_update_script", new=update_script), \
              mock.patch.object(system_update, "restart_service_after_response", new=restart), \
-             mock.patch.object(streaming_api, "_run_provider_installer_op", new=mock.AsyncMock(return_value={"stdout": "", "stderr": "", "returncode": 0})) as installer:
+              mock.patch.object(streaming_api, "_run_provider_installer_op", new=mock.AsyncMock(return_value={"stdout": "", "stderr": "", "returncode": 0})) as installer, \
+              _readiness_reports_active():
             update_task = asyncio.create_task(self.client.post(UPDATE))
             try:
                 await asyncio.wait_for(entered.wait(), 2)

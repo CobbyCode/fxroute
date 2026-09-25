@@ -55,6 +55,10 @@ _PROVIDER_HELPER_MISSING_CONTRACT = (
 _LOCAL_HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _LOCAL_HOSTNAME_RESERVED = {"localhost"}
 _SERVICE_RESTART_TERMINATE_GRACE_SECONDS = 3
+_SERVICE_STATE_READBACK_TIMEOUT_SECONDS = 10
+# Providers whose install path owns a user service: success requires the
+# unit to actually reach ActiveState=active, not just installer exit 0.
+_PROVIDER_SERVICE_UNITS = {"spotify": "spotifyd.service", "qobuz": "qbzd.service"}
 
 _STREAMING_TRANSPORT_ACTIONS = {
     "play",
@@ -734,6 +738,48 @@ async def _run_provider_installer_op(script: Path, label: str, *args: str) -> di
     return result
 
 
+async def _read_user_service_active_state(unit: str) -> str | None:
+    """Return the ActiveState of a user service, or None when unreadable.
+
+    A zero systemctl exit only reports that the request was accepted; only
+    this readback shows whether the unit actually reached active state.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl",
+            "--user",
+            "show",
+            "-p",
+            "ActiveState",
+            "--value",
+            unit,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError:
+        return None
+    communicate_task = asyncio.create_task(proc.communicate())
+    try:
+        stdout, _stderr = await asyncio.wait_for(
+            asyncio.shield(communicate_task),
+            timeout=_SERVICE_STATE_READBACK_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        if await pw_link.stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        ):
+            raise asyncio.CancelledError
+        return None
+    except asyncio.CancelledError:
+        await pw_link.stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        )
+        raise
+    if proc.returncode != 0:
+        return None
+    return stdout.decode(errors="replace").strip() or None
+
+
 @router.get("/api/streaming/providers/admin")
 async def api_streaming_providers_admin():
     """Operator-facing provider administration state for Settings -> Providers."""
@@ -841,6 +887,28 @@ async def api_streaming_provider_install(provider_id: str, request: Request):
                 )
         except Exception:
             logger.warning("TIDAL provider module refresh failed", exc_info=True)
+    unit = _PROVIDER_SERVICE_UNITS.get(provider_id)
+    if unit is not None:
+        # Installer exit 0 covers download/verify/stage failures, but the
+        # service restarts inside install.sh are warn-only: a failed restart
+        # or enable still exits 0. Only report success when the unit the
+        # install path owns actually reached active state.
+        state = await _read_user_service_active_state(unit)
+        if state != "active":
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"{provider_id} install finished but {unit} is not active "
+                    f"(ActiveState={state or 'unknown'}); restart the service and retry"
+                ),
+            )
+    elif provider_id == "tidal" and not streaming.get_provider(provider_id).is_installed():
+        # No service to read back for TIDAL: the import verdict refreshed
+        # above is the readiness signal.
+        raise HTTPException(
+            status_code=500,
+            detail="tidal install finished but tidalapi is still not importable",
+        )
     return {
         "ok": True,
         "provider_id": provider_id,
@@ -880,7 +948,7 @@ async def api_streaming_provider_uninstall(provider_id: str, request: Request):
 @_guard_provider_admin
 async def api_streaming_provider_service_action(provider_id: str, action: str, request: Request):
     """Start/stop/restart a provider's user service (Connect readiness)."""
-    unit = {"spotify": "spotifyd.service", "qobuz": "qbzd.service"}.get(provider_id)
+    unit = _PROVIDER_SERVICE_UNITS.get(provider_id)
     if unit is None:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} has no service to control")
     if action not in {"start", "stop", "restart"}:
@@ -912,6 +980,16 @@ async def api_streaming_provider_service_action(provider_id: str, action: str, r
     if proc.returncode != 0:
         detail = stderr.decode(errors="replace").strip() or f"systemctl {action} {unit} failed"
         raise HTTPException(status_code=500, detail=detail)
+    if action in {"start", "restart"}:
+        # systemctl exit 0 only reports that the job was queued/accepted; a
+        # unit that immediately fails still exits 0. Read back the resulting
+        # state and fail a start/restart that never reached active.
+        state = await _read_user_service_active_state(unit)
+        if state != "active":
+            raise HTTPException(
+                status_code=500,
+                detail=f"systemctl {action} {unit} did not reach active state (ActiveState={state or 'unknown'})",
+            )
     provider = streaming.get_provider(provider_id)
     return {
         "ok": True,
@@ -929,7 +1007,11 @@ def _mdns_device_name() -> str:
 
 
 async def _restart_spotifyd_best_effort() -> bool:
-    """Restart the spotifyd user service; never raises, returns success."""
+    """Restart the spotifyd user service; never raises, returns success.
+
+    Success requires the restart to be accepted (exit 0) and the unit to
+    actually reach ActiveState=active afterwards.
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             "systemctl",
@@ -940,7 +1022,9 @@ async def _restart_spotifyd_best_effort() -> bool:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await asyncio.wait_for(proc.wait(), timeout=15)
-        return proc.returncode == 0
+        if proc.returncode != 0:
+            return False
+        return (await _read_user_service_active_state("spotifyd.service")) == "active"
     except (OSError, asyncio.TimeoutError):
         return False
 
