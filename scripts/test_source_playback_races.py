@@ -30,6 +30,8 @@ from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
+import audio.bluetooth as bluetooth_module
+from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
 from playback_transition_test_support import MainCoreTransitionRuntime
 
@@ -441,6 +443,114 @@ class SourceRouteTests(SourceRaceCase):
 
     def _external_overview(self, key="line-in"):
         return {"mode": "external-input", "selected_input": {"key": key}}
+
+    async def test_monitor_peak_publish_cannot_follow_newer_source_switch(self):
+        persisted = {"mode": "bluetooth-input", "selected_input_key": None}
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        peak_modes = []
+
+        async def monitor_peak(overview):
+            if overview["mode"] == "bluetooth-input":
+                entered.set()
+                await release.wait()
+            peak_modes.append(overview["mode"])
+
+        async def route_peak(overview):
+            peak_modes.append(overview["mode"])
+
+        monitor = BluetoothInputMonitor(BluetoothInputDependencies(
+            sync_peak_monitor_for_source_mode_state=monitor_peak,
+            get_persisted_source_mode=lambda: persisted["mode"],
+            get_source_transition_lock=lambda: main._source_transition_lock(),
+        ))
+
+        def select(mode, input_key=None):
+            persisted.update(mode=mode, selected_input_key=input_key)
+            return self._external_overview(input_key or "line-in") if mode == "external-input" else {"mode": mode}
+
+        with patch.object(main.samplerate, "_load_audio_source_selection", side_effect=lambda: dict(persisted)), patch.object(
+            main, "set_audio_source_selection", side_effect=select
+        ), patch.object(main, "bluetooth_input", monitor), patch.object(
+            main.external_input, "sync", AsyncMock(side_effect=lambda overview: overview)
+        ), patch.object(monitor, "sync", AsyncMock(side_effect=lambda overview: overview)), patch.object(
+            bluetooth_module, "get_audio_source_overview", side_effect=lambda: {"mode": persisted["mode"]}
+        ), patch.object(main, "_pause_all_app_playback_for_external_input", AsyncMock()), patch.object(
+            main.peak_monitor_coordinator, "sync_source_mode_state", route_peak
+        ):
+            monitor.monitor_task = asyncio.create_task(monitor.run_monitor_loop())
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                switch = asyncio.create_task(main.save_audio_source_selection_route(
+                    self._request("external-input", "line-in")
+                ))
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                self.assertFalse(switch.done())
+                self.assertEqual(peak_modes, [])
+                release.set()
+                await asyncio.wait_for(switch, 2)
+                await asyncio.sleep(0)
+                self.assertEqual(peak_modes[-1], "external-input")
+            finally:
+                release.set()
+                await monitor.stop()
+
+    async def test_older_bluetooth_sync_cannot_relink_after_newer_external_switch(self):
+        persisted = {"mode": "bluetooth-input", "selected_input_key": None}
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        monitor = BluetoothInputMonitor(BluetoothInputDependencies(
+            sync_peak_monitor_for_source_mode_state=AsyncMock(),
+            get_persisted_source_mode=lambda: persisted["mode"],
+        ))
+
+        async def slow_agent():
+            entered.set()
+            await release.wait()
+
+        def select(mode, input_key=None):
+            persisted.update(mode=mode, selected_input_key=input_key)
+            if mode == "external-input":
+                return self._external_overview(input_key or "line-in")
+            return {"mode": mode, "bluetooth": {"selectable": True}}
+
+        with patch.object(main.samplerate, "_load_audio_source_selection", side_effect=lambda: dict(persisted)), patch.object(
+            main, "set_audio_source_selection", side_effect=select
+        ), patch.object(main, "bluetooth_input", monitor), patch.object(
+            main.external_input, "sync", AsyncMock(side_effect=lambda overview: overview)
+        ), patch.object(monitor, "_ensure_agent", slow_agent), patch.object(
+            monitor, "_link_source_to_dsp", AsyncMock()
+        ), patch.object(bluetooth_module, "input_links_present", AsyncMock(return_value=True)), patch.object(
+            monitor, "stop_agent", AsyncMock()
+        ), patch.object(
+            bluetooth_module, "get_bluetooth_audio_overview",
+            return_value={"receiver_session": {"source_name": "bluez-old"}},
+        ), patch.object(
+            bluetooth_module, "get_audio_source_overview",
+            side_effect=lambda: {"mode": persisted["mode"]},
+        ), patch.object(bluetooth_module, "set_bluetooth_receiver_enabled"), patch.object(
+            bluetooth_module, "disconnect_connected_bluetooth_audio_sources", return_value=[]
+        ), patch.object(main, "_pause_all_app_playback_for_external_input", AsyncMock()), patch.object(
+            main.peak_monitor_coordinator, "sync_source_mode_state", AsyncMock()
+        ):
+            older = asyncio.create_task(monitor.sync({"mode": "bluetooth-input", "bluetooth": {"selectable": True}}))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                newer = asyncio.create_task(main.save_audio_source_selection_route(
+                    self._request("external-input", "line-in")
+                ))
+                await asyncio.sleep(0)
+                release.set()
+                await asyncio.wait_for(older, 2)
+                await asyncio.wait_for(newer, 2)
+                self.assertGreater(main.playback_state.source_generation, self._state["source_generation"])
+                self.assertIsNone(monitor.input_source_name)
+            finally:
+                release.set()
+                if not older.done():
+                    older.cancel()
+                await asyncio.gather(older, return_exceptions=True)
 
     async def test_switch_bumps_generation_and_switch_back_restores_play(self):
         persisted = {"mode": "app-playback", "selected_input_key": None}

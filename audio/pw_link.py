@@ -95,10 +95,23 @@ async def run_pw_link_command(*args: str) -> str:
         # A hanging PipeWire registry must not block a request forever.
         # Report the timeout as a controlled command failure, exactly like
         # the nonzero-exit path below.
-        await stop_pw_link_process(proc)
+        cancelled = await stop_command_child_cancellation_safe(
+            proc, PW_LINK_TERMINATE_GRACE_SECONDS,
+            cleanup_log="pw-link child cleanup failed after timeout",
+            cleanup_log_exc_info=True,
+        )
+        if cancelled:
+            raise asyncio.CancelledError
         raise RuntimeError(
             f"pw-link {' '.join(args)} timed out after {PW_LINK_COMMAND_TIMEOUT_SECONDS}s"
         )
+    except asyncio.CancelledError:
+        await stop_command_child_cancellation_safe(
+            proc, PW_LINK_TERMINATE_GRACE_SECONDS,
+            cleanup_log="pw-link child cleanup failed after cancellation",
+            cleanup_log_exc_info=True,
+        )
+        raise
     if proc.returncode != 0:
         raise RuntimeError(stderr.decode(errors="ignore").strip() or f"pw-link {' '.join(args)} failed")
     return stdout.decode(errors="ignore").strip()

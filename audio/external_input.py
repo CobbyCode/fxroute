@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""External-input monitoring loopback routing.
+"""External-input monitoring loopback routing and link recovery.
 
 Owns the external-input loopback source name and the link
 connect/disconnect behavior, moved out of ``main.py``.  No imports from
@@ -8,14 +8,17 @@ connect/disconnect behavior, moved out of ``main.py``.  No imports from
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from audio import pw_link
+from audio.input_links import input_links_present
 from audio.samplerate import SOURCE_MODE_EXTERNAL_INPUT
 
 logger = logging.getLogger(__name__)
+EXTERNAL_INPUT_MONITOR_INTERVAL_SECONDS = 3
 
 OverviewReader = Callable[[], dict[str, Any]]
 
@@ -38,6 +41,9 @@ class ExternalInputRoutingDependencies:
     """Live services the external-input routing needs."""
 
     get_audio_source_overview: OverviewReader
+    get_persisted_source_mode: Callable[[], str] | None = None
+    get_source_transition_lock: Callable[[], asyncio.Lock] | None = None
+    sync_peak_monitor_for_source_mode_state: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
 
 class ExternalInputRouting:
@@ -49,6 +55,8 @@ class ExternalInputRouting:
         self.loopback_selection_key: str | None = None
         self._active_channels: tuple[str, str] = _LEGACY_CHANNELS
         self._pending_channels: tuple[str, str] | None = None
+        self._sync_lock = asyncio.Lock()
+        self.monitor_task: asyncio.Task | None = None
 
     def _candidate_source_ports(self, source_name: str, channel: str) -> tuple[str, ...]:
         return (
@@ -107,10 +115,12 @@ class ExternalInputRouting:
         if left == right:
             raise RuntimeError("External input requires two distinct stereo channels")
         identity = (selection_key or "").strip() or normalized
-        if self.loopback_selection_key == identity or (
-            selection_key is None and self.loopback_selection_key is None
+        channels = ((left, "FL"), (right, "FR"))
+        if (
+            self.loopback_selection_key == identity
             and self.loopback_source_name == normalized
             and self._active_channels == (left, right)
+            and await input_links_present(normalized, channels)
         ):
             return
         await self.disable()
@@ -120,6 +130,8 @@ class ExternalInputRouting:
                 source_ports = self._candidate_source_ports(normalized, channel)
                 sink_port = f"fxroute_dsp_sink:playback_{sink_side}"
                 await pw_link.connect_ports(source_ports, sink_port)
+            if not await input_links_present(normalized, channels):
+                raise RuntimeError("External input links missing after reconnect")
         except BaseException:
             try:
                 await self._disconnect_source(normalized)
@@ -136,6 +148,10 @@ class ExternalInputRouting:
         )
 
     async def sync(self, source_overview: dict[str, Any] | None = None) -> dict[str, Any]:
+        async with self._sync_lock:
+            return await self._sync_unlocked(source_overview)
+
+    async def _sync_unlocked(self, source_overview: dict[str, Any] | None = None) -> dict[str, Any]:
         overview = source_overview or self._deps.get_audio_source_overview()
         if overview.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
             await self.disable()
@@ -153,3 +169,43 @@ class ExternalInputRouting:
             selection_key=str(current_input.get("key") or ""),
         )
         return overview
+
+    async def _monitor_once(self) -> None:
+        overview = await asyncio.to_thread(self._deps.get_audio_source_overview)
+        if overview.get("mode") == SOURCE_MODE_EXTERNAL_INPUT:
+            overview = await self.sync(overview)
+        elif self.loopback_source_name is not None:
+            await self.sync(overview)
+        else:
+            return
+        if self._deps.sync_peak_monitor_for_source_mode_state is not None:
+            await self._deps.sync_peak_monitor_for_source_mode_state(overview)
+
+    async def run_monitor_loop(self) -> None:
+        while True:
+            mode_provider = self._deps.get_persisted_source_mode
+            if mode_provider is not None and mode_provider() != SOURCE_MODE_EXTERNAL_INPUT and self.loopback_source_name is None:
+                await asyncio.sleep(EXTERNAL_INPUT_MONITOR_INTERVAL_SECONDS)
+                continue
+            try:
+                lock_provider = self._deps.get_source_transition_lock
+                if lock_provider is not None:
+                    async with lock_provider():
+                        await self._monitor_once()
+                else:
+                    await self._monitor_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("External input monitor loop check failed: %s", exc)
+            await asyncio.sleep(EXTERNAL_INPUT_MONITOR_INTERVAL_SECONDS)
+
+    async def stop(self) -> None:
+        task = self.monitor_task
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if self.monitor_task is task:
+                self.monitor_task = None
+        await self.disable()

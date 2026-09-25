@@ -8,6 +8,7 @@ or be duplicated onto both sides.
 """
 
 import pathlib
+import asyncio
 import sys
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -283,11 +284,51 @@ class SourceSelectionKeyTests(unittest.TestCase):
 
 
 class ExternalInputRoutingTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Selection tests model successful writes; graph readback has its own tests.
+        self.enterContext(patch("audio.external_input.input_links_present", new=AsyncMock(return_value=True)))
+
     def _routing(self, current_input: dict) -> ExternalInputRouting:
         overview = {"mode": "external-input", "selected_input": current_input}
         return ExternalInputRouting(ExternalInputRoutingDependencies(
             get_audio_source_overview=lambda: overview,
         ))
+
+    async def test_older_external_sync_cannot_overwrite_newer_pair(self):
+        first = {"mode": "external-input", "selected_input": {
+            "key": "old::pair:1-2", "source_key": "old",
+            "left_channel": "FL", "right_channel": "FR",
+        }}
+        second = {"mode": "external-input", "selected_input": {
+            "key": "new::pair:3-4", "source_key": "new",
+            "left_channel": "RL", "right_channel": "RR",
+        }}
+        routing = self._routing(first["selected_input"])
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def connect(ports, _sink):
+            if ports[0].startswith("old:") and not entered.is_set():
+                entered.set()
+                await release.wait()
+
+        with patch("audio.pw_link.connect_ports", new=connect), patch(
+            "audio.pw_link.disconnect_ports", new=AsyncMock()
+        ):
+            older = asyncio.create_task(routing.sync(first))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                newer = asyncio.create_task(routing.sync(second))
+                await asyncio.sleep(0)
+                release.set()
+                await asyncio.wait_for(asyncio.gather(older, newer), 2)
+                self.assertEqual(routing.loopback_source_name, "new")
+                self.assertEqual(routing.loopback_selection_key, "new::pair:3-4")
+            finally:
+                release.set()
+                if not older.done():
+                    older.cancel()
+                await asyncio.gather(older, return_exceptions=True)
 
     async def test_sync_routes_selected_pair_to_dsp(self):
         routing = self._routing({

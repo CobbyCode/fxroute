@@ -117,6 +117,115 @@ class RunPwLinkCommandTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ChildProcessError):
             os.waitpid(proc.pid, os.WNOHANG)
 
+    async def test_cancellation_with_real_process_terminates_and_reaps(self):
+        real_exec = asyncio.create_subprocess_exec
+        started = asyncio.Event()
+        captured = {}
+
+        async def fake_exec(*args, **kwargs):
+            proc = await real_exec("sleep", "30", stdout=asyncio.subprocess.PIPE,
+                                   stderr=asyncio.subprocess.PIPE)
+            captured["proc"] = proc
+            started.set()
+            return proc
+
+        with patch.object(pw_link.asyncio, "create_subprocess_exec", fake_exec), patch.object(
+            pw_link, "PW_LINK_TERMINATE_GRACE_SECONDS", 0.2
+        ):
+            task = asyncio.create_task(pw_link.run_pw_link_command("-l"))
+            await started.wait()
+            await asyncio.sleep(0)
+            task.cancel()
+            try:
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 2)
+                proc = captured["proc"]
+                self.assertIsNotNone(proc.returncode)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(proc.pid, os.WNOHANG)
+            finally:
+                proc = captured["proc"]
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.communicate()
+
+    async def test_repeated_cancellation_still_reaps_sigterm_resistant_child(self):
+        real_exec = asyncio.create_subprocess_exec
+        started = asyncio.Event()
+        captured = {}
+
+        async def fake_exec(*args, **kwargs):
+            proc = await real_exec(
+                sys.executable, "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print('ready', flush=True); time.sleep(30)",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.stdout.readline()
+            captured["proc"] = proc
+            started.set()
+            return proc
+
+        with patch.object(pw_link.asyncio, "create_subprocess_exec", fake_exec), patch.object(
+            pw_link, "PW_LINK_TERMINATE_GRACE_SECONDS", 0.2
+        ):
+            task = asyncio.create_task(pw_link.run_pw_link_command("-l"))
+            await started.wait()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 2)
+                proc = captured["proc"]
+                self.assertEqual(proc.returncode, -signal.SIGKILL)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(proc.pid, os.WNOHANG)
+            finally:
+                proc = captured["proc"]
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.communicate()
+
+    async def test_cancellation_during_timeout_cleanup_still_reaps_child(self):
+        real_exec = asyncio.create_subprocess_exec
+        started = asyncio.Event()
+        captured = {}
+
+        async def fake_exec(*args, **kwargs):
+            proc = await real_exec(
+                sys.executable, "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print('ready', flush=True); time.sleep(30)",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.stdout.readline()
+            captured["proc"] = proc
+            started.set()
+            return proc
+
+        with patch.object(pw_link.asyncio, "create_subprocess_exec", fake_exec), patch.object(
+            pw_link, "PW_LINK_COMMAND_TIMEOUT_SECONDS", 0.05
+        ), patch.object(pw_link, "PW_LINK_TERMINATE_GRACE_SECONDS", 0.2):
+            task = asyncio.create_task(pw_link.run_pw_link_command("-l"))
+            await started.wait()
+            await asyncio.sleep(0.1)
+            self.assertFalse(task.done())
+            task.cancel()
+            try:
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 2)
+                proc = captured["proc"]
+                self.assertEqual(proc.returncode, -signal.SIGKILL)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(proc.pid, os.WNOHANG)
+            finally:
+                proc = captured["proc"]
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.communicate()
+
 
 class StopPwLinkProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_noop_for_already_exited_process(self):

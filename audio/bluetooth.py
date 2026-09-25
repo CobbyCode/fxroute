@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from audio import pw_link
+from audio.input_links import input_links_present
 from audio.samplerate import (
     SOURCE_MODE_BLUETOOTH_INPUT,
     disconnect_connected_bluetooth_audio_sources,
@@ -24,6 +25,7 @@ from audio.samplerate import (
 )
 
 logger = logging.getLogger(__name__)
+BLUETOOTH_INPUT_MONITOR_INTERVAL_SECONDS = 3
 
 SourceModePeakSync = Callable[[dict[str, Any] | None], Awaitable[None]]
 
@@ -34,6 +36,7 @@ class BluetoothInputDependencies:
 
     sync_peak_monitor_for_source_mode_state: SourceModePeakSync
     get_persisted_source_mode: Callable[[], str] | None = None
+    get_source_transition_lock: Callable[[], asyncio.Lock] | None = None
 
 
 class BluetoothInputMonitor:
@@ -44,6 +47,7 @@ class BluetoothInputMonitor:
         self.input_source_name: str | None = None
         self.agent_process: asyncio.subprocess.Process | None = None
         self.monitor_task: asyncio.Task | None = None
+        self._sync_lock = asyncio.Lock()
 
     async def _disconnect_source(self, source_name: str | None) -> None:
         normalized = (source_name or "").strip()
@@ -142,10 +146,13 @@ class BluetoothInputMonitor:
         if not normalized:
             raise RuntimeError("Missing Bluetooth source name for monitoring")
         if self.input_source_name == normalized:
-            return
+            if await input_links_present(normalized, (("FL", "FL"), ("FR", "FR"))):
+                return
         await self.clear_links()
         try:
             await self._link_source_to_dsp(normalized)
+            if not await input_links_present(normalized, (("FL", "FL"), ("FR", "FR"))):
+                raise RuntimeError("Bluetooth input links missing after reconnect")
         except BaseException:
             await self._disconnect_source(normalized)
             raise
@@ -153,6 +160,10 @@ class BluetoothInputMonitor:
         logger.info("Enabled Bluetooth input monitoring from %s to fxroute_dsp_sink", normalized)
 
     async def sync(self, source_overview: dict[str, Any] | None = None) -> dict[str, Any]:
+        async with self._sync_lock:
+            return await self._sync_unlocked(source_overview)
+
+    async def _sync_unlocked(self, source_overview: dict[str, Any] | None = None) -> dict[str, Any]:
         # The source overview runs the bounded bluetoothctl/pactl subprocess
         # pipeline; keep it off the event loop.
         overview = (
@@ -197,26 +208,38 @@ class BluetoothInputMonitor:
                 # Bluetooth input is not selected and nothing is active: the
                 # expensive source-overview build (bluetoothctl/pactl/pw-cli
                 # subprocess pipeline) has no cleanup or sync duty this tick.
-                await asyncio.sleep(3)
+                await asyncio.sleep(BLUETOOTH_INPUT_MONITOR_INTERVAL_SECONDS)
                 continue
             try:
-                overview = await asyncio.to_thread(get_audio_source_overview)
-                if overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:
-                    overview = await self.sync(overview)
-                    await self._deps.sync_peak_monitor_for_source_mode_state(overview)
-                elif self.input_source_name:
-                    await self.disable()
-                    await self._deps.sync_peak_monitor_for_source_mode_state(overview)
+                lock_provider = getattr(self._deps, "get_source_transition_lock", None)
+                if lock_provider is not None:
+                    async with lock_provider():
+                        await self._monitor_once()
+                else:
+                    await self._monitor_once()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.debug("Bluetooth input monitor loop check failed: %s", exc)
-            await asyncio.sleep(3)
+            await asyncio.sleep(BLUETOOTH_INPUT_MONITOR_INTERVAL_SECONDS)
+
+    async def _monitor_once(self) -> None:
+        overview = await asyncio.to_thread(get_audio_source_overview)
+        if overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:
+            overview = await self.sync(overview)
+            await self._deps.sync_peak_monitor_for_source_mode_state(overview)
+        elif self.input_source_name:
+            await self.disable()
+            await self._deps.sync_peak_monitor_for_source_mode_state(overview)
 
     async def stop(self) -> None:
-        if self.monitor_task is not None and not self.monitor_task.done():
-            self.monitor_task.cancel()
-        self.monitor_task = None
+        task = self.monitor_task
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if self.monitor_task is task:
+                self.monitor_task = None
         # The input may never have been active; the disable side effects
         # (link disconnect, agent stop, BlueZ source disconnect) only apply
         # then.  The monitor task above is always stopped.

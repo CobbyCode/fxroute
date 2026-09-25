@@ -736,6 +736,11 @@ peak_monitor_coordinator = PeakMonitorCoordinator(PeakMonitorCoordinatorDeps(
 
 external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     get_audio_source_overview=lambda: get_audio_source_overview(),
+    get_persisted_source_mode=lambda: (
+        samplerate._load_audio_source_selection().get("mode") or SOURCE_MODE_APP_PLAYBACK
+    ),
+    get_source_transition_lock=lambda: _source_transition_lock(),
+    sync_peak_monitor_for_source_mode_state=lambda overview: peak_monitor_coordinator.sync_source_mode_state(overview),
 ))
 
 bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
@@ -743,6 +748,7 @@ bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
     get_persisted_source_mode=lambda: (
         samplerate._load_audio_source_selection().get("mode") or SOURCE_MODE_APP_PLAYBACK
     ),
+    get_source_transition_lock=lambda: _source_transition_lock(),
 ))
 
 samplerate_drift = SamplerateDriftObserver(SamplerateDriftDependencies(
@@ -2686,6 +2692,9 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Failed to re-apply source monitoring: %s", exc)
 
+        external_input.monitor_task = asyncio.create_task(
+            external_input.run_monitor_loop(), name="external-input-monitor",
+        )
         bluetooth_input.monitor_task = asyncio.create_task(
             bluetooth_input.run_monitor_loop(),
             name="bluetooth-input-monitor",
@@ -2828,7 +2837,7 @@ async def _shutdown_lifespan_resources() -> None:
         await cleanup("subwoofer-runtime", runtime.dsp_runtime.stop)
     await cleanup("bluetooth-input", bluetooth_input.stop)
     await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
-    await cleanup("external-input", external_input.disable)
+    await cleanup("external-input", external_input.stop)
     if runtime.peak_monitor is not None:
         await cleanup("peak-monitor", runtime.peak_monitor.stop)
     if hardware_controller is not None:

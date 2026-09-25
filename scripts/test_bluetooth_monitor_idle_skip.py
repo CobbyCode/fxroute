@@ -40,6 +40,40 @@ def _make_monitor(*, mode: str) -> BluetoothInputMonitor:
 
 
 class BluetoothMonitorIdleSkipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_drains_monitor_before_returning(self):
+        monitor = _make_monitor(mode=SOURCE_MODE_BLUETOOTH_INPUT)
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+        mutations = []
+
+        async def monitor_work():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            finally:
+                mutations.append("finished")
+
+        monitor.monitor_task = asyncio.create_task(monitor_work())
+        await started.wait()
+        task = monitor.monitor_task
+        stopping = asyncio.create_task(monitor.stop())
+        try:
+            await asyncio.wait_for(cancelled.wait(), 2)
+            self.assertFalse(stopping.done())
+            self.assertIs(monitor.monitor_task, task)
+        finally:
+            release.set()
+            await asyncio.wait_for(stopping, 2)
+        self.assertTrue(task.done())
+        self.assertEqual(mutations, ["finished"])
+        self.assertIsNone(monitor.monitor_task)
+        await asyncio.sleep(0)
+        self.assertEqual(mutations, ["finished"])
+
     async def _run_loop_briefly(self, monitor: BluetoothInputMonitor) -> None:
         task = asyncio.create_task(monitor.run_monitor_loop())
         try:
