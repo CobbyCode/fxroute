@@ -717,11 +717,43 @@ def add_catalog_station(catalog_id: str) -> Station:
 
 def add_station(name: str, input_url: str, custom_image_url: Optional[str] = None) -> Station:
     raw = _load_raw_stations()
-    existing_ids = {str(item.get("id") or "").strip() for item in raw}
     normalized_input_url = _normalize_url(input_url)
     normalized_custom_image_url = _normalize_optional_image_url(custom_image_url)
     stream_url = resolve_stream_url(input_url)
     resolved_name = _auto_station_name(name, normalized_input_url, stream_url)
+    # Reuse the catalog identity (input_url or stream_url exact match):
+    # a manually added or imported stream that is already saved must not
+    # create a second station entry.
+    candidate = Station(
+        id="",
+        name=resolved_name,
+        stream_url=stream_url,
+        input_url=normalized_input_url,
+    )
+    saved_stations: List[Station] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        station_id = str(item.get("id") or "").strip()
+        station_name = str(item.get("name") or "").strip()
+        saved_stream_url = str(item.get("stream_url") or "").strip()
+        saved_input_url = str(item.get("input_url") or saved_stream_url).strip()
+        if not station_id or not station_name or not saved_stream_url:
+            continue
+        saved_stations.append(
+            Station(
+                id=station_id,
+                name=station_name,
+                stream_url=saved_stream_url,
+                input_url=saved_input_url,
+                image_url=str(item.get("image_url") or "").strip() or None,
+                custom_image_url=str(item.get("custom_image_url") or "").strip() or None,
+            )
+        )
+    existing = find_saved_catalog_station(candidate, saved_stations)
+    if existing is not None:
+        return existing
+    existing_ids = {str(item.get("id") or "").strip() for item in raw}
     station = {
         "id": _make_unique_id(resolved_name, existing_ids),
         "name": resolved_name,
