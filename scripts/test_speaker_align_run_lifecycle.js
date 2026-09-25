@@ -98,7 +98,34 @@ async function failedOrCancelledRunClearsTheResults() {
         assert.equal(state.measurement.speakerAlignResult, null);
         assert.equal(state.measurement.speakerAlignResults, null);
         assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, false);
+        assert.equal(state.measurement.statusText, outcome.status === 'failed'
+            ? 'Speaker Align Left failed: Selected electrical reference was not captured'
+            : 'Speaker Align Left cancelled.');
     }
+}
+
+// Progress belongs to the feature line while the run is live; the panel
+// status line stays empty until the outcome, and the two never carry the
+// same text.
+async function progressAndOutcomeStayApart() {
+    const { state, elements, flows, toasts } = fixture();
+    const seen = [];
+    let polls = 0;
+    flows.init({ api: {
+        startSpeakerAlign: async payload => response({ id: 'run', side: payload.side, status: 'queued' }),
+        pollSpeakerAlignJob: async jobId => {
+            seen.push([elements.measurementSpeakerAlignStatus.textContent, state.measurement.statusText]);
+            polls++;
+            return polls === 1
+                ? response({ id: jobId, side: 'left', status: 'acquiring', message: 'Measuring left low (1/2)…' })
+                : response({ id: jobId, side: 'left', status: 'committed', result: verified });
+        },
+    } });
+    await flows.startSpeakerAlign('left');
+    assert.deepEqual(seen, [['Starting…', ''], ['Measuring left low (1/2)…', '']]);
+    assert.equal(elements.measurementSpeakerAlignStatus.textContent, '', 'feature line is idle again');
+    assert.equal(state.measurement.statusText, 'Speaker Align Left verified and applied.');
+    assert.deepEqual(toasts.at(-1), ['Speaker Align Left applied', 'success']);
 }
 
 async function abandonedPollingCancelsTheBackendJob() {
@@ -116,7 +143,7 @@ async function abandonedPollingCancelsTheBackendJob() {
     await flows.startSpeakerAlign('left');
     assert.equal(polls, 40);
     assert.deepEqual(cancelled, ['still-running'], 'giving up polling cancels the backend job');
-    assert.match(state.measurement.statusText, /the job was cancelled/);
+    assert.equal(state.measurement.statusText, 'Speaker Align Left interrupted: Failed to fetch. The run was cancelled.');
     assert.equal(toasts.at(-1)[1], 'error');
     assert.equal(state.measurement.speakerAlignJobId, '');
     assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, false);
@@ -128,13 +155,14 @@ async function abandonedPollingCancelsTheBackendJob() {
         cancelSpeakerAlignJob: async () => { throw new TypeError('Failed to fetch'); },
     } });
     await second.flows.startSpeakerAlign('left');
-    assert.match(second.state.measurement.statusText, /cancelling the job failed/,
+    assert.match(second.state.measurement.statusText, /Cancelling the run failed\./,
         'an unreachable backend is reported, not hidden');
 }
 
 async function main() {
     await finishedRunJoinsTheNormalFlow();
     await failedOrCancelledRunClearsTheResults();
+    await progressAndOutcomeStayApart();
     await abandonedPollingCancelsTheBackendJob();
     console.log('Speaker Align run lifecycle UI: passed');
 }

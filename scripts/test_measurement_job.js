@@ -108,7 +108,10 @@ async function main() {
         state.measurement.startInFlight = true;
         await job.requestMeasurementCancellation();
         assert.equal(state.measurement.cancelRequested, true);
-        assert.equal(state.measurement.statusText, 'Cancelling measurement…');
+        // Cancelling is progress: sweep feature line, not the outcome line.
+        assert.equal(state.measurement.progressKind, 'sweep');
+        assert.equal(state.measurement.progressText, 'Cancelling…');
+        assert.equal(state.measurement.statusText, '');
     }
 
     // 3. Dispatch prefers hybrid / auto_sub / speaker_align over the sweep cancel.
@@ -190,6 +193,45 @@ async function main() {
         job.syncMeasurementStartButtonFallback();
         assert.equal(elements.measurementRepeatStartBtn.textContent, 'Cancel measurement');
         assert.equal(elements.measurementRepeatStartBtn.disabled, false, 'running repeat stays cancellable');
+    }
+
+    // 7. Progress stays on the sweep feature line while the job runs; the
+    //    panel status line only gets the labelled outcome. The idle note of
+    //    the page shell comes back once the job ends.
+    {
+        const seen = [];
+        const h = makeJobHarness({
+            getMeasurementTimingInfo: () => ({ line: 'Acoustic-only timing · delay 3.21 ms · timing stable' }),
+            getMeasurementJobResultMeasurement: (j) => j.result?.measurement || null,
+        });
+        const sweepStatus = { textContent: 'Measures frequency and impulse response.', dataset: {} };
+        h.elements.measurementSweepStatus = sweepStatus;
+        h.state.measurement.activeJobId = 'j1';
+        h.state.measurement.activeMeasurementKind = 'single';
+        h.state.measurement.startInFlight = true;
+        h.fetchResponses.push(
+            { ok: true, json: async () => ({ job: { id: 'j1', status: 'running', message: 'Running sweep…' } }) },
+            { ok: true, json: async () => ({ job: { id: 'j1', status: 'completed', message: 'Measurement finished.',
+                result: { measurement: { id: 'm1', review_traces: [] } } } }) },
+        );
+        job.init({ sleep: async () => { seen.push([sweepStatus.textContent, h.state.measurement.statusText]); } });
+        await job.pollMeasurementJob('j1', 7);
+        assert.deepEqual(seen, [['Running sweep…', '']]);
+        assert.equal(h.state.measurement.statusText, 'Sweep finished · Acoustic-only timing · delay 3.21 ms · timing stable');
+        assert.equal(sweepStatus.textContent, 'Measures frequency and impulse response.');
+        assert.ok(h.calls.some((c) => Array.isArray(c) && c[0] === 'toast' && c[1] === 'Sweep finished'));
+    }
+
+    // 8. An L/R repeat cancel is labelled as such.
+    {
+        const h = makeJobHarness();
+        h.state.measurement.activeJobId = 'j2';
+        h.state.measurement.activeMeasurementKind = 'lr_repeat';
+        h.state.measurement.repeatJobActive = true;
+        h.fetchResponses.push({ ok: true, json: async () => ({ job: { id: 'j2', status: 'cancelled', message: 'Measurement cancelled.' } }) });
+        await job.pollMeasurementJob('j2', 7);
+        assert.equal(h.state.measurement.statusText, 'L/R repeat cancelled.');
+        assert.equal(h.state.measurement.progressText, '');
     }
 
     console.log('measurement job lifecycle: ok');

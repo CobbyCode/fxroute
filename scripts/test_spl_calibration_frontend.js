@@ -76,6 +76,10 @@ assert.match(splSource, /function toggleSplCalibrationNoise\(\) \{/);
     assert.ok(autoCall);
     assert.equal(button.textContent, 'Cancel measurement');
     assert.equal(button.disabled, false);
+    // The running action shows next to the noise button; the bottom status
+    // line waits for the outcome.
+    assert.equal(autoStatus.textContent, 'Measuring SPL…');
+    assert.equal(status.textContent, '');
 
     await spl.toggleSplCalibrationNoise();
     const noiseCalls = fetchCalls.filter((call) => call.url.endsWith('/noise'));
@@ -84,6 +88,7 @@ assert.match(splSource, /function toggleSplCalibrationNoise\(\) \{/);
     assert.equal(button.textContent, 'Start noise');
     assert.equal(button.disabled, false);
     assert.equal(status.textContent, 'Automatic SPL measurement cancelled.');
+    assert.equal(autoStatus.textContent, 'Automatic SPL measurement: UMIK-1 detected');
 
     resolveAutomatic({
         ok: false,

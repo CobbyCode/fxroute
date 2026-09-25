@@ -113,8 +113,10 @@ async function main() {
     assert.match(html, /<th scope="row">High · ref<\/th><td>\+0\.000 ms<\/td><td>-2\.00 dB<\/td><td>—<\/td>/);
     assert.match(html, /Verification: spread 3\.000 → 0\.021 ms \(limit 0\.250 ms\) · level spread 0\.40 → 0\.20 dB \(advisory 1\.00 dB\)/);
     assert.doesNotMatch(html, /speaker-align-time|<svg|Before level|data-speaker-align-save/);
-    assert.equal(elements.measurementSpeakerAlignStatus.textContent,
-        'Speaker Align right timing verified and committed at revision 8.');
+    // The outcome goes to the panel status line once; the feature line next
+    // to the buttons is back to its idle note (empty in this harness).
+    assert.equal(state.measurement.statusText, 'Speaker Align Right verified and applied.');
+    assert.equal(elements.measurementSpeakerAlignStatus.textContent, '');
     assert.match(measurementCss, /\.speaker-align-table-wrap\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/);
     assert.match(measurementCss, /\.speaker-align-table\s*\{[^}]*min-width:\s*\d+px/);
     assert.match(measurementCss, /\.speaker-align-verification\s*\{/);
@@ -153,6 +155,7 @@ async function main() {
     state.measurement.activeMeasurementKind = '';
     await flows.startSpeakerAlign('right');
     assert.equal(elements.measurementSpeakerAlignResults.innerHTML, '');
+    assert.equal(state.measurement.statusText, 'Speaker Align Right failed: mic unplugged');
     assert.equal(state.measurement.pendingRepeatMeasurements.length, 2);
     pollJob = { id: 'alignment', side: 'right', status: 'committed', result };
 

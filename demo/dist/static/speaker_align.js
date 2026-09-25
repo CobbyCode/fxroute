@@ -104,42 +104,41 @@
         });
     }
 
+    // Backend reasons and advisories read "<numbers>: <plain reason>"; the
+    // numbers are in the result table, the status line keeps the plain part.
+    function plainReasons(list) {
+        return (Array.isArray(list) ? list : [])
+            .map(text => trimmed(text))
+            .filter(Boolean)
+            .map(text => (text.includes(': ') ? text.slice(text.indexOf(': ') + 2) : text));
+    }
+
+    // One outcome sentence for the panel status line.
     function formatSpeakerAlignStatus(job) {
         const record = job || {};
-        const side = trimmed(record.side) || 'speaker';
+        const side = trimmed(record.side);
+        const name = side === 'left' || side === 'right'
+            ? `Speaker Align ${side === 'right' ? 'Right' : 'Left'}` : 'Speaker Align';
         const status = trimmed(record.status) || 'unknown';
-        const message = trimmed(record.message);
         const result = record.result || {};
-        // The numbers live in the compact result block; the status line
-        // keeps the outcome and any advisories.
-        if (status === 'committed') {
-            const revision = result.committed_revision;
-            const revisionText = Number.isInteger(revision) ? ` at revision ${revision}` : '';
-            const warnings = Array.isArray(result.check?.warnings) ? result.check.warnings.filter(text => String(text ?? '').trim()) : [];
-            const warningText = warnings.length ? ` Advisories: ${warnings.join('; ')}.` : '';
-            return `Speaker Align ${side} timing verified and committed${revisionText}.${warningText}`;
-        }
+        const warnings = plainReasons(result.check?.warnings);
+        const note = warnings.length ? ` Note: ${warnings.join('; ')}.` : '';
+        if (status === 'committed') return `${name} verified and applied.${note}`;
         if (status === 'trial-done') {
-            const confirmed = result.confirmed === true;
-            const warnings = Array.isArray(result.check?.warnings) ? result.check.warnings.filter(text => String(text ?? '').trim()) : [];
-            const warningText = warnings.length ? ` Advisories: ${warnings.join('; ')}.` : '';
-            return confirmed
-                ? `Speaker Align ${side} trial confirmed without committing.${warningText}`
-                : `Speaker Align ${side} trial did not confirm; nothing changed.${warningText}`;
+            return result.confirmed === true
+                ? `${name} trial verified; nothing applied.${note}`
+                : `${name} trial not verified; nothing changed.${note}`;
         }
         if (status === 'unconfirmed') {
-            const reasons = result.check?.reasons || [];
-            const warnings = Array.isArray(result.check?.warnings) ? result.check.warnings.filter(text => String(text ?? '').trim()) : [];
-            const warningText = warnings.length ? ` Advisories: ${warnings.join('; ')}.` : '';
-            return `Speaker Align ${side} not verified: ${reasons.join('; ')}. Previous delays restored.${warningText}`;
+            const reasons = plainReasons(result.check?.reasons);
+            return `${name} not verified${reasons.length ? `: ${reasons.join('; ')}` : ''}. Previous delays kept.${note}`;
         }
         if (status === 'failed') {
-            return trimmed(record.error) || message || `Speaker Align ${side} failed.`;
+            const reason = trimmed(record.error) || trimmed(record.message).replace(/^Speaker alignment failed:\s*/i, '');
+            return reason ? `${name} failed: ${reason}` : `${name} failed.`;
         }
-        if (status === 'cancelled' || status === 'cancelling') {
-            return message || `Speaker Align ${side} cancelled.`;
-        }
-        return message || `Speaker Align ${side}: ${status}.`;
+        if (status === 'cancelled' || status === 'cancelling') return `${name} cancelled.`;
+        return trimmed(record.message) || `${name}: ${status}.`;
     }
 
     function wayLabel(role) {

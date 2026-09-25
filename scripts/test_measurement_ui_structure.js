@@ -104,14 +104,14 @@ assert.match(capture, /const repeatBlockedReason = deps\.measurementRepeatBlocke
 assert.match(panelUi, /elements\.measurementRepeatStartBtn\.disabled = repeatBlockedReason && !lrActive/);
 assert.match(panelUi, /syncMeasurementRepeatNote\(lrActive, repeatBlockedReason\);/);
 assert.match(app, /elements\.measurementRepeatNote\.textContent = lrActive \|\| !blockedReason/);
-assert.match(capture, /deps\.showToast\(repeatBlockedReason, 'warning'\)/);
+assert.match(capture, /deps\.showToast\('L\/R repeat unavailable', 'warning'\)/);
 assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);
 assert.match(index, /Combined Speaker and Room Measurement/);
 assert.match(index, /id="measurement-spl-calibration-open"[^>]*>SPL Calibration<\/button>/);
 assert.match(index, /Calibrate your loudness reference\./);
 // Speaker Auto Alignment is compact: two equal buttons side by side, one
-// short note below, status and results underneath. No sequence line and no
-// long explanation paragraphs.
+// short note to their right that doubles as the live status line, results
+// underneath. No sequence line and no long explanation paragraphs.
 assert.match(index, /id="measurement-speaker-align-left"[^>]*>Align Left<\/button>/);
 assert.match(index, /id="measurement-speaker-align-right"[^>]*>Align Right<\/button>/);
 // Horizontal pattern like the other actions: button pair left, one-line
@@ -120,9 +120,16 @@ assert.match(index, /class="measurement-workflow-speaker-row"/);
 assert.ok(index.indexOf('measurement-workflow-speaker-buttons') < index.indexOf('Aligns each way of the selected speaker with the microphone fixed.'),
     'the note sits right of the button pair');
 assert.match(index, /Aligns each way of the selected speaker with the microphone fixed\./);
-// The sentence lives exactly once in the static note; the status line stays
-// empty while idle so it never renders twice.
+// The sentence lives exactly once in the page shell: it is the idle text of
+// the status slot, which shows progress while a run is live, so it never
+// renders twice.
 assert.equal(index.split('Aligns each way of the selected speaker with the microphone fixed.').length - 1, 1);
+assert.match(index, /<span id="measurement-speaker-align-status" class="measurement-repeat-help" aria-live="polite">Aligns each way of the selected speaker with the microphone fixed\.<\/span>/);
+// Every measurement action has one feature line right of its button: idle
+// note from the page shell, live progress while running.
+assert.match(index, /<span id="measurement-sweep-status" class="measurement-repeat-help" aria-live="polite">[^<]+<\/span>/);
+assert.match(index, /<span id="measurement-auto-sub-status" class="measurement-repeat-help" aria-live="polite">[^<]+<\/span>/);
+assert.match(index, /class="effects-actions-row spl-calibration-noise-row">\s*<button id="spl-calibration-noise"[^>]*>Start noise<\/button>\s*<span id="spl-calibration-auto-status"/);
 assert.doesNotMatch(flows, /Aligns each way of the selected speaker/);
 assert.doesNotMatch(app, /Aligns each way of the selected speaker/);
 assert.doesNotMatch(index, /measurement-speaker-align-sequence/);
@@ -135,11 +142,10 @@ assert.match(measurementCss, /\.measurement-workflow-speaker-buttons[\s\S]*?widt
 assert.match(measurementCss, /\.measurement-workflow-speaker-row[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
 // Shared vertical rhythm (heading → buttons → divider): label and Setup
 // share one top edge, every section uses the same 0.75rem heading gap, and
-// idle speaker-align status/results collapse instead of reserving phantom
-// flex gaps below the buttons.
+// idle speaker-align results collapse instead of reserving a phantom flex
+// gap below the buttons.
 assert.match(measurementCss, /\.measurement-workflow-heading[\s\S]*?align-items:\s*flex-start/);
 assert.match(measurementCss, /\.measurement-workflow-section[\s\S]*?gap:\s*0\.75rem/);
-assert.match(measurementCss, /#measurement-speaker-align-status:empty/);
 assert.match(measurementCss, /#measurement-speaker-align-results:empty/);
 // Calibration keeps the same button → divider distance as the other
 // sections: the status line margin sums the section list gap and the

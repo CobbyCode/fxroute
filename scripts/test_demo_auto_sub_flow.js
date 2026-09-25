@@ -162,12 +162,15 @@ async function runAutoSubFlow(modeName) {
     assert.ok(Number.isFinite(r21.result.original_alignment_ms));
     assert.ok(r21.result.coarse_winner && Number.isFinite(r21.result.coarse_winner.delay_ms));
     assert.ok(r21.result.runner_up && Number.isFinite(r21.result.runner_up.delay_ms));
-    assert.match(r21.state.measurement.statusText, /AutoSub applied: -?\d+\.\d+ ms \(was -?\d+\.\d+ ms\)/);
-    // The inline status element must have shown live progress during the run.
+    assert.match(r21.state.measurement.statusText, /^Auto Sub applied -?\d+\.\d+ ms \(was -?\d+\.\d+ ms\)/);
+    // The Auto Sub feature line shows live progress during the run and hands
+    // back to its idle note afterwards; the scan details are the second line
+    // of the outcome on the panel status line, never in both places.
     const sawProgress = r21.statusLines.some(line => /sweeps|candidates/.test(line));
     assert.ok(sawProgress, '2.1 run must show live sweep/candidate progress lines');
-    const finalLine = r21.statusLines[r21.statusLines.length - 1];
-    assert.match(finalLine, /Coarse: -?\d+\.\d+ ms \(\d+\.\d+ %\) · Fine checked: -?\d+\.\d+ ms \(\d+\.\d+ %\)/);
+    assert.equal(r21.statusLines[r21.statusLines.length - 1], '', 'feature line returns to idle after the run');
+    assert.ok(!r21.statusLines.some(line => /applied/.test(line)), 'the outcome never lands on the feature line');
+    assert.match(r21.state.measurement.statusText, /\nCoarse -?\d+\.\d+ ms \(\d+\.\d+ %\) · Fine -?\d+\.\d+ ms \(\d+\.\d+ %\)/);
 
     // 2.2: per-sub coarse scans + combined matrix, both sub alignments set.
     const r22 = await runAutoSubFlow('subwoofer-2.2');
@@ -178,11 +181,12 @@ async function runAutoSubFlow(modeName) {
     assert.ok(Number.isFinite(r22.result.derived_sub2_delay_ms));
     assert.ok(r22.result.sub1_coarse_winner && Number.isFinite(r22.result.sub1_coarse_winner.delay_ms));
     assert.ok(r22.result.sub2_coarse_winner && Number.isFinite(r22.result.sub2_coarse_winner.delay_ms));
-    assert.match(r22.state.measurement.statusText, /AutoSub 2\.2 applied: Sub 1 -?\d+\.\d+ ms \(was -?\d+\.\d+ ms\) · Sub 2 -?\d+\.\d+ ms \(was -?\d+\.\d+ ms\)/);
+    assert.match(r22.state.measurement.statusText, /^Auto Sub 2\.2 applied: Sub 1 -?\d+\.\d+ ms \(was -?\d+\.\d+ ms\) · Sub 2 -?\d+\.\d+ ms \(was -?\d+\.\d+ ms\)/);
     const sawSubStages = r22.statusLines.some(line => /Optimizing Sub 1/.test(line))
         && r22.statusLines.some(line => /Optimizing Sub 2/.test(line));
     assert.ok(sawSubStages, '2.2 run must show per-sub stage progress lines');
-    assert.match(r22.statusLines[r22.statusLines.length - 1], /Derived: Main -?\d+\.\d+ ms \/ Sub 1 -?\d+\.\d+ ms \/ Sub 2 -?\d+\.\d+ ms/);
+    assert.equal(r22.statusLines[r22.statusLines.length - 1], '', 'feature line returns to idle after the run');
+    assert.match(r22.state.measurement.statusText, /\nSub 1 scan -?\d+\.\d+ ms .*Output delays: Main -?\d+\.\d+ ms \/ Sub 1 -?\d+\.\d+ ms \/ Sub 2 -?\d+\.\d+ ms/);
 
     console.log('ok demo auto-sub UI flow (2.1 + 2.2, no placeholders)');
 })();

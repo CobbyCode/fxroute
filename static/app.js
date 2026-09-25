@@ -701,6 +701,10 @@ let state = {
         inputsLoading: false,
         startInFlight: false,
         saveInFlight: false,
+        // Live progress of the running action, shown on its feature line
+        // ('sweep' | 'auto_sub' | 'speaker_align').
+        progressKind: '',
+        progressText: '',
         measurements: [],
         currentMeasurement: null,
         pendingRepeatMeasurements: [],
@@ -1126,6 +1130,7 @@ const elements = {
     measurementSweepSideRow: document.getElementById('measurement-sweep-side-row'),
     measurementAreaIndicator: document.getElementById('measurement-area-indicator'),
     measurementAreaNote: document.getElementById('measurement-area-note'),
+    measurementSweepStatus: document.getElementById('measurement-sweep-status'),
     measurementRepeatStartBtn: document.getElementById('measurement-repeat-start'),
     measurementRepeatNote: document.getElementById('measurement-repeat-note'),
     measurementAutoSubStartBtn: document.getElementById('measurement-auto-sub-start'),
@@ -3927,8 +3932,14 @@ function measurementInputAvailabilityMessage() {
 }
 
 function measurementSetupStatusText() {
+    // The panel status line carries outcomes, warnings and errors; a running
+    // measurement shows its progress on its own feature line instead.
     const measurementState = state.measurement || {};
-    return measurementInputAvailabilityMessage() || measurementState.statusText || describeMeasurementScope();
+    const measurementRunning = !!(measurementState.startInFlight || measurementState.activeJobId
+        || measurementState.autoSubInFlight || measurementState.speakerAlignInFlight
+        || measurementState.hybridWizard?.running);
+    return measurementInputAvailabilityMessage() || measurementState.statusText
+        || (measurementRunning ? '' : describeMeasurementScope());
 }
 
 
@@ -3968,13 +3979,11 @@ function stopMeasurementWindowHeartbeat(keepalive = false) {
     void sendMeasurementWindowHeartbeat(false, keepalive);
 }
 
-const MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT = 'Scans sub delay around crossover, picks best alignment.';
-
 function resetMeasurementTransientStatus() {
-    // A cancelled/completed/failed AutoSub (or sweep) leaves its statusText
-    // and the directly written AutoSub inline status behind; no render pass
-    // ever restores them, so reopening the panel would show stale
-    // cancelled/completed/error/progress/result state until a page refresh.
+    // A cancelled/completed/failed run leaves its outcome in statusText and
+    // the Speaker Align result table behind; reopening the panel starts
+    // clean. The feature lines are rendered from progress state, which the
+    // flows clear themselves when a run ends.
     // Unsaved measurement data (autoSubMeasurements, currentMeasurement) is
     // deliberately kept: it is saveable content, not transient status.
     const measurementState = state.measurement || {};
@@ -3982,15 +3991,11 @@ function resetMeasurementTransientStatus() {
         || measurementState.activeJobId || measurementState.autoSubJobId || measurementState.speakerAlignJobId
         || measurementState.activeMeasurementKind) return;
     measurementState.statusText = '';
+    measurementState.progressKind = '';
+    measurementState.progressText = '';
     measurementState.autoSubResult = null;
     measurementState.speakerAlignResult = null;
     measurementState.speakerAlignResults = null;
-    if (elements.measurementAutoSubStatus) {
-        elements.measurementAutoSubStatus.textContent = MEASUREMENT_AUTO_SUB_STATUS_DEFAULT_TEXT;
-    }
-    if (elements.measurementSpeakerAlignStatus) {
-        elements.measurementSpeakerAlignStatus.textContent = '';
-    }
     if (elements.measurementSpeakerAlignResults) {
         elements.measurementSpeakerAlignResults.innerHTML = '';
     }
@@ -4038,7 +4043,6 @@ function toggleMeasurementPanel(forceOpen = null) {
                 && measurementState.activeMeasurementKind !== 'speaker_align') {
                 measurementState.speakerAlignResult = null;
                 measurementState.speakerAlignResults = null;
-                if (elements.measurementSpeakerAlignStatus) elements.measurementSpeakerAlignStatus.textContent = '';
                 if (elements.measurementSpeakerAlignResults) elements.measurementSpeakerAlignResults.innerHTML = '';
             }
         }

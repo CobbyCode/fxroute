@@ -125,7 +125,7 @@ async function main() {
         state.measurement.selectedInputId = '';
         await capture.startMeasurement();
         assert.ok(!calls.some((c) => c[0] === 'fetch'));
-        assert.match(state.measurement.statusText, /No usable host capture source/);
+        assert.equal(state.measurement.statusText, 'No usable capture input. Select one in Setup.');
     }
 
     // 6. startLrRepeat respects the area block reason.

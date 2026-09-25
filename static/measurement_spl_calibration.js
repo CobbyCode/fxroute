@@ -19,9 +19,28 @@
     let splCalibrationAutomaticAvailable = false;
     let splCalibrationAutomaticRunning = false;
     let splCalibrationOperationGeneration = 0;
+    let splCalibrationModeText = '';
 
     function init(overrides) {
         deps = Object.assign(deps, overrides || {});
+    }
+
+    // Same contract as the measurement panel: the line next to the noise
+    // button shows the mode or the running action, the bottom status line
+    // only the outcome, warning or error.
+    function setSplCalibrationActionLine(text = '') {
+        const element = deps.getElements().splCalibrationAutoStatus;
+        if (element) element.textContent = text || splCalibrationModeText;
+    }
+
+    function setSplCalibrationStatus(text = '') {
+        const element = deps.getElements().splCalibrationStatus;
+        if (element) element.textContent = text;
+    }
+
+    function formatSignedDb(value) {
+        const number = Number(value);
+        return `${number >= 0 ? '+' : ''}${number.toFixed(1)} dB`;
     }
 
     function splCalibrationModeLabel(data) {
@@ -60,13 +79,13 @@
             if (generation !== splCalibrationOperationGeneration) return;
             splCalibrationNoiseActive = false;
             resetSplCalibrationNoiseButton();
-            if (statusText && deps.getElements().splCalibrationStatus) {
-                deps.getElements().splCalibrationStatus.textContent = statusText;
-            }
+            setSplCalibrationActionLine();
+            if (statusText) setSplCalibrationStatus(statusText);
         }
     }
 
     async function openSplCalibration() {
+        setSplCalibrationStatus();
         deps.getElements().splCalibrationPanel?.classList.remove('hidden');
         deps.openModal(deps.getElements().splCalibrationPanel, {
             initialFocus: deps.getElements().splCalibrationNoise,
@@ -79,11 +98,10 @@
             splCalibrationNoiseActive = !!data.noise_active;
             splCalibrationAutomaticAvailable = !!data.automatic?.available;
             if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
-            if (deps.getElements().splCalibrationAutoStatus) {
-                deps.getElements().splCalibrationAutoStatus.textContent = splCalibrationModeLabel(data);
-            }
+            splCalibrationModeText = splCalibrationModeLabel(data);
+            setSplCalibrationActionLine();
         } catch (error) {
-            if (deps.getElements().splCalibrationStatus) deps.getElements().splCalibrationStatus.textContent = error.message;
+            setSplCalibrationStatus(error.message);
         }
     }
 
@@ -96,19 +114,20 @@
     async function toggleSplCalibrationNoise() {
         if (splCalibrationAutomaticRunning) {
             await stopSplCalibrationOperation('Automatic SPL measurement cancelled.').catch((error) => {
-                if (deps.getElements().splCalibrationStatus) deps.getElements().splCalibrationStatus.textContent = error.message;
+                setSplCalibrationStatus(error.message);
             });
             return;
         }
         const next = !splCalibrationNoiseActive;
         if (!next) {
-            await stopSplCalibrationOperation('Noise stopped; previous volume state restored.').catch((error) => {
-                if (deps.getElements().splCalibrationStatus) deps.getElements().splCalibrationStatus.textContent = error.message;
+            await stopSplCalibrationOperation('Noise stopped. Volume restored.').catch((error) => {
+                setSplCalibrationStatus(error.message);
             });
             return;
         }
         const generation = ++splCalibrationOperationGeneration;
         if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.disabled = true;
+        setSplCalibrationStatus();
         try {
             if (!await runSplCalibrationNoiseCountdown(generation)) return;
             if (splCalibrationAutomaticAvailable) {
@@ -117,9 +136,7 @@
                     deps.getElements().splCalibrationNoise.disabled = false;
                     deps.getElements().splCalibrationNoise.textContent = 'Cancel measurement';
                 }
-                if (deps.getElements().splCalibrationStatus) {
-                    deps.getElements().splCalibrationStatus.textContent = 'Automatic SPL measurement in progress…';
-                }
+                setSplCalibrationActionLine('Measuring SPL…');
                 const response = await deps.fetch('/api/measurements/spl-calibration/automatic', { method: 'POST' });
                 const data = await response.json();
                 if (generation !== splCalibrationOperationGeneration) return;
@@ -129,10 +146,8 @@
                 }
                 splCalibrationNoiseActive = false;
                 if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.textContent = 'Start noise';
-                if (deps.getElements().splCalibrationStatus) {
-                    const adjustment = Number(data.required_adjustment_db);
-                    deps.getElements().splCalibrationStatus.textContent = `${data.microphone_model} measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · Loudness calibration offset ${adjustment >= 0 ? '+' : ''}${adjustment.toFixed(1)} dB. Save / Apply couples this offset to Loudness only.`;
-                }
+                setSplCalibrationActionLine();
+                setSplCalibrationStatus(`${data.microphone_model} measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · Loudness offset ${formatSignedDb(data.required_adjustment_db)}. Save / Apply to use it.`);
                 return;
             }
             const response = await deps.fetch('/api/measurements/spl-calibration/noise', {
@@ -145,12 +160,11 @@
             if (!response.ok) throw new Error(data.detail || 'Calibration noise failed');
             splCalibrationNoiseActive = true;
             if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.textContent = 'Stop noise';
-            if (deps.getElements().splCalibrationStatus) {
-                deps.getElements().splCalibrationStatus.textContent = 'Settling… read the C/Slow meter after about 1 second and average for about 3 seconds.';
-            }
+            setSplCalibrationActionLine('Noise playing. Read the C/Slow meter after about 1 s, average over about 3 s.');
         } catch (error) {
-            if (generation === splCalibrationOperationGeneration && deps.getElements().splCalibrationStatus) {
-                deps.getElements().splCalibrationStatus.textContent = error.message;
+            if (generation === splCalibrationOperationGeneration) {
+                setSplCalibrationActionLine();
+                setSplCalibrationStatus(error.message);
             }
         } finally {
             if (generation === splCalibrationOperationGeneration) {
@@ -163,7 +177,7 @@
     async function saveSplCalibration() {
         const measured = Number(deps.getElements().splCalibrationMeasured?.value);
         if (!Number.isFinite(measured)) {
-            if (deps.getElements().splCalibrationStatus) deps.getElements().splCalibrationStatus.textContent = 'Enter the measured C/Slow SPL value.';
+            setSplCalibrationStatus('Enter the measured C/Slow SPL value.');
             return;
         }
         try {
@@ -176,16 +190,14 @@
             if (!response.ok) throw new Error(data.detail || 'Failed to apply SPL calibration');
             splCalibrationNoiseActive = false;
             if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.textContent = 'Start noise';
-            if (deps.getElements().splCalibrationStatus) {
-                const adjustment = Number(data.required_adjustment_db);
-                const sign = adjustment >= 0 ? '+' : '';
-                deps.getElements().splCalibrationStatus.textContent = data.calibrated
-                    ? `Measured ${measured.toFixed(1)} dB SPL · Loudness calibration offset ${sign}${adjustment.toFixed(1)} dB · calibrated.`
-                    : `Measured ${measured.toFixed(1)} dB SPL · Loudness calibration offset ${sign}${adjustment.toFixed(1)} dB. The offset is coupled to Loudness only; playback with Loudness off is unchanged.`;
-            }
+            setSplCalibrationActionLine();
+            const offsetText = `Saved: ${measured.toFixed(1)} dB SPL measured · Loudness offset ${formatSignedDb(data.required_adjustment_db)}`;
+            setSplCalibrationStatus(data.calibrated
+                ? `${offsetText} · within 1 dB of target.`
+                : `${offsetText}. Only affects playback with Loudness on.`);
             await deps.fetchEffects();
         } catch (error) {
-            if (deps.getElements().splCalibrationStatus) deps.getElements().splCalibrationStatus.textContent = error.message;
+            setSplCalibrationStatus(error.message);
         }
     }
 

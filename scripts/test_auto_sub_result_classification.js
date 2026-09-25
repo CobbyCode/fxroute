@@ -10,6 +10,10 @@
 // "Weak" is reserved for the backend's uncertain confidence. A result that
 // was not applied is rendered as kept-current/rejected, never automatically
 // as weak, and a sub-50 comparative score alone never implies weak.
+//
+// The outcome lives on the panel status line (statusText); the toast is a
+// short headline and never repeats it, and the Auto Sub feature line is
+// left to its idle note once the run is over.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -83,10 +87,11 @@ function base21Result(overrides = {}) {
     // 1. Applied + clear confidence: honest success, confidence is shown.
     {
         const { state, toasts } = await classify(base21Result());
-        assert.match(state.measurement.statusText, /AutoSub applied: 0\.78 ms \(was 0\.00 ms\)/);
+        assert.match(state.measurement.statusText, /^Auto Sub applied 0\.78 ms \(was 0\.00 ms\) · Score 62\.2 %/);
+        assert.match(state.measurement.statusText, /\nConfidence clear · Coarse 0\.80 ms \(62\.0 %\)/);
         assert.doesNotMatch(state.measurement.statusText, /weak/i);
         assert.equal(toasts[0].type, 'success');
-        assert.match(toasts[0].text, /confidence clear/);
+        assert.equal(toasts[0].text, 'Auto Sub applied');
     }
 
     // 2. Incumbent won (not applied): "kept current alignment", not weak,
@@ -98,13 +103,11 @@ function base21Result(overrides = {}) {
             suggested_alignment_ms: 0.0,
             apply_decision: 'not_applied_incumbent_better',
         }));
-        assert.match(state.measurement.statusText, /AutoSub kept current alignment: 0\.00 ms/);
+        assert.match(state.measurement.statusText, /Auto Sub kept the current alignment: 0\.00 ms/);
         assert.doesNotMatch(state.measurement.statusText, /weak/i);
         assert.doesNotMatch(state.measurement.statusText, /not applied/);
         assert.equal(toasts[0].type, 'warning');
-        assert.match(toasts[0].text, /Kept current alignment: 0\.00 ms/);
-        assert.doesNotMatch(toasts[0].text, /weak/i);
-        assert.doesNotMatch(toasts[0].text, /not applied/);
+        assert.equal(toasts[0].text, 'Auto Sub kept the current alignment');
     }
 
     // 3. Incumbent won, older backend without apply_decision: the delay
@@ -116,7 +119,7 @@ function base21Result(overrides = {}) {
             suggested_alignment_ms: 0.0,
             apply_decision: undefined,
         }));
-        assert.match(state.measurement.statusText, /AutoSub kept current alignment: 0\.00 ms/);
+        assert.match(state.measurement.statusText, /Auto Sub kept the current alignment: 0\.00 ms/);
         assert.doesNotMatch(state.measurement.statusText, /weak/i);
     }
 
@@ -130,11 +133,10 @@ function base21Result(overrides = {}) {
             confidence: 'close',
             confirmation_gate: { action: 'reverted_to_original' },
         }));
-        assert.match(state.measurement.statusText, /AutoSub suggested: 0\.78 ms \(was 0\.00 ms, not applied · final check failed/);
+        assert.match(state.measurement.statusText, /Auto Sub suggested 0\.78 ms \(was 0\.00 ms\), not applied: final check failed/);
         assert.doesNotMatch(state.measurement.statusText, /weak/i);
         assert.equal(toasts[0].type, 'warning');
-        assert.match(toasts[0].text, /not applied · final check failed/);
-        assert.doesNotMatch(toasts[0].text, /weak/i);
+        assert.equal(toasts[0].text, 'Auto Sub result not applied');
     }
 
     // 5. Uncertain confidence: the only case that justifies the weak verdict.
@@ -145,9 +147,10 @@ function base21Result(overrides = {}) {
             apply_decision: 'not_applied_uncertain_confidence',
             confidence: 'uncertain',
         }));
-        assert.match(state.measurement.statusText, /AutoSub result weak\. Check with a normal 2\.1 measurement\./);
+        assert.match(state.measurement.statusText, /^Auto Sub result weak: suggested 0\.78 ms \(was 0\.00 ms\), not applied · Score 62\.2 %.*\. Check with a normal sweep\./);
+        assert.match(state.measurement.statusText, /\nConfidence uncertain/);
         assert.equal(toasts[0].type, 'error');
-        assert.match(toasts[0].text, /confidence uncertain/);
+        assert.equal(toasts[0].text, 'Auto Sub result weak');
     }
 
     // 6. A sub-50 comparative score alone must not imply weak.
@@ -163,9 +166,10 @@ function base21Result(overrides = {}) {
     //    invented confidence and no weak verdict.
     {
         const { state, toasts } = await classify(base21Result({ confidence: undefined }));
-        assert.match(state.measurement.statusText, /AutoSub applied: 0\.78 ms \(was 0\.00 ms\)/);
+        assert.match(state.measurement.statusText, /Auto Sub applied 0\.78 ms \(was 0\.00 ms\)/);
         assert.doesNotMatch(state.measurement.statusText, /weak/i);
-        assert.doesNotMatch(toasts[0].text, /confidence/);
+        assert.doesNotMatch(state.measurement.statusText, /confidence/i);
+        assert.doesNotMatch(toasts[0].text, /confidence/i);
     }
 
     // 8. Gate reverted to incumbent (the 2026-09-02 05:34 2.1 real run):
@@ -176,6 +180,7 @@ function base21Result(overrides = {}) {
     //    candidate, so Score and delay never diverge.
     //    UI: the gate revert is rendered as applied 0.00 ms with the
     //    suggested -3.71 ms context, never as 'kept current' or 'weak'.
+    //    The 65.2 % score belongs to the rejected suggestion, not to 0.00 ms.
     {
         const { state, toasts } = await classify(base21Result({
             original_alignment_ms: 0.0,
@@ -195,17 +200,15 @@ function base21Result(overrides = {}) {
                 failed_sides: ['right'],
             },
         }));
-        assert.match(state.measurement.statusText, /AutoSub applied: 0\.00 ms \(was 0\.00 ms\)/);
-        assert.match(state.measurement.statusText, /suggested -3\.71 ms/);
-        assert.match(state.measurement.statusText, /65\.2/);
+        assert.match(state.measurement.statusText, /^Auto Sub applied 0\.00 ms \(was 0\.00 ms\)\. /);
+        assert.match(state.measurement.statusText,
+            /Suggested -3\.71 ms \(Score 65\.2 % · L 70\.3 % \/ R 63\.9 %\) was rejected by the local-dip check\./);
         assert.doesNotMatch(state.measurement.statusText, /kept current/);
         assert.doesNotMatch(state.measurement.statusText, /weak/i);
         assert.doesNotMatch(state.measurement.statusText, /Score 26\.8/);
+        assert.doesNotMatch(state.measurement.statusText, /gate_reverted/);
         assert.equal(toasts[0].type, 'success');
-        assert.match(toasts[0].text, /0\.00 ms/);
-        assert.match(toasts[0].text, /suggested -3\.71 ms/);
-        assert.doesNotMatch(toasts[0].text, /kept current/);
-        assert.doesNotMatch(toasts[0].text, /weak/i);
+        assert.equal(toasts[0].text, 'Auto Sub applied');
     }
 
     console.log('ok auto-sub result classification (weak only via confidence; kept/rejected honest)');

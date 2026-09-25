@@ -4686,10 +4686,9 @@ select.url-input {
     min-width: 0;
 }
 
-/* Idle speaker-align status/results collapse: without this the section's
-   flex gaps reserve two phantom rows below the buttons even while empty,
-   breaking the shared heading → buttons → divider rhythm. */
-#measurement-speaker-align-status:empty,
+/* Idle speaker-align results collapse: without this the section's flex gap
+   reserves a phantom row below the buttons even while empty, breaking the
+   shared heading → buttons → divider rhythm. */
 #measurement-speaker-align-results:empty {
     display: none;
 }
@@ -4716,6 +4715,8 @@ select.url-input {
     margin-top: calc(0.5rem + 0.35rem);
     padding-top: 0.6rem;
     border-top: 1px solid var(--border);
+    /* An outcome may carry a second detail line (Auto Sub scan details). */
+    white-space: pre-line;
 }
 
 #measurement-setup-status:empty {
@@ -4767,6 +4768,12 @@ select.url-input {
 
 .spl-calibration-dialog #spl-calibration-status {
     margin-top: 0.35rem;
+}
+
+/* Mode and running action sit right of the noise button, like the action
+   notes in the measurement panel. */
+.spl-calibration-dialog .spl-calibration-noise-row {
+    justify-content: flex-start;
 }
 
 .hybrid-measurement-overlay {

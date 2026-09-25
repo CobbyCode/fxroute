@@ -99,7 +99,7 @@ async function main() {
         });
         await Job.pollMeasurementJob('job-1', 3);
         assert.equal(state.measurement.activeJobId, '', 'completed poll clears the job');
-        assert.equal(state.measurement.statusText, 'done');
+        assert.equal(state.measurement.statusText, 'Sweep finished, but no result data was returned.');
     }
 
     // 2b. Sweep poll resolves a gone job instead of hanging.

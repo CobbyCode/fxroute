@@ -409,10 +409,15 @@ def _run():
                 assert page.locator("#measurement-sweep-toggle").inner_text() == "Cancel"
                 page.evaluate("window.__measurementControls.releaseCompletionDebug()")
                 page.wait_for_timeout(50)
-                assert "Measurement running" in page.locator("#measurement-setup-status").inner_text()
+                # Live progress sits on the sweep line, the panel status
+                # line stays free for the outcome.
+                assert "Measurement running" in page.locator("#measurement-sweep-status").inner_text()
+                assert page.locator("#measurement-setup-status").inner_text() == ""
                 _cancel_from_sweep_button(page)
+                page.wait_for_function("() => document.getElementById('measurement-setup-status')?.textContent === 'Sweep cancelled.'")
+                assert page.locator("#measurement-sweep-status").inner_text() == "Measures frequency and impulse response."
                 page.evaluate("window.__measurementControls.delayCompletionDebug = false")
-                checks += 5
+                checks += 7
 
                 page.locator("#measurement-sweep-toggle").click()
                 page.locator("#measurement-hybrid-open").click()

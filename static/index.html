@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.266">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.267">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -1127,13 +1127,14 @@
                                                     </div>
                                                 </div>
                                             </div>
+                                            <span id="measurement-sweep-status" class="measurement-repeat-help" aria-live="polite">Measures frequency and impulse response.</span>
                                         </div>
                                     </div>
                                     <div class="measurement-workflow-section measurement-workflow-auto-sub hidden" id="measurement-auto-sub-group">
                                         <h4 class="measurement-workflow-label">Subwoofer</h4>
                                         <div class="measurement-workflow-row">
                                             <button id="measurement-auto-sub-start" class="btn-secondary" type="button">Auto Sub Optimize</button>
-                                            <span id="measurement-auto-sub-status" class="measurement-repeat-help">Scans sub delay around crossover, picks best alignment.</span>
+                                            <span id="measurement-auto-sub-status" class="measurement-repeat-help" aria-live="polite">Scans sub delay around crossover, picks best alignment.</span>
                                         </div>
                                     </div>
                                     <div class="measurement-workflow-section measurement-workflow-speaker-align hidden" id="measurement-speaker-align-group">
@@ -1144,9 +1145,8 @@
                                                 <button id="measurement-speaker-align-right" class="btn-secondary" type="button">Align Right</button>
                                                 <button id="measurement-speaker-align-cancel" class="btn-secondary hidden" type="button">Cancel Alignment</button>
                                             </div>
-                                            <span class="measurement-repeat-help">Aligns each way of the selected speaker with the microphone fixed.</span>
+                                            <span id="measurement-speaker-align-status" class="measurement-repeat-help" aria-live="polite">Aligns each way of the selected speaker with the microphone fixed.</span>
                                         </div>
-                                        <p id="measurement-speaker-align-status" class="measurement-repeat-help" aria-live="polite"></p>
                                         <div id="measurement-speaker-align-results"></div>
                                     </div>
                                     <div class="measurement-workflow-section">
@@ -1436,8 +1436,9 @@
                     </button>
                 </div>
                 <div class="effects-stack">
-                    <div class="effects-actions-row">
+                    <div class="effects-actions-row spl-calibration-noise-row">
                         <button id="spl-calibration-noise" class="btn-primary" type="button">Start noise</button>
+                        <span id="spl-calibration-auto-status" class="measurement-repeat-help" aria-live="polite">Checking microphone calibration…</span>
                     </div>
                     <div class="field-group">
                         <label for="spl-calibration-measured">Measured SPL</label>
@@ -1446,7 +1447,6 @@
                             <span class="delay-unit">dB SPL</span>
                         </div>
                     </div>
-                    <p id="spl-calibration-auto-status" class="measurement-inline-note">Checking microphone calibration…</p>
                     <div class="effects-actions-row effects-actions-right">
                         <button id="spl-calibration-save" class="btn-primary" type="button">Save / Apply</button>
                     </div>
@@ -1731,8 +1731,8 @@
     <script src="/static/hybrid_measurement.js?v=0.9.15"></script>
     <script src="/static/measurement_ui.js?v=0.9.20"></script>
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
-    <script src="/static/speaker_align.js?v=0.9.11"></script>
-    <script src="/static/measurement_flows.js?v=0.9.34"></script>
+    <script src="/static/speaker_align.js?v=0.9.12"></script>
+    <script src="/static/measurement_flows.js?v=0.9.35"></script>
     <script src="/static/output_state.js?v=0.9.12"></script>
     <script src="/static/crossover.js?v=0.9.7"></script>
     <script src="/static/crossover_view.js?v=0.9.1"></script>
@@ -1754,15 +1754,15 @@
     <script src="/static/measurement_calibration.js?v=0.9.1"></script>
     <script src="/static/measurement_peq_editor.js?v=0.9.1"></script>
     <script src="/static/measurement_convolver_editor.js?v=0.9.1"></script>
-    <script src="/static/measurement_capture.js?v=0.9.1"></script>
-    <script src="/static/measurement_job.js?v=0.9.2"></script>
+    <script src="/static/measurement_capture.js?v=0.9.2"></script>
+    <script src="/static/measurement_job.js?v=0.9.3"></script>
     <script src="/static/measurement_saved_actions.js?v=0.9.3"></script>
-    <script src="/static/measurement_spl_calibration.js?v=0.9.1"></script>
+    <script src="/static/measurement_spl_calibration.js?v=0.9.2"></script>
     <script src="/static/library_ui.js?v=0.9.2"></script>
     <script src="/static/playback_core.js?v=0.9.1"></script>
     <script src="/static/playback_ui.js?v=0.9.3"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.236"></script>
+    <script src="/static/app.js?v=0.9.237"></script>
     <script src="/static/streaming.js?v=0.9.71"></script>
 </body>
 </html>

@@ -32,12 +32,34 @@
         deps = Object.assign(deps, overrides || {});
     }
 
+    // Live progress goes to the sweep feature line; the panel status line
+    // (statusText) only gets the outcome.
+    function setProgress(text) {
+        const measurementState = deps.getState().measurement;
+        // A cancel requested before the job id arrived keeps "Cancelling…".
+        if (measurementState.cancelRequested) return;
+        measurementState.progressKind = 'sweep';
+        measurementState.progressText = text;
+    }
+
+    function clearProgress() {
+        const measurementState = deps.getState().measurement;
+        if (measurementState.progressKind !== 'sweep') return;
+        measurementState.progressKind = '';
+        measurementState.progressText = '';
+    }
+
+    function failureText(label, error) {
+        const reason = String(error?.message || '').replace(/^Measurement failed\.?:?\s*/i, '').trim();
+        return reason ? `${label} failed: ${reason}` : `${label} failed.`;
+    }
+
     async function startHostMeasurement(jobGeneration = deps.getState().measurement.jobGeneration) {
         if (!deps.requireConcreteFilterBank()) return;
         if (!deps.getState().measurement.hostCaptureAvailable || !deps.getState().measurement.selectedInputId) {
-            deps.getState().measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
+            deps.getState().measurement.statusText = 'No usable capture input. Select one in Setup.';
             deps.renderMeasurementPanel();
-            deps.showToast(deps.getState().measurement.statusText, 'error');
+            deps.showToast('No capture input', 'error');
             return;
         }
 
@@ -71,17 +93,17 @@
         deps.getState().measurement.activeMeasurementKind = 'single';
         deps.getState().measurement.pendingRepeatMeasurements = [];
         deps.getState().measurement.currentMeasurementSaved = false;
-        deps.getState().measurement.statusText = 'Starting host-local sweep…';
+        setProgress('Starting…');
         deps.renderMeasurementPanel();
         void deps.postRuntimeDebugSnapshot('ui-before-measurement-start', { measurementKind: 'single' });
 
         const resp = await deps.fetch('/api/measurements/start', { method: 'POST', body: formData });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to start measurement'));
+        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'could not start'));
         const job = data.job || {};
         deps.getState().measurement.activeJobId = String(job.id || '');
         deps.getState().measurement.activeMeasurementKind = deps.normalizeMeasurementKind(job.job_kind || 'single') || 'single';
-        deps.getState().measurement.statusText = deps.formatMeasurementJobStatusText(job, 'Preparing sweep…');
+        setProgress(deps.formatMeasurementJobStatusText(job, 'Preparing…'));
         deps.renderMeasurementPanel();
         if (deps.getState().measurement.cancelRequested) await deps.cancelMeasurement();
         if (!deps.getState().measurement.activeJobId) return;
@@ -91,9 +113,9 @@
     async function startLrRepeatMeasurement(jobGeneration = deps.getState().measurement.jobGeneration) {
         if (!deps.requireConcreteFilterBank()) return;
         if (!deps.getState().measurement.hostCaptureAvailable || !deps.getState().measurement.selectedInputId) {
-            deps.getState().measurement.statusText = 'No usable host capture source is available for an L/R repeat measurement on this host.';
+            deps.getState().measurement.statusText = 'No usable capture input. Select one in Setup.';
             deps.renderMeasurementPanel();
-            deps.showToast(deps.getState().measurement.statusText, 'error');
+            deps.showToast('No capture input', 'error');
             return;
         }
         await deps.flushSubwooferSettingsBeforeMeasurement();
@@ -117,16 +139,16 @@
         deps.getState().measurement.activeMeasurementKind = 'lr_repeat';
         deps.getState().measurement.pendingRepeatMeasurements = [];
         deps.getState().measurement.repeatJobActive = true;
-        deps.getState().measurement.statusText = 'Starting L/R repeat…';
+        setProgress('Starting…');
         deps.renderMeasurementPanel();
         void deps.postRuntimeDebugSnapshot('ui-before-measurement-start', { measurementKind: 'lr-repeat' });
         const resp = await deps.fetch('/api/measurements/lr-repeat/start', { method: 'POST', body: formData });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to start L/R repeat measurement'));
+        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'could not start'));
         const job = data.job || {};
         deps.getState().measurement.activeJobId = String(job.id || '');
         deps.getState().measurement.activeMeasurementKind = deps.normalizeMeasurementKind(job.job_kind || 'lr-repeat') || 'lr_repeat';
-        deps.getState().measurement.statusText = deps.formatMeasurementJobStatusText(job, 'Preparing L/R repeat…');
+        setProgress(deps.formatMeasurementJobStatusText(job, 'Preparing…'));
         deps.renderMeasurementPanel();
         if (deps.getState().measurement.cancelRequested) await deps.cancelMeasurement();
         if (!deps.getState().measurement.activeJobId) return;
@@ -136,9 +158,9 @@
     async function startMeasurement() {
         if (deps.getState().measurement.startInFlight || deps.getState().measurement.activeJobId) return;
         if (!deps.measurementModeReady()) {
-            deps.getState().measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
+            deps.getState().measurement.statusText = 'No usable capture input. Select one in Setup.';
             deps.renderMeasurementPanel();
-            deps.showToast(deps.getState().measurement.statusText, 'error');
+            deps.showToast('No capture input', 'error');
             return;
         }
 
@@ -150,6 +172,7 @@
         deps.getState().measurement.activeMeasurementKind = '';
         deps.getState().measurement.activeJobId = '';
         deps.getState().measurement.currentMeasurementSaved = false;
+        deps.getState().measurement.statusText = '';
         deps.renderMeasurementPanel();
 
         try {
@@ -157,10 +180,11 @@
         } catch (error) {
             if (deps.getState().measurement.jobGeneration !== jobGeneration) return;
             console.error('startMeasurement failed', error);
-            deps.getState().measurement.statusText = error.message || 'Failed to start measurement';
-            deps.showToast(deps.getState().measurement.statusText, 'error');
+            deps.getState().measurement.statusText = failureText('Sweep', error);
+            deps.showToast('Sweep failed', 'error');
         } finally {
             if (deps.getState().measurement.jobGeneration !== jobGeneration) return;
+            clearProgress();
             deps.getState().measurement.startInFlight = false;
             if (deps.getState().measurement.jobGeneration === jobGeneration && !deps.getState().measurement.activeJobId) {
                 deps.getState().measurement.activeMeasurementKind = '';
@@ -177,13 +201,13 @@
         if (repeatBlockedReason) {
             deps.getState().measurement.statusText = repeatBlockedReason;
             deps.renderMeasurementPanel();
-            deps.showToast(repeatBlockedReason, 'warning');
+            deps.showToast('L/R repeat unavailable', 'warning');
             return;
         }
         if (!deps.measurementModeReady()) {
-            deps.getState().measurement.statusText = 'No usable host capture source is available for a real measurement on this host.';
+            deps.getState().measurement.statusText = 'No usable capture input. Select one in Setup.';
             deps.renderMeasurementPanel();
-            deps.showToast(deps.getState().measurement.statusText, 'error');
+            deps.showToast('No capture input', 'error');
             return;
         }
         const jobGeneration = Number(deps.getState().measurement.jobGeneration || 0) + 1;
@@ -192,16 +216,18 @@
         deps.getState().measurement.cancelRequested = false;
         deps.getState().measurement.activeMeasurementKind = '';
         deps.getState().measurement.repeatJobActive = true;
+        deps.getState().measurement.statusText = '';
         deps.renderMeasurementPanel();
         try {
             await startLrRepeatMeasurement(jobGeneration);
         } catch (error) {
             if (deps.getState().measurement.jobGeneration !== jobGeneration) return;
             console.error('startLrRepeat failed', error);
-            deps.getState().measurement.statusText = error.message || 'Failed to start L/R repeat measurement';
-            deps.showToast(deps.getState().measurement.statusText, 'error');
+            deps.getState().measurement.statusText = failureText('L/R repeat', error);
+            deps.showToast('L/R repeat failed', 'error');
         } finally {
             if (deps.getState().measurement.jobGeneration !== jobGeneration) return;
+            clearProgress();
             deps.getState().measurement.startInFlight = false;
             if (deps.getState().measurement.jobGeneration === jobGeneration && !deps.getState().measurement.activeJobId) {
                 deps.getState().measurement.activeMeasurementKind = '';
