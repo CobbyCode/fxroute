@@ -9,9 +9,12 @@ existing API responses for playlist import and export.
 
 from __future__ import annotations
 
+import io
+import os
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -22,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 import main
 import library.api as library_api
 import library.playlist_io as playlist_io
+import library.playlists as playlist_store
 
 
 def make_track(track_id, rel_path=None, url=None, title=None, artist=None, duration=None):
@@ -285,7 +289,7 @@ class PlaylistIOImportTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def test_import_without_match_returns_none(self):
-        with patch.object(main, "settings", self.settings), patch("library.playlist_io.save_playlist") as save:
+        with patch.object(main, "settings", self.settings), patch("library.playlist_io.save_new_playlist") as save:
             result = playlist_io.import_m3u_playlist(
                 "nope.m3u8", "#EXTM3U\nunknown.flac\n", tracks=[],
                 music_root=self.music_root,
@@ -296,7 +300,7 @@ class PlaylistIOImportTests(unittest.TestCase):
     def test_import_matches_and_returns_payload(self):
         track = make_track("t1", self.music_root / "album" / "song.flac", title="Song", duration=240)
         saved = SimpleNamespace(id="p9", name="mix", track_ids=["t1"])
-        with patch.object(main, "settings", self.settings), patch("library.playlist_io.save_playlist", return_value=saved) as save:
+        with patch.object(main, "settings", self.settings), patch("library.playlist_io.save_new_playlist", return_value=saved) as save:
             result = playlist_io.import_m3u_playlist(
                 "mix.m3u8", "\ufeff#EXTM3U\n#EXTINF:240,Song\nalbum/song.flac\nunknown.flac\n",
                 self.music_root,
@@ -365,7 +369,7 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(main, "settings", self.settings),
             patch.object(main.runtime.music_library, "scanner", scanner),
-            patch("library.playlist_io.save_playlist", return_value=saved) as save,
+            patch("library.playlist_io.save_new_playlist", return_value=saved) as save,
         ):
             payload = await library_api.upload_track(file=FakeUpload(b"#EXTM3U\nalbum/song.flac\n"))
         self.assertEqual(payload["status"], "imported")
@@ -403,6 +407,196 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
                 await library_api.upload_track(file=FakeUpload())
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail, "Playlist did not match any library tracks")
+
+
+# ---------------------------------------------------------------------------
+# Import name collisions: an import adds a playlist, it never replaces one
+# ---------------------------------------------------------------------------
+
+class _IsolatedPlaylistStore:
+    """Point library.playlists at a throwaway config dir and reset its cache."""
+
+    def __init__(self, test, base: Path):
+        self.playlists = playlist_store
+        patcher = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(base / "config")})
+        patcher.start()
+        test.addCleanup(patcher.stop)
+        self._reset()
+        test.addCleanup(self._reset)
+
+    def _reset(self):
+        with self.playlists._cache_lock:
+            self.playlists._cached_playlists = None
+            self.playlists._cache_generation = 0
+
+    def stored(self) -> dict:
+        return {playlist.id: playlist for playlist in self.playlists.get_playlists()}
+
+
+class PlaylistImportNameCollisionTests(unittest.IsolatedAsyncioTestCase):
+    """An M3U import must never silently replace an existing user playlist."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.music_root = self.base / "music"
+        self.music_root.mkdir(parents=True)
+        self.settings = SimpleNamespace(MUSIC_ROOT=self.music_root, download_dir=self.base / "downloads")
+        self.store = _IsolatedPlaylistStore(self, self.base)
+        self.addCleanup(self._tmp.cleanup)
+        self.track = make_track("t1", self.music_root / "one.mp3", title="One")
+
+    def test_import_does_not_replace_an_existing_user_playlist(self):
+        existing = self.store.playlists.save_playlist("Road Trip", ["local_a/one.mp3", "local_a/two.mp3"])
+
+        result = playlist_io.import_m3u_playlist(
+            "Road Trip.m3u8", "#EXTM3U\none.mp3\n", self.music_root, tracks=[self.track]
+        )
+
+        self.assertEqual(result["name"], "Road Trip (2)", "the import gets its own unique name")
+        self.assertNotEqual(result["id"], existing.id)
+        stored = self.store.stored()
+        self.assertEqual(len(stored), 2, "the import is added, not substituted")
+        self.assertEqual(stored[existing.id].name, "Road Trip")
+        self.assertEqual(stored[existing.id].track_ids, ["local_a/one.mp3", "local_a/two.mp3"])
+        self.assertEqual(stored[result["id"]].track_ids, ["t1"])
+
+    def test_import_does_not_replace_a_case_variant(self):
+        existing = self.store.playlists.save_playlist("Road Trip", ["local_a/one.mp3"])
+
+        result = playlist_io.import_m3u_playlist(
+            "Road Trip.m3u8", "#EXTM3U\none.mp3\n", self.music_root, tracks=[self.track]
+        )
+
+        self.assertNotEqual(result["id"], existing.id)
+        self.assertEqual(self.store.stored()[existing.id].track_ids, ["local_a/one.mp3"])
+
+    async def test_upload_endpoint_reports_the_unique_name(self):
+        existing = self.store.playlists.save_playlist("Road Trip", ["local_a/one.mp3"])
+        scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: [self.track])
+
+        class FakeUpload:
+            filename = "Road Trip.m3u8"
+
+            def __init__(self, content: bytes):
+                self._chunks = [content]
+
+            async def read(self, size=-1):
+                return self._chunks.pop(0) if self._chunks else b""
+
+            async def close(self):
+                return None
+
+        with patch.object(main, "settings", self.settings), \
+                patch.object(main.runtime.music_library, "scanner", scanner):
+            payload = await library_api.upload_track(
+                file=FakeUpload(b"#EXTM3U\none.mp3\n")
+            )
+
+        self.assertEqual(payload["imported_playlist_count"], 1)
+        self.assertEqual(payload["playlist"]["name"], "Road Trip (2)")
+        stored = self.store.stored()
+        self.assertEqual(stored[existing.id].track_ids, ["local_a/one.mp3"])
+
+
+def _build_zip(members: list[tuple[str, bytes]]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, content in members:
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+class ZipSameStemImportTests(unittest.IsolatedAsyncioTestCase):
+    """Two ZIP members with the same stem must both be persisted."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.music_root = self.base / "music"
+        (self.music_root / "album").mkdir(parents=True)
+        self.download_dir = self.base / "downloads"
+        self.settings = SimpleNamespace(MUSIC_ROOT=self.music_root, download_dir=self.download_dir)
+        self.store = _IsolatedPlaylistStore(self, self.base)
+        self.addCleanup(self._tmp.cleanup)
+        self.tracks = [
+            make_track("t1", self.music_root / "album" / "cd1.mp3", title="CD1 Track"),
+            make_track("t2", self.music_root / "album" / "cd2.mp3", title="CD2 Track"),
+        ]
+        self.scanner = SimpleNamespace(
+            music_root=self.music_root,
+            get_tracks=lambda refresh=True, **kwargs: self.tracks,
+            refresh=lambda *args, **kwargs: self.tracks,
+        )
+
+    async def _upload(self, members: list[tuple[str, bytes]], filename: str = "album.zip") -> dict:
+        class FakeUpload:
+            def __init__(self, content: bytes):
+                self._chunks = [content]
+                self.filename = filename
+
+            async def read(self, size=-1):
+                return self._chunks.pop(0) if self._chunks else b""
+
+            async def close(self):
+                return None
+
+        with patch.object(main, "settings", self.settings), \
+                patch.object(main.runtime.music_library, "scanner", self.scanner):
+            return await library_api.upload_track(file=FakeUpload(_build_zip(members)))
+
+    async def test_same_stem_zip_playlists_are_both_persisted(self):
+        payload = await self._upload([
+            ("CD1/mix.m3u8", b"#EXTM3U\ncd1.mp3\n"),
+            ("CD2/mix.m3u8", b"#EXTM3U\ncd2.mp3\n"),
+        ])
+
+        self.assertEqual(payload["imported_playlist_count"], 2)
+        stored = self.store.stored()
+        self.assertEqual(len(stored), 2, "both members must be persisted, not just the last one")
+        self.assertEqual(
+            sorted(playlist.name for playlist in stored.values()),
+            ["CD2 mix", "mix"],
+            "the colliding name carries the member's position in the archive",
+        )
+        self.assertEqual(payload["imported_track_count"], 0)
+        self.assertEqual(
+            sorted(playlist["track_ids"][0] for playlist in payload["playlists"]),
+            ["t1", "t2"],
+            "each member keeps its own matched tracks",
+        )
+
+    async def test_same_stem_zip_does_not_overwrite_a_user_playlist(self):
+        existing = self.store.playlists.save_playlist("mix", ["local_kept/track.mp3"])
+
+        payload = await self._upload([
+            ("CD1/mix.m3u8", b"#EXTM3U\ncd1.mp3\n"),
+            ("CD2/mix.m3u8", b"#EXTM3U\ncd2.mp3\n"),
+        ])
+
+        self.assertEqual(payload["imported_playlist_count"], 2)
+        self.assertEqual(
+            self.store.stored()[existing.id].track_ids,
+            ["local_kept/track.mp3"],
+            "an existing user playlist must survive a ZIP import untouched",
+        )
+        self.assertEqual(len(self.store.stored()), 3)
+
+    async def test_repeated_import_of_the_same_zip_keeps_persisting_both(self):
+        members = [
+            ("CD1/mix.m3u8", b"#EXTM3U\ncd1.mp3\n"),
+            ("CD2/mix.m3u8", b"#EXTM3U\ncd2.mp3\n"),
+        ]
+        first = await self._upload(members, filename="album.zip")
+        second = await self._upload(members, filename="album2.zip")
+        self.assertEqual(first["imported_playlist_count"], 2)
+        self.assertEqual(second["imported_playlist_count"], 2)
+        self.assertEqual(len(self.store.stored()), 4)
+
+    async def test_single_playlist_zip_keeps_the_plain_stem(self):
+        payload = await self._upload([("mix.m3u8", b"#EXTM3U\ncd1.mp3\n")])
+        self.assertEqual(payload["imported_playlist_count"], 1)
+        self.assertEqual(payload["playlists"][0]["name"], "mix")
 
 
 if __name__ == "__main__":

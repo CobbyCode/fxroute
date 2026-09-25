@@ -246,6 +246,50 @@ def read_member_bounded(
     return b"".join(chunks)
 
 
+def unique_archive_playlist_name(
+    name: str, used_names: set[str]
+) -> str:
+    """First free variant of ``name`` within one archive, case-insensitively."""
+    if name.lower() not in used_names:
+        return name
+    index = 2
+    while f"{name} ({index})".lower() in used_names:
+        index += 1
+    return f"{name} ({index})"
+
+
+def zip_playlist_names(playlist_files: List[Path], target_root: Path) -> List[tuple[Path, str]]:
+    """Pair each extracted playlist member with a collision-free name.
+
+    Members are processed in archive order.  The first member of a given stem
+    keeps the plain stem, so a single ``mix.m3u8`` still imports as ``mix``.
+    Every later member with the same stem is qualified by its position in the
+    archive: its containing folder, if it has one, otherwise the member's 1-based
+    position.  Two members of one album therefore both persist instead of the
+    second replacing the first.  The result is a pure function of the archive
+    layout, so re-importing the same ZIP yields the same names.
+    """
+    stem_positions: dict[str, int] = {}
+    assigned: List[tuple[Path, str]] = []
+    used_names: set[str] = set()
+    for playlist_path in playlist_files:
+        stem = playlist_path.stem or "playlist"
+        position = stem_positions.get(stem.lower(), 0) + 1
+        stem_positions[stem.lower()] = position
+        if position == 1:
+            name = stem
+        else:
+            try:
+                folder = playlist_path.parent.relative_to(target_root)
+            except ValueError:
+                folder = None
+            folder_name = folder.name if folder is not None and folder.name not in ("", ".") else ""
+            name = f"{folder_name} {stem}" if folder_name else f"{stem} ({position})"
+        assigned.append((playlist_path, unique_archive_playlist_name(name, used_names)))
+        used_names.add(assigned[-1][1].lower())
+    return assigned
+
+
 def extract_zip_album(
     zip_path: Path,
     target_root: Path,

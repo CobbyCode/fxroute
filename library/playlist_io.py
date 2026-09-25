@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import unquote
 
-from library.playlists import save_playlist
+from library.playlists import save_new_playlist
 
 
 def parse_m3u_entries(content: str) -> List[str]:
@@ -170,7 +170,10 @@ def import_m3u_playlist(
     )
     if not track_ids:
         return None
-    playlist = save_playlist(Path(name).stem or "Imported playlist", track_ids)
+    # The name comes from a file stem, so it can collide with a playlist the
+    # user already has.  The import is always created as an additional entry
+    # under a unique name; it must never replace the existing playlist.
+    playlist = save_new_playlist(Path(name).stem or "Imported playlist", track_ids)
     return {
         "id": playlist.id,
         "name": playlist.name,

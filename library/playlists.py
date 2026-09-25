@@ -102,6 +102,20 @@ def _make_unique_id(name: str, existing_ids: set[str]) -> str:
     return f"{candidate}-{index}"
 
 
+def _unique_name_for(raw: List[dict], name: str) -> str:
+    """First free variant of ``name`` among the persisted playlists.
+
+    Case-insensitive, matching the identity ``save_playlist`` compares on.
+    """
+    taken = {str(item.get("name") or "").strip().lower() for item in raw}
+    if name.lower() not in taken:
+        return name
+    index = 2
+    while f"{name} ({index})".lower() in taken:
+        index += 1
+    return f"{name} ({index})"
+
+
 def get_playlists() -> List[Playlist]:
     """Load saved playlists, cache-publication-safe.
 
@@ -162,6 +176,38 @@ def save_playlist(name: str, track_ids: List[str]) -> Playlist:
         playlist = Playlist(
             id=_make_unique_id(cleaned_name, existing_ids),
             name=cleaned_name,
+            track_ids=cleaned_track_ids,
+        )
+        raw.append(asdict(playlist))
+        _save_raw_playlists(raw)
+        return playlist
+
+
+def save_new_playlist(name: str, track_ids: List[str]) -> Playlist:
+    """Create a playlist without ever replacing an existing one.
+
+    ``save_playlist`` deliberately overwrites a same-named playlist, which is
+    what an explicit user save means.  An import must never do that: its name
+    is derived from a file stem, so it would silently replace a user playlist
+    that happens to carry the same name.  The name is therefore made unique
+    inside the same locked read -> decide -> persist cycle that creates the
+    entry, so two concurrent imports cannot pick the same free name.
+    """
+    cleaned_name = (name or "").strip()
+    if not cleaned_name:
+        raise ValueError("Playlist name is required")
+
+    cleaned_track_ids = [str(track_id).strip() for track_id in track_ids if str(track_id).strip()]
+    if not cleaned_track_ids:
+        raise ValueError("Playlist must contain at least one track")
+
+    with _mutation_lock:
+        raw = _load_raw_playlists()
+        unique_name = _unique_name_for(raw, cleaned_name)
+        existing_ids = {str(item.get("id") or "").strip() for item in raw}
+        playlist = Playlist(
+            id=_make_unique_id(unique_name, existing_ids),
+            name=unique_name,
             track_ids=cleaned_track_ids,
         )
         raw.append(asdict(playlist))

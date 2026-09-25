@@ -26,6 +26,7 @@ from zip_album import (
     dedupe_archive_name,
     extract_zip_album,
     is_safe_relative_zip_path,
+    zip_playlist_names,
 )
 
 
@@ -266,6 +267,131 @@ class ExtractZipAlbumTests(unittest.TestCase):
                 extract_zip_album(zip_path, target)
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertEqual(ctx.exception.detail, "Invalid ZIP archive")
+
+
+class ZipPlaylistNameTests(unittest.TestCase):
+    """Naming contract for playlist members of one archive.
+
+    Same-named members in different ZIP folders used to import under one name,
+    so the second replaced the first while the API still reported two imports.
+    Names must be a stable function of the archive layout and unique per
+    member.
+    """
+
+    def _names(self, target: Path, members: list[tuple[str, bytes]]) -> list[tuple[str, str]]:
+        with tempfile.TemporaryDirectory() as td:
+            zip_path = Path(td) / "album.zip"
+            _write_zip(zip_path, members)
+            result = extract_zip_album(zip_path, target)
+            return [
+                (str(path.relative_to(target)), name)
+                for path, name in zip_playlist_names(result["playlist_files"], target)
+            ]
+
+    def test_single_playlist_keeps_the_plain_stem(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "out"
+            self.assertEqual(
+                self._names(target, [("mix.m3u8", b"#EXTM3U")]),
+                [("mix.m3u8", "mix")],
+            )
+
+    def test_same_stem_members_get_distinct_names(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "out"
+            self.assertEqual(
+                self._names(target, [
+                    ("CD1/mix.m3u8", b"#EXTM3U"),
+                    ("CD2/mix.m3u8", b"#EXTM3U"),
+                ]),
+                [("CD1/mix.m3u8", "mix"), ("CD2/mix.m3u8", "CD2 mix")],
+            )
+
+    def test_third_collision_uses_its_own_folder(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "out"
+            self.assertEqual(
+                [name for _, name in self._names(target, [
+                    ("CD1/mix.m3u8", b"#EXTM3U"),
+                    ("CD2/mix.m3u8", b"#EXTM3U"),
+                    ("CD3/mix.m3u8", b"#EXTM3U"),
+                ])],
+                ["mix", "CD2 mix", "CD3 mix"],
+            )
+
+    def test_nested_folder_collisions_use_the_containing_folder(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "out"
+            self.assertEqual(
+                [name for _, name in self._names(target, [
+                    ("Album/disc1/list.m3u8", b"#EXTM3U"),
+                    ("Album/disc2/list.m3u8", b"#EXTM3U"),
+                ])],
+                ["list", "disc2 list"],
+            )
+
+    def test_folders_outside_the_target_root_fall_back_to_the_position(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "out"
+            other = Path(td) / "elsewhere"
+            first = [target / "mix.m3u8", other / "mix.m3u8"]
+            self.assertEqual(
+                [name for _, name in zip_playlist_names(first, target)],
+                ["mix", "mix (2)"],
+            )
+
+    def test_qualifying_a_name_that_itself_collides_gets_a_counter(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "out"
+            members = [
+                ("mix.m3u8", b"#EXTM3U"),
+                ("CD2/mix.m3u8", b"#EXTM3U"),
+                ("CD2 mix.m3u8", b"#EXTM3U"),
+            ]
+            self.assertEqual(
+                [name for _, name in self._names(target, members)],
+                ["mix", "CD2 mix", "CD2 mix (2)"],
+            )
+
+    def test_case_differing_stems_are_treated_as_one_collision(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "out"
+            self.assertEqual(
+                [name for _, name in self._names(target, [
+                    ("mix.m3u8", b"#EXTM3U"),
+                    ("CD2/MIX.m3u8", b"#EXTM3U"),
+                ])],
+                ["mix", "CD2 MIX"],
+            )
+
+    def test_counter_fallback_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "out"
+            other = Path(td) / "elsewhere"
+            files = [target / "mix.m3u8", other / "Mix.m3u8"]
+            self.assertEqual(
+                [name for _, name in zip_playlist_names(files, target)],
+                ["mix", "Mix (2)"],
+            )
+
+    def test_naming_is_stable_across_repeated_extractions(self):
+        members = [("CD1/mix.m3u8", b"#EXTM3U"), ("CD2/mix.m3u8", b"#EXTM3U")]
+        with tempfile.TemporaryDirectory() as td:
+            first = self._names(Path(td) / "a", members)
+        with tempfile.TemporaryDirectory() as td:
+            second = self._names(Path(td) / "b", members)
+        self.assertEqual(first, second)
+
+    def test_non_playlist_members_are_not_named(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "out"
+            _write_zip(Path(td) / "album.zip", [
+                ("CD1/mix.m3u8", b"#EXTM3U"),
+                ("CD1/track.mp3", b"audio"),
+            ])
+            result = extract_zip_album(Path(td) / "album.zip", target)
+            self.assertEqual(len(result["playlist_files"]), 1)
+            self.assertEqual([name for _, name in zip_playlist_names(result["playlist_files"], target)], ["mix"])
 
 
 if __name__ == "__main__":

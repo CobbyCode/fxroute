@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -259,6 +260,21 @@ def _discover_host_shares(server: str) -> list[dict[str, str]]:
     return shares
 
 
+@dataclass(frozen=True)
+class LibraryContext:
+    """Identity of the music-library context a piece of work was prepared for.
+
+    ``generation`` is the decisive field: it advances once per committed
+    library switch, so any work that captured an older generation (a running
+    scan, a prepared playback transition) can be rejected before it publishes.
+    """
+
+    library_id: str
+    library_type: str
+    root: str
+    generation: int
+
+
 def discover_smb_shares(hosts: list[str]) -> list[dict[str, str]]:
     """List guest-visible disk shares on known SMB hosts.
 
@@ -314,6 +330,48 @@ class MusicLibraryManager:
         # here because rescans always run in worker threads (never awaited
         # while held) and the manager instance is never copied.
         self._discovery_lock = threading.Lock()
+        # Context generation of the active library.  A committed switch
+        # advances it exactly once, which is enough to invalidate every
+        # capture taken before the switch.
+        self._generation = 0
+        self._generation_lock = threading.Lock()
+
+    # ── Library context generation ───────────────────────────────────
+
+    def capture_context(self) -> LibraryContext:
+        """Snapshot the active library context for work about to start."""
+        with self._generation_lock:
+            return LibraryContext(
+                library_id=self.active_id,
+                library_type=self.active_type,
+                root=str(self.active_root),
+                generation=self._generation,
+            )
+
+    def context_is_current(self, captured: LibraryContext | None) -> bool:
+        """Whether no library switch committed since ``captured`` was taken."""
+        if not isinstance(captured, LibraryContext):
+            return False
+        with self._generation_lock:
+            return captured.generation == self._generation
+
+    def active_snapshot(self) -> tuple[str, str, Path]:
+        """The published active library, for a switch that may be rolled back."""
+        with self._generation_lock:
+            return (self.active_id, self.active_type, self.active_root)
+
+    def restore_active(self, library_id: str, library_type: str, root: Path) -> None:
+        """Re-publish a previously active library without re-resolving it.
+
+        Used to roll a failed switch back so the manager, scanner, queue and
+        player describe one library again.  The generation is not advanced: a
+        switch that failed never published a context, so no prepared work
+        observed a new one and nothing has to be invalidated.
+        """
+        with self._generation_lock:
+            self.active_id = library_id
+            self.active_type = library_type
+            self.active_root = root
 
     def _resolve_discovery_hosts(self) -> list[str]:
         if self._configured_hosts is not None:
@@ -424,11 +482,28 @@ class MusicLibraryManager:
                 return candidate.resolve()
         return None
 
+    def _publish_active(self, library_id: str, library_type: str, root: Path) -> int:
+        """Publish the active library and advance the context generation.
+
+        The generation only advances on a real change, so re-selecting the
+        already active library leaves work prepared against it valid.
+        """
+        with self._generation_lock:
+            changed = (
+                self.active_id != library_id
+                or self.active_type != library_type
+                or self.active_root != root
+            )
+            self.active_id = library_id
+            self.active_type = library_type
+            self.active_root = root
+            if changed:
+                self._generation += 1
+            return self._generation
+
     def activate(self, library_id: str) -> Path:
         if library_id == "local":
-            self.active_id = "local"
-            self.active_type = "local"
-            self.active_root = self.local_root
+            self._publish_active("local", "local", self.local_root)
             return self.active_root
         if not library_id.startswith("smb:"):
             raise ValueError("Unsupported music library type")
@@ -487,9 +562,7 @@ class MusicLibraryManager:
                 detail += f" ({'; '.join(mount_diagnostics)})"
                 logger.warning("SMB mount failed for %s / %s: %s", server, share, "; ".join(mount_diagnostics))
             raise FileNotFoundError(detail)
-        self.active_id = library_id
-        self.active_type = "smb"
-        self.active_root = root
+        self._publish_active(library_id, "smb", root)
         return root
 
     def status(self) -> dict:

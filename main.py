@@ -43,7 +43,7 @@ from http_origin import (
 from connection_manager import ConnectionManager
 from common.atomic_write import atomic_write_bytes
 import system_update as update_lifecycle
-from library.sources import MusicLibraryManager
+from library.sources import LibraryContext, MusicLibraryManager
 from radio.metadata import RadioMetadataService
 from safe_http import BlockedUrlError
 
@@ -515,6 +515,21 @@ class MusicLibraryRuntime:
         self.switch_lock = None
 
 
+@dataclass(frozen=True)
+class PlaybackCommitIntent:
+    """Commit boundaries captured when one playback intent starts.
+
+    Carries every boundary that can invalidate a prepared app publish: the
+    audio source selection and the music-library context the transition was
+    prepared for.  A library switch advances the library generation, so the
+    prepared transition can no longer publish a track from the library the
+    user already left.
+    """
+
+    source: tuple[str, int]
+    library: LibraryContext | None
+
+
 @dataclass
 class RuntimeResources:
     """Lifecycle-owned runtime resources created and torn down by the FastAPI lifespan.
@@ -662,6 +677,35 @@ async def _run_locked_worker(lock: asyncio.Lock, func: Callable[..., Any], *args
     """
     async with lock:
         return await _drain_worker(func, *args, **kwargs)
+
+
+async def _finish_despite_cancellation(coro, *, name: str) -> Any:
+    """Run a commit section to completion even when the caller is cancelled.
+
+    Commit sections mutate state that cannot be unwound: an already published
+    manager state, a stopped player, a swapped scanner.  A cancellation in
+    the middle would leave those halves describing different things, so the
+    section is run as its own task and awaited until it actually finished.
+
+    A failed section reports its own error, so the caller can undo the switch;
+    a section that merely ran while the caller was cancelled propagates the
+    cancellation.
+    """
+    task = asyncio.create_task(coro, name=name)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if task.cancelled():
+        raise asyncio.CancelledError
+    error = task.exception()
+    if error is not None:
+        raise error
+    if cancelled:
+        raise asyncio.CancelledError
+    return task.result()
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
 # Measurement-window heartbeat timestamp: set by
 # /api/power/measurement-heartbeat, read only via _is_measurement_window_open().
@@ -999,7 +1043,7 @@ playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies
     get_tracks=lambda: runtime.music_library.scanner.get_tracks(),
     build_playback_payload=lambda *a, **k: build_playback_payload(*a, **k),
     resolve_stream_url=lambda track: _resolve_tidal_stream_url(track),
-    capture_source_intent=lambda: playback_state.capture_source_intent(),
+    capture_source_intent=lambda: _capture_source_intent(),
     ensure_source_intent_current=lambda captured: _ensure_source_intent_current(captured),
 ))
 
@@ -1267,18 +1311,59 @@ def _schedule_tidal_prefetch() -> None:
     threading.Thread(target=prefetch_stream, args=(next_id,), daemon=True).start()
 
 
-def _capture_source_intent() -> tuple[str, int]:
-    """Capture the source commit boundary for one playback intent.
+def _capture_source_intent() -> PlaybackCommitIntent:
+    """Capture the commit boundary for one playback intent.
 
     Call synchronously at intent start (before the first await) so a source
     switch that commits while the transition runs invalidates the later app
     publish instead of committing stale queue/track/owner state over it.
     """
-    return playback_state.capture_source_intent()
+    return PlaybackCommitIntent(
+        source=playback_state.capture_source_intent(),
+        library=_capture_library_context(),
+    )
 
 
-def _ensure_source_intent_current(captured: tuple[str, int] | None) -> None:
-    """Reject an app publish whose source boundary moved during the intent."""
+def _capture_library_context() -> LibraryContext | None:
+    """Capture the music-library context a playback intent is prepared for.
+
+    None when no library manager exists (bare unit wiring): without an active
+    library there is no library context that could invalidate the publish.
+    """
+    manager = runtime.music_library.manager
+    capture = getattr(manager, "capture_context", None)
+    if not callable(capture):
+        return None
+    return capture()
+
+
+def _ensure_library_context_current(captured: LibraryContext | None) -> None:
+    """Reject a publish prepared for a different music library.
+
+    A library switch replaces scanner, queue and playback state together and
+    advances the library generation.  A transition that was prepared against
+    the previous library must not commit its track over the new one.
+    """
+    if captured is None:
+        return
+    manager = runtime.music_library.manager
+    is_current = getattr(manager, "context_is_current", None)
+    if callable(is_current) and not is_current(captured):
+        raise HTTPException(status_code=409, detail="Music library changed during playback transition")
+
+
+def _ensure_source_intent_current(captured: Any) -> None:
+    """Reject an app publish whose commit boundary moved during the intent.
+
+    Both boundaries count: the audio source selection and the active music
+    library.  A plain ``(mode, generation)`` tuple stays accepted for callers
+    that only capture the source boundary.
+    """
+    if isinstance(captured, PlaybackCommitIntent):
+        if not playback_state.source_intent_is_current(captured.source):
+            raise HTTPException(status_code=409, detail="Audio source changed during playback transition")
+        _ensure_library_context_current(captured.library)
+        return
     if not playback_state.source_intent_is_current(captured):
         raise HTTPException(status_code=409, detail="Audio source changed during playback transition")
 
@@ -1368,7 +1453,10 @@ async def _json_object(request: Request, *, detail: str = "Invalid JSON body") -
 
 
 def _create_library_refresh_task(scanner: LibraryScanner, *, name: str) -> asyncio.Task:
-    task = asyncio.create_task(asyncio.to_thread(scanner.refresh, True), name=name)
+    # The scan runs in a worker thread, so it must be drained rather than
+    # cancelled: unwinding this task would leave the thread walking the tree
+    # and publishing its result after the caller believed it was gone.
+    task = asyncio.create_task(_drain_worker(scanner.refresh, True), name=name)
     runtime.library_refresh_tasks.add(task)
     task.add_done_callback(runtime.library_refresh_tasks.discard)
     return task
@@ -5586,6 +5674,33 @@ async def add_manual_music_library(request: Request):
     return {"entry": entry, **cached, "discovery_refreshing": refreshing}
 
 
+async def _commit_music_library_switch(
+    scanner: LibraryScanner,
+    *,
+    root: Path,
+    library_id: str,
+) -> None:
+    """Complete a switch whose manager state is already published.
+
+    Runs as one section: a cancellation between its steps would leave the
+    manager on the new library while the scanner, the queue and the player
+    still describe the previous one.
+    """
+    scanner.cancel_refresh()
+    active_refreshes = [task for task in runtime.library_refresh_tasks if not task.done()]
+    if active_refreshes:
+        await asyncio.gather(*active_refreshes, return_exceptions=True)
+    if runtime.player_instance is not None and runtime.player_instance._running:
+        _mark_playback_intent_changed()
+        await _drain_worker(runtime.player_instance.stop_playback)
+        playback_state.current_track_info = None
+        playback_state.last_track_info = None
+    playback_queue.queue.reset()
+    runtime.music_library.scanner = _library_scanner_for(root, library_id)
+    runtime.music_library.scanner.prepare_scan_status()
+    runtime.library_scan_task = _create_library_refresh_task(runtime.music_library.scanner, name="selected-library-scan")
+
+
 @app.post("/api/music-libraries/select")
 async def select_music_library(request: Request):
     manager = runtime.music_library.manager
@@ -5600,6 +5715,7 @@ async def select_music_library(request: Request):
     async with _music_library_lock():
         if _playback_transition_is_active():
             raise HTTPException(status_code=409, detail="A playback transition is in progress")
+        previous_library = manager.active_snapshot()
         try:
             root = await asyncio.to_thread(manager.activate, library_id)
         except (ValueError, FileNotFoundError) as exc:
@@ -5608,19 +5724,27 @@ async def select_music_library(request: Request):
             # Cached response: the selector entry was already known, so no
             # network rescan belongs into this answer path.
             return manager.status_cached()
-        scanner.cancel_refresh()
-        active_refreshes = [task for task in runtime.library_refresh_tasks if not task.done()]
-        if active_refreshes:
-            await asyncio.gather(*active_refreshes, return_exceptions=True)
-        if runtime.player_instance is not None and runtime.player_instance._running:
-            _mark_playback_intent_changed()
-            await _drain_worker(runtime.player_instance.stop_playback)
-            playback_state.current_track_info = None
-            playback_state.last_track_info = None
-        playback_queue.queue.reset()
-        runtime.music_library.scanner = _library_scanner_for(root, library_id)
-        runtime.music_library.scanner.prepare_scan_status()
-        runtime.library_scan_task = _create_library_refresh_task(runtime.music_library.scanner, name="selected-library-scan")
+        try:
+            # The manager already points at the new library, so the remaining
+            # steps run to completion even when this request is cancelled;
+            # otherwise the switch would be left half applied.
+            await _finish_despite_cancellation(
+                _commit_music_library_switch(scanner, root=root, library_id=library_id),
+                name="music-library-switch-commit",
+            )
+        except asyncio.CancelledError:
+            # The section finished; only the caller's request was cancelled, so
+            # there is nothing to undo.
+            raise
+        except BaseException:
+            # The switch did not complete: put the manager back so manager,
+            # scanner, queue and player all describe the previous library
+            # again instead of leaving a mixed state behind.
+            try:
+                await asyncio.to_thread(manager.restore_active, *previous_library)
+            except Exception:
+                logger.exception("Failed to roll back the music library switch")
+            raise
         return manager.status_cached()
 
 
@@ -5713,7 +5837,7 @@ def _make_streaming_api_deps() -> streaming_api.StreamingApiDeps:
         spotify_playerctl_watch=spotify_playerctl_watch,
         api_spotify_play=lambda: api_spotify_play(),
         api_spotify_toggle=lambda: api_spotify_toggle(),
-        capture_source_intent=lambda: playback_state.capture_source_intent(),
+        capture_source_intent=lambda: _capture_source_intent(),
         ensure_source_intent_current=lambda captured: _ensure_source_intent_current(captured),
     )
 

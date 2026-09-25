@@ -246,6 +246,13 @@ class LibraryScanner:
         self._scan_tracks_found = 0
         self._scan_track_cache_hits = 0
         self._scan_track_cache_misses = 0
+        self._scan_outside_root = 0
+        # Monotonic claim token for scan results. A run captures it when it
+        # takes the scan lock and may only publish while it still holds it,
+        # so a worker thread that outlived its asyncio wrapper (library
+        # switch, shutdown) cannot replace the cache, ``last_scan`` or the
+        # stored metadata of the current state.
+        self._scan_token = 0
         self.metadata_store = metadata_store or LibraryMetadataStore()
         self._refresh_cancel = threading.Event()
 
@@ -270,6 +277,7 @@ class LibraryScanner:
         self._scan_tracks_found = 0
         self._scan_track_cache_hits = 0
         self._scan_track_cache_misses = 0
+        self._scan_outside_root = 0
 
     def _metadata_fd_counts(self) -> tuple[int, int]:
         fd_dir = Path("/proc/self/fd")
@@ -380,12 +388,27 @@ class LibraryScanner:
                 self._scan_state_cond.wait()
             return self._track_cache if self._track_cache else None
 
-    def _run_scan_locked(self) -> List[Track]:
-        """Run exactly one full scan. Caller must hold ``self._scan_lock``."""
+    def _begin_scan(self) -> int:
+        """Claim scan-ownership and return the token that guards publishing."""
         with self._scan_state_lock:
             self._scan_scheduled = False
             self._scan_in_progress = True
+            self._scan_token += 1
+            scan_token = self._scan_token
             self._reset_scan_status_locked()
+            return scan_token
+
+    def _scan_claim_is_current(self, scan_token: int) -> bool:
+        """Whether this run may still publish its results.
+
+        A newer scan, a library switch (``cancel_refresh``) or a shutdown all
+        advance the token, so a superseded run is only ever allowed to abort.
+        """
+        return scan_token == self._scan_token
+
+    def _run_scan_locked(self) -> List[Track]:
+        """Run exactly one full scan. Caller must hold ``self._scan_lock``."""
+        scan_token = self._begin_scan()
         tracks = []
         active_track_paths: List[str] = []
         self._log_metadata_fd_counts("before-scan")
@@ -396,8 +419,15 @@ class LibraryScanner:
                 self._scan_error = f"Music directory not found: {self.music_root}"
                 return []
 
+            # Resolved once per scan: a symlinked audio file may point
+            # anywhere, and only files that really live inside the active
+            # music root may enter the cache, the library and playback.
+            resolved_music_root = self.music_root.resolve()
             logger.info(f"Scanning music directory: {self.music_root}")
             for root, dirs, files in os.walk(self.music_root):
+                if not self._scan_claim_is_current(scan_token):
+                    logger.info("Library scan discarded: superseded by a newer scan, library switch or shutdown")
+                    return self._track_cache
                 if self._refresh_cancel.is_set():
                     logger.info("Library scan cancelled during shutdown")
                     return self._track_cache
@@ -408,6 +438,9 @@ class LibraryScanner:
                 if self._scan_current_dir == ".":
                     self._scan_current_dir = ""
                 for filename in files:
+                    if not self._scan_claim_is_current(scan_token):
+                        logger.info("Library scan discarded: superseded by a newer scan, library switch or shutdown")
+                        return self._track_cache
                     if self._refresh_cancel.is_set():
                         logger.info("Library scan cancelled during shutdown")
                         return self._track_cache
@@ -415,6 +448,14 @@ class LibraryScanner:
                     filepath = Path(root) / filename
                     if filepath.suffix.lower() in AUDIO_EXTENSIONS:
                         self._scan_audio_seen += 1
+                        if not is_within_resolved_root(filepath, resolved_music_root):
+                            self._scan_outside_root += 1
+                            logger.warning(
+                                "Skipping %s: resolves to %s, outside the music root",
+                                filepath,
+                                filepath.resolve(strict=False),
+                            )
+                            continue
                         try:
                             rel_path = filepath.relative_to(self.music_root).as_posix()
                             active_track_paths.append(rel_path)
@@ -433,6 +474,12 @@ class LibraryScanner:
                                 self._scan_tracks_found = len(tracks)
                         except Exception as e:
                             logger.warning(f"Failed to read metadata for {filepath}: {e}")
+
+            if not self._scan_claim_is_current(scan_token):
+                logger.info(
+                    "Library scan discarded before publishing: %d track(s) not applied", len(tracks)
+                )
+                return self._track_cache
 
             self._log_metadata_fd_counts("after-track-cache-pass")
 
@@ -467,7 +514,15 @@ class LibraryScanner:
         return self._track_cache
 
     def cancel_refresh(self) -> None:
+        """Invalidate any in-flight scan (library switch, shutdown, reset).
+
+        Bumps the scan token so a worker that is still walking the tree
+        discards its results instead of publishing them over the current
+        state once it finishes.
+        """
         self._refresh_cancel.set()
+        with self._scan_state_lock:
+            self._scan_token += 1
 
     def _create_track_from_file(self, filepath: Path) -> Optional[Track]:
         """Create a Track object with metadata from file."""
@@ -678,6 +733,7 @@ class LibraryScanner:
             "tracks_found": self._scan_tracks_found,
             "track_cache_hits": self._scan_track_cache_hits,
             "track_cache_misses": self._scan_track_cache_misses,
+            "files_outside_root": self._scan_outside_root,
             "current_dir": self._scan_current_dir,
             "last_scan": self._last_scan.isoformat() if self._last_scan else None,
             "started_at": self._scan_started_at.isoformat() if self._scan_started_at else None,
@@ -960,13 +1016,28 @@ REMOVABLE_ARTWORK_STEMS = {"cover", "folder", "front", "albumart"}
 REMOVABLE_EMPTY_SIDECAR_SUFFIXES = {".m3u", ".m3u8", ".cue", ".log", ".nfo", ".txt"}
 
 
-def path_within_root(path: Path, root: Path) -> bool:
+def is_within_resolved_root(path: Path, resolved_root: Path) -> bool:
+    """Whether ``path`` really resolves inside an already resolved root.
+
+    ``path_within_root`` re-resolves the root on every call. A full library
+    scan checks every audio file it finds, so it resolves its root once and
+    reuses it here. A symlink inside the root that points outside it fails
+    this check and is rejected before it can reach cache, library or
+    playback.
+    """
     try:
         resolved_path = path.resolve()
-        resolved_root = root.resolve()
     except Exception:
         return False
     return resolved_path == resolved_root or resolved_root in resolved_path.parents
+
+
+def path_within_root(path: Path, root: Path) -> bool:
+    try:
+        resolved_root = root.resolve()
+    except Exception:
+        return False
+    return is_within_resolved_root(path, resolved_root)
 
 
 def is_removable_artwork_file(path: Path) -> bool:

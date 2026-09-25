@@ -671,10 +671,13 @@ async def upload_track(file: UploadFile = File(...)):
                 temp_zip_path.unlink(missing_ok=True)
 
             tracks = await _run_blocking(library_scanner.refresh, True, wait_if_running=True)
+            # One entry per persisted playlist: members that share a stem get
+            # distinct names first, and the import never overwrites an existing
+            # user playlist, so the count matches what is actually stored.
             imported_playlists = []
-            for playlist_path in playlist_files:
+            for playlist_path, playlist_name in zip_album.zip_playlist_names(playlist_files, album_dir):
                 imported = playlist_io.import_m3u_playlist(
-                    playlist_path.name,
+                    playlist_name,
                     playlist_path.read_text(encoding="utf-8", errors="replace"),
                     _active_music_root(library_scanner, settings),
                     base_dir=playlist_path.parent,

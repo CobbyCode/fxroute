@@ -142,6 +142,62 @@ class PlaylistPersistenceTestCase(unittest.TestCase):
         )
         self.assertEqual(self._temp_leftovers(), [])
 
+    def test_save_new_playlist_never_replaces_an_existing_one(self):
+        """An import creates an additional entry instead of overwriting."""
+        existing = playlists.save_playlist("Road Trip", ["A", "B"])
+        created = playlists.save_new_playlist("Road Trip", ["C"])
+        self.assertEqual(created.name, "Road Trip (2)")
+        self.assertNotEqual(created.id, existing.id)
+        self.assertEqual(
+            self._disk_data(),
+            [
+                {"id": "road-trip", "name": "Road Trip", "track_ids": ["A", "B"]},
+                {"id": "road-trip-2", "name": "Road Trip (2)", "track_ids": ["C"]},
+            ],
+        )
+
+    def test_save_new_playlist_disambiguates_case_insensitively(self):
+        playlists.save_playlist("Road Trip", ["A"])
+        created = playlists.save_new_playlist("road trip", ["B"])
+        self.assertEqual(created.name, "road trip (2)")
+        self.assertEqual(len(self._disk_data()), 2)
+
+    def test_save_new_playlist_keeps_counting_past_existing_variants(self):
+        playlists.save_playlist("Mix", ["A"])
+        playlists.save_playlist("Mix (2)", ["B"])
+        created = playlists.save_new_playlist("Mix", ["C"])
+        self.assertEqual(created.name, "Mix (3)")
+        self.assertEqual(created.id, "mix-3")
+        self.assertEqual(len(self._disk_data()), 3)
+
+    def test_save_new_playlist_uses_the_plain_name_when_it_is_free(self):
+        created = playlists.save_new_playlist("Fresh", ["A"])
+        self.assertEqual((created.id, created.name), ("fresh", "Fresh"))
+
+    def test_save_new_playlist_rejects_empty_input(self):
+        with self.assertRaises(ValueError):
+            playlists.save_new_playlist("  ", ["A"])
+        with self.assertRaises(ValueError):
+            playlists.save_new_playlist("Mix", [])
+
+    def test_parallel_new_playlist_creates_never_collide_or_overwrite(self):
+        playlists.save_playlist("Mix", ["existing"])
+        start = threading.Barrier(2)
+        results = []
+
+        def create():
+            start.wait(timeout=10)
+            results.append(playlists.save_new_playlist("Mix", ["A"]))
+
+        self._run_threads(create, create)
+        self.assertEqual(len(self._disk_data()), 3, "the existing playlist plus two distinct imports")
+        self.assertEqual(len({playlist.id for playlist in results}), 2)
+        self.assertEqual(len({playlist.name for playlist in results}), 2)
+        self.assertEqual(
+            sorted(item["name"] for item in self._disk_data()),
+            ["Mix", "Mix (2)", "Mix (3)"],
+        )
+
     def test_missing_file_first_write_creates_valid_json(self):
         self.assertEqual(playlists.get_playlists(), [])
         self.assertEqual(self.playlists_file.read_text(encoding="utf-8"), "[]\n")
