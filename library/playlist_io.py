@@ -154,6 +154,23 @@ def resolve_m3u_track_ids(
     return track_ids
 
 
+def _import_display_name(name: str) -> str:
+    """Strip a real playlist filename suffix, keep a derived name intact.
+
+    ZIP imports already pass the finished name from
+    ``zip_album.zip_playlist_names`` (e.g. ``CD1.5 mix``); running that
+    through ``Path.stem`` would truncate at the folder version dot
+    (``CD1``). Only a real ``.m3u``/``.m3u8`` filename loses its suffix.
+    """
+    cleaned = (name or "").strip()
+    lowered = cleaned.lower()
+    for ext in (".m3u8", ".m3u"):
+        if lowered.endswith(ext):
+            cleaned = cleaned[: -len(ext)].strip()
+            break
+    return cleaned or "Imported playlist"
+
+
 def import_m3u_playlist(
     name: str,
     content: str,
@@ -170,10 +187,12 @@ def import_m3u_playlist(
     )
     if not track_ids:
         return None
-    # The name comes from a file stem, so it can collide with a playlist the
-    # user already has.  The import is always created as an additional entry
-    # under a unique name; it must never replace the existing playlist.
-    playlist = save_new_playlist(Path(name).stem or "Imported playlist", track_ids)
+    # The name is either a real playlist filename (single upload) or the
+    # finished name derived by zip_album.zip_playlist_names (ZIP import).
+    # Only the filename loses its suffix; a derived name stays exact.
+    # It is always created as an additional entry under a unique name; it
+    # must never replace the existing playlist.
+    playlist = save_new_playlist(_import_display_name(name), track_ids)
     return {
         "id": playlist.id,
         "name": playlist.name,

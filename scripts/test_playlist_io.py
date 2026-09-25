@@ -660,5 +660,85 @@ class ZipPlaylistRollbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored[existing.id].track_ids, ["t1"], "user playlists stay unchanged")
 
 
+class ZipDottedFolderImportTests(unittest.IsolatedAsyncioTestCase):
+    """A derived ZIP playlist name must not pass through Path.stem again."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.music_root = self.base / "music"
+        (self.music_root / "album").mkdir(parents=True)
+        self.download_dir = self.base / "downloads"
+        self.settings = SimpleNamespace(MUSIC_ROOT=self.music_root, download_dir=self.download_dir)
+        self.store = _IsolatedPlaylistStore(self, self.base)
+        self.addCleanup(self._tmp.cleanup)
+        self.tracks = [
+            make_track("t1", self.music_root / "album" / "cd1.mp3", title="CD1 Track"),
+            make_track("t2", self.music_root / "album" / "cd2.mp3", title="CD2 Track"),
+        ]
+        self.scanner = SimpleNamespace(
+            music_root=self.music_root,
+            get_tracks=lambda refresh=True, **kwargs: self.tracks,
+            refresh=lambda *args, **kwargs: self.tracks,
+        )
+
+    async def _upload(self, members: list[tuple[str, bytes]], filename: str = "album.zip") -> dict:
+        class FakeUpload:
+            def __init__(self, content: bytes):
+                self._chunks = [content]
+                self.filename = filename
+
+            async def read(self, size=-1):
+                return self._chunks.pop(0) if self._chunks else b""
+
+            async def close(self):
+                return None
+
+        with patch.object(main, "settings", self.settings), \
+                patch.object(main.runtime.music_library, "scanner", self.scanner):
+            return await library_api.upload_track(file=FakeUpload(_build_zip(members)))
+
+    async def test_dotted_folder_members_stay_distinct(self):
+        payload = await self._upload([
+            ("CD1/mix.m3u8", b"#EXTM3U\ncd1.mp3\n"),
+            ("CD1.5/mix.m3u8", b"#EXTM3U\ncd2.mp3\n"),
+        ])
+        self.assertEqual(payload["imported_playlist_count"], 2)
+        self.assertEqual(
+            sorted(item["name"] for item in payload["playlists"]),
+            ["CD1.5 mix", "mix"],
+        )
+        self.assertEqual(
+            sorted(playlist.name for playlist in self.store.stored().values()),
+            ["CD1.5 mix", "mix"],
+        )
+
+    def test_derived_name_with_dot_is_kept_exact(self):
+        result = playlist_io.import_m3u_playlist(
+            "CD1.5 mix", "#EXTM3U\ncd1.mp3\n", self.music_root, tracks=self.tracks,
+        )
+        self.assertEqual(result["name"], "CD1.5 mix")
+
+    def test_real_filename_still_strips_extension(self):
+        result = playlist_io.import_m3u_playlist(
+            "mix.m3u8", "#EXTM3U\ncd1.mp3\n", self.music_root, tracks=self.tracks,
+        )
+        self.assertEqual(result["name"], "mix")
+
+    async def test_dotted_names_collide_with_user_playlist_via_unique_names(self):
+        existing = self.store.playlists.save_playlist("mix", ["t1"])
+        payload = await self._upload([
+            ("CD1/mix.m3u8", b"#EXTM3U\ncd1.mp3\n"),
+            ("CD1.5/mix.m3u8", b"#EXTM3U\ncd2.mp3\n"),
+        ])
+        self.assertEqual(payload["imported_playlist_count"], 2)
+        stored = self.store.stored()
+        self.assertEqual(len(stored), 3)
+        self.assertEqual(stored[existing.id].track_ids, ["t1"])
+        names = sorted(playlist.name for playlist in stored.values())
+        self.assertIn("CD1.5 mix", names)
+        self.assertEqual(len(set(names)), 3, "all persisted names stay distinct")
+
+
 if __name__ == "__main__":
     unittest.main()
