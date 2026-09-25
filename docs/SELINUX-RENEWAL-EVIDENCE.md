@@ -88,3 +88,11 @@ Renewal detection must poll the real storage path
 user, so a read-only watcher needs `sudo -n` for its polling. A first watcher
 that polled `/var/lib/fxroute-caddy/certificates/...` unprivileged saw
 nothing even though the renewal itself was fully successful.
+
+The watcher is kept in the repository as `scripts/watch-caddy-renewal.sh`.
+Two further traps it avoids: the renewal evidence block must write the
+`journalctl` excerpt to the log file instead of stdout, because a `nohup`
+start discards stdout; and the health probe must request one of the named
+Caddy sites (e.g. `https://fxroute.local`), since a loopback address gets
+no SNI match and therefore no certificate. Both are covered by the
+environment overrides used for the smoke test.
