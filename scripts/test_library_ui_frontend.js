@@ -164,4 +164,87 @@ state.library.currentFolder = 'Rock';
 assert.equal(Library.isTrackInCurrentFolder({ id: 'local_Rock/song.mp3' }), true);
 assert.equal(Library.isTrackInCurrentFolder({ id: 'local_Jazz/song.mp3' }), false);
 
-console.log('library ui frontend: ok');
+// Playlist export error rendering (N6): the fail-closed export route answers
+// 409 with a structured detail object, so the toast must never stringify it.
+async function testPlaylistExportErrorRendering() {
+    const { formatTransitionErrorDetail } = require('../static/api.js');
+    const state = { library: { scanStatus: null, viewMode: 'flat', currentFolder: '' }, playlists: [{ id: 'p1', name: 'Road Trip', track_ids: ['local_a/1.mp3'] }] };
+    let toasts = [];
+    let downloads = 0;
+
+    async function runExportCase(response, jsonResult) {
+        toasts = [];
+        downloads = 0;
+        Library.init({
+            getState: () => state,
+            getElements: () => ({}),
+            showToast: (message, kind) => toasts.push([message, kind]),
+            formatTransitionErrorDetail,
+            getDownloadFilenameFromResponse: (_resp, fallback) => fallback,
+            triggerBlobDownload: () => { downloads += 1; },
+        });
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = async () => (jsonResult === 'unparsable'
+            ? response
+            : { ...response, json: async () => jsonResult });
+        try {
+            await Library.downloadPlaylistById('p1');
+        } finally {
+            globalThis.fetch = realFetch;
+        }
+        return toasts;
+    }
+
+    // 409 with missing_track_ids: show the backend message, never "[object Object]".
+    const objectDetail = {
+        error: 'playlist_tracks_unavailable',
+        message: 'Playlist export failed: 1 track(s) are no longer in the library: local_x/9.mp3',
+        missing_track_ids: ['local_x/9.mp3'],
+    };
+    const objectToasts = await runExportCase({ ok: false, status: 409, blob: async () => { throw new Error('must not download'); } }, { detail: objectDetail });
+    assert.equal(objectToasts.length, 1, 'one toast for a failed export');
+    assert.equal(objectToasts[0][1], 'error', 'failed export toasts an error');
+    assert.equal(objectToasts[0][0], objectDetail.message, 'object detail shows the backend message');
+    assert.doesNotMatch(objectToasts[0][0], /\[object Object\]/, 'never stringify a structured detail');
+    assert.equal(downloads, 0, 'a failed export downloads nothing');
+
+    // String detail keeps the previous behavior.
+    const stringToasts = await runExportCase({ ok: false, status: 404, blob: async () => { throw new Error('must not download'); } }, { detail: 'Playlist not found' });
+    assert.deepEqual(stringToasts, [['Playlist not found', 'error']], 'string detail still rendered as-is');
+
+    // No detail at all: generic fallback, and an unparsable body behaves the same.
+    const noDetailToasts = await runExportCase({ ok: false, status: 500, blob: async () => { throw new Error('must not download'); } }, {});
+    assert.deepEqual(noDetailToasts, [['Playlist export failed', 'error']], 'missing detail falls back');
+    const unparsableToasts = await runExportCase(
+        { ok: false, status: 502, json: async () => { throw new SyntaxError('Unexpected token < in JSON'); }, blob: async () => { throw new Error('must not download'); } },
+        'unparsable',
+    );
+    assert.deepEqual(unparsableToasts, [['Playlist export failed', 'error']], 'unparsable body falls back');
+
+    // Message-less structured detail must not leak raw JSON into the toast.
+    const messageLessToasts = await runExportCase({ ok: false, status: 409, blob: async () => { throw new Error('must not download'); } }, { detail: { error: 'x', missing_track_ids: ['a'] } });
+    assert.deepEqual(messageLessToasts, [['Playlist export failed', 'error']], 'message-less detail falls back');
+
+    // Successful export is unchanged: download triggers, success toast, no error.
+    const successToasts = await runExportCase({ ok: true, status: 200, blob: async () => 'BLOB' }, {});
+    assert.equal(downloads, 1, 'successful export triggers the download');
+    assert.deepEqual(successToasts, [['Downloading Road Trip.m3u8', 'success']], 'successful export toasts success');
+
+    // The export path must not regress to a raw detail read.
+    const libExportSource = fs.readFileSync(path.join(repoRoot, 'static', 'library_ui.js'), 'utf8');
+    const exportBody = libExportSource.slice(
+        libExportSource.indexOf('async function downloadPlaylistById('),
+        libExportSource.indexOf('async function deletePlaylistById('),
+    );
+    assert.ok(
+        !/new Error\(data\.detail \|\|/.test(exportBody),
+        'downloadPlaylistById must not stringify a structured detail directly',
+    );
+}
+
+testPlaylistExportErrorRendering()
+    .then(() => console.log('library ui frontend: ok'))
+    .catch((error) => {
+        console.error(error);
+        process.exit(1);
+    });

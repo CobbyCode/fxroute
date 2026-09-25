@@ -2053,7 +2053,12 @@ async function downloadPlaylistById(playlistId) {
         const resp = await fetch(`/api/playlists/${encodeURIComponent(playlistId)}/export`);
         if (!resp.ok) {
             const data = await resp.json().catch(() => ({}));
-            throw new Error(data.detail || 'Playlist export failed');
+            // A fail-closed export reports a structured detail object
+            // ({error, message, missing_track_ids}). String() on it would
+            // surface "[object Object]", so route it through the shared
+            // formatter: the backend message wins, string details keep
+            // working, and a message-less/absent detail falls back.
+            throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Playlist export failed'));
         }
         const blob = await resp.blob();
         const filename = deps.getDownloadFilenameFromResponse(resp, `${playlist.name || 'playlist'}.m3u8`);
