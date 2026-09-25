@@ -245,19 +245,60 @@ def _active_line_source_for_power() -> str | None:
     return None
 
 
-def _build_power_state_payload() -> dict:
-    local_state = runtime.player_instance.state if runtime.player_instance else {}
-    spotify_state = playback_state.latest_spotify_state or {}
-    qobuz_state = playback_state.latest_qobuz_state or {}
-    playback_active = (
-        _is_local_playback_active(local_state)
-        or _is_spotify_playback_active(spotify_state)
-        or _is_qobuz_playback_active(qobuz_state)
-    )
-    measurement_window_open = _is_measurement_window_open()
-    # Measurement keeps priority and skips the line-source probe entirely;
-    # its behavior is unchanged by the Bluetooth/external extension below.
-    line_source = None if measurement_window_open else _active_line_source_for_power()
+def _external_input_link_channels() -> tuple[str, str]:
+    """Return the stereo channels of the established external-input link."""
+    try:
+        raw = getattr(external_input, "active_channels", None)
+    except Exception:
+        raw = None
+    if isinstance(raw, (tuple, list)) and len(raw) == 2:
+        left = str(raw[0] or "").strip() or "FL"
+        right = str(raw[1] or "").strip() or "FR"
+    else:
+        left, right = "FL", "FR"
+    if left == right:
+        left, right = "FL", "FR"
+    return left, right
+
+
+async def _active_line_source_for_power_async() -> str | None:
+    """Routed line source keeping the amp hint on, if any (never blocks).
+
+    Same ground truth as the synchronous probe, but safe for the async
+    HTTP path: the blocking ``wpctl`` Bluetooth read runs off the event
+    loop, and the external-input hint requires the loopback link to be
+    present in the live graph instead of trusting the stored source
+    name. Both probes stay fail-closed on any error.
+    """
+    try:
+        bluetooth_source = (bluetooth_input.input_source_name or "").strip()
+    except Exception:
+        bluetooth_source = ""
+    if bluetooth_source:
+        try:
+            streaming = await asyncio.to_thread(is_bluetooth_audio_streaming, bluetooth_source)
+        except Exception:
+            streaming = False
+        if streaming:
+            return "bluetooth"
+    try:
+        external_source = (external_input.loopback_source_name or "").strip()
+    except Exception:
+        external_source = ""
+    if external_source:
+        left, right = _external_input_link_channels()
+        try:
+            if await input_links_present(external_source, ((left, "FL"), (right, "FR"))):
+                return "external-input"
+        except Exception:
+            return None
+        return None
+    return None
+
+
+def _finish_power_state_payload(
+    playback_active: bool, measurement_window_open: bool, line_source: str | None
+) -> dict:
     if measurement_window_open:
         reason = "measurement_window"
     elif playback_active:
@@ -274,6 +315,34 @@ def _build_power_state_payload() -> dict:
         "playback_active": bool(playback_active),
         "measurement_window_open": bool(measurement_window_open),
     }
+
+
+def _power_state_playback_flags() -> tuple[bool, bool]:
+    local_state = runtime.player_instance.state if runtime.player_instance else {}
+    spotify_state = playback_state.latest_spotify_state or {}
+    qobuz_state = playback_state.latest_qobuz_state or {}
+    playback_active = (
+        _is_local_playback_active(local_state)
+        or _is_spotify_playback_active(spotify_state)
+        or _is_qobuz_playback_active(qobuz_state)
+    )
+    return playback_active, _is_measurement_window_open()
+
+
+def _build_power_state_payload() -> dict:
+    playback_active, measurement_window_open = _power_state_playback_flags()
+    # Measurement keeps priority and skips the line-source probe entirely;
+    # its behavior is unchanged by the Bluetooth/external extension below.
+    line_source = None if measurement_window_open else _active_line_source_for_power()
+    return _finish_power_state_payload(playback_active, measurement_window_open, line_source)
+
+
+async def _build_power_state_payload_async() -> dict:
+    playback_active, measurement_window_open = _power_state_playback_flags()
+    # Measurement keeps priority and skips the line-source probe entirely;
+    # its behavior is unchanged by the Bluetooth/external extension below.
+    line_source = None if measurement_window_open else await _active_line_source_for_power_async()
+    return _finish_power_state_payload(playback_active, measurement_window_open, line_source)
 
 
 def _is_qobuz_playback_active(state: dict | None) -> bool:
@@ -361,6 +430,7 @@ import dsp.orchestration as dsp_orchestration
 import dsp.preset_loading as preset_loading
 import playback.orchestration as playback_orchestration
 from audio import pw_link
+from audio.input_links import input_links_present
 from audio.output_ports import hardware_playback_port_fallback_from_mode
 from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
 from audio.output_state import (
@@ -1843,8 +1913,25 @@ async def _guarded_effects_transition(previous, candidate, persist_all_presets):
     return result
 
 
+def _commit_spotify_state_direct(data: dict) -> dict:
+    """Publish an authoritative Spotify state, invalidating in-flight reads.
+
+    Synthetic or transport-action states (pause/stop) bypass the status
+    read, so they advance both sequences: an older read that returns
+    afterwards must not overwrite them.
+    """
+    playback_state.spotify_state_read_sequence += 1
+    playback_state.spotify_state_commit_sequence = playback_state.spotify_state_read_sequence
+    playback_state.latest_spotify_state = data
+    return data
+
+
 async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
+    playback_state.spotify_state_read_sequence += 1
+    read_sequence = playback_state.spotify_state_read_sequence
     status = dict(data or await spotify_get_status())
+    if read_sequence < playback_state.spotify_state_commit_sequence:
+        return playback_state.latest_spotify_state or status
     source_volume = status.get("volume") if isinstance(status.get("volume"), (int, float)) else None
     status["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     status["volume"] = get_output_volume_safe()
@@ -1853,6 +1940,8 @@ async def get_spotify_ui_state(data: Optional[dict] = None) -> dict:
     status["artwork_available"] = bool(art_url)
     status["artwork_url"] = art_url or None
     status["artwork_source"] = "spotify" if art_url else "none"
+    playback_state.spotify_state_commit_sequence = read_sequence
+    playback_state.latest_spotify_state = status
     return status
 
 
@@ -2566,13 +2655,13 @@ async def _spotify_player_present(timeout: float = 0.8) -> bool:
 
 async def pause_spotify_for_local_playback_broadcast():
     if not await _spotify_player_present():
-        playback_state.latest_spotify_state = {
+        _commit_spotify_state_direct({
             "available": playerctl_available(),
             "installed": spotify_installed(),
             "source": "spotify",
             "status": "Stopped",
             "playback_owner": None,
-        }
+        })
         await manager.broadcast({"type": "spotify", "data": playback_state.latest_spotify_state})
         return
     try:
@@ -3783,7 +3872,7 @@ async def stop_playback():
             # spotify from stale Playing telemetry, then wait bounded for the
             # renderer's sink input to actually disappear.
             data = await spotify_pause()
-            playback_state.latest_spotify_state = data
+            _commit_spotify_state_direct(data)
             try:
                 await media_readiness.wait_for_pipewire_spotify_release()
             except Exception as exc:
@@ -4069,7 +4158,7 @@ async def get_status():
 
 @app.get("/api/power/state")
 async def get_power_state():
-    return _build_power_state_payload()
+    return await _build_power_state_payload_async()
 
 
 @app.post("/api/power/measurement-heartbeat")

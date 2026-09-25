@@ -82,6 +82,8 @@ class PlaybackState:
     last_radio_track_info: dict[str, Any] | None = None
     latest_spotify_state: dict[str, Any] | None = None
     latest_qobuz_state: dict[str, Any] | None = None
+    spotify_state_read_sequence: int = 0
+    spotify_state_commit_sequence: int = 0
     qobuz_state_read_sequence: int = 0
     qobuz_state_commit_sequence: int = 0
     # Authoritative playback owner: which source currently owns playback.

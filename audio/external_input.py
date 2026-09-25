@@ -64,6 +64,11 @@ class ExternalInputRouting:
             f"{source_name}:output_{channel}",
         )
 
+    @property
+    def active_channels(self) -> tuple[str, str]:
+        """Return the stereo channels of the established loopback link."""
+        return (self._active_channels[0], self._active_channels[1])
+
     async def _disconnect_source(
         self,
         source_name: str | None,
