@@ -76,7 +76,7 @@
                             <span class="measurement-list-title"><a href="${deps.escapeHtml(ui.measurementFileUrl(measurement.id))}" title="${deps.escapeHtml(measurement.name)}">${deps.escapeHtml(deps.getCompactDisplayName(measurement.name, 24))}</a></span>
                             ${areaBadgeHtml}
                         </span>
-                        <span class="measurement-list-meta">${deps.escapeHtml(ui.formatMeasurementDate(measurement.created_at))}</span>
+                        <span class="measurement-list-meta measurement-list-date">${deps.escapeHtml(ui.formatMeasurementDate(measurement.created_at))}</span>
                     </div>
                     <div class="measurement-list-row">
                         <span class="measurement-list-meta">${deps.escapeHtml(measurement.input_device?.label || 'Capture input')} · ${deps.escapeHtml(String(measurement.channel || 'left'))}${deps.escapeHtml(micInputChannel)}${deps.escapeHtml(referenceInputChannel)}</span>
@@ -98,12 +98,11 @@
                     <summary>${measurementState.savedGroupOpen ? 'Close saved' : 'Open saved'} (${measurements.length})</summary>
                     <div class="measurement-saved-list">
                         <div class="measurement-saved-toolbar">
+                            <label class="measurement-list-meta measurement-select-all-toggle"><input type="checkbox" data-measurement-select-all ${allSavedSelected ? 'checked' : ''} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''}>Select all</label>
                             <div class="measurement-saved-toolbar-selection">
-                                <label class="measurement-list-meta measurement-select-all-toggle"><input type="checkbox" data-measurement-select-all ${allSavedSelected ? 'checked' : ''} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''}>Select all</label>
                                 <button type="button" class="btn-danger measurement-saved-delete-action ${selectedSavedCount ? '' : 'is-inert'}" data-measurement-delete-selected ${selectedSavedCount ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount ? 'false' : 'true'}" aria-label="Delete selected measurements"><span class="label-full">Delete selected</span><span class="label-compact" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></span></button>
                                 <button type="button" class="btn-secondary measurement-saved-merge-action ${selectedSavedCount >= 2 ? '' : 'is-inert'}" data-measurement-merge-selected ${selectedSavedCount >= 2 ? '' : 'disabled'} ${measurementState.saveInFlight || measurementState.startInFlight ? 'disabled' : ''} aria-hidden="${selectedSavedCount >= 2 ? 'false' : 'true'}" aria-label="Merge selected measurements"><span class="label-full">Merge selected</span><span class="label-compact" aria-hidden="true">⇄</span></button>
                             </div>
-                            <button type="button" class="btn-secondary measurement-saved-close-action" data-measurement-close-saved aria-label="Close saved measurements"><span class="label-full">Close</span><span class="label-compact">×</span></button>
                         </div>
                         ${savedItemsHtml}
                     </div>
@@ -160,12 +159,6 @@
             const deleteButton = event.target.closest('[data-measurement-delete-selected]');
             if (deleteButton) {
                 deps.deleteSelectedMeasurements();
-                return;
-            }
-            const closeButton = event.target.closest('[data-measurement-close-saved]');
-            if (closeButton) {
-                deps.getState().measurement.savedGroupOpen = false;
-                deps.renderMeasurementPanel();
             }
         });
     }

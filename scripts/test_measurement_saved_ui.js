@@ -4,6 +4,7 @@
 // details state and action availability.
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 require('../static/measurement_ui.js');
 const outputState = require('../static/output_state.js');
 const { escapeHtml } = require('../static/ui_helpers.js');
@@ -58,6 +59,12 @@ assert.match(html, /data-measurement-select-all  /);
 assert.match(html, /data-measurement-delete-selected /);
 assert.match(html, /data-measurement-merge-selected disabled/);
 assert.doesNotMatch(html, /data-measurement-toggle="current"/);
+// Open/close belongs to the accordion summary alone: the separate Close
+// button and its handler are gone, so a stray click cannot fold the group.
+assert.doesNotMatch(html, /data-measurement-close-saved|measurement-saved-close-action/);
+assert.match(html, /class="measurement-saved-toolbar">\s*<label class="measurement-list-meta measurement-select-all-toggle">/);
+assert.match(html, /<div class="measurement-saved-toolbar-selection">\s*<button[^>]*data-measurement-delete-selected[\s\S]*?<button[^>]*data-measurement-merge-selected[^>]*>[\s\S]*?<\/div>/);
+assert.match(html, /class="measurement-list-meta measurement-list-date">Sep 20, 2026/);
 
 state.measurement.visibilityById.legacy = true;
 state.measurement.savedGroupOpen = false;
@@ -109,8 +116,33 @@ listeners.change[0].handler({ target: {
 assert.deepEqual([state.measurement.visibilityById.mid, state.measurement.visibilityById.legacy], [true, true]);
 listeners.click[0].handler({ target: { closest: (selector) => selector === '[data-measurement-merge-selected]' ? {} : null } });
 assert.deepEqual(calls, ['render', 'render', 'merge']);
+listeners.click[0].handler({ target: { closest: (selector) => selector === '[data-measurement-delete-selected]' ? {} : null } });
+assert.deepEqual(calls, ['render', 'render', 'merge', 'delete']);
+// The removed Close control is inert: only the summary folds the group.
 listeners.click[0].handler({ target: { closest: (selector) => selector === '[data-measurement-close-saved]' ? {} : null } });
-assert.equal(state.measurement.savedGroupOpen, false);
-assert.deepEqual(calls.slice(-2), ['merge', 'render']);
+assert.equal(state.measurement.savedGroupOpen, true);
+assert.deepEqual(calls, ['render', 'render', 'merge', 'delete']);
+
+// The layout contract the narrow-viewport fix depends on: the grid tracks may
+// shrink below their content, the run name truncates, and the free-form meta
+// wraps anywhere so an unbroken ALSA id cannot widen the card.
+const measurementCss = fs.readFileSync(require.resolve('../static/css/_measurement.css'), 'utf8');
+const responsiveCss = fs.readFileSync(require.resolve('../static/css/_responsive.css'), 'utf8');
+for (const selector of ['.measurement-list', '.measurement-saved-list', '.measurement-list-item']) {
+    assert.match(measurementCss, new RegExp(`\\${selector}\\s*\\{[^}]*grid-template-columns:\\s*minmax\\(0,\\s*1fr\\)`),
+        `${selector} must not be floored at its min-content width`);
+}
+assert.match(measurementCss, /\.measurement-list-meta,\s*\.measurement-list-points\s*\{[^}]*overflow-wrap:\s*anywhere/,
+    'long device strings must be able to break inside the card');
+assert.match(measurementCss, /\.measurement-list-title\s*\{[^}]*min-width:\s*0/);
+assert.match(measurementCss, /\.measurement-toggle\s*\{[^}]*flex-wrap:\s*wrap[^}]*max-width:\s*100%/);
+assert.match(measurementCss, /\.measurement-list-title a\s*\{[^}]*text-overflow:\s*ellipsis/);
+// The fixed-format values keep their own line; the free-form meta takes the slack.
+assert.match(measurementCss, /\.measurement-list-date,\s*\.measurement-list-points\s*\{[^}]*white-space:\s*nowrap[^}]*flex:\s*0 0 auto/);
+assert.match(measurementCss, /\.measurement-list-row > \.measurement-list-meta:not\(\.measurement-list-date\)\s*\{[^}]*flex:\s*1 1 auto/);
+for (const source of [measurementCss, responsiveCss]) {
+    assert.doesNotMatch(source, /measurement-saved-close-action/,
+        'the redundant Close button is fully removed');
+}
 
 console.log('measurement saved-list rendering: ok');

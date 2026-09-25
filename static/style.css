@@ -4351,6 +4351,7 @@ select.url-input {
 .measurement-list-title a {
     display: inline-block;
     max-width: 100%;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: bottom;
@@ -4603,6 +4604,9 @@ select.url-input {
     font-size: 0.68rem;
     line-height: 1.4;
     white-space: nowrap;
+    /* Stays whole; the title truncates around it. */
+    flex: 0 0 auto;
+    max-width: 100%;
 }
 
 .measurement-area-badge.is-stale {
@@ -5305,12 +5309,19 @@ select.url-input {
 
 .measurement-list {
     display: grid;
+    /* minmax(0, …): an auto track is floored at its min-content width, so a
+       single long run name or device string would push the column past the
+       dialog instead of wrapping inside the card. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.75rem;
+    min-width: 0;
 }
 
 .measurement-list-item {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.35rem;
+    min-width: 0;
     padding: 0.85rem 0.95rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -5322,12 +5333,25 @@ select.url-input {
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
+    min-width: 0;
 }
 
 .measurement-toggle {
     display: flex;
     align-items: center;
+    /* Wraps so the area badge drops to its own line on a phone instead of
+       being pushed out of the card. */
+    flex-wrap: wrap;
     gap: 0.7rem;
+    min-width: 0;
+    /* The row is a column on phones, where a flex item is sized by its own
+       content; without this the nowrap run name would claim its full width
+       and push the badge past the card edge. */
+    max-width: 100%;
+    /* The toggle absorbs the row's shrink, so `space-between` alone would
+       leave the date glued to it; the auto margin keeps the date on the
+       trailing edge whatever width the name and badge need. */
+    margin-right: auto;
     cursor: pointer;
 }
 
@@ -5349,6 +5373,10 @@ select.url-input {
     display: inline-flex;
     align-items: center;
     gap: 0.45rem;
+    /* Basis instead of auto: the run name is a nowrap, ellipsized single
+       line, so an auto basis would reserve its full width and shove the
+       badge out of the card. The title absorbs the slack and truncates. */
+    flex: 1 1 6rem;
     min-width: 0;
 }
 
@@ -5356,6 +5384,27 @@ select.url-input {
 .measurement-list-points {
     color: var(--text-secondary);
     font-size: 0.84rem;
+    min-width: 0;
+    /* anywhere (not break-word): ALSA ids and run names carry no spaces, and
+       only `anywhere` also lowers the min-content width, so the row may wrap
+       the string instead of widening the card. */
+    overflow-wrap: anywhere;
+}
+
+/* The free-form row meta (device, timing, QC) is the side that absorbs the
+   row's slack; the fixed-format values beside it stay whole. Scoped to the
+   row so it does not stretch the Select all label in the toolbar. */
+.measurement-list-row > .measurement-list-meta:not(.measurement-list-date) {
+    flex: 1 1 auto;
+}
+
+/* Short fixed-format values: the capture date and the point count read as one
+   label, so they stay whole and unbroken. They must not be the shrinking side
+   of the row either, or the nowrap text would spill out of its own box. */
+.measurement-list-date,
+.measurement-list-points {
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
 
 .measurement-saved-group {
@@ -5363,6 +5412,7 @@ select.url-input {
     border-radius: var(--radius-md);
     background: rgba(255,255,255,0.02);
     padding: 0.2rem 0.2rem 0.4rem;
+    min-width: 0;
 }
 
 .measurement-saved-group > summary {
@@ -5375,6 +5425,8 @@ select.url-input {
     padding-right: var(--arrow-reserve);
     font-weight: 600;
     position: relative;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .measurement-saved-group > summary::-webkit-details-marker {
@@ -5406,8 +5458,10 @@ select.url-input {
 
 .measurement-saved-list {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.75rem;
     padding: 0 0.3rem 0.3rem;
+    min-width: 0;
 }
 
 .measurement-saved-toolbar {
@@ -5416,19 +5470,20 @@ select.url-input {
     justify-content: space-between;
     gap: 0.75rem;
     flex-wrap: wrap;
+    min-width: 0;
     margin-bottom: 0.1rem;
 }
 
+/* The selection-dependent bulk actions. Open/close lives on the accordion
+   summary alone, so this group holds only the two actions and sits at the
+   toolbar's trailing edge. */
 .measurement-saved-toolbar-selection {
     display: flex;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: flex-end;
     gap: 0.75rem;
     flex-wrap: wrap;
-    flex: 1 1 auto;
-}
-.measurement-saved-close-action {
-    margin-left: auto;
+    min-width: 0;
 }
 .label-compact {
     display: none;
@@ -5438,6 +5493,7 @@ select.url-input {
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    min-width: 0;
 }
 
 .measurement-saved-merge-action,
@@ -9403,11 +9459,11 @@ input[type="number"]::-webkit-outer-spin-button {
     .measurement-saved-toolbar-selection {
         gap: 0.5rem;
     }
+    /* Wrapping keeps "Select all" at the leading edge and the actions
+       trailing; when the phone width cannot hold both, the actions drop to
+       a second line that also starts left instead of leaving the card. */
     .measurement-saved-toolbar {
         justify-content: space-between;
-    }
-    .measurement-saved-toolbar-selection {
-        flex: 1 1 auto;
     }
         .measurement-saved-delete-action,
     .measurement-saved-merge-action {
@@ -9417,20 +9473,12 @@ input[type="number"]::-webkit-outer-spin-button {
         font-size: 1rem;
     }
         .measurement-saved-delete-action .label-full,
-        .measurement-saved-merge-action .label-full,
-    .measurement-saved-close-action .label-full {
+    .measurement-saved-merge-action .label-full {
         display: none;
     }
         .measurement-saved-delete-action .label-compact,
-        .measurement-saved-merge-action .label-compact,
-    .measurement-saved-close-action .label-compact {
+    .measurement-saved-merge-action .label-compact {
         display: inline;
-    }
-    .measurement-saved-close-action {
-        width: 38px;
-        min-width: 38px;
-        padding-inline: 0;
-        font-size: 1rem;
     }
 
     .measurement-list-item {

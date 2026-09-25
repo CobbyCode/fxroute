@@ -1739,11 +1739,11 @@
     .measurement-saved-toolbar-selection {
         gap: 0.5rem;
     }
+    /* Wrapping keeps "Select all" at the leading edge and the actions
+       trailing; when the phone width cannot hold both, the actions drop to
+       a second line that also starts left instead of leaving the card. */
     .measurement-saved-toolbar {
         justify-content: space-between;
-    }
-    .measurement-saved-toolbar-selection {
-        flex: 1 1 auto;
     }
         .measurement-saved-delete-action,
     .measurement-saved-merge-action {
@@ -1753,20 +1753,12 @@
         font-size: 1rem;
     }
         .measurement-saved-delete-action .label-full,
-        .measurement-saved-merge-action .label-full,
-    .measurement-saved-close-action .label-full {
+    .measurement-saved-merge-action .label-full {
         display: none;
     }
         .measurement-saved-delete-action .label-compact,
-        .measurement-saved-merge-action .label-compact,
-    .measurement-saved-close-action .label-compact {
+    .measurement-saved-merge-action .label-compact {
         display: inline;
-    }
-    .measurement-saved-close-action {
-        width: 38px;
-        min-width: 38px;
-        padding-inline: 0;
-        font-size: 1rem;
     }
 
     .measurement-list-item {
