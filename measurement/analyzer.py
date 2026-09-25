@@ -536,6 +536,7 @@ class MeasurementAnalyzer:
             "review_band_meta": display_data["review_band_meta"],
             "quality_checks": quality_checks,
             "capture_audit": capture_audit,
+            "direct_arrival_timing_available": bool(direct_timing_meta["timing_valid"]),
             "clock": {
                 "observed_sweep_samples": int(timing["observed_sweep_samples"]),
                 "reference_sweep_samples": int(reference_sweep.size),
@@ -594,6 +595,7 @@ class MeasurementAnalyzer:
                 "direct_selected_score": round(float(direct_timing_meta["selected_score"]), 6),
                 "direct_selected_support_score": round(float(direct_timing_meta["selected_support_score"]), 6),
                 "direct_confidence": round(float(direct_timing_meta["confidence"]), 6),
+                "timing_status": direct_timing_meta["timing_status"],
                 "direct_first_threshold_index": direct_timing_meta["first_threshold_index"],
                 "direct_first_threshold_offset_from_peak_samples": direct_timing_meta["first_threshold_offset_from_peak_samples"],
                 "direct_candidate_count": int(direct_timing_meta["candidate_count"]),
@@ -602,9 +604,6 @@ class MeasurementAnalyzer:
                 "direct_candidates_chronological": direct_timing_meta["candidates_chronological"],
                 "reference_peak_index": int(direct_timing_meta["reference_peak_index"]),
                 "reference_peak_seconds": round(float(direct_timing_meta["reference_peak_seconds"]), 6),
-                "arrival_samples": int(direct_timing_meta["relative_samples"]),
-                "arrival_seconds": round(float(direct_timing_meta["relative_seconds"]), 6),
-                "arrival_ms": round(float(direct_timing_meta["relative_seconds"]) * 1000.0, 6),
                 "timing_source": "direct_arrival_minus_reference_peak",
                 "window_start_index": int(ir_meta["window_start_index"]),
                 "window_end_index": int(ir_meta["window_end_index"]),
@@ -617,6 +616,12 @@ class MeasurementAnalyzer:
             "variable_window": variable_window_meta,
             "_impulse_response_debug_segment": impulse_response_debug_segment,
         }
+        if direct_timing_meta["timing_valid"]:
+            analysis["impulse_response"].update({
+                "arrival_samples": int(direct_timing_meta["relative_samples"]),
+                "arrival_seconds": round(float(direct_timing_meta["relative_seconds"]), 6),
+                "arrival_ms": round(float(direct_timing_meta["relative_seconds"]) * 1000.0, 6),
+            })
         if direct_window is not None:
             analysis["direct_response"] = direct_window
         if complex_response is not None:
@@ -1765,6 +1770,7 @@ class MeasurementAnalyzer:
             key=lambda item: int(item["sample"]),
         )[:IR_DIRECT_CANDIDATE_LIMIT]
         relative_samples = int(direct_arrival_index - reference_peak_index)
+        timing_valid = relative_samples >= 0
         return {
             "direct_arrival_index": int(direct_arrival_index),
             "direct_seconds": float(direct_arrival_index) / float(sample_rate),
@@ -1776,7 +1782,9 @@ class MeasurementAnalyzer:
             "selection_rule": selection_rule,
             "selected_score": selected_score,
             "selected_support_score": selected_support,
-            "confidence": selected_score / max(strongest_score, 1e-12),
+            "confidence": selected_score / max(strongest_score, 1e-12) if timing_valid else 0.0,
+            "timing_valid": timing_valid,
+            "timing_status": "valid" if timing_valid else "ambiguous",
             "first_threshold_index": first_threshold_index,
             "first_threshold_offset_from_peak_samples": (
                 int(first_threshold_index - peak_index) if first_threshold_index is not None else None

@@ -552,6 +552,15 @@ class HostCaptureRunner:
                 "confidence": impulse_meta.get("direct_confidence"),
                 "stability": "host-reference",
             })
+        if analysis.get("direct_arrival_timing_available") is False:
+            reference_path.update({
+                "timing_status": "ambiguous",
+                "timing_label": "Acoustic arrival before reference",
+                "stability": "ambiguous",
+                "confidence": 0.0,
+            })
+            for key in ("acoustic_arrival_corrected_ms", "acoustic_arrival_corrected_seconds", "acoustic_arrival_corrected_samples"):
+                reference_path.pop(key, None)
         analysis["reference_path"] = reference_path
         pipewire_warnings = store._routing._extract_pipewire_warning_lines({
             "pw-play.stdout": play_stdout,

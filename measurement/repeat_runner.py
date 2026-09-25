@@ -604,15 +604,9 @@ class MeasurementRepeatRunner:
         normalized = [self._store._persistence._normalize_measurement(item) for item in measurements]
         timings = []
         for index, measurement in enumerate(normalized):
-            analysis = measurement.get("analysis") if isinstance(measurement.get("analysis"), dict) else {}
-            reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
-            impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
-            timing_ms = reference_path.get("acoustic_arrival_corrected_ms", impulse.get("arrival_ms"))
-            try:
-                timing_ms = float(timing_ms)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(timing_ms):
+            timing_ms = self._extract_measurement_timing_ms(measurement)
+            if timing_ms is not None:
+                reference_path = measurement.get("analysis", {}).get("reference_path") or {}
                 timings.append({
                     "index": index,
                     "timing_ms": timing_ms,
@@ -737,12 +731,16 @@ class MeasurementRepeatRunner:
         analysis = measurement.get("analysis") if isinstance(measurement.get("analysis"), dict) else {}
         reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
         impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
+        if (analysis.get("direct_arrival_timing_available") is False
+                or reference_path.get("stability") == "unstable"
+                or reference_path.get("timing_status") in {"lr-repeat-unstable", "ambiguous"}):
+            return None
         timing_ms = reference_path.get("acoustic_arrival_corrected_ms", impulse.get("arrival_ms"))
         try:
             timing_ms = float(timing_ms)
         except (TypeError, ValueError):
             return None
-        if not math.isfinite(timing_ms):
+        if not math.isfinite(timing_ms) or timing_ms < 0:
             return None
         return timing_ms
 
@@ -816,17 +814,11 @@ class MeasurementRepeatRunner:
             if l_timing is not None and r_timing is not None:
                 pair_deltas.append((idx, r_timing - l_timing))
 
-        l_elec_all = all(
-            self._extract_measurement_timing_ms(m) is not None and
-            (m.get("analysis", {}).get("reference_path", {}) or {}).get("electrical_reference_used")
-            for m in left_measurements if self._extract_measurement_timing_ms(m) is not None
+        electrical_reference_used = bool(pair_deltas) and all(
+            (left_measurements[0 if left_is_effective_single else idx].get("analysis", {}).get("reference_path") or {}).get("electrical_reference_used")
+            and (right_measurements[0 if right_is_effective_single else idx].get("analysis", {}).get("reference_path") or {}).get("electrical_reference_used")
+            for idx, _delta in pair_deltas
         )
-        r_elec_all = all(
-            self._extract_measurement_timing_ms(m) is not None and
-            (m.get("analysis", {}).get("reference_path", {}) or {}).get("electrical_reference_used")
-            for m in right_measurements if self._extract_measurement_timing_ms(m) is not None
-        )
-        electrical_reference_used = l_elec_all and r_elec_all
 
         delta_cluster_limit = (
             LR_REPEAT_PAIRED_DELTA_CLUSTER_MS
@@ -921,20 +913,8 @@ class MeasurementRepeatRunner:
         analysis = own_effective.get("analysis") if isinstance(own_effective.get("analysis"), dict) else {}
         ref_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
         impulse = analysis.get("impulse_response") if isinstance(analysis.get("impulse_response"), dict) else {}
-        other_analysis = other_effective.get("analysis") if isinstance(other_effective.get("analysis"), dict) else {}
-        other_ref = other_analysis.get("reference_path") if isinstance(other_analysis.get("reference_path"), dict) else {}
-        other_impulse = other_analysis.get("impulse_response") if isinstance(other_analysis.get("impulse_response"), dict) else {}
-
-        own_timing = ref_path.get("acoustic_arrival_corrected_ms", impulse.get("arrival_ms"))
-        other_timing = other_ref.get("acoustic_arrival_corrected_ms", other_impulse.get("arrival_ms"))
-        try:
-            own_timing = float(own_timing)
-        except (TypeError, ValueError):
-            own_timing = None
-        try:
-            other_timing = float(other_timing)
-        except (TypeError, ValueError):
-            other_timing = None
+        own_timing = self._extract_measurement_timing_ms(own_effective)
+        other_timing = self._extract_measurement_timing_ms(other_effective)
         delta = None
         if own_timing is not None and other_timing is not None:
             delta = round(other_timing - own_timing, 6)
@@ -998,7 +978,8 @@ class MeasurementRepeatRunner:
             if len(residual_shifts) > 1 else 0
         )
         spread_limit = self._er_pre_average_sample_spread_limit(sample_rate)
-        timing_stable = bool(own_dbg.get("pre_average_applied")) and residual_spread <= spread_limit
+        timing_stable = (bool(own_dbg.get("pre_average_applied")) and residual_spread <= spread_limit
+                         and own_timing is not None and other_timing is not None)
 
         if delta is not None:
             shifts_str = ", ".join(
@@ -1039,6 +1020,18 @@ class MeasurementRepeatRunner:
                 "acoustic_arrival_corrected_seconds": round(own_timing / 1000.0, 9),
                 "acoustic_arrival_corrected_samples": arrival_samples,
             })
+        else:
+            ref_path_out.update({
+                "timing_status": "lr-repeat-unstable",
+                "timing_label": "L/R repeat timing unstable",
+                "stability": "unstable",
+            })
+            for key in ("acoustic_arrival_corrected_ms", "acoustic_arrival_corrected_seconds", "acoustic_arrival_corrected_samples"):
+                ref_path_out.pop(key, None)
+            impulse = deepcopy(impulse)
+            for key in ("arrival_ms", "arrival_seconds", "arrival_samples", "direct_arrival_index"):
+                impulse.pop(key, None)
+            analysis_out["direct_arrival_timing_available"] = False
         analysis_out["reference_path"] = ref_path_out
         analysis_out["impulse_response"] = impulse
         payload["analysis"] = analysis_out
@@ -1064,7 +1057,8 @@ class MeasurementRepeatRunner:
             raise ValueError("L/R repeat side summary needs at least one measurement")
         normalized = [self._store._persistence._normalize_measurement(item) for item in measurements]
         accepted_indices = accepted_pair_indices if accepted_pair_indices is not None else list(range(len(normalized)))
-        accepted_measurements = [normalized[index] for index in accepted_indices]
+        magnitude_indices = accepted_indices or list(range(len(normalized)))
+        accepted_measurements = [normalized[index] for index in magnitude_indices]
         side_label = "L" if channel == "left" else "R"
         summary_name = f"{str(base_name or 'L/R Repeat').strip()} · {side_label}"
         timestamp = datetime.now(timezone.utc).replace(microsecond=0)
@@ -1164,8 +1158,17 @@ class MeasurementRepeatRunner:
                 "timing_label": "L/R repeat timing unstable",
                 "stability": "unstable",
             })
+            for key in ("acoustic_arrival_corrected_ms", "acoustic_arrival_corrected_seconds", "acoustic_arrival_corrected_samples"):
+                reference_path.pop(key, None)
+            for key in ("arrival_ms", "arrival_seconds", "arrival_samples", "direct_arrival_index"):
+                impulse.pop(key, None)
             analysis["direct_arrival_timing_available"] = False
-            payload["notes"].append("No stable paired-delta cluster found; L/R alignment must not use this summary.")
+            if pair_count == 0:
+                payload["notes"].append(
+                    "No valid L/R timing pair was found; all sweep magnitudes were averaged, but L/R alignment must not use this summary."
+                )
+            else:
+                payload["notes"].append("No stable paired-delta cluster found; L/R alignment must not use this summary.")
 
         analysis["reference_path"] = reference_path
         analysis["impulse_response"] = impulse

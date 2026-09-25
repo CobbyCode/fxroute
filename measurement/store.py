@@ -1338,6 +1338,8 @@ class MeasurementStore:
         return bool(error_codes) and error_codes.issubset({"weak-start-alignment", "weak-end-alignment"})
 
     def _evaluate_electrical_reference_status(self, analysis: dict[str, Any]) -> dict[str, Any]:
+        if analysis.get("direct_arrival_timing_available") is False:
+            return {"usable": False, "warning": "Acoustic arrival preceded the reference; used host monitor timing fallback."}
         reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
         clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}
         peak_dbfs = float(reference_path.get("peak_dbfs") or -120.0)
@@ -1457,6 +1459,8 @@ class MeasurementStore:
         *,
         measurement_scope: str,
     ) -> bool:
+        if analysis.get("direct_arrival_timing_available") is False:
+            return False
         if self._normalize_measurement_scope(measurement_scope) != MEASUREMENT_SCOPE_ACTIVE_CHAIN:
             return False
         try:

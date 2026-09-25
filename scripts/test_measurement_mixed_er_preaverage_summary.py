@@ -149,6 +149,87 @@ class MixedErPreaverageSummaryTests(unittest.TestCase):
                 [[20.0, 2.0], [1000.0, 3.0], [20000.0, 4.0]],
             )
 
+    def test_unstable_paired_summaries_discard_raw_timing_and_cannot_be_reused(self):
+        with tempfile.TemporaryDirectory() as tempdir, mock.patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            left = [_payload("l1", "left", 1.0, 0.0, electrical=True),
+                    _payload("l2", "left", 2.0, 2.0, electrical=True)]
+            right = [_payload("r1", "right", 1.1, 1.0, electrical=True),
+                     _payload("r2", "right", 4.1, 3.0, electrical=True)]
+
+            summaries = store._repeat_runner.summarize_lr_repeat_paired(
+                left, right, base_name="Unstable", repeat_count=2
+            )
+
+            for summary in summaries:
+                analysis = summary["analysis"]
+                self.assertFalse(analysis["lr_repeat"]["timing_stable"])
+                self.assertFalse(analysis["direct_arrival_timing_available"])
+                self.assertEqual(analysis["reference_path"]["timing_status"], "lr-repeat-unstable")
+                for key in ("acoustic_arrival_corrected_ms", "acoustic_arrival_corrected_seconds", "acoustic_arrival_corrected_samples"):
+                    self.assertNotIn(key, analysis["reference_path"])
+                for key in ("arrival_ms", "arrival_seconds", "arrival_samples", "direct_arrival_index"):
+                    self.assertNotIn(key, analysis["impulse_response"])
+                self.assertIsNone(store._repeat_runner._extract_measurement_timing_ms(summary))
+                saved = store.save_measurement(summary)
+                reloaded = store.get_measurement(saved["id"])
+                self.assertIsNone(store._repeat_runner._extract_measurement_timing_ms(reloaded))
+                self.assertNotIn("arrival_ms", reloaded["analysis"]["impulse_response"])
+
+    def test_no_valid_paired_timing_keeps_magnitude_without_claiming_reference(self):
+        with tempfile.TemporaryDirectory() as tempdir, mock.patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            left = [_payload("l1", "left", 1.0, 0.0, electrical=True),
+                    _payload("l2", "left", 1.1, 2.0, electrical=True)]
+            right = [_payload("r1", "right", 1.2, 1.0, electrical=True),
+                     _payload("r2", "right", 1.3, 3.0, electrical=True)]
+            for item in right:
+                item["analysis"]["reference_path"].pop("acoustic_arrival_corrected_ms")
+                item["analysis"]["impulse_response"].pop("arrival_ms")
+
+            l_summary, r_summary = store._repeat_runner.summarize_lr_repeat_paired(
+                left, right, base_name="No timing", repeat_count=2
+            )
+
+            for summary, level in ((l_summary, 1.0), (r_summary, 2.0)):
+                repeat = summary["analysis"]["lr_repeat"]
+                self.assertEqual(repeat["pair_count"], 0)
+                self.assertEqual(repeat["accepted_runs"], 0)
+                self.assertFalse(repeat["timing_stable"])
+                self.assertFalse(repeat["electrical_reference_used"])
+                self.assertEqual(summary["traces"][0]["points"][0], [20.0, level])
+                self.assertIsNone(store._repeat_runner._extract_measurement_timing_ms(summary))
+                self.assertTrue(any("No valid L/R timing pair" in note for note in summary["notes"]))
+
+    def test_preaveraged_summary_does_not_reinstate_unavailable_timing(self):
+        with tempfile.TemporaryDirectory() as tempdir, mock.patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            own = _payload("left", "left", -8.48, 0.0, electrical=True)
+            own["analysis"]["direct_arrival_timing_available"] = False
+            other = _payload("right", "right", 1.0, 1.0, electrical=True)
+            debug = {side: {"pre_average_applied": True,
+                            "alignment_shifts_samples": [0, 0],
+                            "residual_alignment_shifts_samples": [0, 0]}
+                     for side in ("left", "right")}
+
+            summary = store._repeat_runner._build_pre_averaged_lr_summary(
+                own, other, side="left", base_name="Preavg", repeat_count=2,
+                pre_avg_debug=debug,
+            )
+
+            analysis = summary["analysis"]
+            self.assertFalse(analysis["lr_repeat"]["paired_timing_stable"])
+            self.assertFalse(analysis["direct_arrival_timing_available"])
+            self.assertIsNone(store._repeat_runner._extract_measurement_timing_ms(summary))
+            self.assertNotIn("acoustic_arrival_corrected_ms", analysis["reference_path"])
+            self.assertNotIn("arrival_ms", analysis["impulse_response"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

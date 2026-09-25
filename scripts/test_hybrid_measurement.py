@@ -19,7 +19,7 @@ from measurement.hybrid import (
 from measurement.store import MeasurementStore
 from measurement.analyzer import MeasurementAnalyzer
 from measurement.persistence import MeasurementPersistence
-from measurement.signal import generate_log_sweep
+from measurement.signal import build_inverse_sweep, generate_log_sweep
 
 
 class HybridMeasurementAnalysisTests(unittest.TestCase):
@@ -89,12 +89,12 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
         sample_rate = 48_000
         sweep = generate_log_sweep(sample_rate, 0.68, 10.0, 22_000.0, peak_scale=0.8)
         lead = np.zeros(int(round(sample_rate * 0.34)), dtype=np.float32)
-        tail = np.zeros(int(round(sample_rate * 0.18)), dtype=np.float32)
+        tail = np.zeros(int(round(sample_rate * 0.32)), dtype=np.float32)
         reference_channel = np.concatenate([lead, sweep, tail]).astype(np.float32)
         mic_channel = np.zeros_like(reference_channel)
         direct_offset = lead.size + 4_800
-        mic_channel[direct_offset] = 0.5
-        mic_channel[direct_offset + 480] = 0.275
+        mic_channel[direct_offset:direct_offset + sweep.size] = 0.5 * sweep
+        mic_channel[direct_offset + 480:direct_offset + 480 + sweep.size] += 0.275 * sweep
         capture = np.column_stack([mic_channel, reference_channel])
 
         with tempfile.TemporaryDirectory() as home:
@@ -106,7 +106,7 @@ class HybridMeasurementAnalysisTests(unittest.TestCase):
                 expected_sample_rate=sample_rate,
                 channel="left",
                 reference_sweep=sweep,
-                inverse_sweep=np.array([1.0], dtype=np.float64),
+                inverse_sweep=build_inverse_sweep(sweep, sample_rate, 0.68, 10.0, 22_000.0),
                 calibration_curve=None,
                 capture_label="Synthetic capture",
                 reference_channel_index=1,
