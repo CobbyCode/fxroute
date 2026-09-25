@@ -203,12 +203,12 @@ class SharedVerificationResidualTests(unittest.TestCase):
         # spread as evidence instead of confirming silently.
         document, residual = residual_ms(synthetic_take(GEOMETRY_MS, gains_db={"left_high": -40.0}))
         margin = document["way_isolation_db"]["left_high"]
-        self.assertTrue(margin is None or margin < MIN_WAY_ISOLATION_DB, margin)
+        # Collapsed or marginally apart, the way always reports its margin:
+        # a collapsed arrival makes the residual gate blind, so ``None`` here
+        # would confirm a take that cannot locate the way at all.
+        self.assertIsNotNone(margin)
+        self.assertLess(margin, MIN_WAY_ISOLATION_DB)
         self.assertGreater(abs(document["way_levels_db"]["left_high"]), 20.0)
-        if margin is None:
-            # A collapsed arrival: the residual gate is blind here, which is
-            # exactly why the level evidence has to be reported.
-            self.assertLessEqual(residual, 0.02)
 
     def test_barely_separable_way_is_reported_by_its_isolation(self):
         # A 12 dB quieter low way is still located on its own arrival, but only

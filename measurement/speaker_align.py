@@ -304,7 +304,9 @@ class SpeakerAlignment:
         way's arrival, so a take that cannot separate the ways must abort the
         plan instead of guessing a delay from it. Two arrivals inside one lobe
         are one event and report no margin; that is the aligned case, not an
-        ambiguity.
+        ambiguity. A quiet way whose band peak is the neighbour's leak also
+        lands inside that lobe, but ``side_confirmation`` reports its margin
+        then, so it fails here instead of planning a zero delay.
         """
         from measurement.speaker_verification import MIN_WAY_ISOLATION_DB
         if not isinstance(planning, dict):

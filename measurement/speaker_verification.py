@@ -444,10 +444,15 @@ def side_confirmation(
     time base, relative to the earliest way of the take (so the values read as
     relative arrivals while their spread is exactly the residual the gate
     checks).    ``way_isolation_db`` holds, per way, the margin of its own arrival above
-    what the side's other ways leave in the same isolated band, or ``None``
-    when no other way arrives outside this way's own lobe. The band's energy at
-    a later arrival counts as that way's leak only up to what the rendered model
-    lets that way leave there (``LEAK_MODEL_MARGIN_DB`` of headroom).
+    what the side's other ways leave in the same isolated band. The band's
+    energy at a later arrival counts as that way's leak only up to what the
+    rendered model lets that way leave there (``LEAK_MODEL_MARGIN_DB`` of
+    headroom). A way arriving inside this way's own lobe is one event with it
+    (the aligned case) and needs no margin -- unless this way's own energy does
+    not stand ``MIN_WAY_ISOLATION_DB`` clear of that way's modelled leak into
+    the band: then the band's peak may be the neighbour's leak, the way is lost
+    in it, and that margin is reported so no gate confirms or plans from it.
+    ``None`` means every other way arrives inside the lobe and is separable.
     ``way_levels_db`` holds the same take's isolated passband levels relative to
     the loudest way; only their spread is a criterion, and the medians stay in
     ``bands`` for diagnosis. The levels measure what the per-way level estimate
@@ -524,12 +529,28 @@ def side_confirmation(
             return min(measured, float(energy[other_role][other_index])
                        * leak_share[(other_role, role)] * margin)
 
-        distinct = [leak(other_role, other["arrival_index"])
-                    for other_role, other in bands.items()
-                    if other_role != role and apart(other["arrival_index"])]
+        def margin_db(foreign: float, own: float) -> float:
+            return round(10.0 * math.log10(max(own, 1e-300) / max(foreign, 1e-300)), 3)
+
         own = float(energy[role][own_index])
-        isolation_db[role] = (round(10.0 * math.log10(max(own, 1e-300) / max(max(distinct), 1e-300)), 3)
-                              if distinct else None)
+        margins = [margin_db(leak(other_role, other["arrival_index"]), own)
+                   for other_role, other in bands.items()
+                   if other_role != role and apart(other["arrival_index"])]
+        # A coinciding arrival cannot be measured apart from this way's own, so
+        # its leak is the model's: the other way's band peak times the share
+        # this band passes of it, without driver headroom. A quiet way whose
+        # band peak is really the neighbour's leak lands here on the
+        # neighbour's arrival and reads as aligned; its own energy then stands
+        # no clear margin above that leak, so the margin is reported instead of
+        # none. A separable coincidence is the aligned case and adds nothing.
+        for other_role, other in bands.items():
+            if other_role == role or apart(other["arrival_index"]):
+                continue
+            modelled = float(energy[other_role][other["arrival_index"]]) * leak_share[(other_role, role)]
+            coincident = margin_db(modelled, own)
+            if coincident < MIN_WAY_ISOLATION_DB:
+                margins.append(coincident)
+        isolation_db[role] = min(margins) if margins else None
     loudest = max(band["level_db"] for band in bands.values())
     levels_db = {role: round(band["level_db"] - loudest, 3) for role, band in bands.items()}
     return {

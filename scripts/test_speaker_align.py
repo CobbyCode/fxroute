@@ -815,5 +815,73 @@ class RejectionTests(unittest.TestCase):
                     alignment_for(state, channels)
 
 
+
+class LostWayTests(unittest.TestCase):
+    """A way lost in its neighbour's leak neither plans nor verifies.
+
+    Far enough below its neighbour, a way's isolated band peaks on the
+    neighbour's leak: both arrivals collapse onto one index, no arrival is
+    apart and the take used to read as aligned (``None`` isolation, 0 ms
+    residual) whatever the real offset. A coincidence the way's own energy
+    cannot tell from that leak must now report its margin instead.
+    """
+
+    GEOMETRY = {"left_low": 5.0, "left_high": 12.5}
+
+    def setUp(self):
+        self.alignment, self.live = alignment_for()
+        self.baseline = proposal_for(self.alignment, self.live)
+
+    def confirm(self, arrival_ms, **take_options):
+        from measurement.speaker_apply import verify_confirmation
+        document = takes.confirmation_document(self.alignment, arrival_ms, **take_options)
+        return document, verify_confirmation(self.baseline, document)
+
+    def test_real_offset_of_a_quiet_way_is_not_confirmed(self):
+        from measurement.speaker_verification import MIN_WAY_ISOLATION_DB
+        for gain_db in (-20.0, -25.0):
+            for offset_ms in (1.0, 7.5):
+                arrivals = {"left_low": 5.0, "left_high": 5.0 + offset_ms}
+                with self.subTest(gain_db=gain_db, offset_ms=offset_ms):
+                    document, check = self.confirm(arrivals, gains_db={"left_low": gain_db})
+                    self.assertFalse(check["confirmed"], check)
+                    self.assertLess(document["way_isolation_db"]["left_low"], MIN_WAY_ISOLATION_DB)
+                    self.assertTrue(any("cannot separate the ways" in reason
+                                        for reason in check["reasons"]), check["reasons"])
+
+    def test_collapsed_arrival_reports_its_margin_instead_of_none(self):
+        # -25 dB with a 7.5 ms offset: the low band peaks on the high way's
+        # leak, the residual reads 0 ms. It used to confirm with None/None.
+        document, check = self.confirm(self.GEOMETRY, gains_db={"left_low": -25.0})
+        spread = max(document["arrival_ms"].values()) - min(document["arrival_ms"].values())
+        self.assertLessEqual(spread, 0.02, "the arrivals still collapse onto one peak")
+        self.assertIsNotNone(document["way_isolation_db"]["left_low"])
+        self.assertLess(document["way_isolation_db"]["left_low"], 3.0)
+        self.assertFalse(check["confirmed"])
+
+    def test_exactly_aligned_ways_still_confirm_without_a_margin(self):
+        for gains in ({}, {"left_low": -6.0}, {"left_high": -20.0}):
+            with self.subTest(gains=gains):
+                document, check = self.confirm(
+                    {"left_low": 5.0, "left_high": 5.0}, gains_db=gains)
+                self.assertEqual(document["way_isolation_db"], {"left_low": None, "left_high": None})
+                self.assertTrue(check["confirmed"], check["reasons"])
+
+    def test_planning_take_with_a_lost_way_plans_nothing(self):
+        roles = [request["role"] for request in self.alignment.capture_requests()]
+        for gain_db in (-20.0, -25.0):
+            with self.subTest(gain_db=gain_db):
+                planning = takes.planning_document(
+                    self.alignment, self.GEOMETRY, gains_db={"left_low": gain_db})
+                with self.assertRaisesRegex(ValueError, "cannot separate the ways"):
+                    self.alignment.propose(captures_for(self.alignment),
+                                           planning=planning, live_target=self.live)
+        # The aligned, equally loud take still plans its zero delay.
+        planning = takes.planning_document(self.alignment, {role: 5.0 for role in roles})
+        proposal = self.alignment.propose(captures_for(self.alignment),
+                                          planning=planning, live_target=self.live)
+        self.assertEqual(set(proposal["added_delay_ms"].values()), {0.0})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
