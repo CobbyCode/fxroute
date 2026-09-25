@@ -21,6 +21,8 @@ stubbed out (deployment side effects).
 """
 
 import re
+import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -86,7 +88,7 @@ def make_repo(root: Path) -> Path:
     )
     return work
 
-def run_restore(work: Path) -> subprocess.CompletedProcess:
+def run_restore(work: Path, *, path_prefix: Path | None = None) -> subprocess.CompletedProcess:
     harness = f"""
 set -Eeuo pipefail
 log() {{ printf '[fxroute-update] %s\\n' "$*"; }}
@@ -101,10 +103,62 @@ export FXROUTE_SERVICE_NAME
 printf 'harness-rc=%s\\n' "$?"
 printf 'harness-alive\\n'
 """
-    return subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
+    env = os.environ.copy()
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}:{env['PATH']}"
+    return subprocess.run(["bash", "-c", harness], capture_output=True, text=True, env=env)
 
 
 class RestoreUntrackedBackupTests(unittest.TestCase):
+    def test_failed_patch_write_keeps_tracked_change_and_never_resets(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            work = make_repo(root)
+            modified = "print('fxroute')\nprint('important edit')\n"
+            (work / "main.py").write_text(modified)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            git_binary = shutil.which("git")
+            (bin_dir / "git").write_text(
+                f'#!/bin/bash\nif [[ "$1" == diff && "$2" != --quiet ]]; then '
+                'printf "partial patch\\n"; exit 9; fi\n'
+                f'if [[ "$1" == reset ]]; then printf "reset\\n" >> "{root / "reset-called"}"; fi\n'
+                f'exec "{git_binary}" "$@"\n'
+            )
+            (bin_dir / "git").chmod(0o755)
+
+            result = run_restore(work, path_prefix=bin_dir)
+
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((work / "main.py").read_text(), modified)
+            self.assertFalse((root / "reset-called").exists())
+            self.assertEqual(list((work / "backups").glob("*.patch")), [])
+            self.assertNotIn("reconcile-stubbed", result.stdout)
+
+    def test_unwritable_backup_destination_keeps_tracked_change(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = make_repo(Path(td))
+            modified = "print('fxroute')\nprint('important edit')\n"
+            (work / "main.py").write_text(modified)
+            (work / "backups").write_text("not a directory\n")
+
+            result = run_restore(work)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((work / "main.py").read_text(), modified)
+            self.assertNotIn("reconcile-stubbed", result.stdout)
+
+    def test_clean_checkout_can_restore_without_patch(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = make_repo(Path(td))
+
+            result = run_restore(work)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("harness-alive", result.stdout)
+            self.assertEqual((work / "main.py").read_text(), "print('fxroute')\n")
+            self.assertFalse((work / "backups").exists())
+
     def assert_tracked_backup_restores_change(self, work: Path, expected: str):
         patches = sorted((work / "backups").glob("local-changes-*.patch"))
         self.assertEqual(len(patches), 1, "tracked diff must be saved as patch")

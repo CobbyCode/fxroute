@@ -7,7 +7,6 @@ REPO_PATH="${FXROUTE_REPO_PATH:-}"
 RESTART_MODE="auto"
 CONFIG_FILE="${FXROUTE_INSTALL_CONFIG:-$HOME/.config/fxroute/install-config.env}"
 SERVICE_NAME="${FXROUTE_SERVICE_NAME:-fxroute}"
-NATIVE_HELPER_BUILD_OK=1
 
 usage() {
   cat <<EOF
@@ -183,9 +182,8 @@ build_native_dsp_if_needed() {
   local binary="$REPO_PATH/native_dsp/build/fxroute-dsp"
 
   [[ -f "$build_script" ]] || {
-    NATIVE_HELPER_BUILD_OK=0
     log "FXRoute native DSP build script is missing."
-    return 0
+    return 1
   }
 
   if [[ -x "$binary" ]] && ! find "$source_dir" -type f -newer "$binary" \
@@ -196,8 +194,8 @@ build_native_dsp_if_needed() {
 
   log "Building FXRoute native DSP engine."
   if ! bash "$build_script" || [[ ! -x "$binary" ]]; then
-    NATIVE_HELPER_BUILD_OK=0
     log "FXRoute native DSP engine build failed."
+    return 1
   else
     log "FXRoute native DSP engine built successfully."
   fi
@@ -247,13 +245,12 @@ reconcile_checkout() {
   install_dependencies_if_needed
   run_production_build
   cleanup_obsolete_root_modules
-  build_native_dsp_if_needed
-  restart_service_if_needed
-  if [[ "$NATIVE_HELPER_BUILD_OK" == "1" ]]; then
-    mark_reconciliation_complete
-  else
+  if ! build_native_dsp_if_needed; then
     log "Reconciliation remains incomplete because a native build failed."
+    return 1
   fi
+  restart_service_if_needed
+  mark_reconciliation_complete
 }
 
 setup_repo() {
@@ -357,7 +354,7 @@ restore_main() {
   setup_repo
 
   local remote_ref remote_version remote_commit
-  local backup_dir patch_file untracked_archive untracked_list
+  local backup_dir patch_file untracked_archive untracked_list tracked_dirty
   log "Restore: fetching GitHub updates."
   git fetch --prune --no-tags
 
@@ -370,15 +367,20 @@ restore_main() {
   local dirty=""
   dirty="$(git status --porcelain=v1 --untracked-files=all)"
   if [[ -n "$dirty" ]]; then
+    tracked_dirty="$(git status --porcelain=v1 --untracked-files=no)"
     backup_dir="$REPO_PATH/backups"
     mkdir -p "$backup_dir"
     patch_file="$backup_dir/local-changes-$(date -u +%Y%m%d-%H%M%S).patch"
     log "Restore: saving local changes to $patch_file"
-    git diff HEAD -- > "$patch_file" 2>/dev/null || true
+    if ! git diff --binary HEAD -- > "$patch_file"; then
+      rm -f "$patch_file"
+      die "Restore: could not save tracked source changes; checkout left unchanged."
+    fi
     if [[ -s "$patch_file" ]]; then
       log "Restore: tracked source changes saved as patch."
     else
       rm -f "$patch_file"
+      [[ -z "$tracked_dirty" ]] || die "Restore: tracked changes have no patch backup; checkout left unchanged."
       log "Restore: no tracked source changes to save."
     fi
     # Untracked user files are NOT covered by the patch above, but the
