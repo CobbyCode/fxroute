@@ -198,13 +198,20 @@ class DSPPeakMonitor:
         self._last_vu_update_at_l: Optional[float] = None
         self._last_vu_update_at_r: Optional[float] = None
         self._pending_frame_bytes: bytes = b""
+        # Ownership epoch for the monitor task: start()/stop() bump it, and
+        # every task-owned emit carries the epoch it was launched with. An
+        # emit from a superseded epoch is dropped, so a stopped run can
+        # never publish state over a newer run (or after ownership ends).
+        self._generation = 0
 
     async def start(self):
         if self._task and not self._task.done():
             logger.info("Peak monitor start skipped because task is already running")
             return
         self._running = True
-        self._task = asyncio.create_task(self._run(), name="fxroute-dsp-peak-monitor")
+        self._generation += 1
+        self._task = asyncio.create_task(
+            self._run(self._generation), name="fxroute-dsp-peak-monitor")
         logger.info("Peak monitor start armed: task_created=true")
 
     async def restart(self):
@@ -250,31 +257,45 @@ class DSPPeakMonitor:
         had_task = bool(self._task and not self._task.done())
         had_proc = bool(self._proc and self._proc.returncode is None)
         self._running = False
+        # Invalidate in-flight emits before the first await: an old task
+        # rescheduled after this point must no longer publish state.
+        self._generation += 1
         task = self._task
-        self._task = None
         proc = self._proc
-        self._proc = None
-        if task:
+        if task is not None and not task.done():
             task.cancel()
-        if proc and proc.returncode is None:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=1.0)
-            except Exception:
-                proc.kill()
+        # Shielded drains: cancelling stop() mid-reap must neither orphan
+        # the child nor skip the task join. A caller cancellation is
+        # remembered and re-raised only after the lifecycle below ended.
+        stop_cancelled = False
+        if proc is not None and proc.returncode is None:
+            if await process_stop.stop_command_child_cancellation_safe(
+                proc,
+                PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS,
+                cleanup_log="Peak monitor pw-record stop failed",
+            ):
+                stop_cancelled = True
+        if task is not None and not task.done():
+            async def _join_cancelled_task() -> None:
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=1.0)
-                except Exception:
-                    logger.warning("Peak monitor process did not exit cleanly during stop")
-        if task:
-            try:
-                await asyncio.wait_for(task, timeout=1.0)
-            except asyncio.CancelledError:
-                pass
-            except asyncio.TimeoutError:
-                logger.warning("Peak monitor task did not cancel cleanly during stop")
-            except Exception as exc:
-                logger.warning("Ignoring peak monitor shutdown error during stop: %s", exc)
+                    await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Peak monitor task did not cancel cleanly during stop")
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.warning("Ignoring peak monitor shutdown error during stop: %s", exc)
+            # Shielded: the join runs to completion even when stop() itself
+            # is cancelled; ownership below is released only afterwards.
+            if await process_stop.run_stop_shielded(
+                _join_cancelled_task(),
+                cleanup_log="Peak monitor task join failed",
+            ):
+                stop_cancelled = True
+        # Synchronous from here: no await below can be interrupted, so the
+        # task/child lifecycle is fully complete before ownership is freed.
+        self._task = None
+        self._proc = None
         self._target = None
         self._hold_until = 0.0
         self._consecutive_hits = 0
@@ -297,6 +318,10 @@ class DSPPeakMonitor:
         self._last_vu_update_at_r = None
         self._pending_frame_bytes = b""
         logger.info("Peak monitor stop completed in %.3fs (had_task=%s had_proc=%s)", time.monotonic() - stop_started_at, had_task, had_proc)
+        if stop_cancelled:
+            # The child/task lifecycle above ran to completion shielded;
+            # only now is the caller's cancellation propagated.
+            raise asyncio.CancelledError
 
     def snapshot(self) -> dict:
         now = time.monotonic()
@@ -332,14 +357,20 @@ class DSPPeakMonitor:
             "last_error": self._last_error,
         }
 
-    async def _emit_if_changed(self, force: bool = False):
+    async def _emit_if_changed(self, force: bool = False,
+                               generation: Optional[int] = None):
+        if generation is not None and generation != self._generation:
+            # Superseded run: never publish past stop()/restart().
+            return
         snapshot = self.snapshot()
         if force or snapshot != self._last_emit:
             self._last_emit = snapshot
             if self.on_change:
                 await self.on_change(snapshot)
 
-    async def _run(self):
+    async def _run(self, generation: Optional[int] = None):
+        if generation is None:
+            generation = self._generation
         while self._running:
             try:
                 target = await self._discover_target()
@@ -348,7 +379,7 @@ class DSPPeakMonitor:
             except Exception as exc:
                 self._last_error = str(exc)
                 logger.warning("FXRoute DSP peak monitor target discovery failed: %s", exc)
-                await self._emit_if_changed(force=True)
+                await self._emit_if_changed(force=True, generation=generation)
                 await asyncio.sleep(ERROR_RETRY_INTERVAL)
                 continue
 
@@ -359,7 +390,7 @@ class DSPPeakMonitor:
                 if self._target is not None:
                     self._target = None
                     self._last_error = None
-                    await self._emit_if_changed(force=True)
+                    await self._emit_if_changed(force=True, generation=generation)
                 await asyncio.sleep(
                     min(DISCOVERY_INTERVAL * self._empty_discoveries, DISCOVERY_INTERVAL_MAX)
                 )
@@ -387,19 +418,22 @@ class DSPPeakMonitor:
                             "Peak monitor first target armed with rebuild settle grace (serial %s)",
                             target.serial,
                         )
-                await self._emit_if_changed(force=True)
+                await self._emit_if_changed(force=True, generation=generation)
 
             try:
-                await self._capture_target(target)
+                await self._capture_target(target, generation)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self._last_error = str(exc)
                 logger.warning("FXRoute DSP peak monitor capture failed: %s", exc)
-                await self._emit_if_changed(force=True)
+                await self._emit_if_changed(force=True, generation=generation)
                 await asyncio.sleep(ERROR_RETRY_INTERVAL)
 
-    async def _capture_target(self, target: MonitorTarget):
+    async def _capture_target(self, target: MonitorTarget,
+                              generation: Optional[int] = None):
+        if generation is None:
+            generation = self._generation
         capture_started_at = time.monotonic()
         capture_node_name = f"{CAPTURE_NODE_NAME}_{next(CAPTURE_NODE_SEQUENCE)}"
         capture_rate = _resolve_capture_rate()
@@ -430,7 +464,7 @@ class DSPPeakMonitor:
             capture_rate,
         )
         self._last_error = None
-        await self._emit_if_changed(force=True)
+        await self._emit_if_changed(force=True, generation=generation)
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -454,7 +488,7 @@ class DSPPeakMonitor:
             except Exception as exc:
                 logger.warning("Peak monitor link setup failed, continuing without capture links yet: %s", exc)
                 self._last_error = str(exc)
-                await self._emit_if_changed(force=True)
+                await self._emit_if_changed(force=True, generation=generation)
             self._settle_timeout_count = 0
             self._capture_armed_under_settle = self._settle_until > 0.0
             self._stable_target_checks = 0
@@ -491,7 +525,7 @@ class DSPPeakMonitor:
                             if transitioned:
                                 setattr(self, f"_last_over_at{channel}", time.time())
                         if transitioned_by_channel[""]:
-                            await self._emit_if_changed(force=True)
+                            await self._emit_if_changed(force=True, generation=generation)
                 elif self._proc.returncode is not None:
                     break
                 else:
@@ -557,12 +591,12 @@ class DSPPeakMonitor:
                     for channel in METER_CHANNEL_SUFFIXES:
                         self._update_vu_db(VU_FLOOR_DB, now, channel=channel)
                 if self._expire_holds(now):
-                    await self._emit_if_changed(force=True)
+                    await self._emit_if_changed(force=True, generation=generation)
                 elif now - self._last_vu_emit_at >= VU_EMIT_INTERVAL:
                     self._last_vu_emit_at = now
-                    await self._emit_if_changed()
+                    await self._emit_if_changed(generation=generation)
             if self._expire_holds(time.monotonic()):
-                await self._emit_if_changed(force=True)
+                await self._emit_if_changed(force=True, generation=generation)
             if self._proc.returncode is None:
                 await self._proc.wait()
             stderr = b""
@@ -578,11 +612,13 @@ class DSPPeakMonitor:
             self._consecutive_hits_l = 0
             self._consecutive_hits_r = 0
             if self._proc and self._proc.returncode is None:
-                self._proc.terminate()
-                try:
-                    await asyncio.wait_for(self._proc.wait(), timeout=1)
-                except Exception:
-                    self._proc.kill()
+                # Shielded: task cancellation during the reap must not
+                # orphan the capture child (stop() reaps the same way).
+                if await process_stop.stop_command_child_cancellation_safe(
+                    self._proc, PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS,
+                    cleanup_log="Peak monitor capture child stop failed",
+                ):
+                    raise asyncio.CancelledError
             self._proc = None
             self._capture_node_name = None
             self._capture_rate = None

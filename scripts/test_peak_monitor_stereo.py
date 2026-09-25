@@ -39,6 +39,9 @@ class _FakeProc:
     async def wait(self):
         return self.returncode
 
+    async def communicate(self):
+        return (b"", b"")
+
 
 def _stereo_chunk(left: float, right: float) -> bytes:
     return struct.pack("<2f", left, right) * (peak_monitor.READ_SIZE // 8)

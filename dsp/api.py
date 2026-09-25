@@ -1409,7 +1409,18 @@ async def delete_dsp_preset(request: Request):
             # Neutral fallback; resync the running native engine through the
             # normal locked loader so it never keeps processing the deleted
             # preset's graph.
-            await _deps().load_dsp_preset(dsp_mgr.get_active_preset() or "Neutral")
+            try:
+                await _deps().load_dsp_preset(dsp_mgr.get_active_preset() or "Neutral")
+            except Exception:
+                # Fail closed: never publish a false success. Broadcast the
+                # truthful current state before propagating the failure.
+                try:
+                    status = dsp_mgr.get_status()
+                    await _deps().broadcast({"type": "dsp", "data": status})
+                except Exception:
+                    logger.exception(
+                        "Failed to broadcast DSP state after preset-delete resync failure")
+                raise
         status = dsp_mgr.get_status()
         await _deps().broadcast({"type": "dsp", "data": status})
         _deps().schedule_peak_monitor_refresh("preset-delete")

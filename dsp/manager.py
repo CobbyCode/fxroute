@@ -5,9 +5,10 @@ import copy
 import json
 import logging
 import math
+import os
 import re
-import shutil
 import struct
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -1410,13 +1411,58 @@ class DSPManager:
             raise ValueError(f'Preset "{name}" is used by an output bank and cannot be deleted')
         payload = self.preset_store.read(name)
         kernels = self.preset_store.kernels(payload)
-        self.preset_store.path(name).unlink()
-        orphaned = kernels - self.preset_store.referenced_kernels_except(name)
-        for kernel in orphaned:
-            for path in self.preset_store.find_ir_paths(kernel):
-                path.unlink()
+        preset_path = self.preset_store.path(name)
         if self.get_active_preset() == name:
-            self.load_preset("Neutral")
+            # Pre-flight the Neutral fallback before mutating anything: a
+            # fallback that cannot load must fail here, never after the
+            # preset file is already gone (which would leave active.json
+            # pointing at a missing preset).
+            self.preset_store.read("Neutral")
+            self.compile_engine_config(
+                [{"name": "left", "source": 0}, {"name": "right", "source": 1}],
+                preset_name="Neutral", sample_rate_hz=48000,
+            )
+        # Stage every removal as a same-directory rename first: any later
+        # persist/apply failure restores the exact previous files instead
+        # of leaving a half-deleted preset behind.
+        staged: List[tuple[Path, Path]] = []
+        try:
+            self._stage_delete_path(preset_path, staged)
+            orphaned = kernels - self.preset_store.referenced_kernels_except(name)
+            for kernel in orphaned:
+                for path in self.preset_store.find_ir_paths(kernel):
+                    self._stage_delete_path(path, staged)
+            if self.get_active_preset() == name:
+                self.load_preset("Neutral")
+        except BaseException:
+            for original, backup in reversed(staged):
+                try:
+                    os.replace(backup, original)
+                except OSError:
+                    logger.warning("Failed to restore %s after preset delete failure", original)
+            raise
+        for _, backup in staged:
+            try:
+                backup.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to remove staged preset delete backup %s", backup)
+
+    @staticmethod
+    def _stage_delete_path(path: Path, staged: List[tuple[Path, Path]]) -> None:
+        """Rename ``path`` to a unique same-directory backup for delete rollback."""
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".fxroute-delete-backup-", dir=str(path.parent))
+        os.close(fd)
+        backup = Path(tmp_name)
+        try:
+            os.replace(path, backup)
+        except BaseException:
+            try:
+                backup.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        staged.append((path, backup))
 
     def _extract_kernel_names_from_payload(self, payload: Optional[Dict[str, Any]]):
         if isinstance(payload, dict) and payload.get("schema") == self.PRESET_SCHEMA:
@@ -1460,6 +1506,50 @@ class DSPManager:
         except ValueError as exc:
             raise ValueError(f"Invalid IR file {path.name}: {exc}") from exc
 
+    def _stage_ir_bytes(self, destination: Path, data: bytes) -> Path:
+        """Write IR bytes to a temp file in irs_dir without touching the target."""
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".fxroute-ir-stage-", suffix=destination.suffix, dir=str(self.irs_dir))
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            try:
+                Path(tmp_name).unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        return Path(tmp_name)
+
+    @staticmethod
+    def _guard_ir_destination(destination: Path, name: str) -> None:
+        """Reject symlink/directory targets before an IR publish."""
+        if destination.is_symlink():
+            raise ValueError(
+                f"Import blocked: existing IR path is a symlink: {name}")
+        if destination.is_dir():
+            raise ValueError(
+                f"Import blocked: existing IR path is a directory: {name}")
+
+    def _publish_staged_ir(self, stage: Path, destination: Path) -> None:
+        """Validate staged IR bytes, then atomically replace the destination.
+
+        The previous file (if any) is replaced only after the new content
+        is fully written and validated, so a failed upload can never
+        damage the previously valid IR.
+        """
+        try:
+            self._validate_ir_file(stage)
+        except BaseException:
+            try:
+                stage.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        os.replace(stage, destination)
+
     def upload_ir(self, source_path: Path, filename: str,
                   stored_name: Optional[str] = None) -> dict:
         source = Path(source_path)
@@ -1477,18 +1567,15 @@ class DSPManager:
         except ValueError as exc:
             raise ValueError(f"Invalid IR file {name}: {exc}") from exc
         destination = self.irs_dir / name
+        self._guard_ir_destination(destination, name)
         if params.get("converted"):
-            destination.write_bytes(build_wav_bytes(
+            data = build_wav_bytes(
                 params["channels"], params["rate"], params["bits"],
                 params["format"], params["data"],
-            ))
+            )
         else:
-            shutil.copyfile(source, destination)
-        try:
-            self._validate_ir_file(destination)
-        except ValueError:
-            destination.unlink(missing_ok=True)
-            raise
+            data = source.read_bytes()
+        self._publish_staged_ir(self._stage_ir_bytes(destination, data), destination)
         return {"name": destination.name, "basename": destination.stem,
                 "path": str(destination), "size": destination.stat().st_size}
 
@@ -1539,10 +1626,14 @@ class DSPManager:
             stereo[byte_offset::2 * width] = left_data[byte_offset::width]
             stereo[width + byte_offset::2 * width] = right_data[byte_offset::width]
         destination = self.irs_dir / Path(merged_name).name
-        destination.write_bytes(build_wav_bytes(
-            channels=2, rate=left["rate"], bits=left["bits"],
-            format_tag=left["format"], data=bytes(stereo),
-        ))
+        self._guard_ir_destination(destination, destination.name)
+        self._publish_staged_ir(
+            self._stage_ir_bytes(destination, build_wav_bytes(
+                channels=2, rate=left["rate"], bits=left["bits"],
+                format_tag=left["format"], data=bytes(stereo),
+            )),
+            destination,
+        )
         return {"name": destination.name, "basename": destination.stem,
                 "path": str(destination), "size": destination.stat().st_size}
 
