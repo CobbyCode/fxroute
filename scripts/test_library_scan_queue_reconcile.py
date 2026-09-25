@@ -316,9 +316,25 @@ class QueueReconcileLifecycleTests(ScanReconcileBase):
         async def scenario():
             queue = self._seed_queue()
             main._scan_queue_owner_loop = asyncio.get_running_loop()
-            await asyncio.to_thread(main._prune_queue_after_scan, ["local_a.mp3"])
+            # Post from a worker thread, then invalidate before the owning
+            # loop runs the reconcile. No `await` may happen between the
+            # post and the invalidate: awaiting would let the loop run the
+            # posted reconcile first (FIFO ready queue), making the
+            # invalidate a silent no-op. The event only signals that the
+            # worker posted; it never yields to the loop, so the reconcile
+            # stays posted-but-unrun until the invalidate lands.
+            posted = threading.Event()
+
+            def worker():
+                main._prune_queue_after_scan(["local_a.mp3"])
+                posted.set()
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            self.assertTrue(posted.wait(5), "scan worker did not post the reconcile")
             # Shutdown/switch drops the posted-but-unrun reconcile ...
             main._invalidate_pending_queue_reconcile()
+            thread.join(5)
             await asyncio.sleep(0.3)
             self.assertEqual([t["id"] for t in queue.tracks], ["local_a.mp3", "local_b.mp3", "local_c.mp3"])
             self.assertEqual(queue.index, 2)
