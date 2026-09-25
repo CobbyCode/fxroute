@@ -543,6 +543,29 @@ class LibraryMetadataStore:
             return {"track_id": row["track_id"], "favorite": bool(row["favorite"])}
         return {"track_id": track_id, "favorite": bool(favorite)}
 
+    def get_track_favorites(self, track_ids: Iterable[str]) -> dict[str, bool]:
+        """Return the stored favorite flag for the given track ids.
+
+        Only active rows (``missing_since IS NULL``) are considered. Unknown
+        ids are omitted so callers can overlay the result onto a freshly
+        built track list without touching tracks the store never saw.
+        """
+        wanted = {str(track_id or "").strip() for track_id in track_ids}
+        wanted.discard("")
+        if not wanted:
+            return {}
+        placeholders = ",".join("?" for _ in wanted)
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"SELECT track_id, favorite FROM tracks WHERE track_id IN ({placeholders}) AND missing_since IS NULL",
+                    sorted(wanted),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            logger.warning("Track favorites read failed: %s", exc)
+            return {}
+        return {str(row["track_id"]): bool(row["favorite"]) for row in rows}
+
     def increment_track_play_count(self, track_id: str) -> None:
         track_id = str(track_id or "").strip()
         if not track_id:

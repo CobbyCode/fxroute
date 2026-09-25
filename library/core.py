@@ -255,6 +255,14 @@ class LibraryScanner:
         self._scan_token = 0
         self.metadata_store = metadata_store or LibraryMetadataStore()
         self._refresh_cancel = threading.Event()
+        # Guards cache publishing against concurrent favorite writes. The
+        # scan builds its track list over time and may hold a stale favorite
+        # snapshot; the publish step re-reads the stored flags and swaps the
+        # cache atomically under this lock, while set_track_favorite patches
+        # the live cache under the same lock. A favorite written between the
+        # snapshot and the publish is therefore either seen by the overlay
+        # or applied to the freshly published cache, never discarded.
+        self._cache_publish_lock = threading.Lock()
 
     def prepare_scan_status(self):
         """Pre-mark a scan as scheduled (startup / manual refresh).
@@ -487,7 +495,7 @@ class LibraryScanner:
             # while honoring tag track numbers inside the same folder/album when present.
             tracks.sort(key=_track_sort_key)
 
-            self._track_cache = tracks
+            self._publish_tracks(tracks)
             try:
                 self._scan_current_dir = "Finalizing metadata"
                 self.metadata_store.sync_tracks_seen(active_track_paths)
@@ -523,6 +531,29 @@ class LibraryScanner:
         self._refresh_cancel.set()
         with self._scan_state_lock:
             self._scan_token += 1
+
+    def _publish_tracks(self, tracks: List[Track]) -> None:
+        """Publish a freshly built track list without losing newer favorites.
+
+        The walk may have snapshotted a favorite flag before the user changed
+        it, so the stored flags are re-read and overlaid right before the
+        swap. Overlay and swap run atomically under ``_cache_publish_lock``,
+        which ``set_track_favorite`` also holds while patching the live
+        cache: a concurrent favorite write either lands in the overlay read
+        or in the freshly published cache. Best-effort: a failed re-read
+        keeps the built list instead of failing the scan.
+        """
+        try:
+            fresh = self.metadata_store.get_track_favorites([track.id for track in tracks])
+        except Exception as exc:
+            logger.warning("Track favorites overlay failed, publishing scanned state: %s", exc)
+            fresh = {}
+        with self._cache_publish_lock:
+            if fresh:
+                for track in tracks:
+                    if track.id in fresh:
+                        track.favorite = fresh[track.id]
+            self._track_cache = tracks
 
     def _create_track_from_file(self, filepath: Path) -> Optional[Track]:
         """Create a Track object with metadata from file."""
@@ -883,9 +914,10 @@ class LibraryScanner:
         """Persist a track favorite and keep the in-memory track cache in sync."""
         result = self.metadata_store.set_track_favorite(track_id, favorite)
         favorite_value = bool(result.get("favorite"))
-        for track in self._track_cache:
-            if track.id == track_id:
-                track.favorite = favorite_value
+        with self._cache_publish_lock:
+            for track in self._track_cache:
+                if track.id == track_id:
+                    track.favorite = favorite_value
         return result
 
     def get_album_discover(self, album_id: str, force: bool = False) -> Dict[str, Any]:
