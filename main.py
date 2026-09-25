@@ -4867,17 +4867,30 @@ async def _try_render_v2_sync_target(rate: int, overview: dict):
         return None
 
 
-def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int) -> dict | None:
-    """Stage the committed v2 plan context for one manual bank measurement.
+def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,
+                           channel: str = "") -> dict | None:
+    """Stage the committed v2 plan context for one manual measurement.
 
     Returns {"expected_native_layout", "expected_native_output_mode",
     "expected_plan_fingerprint"} compiled at the measurement rate, or None
     when the head cannot activate (the caller keeps the legacy route, whose
     pre-sweep check then fails closed as before).  Never raises.
+
+    The committed plan is the engine's own processing model, so it is the
+    only expectation that can describe the running graph: one layout entry
+    per active role and the engine's own mode name.  The legacy overview
+    translation cannot (it names the mode "subwoofer-2.2" and always
+    describes four outputs), which is why a manual sweep without a named
+    area bank used to be refused as "native DSP output mode stereo-sub !=
+    measurement mode subwoofer-2.2" plus "does not expose 4 outputs".
+
+    The bank is therefore optional: the plan covers the whole active
+    topology, and an empty bank follows the current editing selection
+    exactly like ``_freeze_measurement_target`` does, so the measured roles
+    and their output mask still come from the effective routing.  The
+    channel only selects the swept side and never changes the plan.
     """
     try:
-        if not str(measurement_bank or "").strip():
-            return None
         if not isinstance(measurement_rate_hz, int) or measurement_rate_hz <= 0:
             return None
         service = get_output_service()

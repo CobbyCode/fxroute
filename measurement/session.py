@@ -136,20 +136,38 @@ def _dsp_runtime() -> Any:
     return _measurement_services().get_dsp_runtime()
 
 
-def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int) -> dict:
-    """Stage the committed v2 plan context for one manual bank measurement.
+def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,
+                           channel: str = "") -> dict:
+    """Stage the committed v2 plan context for one manual measurement.
 
     Returns kwargs for ``MeasurementStore.start_measurement`` (possibly
     empty, preserving the legacy overview route).  Never raises: an
     unresolvable bank or unrenderable head falls back to legacy, where the
     store's own bank validation and the pre-sweep check still fail closed.
+
+    The factory is consulted even without a named area bank: the committed
+    plan describes the whole active topology, so a sweep that only picked a
+    channel (left/right) still has to be checked against it.  Skipping it
+    sent those sweeps to the legacy route, which reports the legacy mode
+    label and always four outputs, so a stereo-sub crossover with more
+    active roles was refused as "does not expose 4 outputs".
     """
     factory = getattr(_measurement_services(), "stage_bank_v2_context", None)
-    if factory is None or not str(measurement_bank or "").strip():
+    if factory is None:
         return {}
     try:
         staged = factory(measurement_bank=measurement_bank,
-                         measurement_rate_hz=measurement_rate_hz)
+                         measurement_rate_hz=measurement_rate_hz,
+                         channel=channel)
+    except TypeError:
+        # An injected factory that does not accept the channel still gets the
+        # plan it can build; the channel only selects the measured side.
+        try:
+            staged = factory(measurement_bank=measurement_bank,
+                             measurement_rate_hz=measurement_rate_hz)
+        except Exception as exc:
+            logger.warning("Bank v2 staging failed, using legacy measurement route: %s", exc)
+            return {}
     except Exception as exc:
         logger.warning("Bank v2 staging failed, using legacy measurement route: %s", exc)
         return {}
@@ -1616,7 +1634,8 @@ async def start_measurement(
                 measurement_role=measurement_role,
                 measurement_bank=measurement_bank,
                 **_stage_bank_v2_context(measurement_bank=measurement_bank,
-                                         measurement_rate_hz=measurement_rate),
+                                         measurement_rate_hz=measurement_rate,
+                                         channel=channel),
             ),
             entry_epoch=entry_epoch,
         )
