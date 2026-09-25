@@ -64,18 +64,19 @@ class MeasurementJobRunner:
     async def run(self, job_id: str, job: dict[str, Any], executor: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         # Temporary phase instrumentation (no logic impact).
         _rm: dict[str, float] = {"run_start": time.monotonic()}
-        with self.process_lock:
-            was_cancelling_before = job_id in self.cancelled_jobs
-            if not was_cancelling_before:
-                job["status"] = "running"
-                job["updated_at"] = self._utc_now()
-                job["message"] = "Running L/R repeat…" if job.get("job_kind") == "lr-repeat" else "Running sweep…"
-                self._persist_job(job)
         previous_effect_bypass = None
         scope_owned = False
         output_mask = job.get("output_mask")
         mask_owned = False
+        was_cancelling_before = False
         try:
+            with self.process_lock:
+                was_cancelling_before = job_id in self.cancelled_jobs
+                if not was_cancelling_before:
+                    job["status"] = "running"
+                    job["updated_at"] = self._utc_now()
+                    job["message"] = "Running L/R repeat…" if job.get("job_kind") == "lr-repeat" else "Running sweep…"
+                    self._persist_job(job)
             if was_cancelling_before:
                 raise RuntimeError("Measurement cancelled.")
             if job.get("measurement_scope") == "raw_helper":
@@ -108,7 +109,10 @@ class MeasurementJobRunner:
             try:
                 result = await asyncio.shield(worker_task)
             except asyncio.CancelledError:
-                self.cancel_job(job_id, job)
+                try:
+                    self.cancel_job(job_id, job)
+                except Exception:
+                    logger.exception("Failed to persist cancelling measurement job %s", job_id)
                 while not worker_task.done():
                     try:
                         await asyncio.shield(worker_task)
@@ -127,7 +131,10 @@ class MeasurementJobRunner:
             with self.process_lock:
                 if not self._is_terminal(job.get("status")):
                     if job_id in self.cancelled_jobs:
-                        self._set_cancelled(job)
+                        try:
+                            self._set_cancelled(job)
+                        except Exception:
+                            logger.exception("Failed to persist cancelled measurement job %s", job_id)
                     else:
                         job["status"] = "completed"
                         job["updated_at"] = self._utc_now()
@@ -141,12 +148,18 @@ class MeasurementJobRunner:
             with self.process_lock:
                 self.cancelled_jobs.add(job_id)
                 if not self._is_terminal(job.get("status")):
-                    self._set_cancelled(job)
+                    try:
+                        self._set_cancelled(job)
+                    except Exception:
+                        logger.exception("Failed to persist cancelled measurement job %s", job_id)
         except Exception as exc:
             with self.process_lock:
                 if not self._is_terminal(job.get("status")):
                     if job_id in self.cancelled_jobs:
-                        self._set_cancelled(job)
+                        try:
+                            self._set_cancelled(job)
+                        except Exception:
+                            logger.exception("Failed to persist cancelled measurement job %s", job_id)
                     else:
                         job["status"] = "failed"
                         job["updated_at"] = self._utc_now()

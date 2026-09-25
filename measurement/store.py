@@ -461,6 +461,8 @@ class MeasurementStore:
             }
             if reference_candidate_input_channels:
                 job_input_channels["electrical_reference_candidates"] = reference_candidate_input_channels
+            if self._shutdown:
+                raise RuntimeError("Measurement store is shutting down")
             job = {
                 "id": job_id,
                 "status": "queued",
@@ -566,6 +568,9 @@ class MeasurementStore:
         # the slot stays taken while the job becomes visible, so a
         # concurrent start can never slip between release and insert.
         with self._start_slot_lock:
+            if self._shutdown:
+                self._start_slot_reserved = False
+                raise RuntimeError("Measurement store is shutting down")
             if not self._start_slot_reserved:
                 active_job = self._find_active_or_cancelling_job()
                 if active_job is not None and str(active_job.get("id") or "") != job_id:
@@ -864,6 +869,11 @@ class MeasurementStore:
     async def shutdown(self) -> None:
         """Cancel and drain every measurement owned by this store."""
         self._shutdown = True
+        # Invalidate a preparation that still holds the start reservation:
+        # its later registration must fail instead of starting a job
+        # after the shutdown drained.
+        with self._start_slot_lock:
+            self._start_slot_reserved = False
         active_job_ids = [
             job_id
             for job_id, job in self._jobs.items()
@@ -1371,6 +1381,8 @@ class MeasurementStore:
         except Exception:
             logger.exception("MEASUREMENT-CANCEL-DIAG stale job normalization failed")
         with self._start_slot_lock:
+            if self._shutdown:
+                raise RuntimeError("Measurement store is shutting down")
             if self._start_slot_reserved:
                 logger.warning(
                     "MEASUREMENT-CANCEL-DIAG new job blocked: existing_job=starting status=queued",

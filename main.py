@@ -3928,10 +3928,20 @@ async def _system_update_or_restore(request: Request, *script_args: str) -> dict
             returncode=result["returncode"], stdout=result.get("stdout", ""), restore=restore
         )
         if update_applied:
-            _create_lifecycle_background_task(
-                _restart_fxroute_service_after_response(service_name), name="service-restart"
-            )
+            # Reserve before creating the task so no maintenance request
+            # slips into the gap. The done-callback owns the release: a
+            # task cancelled before its first step never runs its
+            # coroutine finally, so the callback is the only guaranteed
+            # release path. finish is idempotent, double release is safe.
             update_lifecycle.reserve_deferred_restart()
+            try:
+                task = _create_lifecycle_background_task(
+                    _restart_fxroute_service_after_response(service_name), name="service-restart"
+                )
+            except BaseException:
+                update_lifecycle.finish_deferred_restart()
+                raise
+            task.add_done_callback(lambda _done: update_lifecycle.finish_deferred_restart())
 
     result = await _run_update_operation(
         _UPDATE_APPLY_TIMEOUT_SECONDS, *script_args, on_result=schedule_restart
