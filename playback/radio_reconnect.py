@@ -41,6 +41,8 @@ class RadioReconnect:
         self.active_since: float = 0.0
         self._stopped = False
         self._resetting = False
+        self._pending_reset_eof: tuple[dict, dict] | None = None
+        self._stop_seq = 0
 
     async def _reconnect_after_delay(
         self,
@@ -88,7 +90,10 @@ class RadioReconnect:
                 self.task = None
 
     def schedule(self, state: dict) -> None:
-        if self._stopped or self._resetting:
+        if self._stopped:
+            return
+        if self._resetting:
+            self._defer_reset_eof(state)
             return
         playback_state = self._deps.get_playback_state()
         track_info = playback_state.current_track_info or {}
@@ -135,6 +140,9 @@ class RadioReconnect:
 
     async def reset(self) -> None:
         self._resetting = True
+        stop_seq_at_entry = self._stop_seq
+        stopped_at_entry = self._stopped
+        self._pending_reset_eof = None
         try:
             await self._drain_task()
         finally:
@@ -142,11 +150,49 @@ class RadioReconnect:
         self.attempts = 0
         self.url = None
         self.active_since = 0.0
-        self._stopped = False
+        if self._stop_seq != stop_seq_at_entry:
+            self._pending_reset_eof = None
+            return
+        if stopped_at_entry:
+            self._stopped = False
+        pending = self._pending_reset_eof
+        self._pending_reset_eof = None
+        if pending is None or self._stopped:
+            return
+        pending_state, pending_track = pending
+        try:
+            live_track = (self._deps.get_playback_state().current_track_info or {})
+        except Exception:
+            return
+        if live_track.get("source") != "radio" or not live_track.get("url"):
+            return
+        if live_track.get("source") != pending_track.get("source"):
+            return
+        if live_track.get("url") != pending_track.get("url"):
+            return
+        self.schedule(pending_state)
+
+    def _defer_reset_eof(self, state: dict) -> None:
+        try:
+            track_info = (self._deps.get_playback_state().current_track_info or {})
+        except Exception:
+            return
+        if track_info.get("source") != "radio" or not track_info.get("url"):
+            return
+        if state.get("current_file") and not state.get("ended"):
+            if self._pending_reset_eof is not None:
+                self._pending_reset_eof = None
+            return
+        if not (state.get("ended") and not state.get("current_file")):
+            return
+        self._pending_reset_eof = (dict(state), dict(track_info))
 
     async def stop(self) -> None:
         self._stopped = True
+        self._stop_seq += 1
+        self._pending_reset_eof = None
         await self._drain_task()
+        self._pending_reset_eof = None
 
     async def _drain_task(self) -> None:
         task = self.task
