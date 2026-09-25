@@ -599,5 +599,66 @@ class ZipSameStemImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["playlists"][0]["name"], "mix")
 
 
+class ZipPlaylistRollbackTests(unittest.IsolatedAsyncioTestCase):
+    """A failed ZIP playlist persist must not leave partial playlists behind."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.music_root = self.base / "music"
+        (self.music_root / "album").mkdir(parents=True)
+        self.download_dir = self.base / "downloads"
+        self.settings = SimpleNamespace(MUSIC_ROOT=self.music_root, download_dir=self.download_dir)
+        self.store = _IsolatedPlaylistStore(self, self.base)
+        self.addCleanup(self._tmp.cleanup)
+        self.tracks = [
+            make_track("t1", self.music_root / "album" / "cd1.mp3", title="CD1 Track"),
+            make_track("t2", self.music_root / "album" / "cd2.mp3", title="CD2 Track"),
+        ]
+        self.scanner = SimpleNamespace(
+            music_root=self.music_root,
+            get_tracks=lambda refresh=True, **kwargs: self.tracks,
+            refresh=lambda *args, **kwargs: self.tracks,
+        )
+
+    async def _upload(self, members: list[tuple[str, bytes]], filename: str = "album.zip") -> dict:
+        class FakeUpload:
+            def __init__(self, content: bytes):
+                self._chunks = [content]
+                self.filename = filename
+
+            async def read(self, size=-1):
+                return self._chunks.pop(0) if self._chunks else b""
+
+            async def close(self):
+                return None
+
+        with patch.object(main, "settings", self.settings), \
+                patch.object(main.runtime.music_library, "scanner", self.scanner):
+            return await library_api.upload_track(file=FakeUpload(_build_zip(members)))
+
+    async def test_second_playlist_persist_failure_rolls_back_first(self):
+        existing = self.store.playlists.save_playlist("keep-me", ["t1"])
+        real_save = playlist_io.save_new_playlist
+        calls = {"count": 0}
+
+        def flaky(name, track_ids):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise RuntimeError("boom persist 2")
+            return real_save(name, track_ids)
+
+        with patch.object(playlist_io, "save_new_playlist", side_effect=flaky):
+            with self.assertRaises(library_api.HTTPException) as ctx:
+                await self._upload([
+                    ("CD1/mix.m3u8", b"#EXTM3U\ncd1.mp3\n"),
+                    ("CD2/mix.m3u8", b"#EXTM3U\ncd2.mp3\n"),
+                ])
+        self.assertEqual(ctx.exception.status_code, 500)
+        stored = self.store.stored()
+        self.assertEqual(set(stored), {existing.id}, "no playlist from this import may remain")
+        self.assertEqual(stored[existing.id].track_ids, ["t1"], "user playlists stay unchanged")
+
+
 if __name__ == "__main__":
     unittest.main()

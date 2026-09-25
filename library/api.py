@@ -675,16 +675,25 @@ async def upload_track(file: UploadFile = File(...)):
             # distinct names first, and the import never overwrites an existing
             # user playlist, so the count matches what is actually stored.
             imported_playlists = []
-            for playlist_path, playlist_name in zip_album.zip_playlist_names(playlist_files, album_dir):
-                imported = playlist_io.import_m3u_playlist(
-                    playlist_name,
-                    playlist_path.read_text(encoding="utf-8", errors="replace"),
-                    _active_music_root(library_scanner, settings),
-                    base_dir=playlist_path.parent,
-                    tracks=tracks,
-                )
-                if imported:
-                    imported_playlists.append(imported)
+            try:
+                for playlist_path, playlist_name in zip_album.zip_playlist_names(playlist_files, album_dir):
+                    imported = playlist_io.import_m3u_playlist(
+                        playlist_name,
+                        playlist_path.read_text(encoding="utf-8", errors="replace"),
+                        _active_music_root(library_scanner, settings),
+                        base_dir=playlist_path.parent,
+                        tracks=tracks,
+                    )
+                    if imported:
+                        imported_playlists.append(imported)
+            except BaseException:
+                # A single ZIP import must not leave partial playlists behind.
+                for playlist in imported_playlists:
+                    try:
+                        delete_playlist(playlist["id"])
+                    except Exception as exc:
+                        logger.warning("Failed to roll back playlist %s: %s", playlist.get("id"), exc)
+                raise
             if not audio_files and not imported_playlists:
                 shutil.rmtree(album_dir, ignore_errors=True)
                 raise HTTPException(status_code=400, detail="Playlist did not match any library tracks")
