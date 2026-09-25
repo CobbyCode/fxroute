@@ -510,18 +510,21 @@ class DSPRuntime:
                 await self._run(("pw-link", link.source, link.target))
             return await self.verify()
 
+    @staticmethod
+    def _direct_source_candidates(config: DSPRuntimeConfig) -> set[PipeWireLink]:
+        # Sources keep fixed output names; hardware ports come from the
+        # committed output configuration, including AUX-only devices.
+        return {
+            PipeWireLink(f"{node}:output_{channel}", f"{config.output_key}:{port}")
+            for node in DIRECT_SOURCE_NODES
+            for port in config.hardware_ports
+            for channel in HARDWARE_CHANNEL_ORDER
+        }
+
     async def _remove_direct_source_links(self) -> None:
         if self._config is None:
             return
-        # The source nodes keep their fixed output_FL/FR/RL/RR naming; only
-        # the hardware side is resolved, so a direct source→sink link is
-        # removed no matter how the device names its playback ports.
-        candidates = {
-            PipeWireLink(f"{node}:output_{channel}", f"{self._config.output_key}:{port}")
-            for node in DIRECT_SOURCE_NODES
-            for port in self._config.hardware_ports
-            for channel in HARDWARE_CHANNEL_ORDER
-        }
+        candidates = self._direct_source_candidates(self._config)
         # Disconnecting the whole candidate matrix costs one failing `pw-link
         # -d` subprocess per combination (144 on an 18-channel device) and
         # every one of them is a no-op on a healthy graph.  Read the live graph
@@ -1319,8 +1322,11 @@ class DSPRuntime:
             return False
         result = await self._run(("pw-link", "-l"))
         desired = {link for link in self._links if link.source.startswith(f"{DSP_NODE_NAME}:output_")}
+        direct = self._direct_source_candidates(self._config) if self._config is not None else set()
         return (result.returncode == 0
                 and not (physical_output_links(result.stdout) - desired)
+                and not any(PipeWireLink(source, target) in direct
+                            for source, target in iter_pw_links(result.stdout))
                 and all(_contains_link(result.stdout, link.source, link.target) for link in self._links))
 
     def stderr_tail(self) -> str:

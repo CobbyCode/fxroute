@@ -111,6 +111,63 @@ class OutputAuthorityTests(unittest.IsolatedAsyncioTestCase):
     async def test_extra_physical_output_is_not_a_complete_graph(self):
         self.assertFalse(await self.runtime.verify())
 
+    async def test_clean_dsp_graph_verifies_without_repair(self):
+        self.default = "alsa_output.A"
+        self.links = set(self.desired)
+        commands = []
+        original_run = self.runtime._run
+
+        async def record(args):
+            commands.append(tuple(args))
+            return await original_run(args)
+
+        self.runtime._run = record
+        self.assertTrue(await self.runtime.verify())
+        self.assertEqual(commands, [("pw-link", "-l")])
+
+    async def test_parallel_spotify_hardware_edge_invalidates_dsp_graph(self):
+        self.links = self.desired | {
+            PipeWireLink("spotify:output_FL", "alsa_output.A:playback_FL"),
+        }
+        self.assertFalse(await self.runtime.verify())
+
+    async def test_stereo_watcher_removes_parallel_spotify_edge_without_overview(self):
+        self.default = "alsa_output.A"
+        bypass = PipeWireLink("spotify:output_FL", "alsa_output.A:playback_FR")
+        self.links = self.desired | {bypass}
+        commands = []
+        original_run = self.runtime._run
+
+        async def record(args):
+            commands.append(tuple(args))
+            return await original_run(args)
+
+        self.runtime._run = record
+        ticks = 0
+
+        async def sleep(_delay):
+            nonlocal ticks
+            ticks += 1
+            if ticks > 1:
+                raise asyncio.CancelledError
+
+        deps = _watcher_deps(SimpleNamespace(
+            sleep=sleep, get_dsp_runtime=lambda: self.runtime,
+            get_audio_output_overview=lambda: self.fail("Stereo watch must not build overview"),
+            observe_playback_samplerate_drift=mock.AsyncMock(), get_output_mode=lambda: "stereo"))
+        deps = replace(deps, reconcile_output_default=overview.reconcile_selected_output_default,
+                       read_output_default_state=overview.selected_output_default_state,
+                       get_coordinator_lock=lambda: asyncio.Lock(),
+                       get_measurement_sr_session=lambda: SimpleNamespace(lock=asyncio.Lock()))
+        with self.assertRaises(asyncio.CancelledError):
+            await DspOrchestrator(deps).runtime_link_watch_loop()
+        self.assertEqual(self.links, self.desired)
+        self.assertTrue(await self.runtime.verify())
+        self.assertEqual(
+            [command for command in commands if command[:2] == ("pw-link", "-d")],
+            [("pw-link", "-d", bypass.source, bypass.target)],
+        )
+
     def test_default_drift_and_reappearing_device_reconcile_to_saved_a(self):
         reconcile = getattr(overview, "reconcile_selected_output_default", None)
         self.assertTrue(callable(reconcile), "Output default reconciliation is required")
