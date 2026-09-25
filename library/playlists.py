@@ -89,7 +89,7 @@ def _load_raw_playlists() -> List[dict]:
         logger.error(f"Failed to load playlists.json: {e}")
         raise PlaylistStoreCorruptedError(f"playlists.json is corrupted and cannot be parsed: {e}") from e
     if not isinstance(data, list):
-        raise ValueError("playlists.json must contain a JSON array")
+        raise PlaylistStoreCorruptedError("playlists.json is corrupted and must contain a JSON array")
     return data
 
 

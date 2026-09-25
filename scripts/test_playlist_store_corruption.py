@@ -6,7 +6,7 @@ Fail-closed contract for the playlist store:
 - syntactically broken JSON -> every mutation raises
   PlaylistStoreCorruptedError and the file stays byte-identical
 - structurally invalid content (valid JSON, not an array) -> every
-  mutation raises ValueError and the file stays unchanged
+  mutation raises PlaylistStoreCorruptedError and the file stays unchanged
 - reads stay available during corruption (empty list fallback, uncached)
 - after restoring a valid store, mutations and reads work again without
   any manual cache reset
@@ -117,7 +117,7 @@ class PlaylistStoreCorruptionTestCase(unittest.TestCase):
             with self.subTest(payload=payload):
                 self._write_bytes(payload)
                 for mutate in self._mutations():
-                    with self.assertRaises(ValueError):
+                    with self.assertRaises(PlaylistStoreCorruptedError):
                         mutate()
                 self.assertEqual(self._disk_bytes(), payload)
 
@@ -131,6 +131,13 @@ class PlaylistStoreCorruptionTestCase(unittest.TestCase):
     def test_reads_stay_available_during_corruption(self):
         self._write_bytes(b"{broken")
         self.assertEqual(playlists.get_playlists(), [])
+
+    def test_reads_stay_available_for_structurally_invalid_store(self):
+        for payload in STRUCTURALLY_INVALID_PAYLOADS:
+            with self.subTest(payload=payload):
+                self._write_bytes(payload)
+                self.assertEqual(playlists.get_playlists(), [])
+                self.assertEqual(self._disk_bytes(), payload)
 
     def test_recovery_after_restore_needs_no_cache_reset(self):
         self._write_bytes(b"{broken")
@@ -147,6 +154,21 @@ class PlaylistStoreCorruptionTestCase(unittest.TestCase):
 
     def test_api_reports_corruption_as_server_error(self):
         self._write_bytes(b"{broken")
+        before = self._disk_bytes()
+        with self.assertRaises(library_api.HTTPException) as ctx:
+            asyncio.run(
+                library_api.create_or_update_playlist(
+                    SimpleNamespace(name="New", track_ids=["A"])
+                )
+            )
+        self.assertEqual(ctx.exception.status_code, 500)
+        with self.assertRaises(library_api.HTTPException) as ctx:
+            asyncio.run(library_api.remove_playlist("mix"))
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertEqual(self._disk_bytes(), before)
+
+    def test_api_reports_structural_corruption_as_server_error(self):
+        self._write_bytes(b'{"id": "mix", "name": "Mix"}')
         before = self._disk_bytes()
         with self.assertRaises(library_api.HTTPException) as ctx:
             asyncio.run(

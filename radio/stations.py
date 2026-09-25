@@ -357,7 +357,7 @@ def _load_raw_stations() -> List[dict]:
         logger.error(f"Failed to load stations.json: {e}")
         raise StationStoreCorruptedError(f"stations.json is corrupted and cannot be parsed: {e}") from e
     if not isinstance(data, list):
-        raise ValueError("stations.json must contain a JSON array")
+        raise StationStoreCorruptedError("stations.json is corrupted and must contain a JSON array")
     return data
 
 

@@ -7,7 +7,7 @@ Fail-closed contract for the station store:
   StationStoreCorruptedError and the file stays byte-identical (no
   fallback to defaults plus the new change)
 - structurally invalid content (valid JSON, not an array) -> every
-  mutation raises ValueError and the file stays unchanged
+  mutation raises StationStoreCorruptedError and the file stays unchanged
 - reads stay available during corruption (defaults fallback, uncached
   and never persisted back, so lazy artwork enrichment cannot repair
   the damaged file with defaults either)
@@ -135,7 +135,7 @@ class StationStoreCorruptionTestCase(unittest.TestCase):
             with self.subTest(payload=payload):
                 self._write_bytes(payload)
                 for mutate in self._mutations():
-                    with self.assertRaises(ValueError):
+                    with self.assertRaises(StationStoreCorruptedError):
                         mutate()
                 self.assertEqual(self._disk_bytes(), payload)
 
@@ -159,6 +159,18 @@ class StationStoreCorruptionTestCase(unittest.TestCase):
             [item["id"] for item in stations.DEFAULT_STATIONS],
         )
         self.assertEqual(self._disk_bytes(), b"{broken")
+        self.assertEqual(stations.DEFAULT_STATIONS, self._default_snapshot)
+
+    def test_reads_fall_back_for_structurally_invalid_store(self):
+        for payload in STRUCTURALLY_INVALID_PAYLOADS:
+            with self.subTest(payload=payload):
+                self._write_bytes(payload)
+                fallback = stations.get_stations()
+                self.assertEqual(
+                    [station.id for station in fallback],
+                    [item["id"] for item in stations.DEFAULT_STATIONS],
+                )
+                self.assertEqual(self._disk_bytes(), payload)
         self.assertEqual(stations.DEFAULT_STATIONS, self._default_snapshot)
 
     def test_recovery_after_restore_needs_no_cache_reset(self):
@@ -208,6 +220,25 @@ class StationStoreCorruptionTestCase(unittest.TestCase):
                     ),
                 )
             )
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertEqual(self._disk_bytes(), before)
+
+    def test_api_reports_structural_corruption_as_server_error(self):
+        self._write_bytes(b'{"id": "mine", "name": "Mine"}')
+        before = self._disk_bytes()
+        with self.assertRaises(radio_api.HTTPException) as ctx:
+            asyncio.run(
+                radio_api.create_station(
+                    SimpleNamespace(
+                        name="New",
+                        stream_url="https://example.com/new.mp3",
+                        custom_image_url=None,
+                    )
+                )
+            )
+        self.assertEqual(ctx.exception.status_code, 500)
+        with self.assertRaises(radio_api.HTTPException) as ctx:
+            asyncio.run(radio_api.remove_station("mine"))
         self.assertEqual(ctx.exception.status_code, 500)
         self.assertEqual(self._disk_bytes(), before)
 

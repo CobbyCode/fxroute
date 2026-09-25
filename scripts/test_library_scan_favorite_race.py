@@ -10,6 +10,11 @@ patch and the live library shows the old state again until the next scan.
 Each test holds a scan thread immediately before its cache publish, mutates
 a favorite from the main thread, releases the scan, and then asserts that
 the DB and the published track cache agree on the new state.
+
+BulkFavoritesScaleTests covers libraries above the SQLite variable limit
+(``MAX_VARIABLE_NUMBER``): the favorite overlay must return complete
+results for 500 / 5.000 / 40.000 ids, keep excluding ``missing_since``
+rows, and keep the favorite-vs-scan race closed at that scale.
 """
 
 import os
@@ -176,6 +181,112 @@ class ScanFavoriteRaceTests(unittest.TestCase):
         self.assertEqual(
             self.store.get_track_favorites(["local_a.mp3", "local_b.mp3", "local_nope.mp3"]),
             {"local_a.mp3": True, "local_b.mp3": False},
+        )
+
+
+class BulkFavoritesScaleTests(unittest.TestCase):
+    """Favorite overlay above the SQLite variable limit.
+
+    Reproduced defect: ``get_track_favorites`` built a single ``IN`` query
+    with one placeholder per id. Above ``MAX_VARIABLE_NUMBER`` (32766 on
+    current builds, 999 on older ones) SQLite raised "too many SQL
+    variables", the lookup returned ``{}``, and the scan-publish overlay
+    silently stopped applying stored favorites for large libraries.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        network = patch.object(LibraryMetadataStore, "_request_json", _no_network)
+        network.start()
+        self.addCleanup(network.stop)
+        self.root = self.base / "music"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.store = LibraryMetadataStore(
+            self.base / "meta.sqlite", self.base / "meta-covers"
+        )
+        self.scanner = LibraryScanner(self.root, metadata_store=self.store)
+
+    def _seed(self, count: int) -> set[str]:
+        """Insert ``count`` tracks; every 7th is favorited. Returns favored ids."""
+        favored = {f"local_scale_{index:05d}.mp3" for index in range(count) if index % 7 == 0}
+        with self.store._connect() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO tracks"
+                " (rel_path, track_id, mtime_ns, size_bytes, title, favorite, missing_since)"
+                " VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                [
+                    (
+                        f"scale_{index:05d}.mp3",
+                        f"local_scale_{index:05d}.mp3",
+                        1,
+                        100,
+                        f"Scale {index}",
+                        1 if f"local_scale_{index:05d}.mp3" in favored else 0,
+                    )
+                    for index in range(count)
+                ],
+            )
+        return favored
+
+    def _assert_full_overlay(self, count: int) -> None:
+        favored = self._seed(count)
+        ids = [f"local_scale_{index:05d}.mp3" for index in range(count)]
+        result = self.store.get_track_favorites(ids)
+        self.assertEqual(len(result), count)
+        self.assertEqual(
+            {track_id for track_id, is_favorite in result.items() if is_favorite},
+            favored,
+        )
+        # Unknown ids stay omitted, empty/blank ids stay ignored.
+        self.assertNotIn("local_scale_nope.mp3", self.store.get_track_favorites([*ids, "local_scale_nope.mp3", " ", ""]))
+        self.assertEqual(
+            self.store.get_track_favorites([*ids, "local_scale_nope.mp3"]),
+            result,
+        )
+
+    def test_bulk_favorites_read_at_typical_sizes(self):
+        self._assert_full_overlay(500)
+        self._assert_full_overlay(5000)
+
+    def test_bulk_favorites_read_above_sqlite_variable_limit(self):
+        self._assert_full_overlay(40000)
+
+    def test_bulk_favorites_read_excludes_missing_since_at_scale(self):
+        favored = self._seed(40000)
+        hidden_id = "local_scale_00007.mp3"
+        self.assertIn(hidden_id, favored)
+        with self.store._connect() as conn:
+            conn.execute(
+                "UPDATE tracks SET missing_since = ? WHERE track_id = ?",
+                ("2026-01-01T00:00:00+00:00", hidden_id),
+            )
+        ids = [f"local_scale_{index:05d}.mp3" for index in range(40000)]
+        result = self.store.get_track_favorites(ids)
+        self.assertEqual(len(result), 39999)
+        self.assertNotIn(hidden_id, result)
+        self.assertEqual(
+            {track_id for track_id, is_favorite in result.items() if is_favorite},
+            favored - {hidden_id},
+        )
+
+    def test_scan_publish_overlay_applies_at_scale(self):
+        """The favorite-vs-scan race stays closed above the variable limit."""
+        from models import Track
+
+        favored = self._seed(40000)
+        # A freshly walked list carries a stale favorite=false snapshot.
+        built = [
+            Track(id=f"local_scale_{index:05d}.mp3", title=f"Scale {index}", favorite=False)
+            for index in range(40000)
+        ]
+        self.scanner._publish_tracks(built)
+        published = {track.id: track.favorite for track in self.scanner.get_tracks(refresh=False)}
+        self.assertEqual(len(published), 40000)
+        self.assertEqual(
+            {track_id for track_id, is_favorite in published.items() if is_favorite},
+            favored,
         )
 
 

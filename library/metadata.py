@@ -549,22 +549,35 @@ class LibraryMetadataStore:
         Only active rows (``missing_since IS NULL``) are considered. Unknown
         ids are omitted so callers can overlay the result onto a freshly
         built track list without touching tracks the store never saw.
+
+        The lookup runs in small chunks: a single ``IN`` query with one
+        placeholder per id exceeds the SQLite variable limit
+        (``MAX_VARIABLE_NUMBER``) for very large libraries and would fail
+        with "too many SQL variables", dropping the favorite overlay right
+        before the scan publish. Chunks of 500 stay below every common
+        limit (999 on older builds, 32766 on current ones).
         """
         wanted = {str(track_id or "").strip() for track_id in track_ids}
         wanted.discard("")
         if not wanted:
             return {}
-        placeholders = ",".join("?" for _ in wanted)
+        ordered = sorted(wanted)
+        merged: dict[str, bool] = {}
         try:
             with self._connect() as conn:
-                rows = conn.execute(
-                    f"SELECT track_id, favorite FROM tracks WHERE track_id IN ({placeholders}) AND missing_since IS NULL",
-                    sorted(wanted),
-                ).fetchall()
+                for start in range(0, len(ordered), 500):
+                    batch = ordered[start : start + 500]
+                    placeholders = ",".join("?" for _ in batch)
+                    rows = conn.execute(
+                        f"SELECT track_id, favorite FROM tracks WHERE track_id IN ({placeholders}) AND missing_since IS NULL",
+                        batch,
+                    ).fetchall()
+                    for row in rows:
+                        merged[str(row["track_id"])] = bool(row["favorite"])
         except sqlite3.Error as exc:
             logger.warning("Track favorites read failed: %s", exc)
             return {}
-        return {str(row["track_id"]): bool(row["favorite"]) for row in rows}
+        return merged
 
     def increment_track_play_count(self, track_id: str) -> None:
         track_id = str(track_id or "").strip()
