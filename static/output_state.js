@@ -189,7 +189,7 @@ function measurementArea(catalog, bankId) {
         available,
         sides,
         note: !available ? repeat_note : selected === 'global'
-            ? 'Whole system sweep; all area banks remain active.'
+            ? 'Whole system; all area banks active.'
             : `Only ${label} stays audible; every other output is muted for this sweep.`,
         repeat_supported,
         repeat_note,

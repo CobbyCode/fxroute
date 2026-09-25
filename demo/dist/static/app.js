@@ -2954,7 +2954,7 @@ function renderMeasurementArea() {
     if (elements.measurementAreaNote) {
         elements.measurementAreaNote.textContent = area
             ? area.note
-            : 'Whole system sweep; all area banks remain active.';
+            : 'Whole system; all area banks active.';
     }
     if (elements.measurementSweepStartBtn) {
         elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight || area?.available === false;
