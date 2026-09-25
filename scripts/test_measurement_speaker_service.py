@@ -339,6 +339,37 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("mic unplugged", job["error"])
         self.assertFalse(self.session.committed)
 
+    async def test_planning_gate_failure_keeps_the_planning_evidence(self):
+        # A take whose ways cannot be told apart fails the plan; the job keeps
+        # the arrivals and margins it failed on, never a waveform.
+        def acquire_unseparable(alignment, **kwargs):
+            planning = planning_for(alignment, self.first_arrivals)
+            planning["way_isolation_db"] = {"left_low": 4.5, "left_high": None}
+            provenance = {"job_ids": ["job-1"],
+                          "planning": {key: value for key, value in planning.items() if key != "bands"}}
+            return {"captures": captures_for(alignment, self.first_arrivals),
+                    "planning": planning, "provenance": provenance}
+
+        async def acquire(alignment, **kwargs):
+            return acquire_unseparable(alignment, **kwargs)
+
+        service, job_id = self.start(self.service(acquire=acquire))
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("cannot separate the ways", job["error"])
+        evidence = job["result"]["planning"]
+        self.assertEqual(set(evidence), {"arrival_ms", "way_isolation_db", "way_levels_db"})
+        self.assertEqual(evidence["way_isolation_db"], {"left_low": 4.5, "left_high": None})
+        self.assertAlmostEqual(evidence["arrival_ms"]["left_high"] - evidence["arrival_ms"]["left_low"],
+                               144 * 1000.0 / RATE, delta=0.05)
+        self.assertFalse(self.session.committed)
+
+    async def test_failure_before_planning_carries_no_result(self):
+        self.acquire_queue = [RuntimeError("mic unplugged")]
+        service, job_id = self.start()
+        job = await self.wait_terminal(service, job_id)
+        self.assertIsNone(job["result"])
+
     async def test_stale_live_target_fails_before_any_job_exists(self):
         self.live_revision_bump = 1
         service = self.service()

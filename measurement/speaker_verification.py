@@ -94,6 +94,16 @@ ARRIVAL_LEADING_NULL_DB = 6.0
 # the shared take: its band is then the neighbour's leak and the take must not
 # confirm timing from it.
 MIN_WAY_ISOLATION_DB = 10.0
+# What a neighbour can leave in a way's band is bounded by the rendered model:
+# the neighbour's own band peak times the share of it this band's filter passes
+# (flat drivers). Real drivers are not flat in their neighbour's band, so the
+# bound gets this much headroom. Only energy *after* the way's own arrival that
+# no plausible leak can explain -- the way's own ringing or an early reflection
+# -- is discounted. Energy before the arrival never is: a strong earlier lobe of
+# the way itself means its arrival may be a later lobe, and the take must not
+# plan from that.
+LEAK_MODEL_MARGIN_DB = 20.0
+LEAK_MODEL_SAMPLES = 1 << 15
 # Band level grid: 240 log-spaced points, the same resolution the crossover
 # passband scan uses.
 BAND_LEVEL_POINTS = 240
@@ -388,6 +398,35 @@ def band_level(band: object, passband: Sequence[float], *, sample_rate_hz: int,
             "passband_hz": [round(low_hz, 3), round(high_hz, 3)]}
 
 
+def _leak_shares(processing: dict, roles: Sequence[str], *, sample_rate_hz: int,
+                 isolation_power: float) -> dict[tuple[str, str], float]:
+    """Model leak of each way into each other way's band, as a share of its own band peak.
+
+    ``(source, band)`` maps to the peak energy the ``band`` role's filter leaves
+    of a flat ``source`` way, relative to the peak its own band filter leaves:
+    both are the same driver, so the ratio is the driver-independent cross-talk
+    of the rendered crossover and the band isolation.
+    """
+    frequencies = np.fft.rfftfreq(LEAK_MODEL_SAMPLES, 1.0 / sample_rate_hz)
+    filters = {}
+    for role in roles:
+        others = [processing[other] for other in roles if other != role]
+        filters[role] = _isolation_weight(processing[role], frequencies, sample_rate_hz=sample_rate_hz,
+                                          isolation_power=isolation_power, foreign=others)
+
+    def peak(spectrum: np.ndarray) -> float:
+        return float(np.max(np.square(np.fft.irfft(spectrum, n=LEAK_MODEL_SAMPLES))))
+
+    shares = {}
+    for source in roles:
+        source_weight, source_response = filters[source]
+        own = max(peak(source_weight * source_response), 1e-300)
+        for band in roles:
+            if band != source:
+                shares[(source, band)] = peak(filters[band][0] * source_response) / own
+    return shares
+
+
 def side_confirmation(
     *,
     impulse_response: object,
@@ -406,7 +445,9 @@ def side_confirmation(
     relative arrivals while their spread is exactly the residual the gate
     checks).    ``way_isolation_db`` holds, per way, the margin of its own arrival above
     what the side's other ways leave in the same isolated band, or ``None``
-    when no other way arrives outside this way's own lobe.
+    when no other way arrives outside this way's own lobe. The band's energy at
+    a later arrival counts as that way's leak only up to what the rendered model
+    lets that way leave there (``LEAK_MODEL_MARGIN_DB`` of headroom).
     ``way_levels_db`` holds the same take's isolated passband levels relative to
     the loudest way; only their spread is a criterion, and the medians stay in
     ``bands`` for diagnosis. The levels measure what the per-way level estimate
@@ -458,6 +499,14 @@ def side_confirmation(
     # wants anyway, so there is nothing to isolate. The lobe extent on the
     # other arrival's side is the resolution of the estimate itself, never a
     # fixed distance: inside it the band's energy is its own lobe, not a leak.
+    # What each other way can leave in a band is bounded by the model: its own
+    # band peak times the share this band's filter passes of it, with headroom
+    # for real drivers (``LEAK_MODEL_MARGIN_DB``). Energy above that bound at a
+    # later arrival is this way's own ringing or reflection, not the neighbour's
+    # leak; at an earlier arrival it stays counted (see the constant).
+    leak_share = _leak_shares(processing, ordered_roles, sample_rate_hz=sample_rate_hz,
+                              isolation_power=isolation_power)
+    margin = 10.0 ** (LEAK_MODEL_MARGIN_DB / 10.0)
     isolation_db: dict[str, float | None] = {}
     for role, band in bands.items():
         own_index = band["arrival_index"]
@@ -467,7 +516,15 @@ def side_confirmation(
                 return own_index - other_index > int(band["lead_samples"])
             return other_index - own_index > int(band["lobe_samples"])
 
-        distinct = [float(energy[role][other["arrival_index"]])
+        def leak(other_role: str, other_index: int, role: str = role,
+                 own_index: int = own_index) -> float:
+            measured = float(energy[role][other_index])
+            if other_index < own_index:
+                return measured
+            return min(measured, float(energy[other_role][other_index])
+                       * leak_share[(other_role, role)] * margin)
+
+        distinct = [leak(other_role, other["arrival_index"])
                     for other_role, other in bands.items()
                     if other_role != role and apart(other["arrival_index"])]
         own = float(energy[role][own_index])

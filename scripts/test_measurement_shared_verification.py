@@ -301,10 +301,15 @@ class RenderedMainHighpassTests(unittest.TestCase):
     ROLES = ("right_low", "right_high")
     LOW_BEHIND_HIGH_MS = 0.354
 
-    def take(self, low_behind_high_ms=None, *, woofer_hz=100.0, woofer_q=0.7):
+    def take(self, low_behind_high_ms=None, *, woofer_hz=100.0, woofer_q=0.7,
+             tweeter_reflection=None):
         if low_behind_high_ms is None:
             low_behind_high_ms = self.LOW_BEHIND_HIGH_MS
         frequencies = np.fft.rfftfreq(TAKE_SAMPLES, 1.0 / RATE)
+        tweeter = 1.0
+        if tweeter_reflection is not None:
+            samples, gain = tweeter_reflection
+            tweeter = 1.0 + gain * np.exp(-2j * np.pi * frequencies * samples / RATE)
         woofer = 1.0
         if woofer_hz is not None:
             corner = 1j * frequencies / woofer_hz
@@ -312,7 +317,7 @@ class RenderedMainHighpassTests(unittest.TestCase):
         spectrum = np.zeros_like(frequencies, dtype=complex)
         for role, arrival_ms, gain_db, driver in (
                 ("right_low", low_behind_high_ms, 0.0, woofer),
-                ("right_high", 0.0, 11.0, 1.0)):
+                ("right_high", 0.0, 11.0, tweeter)):
             delay = ORIGIN_SAMPLES + int(round(arrival_ms * RATE / 1000.0))
             spectrum += (10.0 ** (gain_db / 20.0) * driver * way_response(self.RENDERED, role)
                          * np.exp(-2j * np.pi * frequencies * delay / RATE))
@@ -406,6 +411,27 @@ class RenderedMainHighpassTests(unittest.TestCase):
             with self.subTest(curve=curve), self.assertRaises(ValueError):
                 confirm_take(self.take(), processing=self.RENDERED, roles=self.ROLES,
                              calibration_curve=curve)
+
+    def test_the_tweeters_own_reflection_after_its_arrival_is_not_a_leak(self):
+        """The left side on the test machine, re-planned from a near-aligned state.
+
+        The woofer's band arrival lands 8 samples after the tweeter's, right on
+        a reflection of the tweeter itself (-9 dB). Through a 1 kHz / 3 kHz
+        crossover the woofer can leave nowhere near that much in the tweeter's
+        band, so the energy is the tweeter's own and the ways stay separable.
+        """
+        take = self.take(12 / 48.0, tweeter_reflection=(8, 0.35))
+        document = confirm_take(take, processing=self.RENDERED, roles=self.ROLES)
+        high = document["bands"]["right_high"]
+        after = document["bands"]["right_low"]["arrival_index"] - high["arrival_index"]
+        self.assertEqual(after, 8)
+        band = way_band_impulse_response(take, self.RENDERED["right_high"], sample_rate_hz=RATE,
+                                         foreign=[self.RENDERED["right_low"]])
+        energy = np.square(band)
+        measured_db = 10.0 * math.log10(energy[high["arrival_index"]]
+                                        / energy[high["arrival_index"] + after])
+        self.assertLess(measured_db, MIN_WAY_ISOLATION_DB)
+        self.assertGreater(document["way_isolation_db"]["right_high"], MIN_WAY_ISOLATION_DB + 20.0)
 
     def test_malformed_rendered_list_is_rejected(self):
         for crossover in ({"kind": "lowpass"}, [{"family": "linkwitz-riley"}], ["lowpass"]):

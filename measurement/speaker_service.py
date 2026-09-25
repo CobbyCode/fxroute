@@ -434,6 +434,9 @@ class SpeakerAlignService:
             side = str(self._jobs[job_id]["side"])
             dry_run = bool(self._jobs[job_id]["dry_run"])
         probe = lambda: self._is_cancel_requested(job_id)
+        # The shared planning take's evidence, once measured: a job that fails
+        # on it (the planning gate) keeps what it failed on.
+        planning_evidence: dict[str, Any] | None = None
         try:
             # The worker reuses the frozen start snapshot: the fresh-head
             # drift gate below fails the job as stale instead of silently
@@ -480,6 +483,11 @@ class SpeakerAlignService:
                 expected_native_context=session.measurement_context(),
                 on_progress=lambda role, index, count: self._note(
                     job_id, "acquiring", f"Measuring {role.replace('_', ' ')} ({index}/{count})…"))
+            planning = (first.get("provenance") or {}).get("planning")
+            if isinstance(planning, dict):
+                planning_evidence = {"planning": {
+                    key: planning[key] for key in ("arrival_ms", "way_isolation_db", "way_levels_db")
+                    if key in planning}}
             proposal = alignment.propose(
                 first["captures"], planning=first["planning"],
                 live_target=live_target, cancel_requested=probe)
@@ -567,8 +575,14 @@ class SpeakerAlignService:
             self._finish(job_id, "cancelled", "Speaker alignment cancelled.")
             raise
         except Exception as exc:
+            result = None
+            if planning_evidence is not None:
+                try:
+                    result = _jsonable(planning_evidence)
+                except (TypeError, ValueError):
+                    result = None
             self._finish(job_id, "failed", f"Speaker alignment failed: {exc}",
-                         error=str(exc) or type(exc).__name__)
+                         result=result, error=str(exc) or type(exc).__name__)
 
     async def _notify_committed(self, *, output_key: str, channels: int,
                                 committed_revision: Any, job_id: str) -> None:
