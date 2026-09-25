@@ -20,6 +20,7 @@ from starlette.background import BackgroundTask
 import library.playlist_io as playlist_io
 import zip_album
 from library.core import cleanup_track_parent_folder, path_within_root
+from library.metadata import TrackNotFoundError
 from uploads import (
     LIBRARY_UPLOAD_MAX_BYTES,
     TEXT_UPLOAD_MAX_BYTES,
@@ -443,7 +444,12 @@ async def set_track_favorite(track_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Track not found")
     body = await request.json()
     favorite = bool(body.get("favorite"))
-    result = library_scanner.set_track_favorite(track_id, favorite)
+    try:
+        result = library_scanner.set_track_favorite(track_id, favorite)
+    except TrackNotFoundError:
+        # The track left the active library between the authoritative read
+        # and the write: report the same not-found instead of a silent success.
+        raise HTTPException(status_code=404, detail="Track not found")
     favorite_value = bool(result.get("favorite"))
     runtime = _runtime
     if runtime is not None and runtime.sync_track_favorite is not None:
@@ -599,11 +605,24 @@ async def export_playlist(playlist_id: str):
     playlist = next((item for item in get_playlists() if item.id == playlist_id), None)
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
-    content = playlist_io.build_m3u_for_playlist(
-        playlist,
-        await _run_blocking(library_scanner.get_tracks, authoritative=True),
-        _active_music_root(library_scanner, settings),
-    )
+    try:
+        content = playlist_io.build_m3u_for_playlist(
+            playlist,
+            await _run_blocking(library_scanner.get_tracks, authoritative=True),
+            _active_music_root(library_scanner, settings),
+        )
+    except playlist_io.PlaylistTrackUnavailableError as e:
+        # Never hand out a shortened M3U as a success: the playlist still
+        # references tracks the library no longer resolves.
+        logger.warning("Playlist export %s failed: %s", playlist_id, e)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "playlist_tracks_unavailable",
+                "message": str(e),
+                "missing_track_ids": e.missing_track_ids,
+            },
+        )
     filename = playlist_io.playlist_download_filename(playlist.name)
     return Response(
         content=content,

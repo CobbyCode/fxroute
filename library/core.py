@@ -967,7 +967,12 @@ class LibraryScanner:
         return self.metadata_store.set_album_favorite(album_id, favorite)
 
     def set_track_favorite(self, track_id: str, favorite: bool) -> Dict[str, Any]:
-        """Persist a track favorite and keep the in-memory track cache in sync."""
+        """Persist a track favorite and keep the in-memory track cache in sync.
+
+        A retired/unknown track id raises ``TrackNotFoundError`` from the
+        store; the in-memory cache is then left untouched, so a failed
+        favorite write can never look like a successful one.
+        """
         result = self.metadata_store.set_track_favorite(track_id, favorite)
         favorite_value = bool(result.get("favorite"))
         with self._cache_publish_lock:

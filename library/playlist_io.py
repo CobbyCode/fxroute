@@ -13,6 +13,30 @@ from urllib.parse import unquote
 
 from library.playlists import save_new_playlist
 
+# Cap for the reported missing-id sample: a long-gone playlist must not
+# produce an unbounded error message.
+MISSING_TRACK_REPORT_LIMIT = 10
+
+
+class PlaylistTrackUnavailableError(ValueError):
+    """A playlist references tracks the library cannot resolve anymore.
+
+    An export must never look like a complete success while silently
+    dropping stored entries, so the export path fails closed instead of
+    writing a shortened M3U. The playlist itself stays untouched.
+    """
+
+    def __init__(self, missing_track_ids: List[str]):
+        self.missing_track_ids = list(missing_track_ids)
+        count = len(self.missing_track_ids)
+        shown = self.missing_track_ids[:MISSING_TRACK_REPORT_LIMIT]
+        suffix = f" (+{count - len(shown)} more)" if count > len(shown) else ""
+        super().__init__(
+            f"Playlist export failed: {count} track(s) are no longer in the library: "
+            + ", ".join(shown)
+            + suffix
+        )
+
 
 def parse_m3u_entries(content: str) -> List[str]:
     entries = []
@@ -39,14 +63,29 @@ def track_relative_m3u_path(track, music_root: Path) -> str:
 
 
 def build_m3u_for_playlist(playlist, tracks, music_root: Path) -> str:
+    """Render the playlist as M3U, failing closed on unresolvable entries.
+
+    A stored track id that the current library cannot resolve (retired
+    file, other library, stale id) must not disappear from the export
+    without a trace: the caller gets an explicit
+    ``PlaylistTrackUnavailableError`` instead of a silently shortened
+    M3U. The playlist and its stored track ids stay unchanged.
+    """
     tracks_by_id = {track.id: track for track in tracks}
-    lines = ["#EXTM3U"]
+    missing: List[str] = []
+    resolved = []
     for track_id in playlist.track_ids:
         track = tracks_by_id.get(track_id)
         if not track:
+            missing.append(track_id)
             continue
+        resolved.append(track)
+    if missing:
+        raise PlaylistTrackUnavailableError(missing)
+    lines = ["#EXTM3U"]
+    for track in resolved:
         duration = int(track.duration) if track.duration and track.duration > 0 else -1
-        label = track.title or Path(track.path or track_id).stem
+        label = track.title or Path(track.path or track.id).stem
         if track.artist:
             label = f"{track.artist} - {label}"
         lines.append(f"#EXTINF:{duration},{label}")

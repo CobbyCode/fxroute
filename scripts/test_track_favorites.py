@@ -25,7 +25,7 @@ Path(os.environ["MUSIC_ROOT"]).mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from library.api import LibraryApiRuntime, configure_runtime, set_track_favorite as set_track_favorite_route
-from library.metadata import LibraryMetadataStore
+from library.metadata import LibraryMetadataStore, TrackNotFoundError
 from library.core import LibraryScanner
 from models import Track
 
@@ -101,6 +101,42 @@ class StoreTests(unittest.TestCase):
         with self.store._connect() as conn:
             row = conn.execute("SELECT favorite FROM tracks WHERE track_id = 't1'").fetchone()
         self.assertEqual(row["favorite"], 0)
+
+    def test_retired_track_favorite_write_reports_not_found(self):
+        """A missing_since row must not report a favorite write as success."""
+        self._seed("gone")
+        with self.store._connect() as conn:
+            conn.execute(
+                "UPDATE tracks SET missing_since = '2026-01-01T00:00:00+00:00' WHERE track_id = 'gone'"
+            )
+        with self.assertRaises(TrackNotFoundError):
+            self.store.set_track_favorite("gone", True)
+        # The row is untouched: still unfavorited, still retired.
+        with self.store._connect() as conn:
+            row = conn.execute(
+                "SELECT favorite, missing_since FROM tracks WHERE track_id = 'gone'"
+            ).fetchone()
+        self.assertEqual(row["favorite"], 0)
+        self.assertEqual(row["missing_since"], "2026-01-01T00:00:00+00:00")
+        # The retired row is also invisible to the bulk favorite lookup.
+        self.assertEqual(self.store.get_track_favorites(["gone"]), {})
+
+    def test_unknown_track_favorite_write_reports_not_found(self):
+        with self.assertRaises(TrackNotFoundError):
+            self.store.set_track_favorite("never-scanned", True)
+        # Nothing was inserted as a side effect.
+        with self.store._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM tracks WHERE track_id = 'never-scanned'"
+            ).fetchone()
+        self.assertEqual(row["n"], 0)
+
+    def test_empty_track_id_keeps_legacy_no_op(self):
+        # The empty id never reached the database before either; keep it.
+        self.assertEqual(
+            self.store.set_track_favorite("", True),
+            {"track_id": "", "favorite": True},
+        )
 
     def test_favorite_persists_after_reopen(self):
         self._seed("t1")
@@ -232,6 +268,22 @@ class ScannerTests(unittest.TestCase):
         self.assertTrue(self.scanner._track_cache[0].favorite)
         self.assertTrue(self.scanner._track_cache[0].to_dict()["favorite"])
 
+    def test_scanner_leaves_cache_untouched_for_retired_track(self):
+        """A failed favorite write must not patch the in-memory cache."""
+        track = Track(id="t1", title="Song")
+        self.scanner._track_cache = [track]
+        self._seed_track("t1")
+        with self.store._connect() as conn:
+            conn.execute(
+                "UPDATE tracks SET missing_since = '2026-01-01T00:00:00+00:00' WHERE track_id = 't1'"
+            )
+        with self.assertRaises(TrackNotFoundError):
+            self.scanner.set_track_favorite("t1", True)
+        self.assertFalse(track.favorite)
+        with self.store._connect() as conn:
+            row = conn.execute("SELECT favorite FROM tracks WHERE track_id = 't1'").fetchone()
+        self.assertEqual(row["favorite"], 0)
+
     def test_rescan_of_edited_file_preserves_favorite(self):
         """A cache miss (edited file) must not drop a persisted favorite.
 
@@ -346,6 +398,19 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await set_track_favorite_route("local_album/nope.flac", _FakeRequest({"favorite": True}))
         self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_route_404_when_store_reports_retired_track(self):
+        """Track present in the live list but retired in the store."""
+        from fastapi import HTTPException
+
+        def raising(track_id: str, favorite: bool) -> dict:
+            raise TrackNotFoundError(f"Track not found: {track_id}")
+
+        self.scanner.set_track_favorite = raising
+        with self.assertRaises(HTTPException) as ctx:
+            await set_track_favorite_route("local_album/a.flac", _FakeRequest({"favorite": True}))
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(ctx.exception.detail, "Track not found")
 
 
 if __name__ == "__main__":

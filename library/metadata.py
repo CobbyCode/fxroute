@@ -37,6 +37,18 @@ MISSING_RETENTION_SECONDS = 60 * 24 * 60 * 60
 MAX_ENRICH_PER_SCAN = 8
 
 
+class TrackNotFoundError(KeyError):
+    """No active (non-retired) library row exists for the requested track id.
+
+    Subclasses ``KeyError`` so the store keeps its existing
+    not-found-is-an-exception semantics; the API layer maps it to its
+    established 404 response.
+    """
+
+    def __str__(self) -> str:  # KeyError repr()s its message otherwise
+        return str(self.args[0]) if self.args else ""
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -526,22 +538,31 @@ class LibraryMetadataStore:
                     conn.execute("DELETE FROM tracks WHERE rel_path = ?", (row["rel_path"],))
 
     def set_track_favorite(self, track_id: str, favorite: bool) -> dict[str, Any]:
-        """Persist a local track's favorite state without touching play stats."""
+        """Persist a local track's favorite state without touching play stats.
+
+        Fails closed: a favorite write only counts when an active row
+        (``missing_since IS NULL``) was actually updated. A retired
+        (``missing_since``) or unknown track id raises
+        ``TrackNotFoundError`` instead of echoing the requested value as a
+        successful write that the database never received.
+        """
         track_id = str(track_id or "").strip()
         if not track_id:
             return {"track_id": track_id, "favorite": bool(favorite)}
         with self._connect() as conn:
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE tracks SET favorite = ? WHERE track_id = ? AND missing_since IS NULL",
                 (1 if favorite else 0, track_id),
-            )
+            ).rowcount
+            if not updated:
+                raise TrackNotFoundError(f"Track not found: {track_id}")
             row = conn.execute(
                 "SELECT track_id, favorite FROM tracks WHERE track_id = ? AND missing_since IS NULL",
                 (track_id,),
             ).fetchone()
         if row:
             return {"track_id": row["track_id"], "favorite": bool(row["favorite"])}
-        return {"track_id": track_id, "favorite": bool(favorite)}
+        raise TrackNotFoundError(f"Track not found: {track_id}")
 
     def get_track_favorites(self, track_ids: Iterable[str]) -> dict[str, bool]:
         """Return the stored favorite flag for the given track ids.

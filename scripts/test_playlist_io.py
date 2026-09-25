@@ -115,7 +115,7 @@ class PlaylistIOExportTests(unittest.TestCase):
             make_track("t3", self.music_root / "single" / "one.flac", title="One", duration=-1),
         ]
         scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: tracks)
-        playlist = SimpleNamespace(id="p1", name="My Mix", track_ids=["t3", "t1", "missing", "t2"])
+        playlist = SimpleNamespace(id="p1", name="My Mix", track_ids=["t3", "t1", "t2"])
         with patch.object(main, "settings", self.settings), patch.object(main.runtime.music_library, "scanner", scanner):
             content = playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
         self.assertEqual(
@@ -125,6 +125,37 @@ class PlaylistIOExportTests(unittest.TestCase):
             "#EXTINF:240,Artist - Song\nalbum/song.flac\n"
             "#EXTINF:-1,Second\nalbum/second.flac\n",
         )
+
+    def test_build_m3u_for_playlist_fails_closed_on_missing_track_ids(self):
+        tracks = [
+            make_track("t1", self.music_root / "album" / "song.flac", title="Song", artist="Artist", duration=240),
+            make_track("t2", self.music_root / "album" / "second.flac", title="Second", duration=0),
+            make_track("t3", self.music_root / "single" / "one.flac", title="One", duration=-1),
+        ]
+        scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: tracks)
+        playlist = SimpleNamespace(id="p1", name="My Mix", track_ids=["t3", "gone", "t1", "also-gone", "t2"])
+        with patch.object(main, "settings", self.settings), patch.object(main.runtime.music_library, "scanner", scanner):
+            with self.assertRaises(playlist_io.PlaylistTrackUnavailableError) as ctx:
+                playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
+        # The report names every unresolvable id, in playlist order, and
+        # nothing is silently dropped from the result.
+        self.assertEqual(ctx.exception.missing_track_ids, ["gone", "also-gone"])
+        self.assertIn("gone", str(ctx.exception))
+        self.assertIn("also-gone", str(ctx.exception))
+        # Playlist state stays exactly as stored.
+        self.assertEqual(playlist.track_ids, ["t3", "gone", "t1", "also-gone", "t2"])
+
+    def test_build_m3u_for_playlist_missing_report_is_capped(self):
+        tracks = [make_track("t1", self.music_root / "album" / "song.flac", title="Song", duration=10)]
+        missing = [f"gone-{i:02d}" for i in range(25)]
+        playlist = SimpleNamespace(id="p1", name="P", track_ids=["t1", *missing])
+        with patch.object(main, "settings", self.settings):
+            with self.assertRaises(playlist_io.PlaylistTrackUnavailableError) as ctx:
+                playlist_io.build_m3u_for_playlist(playlist, tracks, self.music_root)
+        self.assertEqual(ctx.exception.missing_track_ids, missing)
+        message = str(ctx.exception)
+        self.assertIn("25 track(s)", message)
+        self.assertIn("(+15 more)", message)
 
     def test_build_m3u_for_playlist_label_fallback_to_stem(self):
         tracks = [make_track("t1", self.music_root / "album" / "untitled.flac", title=None, duration=5)]
@@ -338,6 +369,24 @@ class PlaylistIOApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.media_type, "audio/x-mpegurl; charset=utf-8")
         self.assertIn('attachment; filename="My-Mix.m3u8"', response.headers["content-disposition"])
         self.assertEqual(response.body.decode(), "#EXTM3U\n#EXTINF:240,Artist - Song\nalbum/song.flac\n")
+
+    async def test_export_api_409_when_stored_track_ids_are_gone(self):
+        tracks = [make_track("t1", self.music_root / "album" / "song.flac", title="Song", artist="Artist", duration=240)]
+        scanner = SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: tracks)
+        playlist = SimpleNamespace(id="p1", name="My Mix", track_ids=["t1", "gone"])
+        with (
+            patch.object(main, "settings", self.settings),
+            patch.object(main.runtime.music_library, "scanner", scanner),
+            patch.object(library_api, "get_playlists", return_value=[playlist]),
+        ):
+            with self.assertRaises(library_api.HTTPException) as ctx:
+                await library_api.export_playlist("p1")
+        self.assertEqual(ctx.exception.status_code, 409)
+        detail = ctx.exception.detail
+        self.assertEqual(detail["error"], "playlist_tracks_unavailable")
+        self.assertEqual(detail["missing_track_ids"], ["gone"])
+        # The stored playlist and its track ids stay untouched.
+        self.assertEqual(playlist.track_ids, ["t1", "gone"])
 
     async def test_export_api_404_for_unknown_playlist(self):
         with patch.object(main, "settings", self.settings), patch.object(main.runtime.music_library, "scanner", SimpleNamespace(get_tracks=lambda refresh=True, **kwargs: [])), patch.object(library_api, "get_playlists", return_value=[]):

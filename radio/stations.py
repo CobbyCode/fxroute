@@ -315,6 +315,16 @@ _cached_stations: Optional[List[Station]] = None
 # no network or file I/O ever happens under it.
 _cache_generation = 0
 _cache_lock = threading.Lock()
+# Serializes the mutating store operations across their complete
+# read -> mutate -> persist -> cache-update cycle.  Without it, two
+# concurrent writers both read the same snapshot and the second persist
+# silently discards the first one's write.  The API already serializes
+# product calls in radio_api; this is the store's own invariant, so direct
+# module use (scripts, tests, background work) is safe too.  It is
+# deliberately NOT the cache lock: the cache lock must never be held
+# across file I/O, and this one is always taken before it, never after.
+# Reentrant so a mutation can call the read/enrich helpers.
+_mutation_lock = threading.RLock()
 
 
 def _config_dir() -> Path:
@@ -331,16 +341,27 @@ def _legacy_stations_file() -> Path:
 
 
 def _ensure_storage() -> Path:
+    """Create/migrate the store file.
+
+    Creation and migration are serialized like every other store
+    operation: two callers must not both decide the file is missing and
+    race their migration/default write. An existing file is returned
+    without taking the lock, so steady-state reads never queue behind a
+    mutating cycle that may hold it across network work.
+    """
     path = _stations_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        legacy_path = _legacy_stations_file()
-        if legacy_path.exists():
-            atomic_write_text(path, legacy_path.read_text(encoding="utf-8"))
-            logger.info("Migrated stations storage to %s", path)
-        else:
-            atomic_write_text(path, json.dumps(DEFAULT_STATIONS, indent=2) + "\n")
-    return path
+    if path.exists():
+        return path
+    with _mutation_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            legacy_path = _legacy_stations_file()
+            if legacy_path.exists():
+                atomic_write_text(path, legacy_path.read_text(encoding="utf-8"))
+                logger.info("Migrated stations storage to %s", path)
+            else:
+                atomic_write_text(path, json.dumps(DEFAULT_STATIONS, indent=2) + "\n")
+        return path
 
 
 def _load_raw_stations() -> List[dict]:
@@ -613,16 +634,24 @@ def get_stations(enrich_missing_art: bool = False) -> List[Station]:
     reloaded.  Callers can therefore never observe a stale snapshot that
     was published after a newer commit.
     """
+    if enrich_missing_art:
+        # Enrichment persists resolved artwork, so it is a mutating store
+        # operation: read -> mutate -> persist -> publish runs as one
+        # serialized cycle.
+        with _mutation_lock:
+            return _get_stations_locked(True)
+    return _get_stations_locked(False)
+
+
+def _get_stations_locked(enrich_missing_art: bool) -> List[Station]:
+    """``get_stations`` body; callers hold the store mutation lock in
+    enrich mode and the read-only path only uses the cache lock."""
     global _cached_stations
     while True:
-        if not enrich_missing_art:
-            with _cache_lock:
-                if _cached_stations is not None:
-                    return _cached_stations
-                generation_before = _cache_generation
-        else:
-            with _cache_lock:
-                generation_before = _cache_generation
+        with _cache_lock:
+            if not enrich_missing_art and _cached_stations is not None:
+                return _cached_stations
+            generation_before = _cache_generation
 
         try:
             raw = _load_raw_stations()
@@ -671,6 +700,10 @@ def get_stations(enrich_missing_art: bool = False) -> List[Station]:
             current = _cached_stations
         if current is not None:
             return current
+        # Enrich mode holds the mutation lock, so a changed generation can
+        # only come from a commit that already finished; reloading is safe
+        # and terminates because nothing else can commit while the lock is
+        # held.
 
 
 def get_station_catalog() -> List[Station]:
@@ -696,26 +729,33 @@ def add_catalog_station(catalog_id: str) -> Station:
     if catalog_station is None:
         raise FileNotFoundError(f"Catalog station not found: {catalog_id}")
 
-    saved_station = find_saved_catalog_station(catalog_station)
-    if saved_station is not None:
-        return saved_station
+    with _mutation_lock:
+        saved_station = find_saved_catalog_station(catalog_station)
+        if saved_station is not None:
+            return saved_station
 
-    raw = _load_raw_stations()
-    existing_ids = {str(item.get("id") or "").strip() for item in raw}
-    station = {
-        "id": _make_unique_id(catalog_station.name, existing_ids, preferred_id=catalog_station.id),
-        "name": catalog_station.name,
-        "input_url": catalog_station.input_url or catalog_station.stream_url,
-        "stream_url": catalog_station.stream_url,
-        "image_url": catalog_station.image_url,
-        "custom_image_url": None,
-    }
-    raw.append(station)
-    _save_raw_stations(raw)
-    return Station(**station)
+        raw = _load_raw_stations()
+        existing_ids = {str(item.get("id") or "").strip() for item in raw}
+        station = {
+            "id": _make_unique_id(catalog_station.name, existing_ids, preferred_id=catalog_station.id),
+            "name": catalog_station.name,
+            "input_url": catalog_station.input_url or catalog_station.stream_url,
+            "stream_url": catalog_station.stream_url,
+            "image_url": catalog_station.image_url,
+            "custom_image_url": None,
+        }
+        raw.append(station)
+        _save_raw_stations(raw)
+        return Station(**station)
 
 
 def add_station(name: str, input_url: str, custom_image_url: Optional[str] = None) -> Station:
+    with _mutation_lock:
+        return _add_station_locked(name, input_url, custom_image_url)
+
+
+def _add_station_locked(name: str, input_url: str, custom_image_url: Optional[str] = None) -> Station:
+    """``add_station`` body; runs under the store mutation lock."""
     raw = _load_raw_stations()
     normalized_input_url = _normalize_url(input_url)
     normalized_custom_image_url = _normalize_optional_image_url(custom_image_url)
@@ -768,6 +808,12 @@ def add_station(name: str, input_url: str, custom_image_url: Optional[str] = Non
 
 
 def update_station(station_id: str, name: str, input_url: str, custom_image_url: Optional[str] = None) -> Station:
+    with _mutation_lock:
+        return _update_station_locked(station_id, name, input_url, custom_image_url)
+
+
+def _update_station_locked(station_id: str, name: str, input_url: str, custom_image_url: Optional[str] = None) -> Station:
+    """``update_station`` body; runs under the store mutation lock."""
     raw = _load_raw_stations()
     for item in raw:
         if str(item.get("id") or "").strip() != station_id:
@@ -794,8 +840,9 @@ def update_station(station_id: str, name: str, input_url: str, custom_image_url:
 
 
 def delete_station(station_id: str) -> None:
-    raw = _load_raw_stations()
-    filtered = [item for item in raw if str(item.get("id") or "").strip() != station_id]
-    if len(filtered) == len(raw):
-        raise FileNotFoundError(f"Station not found: {station_id}")
-    _save_raw_stations(filtered)
+    with _mutation_lock:
+        raw = _load_raw_stations()
+        filtered = [item for item in raw if str(item.get("id") or "").strip() != station_id]
+        if len(filtered) == len(raw):
+            raise FileNotFoundError(f"Station not found: {station_id}")
+        _save_raw_stations(filtered)
