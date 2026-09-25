@@ -66,6 +66,52 @@ def make_coordinator(*, player_state, external_states, track_info=None):
 
 
 class ExternalRendererArmingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_restart_failure_or_cancellation_allows_same_spotify_retry(self):
+        for failure in (RuntimeError("restart failed"), asyncio.CancelledError()):
+            with self.subTest(failure=type(failure).__name__):
+                coordinator, monitor = make_coordinator(
+                    player_state={}, external_states={"spotify": {"available": True, "status": "Playing"}},
+                )
+                original_restart = monitor.restart
+
+                async def fail_once():
+                    monitor.restart = original_restart
+                    monitor.restarts += 1
+                    raise failure
+
+                monitor.restart = fail_once
+                playing = {"available": True, "status": "Playing"}
+                with self.assertRaises(type(failure)):
+                    await coordinator.sync_spotify_state(playing)
+                self.assertFalse(coordinator.armed)
+                self.assertIsNone(coordinator.signature)
+                await coordinator.sync_spotify_state(playing)
+                self.assertTrue(coordinator.armed)
+                self.assertEqual(coordinator.signature, "spotify:playing")
+                self.assertEqual(monitor.restarts, 2)
+
+    async def test_playback_restart_failure_does_not_publish_new_signature(self):
+        coordinator, monitor = make_coordinator(
+            player_state={}, external_states={},
+            track_info={"source": "tidal", "url": "https://stream.example/tidal"},
+        )
+        state = {"current_file": "https://stream.example/tidal", "paused": False, "ended": False}
+        original_restart = monitor.restart
+
+        async def fail_once():
+            monitor.restart = original_restart
+            monitor.restarts += 1
+            raise RuntimeError("restart failed")
+
+        monitor.restart = fail_once
+        with self.assertRaisesRegex(RuntimeError, "restart failed"):
+            await coordinator.sync_playback_state(state)
+        self.assertFalse(coordinator.armed)
+        self.assertIsNone(coordinator.signature)
+        await coordinator.sync_playback_state(state)
+        self.assertEqual(coordinator.signature, "player:tidal:https://stream.example/tidal")
+        self.assertEqual(monitor.restarts, 2)
+
     async def test_qobuz_playing_arms(self):
         coordinator, monitor = make_coordinator(
             player_state={}, external_states={"qobuz": {"available": True, "status": "Playing"}},

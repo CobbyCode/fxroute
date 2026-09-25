@@ -2,12 +2,11 @@
 
 """DSP preset loading with volume capture, locks and failure rollback.
 
-Extracted verbatim from main.py (REFACTOR-016). Behavior is identical to
-the previous inline implementation. This module owns the preset-load
+Extracted from main.py (REFACTOR-016). This module owns the preset-load
 coordination: the canonical volume state capture/restore pair, the failure
 rollback (reload the previously committed preset, re-sync the runtime,
-re-raise the original error), and the lock ordering (canonical volume write
-lock first, then the DSP mutation lock).
+re-raise the original error), cancellation-safe runtime sync, and the lock
+ordering (canonical volume write lock first, then the DSP mutation lock).
 
 It owns no playback, measurement or library state. The DSP-manager guard,
 DSP runtime, volume backends, worker offload, locks and runtime sync are
@@ -158,13 +157,18 @@ async def _load_preset_locked(
     manager = _deps().require_dsp_manager()
     start = await _volume_state_for_manager(manager)
     try:
-        await _deps().drain_worker(
-            manager.load_preset,
-            preset_name,
-            convolver_sample_rate_hz=convolver_sample_rate_hz,
-        )
-        await _deps().sync_runtime(reason="native-dsp-preset-load",
-                                   _rate_lock_held=_rate_lock_held)
+        cancelled = False
+        try:
+            await _deps().drain_worker(
+                manager.load_preset,
+                preset_name,
+                convolver_sample_rate_hz=convolver_sample_rate_hz,
+            )
+        except asyncio.CancelledError:
+            # drain_worker waits for the thread before propagating cancellation;
+            # the active preset may already be committed. Sync it under the lock.
+            cancelled = True
+        cancelled |= await _sync_runtime_drained("native-dsp-preset-load", _rate_lock_held)
     except Exception:
         try:
             if (manager.get_active_preset() or "") != start.preset:
@@ -174,8 +178,24 @@ async def _load_preset_locked(
                     logger.exception("Failed to reload previous preset after preset load failure")
                     if hasattr(manager, "active_preset"):
                         manager.active_preset = start.preset
-            await _deps().sync_runtime(reason="native-dsp-preset-load-rollback",
-                                       _rate_lock_held=_rate_lock_held)
+            await _sync_runtime_drained("native-dsp-preset-load-rollback", _rate_lock_held)
         except Exception:
             logger.exception("Failed to restore previous preset after preset load failure")
         raise
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _sync_runtime_drained(reason: str, rate_lock_held: bool) -> bool:
+    """Finish a started runtime sync before a cancelled caller releases its locks."""
+    task = asyncio.create_task(_deps().sync_runtime(
+        reason=reason, _rate_lock_held=rate_lock_held,
+    ))
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    return cancelled

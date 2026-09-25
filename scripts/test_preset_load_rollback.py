@@ -21,6 +21,8 @@ with a faked loader; the loader's own recovery path had no coverage.
 from __future__ import annotations
 
 import sys
+import asyncio
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -29,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from dsp import preset_loading
+from dsp.manager import DSPManager
 
 
 class _PresetManagerDouble:
@@ -132,6 +135,77 @@ class PresetLoadRollbackTests(unittest.IsolatedAsyncioTestCase):
             "native-dsp-preset-load-rollback",
             [call.kwargs.get("reason") for call in sync.await_args_list],
         )
+
+    async def test_cancelled_worker_after_commit_syncs_runtime_before_releasing_locks(self):
+        with tempfile.TemporaryDirectory() as home:
+            manager = DSPManager(home=Path(home))
+            runtime_preset = "Neutral"
+            sync_seen_under_locks = []
+
+            async def cancelled_after_worker(func, *args, **kwargs):
+                result = func(*args, **kwargs)
+                if func == manager.load_preset:
+                    raise asyncio.CancelledError
+                return result
+
+            async def sync_runtime(**_kwargs):
+                nonlocal runtime_preset
+                sync_seen_under_locks.append(
+                    main._canonical_volume_write_lock().locked()
+                    and main._dsp_mutation_lock().locked()
+                )
+                runtime_preset = manager.get_active_preset()
+
+            main.runtime.canonical_volume_write_lock = None
+            main.runtime.dsp_mutation_lock = None
+            with patch.object(main, "dsp_manager", manager), patch.object(
+                main, "get_output_volume", return_value=50
+            ), patch.object(main.runtime, "dsp_runtime", None), patch.object(
+                main, "_drain_worker", new=cancelled_after_worker
+            ), patch.object(main.dsp_orchestrator, "sync_runtime", new=sync_runtime):
+                with self.assertRaises(asyncio.CancelledError):
+                    await main._load_dsp_preset("Direct")
+
+            self.assertEqual(manager.get_active_preset(), "Direct")
+            self.assertEqual(runtime_preset, "Direct")
+            self.assertEqual(sync_seen_under_locks, [True])
+            self.assertFalse(main._canonical_volume_write_lock().locked())
+            self.assertFalse(main._dsp_mutation_lock().locked())
+
+    async def test_cancellation_during_runtime_sync_waits_for_sync_under_locks(self):
+        manager = _PresetManagerDouble(active="Start")
+        syncing = asyncio.Event()
+        complete = asyncio.Event()
+        runtime_preset = "Start"
+
+        async def sync_runtime(**_kwargs):
+            nonlocal runtime_preset
+            syncing.set()
+            await complete.wait()
+            self.assertTrue(main._canonical_volume_write_lock().locked())
+            self.assertTrue(main._dsp_mutation_lock().locked())
+            runtime_preset = manager.get_active_preset()
+
+        main.runtime.canonical_volume_write_lock = None
+        main.runtime.dsp_mutation_lock = None
+        with patch.object(main, "dsp_manager", manager), patch.object(
+            main, "get_output_volume", return_value=50
+        ), patch.object(main.runtime, "dsp_runtime", None), patch.object(
+            main.dsp_orchestrator, "sync_runtime", new=sync_runtime
+        ):
+            load = asyncio.create_task(main._load_dsp_preset("New"))
+            try:
+                await asyncio.wait_for(syncing.wait(), 5)
+                load.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(load.done())
+                complete.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await load
+            finally:
+                complete.set()
+        self.assertEqual(runtime_preset, "New")
+        self.assertFalse(main._canonical_volume_write_lock().locked())
 
 
 if __name__ == "__main__":

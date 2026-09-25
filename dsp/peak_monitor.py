@@ -1042,6 +1042,17 @@ class PeakMonitorCoordinator:
             self.lock = asyncio.Lock()
         return self.lock
 
+    async def _restart_and_commit(self, signature: str) -> None:
+        try:
+            await self._peak_monitor().restart()
+        except BaseException:
+            # restart() stops first; the previous capture may no longer exist.
+            self.armed = False
+            self.signature = None
+            raise
+        self.armed = True
+        self.signature = signature
+
     async def _broadcast_snapshot(self) -> None:
         peak_monitor = self._peak_monitor()
         if peak_monitor is None:
@@ -1086,7 +1097,6 @@ class PeakMonitorCoordinator:
                 # only restart the peak monitor — do NOT reload the DSP
                 # preset or repair the output graph, which causes an audible crack.
                 if not self.armed and self.signature == desired_signature:
-                    self.armed = True
                     logger.info(
                         "Repairing peak monitor links after pause (same source, relink only): %s",
                         desired_signature,
@@ -1094,24 +1104,29 @@ class PeakMonitorCoordinator:
                     # Peak monitor process was kept running but PipeWire links are
                     # dropped during pause. Repair links without restarting the
                     # pw-record process to avoid audible cracks.
-                    relinked = await self._peak_monitor().relink()
-                    if not relinked:
-                        logger.warning(
-                            "Peak monitor relink failed; falling back to full restart: %s",
-                            desired_signature,
-                        )
-                        await self._peak_monitor().restart()
+                    try:
+                        relinked = await self._peak_monitor().relink()
+                        if not relinked:
+                            logger.warning(
+                                "Peak monitor relink failed; falling back to full restart: %s",
+                                desired_signature,
+                            )
+                            await self._restart_and_commit(desired_signature)
+                        else:
+                            self.armed = True
+                    except BaseException:
+                        self.armed = False
+                        self.signature = None
+                        raise
                     await self._broadcast_snapshot()
                 elif self.signature != desired_signature:
-                    self.armed = True
-                    self.signature = desired_signature
                     if not self._deps.transition_context_is_current(transition_generation):
                         return
                     logger.info(
                         "Restarting peak monitor on committed playback context change; production graph remains coordinator-owned: %s",
                         desired_signature,
                     )
-                    await self._peak_monitor().restart()
+                    await self._restart_and_commit(desired_signature)
                     await self._broadcast_snapshot()
             elif (
                 not is_active_playback
@@ -1162,13 +1177,11 @@ class PeakMonitorCoordinator:
                         source,
                     )
                     return
-                self.armed = True
-                self.signature = desired_signature
                 logger.info(
                     "Starting peak monitor for committed %s playback; rate/graph mutations remain coordinator-owned",
                     source,
                 )
-                await self._peak_monitor().restart()
+                await self._restart_and_commit(desired_signature)
                 await self._broadcast_snapshot()
             elif (
                 not is_playing
@@ -1235,10 +1248,8 @@ class PeakMonitorCoordinator:
                 desired_signature = f"external:{external_key}"
 
             if desired_signature and (not self.armed or self.signature != desired_signature):
-                self.armed = True
-                self.signature = desired_signature
                 logger.info("Starting peak monitor for active line source: %s", desired_signature)
-                await self._peak_monitor().restart()
+                await self._restart_and_commit(desired_signature)
                 await self._broadcast_snapshot()
             elif (not desired_signature) and self.armed and str(self.signature or "").startswith(("bluetooth:", "external:")):
                 player_state = self._deps.get_player_state()

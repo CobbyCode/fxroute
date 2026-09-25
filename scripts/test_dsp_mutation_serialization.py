@@ -462,15 +462,15 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(main._canonical_volume_write_lock().locked())
         main.runtime.canonical_volume_write_lock = None
 
-    async def test_extras_fallback_reload_uses_full_loader_without_canonical(self):
+    async def test_extras_fallback_reload_keeps_both_locks_without_loudness_transition(self):
         main.runtime.dsp_mutation_lock = None
         lock_probe = {}
 
         async def fake_load_preset(preset_name, **_kwargs):
-            # Non-loudness extras update: no canonical lock is held, so the
-            # route must hand the reload to the loader without the "both locks
-            # held" shortcut (the loader acquires them itself).
+            # Non-loudness updates also retain the transaction locks until
+            # the persisted extras and runtime are reconciled.
             lock_probe["canonical_locked"] = main._canonical_volume_write_lock().locked()
+            lock_probe["mutation_locked"] = main._dsp_mutation_lock().locked()
             lock_probe["kwargs"] = dict(_kwargs)
             lock_probe["args"] = (preset_name,)
 
@@ -489,8 +489,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(lock_probe["args"], ("Neutral",))
-        self.assertEqual(lock_probe["kwargs"], {})
-        self.assertFalse(lock_probe["canonical_locked"])
+        self.assertEqual(lock_probe["kwargs"], {"_locks_held": True})
+        self.assertTrue(lock_probe["canonical_locked"])
+        self.assertTrue(lock_probe["mutation_locked"])
         main.runtime.canonical_volume_write_lock = None
 
     async def test_preset_load_waits_for_threaded_mutation(self):

@@ -71,6 +71,25 @@ def external_overview(key="scarlett::pair:1-2"):
 
 
 class LineSourceArmingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_line_restart_cancellation_allows_identical_retry(self):
+        coordinator, monitor = make_coordinator()
+        original_restart = monitor.restart
+
+        async def cancel_once():
+            monitor.restart = original_restart
+            monitor.restarts += 1
+            raise asyncio.CancelledError
+
+        monitor.restart = cancel_once
+        with self.assertRaises(asyncio.CancelledError):
+            await coordinator.sync_source_mode_state(external_overview())
+        self.assertFalse(coordinator.armed)
+        self.assertIsNone(coordinator.signature)
+        await coordinator.sync_source_mode_state(external_overview())
+        self.assertEqual(coordinator.signature, "external:scarlett::pair:1-2")
+        self.assertTrue(coordinator.armed)
+        self.assertEqual(monitor.restarts, 2)
+
     async def test_external_input_arms(self):
         coordinator, monitor = make_coordinator()
         await coordinator.sync_source_mode_state(external_overview())

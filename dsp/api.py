@@ -397,20 +397,16 @@ async def save_dsp_extras(request: Request):
     # lock from the live read through the Loudness mutation and the final
     # master=100, so a parallel /api/volume or streaming volume request
     # can never interleave.  All transferred values are (re)read under the
-    # lock.  Non-Loudness extras updates never take this lock.
+    # lock. Other extras updates also hold it until runtime reconciliation
+    # completes so no newer preset/volume mutation can pass the rollback.
     #
     # The full read-modify-write (extras read, JSON merge, resolution, manager
     # mutation/persistence) runs under the central DSP mutation
     # ownership so a parallel coordinator/volume/SPL mutation can never
     # interleave between the read and the write.  Lock order: canonical
     # volume write lock first, then DSP mutation lock.
-    canonical_transition = any(
-        key in body for key in ("loudness_enabled", "loudnessEnabled")
-    )
-    canonical_lock = None
-    if canonical_transition:
-        canonical_lock = _deps().canonical_volume_write_lock()
-        await canonical_lock.acquire()
+    canonical_lock = _deps().canonical_volume_write_lock()
+    await canonical_lock.acquire()
     try:
         async with _deps().dsp_mutation_lock():
             previous = dsp_mgr.load_global_extras()
@@ -448,34 +444,51 @@ async def save_dsp_extras(request: Request):
                     result = await _deps().drain_worker(
                         dsp_mgr.apply_global_extras_to_all_presets, extras
                     )
-            except Exception:
-                try:
+                active_preset = dsp_mgr.get_active_preset()
+                if (not result.get("runtime_applied") and active_preset
+                        and active_preset not in dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
+                    await _deps().load_dsp_preset(active_preset, _locks_held=True)
+            except (Exception, asyncio.CancelledError):
+                # The worker may have committed before raising or propagating
+                # cancellation. Keep both locks until recovery has completed.
+                async def recover_previous_extras():
+                    if dsp_mgr.load_global_extras() != previous:
+                        await _deps().drain_worker(dsp_mgr.save_global_extras, previous)
+                        active = dsp_mgr.get_active_preset()
+                        if active and active not in dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+                            await _deps().load_dsp_preset(active, _locks_held=True)
                     await _deps().restore_volume_state(dsp_mgr, start)
-                except Exception:
-                    logger.exception("Failed to restore volume state after extras update failure")
-                raise
 
-        active_preset = dsp_mgr.get_active_preset()
-        if (not result.get("runtime_applied") and active_preset
-                and active_preset not in dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
-            try:
-                if canonical_lock is not None:
-                    # The canonical volume write lock is still held for the
-                    # loudness transition; only the DSP mutation lock is free
-                    # and must be re-acquired for the reload so the loader's
-                    # "both locks held" contract is actually satisfied.
-                    async with _deps().dsp_mutation_lock():
-                        await _deps().load_dsp_preset(active_preset, _locks_held=True)
-                else:
-                    # No locks are held here: reload through the loader, which
-                    # acquires the canonical volume write lock and then the
-                    # DSP mutation lock in the documented order.
-                    await _deps().load_dsp_preset(active_preset)
-            except Exception as e:
-                logger.warning("Failed to reload active preset after extras update: %s", e)
+                recovery = asyncio.create_task(recover_previous_extras())
+                try:
+                    while not recovery.done():
+                        try:
+                            await asyncio.shield(recovery)
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            break
+                    recovery.result()
+                except (Exception, asyncio.CancelledError):
+                    logger.exception("Failed to recover previous extras after DSP update failure")
+                    dsp_runtime = _deps().get_dsp_runtime()
+                    if dsp_runtime is not None:
+                        stop = asyncio.create_task(dsp_runtime.stop())
+                        try:
+                            while not stop.done():
+                                try:
+                                    await asyncio.shield(stop)
+                                except asyncio.CancelledError:
+                                    pass
+                                except Exception:
+                                    break
+                            stop.result()
+                        except (Exception, asyncio.CancelledError):
+                            logger.exception("Failed to stop uncertain DSP runtime after extras recovery failure")
+                    raise
+                raise
     finally:
-        if canonical_lock is not None:
-            canonical_lock.release()
+        canonical_lock.release()
 
     status = dsp_mgr.get_status()
     await _deps().broadcast({"type": "dsp", "data": status})
