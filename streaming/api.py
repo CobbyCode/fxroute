@@ -909,6 +909,11 @@ async def api_streaming_provider_install(provider_id: str, request: Request):
             status_code=500,
             detail="tidal install finished but tidalapi is still not importable",
         )
+    if provider_id == "qobuz":
+        # A (re)install restarts/replaces the qbzd daemon: the previous
+        # Connect selection is no longer evidence, so drop it instead of
+        # publishing a stale active renderer.
+        connect_state.reset()
     return {
         "ok": True,
         "provider_id": provider_id,
@@ -936,6 +941,10 @@ async def api_streaming_provider_uninstall(provider_id: str, request: Request):
             _refresh_tidalapi_import_verdict()
         except Exception:
             logger.warning("TIDAL provider module refresh failed after uninstall", exc_info=True)
+    if provider_id == "qobuz":
+        # The qbzd binary/service is gone: a remembered SET_ACTIVE=true would
+        # otherwise keep publishing the removed daemon as the active renderer.
+        connect_state.reset()
     return {
         "ok": True,
         "provider_id": provider_id,
@@ -991,6 +1000,11 @@ async def api_streaming_provider_service_action(provider_id: str, action: str, r
                 detail=f"systemctl {action} {unit} did not reach active state (ActiveState={state or 'unknown'})",
             )
     provider = streaming.get_provider(provider_id)
+    if provider_id == "qobuz":
+        # Any qbzd service transition invalidates the remembered Connect
+        # selection: after stop/restart/start the next SET_ACTIVE line is the
+        # only fresh evidence, never the pre-restart value.
+        connect_state.reset()
     return {
         "ok": True,
         "provider_id": provider_id,

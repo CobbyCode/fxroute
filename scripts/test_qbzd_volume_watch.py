@@ -636,7 +636,9 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
             ),
             debounce_seconds=0.0,
         )
-        with mock.patch("asyncio.create_subprocess_exec", new=spawn):
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn), mock.patch(
+            "streaming.qobuz.backend.qbzd_installed", return_value=True
+        ):
             await watch._bootstrap_device_state()
         self.assertEqual(seen, [False])
         self.assertEqual(applied, [])
@@ -666,7 +668,9 @@ class WatchLoopTests(unittest.IsolatedAsyncioTestCase):
             ),
             debounce_seconds=0.0,
         )
-        with mock.patch("asyncio.create_subprocess_exec", new=spawn):
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn), mock.patch(
+            "streaming.qobuz.backend.qbzd_installed", return_value=True
+        ):
             await watch._bootstrap_device_state()
         self.assertEqual(seen, [])
         self.assertEqual(applied, [])

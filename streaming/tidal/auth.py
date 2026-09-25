@@ -79,15 +79,18 @@ class TidalSession:
     """Holds the active tidalapi session and the pending login state.
 
     A single instance is shared by the provider; the application is
-    single-user, so one session (and one pending device login at a time) is
+    single-user, so one session (and one pending login at a time) is
     enough. Auth mutations run under an asyncio lock so a device-login start
-    and finish never race.
+    and finish never race. Device and PKCE flows share one pending slot
+    guarded by an auth generation plus a flow tag: starting either flow
+    invalidates the other, and a superseded attempt never commits.
     """
 
     def __init__(self) -> None:
         self._session: Any | None = None
         self._pending: Any | None = None  # LinkLogin for the device flow
         self._pending_session: Any | None = None
+        self._pending_flow: str | None = None  # "device" | "pkce" | None
         self._auth_generation = 0
         # Last successfully verified user payload; kept across transient TIDAL
         # outages so the UI never flips to login just because a check failed.
@@ -200,17 +203,48 @@ class TidalSession:
 
     async def clear(self) -> None:
         """Forget the in-memory session and remove the persisted token file."""
+        user_id = ""
+        try:
+            if self._last_user:
+                user_id = str(self._last_user.get("id") or "")
+        except Exception:  # noqa: BLE001 - defensive; logout must not fail
+            user_id = ""
+        if not user_id:
+            try:
+                if SESSION_FILE.exists():
+                    raw = json.loads(SESSION_FILE.read_text())
+                    user = raw.get("user") if isinstance(raw, dict) else None
+                    if isinstance(user, dict):
+                        user_id = str(user.get("id") or "")
+            except Exception:  # noqa: BLE001 - corrupted file still logs out
+                user_id = ""
+        if not user_id and self._session is not None:
+            try:
+                user = getattr(self._session, "user", None)
+                uid = getattr(user, "id", None)
+                if uid is not None:
+                    user_id = str(uid)
+            except Exception:  # noqa: BLE001 - lazy user may hit network
+                user_id = ""
         async with self._lock:
             self._auth_generation += 1
             self._session = None
             self._pending = None
             self._pending_session = None
+            self._pending_flow = None
             self._last_user = None
             try:
                 if SESSION_FILE.exists():
                     SESSION_FILE.unlink()
             except OSError as exc:
                 logger.warning("Failed to remove TIDAL session file: %s", exc)
+        if user_id:
+            try:
+                from streaming.tidal.cache import library_cache
+
+                library_cache.clear_user(user_id)
+            except Exception as exc:  # noqa: BLE001 - cache must not break logout
+                logger.warning("Failed to clear TIDAL library cache for %s: %s", user_id, exc)
 
     # -- device login -------------------------------------------------------
 
@@ -226,6 +260,7 @@ class TidalSession:
         self._auth_generation += 1
         self._pending = link
         self._pending_session = session
+        self._pending_flow = "device"
         return device
 
     @staticmethod
@@ -249,14 +284,20 @@ class TidalSession:
         ``asyncio.to_thread``.  Returns a normalized
         ``{authenticated, user_id, email, country_code, is_pkce}``.
         """
-        if self._pending is None or self._pending_session is None:
+        if (
+            self._pending is None
+            or self._pending_session is None
+            or self._pending_flow != "device"
+        ):
             raise TidalAuthError("no device login is in progress")
-        session = self._pending_session
-        try:
-            payload = self._wait_for_device_login(session, self._pending)
-        finally:
-            self._pending = None
-            self._pending_session = None
+        link, session = self._pending, self._pending_session
+        generation = self._auth_generation
+        self._pending = None
+        self._pending_session = None
+        self._pending_flow = None
+        payload = self._wait_for_device_login(session, link)
+        if generation != self._auth_generation:
+            raise TidalAuthError("device login was superseded")
         self._session = session
         self._last_user = payload
         self._save_session(session)
@@ -278,16 +319,22 @@ class TidalSession:
             self._auth_generation += 1
             self._pending = link
             self._pending_session = session
+            self._pending_flow = "device"
             return device
 
     async def finish_device_login_async(self) -> dict:
         async with self._lock:
-            if self._pending is None or self._pending_session is None:
+            if (
+                self._pending is None
+                or self._pending_session is None
+                or self._pending_flow != "device"
+            ):
                 raise TidalAuthError("no device login is in progress")
             link, session = self._pending, self._pending_session
             generation = self._auth_generation
             self._pending = None
             self._pending_session = None
+            self._pending_flow = None
         # The worker owns only its private session; it never changes shared
         # state or persists credentials after its caller has been cancelled.
         payload = await asyncio.to_thread(self._wait_for_device_login, session, link)
@@ -301,29 +348,31 @@ class TidalSession:
 
     # -- PKCE login (browser; required for Hi-Res 24-bit FLAC) --------------
 
+    @staticmethod
+    def _create_pkce_login() -> tuple[Any, str]:
+        if tidalapi is None:
+            raise TidalAuthError("tidalapi is not installed")
+        session = _new_session(DEFAULT_QUALITY)
+        return session, session.pkce_login_url()
+
     def pkce_login_url(self) -> str:
         """Return the browser login URL for the PKCE flow.
 
         The user opens it, signs in, and is redirected to an "Oops" page whose
-        full URL must be pasted back via :meth:`finish_pkce_login`.
+        full URL must be pasted back via :meth:`finish_pkce_login`. Starting
+        PKCE invalidates any pending device login (and vice versa).
         """
         if tidalapi is None:
             raise TidalAuthError("tidalapi is not installed")
         session = _new_session(DEFAULT_QUALITY)
+        self._auth_generation += 1
+        self._pending = None
         self._pending_session = session
+        self._pending_flow = "pkce"
         return session.pkce_login_url()
 
-    def finish_pkce_login(self, redirect_url: str) -> dict:
-        """Exchange the pasted PKCE redirect URL for an authenticated session.
-
-        The pasted URL is the TIDAL "Oops" redirect page the browser lands on;
-        ``pkce_get_auth_token`` extracts its ``code`` and exchanges it for
-        tokens, which ``process_auth_token`` then applies to the session.
-        """
-        if self._pending_session is None:
-            raise TidalAuthError("no PKCE login is in progress")
-        session = self._pending_session
-        self._pending_session = None
+    @staticmethod
+    def _exchange_pkce_login(session: Any, redirect_url: str) -> dict:
         try:
             token = session.pkce_get_auth_token(redirect_url)
             session.process_auth_token(token, is_pkce_token=True)
@@ -331,18 +380,58 @@ class TidalSession:
             raise TidalAuthError(f"PKCE login failed: {exc}") from exc
         if not session.check_login():
             raise TidalAuthError("PKCE login did not produce a valid session")
+        return _session_payload(session)
+
+    def finish_pkce_login(self, redirect_url: str) -> dict:
+        """Exchange the pasted PKCE redirect URL for an authenticated session.
+
+        The pasted URL is the TIDAL "Oops" redirect page the browser lands on;
+        ``pkce_get_auth_token`` extracts its ``code`` and exchanges it for
+        tokens, which ``process_auth_token`` then applies to the session.
+        A superseded attempt (newer login or logout started meanwhile) never
+        commits.
+        """
+        if self._pending_session is None or self._pending_flow != "pkce":
+            raise TidalAuthError("no PKCE login is in progress")
+        session = self._pending_session
+        generation = self._auth_generation
+        self._pending = None
+        self._pending_session = None
+        self._pending_flow = None
+        payload = self._exchange_pkce_login(session, redirect_url)
+        if generation != self._auth_generation:
+            raise TidalAuthError("PKCE login was superseded")
         self._session = session
-        self._last_user = _session_payload(session)
+        self._last_user = payload
         self._save_session(session)
         return self._last_user
 
     async def pkce_login_url_async(self) -> str:
         async with self._lock:
-            return await asyncio.to_thread(self.pkce_login_url)
+            session, url = await asyncio.to_thread(self._create_pkce_login)
+            self._auth_generation += 1
+            self._pending = None
+            self._pending_session = session
+            self._pending_flow = "pkce"
+            return url
 
     async def finish_pkce_login_async(self, redirect_url: str) -> dict:
         async with self._lock:
-            return await asyncio.to_thread(self.finish_pkce_login, redirect_url)
+            if self._pending_session is None or self._pending_flow != "pkce":
+                raise TidalAuthError("no PKCE login is in progress")
+            session = self._pending_session
+            generation = self._auth_generation
+            self._pending = None
+            self._pending_session = None
+            self._pending_flow = None
+        payload = await asyncio.to_thread(self._exchange_pkce_login, session, redirect_url)
+        async with self._lock:
+            if generation != self._auth_generation:
+                raise TidalAuthError("PKCE login was superseded")
+            self._session = session
+            self._last_user = payload
+            self._save_session(session)
+            return payload
 
     # -- persistence --------------------------------------------------------
 

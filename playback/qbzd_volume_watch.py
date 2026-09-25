@@ -237,10 +237,21 @@ class QobuzVolumeWatch:
 
         The tail starts at ``-n 0`` (no replay), so without this one-shot scan
         a fresh FXRoute start would not know whether the device is currently
-        selected until the next switch happens.
+        selected until the next switch happens. When qbzd is not installed
+        (provider uninstalled) the journal still holds pre-uninstall
+        SET_ACTIVE lines: trusting them would republish a removed daemon as
+        the active renderer, so the bootstrap stays unknown instead.
         """
         if self._deps.on_device_active is None:
             return
+        try:
+            from streaming.qobuz import backend as _qobuz_backend
+
+            if not _qobuz_backend.qbzd_installed():
+                logger.debug("qbzd not installed; skipping device-state bootstrap")
+                return
+        except ImportError:
+            pass
         proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
