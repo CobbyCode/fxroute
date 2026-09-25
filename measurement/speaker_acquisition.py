@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable
 
+from common.run_to_completion import restore_after
 from measurement.capture_evidence import CaptureEvidence
 from measurement.speaker_align import require_timing_reference
 from measurement.target import REFERENCE_TAP_INGRESS
@@ -189,18 +190,21 @@ async def _await_measurement_job(store: Any, job_id: str, *, label: str) -> dict
     awaiting a job without cancelling it (``drain_job`` cancels live jobs), so
     the runner task is awaited directly and drained afterwards for cleanup. A
     caller cancellation absorbed by the runner task is restored as the caller's
-    own cancellation contract instead of being reported as a failure.
+    own cancellation contract instead of being reported as a failure. A drain
+    that fails on the way out is noted on that cancellation, never raised in
+    its place.
     """
     task = store._job_tasks[job_id]
     try:
         await task
-    except asyncio.CancelledError:
-        await store.drain_job(job_id)
+    except asyncio.CancelledError as cancelled:
+        await restore_after(cancelled, store.drain_job(job_id), what="Draining the capture job")
         raise
     current = asyncio.current_task()
     if current is not None and current.cancelling():
-        await store.drain_job(job_id)
-        raise asyncio.CancelledError(f"{label} was cancelled")
+        cancelled = asyncio.CancelledError(f"{label} was cancelled")
+        await restore_after(cancelled, store.drain_job(job_id), what="Draining the capture job")
+        raise cancelled
     await store.drain_job(job_id)
     finished = store.get_job(job_id)
     if finished.get("status") != "completed":
@@ -303,8 +307,8 @@ async def _run_side_take(
                     "processing must match the frozen requests"
                 )
         input_key = _job_input_key(job, f"{side} ways")
-    except BaseException:
-        await store.drain_job(job_id)
+    except BaseException as error:
+        await restore_after(error, store.drain_job(job_id), what="Draining the capture job")
         raise
     finished = await _await_measurement_job(
         store, job_id, label=f"Speaker Align {label} capture")
@@ -455,8 +459,8 @@ async def acquire_speaker_captures(
                     f"Speaker Align target for {role} is stale; revision, device and "
                     "processing must match the frozen requests"
                 )
-        except BaseException:
-            await store.drain_job(job_id)
+        except BaseException as error:
+            await restore_after(error, store.drain_job(job_id), what="Draining the capture job")
             raise
         finished = await _await_measurement_job(
             store, job_id, label=f"Speaker Align capture for {role}")

@@ -47,7 +47,7 @@ from audio.output_service import OutputService
 from audio.output_state import routing_for_device, validate_output_state
 from audio.output_state_store import StateConflictError
 from audio.output_topology import derive_topology
-from common.run_to_completion import run_to_completion
+from common.run_to_completion import restore_after, run_to_completion
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget
 from measurement.release_device import check_release_device
 from measurement.speaker_apply import verify_confirmation
@@ -158,6 +158,9 @@ class SpeakerAlignSession:
         self._start_prepared = self._prepare(self._start_state)
         self._staged: _Prepared | None = None
         self._committed = False
+        # A failed commit forbids further staging and commits; the session
+        # retires only once nothing of it can stay audible.
+        self._commit_failed = False
         self._retired = False
 
     @property
@@ -174,6 +177,12 @@ class SpeakerAlignSession:
             raise RuntimeError("Speaker Align session is committed; its stager is retired")
         if self._retired:
             raise RuntimeError("Speaker Align session failed its commit; its stager is retired")
+
+    def _require_open(self) -> None:
+        self._require_uncommitted()
+        if self._commit_failed:
+            raise RuntimeError(
+                "Speaker Align session failed its commit; only restoring the start is allowed")
 
     def _prepare(self, state: dict) -> _Prepared:
         fingerprint, plan = compile_speaker_candidate(state, service=self._service, **self._context)
@@ -272,7 +281,7 @@ class SpeakerAlignSession:
         return prepared.result()
 
     async def _stage_unlocked(self, candidate_state: dict) -> dict:
-        self._require_uncommitted()
+        self._require_open()
         required = require_speaker_candidate(
             self._start_state, candidate_state, output_key=self._context["output_key"],
             channels=self._context["channels"])
@@ -292,11 +301,13 @@ class SpeakerAlignSession:
                 "expected_native_output_mode": prepared.plan["mode"],
                 "expected_plan_fingerprint": prepared.fingerprint}
 
-    async def _restore_unlocked(self) -> dict:
+    async def _restore_unlocked(self) -> dict | None:
         self._require_uncommitted()
+        if self._commit_failed:
+            return await self._restore_after_failed_commit()
         return await self._stage_prepared_unlocked(self._start_prepared)
 
-    async def _restore_after_failed_commit(self) -> None:
+    async def _restore_after_failed_commit(self) -> dict | None:
         """Take the verified but unpersisted candidate off the runtime.
 
         While the start revision still holds (disk error, cancel, veto) this
@@ -304,31 +315,46 @@ class SpeakerAlignSession:
         writer committed: the runtime is still this session's only while it
         shows the staged candidate and the new head does not render that same
         plan, and only then does the start rendering go back, guarded by the
-        new head's revision. The session retires either way.
+        new head's revision. That ownership check repeats on every attempt.
+
+        The session retires once nothing of it can stay audible: the start is
+        back, or the runtime or the new head no longer depend on it. A failed
+        restore keeps it restorable, so ``restore_start()`` can retry while
+        the candidate may still be audible; staging and commits stay refused.
         """
-        self._retired = True
+        self._commit_failed = True
         staged = self._staged
         if staged is None or staged.fingerprint == self._start_prepared.fingerprint:
-            return
+            self._retired = True
+            return None
         head = self._service.load()
-        if head["revision"] != self._revision:
+        if head["revision"] != self._start_state["revision"]:
             snapshot = await self._readback()
             config = snapshot.get("config") if isinstance(snapshot, dict) else None
             if (not isinstance(config, dict) or snapshot.get("active") is not True
                     or config.get("plan_fingerprint") != staged.fingerprint):
-                return
+                self._retired = True
+                return None
             try:
                 head_fingerprint, _ = compile_speaker_candidate(
                     head, service=self._service, **self._context)
             except (FileNotFoundError, ValueError):
                 head_fingerprint = None
             if head_fingerprint == staged.fingerprint:
-                return
+                self._retired = True
+                return None
             self._revision = head["revision"]
-        await self._stage_prepared_unlocked(self._start_prepared)
+        restored = await self._stage_prepared_unlocked(self._start_prepared)
+        self._retired = True
+        return restored
 
-    async def restore_start(self) -> dict:
-        """Return to the frozen start rendering, only while it still owns it."""
+    async def restore_start(self) -> dict | None:
+        """Return to the frozen start rendering, only while it still owns it.
+
+        After a failed commit this retries the guarded restore of
+        ``_restore_after_failed_commit`` and returns ``None`` when the runtime
+        no longer shows this session's candidate.
+        """
         async with self._lock:
             return await self._restore_unlocked()
 
@@ -351,7 +377,7 @@ class SpeakerAlignSession:
 
     async def _commit_unlocked(self, candidate_state: dict,
                                cancel_requested: Callable[[], bool] | None = None) -> dict:
-        self._require_uncommitted()
+        self._require_open()
         self._check_revision()
         if cancel_requested is not None and cancel_requested():
             raise RuntimeError("Speaker Align winner commit skipped: cancellation requested")
@@ -414,11 +440,14 @@ class SpeakerAlignSession:
         A commit that fails after the confirmation (disk error, revision
         conflict, cancel veto or a cancel during the final readback) restores
         the start rendering too, then re-raises. Every restore finishes before
-        this returns, even when cancelled meanwhile. After commit the runtime
-        shows the committed rendering and the session retires.
+        this returns, even when cancelled meanwhile. A restore that fails is
+        logged and noted on the original error, which is re-raised unchanged;
+        after a failed commit the session then stays restorable through
+        ``restore_start()``. After commit the runtime shows the committed
+        rendering and the session retires.
         """
         async with self._lock:
-            self._require_uncommitted()
+            self._require_open()
             if not callable(confirm):
                 raise ValueError("Speaker Align trial requires a confirm boundary")
             if not isinstance(proposal, dict):
@@ -460,8 +489,10 @@ class SpeakerAlignSession:
                 if cancel_requested is not None and cancel_requested():
                     raise asyncio.CancelledError("Speaker Align trial was cancelled")
                 check = verify_confirmation(proposal, confirmation, **verify_options)
-            except BaseException:
-                await run_to_completion(self._restore_unlocked())
+            except BaseException as error:
+                # A failing restore must not replace the trial's own error.
+                await restore_after(error, self._restore_unlocked(),
+                                    what="Restoring the start rendering")
                 raise
             if not check["confirmed"]:
                 await run_to_completion(self._restore_unlocked())
@@ -470,8 +501,9 @@ class SpeakerAlignSession:
             try:
                 committed = await self._commit_unlocked(
                     proposal["candidate_state"], cancel_requested)
-            except BaseException:
-                await run_to_completion(self._restore_after_failed_commit())
+            except BaseException as error:
+                await restore_after(error, self._restore_after_failed_commit(),
+                                    what="Restoring the start rendering")
                 raise
             return {"confirmed": True, "check": check, "confirmation": confirmation,
                     "committed": committed, "restored": False}

@@ -25,7 +25,7 @@ from copy import deepcopy
 import math
 from typing import Any
 
-from common.run_to_completion import run_to_completion
+from common.run_to_completion import restore_after, run_to_completion
 
 # Ways must measure time-aligned after the trial apply. Arrival detection
 # jitters a few samples; 0.25 ms (~12 samples at 48 kHz) is far below any
@@ -198,9 +198,10 @@ async def apply_and_confirm(
     area: the output state is never persisted here, so its revision still
     matches after staging. ``max_residual_ms`` overrides the confirmation gate
     for hardware qualification; defaults to the module gate. A failed
-    measurement returns ``confirmed: False``; errors re-raise after restore,
-    except a failing restore itself surfaces loudly (chained onto the original
-    error as context). A stage failure runs no restore (the stage boundary owns
+    measurement returns ``confirmed: False``; errors re-raise unchanged after
+    restore, and a restore that fails on that path is logged and noted on the
+    original error instead of replacing it. A restore failing after a clean
+    trial surfaces as its own error. A stage failure runs no restore (the stage boundary owns
     atomicity); every later path finishes its restore before returning or
     raising, and a cancel that arrives during the restore is re-raised only
     once the start rendering is back.
@@ -236,8 +237,9 @@ async def apply_and_confirm(
         confirmation = await confirm()
         _check_cancel(cancel_requested)
         check = verify_confirmation(proposal, confirmation, **verify_options)
-    except BaseException:
-        await run_to_completion(restore())
+    except BaseException as error:
+        # A failing restore must not replace the trial's own error.
+        await restore_after(error, restore(), what="Restoring the start rendering")
         raise
     await run_to_completion(restore())
     return {

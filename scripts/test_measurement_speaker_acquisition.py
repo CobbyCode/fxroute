@@ -728,5 +728,53 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
                                      "reference_input_channel_right": "8"})
 
 
+
+class DrainFailureKeepsCancellationTests(unittest.IsolatedAsyncioTestCase):
+    """A capture drain that fails while the caller is cancelled stays a cancel.
+
+    The caller's cancellation contract wins: the acquisition must report
+    ``CancelledError``, never the drain's persist error in its place; the
+    drain failure is attached as a note.
+    """
+
+    class DrainFailingStore:
+        def __init__(self, runner):
+            self._job_tasks = {"job": runner}
+            self.drained = []
+
+        async def drain_job(self, job_id):
+            self.drained.append(job_id)
+            raise OSError("persist failed")
+
+        def get_job(self, job_id):
+            return {"status": "cancelled"}
+
+    async def run_cancelled(self, runner_body):
+        from measurement.speaker_acquisition import _await_measurement_job
+        runner = asyncio.create_task(runner_body())
+        store = self.DrainFailingStore(runner)
+        caller = asyncio.create_task(_await_measurement_job(store, "job", label="Speaker Align capture"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        caller.cancel()
+        with self.assertLogs("common.run_to_completion", level="ERROR"):
+            with self.assertRaises(asyncio.CancelledError) as raised:
+                await caller
+        self.assertEqual(store.drained, ["job"])
+        self.assertTrue(any("persist failed" in note for note in raised.exception.__notes__))
+
+    async def test_runner_cancelled_with_the_caller(self):
+        await self.run_cancelled(lambda: asyncio.sleep(3600))
+
+    async def test_runner_that_absorbs_the_cancel(self):
+        async def absorbing():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                return "absorbed"
+
+        await self.run_cancelled(absorbing)
+
+
 if __name__ == "__main__":
     unittest.main()

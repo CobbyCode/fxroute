@@ -497,6 +497,15 @@ class ApplyAndConfirmTests(unittest.IsolatedAsyncioTestCase):
             await self.run_trial(doubles)
         self.assertEqual([call[0] for call in doubles.calls], ["stage", "confirm", "restore"])
 
+    async def test_failed_restore_after_a_trial_error_keeps_the_trial_error(self):
+        doubles = StageDoubles(self.aligned, failures={
+            "confirm": RuntimeError("mic unplugged"), "restore": RuntimeError("graph stuck")})
+        with self.assertLogs("common.run_to_completion", level="ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "mic unplugged") as raised:
+                await self.run_trial(doubles)
+        self.assertTrue(any("graph stuck" in note for note in raised.exception.__notes__))
+        self.assertEqual([call[0] for call in doubles.calls], ["stage", "confirm", "restore"])
+
     async def test_threshold_passthrough_accepts_known_residual(self):
         doubles = StageDoubles(self.offset)
         rejected = await self.run_trial(doubles)

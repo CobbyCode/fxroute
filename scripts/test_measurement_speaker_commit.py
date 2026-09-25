@@ -629,6 +629,76 @@ class FailedCommitRestoreTests(SessionFixture, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(self.runtime["fingerprint"], start)
 
 
+    def broken_start_stage(self):
+        """A guarded stage that cannot bring the start rendering back while on."""
+        start = self.compile_start()
+        broken = {"on": True}
+
+        async def stage(new, **kwargs):
+            if broken["on"] and new.config.plan_fingerprint == start:
+                raise RuntimeError("engine lost the start graph")
+            await self.guarded_stage(new, **kwargs)
+
+        return stage, broken
+
+    def assert_restore_noted(self, error):
+        notes = getattr(error, "__notes__", [])
+        self.assertTrue(any("Restoring the start rendering also failed" in note
+                            and "engine lost the start graph" in note for note in notes), notes)
+
+    async def test_failed_restore_keeps_the_commit_error_and_the_session_restorable(self):
+        stage, broken = self.broken_start_stage()
+        session = self.session(guarded_stage=stage)
+
+        def failing_commit(*args, **kwargs):
+            raise OSError("disk full")
+
+        self.service.commit = failing_commit
+        with self.assertLogs("common.run_to_completion", level="ERROR"):
+            with self.assertRaisesRegex(OSError, "disk full") as raised:
+                await self.trial(session)
+        self.assert_restore_noted(raised.exception)
+        # The verified candidate is still audible: the session must not retire.
+        self.assertEqual(self.runtime["fingerprint"], self.compile_candidate())
+        self.assertFalse(session.committed)
+        with self.assertRaisesRegex(RuntimeError, "only restoring the start"):
+            await session.stage_candidate(self.proposal["candidate_state"])
+        with self.assertRaisesRegex(RuntimeError, "only restoring the start"):
+            await session.commit_candidate(self.proposal["candidate_state"])
+        broken["on"] = False
+        await session.restore_start()
+        self.assertEqual(self.runtime["fingerprint"], self.compile_start())
+        with self.assertRaisesRegex(RuntimeError, "retired"):
+            await session.restore_start()
+
+    async def test_failed_restore_after_a_trial_error_keeps_the_trial_error(self):
+        stage, _ = self.broken_start_stage()
+        session = self.session(guarded_stage=stage)
+
+        async def unplugged():
+            raise RuntimeError("mic unplugged")
+
+        with self.assertLogs("common.run_to_completion", level="ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "mic unplugged") as raised:
+                await session.confirm_and_commit(
+                    confirm=unplugged, proposal=self.proposal, live_target=self.live)
+        self.assert_restore_noted(raised.exception)
+        self.assertFalse(session.committed)
+
+    async def test_failed_restore_after_a_cancel_stays_a_cancel(self):
+        stage, _ = self.broken_start_stage()
+        session = self.session(guarded_stage=stage)
+
+        async def cancelled():
+            raise asyncio.CancelledError("stop")
+
+        with self.assertLogs("common.run_to_completion", level="ERROR"):
+            with self.assertRaises(asyncio.CancelledError) as raised:
+                await session.confirm_and_commit(
+                    confirm=cancelled, proposal=self.proposal, live_target=self.live)
+        self.assert_restore_noted(raised.exception)
+
+
 class ServiceRestoreOwnershipTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
     """The job slot and measurement owner outlive every restore of the run."""
 
