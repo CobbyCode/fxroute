@@ -122,13 +122,19 @@ function setupEffectsActions() {
         const direction = button.dataset.stepper === 'dec' ? -1 : 1;
         const step = Number(input.step);
         const stepValue = Number.isFinite(step) && step > 0 ? step : 1;
-        const decimals = Math.min((String(input.step).split('.')[1] || '').length, 4);
+        const decimals = Math.min(Math.max((String(input.step).split('.')[1] || '').length,
+            (String(input.value).split('.')[1] || '').length), 4);
         const min = input.min === '' ? -Infinity : Number(input.min);
         const max = input.max === '' ? Infinity : Number(input.max);
-        const current = Number(input.value);
+        // Crossover trim displays a rounded number while keeping its exact
+        // value for the next nudge. Typed edits invalidate that display match.
+        const precise = input.value === input._fxroutePreciseDisplay
+            ? Number(input._fxroutePreciseValue) : NaN;
+        const hasPreciseValue = Number.isFinite(precise);
+        const current = hasPreciseValue ? precise : Number(input.value);
         if (!Number.isFinite(current)) return;
         let next = current + direction * stepValue;
-        next = Number(next.toFixed(decimals));
+        if (!hasPreciseValue) next = Number(next.toFixed(decimals));
         if (Number.isFinite(min)) next = Math.max(min, next);
         if (Number.isFinite(max)) next = Math.min(max, next);
         if (next === current) return;

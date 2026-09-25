@@ -1483,6 +1483,11 @@ input[type="number"]::-webkit-outer-spin-button {
     font-size: 0.92rem;
 }
 
+/* Two-decimal way trims need space for -80.00 without squeezing the unit. */
+#tab-effects #effects-crossover-trim-group .stepper-control .stepper-input {
+    width: 4.1rem;
+}
+
 .stepper-control input[type="number"]::-webkit-inner-spin-button,
 .stepper-control input[type="number"]::-webkit-outer-spin-button {
     -webkit-appearance: none;

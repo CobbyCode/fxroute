@@ -343,7 +343,9 @@ function crossoverFixtureState() {
 }
 
 function crossoverInput(value) {
-    return { value, addEventListener() {} };
+    const listeners = {};
+    return { value, addEventListener(type, listener) { (listeners[type] ||= []).push(listener); },
+        emit(type) { for (const listener of listeners[type] || []) listener({ target: this }); } };
 }
 
 function crossoverFixtureElements(overrides = {}) {
@@ -403,7 +405,71 @@ function initCrossoverUI(state, elements, extra = {}) {
     assert.equal(mutation.highpass, null, 'derived high-pass is not persisted');
     assert.equal(mutation.lowpass.frequency_hz, 2000);
 }
+{
+    // Every way shows compact trim, but an unrelated save retains the exact
+    // catalog values instead of persisting their rounded display strings.
+    const state = crossoverFixtureState();
+    const mode = state.outputSystem.catalog.modes['stereo-sub'];
+    mode.processing.left_low_mid = {};
+    mode.processing.right_low_mid = {};
+    for (const role of Object.keys(mode.processing)) {
+        mode.processing[role] = { level_db: -4.47049, alignment_ms: 7.8125 };
+    }
+    state.crossover.response = { crossover_enabled: true,
+        ways: Object.fromEntries(Object.keys(mode.processing).map((role) => [role, {}])) };
+    const elements = crossoverFixtureElements({
+        effectsCrossoverCard: { classList: { toggle() {} } },
+        effectsCrossoverLevel: crossoverInput(''),
+        effectsCrossoverDelay: crossoverInput(''),
+    });
+    initCrossoverUI(state, elements);
+    for (const role of Object.keys(mode.processing)) {
+        state.crossover.activeWay = role;
+        CrossoverUI.renderCrossoverTile();
+        assert.equal(elements.effectsCrossoverLevel.value, '-4.47', `${role} level display`);
+        assert.equal(elements.effectsCrossoverDelay.value, '7.81', `${role} align display`);
+        const mutation = CrossoverUI.collectCrossoverWayMutation();
+        assert.equal(mutation.level_db, -4.47049, `${role} level precision`);
+        assert.equal(mutation.alignment_ms, 7.8125, `${role} align precision`);
+    }
+}
 (async () => {
+{
+    // Typed changes and stepper-dispatched changes show two places after
+    // capture; the payload still carries the user's unrounded input.
+    const state = crossoverFixtureState();
+    const mode = state.outputSystem.catalog.modes['stereo-sub'];
+    mode.processing.left_low = { level_db: -4.47049, alignment_ms: 7.8125 };
+    state.crossover.response = { crossover_enabled: true, ways: { left_low: {} } };
+    const elements = crossoverFixtureElements({
+        effectsCrossoverCard: { classList: { toggle() {} } },
+        effectsCrossoverLevel: crossoverInput(''),
+        effectsCrossoverDelay: crossoverInput(''),
+    });
+    const applied = [];
+    const realFetch = globalThis.fetch;
+    const realDocument = globalThis.document;
+    globalThis.document = { activeElement: elements.effectsCrossoverLevel };
+    globalThis.fetch = async () => ({ ok: true, json: async () => state.crossover.response });
+    initCrossoverUI(state, elements, {
+        applyMutation: async (_kind, fields) => { applied.push(fields); return { ok: true }; },
+    });
+    CrossoverUI.renderCrossoverTile();
+    CrossoverUI.wireCrossoverTile();
+    elements.effectsCrossoverLevel.value = '-3.141592';
+    elements.effectsCrossoverLevel.emit('change');
+    assert.equal(applied[0].level_db, -3.141592);
+    assert.equal(applied[0].alignment_ms, 7.8125);
+    assert.equal(elements.effectsCrossoverLevel.value, '-3.14');
+    await new Promise(setImmediate);
+    globalThis.document.activeElement = elements.effectsCrossoverDelay;
+    elements.effectsCrossoverDelay.value = '8.3136';
+    elements.effectsCrossoverDelay.emit('change');
+    assert.equal(applied[1].alignment_ms, 8.3136);
+    assert.equal(elements.effectsCrossoverDelay.value, '8.31');
+    globalThis.fetch = realFetch;
+    globalThis.document = realDocument;
+}
 {
     // First valid 2-way config seeds every way with starters, then refetches.
     const realFetch = globalThis.fetch;

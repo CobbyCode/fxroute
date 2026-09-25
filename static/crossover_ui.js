@@ -46,6 +46,16 @@
         return deps.getState().crossover.response;
     }
 
+    function formatTrimValue(value) {
+        return Number(value).toFixed(2);
+    }
+
+    function showTrimValue(input, value) {
+        input.value = formatTrimValue(value);
+        input._fxroutePreciseValue = Number(value);
+        input._fxroutePreciseDisplay = input.value;
+    }
+
     function renderCrossoverTile() {
         deps.ensureOutputBoxes();
         const mod = (root && root.FXRouteCrossover) || null;
@@ -171,11 +181,11 @@
             if (slopeGroup) slopeGroup.style.display = kindOff ? 'none' : '';
         }
         if (deps.getElements().effectsCrossoverLevel && ((typeof document !== 'undefined' && document.activeElement) || null) !== deps.getElements().effectsCrossoverLevel) {
-            deps.getElements().effectsCrossoverLevel.value = settings.level_db ?? 0;
+            showTrimValue(deps.getElements().effectsCrossoverLevel, settings.level_db ?? 0);
             deps.getElements().effectsCrossoverLevel.disabled = busy;
         }
         if (deps.getElements().effectsCrossoverDelay && ((typeof document !== 'undefined' && document.activeElement) || null) !== deps.getElements().effectsCrossoverDelay) {
-            deps.getElements().effectsCrossoverDelay.value = settings.alignment_ms ?? 0;
+            showTrimValue(deps.getElements().effectsCrossoverDelay, settings.alignment_ms ?? 0);
             deps.getElements().effectsCrossoverDelay.disabled = busy;
         }
         if (deps.getElements().effectsCrossoverPolarity) {
@@ -265,8 +275,12 @@
                 deps.getElements().effectsCrossoverFamilyLowpass, deps.getElements().effectsCrossoverSlopeLowpass),
         };
         if (!linked) {
-            mutation.level_db = mod.clampLevelDb(deps.getElements().effectsCrossoverLevel?.value ?? 0);
-            mutation.alignment_ms = mod.clampAlignmentMs(deps.getElements().effectsCrossoverDelay?.value ?? 0);
+            // A displayed rounded value is not an edit: preserve the precise
+            // stored trim when saving another control on this way.
+            const trimValue = (el, stored) => el?.value === formatTrimValue(stored ?? 0)
+                ? stored ?? 0 : el?.value ?? 0;
+            mutation.level_db = mod.clampLevelDb(trimValue(deps.getElements().effectsCrossoverLevel, current.level_db));
+            mutation.alignment_ms = mod.clampAlignmentMs(trimValue(deps.getElements().effectsCrossoverDelay, current.alignment_ms));
             mutation.polarity = deps.getElements().effectsCrossoverPolarity?.value === 'invert' ? 'invert' : 'normal';
         }
         return mutation;
@@ -345,13 +359,23 @@
             // Tile control listeners (moved verbatim from setupSettingsActions):
             // any value change saves the active way, the L/R link re-renders
             // immediately and only persists through the next save.
-            const crossoverControlChanged = () => { void saveCrossoverWay(); };
+            const crossoverControlChanged = (event) => {
+                void saveCrossoverWay();
+                if (event.target === deps.getElements().effectsCrossoverLevel
+                    || event.target === deps.getElements().effectsCrossoverDelay) {
+                    // Capture the precise edit before compacting its display.
+                    showTrimValue(event.target, event.target.value);
+                }
+            };
             for (const el of [deps.getElements().effectsCrossoverFrequencyHighpass, deps.getElements().effectsCrossoverFrequencyLowpass,
                 deps.getElements().effectsCrossoverFamilyHighpass, deps.getElements().effectsCrossoverSlopeHighpass,
                 deps.getElements().effectsCrossoverFamilyLowpass, deps.getElements().effectsCrossoverSlopeLowpass,
                 deps.getElements().effectsCrossoverLevel,
                 deps.getElements().effectsCrossoverDelay, deps.getElements().effectsCrossoverPolarity]) {
                 if (el) el.addEventListener('change', crossoverControlChanged);
+            }
+            for (const el of [deps.getElements().effectsCrossoverLevel, deps.getElements().effectsCrossoverDelay]) {
+                if (el) el.addEventListener('blur', () => { el.value = formatTrimValue(el.value); });
             }
             if (deps.getElements().effectsCrossoverLink) {
                 deps.getElements().effectsCrossoverLink.addEventListener('change', (event) => {
