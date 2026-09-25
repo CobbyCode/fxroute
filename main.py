@@ -1538,13 +1538,59 @@ def _music_library_lock() -> asyncio.Lock:
     return runtime.music_library.switch_lock
 
 
+# Owning event loop for post-scan queue reconciliation. Captured when the
+# app shell wires a scanner; the scan worker thread never touches queue
+# state and only schedules the reconcile here.
+_scan_queue_owner_loop = None
+# Generation guard for posted reconciles: shutdown and library switches
+# invalidate outstanding reconciles so a stale post can never commit after
+# the queue it was prepared for is gone.
+_queue_reconcile_generation = 0
+
+
+def _invalidate_pending_queue_reconcile() -> None:
+    """Drop posted-but-unrun post-scan queue reconciles (shutdown/switch)."""
+    global _queue_reconcile_generation
+    _queue_reconcile_generation += 1
+
+
 def _prune_queue_after_scan(valid_ids: list[str]) -> None:
+    """Schedule the post-scan queue reconcile on the owning event loop.
+
+    Runs in the scan worker thread right after a successful publish: it
+    snapshots the id list and posts the reconcile, never mutating queue
+    state itself. Queue errors stay best-effort and never fail the scan.
+    """
+    try:
+        snapshot = [str(item or "").strip() for item in (valid_ids or [])]
+    except TypeError:
+        snapshot = []
+    snapshot = [item for item in snapshot if item]
+    loop = _scan_queue_owner_loop
+    if loop is None or loop.is_closed():
+        logger.warning("Queue prune after library scan skipped: no owning event loop")
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(
+            _reconcile_queue_after_scan(snapshot, generation=_queue_reconcile_generation),
+            loop,
+        )
+    except RuntimeError as exc:
+        logger.warning("Queue prune after library scan could not be scheduled: %s", exc)
+
+
+async def _reconcile_queue_after_scan(valid_ids: list[str], *, generation: int) -> None:
     """Reconcile the committed queue with a freshly published library state.
 
-    Runs in the scan worker thread right after a successful publish. Only
+    Runs on the owning event loop, synchronously and without awaits, so
+    event-loop readers only ever observe the pre- or post-prune state. Only
     drops queue entries the rescan retired; the live current-track snapshot
     stays untouched (it describes the loaded MPV source, not the library).
+    A reconcile posted before a shutdown or library switch is dropped.
     """
+    if generation != _queue_reconcile_generation:
+        logger.info("Queue reconcile after library scan skipped: superseded by shutdown or library switch")
+        return
     queue = playback_queue.queue
     if queue is None:
         return
@@ -1563,6 +1609,7 @@ def _prune_queue_after_scan(valid_ids: list[str]) -> None:
 
 
 def _library_scanner_for(root: Path, library_id: str = "local") -> LibraryScanner:
+    global _scan_queue_owner_loop
     if library_id == "local":
         scanner = LibraryScanner(root)
     else:
@@ -1573,6 +1620,10 @@ def _library_scanner_for(root: Path, library_id: str = "local") -> LibraryScanne
             config_dir / f"library-metadata-covers-{cache_key}",
         )
         scanner = LibraryScanner(root, metadata_store=store)
+    try:
+        _scan_queue_owner_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _scan_queue_owner_loop = None
     hook_setter = getattr(scanner, "set_scan_published_hook", None)
     if callable(hook_setter):
         hook_setter(_prune_queue_after_scan)
@@ -3037,6 +3088,9 @@ async def _shutdown_lifespan_resources() -> None:
             lambda: asyncio.gather(*refresh_tasks, return_exceptions=True),
         )
     runtime.library_refresh_tasks.clear()
+    # Posted-but-unrun post-scan queue reconciles must not commit stale
+    # state after the shutdown tore the queue context down.
+    _invalidate_pending_queue_reconcile()
     if runtime.player_instance is not None:
         await cleanup("player", lambda: asyncio.to_thread(runtime.player_instance.stop))
     if runtime.dsp_runtime is not None:
@@ -5805,6 +5859,9 @@ async def _commit_music_library_switch(
     still describe the previous one.
     """
     scanner.cancel_refresh()
+    # A reconcile posted by the retired scanner must not prune the queue
+    # the switch is about to reset and refill.
+    _invalidate_pending_queue_reconcile()
     active_refreshes = [task for task in runtime.library_refresh_tasks if not task.done()]
     if active_refreshes:
         await asyncio.gather(*active_refreshes, return_exceptions=True)
