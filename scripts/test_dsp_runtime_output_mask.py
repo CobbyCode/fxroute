@@ -7,6 +7,7 @@ import socket
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -74,6 +75,19 @@ class OutputMaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.apply_output_mask(0b11)
         await runtime.stop()
         self.assertEqual(runtime._output_mask, 0)
+
+    async def test_poisoned_control_rejects_mask_and_exact_mute_noops(self):
+        runtime = await self._runtime()
+        runtime._output_mask = 1
+        runtime._exact_sub_mute = True
+        runtime._exact_sub_mute_mask = 1
+        runtime._control_poisoned = True
+        with self.assertRaisesRegex(RuntimeError, "unknown"):
+            await runtime.clear_output_mask(1)
+        with self.assertRaisesRegex(RuntimeError, "unknown"):
+            await runtime.set_exact_sub_mute(False, mask=1)
+        self.assertEqual(runtime._output_mask, 1)
+        self.assertTrue(runtime._exact_sub_mute)
 
 
 
@@ -183,6 +197,148 @@ class CancelledMaskAcknowledgementTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(1):
             await self.runtime.enter_active_measurement()
         await self.runtime.exit_active_measurement(False)
+
+
+class TimedOutControlTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_commit_error_poisoned_even_with_an_explicit_reply(self):
+        with tempfile.TemporaryDirectory(prefix="commit-error-") as directory:
+            engine = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self.addCleanup(engine.close)
+            self.addCleanup(client.close)
+            engine.setblocking(False)
+            client.setblocking(False)
+            path = Path(directory) / "engine"
+            engine.bind(str(path))
+            client.bind(str(Path(directory) / "client"))
+            runtime = DSPRuntime(None)
+            runtime._control_socket = client
+            runtime._control_path = path
+
+            async def answer():
+                data, address = await asyncio.get_running_loop().sock_recvfrom(engine, 256)
+                self.assertEqual(data, b"live commit")
+                engine.sendto(b"error live commit timeout\n", address)
+
+            task = asyncio.create_task(answer())
+            try:
+                with self.assertRaisesRegex(RuntimeError, "live commit timeout"):
+                    await runtime._control("live commit", reply=True)
+                await task
+                self.assertEqual(runtime.snapshot()["control_state"], "unknown")
+                with self.assertRaisesRegex(RuntimeError, "unknown"):
+                    await runtime.read_output_gain_db()
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def test_unexpected_mute_reply_never_confirms_mask(self):
+        with tempfile.TemporaryDirectory(prefix="bad-ack-") as directory:
+            engine = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self.addCleanup(engine.close)
+            self.addCleanup(client.close)
+            engine.setblocking(False)
+            client.setblocking(False)
+            path = Path(directory) / "engine"
+            engine.bind(str(path))
+            client.bind(str(Path(directory) / "client"))
+            runtime = DSPRuntime(None)
+            runtime._control_socket = client
+            runtime._control_path = path
+
+            async def answer():
+                data, address = await asyncio.get_running_loop().sock_recvfrom(engine, 256)
+                self.assertEqual(data, b"mute 1 1")
+                engine.sendto(b"0\n", address)
+
+            task = asyncio.create_task(answer())
+            try:
+                with self.assertRaisesRegex(RuntimeError, "reply"):
+                    await runtime.apply_output_mask(1)
+                await task
+                self.assertEqual(runtime._output_mask, 0)
+                self.assertIsNone(runtime.snapshot()["output_mask"])
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def test_late_mute_ack_cannot_answer_next_command_or_confirm_mask(self):
+        with tempfile.TemporaryDirectory(prefix="late-ack-") as directory:
+            engine = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self.addCleanup(engine.close)
+            self.addCleanup(client.close)
+            engine.setblocking(False)
+            client.setblocking(False)
+            engine_path = Path(directory) / "engine"
+            engine.bind(str(engine_path))
+            client.bind(str(Path(directory) / "client"))
+            runtime = DSPRuntime(None)
+            runtime._control_socket = client
+            runtime._control_path = engine_path
+            runtime._config = SimpleNamespace(layout=[{"name": "L"}])
+            received = asyncio.Event()
+
+            async def late_engine():
+                loop = asyncio.get_running_loop()
+                data, address = await loop.sock_recvfrom(engine, 256)
+                self.assertEqual(data, b"mute 1 1")
+                received.set()
+                await asyncio.sleep(0.09)
+                try:
+                    engine.sendto(b"ok\n", address)
+                except OSError:
+                    pass
+
+            task = asyncio.create_task(late_engine())
+            try:
+                with patch("dsp.runtime.CONTROL_TIMEOUT_SECONDS", 0.03, create=True):
+                    with self.assertRaises(asyncio.TimeoutError):
+                        await runtime.apply_output_mask(1)
+                await received.wait()
+                await task
+                runtime._config = None
+                self.assertIsNone(runtime.snapshot()["output_mask"])
+                with self.assertRaisesRegex(RuntimeError, "unknown|unavailable|rebuild"):
+                    await runtime.read_output_gain_db()
+                self.assertEqual(runtime._output_mask, 0)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def test_unmute_timeout_does_not_report_stale_mask_as_engine_state(self):
+        with tempfile.TemporaryDirectory(prefix="unmute-timeout-") as directory:
+            engine = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self.addCleanup(engine.close)
+            self.addCleanup(client.close)
+            engine.setblocking(False)
+            client.setblocking(False)
+            path = Path(directory) / "engine"
+            engine.bind(str(path))
+            client.bind(str(Path(directory) / "client"))
+            server = DatagramEngine(engine)
+            task = asyncio.create_task(server.serve())
+            runtime = DSPRuntime(None)
+            runtime._control_socket = client
+            runtime._control_path = path
+            try:
+                await runtime.apply_output_mask(1)
+                gate = server.hold("mute 1 0")
+                with patch("dsp.runtime.CONTROL_TIMEOUT_SECONDS", 0.03):
+                    with self.assertRaises(asyncio.TimeoutError):
+                        await runtime.clear_output_mask(1)
+                gate.set()
+                await asyncio.sleep(0)
+                self.assertEqual(server.mask, 0)
+                self.assertEqual(runtime._output_mask, 1)
+                self.assertIsNone(runtime.snapshot()["output_mask"])
+                with self.assertRaisesRegex(RuntimeError, "unknown"):
+                    await runtime.apply_output_mask(1)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
 
 if __name__ == "__main__":

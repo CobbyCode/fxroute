@@ -321,6 +321,71 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_failed_stage_aborts_before_atomic_swap(self):
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            runtime._config_text = "stage_begin 0 headroom native headroom\nparam gain_db -3\nstage_end\n"
+            commands = []
+
+            async def control(command, **_kwargs):
+                commands.append(command)
+                if command.startswith("live param"):
+                    raise RuntimeError("error invalid command")
+                return "ok\n"
+
+            runtime._control = control
+            self.assertFalse(await runtime._try_live_update(
+                "stage_begin 0 headroom native headroom\nparam gain_db -2\nstage_end\n"))
+            self.assertEqual(commands, ["live begin", "live param headroom gain_db -2", "live abort"])
+
+        asyncio.run(exercise())
+
+    def test_failed_commit_does_not_try_swap_on_uncertain_engine(self):
+        async def exercise():
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "fxroute-dsp"
+                binary.touch()
+                runtime = DSPRuntime(self.manager, binary=binary)
+                runtime._process = FakeProcess()
+                runtime._control_socket = unittest.mock.Mock()
+                runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+                runtime._config_text = "stage_begin 0 headroom native headroom\nparam gain_db -3\nstage_end\n"
+                commands = []
+
+                async def control(command, **_kwargs):
+                    commands.append(command)
+                    if command == "live commit":
+                        runtime._poison_control()
+                        raise RuntimeError("error live commit timeout")
+                    if command == "effects bypass get":
+                        return "0\n"
+                    return "ok\n"
+
+                async def complete(*_args):
+                    return CommandResult(0)
+
+                runtime._control = control
+                runtime._run = complete
+                runtime._stop_orphan_helpers = complete
+                runtime._wait_for_ports = complete
+                runtime._remove_direct_source_links = complete
+                runtime._reconcile_output_links = complete
+                runtime.set_output_gain_db = complete
+                runtime._launch = lambda _args: launch()
+
+                async def launch():
+                    return FakeProcess()
+
+                await runtime._run_sync(runtime._config,
+                    "stage_begin 0 headroom native headroom\nparam gain_db -2\nstage_end\n")
+                self.assertNotIn("swap config", " ".join(commands))
+                self.assertFalse(runtime._control_poisoned)
+                self.assertIn("live commit", commands)
+                self.assertEqual(runtime._config_text,
+                    "stage_begin 0 headroom native headroom\nparam gain_db -2\nstage_end\n")
+
+        asyncio.run(exercise())
+
     def test_incompatible_config_still_uses_rebuild_path(self):
         runtime = DSPRuntime(self.manager)
         runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))

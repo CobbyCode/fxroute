@@ -29,6 +29,7 @@ unsigned fxdsp_peaks(const fxdsp *dsp, float *peaks, unsigned count);
 void fxdsp_reset_peaks(fxdsp *dsp);
 int fxdsp_compatible(const fxdsp *a, const fxdsp *b);
 int fxdsp_live_begin(fxdsp *dsp);
+int fxdsp_live_abort(fxdsp *dsp);
 int fxdsp_live_control(fxdsp *dsp, const char *stage_id, const char *symbol, float value);
 int fxdsp_live_param(fxdsp *dsp, const char *stage_id, const char *key, float value);
 int fxdsp_live_matrix(fxdsp *dsp, unsigned output, unsigned input, float gain);

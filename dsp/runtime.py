@@ -47,6 +47,7 @@ HELPER_STDERR_TAIL_LIMIT = 64 * 1024
 # buffer, so the reader requests one extra byte and treats a full buffer as
 # truncation instead of parsing a partial payload.
 CONTROL_REPLY_MAX_BYTES = 4096
+CONTROL_TIMEOUT_SECONDS = 1.0
 # The engine prints its gain with %.9g, so two readings of the same level may
 # still differ in the last printed digit.
 OUTPUT_GAIN_TOLERANCE_DB = 1e-6
@@ -451,6 +452,7 @@ class DSPRuntime:
         self._control_socket: socket.socket | None = None
         self._control_path: Path | None = None
         self._control_client_path: Path | None = None
+        self._control_poisoned = False
         self._exact_sub_mute = False
         self._exact_sub_mute_mask = 0
         self._effect_bypass = False
@@ -551,7 +553,7 @@ class DSPRuntime:
 
     def snapshot(self) -> dict[str, Any]:
         running = self._process is not None and getattr(self._process, "returncode", None) is None
-        return {"active": running and not self._error and bool(self._links), "engine": "fxroute_native_dsp",
+        return {"active": running and not self._error and not self._control_poisoned and bool(self._links), "engine": "fxroute_native_dsp",
                 "helper_pid": getattr(self._process, "pid", None) if running else None,
                 "helper_args": [str(self.binary), str(self._config_path)] if self._config_path else None,
                 "config": {"sample_rate": self._config.sample_rate, "output_mode": self._config.output_mode,
@@ -562,7 +564,8 @@ class DSPRuntime:
                             "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
                 "last_error": self._error, "last_started_at": self._started_at,
                 "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
-                "output_mask": self._output_mask,
+                "output_mask": None if self._control_poisoned else self._output_mask,
+                "control_state": "unknown" if self._control_poisoned else "ready",
                 "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
                 "stderr_tail": self.stderr_tail()[:2048]}
 
@@ -575,6 +578,7 @@ class DSPRuntime:
         represent the old mask. Independent output-mask bits remain muted.
         """
         async with self._mute_ownership_lock:
+            self._require_control_state()
             if mask is None and len(self._config.hardware_ports if self._config else ()) < 4:
                 raise RuntimeError("Sub outputs are unavailable")
             bits = self._validate_output_mask(12 if mask is None else mask)
@@ -606,6 +610,10 @@ class DSPRuntime:
             raise ValueError("Output mute mask addresses an output the engine does not expose")
         return mask
 
+    def _require_control_state(self) -> None:
+        if self._control_poisoned:
+            raise RuntimeError("Native DSP control state is unknown; rebuild the engine")
+
     async def apply_output_mask(self, mask: int) -> int:
         """Mute the masked engine outputs; returns the previously applied mask.
 
@@ -617,6 +625,7 @@ class DSPRuntime:
         re-raised afterwards.
         """
         async with self._mute_ownership_lock:
+            self._require_control_state()
             bits = self._validate_output_mask(mask)
             previous = self._output_mask
 
@@ -634,6 +643,7 @@ class DSPRuntime:
         finish together even when the caller is cancelled meanwhile.
         """
         async with self._mute_ownership_lock:
+            self._require_control_state()
             bits = self._validate_output_mask(mask)
             control_bits = bits & ~self._exact_sub_mute_mask
 
@@ -742,23 +752,42 @@ class DSPRuntime:
             return await self._control_unlocked(command, reply=reply)
 
     async def _control_unlocked(self, command: str, *, reply: bool) -> str:
+        self._require_control_state()
         if self._control_socket is None or self._control_path is None:
             raise RuntimeError("Native DSP control is unavailable")
-        self._control_socket.sendto(command.encode(), str(self._control_path))
-        if not reply:
-            return ""
-        loop = asyncio.get_running_loop()
-        data = await asyncio.wait_for(
-            loop.sock_recv(self._control_socket, CONTROL_REPLY_MAX_BYTES + 1), 1.0
-        )
+        try:
+            self._control_socket.sendto(command.encode(), str(self._control_path))
+            if not reply:
+                return ""
+            loop = asyncio.get_running_loop()
+            data = await asyncio.wait_for(
+                loop.sock_recv(self._control_socket, CONTROL_REPLY_MAX_BYTES + 1),
+                CONTROL_TIMEOUT_SECONDS,
+            )
+        except (OSError, asyncio.TimeoutError, asyncio.CancelledError):
+            self._poison_control()
+            raise
         if len(data) > CONTROL_REPLY_MAX_BYTES:
+            self._poison_control()
             raise RuntimeError(
                 "Native DSP control reply exceeded the receive buffer and was truncated"
             )
         response = data.decode(errors="replace")
         if response.startswith("error"):
+            if command == "live commit":
+                self._poison_control()
             raise RuntimeError(response)
+        if command not in {"peaks get", "gain db get", "effects bypass get"} and response != "ok\n":
+            self._poison_control()
+            raise RuntimeError(f"Native DSP returned an unexpected control reply: {response!r}")
         return response
+
+    def _poison_control(self) -> None:
+        """Retire the reply socket; no later command can consume its old ACK."""
+        self._control_poisoned = True
+        self._error = "Native DSP control state is unknown; rebuild the engine"
+        if self._control_socket is not None:
+            self._control_socket.close()
 
     async def guarded_rebuild(self, overview: dict[str, Any], *, guard_db: float,
                               apply_candidate: Callable[[], Any],
@@ -1029,6 +1058,8 @@ class DSPRuntime:
                     self._config_text = text
                     self._error = None
                     return
+                if self._control_poisoned:
+                    raise RuntimeError("Native DSP live update state is unknown; rebuilding engine")
                 await self._control(
                     f"swap config {config_name} {max(-80.0, min(0.0, float(initial_output_gain_db))):.9g}",
                     reply=True,
@@ -1102,6 +1133,7 @@ class DSPRuntime:
             self._process is not None
             and getattr(self._process, "returncode", None) is None
             and self._control_socket is not None
+            and not self._control_poisoned
             and self._config is not None
             and self._config.output_key == config.output_key
             and self._config.sample_rate == config.sample_rate
@@ -1188,13 +1220,28 @@ class DSPRuntime:
                     updates.append("live output %s %.9g %.9g %s" % item[1:])
         if not updates:
             return True
+        began = False
+        committing = False
         try:
             await self._control("live begin", reply=True)
+            began = True
             for command in updates:
                 await self._control(command, reply=True)
+            committing = True
             await self._control("live commit", reply=True)
             return True
-        except Exception as exc:
+        except BaseException as exc:
+            if committing:
+                # A failed commit may still apply on the audio thread later.
+                self._poison_control()
+            elif began and not self._control_poisoned:
+                try:
+                    await run_to_completion(self._control("live abort", reply=True))
+                except BaseException:
+                    self._poison_control()
+                    logger.exception("Native DSP live abort failed; rebuilding engine")
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             logger.warning("Native DSP live update unavailable; using atomic config swap: %s", exc)
             return False
 
@@ -1259,6 +1306,7 @@ class DSPRuntime:
             except OSError:
                 pass
         self._control_path = self._control_client_path = None
+        self._control_poisoned = False
         self._exact_sub_mute = False
         self._exact_sub_mute_mask = 0
         self._effect_bypass = False

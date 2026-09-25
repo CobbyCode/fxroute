@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MAX_ROUTES 1024
 #define MAX_BIQUADS 32
@@ -23,6 +24,7 @@
 #define MAX_STAGES 128
 #define MAX_CONTROLS 268
 #define MAX_LIVE_UPDATES 1024
+#define LIVE_COMMIT_TIMEOUT_NS 250000000L
 #define PI 3.14159265358979323846
 
 typedef struct { unsigned in, out; float gain; } route;
@@ -631,6 +633,12 @@ int fxdsp_live_begin(fxdsp *d) {
     return 1;
 }
 
+int fxdsp_live_abort(fxdsp *d) {
+    if (!d || atomic_load_explicit(&d->live_commit, memory_order_acquire)) return 0;
+    atomic_store_explicit(&d->live_count, 0, memory_order_release);
+    return 1;
+}
+
 int fxdsp_live_control(fxdsp *d, const char *stage_id, const char *symbol, float value) {
     dsp_stage *stage = d ? find_stage(d, stage_id) : NULL;
     live_update update = {.kind = LIVE_CONTROL, .values = {value}};
@@ -792,8 +800,15 @@ static void apply_live_updates(fxdsp *d) {
 
 int fxdsp_live_commit(fxdsp *d) {
     if (!d || atomic_load_explicit(&d->live_commit, memory_order_acquire)) return 0;
+    struct timespec start, now;
+    if (clock_gettime(CLOCK_MONOTONIC, &start)) return 0;
     atomic_store_explicit(&d->live_commit, 1, memory_order_release);
-    while (atomic_load_explicit(&d->live_commit, memory_order_acquire)) sched_yield();
+    while (atomic_load_explicit(&d->live_commit, memory_order_acquire)) {
+        if (clock_gettime(CLOCK_MONOTONIC, &now) ||
+            (int64_t)(now.tv_sec - start.tv_sec) * INT64_C(1000000000) + now.tv_nsec - start.tv_nsec >= LIVE_COMMIT_TIMEOUT_NS)
+            return 0;
+        sched_yield();
+    }
     return 1;
 }
 

@@ -101,8 +101,13 @@ static void handle_control(struct engine *engine, char *command, const struct so
     }
     else if(!strcmp(command,"live begin") && fxdsp_live_begin(atomic_load_explicit(&engine->dsp,memory_order_acquire)))
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
-    else if(!strcmp(command,"live commit") && fxdsp_live_commit(atomic_load_explicit(&engine->dsp,memory_order_acquire)))
+    else if(!strcmp(command,"live abort") && fxdsp_live_abort(atomic_load_explicit(&engine->dsp,memory_order_acquire)))
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    else if(!strcmp(command,"live commit")) {
+        const char *reply = fxdsp_live_commit(atomic_load_explicit(&engine->dsp,memory_order_acquire))
+            ? "ok\n" : "error live commit timeout\n";
+        (void)sendto(engine->control_fd,reply,strlen(reply),0,(const struct sockaddr *)client,client_size);
+    }
     else if(sscanf(command,"live control %255s %127s %f %c",stage_id,symbol,&live_value,&extra)==3 &&
             fxdsp_live_control(atomic_load_explicit(&engine->dsp,memory_order_acquire),stage_id,symbol,live_value))
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);

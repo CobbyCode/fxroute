@@ -88,7 +88,74 @@ def test_pipewire_engine_exposes_non_rt_datagram_control_protocol():
     assert '"{\\"peaks\\":["' in source
     assert '"swap config' in source and "fxdsp_swap_config" in source
     assert '"live begin"' in source and '"live commit"' in source
+    assert '"live abort"' in source and '"error live commit timeout\\n"' in source
     assert "pthread_create" in source and "pthread_join" in source
+
+
+def test_live_commit_is_bounded_and_abort_discards_stages(tmp_path):
+    config = tmp_path / "live.conf"
+    config.write_text("rate 48000\ninputs 1\noutputs 1\nmatrix 0 0 1\n")
+    harness = tmp_path / "live_test.c"
+    binary = tmp_path / "live_test"
+    harness.write_text(r'''
+#define _POSIX_C_SOURCE 200809L
+#include "dsp.h"
+#include <math.h>
+#include <pthread.h>
+#include <time.h>
+
+static fxdsp *d;
+static float source = 1.0f, sample;
+static const float *input[] = {&source};
+static float *output[] = {&sample};
+static void process(void) { fxdsp_process(d, input, output, 1); }
+static void *process_later(void *unused) {
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 10000000L};
+    (void)unused;
+    nanosleep(&delay, NULL);
+    process();
+    return NULL;
+}
+int main(int argc, char **argv) {
+    char error[256];
+    struct timespec start, end;
+    pthread_t thread;
+    (void)argc;
+    d = fxdsp_load(argv[1], error, sizeof error);
+    if (!d) return 1;
+    if (!fxdsp_live_begin(d) || !fxdsp_live_matrix(d, 0, 0, 0.5f)) return 2;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    if (fxdsp_live_commit(d)) return 3;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double elapsed = end.tv_sec - start.tv_sec + (end.tv_nsec - start.tv_nsec) / 1e9;
+    if (elapsed > 0.9 || fxdsp_live_begin(d) || fxdsp_live_abort(d)) return 4;
+    process();
+    if (fabsf(sample - 0.5f) > 1e-6f) return 5;
+    if (!fxdsp_live_begin(d) || !fxdsp_live_matrix(d, 0, 0, 0.25f) || !fxdsp_live_abort(d)) return 6;
+    process();
+    if (fabsf(sample - 0.5f) > 1e-6f) return 7;
+    if (!fxdsp_live_begin(d) || !fxdsp_live_matrix(d, 0, 0, 0.125f)) return 8;
+    fxdsp_set_output_gain_db(d, -6.0f);
+    if (fabsf(fxdsp_output_gain_db(d) + 6.0f) > 1e-6f) return 12;
+    fxdsp_set_output_gain_db(d, 0.0f);
+    if (!fxdsp_live_begin(d) || !fxdsp_live_matrix(d, 0, 0, 0.75f)) return 13;
+    if (pthread_create(&thread, NULL, process_later, NULL)) return 9;
+    if (!fxdsp_live_commit(d)) return 10;
+    pthread_join(thread, NULL);
+    if (fabsf(sample - 0.75f) > 1e-6f) return 11;
+    fxdsp_free(d);
+    return 0;
+}
+''')
+    flags = shlex.split(subprocess.check_output(
+        ["pkg-config", "--cflags", "--libs", "libebur128", "lilv-0", "samplerate", "speexdsp"], text=True))
+    subprocess.run([
+        "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
+        "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "autogain.c"),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        *flags, "-lm", "-pthread", "-o", str(binary),
+    ], check=True)
+    subprocess.run([str(binary), str(config)], check=True, timeout=3)
 
 
 def test_native_config_swap_is_atomic_and_keeps_realtime_callback_free_of_loading():
@@ -250,6 +317,8 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         test_atomic_mutes_and_peak_snapshots_work_offline(Path(directory))
     test_pipewire_engine_exposes_non_rt_datagram_control_protocol()
+    with tempfile.TemporaryDirectory() as directory:
+        test_live_commit_is_bounded_and_abort_discards_stages(Path(directory))
     test_pipewire_process_callback_has_no_non_rt_operations()
     test_pipewire_process_callback_tolerates_unlinked_output_ports()
     test_pipewire_engine_exposes_post_effect_pre_matrix_taps()
