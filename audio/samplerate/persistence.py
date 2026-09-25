@@ -236,8 +236,7 @@ def _load_pipewire_clock_rate_config() -> dict[str, Any]:
 
 def _save_audio_output_selection(selected_key: str) -> None:
     path = _audio_output_selection_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
+    atomic_write_text(path, json.dumps({
         "selected_key": selected_key,
     }, indent=2) + "\n")
 

@@ -80,6 +80,7 @@ from audio.samplerate.parsing import (
 )
 
 from audio.samplerate.persistence import (
+    _audio_output_selection_path,
     _audio_source_selection_path,
     _load_audio_output_selection,
     _load_audio_source_selection,
@@ -115,6 +116,7 @@ from audio.samplerate.overview import (
     get_samplerate_status,
     measurement_helper_snapshot_summary,
     overview_sample_rate,
+    prepare_audio_output_selection,
     playback_rate_aligned,
     reconcile_selected_output_default,
     selected_output_default_state,

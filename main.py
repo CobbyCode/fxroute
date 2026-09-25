@@ -41,6 +41,7 @@ from http_origin import (
     is_request_origin_trusted,
 )
 from connection_manager import ConnectionManager
+from common.atomic_write import atomic_write_bytes
 import system_update as update_lifecycle
 from library.sources import MusicLibraryManager
 from radio.metadata import RadioMetadataService
@@ -4138,23 +4139,87 @@ async def save_audio_output_selection_route(request: Request):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"key": <string>}')
 
     try:
-        async with measurement_sr_session.lock:
-            result = await asyncio.to_thread(set_audio_output_selection, output_key)
-            await dsp_orchestrator.sync_runtime(
-                result, reason="output-selection", retry_on_stale=True, _rate_lock_held=True,
-            )
-        result = with_subwoofer_derived_delays(result)
-        if runtime.dsp_runtime is not None:
-            result["output_mode"] = {
-                **(result.get("output_mode") or {}),
-                "runtime": runtime.dsp_runtime.snapshot(),
-            }
+        coordinator = playback_transition_coordinator
+        if coordinator is None:
+            raise RuntimeError("Playback transition coordinator is unavailable")
+        async with coordinator.lock:
+            async with measurement_sr_session.lock:
+                if measurement_sr_session.has_active_jobs:
+                    raise HTTPException(status_code=423, detail="Measurement is active; output selection is locked")
+                result = await _shield_coro(_apply_audio_output_selection(output_key))
         await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-switch")
         return result
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise bad_request(exc)
-    except RuntimeError as exc:
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to switch audio output: {exc}")
+
+
+async def _verify_audio_output_selection(key: str, target: dict) -> None:
+    snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {}
+    if not snapshot.get("active") or (snapshot.get("config") or {}).get("output_key") != key:
+        raise RuntimeError(f"Native DSP graph did not commit output {key}")
+    diagnosis = await playback_orchestration.configured().playback_graph_diagnosis(target)
+    if diagnosis.get("output_key") != key or not diagnosis.get("links_complete"):
+        raise RuntimeError(f"Native DSP links did not verify for output {key}")
+
+
+async def _apply_audio_output_selection(key: str) -> dict:
+    """Apply and verify a target under Coordinator and rate ownership."""
+    selected = await asyncio.to_thread(samplerate.prepare_audio_output_selection, key)
+    previous = await asyncio.to_thread(get_audio_output_overview)
+    previous_default = (previous.get("default_output") or {}).get("key")
+    if not previous_default:
+        raise RuntimeError("Previous default sink is unavailable")
+    selection_path = samplerate._audio_output_selection_path()
+    previous_bytes = await asyncio.to_thread(lambda: selection_path.read_bytes() if selection_path.exists() else None)
+    previous_graph_key = ((runtime.dsp_runtime.snapshot().get("config") or {}).get("output_key")
+                          if runtime.dsp_runtime is not None else None)
+    target = await asyncio.to_thread(get_audio_output_overview, selection_key=key)
+    if (target.get("selected_output") or {}).get("key") != key:
+        raise RuntimeError("Selected output is no longer available")
+
+    try:
+        await asyncio.to_thread(samplerate._set_default_sink, selected["name"])
+        await dsp_orchestrator.sync_runtime(
+            reason="output-selection", target_overview=target, _rate_lock_held=True,
+        )
+        await _verify_audio_output_selection(key, target)
+        # Re-read the live default before publishing the persistent selection.
+        live = await asyncio.to_thread(get_audio_output_overview, selection_key=key)
+        if (live.get("default_output") or {}).get("key") != selected["name"]:
+            raise RuntimeError("Default sink changed before output selection commit")
+        await asyncio.to_thread(samplerate._save_audio_output_selection, key)
+    except BaseException:
+        try:
+            current_bytes = await asyncio.to_thread(
+                lambda: selection_path.read_bytes() if selection_path.exists() else None
+            )
+            if current_bytes != previous_bytes:
+                if previous_bytes is None:
+                    await asyncio.to_thread(selection_path.unlink, missing_ok=True)
+                else:
+                    await asyncio.to_thread(atomic_write_bytes, selection_path, previous_bytes)
+            await asyncio.to_thread(samplerate._set_default_sink, previous_default)
+            if previous_graph_key and previous_graph_key != key:
+                restore = await asyncio.to_thread(get_audio_output_overview, selection_key=previous_graph_key)
+                try:
+                    await _verify_audio_output_selection(previous_graph_key, restore)
+                except RuntimeError:
+                    await dsp_orchestrator.sync_runtime(
+                        reason="output-selection-rollback", target_overview=restore, _rate_lock_held=True,
+                    )
+                await _verify_audio_output_selection(previous_graph_key, restore)
+        except BaseException:
+            logger.exception("Output selection rollback failed")
+            raise RuntimeError("Output selection failed and previous graph could not be restored")
+        raise
+
+    result = with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview))
+    result["output_mode"] = {**(result.get("output_mode") or {}), "runtime": runtime.dsp_runtime.snapshot()}
+    return result
 
 
 _output_service_instance: OutputService | None = None

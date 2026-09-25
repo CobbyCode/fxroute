@@ -347,7 +347,7 @@ def _selectable_fallback_key(explicit_outputs: list[dict[str, Any]], default_nam
             return item["key"]
     return None
 
-def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str, Any]:
+def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection_key: str | None = None) -> dict[str, Any]:
     # The independent PipeWire/BlueZ enumerations below each spawn their own
     # subprocess; running them concurrently keeps this builder's latency near
     # the slowest single read instead of the sum of all reads.  Callers that
@@ -375,6 +375,8 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
         default_sink = status.get("sink") or {"id": None, "name": None, "description": None}
         relevant_sink = status.get("relevant_sink") or {}
         selection_state = _load_audio_output_selection()
+        if selection_key is not None:
+            selection_state = {**selection_state, "selected_key": selection_key}
         # The v2 output state is the only source of truth; without a usable
         # head the overview degrades to stereo exactly like a missing file.
         output_mode = (
@@ -410,7 +412,7 @@ def get_audio_output_overview(status: dict[str, Any] | None = None) -> dict[str,
     default_name = default_sink.get("name")
     current_name = relevant_sink.get("name") or default_name
     default_label = default_sink.get("description") or _humanize_sink_name(default_name)
-    selected_key = selection_state.get("selected_key")
+    selected_key = selection_key if selection_key is not None else selection_state.get("selected_key")
 
     # The per-sink EnumFormat reads are independent commands; run them
     # concurrently before the assembly loop.  A per-sink failure is stored so
@@ -767,7 +769,7 @@ def get_audio_source_overview() -> dict[str, Any]:
     }
 
 
-def set_audio_output_selection(key: str) -> dict[str, Any]:
+def prepare_audio_output_selection(key: str) -> dict[str, Any]:
     normalized_key = (key or "").strip()
     if not normalized_key:
         raise ValueError("Output key is required")
@@ -787,9 +789,13 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
     ):
         raise ValueError("Selected output does not support the configured fixed sample rate")
 
-    # A deliberate device switch only changes the selection. Topology and
-    # DSP state live in the v2 output state and follow explicitly through
-    # its own apply path; there is no per-device mode memory anymore.
+    return selected_output
+
+
+def set_audio_output_selection(key: str) -> dict[str, Any]:
+    selected_output = prepare_audio_output_selection(key)
+    # Startup re-apply retains the synchronous selection-only behavior. The
+    # HTTP switch stages and verifies the graph before persisting instead.
     _set_default_sink(selected_output["name"])
     _save_audio_output_selection(selected_output["key"])
     return get_audio_output_overview()

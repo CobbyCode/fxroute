@@ -259,10 +259,10 @@ def _reason(context: str, name: str) -> str | None:
         # and start/polling stages of the same funnel.
         return "AutoSub sweep workflow, outside playback transitions"
     if leaf in {
-        "lifespan", "save_audio_output_selection_route",
+        "lifespan", "save_audio_output_selection_route", "_apply_audio_output_selection",
         "_set_canonical_output_volume",
         "_finish_dsp_preset_mutation", "save_dsp_extras",
-        "load_dsp_preset", "_load_dsp_preset", "_load_preset_locked",
+        "load_dsp_preset", "_load_dsp_preset", "_load_preset_locked", "_sync_runtime_drained",
         "_make_dsp_api_deps",
     }:
         return "startup or explicit user configuration workflow"
