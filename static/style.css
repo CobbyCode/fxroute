@@ -4617,7 +4617,7 @@ select.url-input {
 }
 
 .speaker-align-table {
-    min-width: 340px;
+    min-width: 280px;
     width: 100%;
     margin-top: 12px;
     border-collapse: collapse;
@@ -4633,9 +4633,14 @@ select.url-input {
 
 .speaker-align-table th,
 .speaker-align-table td {
-    padding: 6px 8px;
+    padding: 6px 6px;
     text-align: right;
     border-bottom: 1px solid var(--border);
+}
+
+/* A value and its unit stay on one line; only the way label may wrap. */
+.speaker-align-table td {
+    white-space: nowrap;
 }
 
 .speaker-align-table th:first-child {
