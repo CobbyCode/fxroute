@@ -472,6 +472,239 @@ class TrialCommitFlowTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.load()["revision"], self.base["revision"] + 1)
 
 
+class FailedCommitRestoreTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
+    """A verified candidate that never reached disk must not stay audible."""
+
+    def compile_start(self):
+        from measurement.speaker_commit import compile_speaker_candidate
+        return compile_speaker_candidate(self.base, service=self.service, **self.context)[0]
+
+    def compile_candidate(self):
+        from measurement.speaker_commit import compile_speaker_candidate
+        return compile_speaker_candidate(
+            self.proposal["candidate_state"], service=self.service, **self.context)[0]
+
+    async def aligned(self):
+        return confirmation_from(self.alignment, (500, 500))
+
+    async def trial(self, session, **options):
+        return await session.confirm_and_commit(
+            confirm=self.aligned, proposal=self.proposal, live_target=self.live, **options)
+
+    async def test_disk_failure_restores_the_start_rendering(self):
+        session = self.session()
+
+        def failing_commit(*args, **kwargs):
+            raise OSError("disk full")
+
+        self.service.commit = failing_commit
+        with self.assertRaisesRegex(OSError, "disk full"):
+            await self.trial(session)
+        self.assertEqual(self.runtime["fingerprint"], self.compile_start())
+        self.assertEqual(self.runtime["gain_db"], 0.0)
+        self.assertEqual(self.store.load()["revision"], self.base["revision"])
+        self.assertFalse(session.committed)
+        # The session is spent: it neither stages nor restores again.
+        with self.assertRaisesRegex(RuntimeError, "retired"):
+            await session.restore_start()
+
+    async def test_revision_conflict_at_commit_restores_the_start_rendering(self):
+        session = self.session()
+        original = self.service.commit
+
+        def racing_commit(candidate, *, expected_revision):
+            # Another writer lands between the final check and the store lock.
+            other = copy.deepcopy(self.base)
+            other["modes"]["stereo-sub"]["processing"]["right_low"]["level_db"] = -2.0
+            self.store.commit(other, expected_revision=expected_revision)
+            return original(candidate, expected_revision=expected_revision)
+
+        self.service.commit = racing_commit
+        with self.assertRaises(StateConflictError):
+            await self.trial(session)
+        self.assertEqual(self.runtime["fingerprint"], self.compile_start())
+        self.assertEqual(self.store.load()["revision"], self.base["revision"] + 1)
+        self.assertFalse(session.committed)
+
+    async def test_revision_conflict_leaves_a_runtime_someone_else_rendered(self):
+        session = self.session()
+        original = self.service.commit
+
+        def racing_commit(candidate, *, expected_revision):
+            self.store.commit(copy.deepcopy(self.base), expected_revision=expected_revision)
+            self.runtime["fingerprint"] = "other-writer-graph"
+            return original(candidate, expected_revision=expected_revision)
+
+        self.service.commit = racing_commit
+        with self.assertRaises(StateConflictError):
+            await self.trial(session)
+        self.assertEqual(self.runtime["fingerprint"], "other-writer-graph")
+
+    async def test_revision_conflict_keeps_a_candidate_the_new_head_renders(self):
+        session = self.session()
+        original = self.service.commit
+
+        def racing_commit(candidate, *, expected_revision):
+            self.store.commit(copy.deepcopy(candidate), expected_revision=expected_revision)
+            return original(candidate, expected_revision=expected_revision)
+
+        self.service.commit = racing_commit
+        with self.assertRaises(StateConflictError):
+            await self.trial(session)
+        self.assertEqual(self.runtime["fingerprint"], self.compile_candidate())
+
+    async def test_cancel_veto_at_commit_restores_the_start_rendering(self):
+        session = self.session()
+        probes = []
+
+        def veto_at_commit():
+            # The trial checks before and after its confirmation; the third
+            # probe is the commit's own veto.
+            probes.append(True)
+            return len(probes) > 2
+
+        with self.assertRaisesRegex(RuntimeError, "cancellation"):
+            await self.trial(session, cancel_requested=veto_at_commit)
+        self.assertEqual(len(probes), 3)
+        self.assertEqual(self.runtime["fingerprint"], self.compile_start())
+        self.assertEqual(self.store.load()["revision"], self.base["revision"])
+
+    async def test_cancel_in_the_final_readback_restores_the_start_rendering(self):
+        entered = asyncio.Event()
+        gate = asyncio.Event()
+        confirmed = False
+
+        async def readback():
+            nonlocal confirmed
+            if confirmed and not entered.is_set():
+                entered.set()
+                await gate.wait()
+            return await self.readback()
+
+        async def confirm():
+            nonlocal confirmed
+            confirmed = True
+            return confirmation_from(self.alignment, (500, 500))
+
+        session = self.session(readback=readback)
+        worker = asyncio.create_task(session.confirm_and_commit(
+            confirm=confirm, proposal=self.proposal, live_target=self.live))
+        async with asyncio.timeout(5):
+            await entered.wait()
+        self.assertEqual(self.runtime["fingerprint"], self.compile_candidate())
+        worker.cancel()
+        async with asyncio.timeout(5):
+            await asyncio.gather(worker, return_exceptions=True)
+        self.assertTrue(worker.cancelled())
+        self.assertFalse(session.committed)
+        self.assertEqual(self.store.load()["revision"], self.base["revision"])
+        self.assertEqual(self.runtime["fingerprint"], self.compile_start())
+
+    async def test_cancel_during_the_unconfirmed_restore_waits_for_it(self):
+        start = self.compile_start()
+        entered = asyncio.Event()
+        gate = asyncio.Event()
+
+        async def slow_restore(new, **kwargs):
+            if new.config.plan_fingerprint == start and self.stage_calls:
+                entered.set()
+                await gate.wait()
+            await self.guarded_stage(new, **kwargs)
+
+        async def offset():
+            return confirmation_from(self.alignment, (500, 548))
+
+        session = self.session(guarded_stage=slow_restore)
+        worker = asyncio.create_task(session.confirm_and_commit(
+            confirm=offset, proposal=self.proposal, live_target=self.live))
+        async with asyncio.timeout(5):
+            await entered.wait()
+        worker.cancel()
+        await asyncio.sleep(0.05)
+        self.assertFalse(worker.done())
+        gate.set()
+        async with asyncio.timeout(5):
+            await asyncio.gather(worker, return_exceptions=True)
+        self.assertTrue(worker.cancelled())
+        self.assertEqual(self.runtime["fingerprint"], start)
+
+
+class ServiceRestoreOwnershipTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
+    """The job slot and measurement owner outlive every restore of the run."""
+
+    async def run_cancelled_restore(self, *, dry_run):
+        from contextlib import asynccontextmanager
+        from measurement.speaker_service import SpeakerAlignService
+        from measurement.speaker_commit import compile_speaker_candidate
+
+        start, _ = compile_speaker_candidate(self.base, service=self.service, **self.context)
+        entered = asyncio.Event()
+        gate = asyncio.Event()
+        restored = asyncio.Event()
+        held = set()
+
+        async def slow_restore(new, **kwargs):
+            restoring = new.config.plan_fingerprint == start and self.runtime["fingerprint"] not in (None, start)
+            if restoring:
+                entered.set()
+                await gate.wait()
+            await self.guarded_stage(new, **kwargs)
+            if restoring:
+                restored.set()
+
+        session = self.session(guarded_stage=slow_restore)
+
+        @asynccontextmanager
+        async def scope(job_id):
+            held.add(job_id)
+            try:
+                yield
+            finally:
+                held.discard(job_id)
+
+        async def acquire(alignment, **kwargs):
+            return {"captures": captures_for(alignment, (96, 240)),
+                    "planning": planning_from(alignment, (96, 240)), "provenance": {}}
+
+        arrivals = (500, 500) if dry_run else (500, 548)
+
+        async def confirm(alignment, **kwargs):
+            return {"confirmation": confirmation_from(alignment, arrivals), "provenance": {}}
+
+        service = SpeakerAlignService(
+            get_state=self.service.load,
+            describe=lambda state: {**self.context, "fingerprint": "frozen-plan"},
+            acquire=acquire, confirm=confirm, create_session=lambda *a, **k: session,
+            freeze_live=lambda state, **ctx: freeze_measurement_target(state, bank_id="global", **ctx),
+            job_scope=scope)
+        job_id = service.start("left", input_id="mic", reference_input_channel="2",
+                               reference_id="interface:input-2:upstream",
+                               microphone_position_id="seat-1-fixed", dry_run=dry_run)
+        async with asyncio.timeout(5):
+            await entered.wait()
+        service.cancel(job_id)
+        await asyncio.sleep(0.05)
+        service.cancel(job_id)
+        await asyncio.sleep(0.05)
+        self.assertEqual(held, {job_id})
+        self.assertTrue(service.active)
+        self.assertEqual(service.status(job_id)["status"], "cancelling")
+        gate.set()
+        job = await service.wait_for(job_id, timeout_seconds=5)
+        self.assertEqual(job["status"], "cancelled")
+        self.assertTrue(restored.is_set())
+        self.assertEqual(held, set())
+        self.assertFalse(service.active)
+        self.assertEqual(self.runtime["fingerprint"], start)
+        self.assertEqual(self.store.load()["revision"], self.base["revision"])
+
+    async def test_cancel_during_trial_restore_keeps_the_owner(self):
+        await self.run_cancelled_restore(dry_run=True)
+
+    async def test_cancel_during_unconfirmed_restore_keeps_the_owner(self):
+        await self.run_cancelled_restore(dry_run=False)
+
+
 class ReleaseAdapterTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
     async def test_release_rebuilds_committed_plan(self):
         session = self.session()

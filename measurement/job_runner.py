@@ -97,8 +97,10 @@ class MeasurementJobRunner:
             if isinstance(output_mask, int) and output_mask > 0:
                 if not callable(self._output_mask_apply):
                     raise RuntimeError("Native DSP output-mask control is unavailable")
-                await self._output_mask_apply(output_mask)
+                # Owned from the moment the command may reach the engine: a
+                # failed or cancelled acknowledgement can still leave it muted.
                 mask_owned = True
+                await self._output_mask_apply(output_mask)
 
             _rm["scope_done"] = time.monotonic()
             worker_task = asyncio.create_task(asyncio.to_thread(executor, deepcopy(job)))
@@ -152,9 +154,15 @@ class MeasurementJobRunner:
                         job["result"] = None
                         job["error"] = {"detail": str(exc)}
         finally:
+            # A cancel that lands during this cleanup must not skip the scope
+            # exit: the measurement scope lock would stay held. The runtime's
+            # mask operations finish their engine exchange before re-raising.
+            cleanup_cancelled = False
             if mask_owned:
                 try:
                     await self._output_mask_clear(deepcopy(output_mask))
+                except asyncio.CancelledError:
+                    cleanup_cancelled = True
                 except Exception:
                     logger.exception("Failed to restore native DSP output mask after measurement")
             if scope_owned:
@@ -164,6 +172,8 @@ class MeasurementJobRunner:
                     else:
                         exit_scope = self._active_scope_exit
                     await exit_scope(bool(previous_effect_bypass))
+                except asyncio.CancelledError:
+                    cleanup_cancelled = True
                 except Exception:
                     logger.exception("Failed to restore native DSP effect bypass after measurement")
             try:
@@ -185,6 +195,8 @@ class MeasurementJobRunner:
                 logger.exception("Failed to persist terminal measurement job %s", job_id)
             self._cleanup_job(job_id)
             self._retain_history()
+            if cleanup_cancelled:
+                raise asyncio.CancelledError()
 
     def cancel_job(self, job_id: str, job: dict[str, Any]) -> dict[str, Any]:
         with self.process_lock:

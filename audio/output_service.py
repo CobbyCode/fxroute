@@ -82,6 +82,16 @@ class OutputService:
             raise MeasurementActiveError("Measurement is active; output state is locked")
         return self.commit(mutate(self._deps.store.load()), expected_revision=expected_revision)
 
+    def commit_unowned(self, candidate: dict, *, expected_revision: int) -> dict:
+        """Commit a prepared candidate only while no measurement owns the graph.
+
+        Interactive edits prepare across awaits; a measurement job that took
+        ownership meanwhile must win, so the guard runs again at the commit.
+        """
+        if self._deps.measurement_active():
+            raise MeasurementActiveError("Measurement is active; output state is locked")
+        return self.commit(candidate, expected_revision=expected_revision)
+
     def commit(self, candidate: dict, *, expected_revision: int) -> dict:
         """Commit a prepared candidate (see apply for the guarded variant).
 

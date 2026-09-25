@@ -36,7 +36,12 @@ class _RuntimeOutputModeMixin:
         return service
 
     async def commit_output_mode_runtime(self, request: TransitionRequest) -> dict[str, Any]:
-        """Commit the v2 candidate only after the guarded graph readback."""
+        """Commit the v2 candidate only after the guarded graph readback.
+
+        The edit was checked against measurement ownership before the
+        transition started; a job that took the graph since then refuses the
+        commit and the transition rolls the graph back.
+        """
         v2 = request.output_state_transition or {}
         if v2.get("candidate_state") is None:
             raise RuntimeError("output-mode transition has no v2 candidate state")
@@ -44,8 +49,8 @@ class _RuntimeOutputModeMixin:
         expected_revision = v2.get("expected_revision")
         if type(expected_revision) is bool or not isinstance(expected_revision, int):
             raise RuntimeError("output-state transition has no base revision")
-        committed = service.commit(v2["candidate_state"],
-                                   expected_revision=expected_revision)
+        committed = service.commit_unowned(v2["candidate_state"],
+                                           expected_revision=expected_revision)
         return {
             "output_mode_persisted": True,
             "output_state_revision": committed["revision"],

@@ -319,6 +319,16 @@ class CommitV2Tests(unittest.TestCase):
                     v2_request(v2_payload(self.service, self.candidate, self.base))))
         self.assertEqual(self.service.load()["revision"], 2)
 
+    def test_commit_refuses_a_measurement_that_took_the_graph_meanwhile(self):
+        from audio.output_service import MeasurementActiveError
+        runtime = make_transition_runtime()
+        owned = OutputService(replace(self.service._deps, measurement_active=lambda: True))
+        payload = v2_payload(self.service, self.candidate, self.base)
+        with mock.patch.object(main, "get_output_service", return_value=owned):
+            with self.assertRaises(MeasurementActiveError):
+                asyncio.run(runtime.commit_output_mode_runtime(v2_request(payload)))
+        self.assertEqual(self.service.load()["revision"], 1)
+
     def test_commit_without_service_fails(self):
         runtime = make_transition_runtime()
         with mock.patch.object(main, "get_output_service", return_value=None):
@@ -554,6 +564,25 @@ class MainTopologyBranchTests(unittest.TestCase):
                                  "assignments": ["main_l", "main_r", "sub1", "sub2"]},
                 })))
         self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_coordinator_measurement_owner_maps_to_423(self):
+        from audio.output_service import MeasurementActiveError
+
+        async def owned(_request):
+            failure = PlaybackTransitionFailure("owned", transition_id="t",
+                                                stage="output-mode-persist")
+            failure.__cause__ = MeasurementActiveError("Measurement is active; output state is locked")
+            raise failure
+
+        with route_context(self.service, self.manager, owned):
+            with self.assertRaises(main.HTTPException) as ctx:
+                asyncio.run(main.apply_audio_output_state(FakeRequest({
+                    "expected_revision": 1,
+                    "mutation": {"kind": "set_routing", "mode": "stereo-sub",
+                                 "assignments": ["main_l", "main_r", "sub1", "sub2"]},
+                })))
+        self.assertEqual(ctx.exception.status_code, 423)
+        self.assertEqual(self.service.load()["revision"], 1)
 
     def test_sync_plan_runtime_binding_forwards_target(self):
         fake = mock.MagicMock()

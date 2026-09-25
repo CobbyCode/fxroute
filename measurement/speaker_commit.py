@@ -28,7 +28,10 @@ The caller must serialize other graph owners and persistence paths across
 the session. Revision checks detect drift before and after awaits but cannot
 make disk and hardware atomic. On stale revision the session refuses further
 staging, restoration and commits and never touches the newer runtime. Create
-a new session, not a rebased proposal.
+a new session, not a rebased proposal. The one exception is a failed winner
+commit: a verified candidate that never reached disk must not stay audible,
+so the start rendering goes back as long as the runtime still shows that
+candidate (see ``_restore_after_failed_commit``).
 """
 
 from __future__ import annotations
@@ -44,6 +47,7 @@ from audio.output_service import OutputService
 from audio.output_state import routing_for_device, validate_output_state
 from audio.output_state_store import StateConflictError
 from audio.output_topology import derive_topology
+from common.run_to_completion import run_to_completion
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget
 from measurement.release_device import check_release_device
 from measurement.speaker_apply import verify_confirmation
@@ -154,6 +158,7 @@ class SpeakerAlignSession:
         self._start_prepared = self._prepare(self._start_state)
         self._staged: _Prepared | None = None
         self._committed = False
+        self._retired = False
 
     @property
     def committed(self) -> bool:
@@ -167,6 +172,8 @@ class SpeakerAlignSession:
     def _require_uncommitted(self) -> None:
         if self._committed:
             raise RuntimeError("Speaker Align session is committed; its stager is retired")
+        if self._retired:
+            raise RuntimeError("Speaker Align session failed its commit; its stager is retired")
 
     def _prepare(self, state: dict) -> _Prepared:
         fingerprint, plan = compile_speaker_candidate(state, service=self._service, **self._context)
@@ -289,6 +296,37 @@ class SpeakerAlignSession:
         self._require_uncommitted()
         return await self._stage_prepared_unlocked(self._start_prepared)
 
+    async def _restore_after_failed_commit(self) -> None:
+        """Take the verified but unpersisted candidate off the runtime.
+
+        While the start revision still holds (disk error, cancel, veto) this
+        is the ordinary guarded restore. A moved revision means another
+        writer committed: the runtime is still this session's only while it
+        shows the staged candidate and the new head does not render that same
+        plan, and only then does the start rendering go back, guarded by the
+        new head's revision. The session retires either way.
+        """
+        self._retired = True
+        staged = self._staged
+        if staged is None or staged.fingerprint == self._start_prepared.fingerprint:
+            return
+        head = self._service.load()
+        if head["revision"] != self._revision:
+            snapshot = await self._readback()
+            config = snapshot.get("config") if isinstance(snapshot, dict) else None
+            if (not isinstance(config, dict) or snapshot.get("active") is not True
+                    or config.get("plan_fingerprint") != staged.fingerprint):
+                return
+            try:
+                head_fingerprint, _ = compile_speaker_candidate(
+                    head, service=self._service, **self._context)
+            except (FileNotFoundError, ValueError):
+                head_fingerprint = None
+            if head_fingerprint == staged.fingerprint:
+                return
+            self._revision = head["revision"]
+        await self._stage_prepared_unlocked(self._start_prepared)
+
     async def restore_start(self) -> dict:
         """Return to the frozen start rendering, only while it still owns it."""
         async with self._lock:
@@ -372,11 +410,12 @@ class SpeakerAlignSession:
         shared take per speaker side, so a staged way delay cannot cancel
         itself out of the residual the way per-way references do. A failed
         measurement restores the start rendering and returns
-        ``confirmed: False`` without committing; errors restore (shielded
-        against cancellation) and re-raise. A cancel-vetoed commit leaves the
-        session uncommitted with the candidate still staged: the caller must
-        ``restore_start()`` on that path. After commit the runtime shows the
-        committed rendering and the session retires.
+        ``confirmed: False`` without committing; errors restore and re-raise.
+        A commit that fails after the confirmation (disk error, revision
+        conflict, cancel veto or a cancel during the final readback) restores
+        the start rendering too, then re-raises. Every restore finishes before
+        this returns, even when cancelled meanwhile. After commit the runtime
+        shows the committed rendering and the session retires.
         """
         async with self._lock:
             self._require_uncommitted()
@@ -422,14 +461,18 @@ class SpeakerAlignSession:
                     raise asyncio.CancelledError("Speaker Align trial was cancelled")
                 check = verify_confirmation(proposal, confirmation, **verify_options)
             except BaseException:
-                await asyncio.shield(self._restore_unlocked())
+                await run_to_completion(self._restore_unlocked())
                 raise
             if not check["confirmed"]:
-                await asyncio.shield(self._restore_unlocked())
+                await run_to_completion(self._restore_unlocked())
                 return {"confirmed": False, "check": check, "confirmation": confirmation,
                         "restored": True}
-            committed = await self._commit_unlocked(
-                proposal["candidate_state"], cancel_requested)
+            try:
+                committed = await self._commit_unlocked(
+                    proposal["candidate_state"], cancel_requested)
+            except BaseException:
+                await run_to_completion(self._restore_after_failed_commit())
+                raise
             return {"confirmed": True, "check": check, "confirmation": confirmation,
                     "committed": committed, "restored": False}
 

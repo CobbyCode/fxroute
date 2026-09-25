@@ -550,13 +550,44 @@ class ApplyAndConfirmTests(unittest.IsolatedAsyncioTestCase):
             async with asyncio.timeout(10):
                 await entered.wait()
             worker.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await worker
+            await asyncio.sleep(0.05)
+            worker.cancel()
+            await asyncio.sleep(0.05)
+            # The caller releases its measurement owner once this returns, so
+            # the cancel must wait for the restore instead of overtaking it.
+            self.assertFalse(worker.done())
+            self.assertNotIn("restore-done", calls)
         finally:
             released.set()
+        with self.assertRaises(asyncio.CancelledError):
+            async with asyncio.timeout(10):
+                await worker
+        self.assertTrue(restore_done.is_set())
+        self.assertEqual(calls, ["stage", "confirm", "restore", "restore-done"])
+
+    async def test_cancel_during_final_restore_waits_for_it(self):
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        calls = []
+
+        async def slow_restore():
+            calls.append("restore")
+            entered.set()
+            await released.wait()
+            calls.append("restore-done")
+
+        doubles = StageDoubles(self.aligned)
+        worker = asyncio.create_task(self.run_trial(doubles, restore=slow_restore))
         async with asyncio.timeout(10):
-            await restore_done.wait()
-        self.assertIn("restore-done", calls)
+            await entered.wait()
+        worker.cancel()
+        await asyncio.sleep(0.05)
+        self.assertFalse(worker.done())
+        released.set()
+        with self.assertRaises(asyncio.CancelledError):
+            async with asyncio.timeout(10):
+                await worker
+        self.assertEqual(calls, ["restore", "restore-done"])
 
 
 if __name__ == "__main__":

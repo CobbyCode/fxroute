@@ -27,6 +27,7 @@ from audio.output_ports import (
     warn_semantic_playback_fallback,
 )
 from audio.pw_link import stop_command_child_cancellation_safe
+from common.run_to_completion import run_to_completion
 
 # Sources that must reach the hardware only through the DSP output stage.
 DIRECT_SOURCE_NODES = ("mpv", "spotify")
@@ -610,23 +611,38 @@ class DSPRuntime:
 
         Only the given bits are set: unrelated bits (for example the legacy
         exact-sub mute) stay untouched, which is why clearing must repeat the
-        same mask rather than resetting the engine's whole mute state.
+        same mask rather than resetting the engine's whole mute state. The
+        engine applies the mute before it acknowledges, so the command, its
+        acknowledgement and the recorded mask finish as one unit; a cancel is
+        re-raised afterwards.
         """
         async with self._mute_ownership_lock:
             bits = self._validate_output_mask(mask)
             previous = self._output_mask
-            await self._control(f"mute {bits} 1", reply=True)
-            self._output_mask |= bits
+
+            async def exchange() -> None:
+                await self._control(f"mute {bits} 1", reply=True)
+                self._output_mask |= bits
+
+            await run_to_completion(exchange())
             return previous
 
     async def clear_output_mask(self, mask: int) -> None:
-        """Release output-mask bits without clearing an active exact sub mute."""
+        """Release output-mask bits without clearing an active exact sub mute.
+
+        Like ``apply_output_mask``, the engine command and the recorded mask
+        finish together even when the caller is cancelled meanwhile.
+        """
         async with self._mute_ownership_lock:
             bits = self._validate_output_mask(mask)
             control_bits = bits & ~self._exact_sub_mute_mask
-            if control_bits:
-                await self._control(f"mute {control_bits} 0", reply=True)
-            self._output_mask &= ~bits
+
+            async def exchange() -> None:
+                if control_bits:
+                    await self._control(f"mute {control_bits} 0", reply=True)
+                self._output_mask &= ~bits
+
+            await run_to_completion(exchange())
 
     async def reset_output_peaks(self) -> None:
         await self._control("peaks reset", reply=True)

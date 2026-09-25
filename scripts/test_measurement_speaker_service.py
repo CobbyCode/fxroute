@@ -237,9 +237,24 @@ class StartValidationTests(ServiceFixture, unittest.TestCase):
         self.state["modes"]["stereo-sub"]["selected_bank"] = "left_low"
         service = self.service()
         with self.assertRaisesRegex(ValueError, "Global"):
-            service.start(side="left", input_id="mic", reference_input_channel="",
+            service.start(side="left", input_id="mic", reference_input_channel="2",
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
+
+    def test_missing_electrical_reference_fails_before_any_sweep(self):
+        # Verification only admits the electrical reference: without one the
+        # run must stop before its planning sweep, not after verification.
+        service = self.service()
+        for channels in ({"reference_input_channel": ""},
+                         {"reference_input_channel": None},
+                         {"reference_input_channel": " ", "reference_input_channel_left": "",
+                          "reference_input_channel_right": None}):
+            with self.assertRaisesRegex(ValueError, "electrical reference"):
+                service.start(side="left", input_id="mic", reference_id="r",
+                              microphone_position_id="m", **channels)
+        self.assertEqual(service.jobs(), [])
+        self.assertEqual(self.acquire_calls, [])
+        self.assertFalse(service.active)
 
     def test_non_crossover_state_fails_before_job_exists(self):
         self.state["active_mode"] = "stereo"
@@ -320,6 +335,12 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verified["reference_input_channel"], "7")
         self.assertEqual(verified["reference_input_channel_left"], "7")
         self.assertEqual(verified["reference_input_channel_right"], "8")
+
+    async def test_per_side_electrical_reference_alone_is_accepted(self):
+        service, job_id = self.start(reference_input_channel="",
+                                     reference_input_channel_left="7", dry_run=True)
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "trial-done", job)
 
     async def test_dry_run_confirms_without_committing(self):
         service, job_id = self.start(dry_run=True)

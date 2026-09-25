@@ -4832,6 +4832,8 @@ async def _apply_audio_output_state_body(body: dict):
                     raise HTTPException(status_code=409, detail={
                         "code": "revision-conflict", "message": str(cause),
                         "revision": service.load()["revision"]}) from exc
+                if isinstance(cause, MeasurementActiveError):
+                    raise HTTPException(status_code=423, detail=str(cause)) from exc
                 cause = cause.__cause__
             raise _transition_error_http(exc) from exc
         committed = service.load()
@@ -4875,7 +4877,8 @@ async def _apply_audio_output_state_body(body: dict):
                 staged_old_target.config.layout, staged_new_target.config.layout, previous_gain)
 
     try:
-        committed = service.commit(candidate, expected_revision=expected_revision)
+        # A measurement job may have taken the graph during the awaits above.
+        committed = service.commit_unowned(candidate, expected_revision=expected_revision)
     except StateConflictError as exc:
         raise HTTPException(status_code=409, detail={
             "code": "revision-conflict", "message": str(exc),

@@ -90,5 +90,65 @@ class MeasurementLockTests(unittest.IsolatedAsyncioTestCase):
         service.assert_not_called()
 
 
+class LateMeasurementOwnerTests(unittest.IsolatedAsyncioTestCase):
+    """An edit that passed the lock loses to a job that took the graph meanwhile."""
+
+    async def test_output_state_apply_rechecks_the_owner_before_commit(self):
+        import asyncio
+        import threading
+        from dataclasses import replace
+        from audio.output_service import OutputService
+        from test_measurement_speaker_commit import SessionFixture
+
+        class Rig(SessionFixture, unittest.TestCase):
+            def runTest(self):
+                pass
+
+        rig = Rig()
+        rig.setUp()
+        self.addCleanup(rig.doCleanups)
+        owner = SimpleNamespace(has_active_jobs=False)
+        service = OutputService(replace(
+            rig.service._deps, measurement_active=lambda: owner.has_active_jobs))
+        overview_entered = threading.Event()
+        release_overview = threading.Event()
+        self.addCleanup(release_overview.set)
+
+        def slow_overview():
+            overview_entered.set()
+            if not release_overview.wait(5):
+                raise TimeoutError("overview gate was not released")
+            return {"selected_output": {"key": "dev", "channels": 6},
+                    "output_mode": {"effective_output_key": "dev", "effective_output_channels": 6,
+                                    "hardware_playback_ports": [f"playback_AUX{i}" for i in range(6)]}}
+
+        rebuild = AsyncMock()
+        runtime = SimpleNamespace(snapshot=lambda: {"output_gain_db": 0.0},
+                                  guarded_rebuild_rendered=rebuild, sync_rendered=AsyncMock())
+        with (
+            patch.object(main, "get_output_service", return_value=service),
+            patch.object(main, "measurement_sr_session", owner),
+            patch.object(main, "get_audio_output_overview", new=slow_overview),
+            patch.object(main, "get_samplerate_status", return_value={"active_rate": 48000}),
+            patch.object(main, "_require_dsp_manager", return_value=rig.manager),
+            patch.object(main.runtime, "dsp_runtime", runtime),
+        ):
+            worker = asyncio.create_task(main._apply_audio_output_state_body({
+                "expected_revision": rig.base["revision"],
+                "mutation": {"kind": "set_processing", "mode": "stereo-sub",
+                             "role": "left_low", "level_db": -5.0}}))
+            self.assertTrue(await asyncio.to_thread(overview_entered.wait, 3))
+            # Speaker Align registers its owner while the edit is preparing.
+            owner.has_active_jobs = True
+            release_overview.set()
+            with self.assertRaises(HTTPException) as ctx:
+                await worker
+        self.assertEqual(ctx.exception.status_code, 423)
+        self.assertEqual(service.load()["revision"], rig.base["revision"])
+        self.assertEqual(
+            service.load()["modes"]["stereo-sub"]["processing"]["left_low"]["level_db"], 0.0)
+        rebuild.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

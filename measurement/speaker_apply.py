@@ -11,8 +11,8 @@ The runtime boundaries (``stage``/``restore``) are injected. ``stage`` owns
 an atomicity contract: it must either fully render the exact candidate it
 receives or leave the start rendering untouched (restoring internally on
 failure), so a stage failure runs no restore here. Once staging succeeded,
-every later path restores (shielded against cancellation) before returning
-or re-raising; a stage failure itself never triggers restore. ``stage`` must
+every later path restores to completion before returning or re-raising, even
+when cancelled meanwhile; a stage failure itself never triggers restore. ``stage`` must
 never mutate its argument. The production wiring (plan compile, guarded
 rebuild, runtime readback) belongs to the commit/integration slice, not here.
 """
@@ -24,6 +24,8 @@ from collections.abc import Awaitable, Callable
 from copy import deepcopy
 import math
 from typing import Any
+
+from common.run_to_completion import run_to_completion
 
 # Ways must measure time-aligned after the trial apply. Arrival detection
 # jitters a few samples; 0.25 ms (~12 samples at 48 kHz) is far below any
@@ -199,8 +201,9 @@ async def apply_and_confirm(
     measurement returns ``confirmed: False``; errors re-raise after restore,
     except a failing restore itself surfaces loudly (chained onto the original
     error as context). A stage failure runs no restore (the stage boundary owns
-    atomicity); every later path restores shielded against cancellation before
-    returning or raising.
+    atomicity); every later path finishes its restore before returning or
+    raising, and a cancel that arrives during the restore is re-raised only
+    once the start rendering is back.
     """
     for label, bound in (("stage", stage), ("restore", restore), ("confirm", confirm)):
         if not callable(bound):
@@ -233,13 +236,10 @@ async def apply_and_confirm(
         confirmation = await confirm()
         _check_cancel(cancel_requested)
         check = verify_confirmation(proposal, confirmation, **verify_options)
-    except asyncio.CancelledError:
-        await asyncio.shield(restore())
-        raise
     except BaseException:
-        await asyncio.shield(restore())
+        await run_to_completion(restore())
         raise
-    await asyncio.shield(restore())
+    await run_to_completion(restore())
     return {
         "confirmed": check["confirmed"],
         "check": check,

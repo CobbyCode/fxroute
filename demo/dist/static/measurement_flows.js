@@ -687,6 +687,9 @@ async function startSpeakerAlign(side) {
         measurementState.activeMeasurementKind = '';
         measurementState.speakerAlignJobId = '';
         measurementState.speakerAlignCancelRequested = false;
+        // The result arrived while the run was still in flight, which hides
+        // the Save action; render it again now that the run is over.
+        renderSpeakerAlignResultActions();
         deps.fetchAudioOutputOverview().catch(() => {});
         deps.renderMeasurementPanel();
     }
@@ -718,6 +721,24 @@ async function cancelSpeakerAlign() {
     }
 }
 
+// Giving up on polling must not leave the backend job running: it would keep
+// the measurement owner and the output mutes. Cancel it before local cleanup.
+async function abandonSpeakerAlignJob(jobId, reason) {
+    let cancelled = false;
+    try {
+        const resp = await api.cancelSpeakerAlignJob(jobId);
+        cancelled = !!resp?.ok;
+    } catch (error) {
+        console.warn('Speaker Align cancel after polling gave up failed', error);
+    }
+    const measurementState = deps.getState().measurement || {};
+    discardSpeakerAlignResults();
+    measurementState.statusText = cancelled
+        ? `${reason}; the job was cancelled`
+        : `${reason}; cancelling the job failed`;
+    deps.showToast(measurementState.statusText, 'error');
+}
+
 function isCurrentSpeakerAlignPoll(jobId, generation) {
     const live = deps.getState().measurement || {};
     return Number(live.jobGeneration || 0) === Number(generation || 0)
@@ -738,8 +759,7 @@ async function pollSpeakerAlignJob(jobId) {
         if (!isCurrentSpeakerAlignPoll(jobId, pollGeneration)) return;
         await deps.sleep(500);
         if (Date.now() - startedAt >= maxRunningMs) {
-            measurementState.statusText = 'Speaker Align timed out while waiting for the job';
-            deps.showToast(measurementState.statusText, 'error');
+            await abandonSpeakerAlignJob(jobId, 'Speaker Align timed out while waiting for the job');
             return;
         }
         try {
@@ -775,8 +795,7 @@ async function pollSpeakerAlignJob(jobId) {
             consecutiveErrors += 1;
             console.warn('pollSpeakerAlignJob error', error);
             if (consecutiveErrors >= maxConsecutiveErrors) {
-                measurementState.statusText = error?.message || 'Speaker Align polling failed';
-                deps.showToast(measurementState.statusText, 'error');
+                await abandonSpeakerAlignJob(jobId, error?.message || 'Speaker Align polling failed');
                 return;
             }
         }
@@ -971,13 +990,24 @@ async function openSpeakerAlignRunById(measurementId) {
 }
 
 
+// A failed or cancelled run leaves no result behind: an earlier Verified
+// table must not stay on screen as if it belonged to this run.
+function discardSpeakerAlignResults() {
+    const measurementState = deps.getState().measurement || {};
+    measurementState.speakerAlignResult = null;
+    measurementState.speakerAlignResults = null;
+    measurementState.speakerAlignResultSaved = false;
+    const resultsEl = deps.getElements().measurementSpeakerAlignResults;
+    if (resultsEl) resultsEl.innerHTML = '';
+}
+
 async function handleSpeakerAlignResult(job) {
     const measurementState = deps.getState().measurement || {};
     const statusEl = deps.getElements().measurementSpeakerAlignStatus;
     const text = formatSpeakerStatus(job);
     if (job.status === 'cancelled' || job.status === 'cancelling') {
         measurementState.statusText = text;
-        measurementState.speakerAlignResult = null;
+        discardSpeakerAlignResults();
         if (statusEl) statusEl.textContent = text;
         renderSpeakerAlignResultActions();
         deps.showToast(text, 'success');
@@ -985,7 +1015,7 @@ async function handleSpeakerAlignResult(job) {
     }
     if (job.status === 'failed') {
         measurementState.statusText = text;
-        measurementState.speakerAlignResult = null;
+        discardSpeakerAlignResults();
         if (statusEl) statusEl.textContent = '';
         renderSpeakerAlignResultActions();
         deps.showToast(text, 'error');

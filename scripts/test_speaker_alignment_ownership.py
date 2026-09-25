@@ -29,7 +29,7 @@ class SpeakerOwnershipTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(held), 1)
             return await original(alignment, **kwargs)
 
-        service, job_id = self.start(self.service(job_scope=scope, acquire=capture), reference_input_channel="")
+        service, job_id = self.start(self.service(job_scope=scope, acquire=capture))
         result = await service.wait_for(job_id)
         self.assertEqual(result["status"], "committed", result)
         self.assertEqual(held, [])
@@ -77,9 +77,7 @@ class KeeperWiringTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             events.append(("acquire", len(self.acquire_calls)))
             return await original(alignment, **kwargs)
 
-        service, job_id = self.start(
-            self.service(input_keeper=keeper, acquire=capture),
-            reference_input_channel="")
+        service, job_id = self.start(self.service(input_keeper=keeper, acquire=capture))
         result = await service.wait_for(job_id)
         self.assertEqual(result["status"], "committed", result)
         kinds = [event[0] for event in events]
