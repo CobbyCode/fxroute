@@ -36,6 +36,26 @@ logger = logging.getLogger(__name__)
 _WEDGED_SINK_INDEXES = frozenset({"4294967295", "-1"})
 
 
+# Operations whose commit publishes app playback state (queue, track, owner,
+# playback context). They carry the source-generation snapshot taken at
+# attempt start; the Coordinator discards them when a source-mode/input
+# switch committed afterwards instead of starting over the new routing.
+_SOURCE_SCOPED_OPERATIONS = frozenset({
+    "play",
+    "resume",
+    "replay",
+    "queue",
+    "spotify-play",
+    "spotify-toggle",
+    "spotify-claim",
+    "qobuz-play",
+    "qobuz-toggle",
+    "qobuz-claim",
+    "recovery",
+    "graph-reconcile",
+})
+
+
 def _hardware_output_ports(output_mode: Mapping[str, Any], io_text: str, output_key: str,
                            count: int) -> tuple[str, ...]:
     """Resolve the hardware playback ports for the mode's DSP outputs.
@@ -154,6 +174,10 @@ class PlaybackOrchestrationDeps:
     list_spotify_sink_inputs: Callable[[], list[dict]] | None = None
     # Stages a prebuilt plan-derived graph for v2 output-state transitions.
     sync_plan_runtime: Callable[..., Awaitable[None]] | None = None
+    # Current audio-source generation for stamping source-scoped transition
+    # requests. Optional; without it requests stay unstamped and the
+    # Coordinator skips the source check (legacy/test wiring).
+    get_source_generation: Callable[[], int | None] | None = None
 
 
 class PlaybackOrchestrator:
@@ -269,6 +293,15 @@ class PlaybackOrchestrator:
             self._deps.set_coordinator(coordinator)
         epoch = self._deps.begin_transition_attempt()
         request = replace(request, attempt_epoch=epoch)
+        if request.source_generation is None and request.operation in _SOURCE_SCOPED_OPERATIONS:
+            provider = getattr(self._deps, "get_source_generation", None)
+            if callable(provider):
+                try:
+                    current = provider()
+                except Exception:
+                    current = None
+                if isinstance(current, int):
+                    request = replace(request, source_generation=current)
         try:
             return await coordinator.execute(request)
         finally:

@@ -96,6 +96,11 @@ class PlaybackQueueDependencies:
     # before its transition (TIDAL URLs are short-lived).  Returns the URL or
     # None when the track cannot be played.  Optional; wired by main.py.
     resolve_stream_url: Callable[[dict], Awaitable[str | None]] | None = None
+    # Source-generation boundary for the app publish: captured at intent
+    # start, validated before queue/track publish. Optional; without it the
+    # Coordinator-level discard is the only guard (legacy/test wiring).
+    capture_source_intent: Callable[[], Any] | None = None
+    ensure_source_intent_current: Callable[[Any], None] | None = None
 
 
 def can_use_native_local_queue(tracks: list[dict]) -> bool:
@@ -345,6 +350,22 @@ class PlaybackQueue:
             track=track,
         )
 
+    def _capture_source_intent(self) -> Any:
+        capture = getattr(self._deps, "capture_source_intent", None)
+        return capture() if callable(capture) else None
+
+    def _ensure_source_intent_current(self, captured: Any) -> None:
+        ensure = getattr(self._deps, "ensure_source_intent_current", None)
+        if callable(ensure):
+            ensure(captured)
+
+    @staticmethod
+    def _is_source_changed_skip(result: Any) -> bool:
+        state = getattr(result, "state", None) or {}
+        if not isinstance(state, dict):
+            return False
+        return bool(state.get("skipped")) and str(state.get("reason") or "") == "source-changed"
+
     async def load_track(self, index: int, *, transition_reason: str = "queue navigation", queue_candidate: QueueCandidate | None = None) -> bool:
         """Navigate to ``index`` of the committed queue.
 
@@ -353,6 +374,7 @@ class PlaybackQueue:
         transition committed, and failure keeps the old order/index/track
         context intact.
         """
+        source_intent = self._capture_source_intent()
         if queue_candidate is not None:
             if index < 0 or index >= len(queue_candidate.queue):
                 return False
@@ -407,7 +429,10 @@ class PlaybackQueue:
         except PlaybackTransitionFailure as exc:
             raise self._deps.transition_error_http(exc) from exc
         if not getattr(result, "committed", False):
+            if self._is_source_changed_skip(result):
+                raise HTTPException(status_code=409, detail="Audio source changed during playback transition")
             raise HTTPException(status_code=500, detail="Playback transition was not committed")
+        self._ensure_source_intent_current(source_intent)
         rate_updated = False
         if self._deps.sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
             next_track["sample_rate_hz"] = result.target_rate
@@ -567,6 +592,7 @@ class PlaybackQueue:
     async def set_shuffle(self, enabled: bool) -> bool:
         if self._deps.transition_is_active():
             raise HTTPException(status_code=409, detail="A playback transition is in progress")
+        shuffle_source_intent = self._capture_source_intent()
         if len(self.tracks) <= 1:
             self.shuffle = False
             return False
@@ -647,7 +673,10 @@ class PlaybackQueue:
             except PlaybackTransitionFailure:
                 raise
             if not getattr(result, "committed", False):
+                if self._is_source_changed_skip(result):
+                    raise HTTPException(status_code=409, detail="Audio source changed during playback transition")
                 raise HTTPException(status_code=500, detail="Playback transition was not committed")
+            self._ensure_source_intent_current(shuffle_source_intent)
 
             committed_rate = getattr(result, "target_rate", None)
             if isinstance(committed_rate, int) and committed_rate > 0:

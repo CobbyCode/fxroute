@@ -229,7 +229,7 @@ class SpotifyHandoffFailureRestoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_restored_local_context_is_replayable_through_toggle(self):
         player = PlayerDouble(None, playing=False)
         track = local_track()
-        run_mock = AsyncMock(return_value=SimpleNamespace(target_rate=48000))
+        run_mock = AsyncMock(return_value=SimpleNamespace(target_rate=48000, committed=True, transition_id="tr-test-replay"))
         commit = Mock()
         with patch.object(main.runtime, "player_instance", player), patch.object(
             main.playback_state, "current_track_info", None

@@ -33,6 +33,19 @@ from .stages import _TransitionStages
 logger = logging.getLogger(__name__)
 
 
+class _SourceChangedAbort(Exception):
+    """A source-mode/input switch committed while the transition was queued.
+
+    Carries the checkpoint where the stale intent was detected. Handled as a
+    quiet discard (no failure latch, no old-source restore): the newer source
+    routing owns the graph now.
+    """
+
+    def __init__(self, checkpoint: str) -> None:
+        super().__init__(f"audio source changed before {checkpoint}")
+        self.checkpoint = checkpoint
+
+
 class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
     """Serialize every playback transition and own the output-gate lifecycle.
 
@@ -49,10 +62,12 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
         *,
         gate_settle_seconds: float = 0.25,
         gate_state_path: str | Path | None = None,
+        get_source_generation: Callable[[], int | None] | None = None,
     ) -> None:
         self.runtime = runtime
         self.gate_settle_seconds = max(0.0, gate_settle_seconds)
         self.gate_state_path = Path(gate_state_path) if gate_state_path else None
+        self.get_source_generation = get_source_generation
         self.lock = asyncio.Lock()
         self.gate = OutputGateState()
         self.last_error: dict[str, Any] | None = None
@@ -234,6 +249,83 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             await self.ensure_output_gate_closed(stages.transition_id, stage=gate_check)
         return result
 
+    def _source_is_current(self, request: TransitionRequest) -> bool:
+        """Return whether no source switch committed since the intent started.
+
+        Requests without a snapshot (non-playback operations, legacy callers)
+        are exempt; without a generation provider the check fails open so a
+        wiring gap never blocks playback.
+        """
+        expected = request.source_generation
+        if expected is None:
+            return True
+        provider = getattr(self, "get_source_generation", None)
+        if not callable(provider):
+            return True
+        try:
+            current = provider()
+        except Exception:
+            logger.warning("Source-generation readback failed; running transition")
+            return True
+        return current is None or current == expected
+
+    def _ensure_source_current(self, request: TransitionRequest, checkpoint: str) -> None:
+        """Abort the stale intent once a source switch committed mid-flight."""
+        if not self._source_is_current(request):
+            raise _SourceChangedAbort(checkpoint)
+
+    async def _abort_source_changed(
+        self,
+        stages: _TransitionStages,
+        request: TransitionRequest,
+        checkpoint: str,
+    ) -> TransitionResult:
+        """Discard a source-stale transition without touching the new routing.
+
+        Quiets a possibly already staged target (best effort) and restores an
+        owned output gate to audible; never latches a failure and never
+        restores the old app source, which the newer source switch
+        intentionally replaced.
+        """
+        try:
+            await self.runtime.set_source_volume(0, stages.transition_id)
+        except Exception:
+            pass
+        try:
+            await self.runtime.pause_source_after_failure(request)
+        except Exception:
+            pass
+        if stages.gate_required and self.gate.closed:
+            try:
+                await self._restore_gate(stages.transition_id, audible_output=True)
+            except Exception:
+                logger.warning(
+                    "Source-changed abort could not restore the output gate: transition_id=%s",
+                    stages.transition_id,
+                )
+        result = TransitionResult(
+            transition_id=stages.transition_id,
+            committed=False,
+            source=request.source,
+            target_rate=request.target_rate,
+            state={
+                "committed": False,
+                "skipped": True,
+                "reason": "source-changed",
+                "checkpoint": checkpoint,
+            },
+        )
+        self._record_result(result)
+        self.last_error = None
+        logger.info(
+            "Playback transition discarded after source change: source=%s operation=%s transition_id=%s checkpoint=%s",
+            request.source,
+            request.operation,
+            stages.transition_id,
+            checkpoint,
+        )
+        return result
+
     async def _skip_claim_noop(
         self,
         stages: _TransitionStages,
@@ -370,6 +462,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
         stages.gate_required = False
         await self._stage(stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(request))
         await self._stage(stages, "target-source-prepare", lambda: self.runtime.prepare_target_source(request))
+        self._ensure_source_current(request, "before-target-start")
         if request.should_play:
             # The fast path never closes the hardware output gate, so MPV
             # source volume is the only mute.  Restore it before unpausing so
@@ -378,6 +471,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             await self._stage(stages, "source-volume-restore", lambda: self.runtime.set_source_volume(100, stages.transition_id))
         await self._stage(stages, "target-source-start", lambda: self.runtime.start_target_source(request))
         verifier = self.runtime.verify_same_graph_commit
+        self._ensure_source_current(request, "before-commit-readback")
         state = await self._stage(stages, "commit-readback", lambda: verifier(request))
         if not bool(state.get("committed", True)):
             raise RuntimeError("fast-path readback did not satisfy commit contract")
@@ -515,6 +609,10 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             if not bool(state.get("committed", True)):
                 raise RuntimeError("staged transition readback did not satisfy graph contract")
 
+            # The target runs by now; a switch that landed during its start
+            # must stop the commit before volume and gate re-animate it.
+            self._ensure_source_current(request, "before-commit-readback")
+
             restore_source_volume = bool(
                 not request.graph_only
                 and (
@@ -555,6 +653,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
         else:
             if request.should_play:
                 await self._stage(stages, "source-volume-restore", lambda: self.runtime.set_source_volume(100, stages.transition_id))
+            self._ensure_source_current(request, "before-commit-readback")
             state = await self._stage(stages, "commit-readback", lambda: self.runtime.verify_committed_transition(request))
         if not bool(state.get("committed", True)):
             raise RuntimeError("transition readback did not satisfy commit contract")
@@ -647,6 +746,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                         should_skip = False
                     if should_skip:
                         return await self._skip_claim_noop(stages, active_request)
+                self._ensure_source_current(active_request, "lock-acquired")
                 snapshot = await self.runtime.read_transition_snapshot(request)
                 if (
                     not active_request.audio_overview
@@ -706,6 +806,10 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     return await self._skip_measurement_restore(
                         stages, active_request, "intent-changed-after-quiet"
                     )
+
+                # A source switch committed while the transition was queued or
+                # quieting must not start its target over the new routing.
+                self._ensure_source_current(active_request, "before-target-start")
 
                 if stages.gate_required and not active_request.graph_only:
                     # Radio streams expose their decoded rate only after a
@@ -817,6 +921,10 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                 # the clean rate/policy error to the caller instead of
                 # running the failure-restore machinery.
                 raise
+            except _SourceChangedAbort as exc:
+                return await self._abort_source_changed(
+                    stages, active_request, exc.checkpoint
+                )
             except asyncio.CancelledError as exc:
                 raise await self._fail_transition(
                     stages,

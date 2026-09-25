@@ -128,6 +128,12 @@ class TransitionRequest:
     # inside the lock; when this callback returns True the transition is
     # skipped as a no-op without touching the output gate or playback state.
     skip_if_committed_owner: Callable[[], Awaitable[bool]] | None = None
+    # Source-generation snapshot taken when the playback intent started.
+    # The Coordinator discards the transition (without latching a failure)
+    # when a source-mode/input switch committed afterwards: a stale
+    # transition must never start its target over the newer source routing.
+    # None disables the check (non-playback operations, legacy callers).
+    source_generation: int | None = None
 
 @dataclass(frozen=True)
 class TransitionResult:

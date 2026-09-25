@@ -89,6 +89,8 @@ class StreamingApiDeps:
     spotify_playerctl_watch: Any
     api_spotify_play: Callable[[], Awaitable[dict]]
     api_spotify_toggle: Callable[[], Awaitable[dict]]
+    capture_source_intent: Callable[[], Any] | None = None
+    ensure_source_intent_current: Callable[[Any], None] | None = None
 
 
 @dataclass
@@ -171,6 +173,8 @@ async def _qobuz_ui_start_action(action: str) -> dict:
     exclusively for external Connect claims; a UI start never waits for it.
     """
     deps = _deps()
+    capture = getattr(deps, "capture_source_intent", None)
+    source_intent = capture() if callable(capture) else None
     qobuz_state = await deps.get_qobuz_ui_state()
     if action == "toggle" and deps.is_qobuz_playback_active(qobuz_state):
         data = await deps.qobuz_pause()
@@ -204,7 +208,13 @@ async def _qobuz_ui_start_action(action: str) -> dict:
     except PlaybackTransitionFailure as exc:
         raise deps.transition_error_http(exc) from exc
     if not getattr(result, "committed", False):
+        state = getattr(result, "state", None) or {}
+        if isinstance(state, dict) and state.get("skipped") and str(state.get("reason") or "") == "source-changed":
+            raise HTTPException(status_code=409, detail="Audio source changed during qobuz playback")
         return await deps.broadcast_qobuz_state()
+    ensure = getattr(deps, "ensure_source_intent_current", None)
+    if callable(ensure):
+        ensure(source_intent)
     await deps.publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
     connect_state.set_device_active(True)
     await deps.qobuz_pin_unity()

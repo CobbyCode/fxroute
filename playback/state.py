@@ -92,10 +92,46 @@ class PlaybackState:
     playback_transition_pending_attempts: int = 0
     playback_context_commit_id: str | None = None
     latest_player_state_seq_seen: int = 0
+    # Audio source selection as seen by the playback boundary: which source
+    # mode the last committed source transition published, and a monotonic
+    # generation that advances on every committed source-mode/input change.
+    # Playback intents capture (mode, generation) at attempt start and must
+    # not publish queue/track/owner/context afterwards when it changed: an
+    # older transition may otherwise commit app playback over a newer
+    # external/bluetooth source selection (or vice versa).
+    source_mode: str = "app-playback"
+    source_generation: int = 0
 
     def mark_playback_intent_changed(self) -> None:
         """Advance the measurement-restore intent token after a user action."""
         self.playback_intent_generation += 1
+
+    def note_source_selection(self, mode: str) -> int:
+        """Publish a committed source-mode change and return its generation.
+
+        A source switch ends app playback ownership just like a user playback
+        action, so it advances the intent generation as well: provider claims
+        noted before the switch and measurement restores of the old context
+        must not commit afterwards. Playback intents additionally compare the
+        source generation itself, which only ever changes here.
+        """
+        self.source_mode = str(mode or "app-playback")
+        self.source_generation += 1
+        self.playback_intent_generation += 1
+        return self.source_generation
+
+    def capture_source_intent(self) -> tuple[str, int]:
+        """Capture the source commit boundary for one playback intent."""
+        return (self.source_mode, self.source_generation)
+
+    def source_intent_is_current(self, captured: tuple[str, int] | None) -> bool:
+        """Return whether no source switch committed since the capture."""
+        return (
+            isinstance(captured, tuple)
+            and len(captured) == 2
+            and captured[0] == self.source_mode
+            and captured[1] == self.source_generation
+        )
 
     def begin_transition_attempt(self) -> int:
         """Start one transition attempt; returns its monotonic epoch."""

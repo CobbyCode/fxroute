@@ -90,7 +90,7 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
         async def run(request):
             player._state["paused"] = False
             player._state["playing"] = True
-            return SimpleNamespace(target_rate=44100)
+            return SimpleNamespace(target_rate=44100, committed=True, transition_id="tr-test-resume")
 
         commit = Mock()
         track = {"source": "radio", "url": "https://radio.example/live", "sample_rate_hz": 44100}

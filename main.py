@@ -992,6 +992,8 @@ playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies
     get_tracks=lambda: runtime.music_library.scanner.get_tracks(),
     build_playback_payload=lambda *a, **k: build_playback_payload(*a, **k),
     resolve_stream_url=lambda track: _resolve_tidal_stream_url(track),
+    capture_source_intent=lambda: playback_state.capture_source_intent(),
+    ensure_source_intent_current=lambda captured: _ensure_source_intent_current(captured),
 ))
 
 # Bind the native TIDAL provider's now-playing reflection to the FXRoute
@@ -1256,6 +1258,37 @@ def _schedule_tidal_prefetch() -> None:
     from streaming.tidal.playback import prefetch_stream
 
     threading.Thread(target=prefetch_stream, args=(next_id,), daemon=True).start()
+
+
+def _capture_source_intent() -> tuple[str, int]:
+    """Capture the source commit boundary for one playback intent.
+
+    Call synchronously at intent start (before the first await) so a source
+    switch that commits while the transition runs invalidates the later app
+    publish instead of committing stale queue/track/owner state over it.
+    """
+    return playback_state.capture_source_intent()
+
+
+def _ensure_source_intent_current(captured: tuple[str, int] | None) -> None:
+    """Reject an app publish whose source boundary moved during the intent."""
+    if not playback_state.source_intent_is_current(captured):
+        raise HTTPException(status_code=409, detail="Audio source changed during playback transition")
+
+
+def _source_changed_skip(result: Any) -> bool:
+    """Return whether a transition result is a source-change discard."""
+    state = getattr(result, "state", None) or {}
+    if not isinstance(state, Mapping):
+        return False
+    return bool(state.get("skipped")) and str(state.get("reason") or "") == "source-changed"
+
+
+def _raise_for_uncommitted_transition(result: Any, *, what: str) -> None:
+    """Map an uncommitted coordinator outcome to 409 (source) or 500."""
+    if _source_changed_skip(result):
+        raise HTTPException(status_code=409, detail=f"Audio source changed during {what}")
+    raise HTTPException(status_code=500, detail="Playback transition was not committed")
 
 
 def _commit_coordinated_track(
@@ -1896,6 +1929,7 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
     suppress the commit that makes the owner persist across a pause.
     """
     claim_intent_generation = playback_state.playback_intent_generation
+    claim_source_intent = playback_state.capture_source_intent()
     if playback_state.current_playback_owner == "qobuz":
         return await get_qobuz_ui_state()
     qobuz_state = await get_qobuz_ui_state()
@@ -1906,9 +1940,11 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         # Same re-validation contract as the Spotify claim: the guard above
         # runs before the transition lock, so a claim queued behind an
         # FXRoute-initiated Qobuz start must be re-checked inside the lock.
+        # A source switch invalidates the claim the same way.
         return (
             playback_state.current_playback_owner == "qobuz"
             or playback_state.playback_intent_generation != claim_intent_generation
+            or not playback_state.source_intent_is_current(claim_source_intent)
         )
 
     track = _qobuz_target_track_from_state(qobuz_state)
@@ -1935,6 +1971,8 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         return await get_qobuz_ui_state()
     if not getattr(result, "committed", False):
         return qobuz_state
+    if not playback_state.source_intent_is_current(claim_source_intent):
+        return await get_qobuz_ui_state()
     await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
     connect_state.set_device_active(True)
     await _qobuz_pin_unity()
@@ -1953,6 +1991,7 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
     """
     spotifyd_volume_watch.reset_session()
     claim_intent_generation = playback_state.playback_intent_generation
+    claim_source_intent = playback_state.capture_source_intent()
     if playback_state.current_playback_owner == "spotify":
         return await get_spotify_ui_state()
     data = await get_spotify_ui_state()
@@ -1965,9 +2004,11 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
         # gate a second time over already-audible audio.  The Coordinator
         # re-validates inside the lock; the initiating start commits the
         # owner synchronously before the queued claim can acquire it.
+        # A source switch invalidates the claim the same way.
         return (
             playback_state.current_playback_owner == "spotify"
             or playback_state.playback_intent_generation != claim_intent_generation
+            or not playback_state.source_intent_is_current(claim_source_intent)
         )
 
     target_rate = _coordinator_target_rate("spotify")
@@ -1991,6 +2032,8 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
         return await get_spotify_ui_state()
     if not getattr(result, "committed", False):
         return data
+    if not playback_state.source_intent_is_current(claim_source_intent):
+        return await get_spotify_ui_state()
     await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
     return await broadcast_spotify_state()
 
@@ -2492,6 +2535,7 @@ async def lifespan(app: FastAPI):
         playback_transition_coordinator = PlaybackTransitionCoordinator(
             FxrouteTransitionRuntime(make_playback_runtime_deps()),
             gate_state_path=_playback_gate_state_path(),
+            get_source_generation=lambda: playback_state.source_generation,
         )
         startup_gate_reconciled = await playback_transition_coordinator.reconcile_startup_gate()
         logger.info(
@@ -2911,6 +2955,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         make_transition_coordinator=lambda: PlaybackTransitionCoordinator(
             FxrouteTransitionRuntime(make_playback_runtime_deps()),
             gate_state_path=_playback_gate_state_path(),
+            get_source_generation=lambda: playback_state.source_generation,
         ),
         begin_transition_attempt=_begin_playback_transition_attempt,
         end_transition_attempt=_end_playback_transition_attempt,
@@ -2956,6 +3001,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         resolve_source_producer_ports=lambda source: _resolve_playback_source_producer_ports(source),
         list_spotify_sink_inputs=lambda: media_readiness.list_spotify_sink_inputs(),
         sync_plan_runtime=lambda *a, **k: _sync_plan_runtime(*a, **k),
+        get_source_generation=lambda: playback_state.source_generation,
     )
 
 
@@ -3155,6 +3201,7 @@ def _native_mpv_direct_selection_ready(active_queue_ids: list) -> bool:
 
 @app.post("/api/play")
 async def play_track(req: PlayRequest):
+    source_intent = _capture_source_intent()
     if not runtime.player_instance or not runtime.player_instance._running:
         if not await _drain_worker(_ensure_player_running):
             raise HTTPException(status_code=503, detail="Player not available")
@@ -3197,6 +3244,7 @@ async def play_track(req: PlayRequest):
                 await _drain_worker(runtime.player_instance.set_pause, False)
                 if playback_state.playback_transition_epoch != selection_epoch:
                     raise HTTPException(status_code=409, detail="A playback transition completed first")
+                _ensure_source_intent_current(source_intent)
                 _mark_player_state_authoritative(runtime.player_instance.state)
                 _mark_playback_intent_changed()
         track_info = dict(playback_queue.queue.tracks[target_index])
@@ -3336,8 +3384,10 @@ async def play_track(req: PlayRequest):
         raise _transition_error_http(exc) from exc
     if not getattr(result, "committed", False):
         # An uncommitted transition outcome is a failure and must not replace
-        # the committed queue state either.
-        raise HTTPException(status_code=500, detail="Playback transition was not committed")
+        # the committed queue state either. A source-change discard maps to
+        # 409 so the caller retries against the new source routing.
+        _raise_for_uncommitted_transition(result, what="playback")
+    _ensure_source_intent_current(source_intent)
     if native_trim_required:
         # The committed queue lived in MPV's native playlist.  The new target
         # is an app-side source (single track or mixed-rate): trim MPV's
@@ -3461,6 +3511,7 @@ async def _route_global_control(action: str, request: Request | None = None) -> 
 @app.post("/api/playback/toggle")
 async def toggle_playback():
     toggle_epoch = playback_state.playback_transition_epoch
+    source_intent = _capture_source_intent()
     async with _manual_transport_guard(expected_epoch=toggle_epoch):
         routed = await _route_global_control("toggle")
     if routed is not None:
@@ -3502,6 +3553,7 @@ async def toggle_playback():
             async with _manual_transport_guard(expected_epoch=toggle_epoch):
                 await _drain_worker(runtime.player_instance.set_pause, False)
                 new_state = runtime.player_instance.state
+                _ensure_source_intent_current(source_intent)
                 _mark_player_state_authoritative(new_state)
                 _mark_playback_intent_changed()
             return {
@@ -3526,6 +3578,9 @@ async def toggle_playback():
             raise bad_request(exc) from exc
         except PlaybackTransitionFailure as exc:
             raise _transition_error_http(exc) from exc
+        if not getattr(result, "committed", False):
+            _raise_for_uncommitted_transition(result, what="playback")
+        _ensure_source_intent_current(source_intent)
         if was_paused:
             if _sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
                 active_track["sample_rate_hz"] = result.target_rate
@@ -3563,6 +3618,9 @@ async def toggle_playback():
         raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
         raise _transition_error_http(exc) from exc
+    if not getattr(result, "committed", False):
+        _raise_for_uncommitted_transition(result, what="playback")
+    _ensure_source_intent_current(source_intent)
     if _sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
         replay_track["sample_rate_hz"] = result.target_rate
     _commit_coordinated_track(
@@ -5151,9 +5209,72 @@ async def audio_bluetooth_overview():
     return get_bluetooth_audio_overview()
 
 
+def _source_pause_baseline() -> dict[str, Any]:
+    """Capture the app-commit boundary the source pause must not overtake.
+
+    The pause stops whatever app transport is live, unless a newer app commit
+    took ownership afterwards: its commit id differs from the baseline while
+    the owner names an MPV source (local/radio/tidal) or the paused provider
+    itself. A newer source switch aborts the whole pause; the newer switch
+    owns pausing from its own baseline.
+    """
+    return {
+        "commit_id": playback_state.playback_context_commit_id,
+        "owner": playback_state.current_playback_owner,
+        "source_generation": playback_state.source_generation,
+    }
+
+
+def _source_pause_superseded(baseline: dict[str, Any]) -> bool:
+    """Return whether a newer source switch started during the pause."""
+    return playback_state.source_generation != baseline.get("source_generation")
+
+
+def _mpv_pause_superseded(baseline: dict[str, Any]) -> bool:
+    if _source_pause_superseded(baseline):
+        return True
+    return (
+        playback_state.playback_context_commit_id != baseline.get("commit_id")
+        and source_policy.is_mpv_source(playback_state.current_playback_owner)
+    )
+
+
+def _provider_pause_superseded(baseline: dict[str, Any], provider: str) -> bool:
+    if _source_pause_superseded(baseline):
+        return True
+    return (
+        playback_state.playback_context_commit_id != baseline.get("commit_id")
+        and playback_state.current_playback_owner == provider
+    )
+
+
+def _coordinator_lock_for_source_pause() -> asyncio.Lock | None:
+    coordinator = playback_transition_coordinator
+    lock = getattr(coordinator, "lock", None)
+    return lock if isinstance(lock, asyncio.Lock) else None
+
+
 async def _pause_all_app_playback_for_external_input() -> None:
+    # Baseline is captured after the source generation bump, so every app
+    # commit that finished before the pause is stopped, while a commit that
+    # lands during the pause is left alone. The Coordinator lock serializes
+    # the pause against in-flight transitions: a stale one is discarded by
+    # its source checkpoints, a new one commits first and is then skipped by
+    # the per-source checks below.
+    baseline = _source_pause_baseline()
+    lock = _coordinator_lock_for_source_pause()
+    if lock is not None:
+        async with lock:
+            await _pause_scoped_app_playback(baseline)
+    else:
+        await _pause_scoped_app_playback(baseline)
+
+
+async def _pause_scoped_app_playback(baseline: dict[str, Any]) -> None:
     try:
-        if runtime.player_instance and runtime.player_instance._running:
+        if _source_pause_superseded(baseline):
+            return
+        if runtime.player_instance and runtime.player_instance._running and not _mpv_pause_superseded(baseline):
             await _drain_worker(runtime.player_instance.stop_playback)
             await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
             released = await media_readiness.wait_for_pipewire_mpv_release()
@@ -5162,19 +5283,89 @@ async def _pause_all_app_playback_for_external_input() -> None:
     except Exception as exc:
         logger.warning("Local pause for external input failed: %s", exc)
     try:
+        if _source_pause_superseded(baseline):
+            return
         spotify_state = await get_spotify_ui_state()
-        if spotify_state.get("status") == "Playing":
+        if spotify_state.get("status") == "Playing" and not _provider_pause_superseded(baseline, "spotify"):
             data = await spotify_pause()
             await broadcast_spotify_state(data)
     except Exception as exc:
         logger.warning("Spotify pause for external input failed: %s", exc)
     try:
+        if _source_pause_superseded(baseline):
+            return
         qobuz_state = await get_qobuz_ui_state()
-        if _is_qobuz_playback_active(qobuz_state):
+        if _is_qobuz_playback_active(qobuz_state) and not _provider_pause_superseded(baseline, "qobuz"):
             await qobuz_pause()
             await broadcast_qobuz_state()
     except Exception as exc:
         logger.warning("Qobuz pause for external input failed: %s", exc)
+
+
+async def _shield_coro(coro) -> Any:
+    """Drain a coroutine to its terminal state, surviving caller cancellation.
+
+    The caller owns a critical section (here: the source-transition lock). A
+    cancelled caller must not release it while the body is still mutating
+    routing/playback state: the body runs to completion, then CancelledError
+    is re-raised. Body exceptions propagate unchanged; on the cancellation
+    path they are logged and cancellation takes precedence.
+    """
+    task: asyncio.Task = asyncio.create_task(coro)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        try:
+            task.result()
+        except BaseException:
+            logger.exception("Source transition failed while its caller was cancelled")
+        raise asyncio.CancelledError
+    return task.result()
+
+
+async def _apply_audio_source_selection(mode: str, input_key: str | None) -> dict:
+    """Run one source-mode/input change: routing commit, pause, peak sync.
+
+    Runs under the source-transition lock with caller cancellation deferred
+    (see _shield_coro): routing, generations, transports and peak state are
+    always left consistent, never half-committed. The source generation (and
+    the playback intent generation) advances exactly when the committed
+    (mode, input) selection changed, before the external/bluetooth pause, so
+    in-flight playback transitions are discarded and the pause never stops a
+    newer commit.
+    """
+    previous_source_state = samplerate._load_audio_source_selection()
+    try:
+        result = set_audio_source_selection(mode, input_key)
+        result = await external_input.sync(result)
+        result = await bluetooth_input.sync(result)
+    except BaseException:
+        try:
+            restored = set_audio_source_selection(
+                str(previous_source_state.get("mode") or SOURCE_MODE_APP_PLAYBACK),
+                previous_source_state.get("selected_input_key"),
+            )
+            try:
+                restored = await external_input.sync(restored)
+                restored = await bluetooth_input.sync(restored)
+            except BaseException:
+                logger.exception("Failed to re-sync routing after source-mode rollback")
+        except BaseException:
+            logger.exception("Failed to restore previous source selection after routing failure")
+        raise
+    new_mode = str(result.get("mode") or SOURCE_MODE_APP_PLAYBACK)
+    previous_mode = str(previous_source_state.get("mode") or SOURCE_MODE_APP_PLAYBACK)
+    new_key = (result.get("selected_input") or {}).get("key") if isinstance(result.get("selected_input"), dict) else None
+    if new_mode != previous_mode or (new_key or None) != (previous_source_state.get("selected_input_key") or None):
+        playback_state.note_source_selection(new_mode)
+    if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
+        await _pause_all_app_playback_for_external_input()
+    await peak_monitor_coordinator.sync_source_mode_state(result)
+    return result
 
 
 @app.post("/api/audio/source-mode")
@@ -5188,29 +5379,7 @@ async def save_audio_source_selection_route(request: Request):
 
     try:
         async with _source_transition_lock():
-            previous_source_state = samplerate._load_audio_source_selection()
-            try:
-                result = set_audio_source_selection(mode, input_key)
-                result = await external_input.sync(result)
-                result = await bluetooth_input.sync(result)
-            except BaseException:
-                try:
-                    restored = set_audio_source_selection(
-                        str(previous_source_state.get("mode") or SOURCE_MODE_APP_PLAYBACK),
-                        previous_source_state.get("selected_input_key"),
-                    )
-                    try:
-                        restored = await external_input.sync(restored)
-                        restored = await bluetooth_input.sync(restored)
-                    except BaseException:
-                        logger.exception("Failed to re-sync routing after source-mode rollback")
-                except BaseException:
-                    logger.exception("Failed to restore previous source selection after routing failure")
-                raise
-            if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
-                await _pause_all_app_playback_for_external_input()
-            await peak_monitor_coordinator.sync_source_mode_state(result)
-            return result
+            return await _shield_coro(_apply_audio_source_selection(mode, input_key))
     except ValueError as exc:
         raise bad_request(exc)
     except RuntimeError as exc:
@@ -5459,6 +5628,8 @@ def _make_streaming_api_deps() -> streaming_api.StreamingApiDeps:
         spotify_playerctl_watch=spotify_playerctl_watch,
         api_spotify_play=lambda: api_spotify_play(),
         api_spotify_toggle=lambda: api_spotify_toggle(),
+        capture_source_intent=lambda: playback_state.capture_source_intent(),
+        ensure_source_intent_current=lambda captured: _ensure_source_intent_current(captured),
     )
 
 
@@ -5621,6 +5792,7 @@ def _resolve_playback_source_producer_ports(source: str | None) -> tuple[str, st
 
 @app.post("/api/spotify/play")
 async def api_spotify_play():
+    source_intent = _capture_source_intent()
     spotifyd_volume_watch.reset_session()
     target_rate = _coordinator_target_rate("spotify")
     rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
@@ -5645,6 +5817,9 @@ async def api_spotify_play():
     # Publish the authoritative owner synchronously before any further await
     # so the ended waiter never sees a window with a new token and an old
     # footer, and the browser resolves the owner on the playback channel.
+    if not getattr(result, "committed", False):
+        _raise_for_uncommitted_transition(result, what="spotify playback")
+    _ensure_source_intent_current(source_intent)
     await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
     playback_state.latest_spotify_state = await get_spotify_ui_state()
     return await broadcast_spotify_state(playback_state.latest_spotify_state)
@@ -5659,6 +5834,7 @@ async def api_spotify_pause():
 
 @app.post("/api/spotify/toggle")
 async def api_spotify_toggle():
+    source_intent = _capture_source_intent()
     spotifyd_volume_watch.reset_session()
     sd = await get_spotify_ui_state()
     if sd.get("status") == "Playing":
@@ -5687,6 +5863,9 @@ async def api_spotify_toggle():
     # Same ownership contract as api_spotify_play: the authoritative owner
     # and token are published synchronously after the commit, before the
     # Spotify state is read or broadcast.
+    if not getattr(result, "committed", False):
+        _raise_for_uncommitted_transition(result, what="spotify playback")
+    _ensure_source_intent_current(source_intent)
     await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
     data = await get_spotify_ui_state()
     return await broadcast_spotify_state(data)
