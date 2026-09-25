@@ -22,6 +22,7 @@ import main
 from playback.queue import QueueCandidate
 from playback_queue_test_support import queue_state, restore_queue_state
 from playback.transition import PlaybackTransitionFailure
+from playback.radio_reconnect import RadioReconnect, RadioReconnectDependencies
 
 
 def _track(track_id: str, *, rate: int = 44100) -> dict:
@@ -768,6 +769,64 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(playback_queue.queue.shuffle)
             self.assertFalse(playback_queue.queue.loop)
             self.assertEqual(main.playback_state.current_track_info["id"], "radio_s1")
+        finally:
+            self._restore(originals)
+
+    async def test_manual_replay_of_exhausted_radio_url_starts_new_reconnect_session(self):
+        station = _Station("s1")
+        originals = self._install([], index=-1)
+        reconnect = RadioReconnect(RadioReconnectDependencies(
+            get_player_instance=lambda: main.runtime.player_instance,
+            get_playback_state=lambda: main.playback_state,
+            request_coordinated_recovery=AsyncMock(),
+        ))
+        try:
+            main.playback_state.current_track_info = {
+                "source": "radio", "id": "radio_s1", "url": station.stream_url,
+            }
+            main.playback_state.current_playback_owner = "radio"
+            reconnect.url = station.stream_url
+            reconnect.attempts = 5
+
+            async def succeed(request):
+                main.runtime.player_instance.state.update({
+                    "current_file": request.target_url, "ended": False,
+                    "playing": True, "paused": False,
+                })
+                return SimpleNamespace(target_rate=44100, committed=True)
+
+            with patch.object(main, "radio_reconnect", reconnect), self._patch_context(
+                succeed, radio_stations=[station]
+            ):
+                result = await self._play(track_id="s1", source="radio")
+                self.assertEqual(result["status"], "playing")
+                self.assertEqual(reconnect.attempts, 0)
+                main.runtime.player_instance.state.update({"current_file": None, "ended": True})
+                reconnect.schedule(dict(main.runtime.player_instance.state))
+                self.assertEqual(reconnect.attempts, 1)
+                self.assertIsNotNone(reconnect.task)
+                await reconnect.stop()
+        finally:
+            self._restore(originals)
+
+    async def test_failed_manual_radio_play_keeps_previous_reconnect_session(self):
+        station = _Station("s1")
+        originals = self._install([], index=-1)
+        reconnect = RadioReconnect(RadioReconnectDependencies(
+            get_player_instance=lambda: main.runtime.player_instance,
+            get_playback_state=lambda: main.playback_state,
+            request_coordinated_recovery=AsyncMock(),
+        ))
+        try:
+            reconnect.url = station.stream_url
+            reconnect.attempts = 5
+            with patch.object(main, "radio_reconnect", reconnect), self._patch_context(
+                self._failure(), radio_stations=[station]
+            ):
+                with self.assertRaises(main.HTTPException):
+                    await self._play(track_id="s1", source="radio")
+            self.assertEqual(reconnect.attempts, 5)
+            self.assertEqual(reconnect.url, station.stream_url)
         finally:
             self._restore(originals)
 

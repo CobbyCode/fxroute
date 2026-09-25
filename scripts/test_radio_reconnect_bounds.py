@@ -153,7 +153,7 @@ class RadioReconnectBoundsTests(unittest.IsolatedAsyncioTestCase):
         reconnect.attempts = 3
         reconnect.url = RADIO_URL
         reconnect.active_since = 123.0
-        reconnect.reset()
+        await reconnect.reset()
         self.assertEqual(reconnect.attempts, 0)
         self.assertIsNone(reconnect.url)
         self.assertEqual(reconnect.active_since, 0.0)
@@ -170,15 +170,142 @@ class RadioReconnectBoundsTests(unittest.IsolatedAsyncioTestCase):
             task = reconnect.task
             self.assertIsNotNone(task)
             await reconnect.stop()
-            # Cancellation is delivered on the next loop pass; afterwards the
-            # pending reconnect must be observably gone.
-            await asyncio.sleep(0.01)
             self.assertTrue(task.done() and task.cancelled())
             self.assertIsNone(reconnect.task)
         recovery.assert_not_awaited()
         # Stopping an idle reconnect is a no-op.
         await reconnect.stop()
         self.assertIsNone(reconnect.task)
+
+    async def test_older_task_completion_does_not_clear_new_task_handle(self):
+        reconnect, _state, recovery = _make_reconnect()
+        with patch.object(reconnect_module, "RADIO_RECONNECT_DELAY_SECONDS", 30.0):
+            old = asyncio.create_task(reconnect._reconnect_after_delay(RADIO_TRACK, 1, 7))
+            await asyncio.sleep(0)
+            reconnect.schedule(dict(ENDED_STATE))
+            new = reconnect.task
+            old.cancel()
+            await asyncio.gather(old, return_exceptions=True)
+            self.assertIs(reconnect.task, new)
+            reconnect.schedule(dict(ENDED_STATE))
+            self.assertIs(reconnect.task, new)
+            self.assertEqual(reconnect.attempts, 1)
+            await reconnect.stop()
+        recovery.assert_not_awaited()
+
+    async def test_repeated_schedule_during_recovery_has_one_transition(self):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        active = 0
+        maximum_active = 0
+
+        async def recover(*_args, **_kwargs):
+            nonlocal active, maximum_active
+            active += 1
+            maximum_active = max(maximum_active, active)
+            entered.set()
+            try:
+                await release.wait()
+            finally:
+                active -= 1
+
+        reconnect, _state, _recovery = _make_reconnect()
+        reconnect._deps.request_coordinated_recovery = recover
+        with patch.object(reconnect_module, "RADIO_RECONNECT_DELAY_SECONDS", 0):
+            reconnect.schedule(dict(ENDED_STATE))
+            await entered.wait()
+            first = reconnect.task
+            for _ in range(10):
+                reconnect.schedule(dict(ENDED_STATE))
+            self.assertIs(reconnect.task, first)
+            self.assertEqual(reconnect.attempts, 1)
+            self.assertEqual(maximum_active, 1)
+            release.set()
+            await first
+
+    async def test_stop_drains_active_recovery_before_returning(self):
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def recover(*_args, **_kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            finally:
+                finished.set()
+
+        reconnect, _state, _recovery = _make_reconnect()
+        reconnect._deps.request_coordinated_recovery = recover
+        with patch.object(reconnect_module, "RADIO_RECONNECT_DELAY_SECONDS", 0):
+            reconnect.schedule(dict(ENDED_STATE))
+            await entered.wait()
+            task = reconnect.task
+            stopper = asyncio.create_task(reconnect.stop())
+            try:
+                await asyncio.wait_for(cancelled.wait(), 2)
+                self.assertFalse(stopper.done())
+                self.assertIs(reconnect.task, task)
+                reconnect.schedule(dict(ENDED_STATE))
+                self.assertIs(reconnect.task, task)
+            finally:
+                release.set()
+                await asyncio.wait_for(stopper, 2)
+            self.assertTrue(finished.is_set())
+            self.assertTrue(task.done())
+            self.assertIsNone(reconnect.task)
+            reconnect.schedule(dict(ENDED_STATE))
+            self.assertIsNone(reconnect.task)
+
+    async def test_reset_drains_old_station_and_allows_new_station_first_eof(self):
+        old_entered = asyncio.Event()
+        old_cancelled = asyncio.Event()
+        old_release = asyncio.Event()
+        new_entered = asyncio.Event()
+        other = {"source": "radio", "url": "https://radio.example/other"}
+
+        async def recover(track, *_args, **_kwargs):
+            if track["url"] == RADIO_URL:
+                old_entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    old_cancelled.set()
+                    await old_release.wait()
+            else:
+                new_entered.set()
+
+        reconnect, playback_state, _recovery = _make_reconnect()
+        reconnect._deps.request_coordinated_recovery = recover
+        with patch.object(reconnect_module, "RADIO_RECONNECT_DELAY_SECONDS", 0):
+            reconnect.schedule(dict(ENDED_STATE))
+            await old_entered.wait()
+            old = reconnect.task
+            try:
+                resetting = asyncio.create_task(reconnect.reset())
+                await asyncio.wait_for(old_cancelled.wait(), 2)
+                self.assertFalse(resetting.done())
+                playback_state.current_track_info = other
+                reconnect.schedule(dict(ENDED_STATE))
+                self.assertIs(reconnect.task, old)
+            finally:
+                old.cancel()
+                old_release.set()
+                await asyncio.gather(old, return_exceptions=True)
+                if 'resetting' in locals():
+                    await asyncio.wait_for(resetting, 2)
+            self.assertIsNone(reconnect.task)
+            self.assertEqual(reconnect.attempts, 0)
+            self.assertIsNone(reconnect.url)
+            self.assertEqual(reconnect.active_since, 0.0)
+            reconnect.schedule(dict(ENDED_STATE))
+            await asyncio.wait_for(new_entered.wait(), 2)
+            self.assertEqual(reconnect.attempts, 1)
+            await reconnect.stop()
 
 
 if __name__ == "__main__":

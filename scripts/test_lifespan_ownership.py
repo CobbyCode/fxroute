@@ -13,6 +13,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import main
 import audio.pw_link as pw_link_mod
 from playback.player import MPVWrapper
+from playback.radio_reconnect import RadioReconnect, RadioReconnectDependencies
+import playback.radio_reconnect as reconnect_module
 
 
 class FakePlayer:
@@ -176,6 +178,56 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(main.runtime.lifecycle_background_tasks)
         self.assertIsNone(main.measurement_sr_session)
+
+    async def test_shutdown_waits_for_radio_transition_before_stopping_dsp(self):
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+        order = []
+        track = {"source": "radio", "url": "https://radio.example/live"}
+        player = SimpleNamespace(_running=True, state={"ended": True, "current_file": None})
+        playback = SimpleNamespace(
+            current_track_info=track,
+            capture_transition_epoch=lambda: 1,
+            transition_context_is_current=lambda epoch: epoch == 1,
+        )
+
+        async def recover(*_args, **_kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            finally:
+                order.append("radio-finished")
+
+        async def stop_dsp():
+            order.append("dsp-stop")
+
+        reconnect = RadioReconnect(RadioReconnectDependencies(
+            get_player_instance=lambda: player,
+            get_playback_state=lambda: playback,
+            request_coordinated_recovery=recover,
+        ))
+        dsp = SimpleNamespace(stop=stop_dsp)
+        with patch.object(reconnect_module, "RADIO_RECONNECT_DELAY_SECONDS", 0), patch.object(
+            main, "radio_reconnect", reconnect
+        ), patch.object(main.runtime, "dsp_runtime", dsp), patch.object(
+            main.runtime, "player_instance", None
+        ):
+            reconnect.schedule(player.state)
+            await entered.wait()
+            shutdown = asyncio.create_task(main._shutdown_lifespan_resources())
+            try:
+                await asyncio.wait_for(cancelled.wait(), 2)
+                await asyncio.sleep(0.1)
+                self.assertFalse(shutdown.done())
+                self.assertNotIn("dsp-stop", order)
+            finally:
+                release.set()
+                await asyncio.wait_for(shutdown, 5)
+        self.assertEqual(order, ["radio-finished", "dsp-stop"])
 
     def test_player_callback_unregister_and_killed_process_reap(self):
         player = MPVWrapper()

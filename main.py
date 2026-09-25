@@ -3420,6 +3420,8 @@ async def play_track(req: PlayRequest):
     _commit_coordinated_track(
         track_info, source=source, commit_token=getattr(result, "transition_id", None)
     )
+    if source == "radio":
+        await radio_reconnect.reset()
     return {
         "status": "playing",
         "url": target_url,
@@ -3672,7 +3674,7 @@ async def stop_playback():
             playback_state.last_radio_track_info = dict(playback_state.current_track_info)
         playback_state.current_track_info = None
         playback_state.current_playback_owner = None
-        radio_reconnect.reset()
+        await radio_reconnect.reset()
         playback_queue.queue.reset()
         playback_queue.queue.reset_mpv_loop_state()
         await _drain_worker(runtime.player_instance.stop_playback)

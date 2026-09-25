@@ -39,6 +39,8 @@ class RadioReconnect:
         self.attempts: int = 0
         self.url: str | None = None
         self.active_since: float = 0.0
+        self._stopped = False
+        self._resetting = False
 
     async def _reconnect_after_delay(
         self,
@@ -82,9 +84,12 @@ class RadioReconnect:
         except Exception as e:
             logger.warning("Radio stream reconnect failed: %s", e)
         finally:
-            self.task = None
+            if self.task is asyncio.current_task():
+                self.task = None
 
     def schedule(self, state: dict) -> None:
+        if self._stopped or self._resetting:
+            return
         playback_state = self._deps.get_playback_state()
         track_info = playback_state.current_track_info or {}
         track_url = track_info.get("url")
@@ -128,12 +133,26 @@ class RadioReconnect:
             )
         )
 
-    def reset(self) -> None:
+    async def reset(self) -> None:
+        self._resetting = True
+        try:
+            await self._drain_task()
+        finally:
+            self._resetting = False
         self.attempts = 0
         self.url = None
         self.active_since = 0.0
+        self._stopped = False
 
     async def stop(self) -> None:
-        if self.task is not None and not self.task.done():
-            self.task.cancel()
-        self.task = None
+        self._stopped = True
+        await self._drain_task()
+
+    async def _drain_task(self) -> None:
+        task = self.task
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if self.task is task:
+                self.task = None
