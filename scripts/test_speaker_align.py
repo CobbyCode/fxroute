@@ -867,6 +867,42 @@ class LostWayTests(unittest.TestCase):
                 self.assertEqual(document["way_isolation_db"], {"left_low": None, "left_high": None})
                 self.assertTrue(check["confirmed"], check["reasons"])
 
+    def test_aligned_quieter_way_limits_in_both_directions(self):
+        # Pinned limits of the coincidence check (flat leak model, no driver
+        # headroom, the 10 dB isolation gate). The wide high band keeps a
+        # quiet high way separable far down; the narrow low band loses a quiet
+        # low way to the high way's leak sooner. Driver headroom here would
+        # refuse even equally loud aligned ways, so it stays out.
+        aligned = {"left_low": 5.0, "left_high": 5.0}
+        for quiet, gains in (("left_high", (-10.0, -20.0, -25.0)), ("left_low", (-6.0, -10.0))):
+            for gain_db in gains:
+                with self.subTest(quiet=quiet, gain_db=gain_db):
+                    document, check = self.confirm(aligned, gains_db={quiet: gain_db})
+                    self.assertEqual(document["way_isolation_db"],
+                                     {"left_low": None, "left_high": None})
+                    self.assertTrue(check["confirmed"], check["reasons"])
+
+    def test_refused_aligned_way_is_refused_apart_as_well(self):
+        # A low way 15 dB down cannot be told from the high way's leak: aligned
+        # it reports its coincidence margin, 1 ms apart the measured isolation
+        # is below the gate too. Neither reading confirms.
+        for arrivals in ({"left_low": 5.0, "left_high": 5.0},
+                         {"left_low": 5.0, "left_high": 6.0}):
+            with self.subTest(arrivals=arrivals):
+                document, check = self.confirm(arrivals, gains_db={"left_low": -15.0})
+                self.assertLess(document["way_isolation_db"]["left_low"], 10.0)
+                self.assertFalse(check["confirmed"])
+
+    def test_misaligned_quiet_high_way_is_not_confirmed(self):
+        # The other direction of a real offset: a quiet high way stays apart
+        # (no collapse), so the residual or its isolation refuses it.
+        for gain_db in (-20.0, -25.0, -30.0):
+            with self.subTest(gain_db=gain_db):
+                document, check = self.confirm(self.GEOMETRY, gains_db={"left_high": gain_db})
+                spread = max(document["arrival_ms"].values()) - min(document["arrival_ms"].values())
+                self.assertAlmostEqual(spread, 7.5, delta=0.05)
+                self.assertFalse(check["confirmed"])
+
     def test_planning_take_with_a_lost_way_plans_nothing(self):
         roles = [request["role"] for request in self.alignment.capture_requests()]
         for gain_db in (-20.0, -25.0):
