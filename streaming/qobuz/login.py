@@ -97,12 +97,13 @@ async def _read_until_url(proc: asyncio.subprocess.Process, timeout: float) -> t
 
 
 async def _terminate(proc: asyncio.subprocess.Process | None) -> None:
-    if proc is None or proc.returncode is not None:
+    if proc is None:
         return
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        return
+    if proc.returncode is None:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=PROCESS_FINISH_TIMEOUT)
     except asyncio.TimeoutError:
@@ -133,22 +134,36 @@ async def begin_login() -> dict[str, Any]:
                 "reason": "already-in-progress",
                 "login_url": _session.url,
             }
-        proc = await asyncio.create_subprocess_exec(
+        spawn = asyncio.create_task(asyncio.create_subprocess_exec(
             binary, "login", "--paste",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.PIPE,
-        )
-        url, _collected = await _read_until_url(proc, BANNER_TIMEOUT)
-        if not url:
+        ))
+        try:
+            # Shield the spawn: cancellation can arrive after the OS creates
+            # the child but before create_subprocess_exec returns its handle.
+            proc = await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            try:
+                proc = await spawn
+            except Exception:
+                raise
             await _terminate(proc)
-            raise RuntimeError("qbzd login did not report an authorization URL")
-        # Let the listener settle into its blocking wait before returning.
-        await asyncio.sleep(BANNER_SETTLE_SECONDS)
-        session = _LoginSession(proc)
-        session.url = url
-        _session = session
-        return {"started": True, "login_url": url}
+            raise
+        try:
+            url, _collected = await _read_until_url(proc, BANNER_TIMEOUT)
+            if not url:
+                raise RuntimeError("qbzd login did not report an authorization URL")
+            # Let the listener settle into its blocking wait before returning.
+            await asyncio.sleep(BANNER_SETTLE_SECONDS)
+            session = _LoginSession(proc)
+            session.url = url
+            _session = session
+            return {"started": True, "login_url": url}
+        finally:
+            if _session is None:
+                await _terminate(proc)
 
 
 async def finish_login(pasted: str) -> dict[str, Any]:
@@ -163,31 +178,29 @@ async def finish_login(pasted: str) -> dict[str, Any]:
             _session = None
             raise RuntimeError("No qbzd login is in progress; start it again")
         try:
-            code_match = _CODE_PATTERN.search(value)
-            payload = (code_match.group(1) if code_match else value) + "\n"
-            assert session.proc.stdin is not None
-            session.proc.stdin.write(payload.encode())
-            await session.proc.stdin.drain()
-            session.proc.stdin.close()
-        except (BrokenPipeError, ConnectionResetError, AssertionError) as exc:
-            await _terminate(session.proc)
-            _session = None
-            raise RuntimeError("qbzd login exited before the code arrived") from exc
-        try:
-            rest = await asyncio.wait_for(_drain_remaining(session.proc), timeout=FINISH_TIMEOUT)
-        except asyncio.TimeoutError:
-            await _terminate(session.proc)
-            _session = None
-            raise RuntimeError("qbzd login timed out waiting for the browser step") from None
+            try:
+                code_match = _CODE_PATTERN.search(value)
+                payload = (code_match.group(1) if code_match else value) + "\n"
+                assert session.proc.stdin is not None
+                session.proc.stdin.write(payload.encode())
+                await session.proc.stdin.drain()
+                session.proc.stdin.close()
+            except (BrokenPipeError, ConnectionResetError, AssertionError) as exc:
+                raise RuntimeError("qbzd login exited before the code arrived") from exc
+            try:
+                rest = await asyncio.wait_for(_drain_remaining(session.proc), timeout=FINISH_TIMEOUT)
+            except asyncio.TimeoutError:
+                raise RuntimeError("qbzd login timed out waiting for the browser step") from None
+            output = "".join(rest)
+            ok = session.proc.returncode == 0
+            return {
+                "ok": ok,
+                "returncode": session.proc.returncode,
+                "output": output[-1500:],
+            }
         finally:
+            await _terminate(session.proc)
             _session = None
-        output = "".join(rest)
-        ok = session.proc.returncode == 0
-        return {
-            "ok": ok,
-            "returncode": session.proc.returncode,
-            "output": output[-1500:],
-        }
 
 
 async def _drain_remaining(proc: asyncio.subprocess.Process) -> list[str]:

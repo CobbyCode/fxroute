@@ -16,6 +16,8 @@ These tests verify that FXRoute only orchestrates that process correctly:
 
 from __future__ import annotations
 
+import asyncio
+import os
 import pathlib
 import sys
 import unittest
@@ -161,6 +163,46 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
                 await login.begin_login()
         self.assertIsNone(login._session)
 
+    async def test_cancelled_begin_reaps_child_before_next_login(self):
+        proc = _FakeProc([BANNER])
+        reading = asyncio.Event()
+
+        async def blocked_banner(*args):
+            reading.set()
+            await asyncio.Event().wait()
+
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
+             mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc), \
+             mock.patch.object(login, "_read_until_url", side_effect=blocked_banner):
+            task = asyncio.create_task(login.begin_login())
+            await asyncio.wait_for(reading.wait(), 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+        self.assertIsNotNone(proc.returncode)
+        self.assertIsNone(login._session)
+
+    async def test_cancelled_begin_during_spawn_reaps_child(self):
+        proc = _FakeProc([BANNER])
+        spawning = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_spawn(*args, **kwargs):
+            spawning.set()
+            await release.wait()
+            return proc
+
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
+             mock.patch.object(login.asyncio, "create_subprocess_exec", side_effect=delayed_spawn):
+            task = asyncio.create_task(login.begin_login())
+            await asyncio.wait_for(spawning.wait(), 1)
+            task.cancel()
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+        self.assertIsNotNone(proc.returncode)
+        self.assertIsNone(login._session)
+
     async def test_finish_login_pipes_code_and_reports_ok(self):
         proc = _FakeProc([BANNER, "Login successful.\n"])
         with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
@@ -173,6 +215,66 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["returncode"], 0)
         self.assertIn("tok123", proc.stdin.data.decode())
         self.assertIsNone(login._session)
+
+    async def test_cancelled_finish_reaps_child_before_session_is_cleared(self):
+        proc = _FakeProc([BANNER])
+        draining = asyncio.Event()
+
+        async def blocked_drain(*args):
+            draining.set()
+            await asyncio.Event().wait()
+
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
+             mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc):
+            await login.begin_login()
+            with mock.patch.object(login, "_drain_remaining", side_effect=blocked_drain):
+                task = asyncio.create_task(login.finish_login("code"))
+                await asyncio.wait_for(draining.wait(), 1)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 1)
+        self.assertIsNotNone(proc.returncode)
+        self.assertIsNone(login._session)
+
+    async def test_cancelled_real_login_child_is_reaped(self):
+        child = None
+        spawned = asyncio.Event()
+        banner_read = asyncio.Event()
+        real_spawn = asyncio.create_subprocess_exec
+        real_read = login._read_until_url
+
+        async def spawn(*args, **kwargs):
+            nonlocal child
+            child = await real_spawn(
+                sys.executable, "-u", "-c",
+                "import time; print('https://www.qobuz.com/login'); time.sleep(60)",
+                **kwargs,
+            )
+            spawned.set()
+            return child
+
+        async def read_then_wait(proc, timeout):
+            await real_read(proc, timeout)
+            banner_read.set()
+            await asyncio.Event().wait()
+
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
+             mock.patch.object(login.asyncio, "create_subprocess_exec", side_effect=spawn), \
+             mock.patch.object(login, "_read_until_url", side_effect=read_then_wait):
+            task = asyncio.create_task(login.begin_login())
+            try:
+                await asyncio.wait_for(spawned.wait(), 2)
+                await asyncio.wait_for(banner_read.wait(), 2)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 2)
+                self.assertIsNotNone(child.returncode)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child.pid, 0)
+            finally:
+                if child is not None and child.returncode is None:
+                    child.kill()
+                    await child.wait()
 
     async def test_finish_login_without_session_raises(self):
         with self.assertRaisesRegex(RuntimeError, "No qbzd login"):

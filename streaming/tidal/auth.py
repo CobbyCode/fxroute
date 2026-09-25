@@ -88,6 +88,7 @@ class TidalSession:
         self._session: Any | None = None
         self._pending: Any | None = None  # LinkLogin for the device flow
         self._pending_session: Any | None = None
+        self._auth_generation = 0
         # Last successfully verified user payload; kept across transient TIDAL
         # outages so the UI never flips to login just because a check failed.
         self._last_user: dict | None = None
@@ -200,6 +201,7 @@ class TidalSession:
     async def clear(self) -> None:
         """Forget the in-memory session and remove the persisted token file."""
         async with self._lock:
+            self._auth_generation += 1
             self._session = None
             self._pending = None
             self._pending_session = None
@@ -220,13 +222,19 @@ class TidalSession:
         flow is TIDAL-capped at HIGH (320k AAC); use the PKCE flow for
         lossless/Hi-Res.
         """
+        session, link, device = self._create_device_login(quality)
+        self._auth_generation += 1
+        self._pending = link
+        self._pending_session = session
+        return device
+
+    @staticmethod
+    def _create_device_login(quality: str | None) -> tuple[Any, Any, DeviceLogin]:
         if tidalapi is None:
             raise TidalAuthError("tidalapi is not installed")
         session = _new_session(quality or DEVICE_LOGIN_QUALITY)
         link = session.get_link_login()
-        self._pending = link
-        self._pending_session = session
-        return DeviceLogin(
+        return session, link, DeviceLogin(
             verification_uri=link.verification_uri,
             verification_uri_complete=link.verification_uri_complete,
             user_code=link.user_code,
@@ -245,26 +253,51 @@ class TidalSession:
             raise TidalAuthError("no device login is in progress")
         session = self._pending_session
         try:
-            session.process_link_login(self._pending, until_expiry=True)
-        except Exception as exc:  # noqa: BLE001 - tidalapi raises broad types
-            raise TidalAuthError(f"device login failed: {exc}") from exc
+            payload = self._wait_for_device_login(session, self._pending)
         finally:
             self._pending = None
             self._pending_session = None
+        self._session = session
+        self._last_user = payload
+        self._save_session(session)
+        return payload
+
+    @staticmethod
+    def _wait_for_device_login(session: Any, link: Any) -> dict:
+        try:
+            session.process_link_login(link, until_expiry=True)
+        except Exception as exc:  # noqa: BLE001 - tidalapi raises broad types
+            raise TidalAuthError(f"device login failed: {exc}") from exc
         if not session.check_login():
             raise TidalAuthError("device login expired before authorization")
-        self._session = session
-        self._last_user = _session_payload(session)
-        self._save_session(session)
-        return self._last_user
+        return _session_payload(session)
 
     async def start_device_login_async(self, quality: str | None = None) -> DeviceLogin:
         async with self._lock:
-            return await asyncio.to_thread(self.start_device_login, quality)
+            session, link, device = await asyncio.to_thread(self._create_device_login, quality)
+            self._auth_generation += 1
+            self._pending = link
+            self._pending_session = session
+            return device
 
     async def finish_device_login_async(self) -> dict:
         async with self._lock:
-            return await asyncio.to_thread(self.finish_device_login)
+            if self._pending is None or self._pending_session is None:
+                raise TidalAuthError("no device login is in progress")
+            link, session = self._pending, self._pending_session
+            generation = self._auth_generation
+            self._pending = None
+            self._pending_session = None
+        # The worker owns only its private session; it never changes shared
+        # state or persists credentials after its caller has been cancelled.
+        payload = await asyncio.to_thread(self._wait_for_device_login, session, link)
+        async with self._lock:
+            if generation != self._auth_generation:
+                raise TidalAuthError("device login was superseded")
+            self._session = session
+            self._last_user = payload
+            self._save_session(session)
+            return payload
 
     # -- PKCE login (browser; required for Hi-Res 24-bit FLAC) --------------
 

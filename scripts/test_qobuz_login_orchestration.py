@@ -47,6 +47,9 @@ class _ExitedProc:
 
     returncode = 1
 
+    async def wait(self):
+        return self.returncode
+
 
 class _LiveProc:
     """Minimal live-session stand-in: the process is still running."""

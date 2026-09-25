@@ -68,6 +68,44 @@ async def _run_until(watch, calls, *, claims_count=None, passes=None):
 
 
 class QobuzClaimWatcherTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_waits_for_cancelled_watch_cleanup(self):
+        watch, _ = make_watch([{"available": False, "status": "Stopped"}])
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def cleanup_on_cancel():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+                raise
+
+        watch.watch_task = asyncio.create_task(cleanup_on_cancel())
+        await entered.wait()
+        original = watch.watch_task
+        stopped = asyncio.create_task(watch.stop())
+        try:
+            await asyncio.sleep(0)
+            self.assertFalse(stopped.done())
+            self.assertIs(watch.watch_task, original)
+        finally:
+            release.set()
+            await asyncio.wait_for(stopped, 1)
+        self.assertTrue(original.done())
+        self.assertIsNone(watch.watch_task)
+
+    async def test_stop_observes_already_failed_watch(self):
+        watch, _ = make_watch([{"available": False, "status": "Stopped"}])
+
+        async def fail():
+            raise RuntimeError("watch failed")
+
+        watch.watch_task = asyncio.create_task(fail())
+        await asyncio.sleep(0)
+        await watch.stop()
+        self.assertIsNone(watch.watch_task)
+
     async def test_single_claim_per_playing_rising_edge(self):
         watch, calls = make_watch(
             [

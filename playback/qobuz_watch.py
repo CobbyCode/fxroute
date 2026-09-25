@@ -86,6 +86,11 @@ class QobuzPlayerWatch:
             )
 
     async def stop(self) -> None:
-        if self.watch_task is not None and not self.watch_task.done():
-            self.watch_task.cancel()
-        self.watch_task = None
+        task = self.watch_task
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if self.watch_task is task:
+            self.watch_task = None

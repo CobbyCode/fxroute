@@ -1743,8 +1743,12 @@ async def get_qobuz_ui_state(data: Optional[dict] = None) -> dict:
     pinned at 100% (Unity) while the phone slider drives only the master, so
     the raw qbzd value is reported separately as ``source_volume``.
     """
+    playback_state.qobuz_state_read_sequence += 1
+    read_sequence = playback_state.qobuz_state_read_sequence
     provider = streaming.get_provider("qobuz")
     status = dict(data or await provider.status())
+    if read_sequence < playback_state.qobuz_state_commit_sequence:
+        return playback_state.latest_qobuz_state or status
     source_volume = status.get("volume") if isinstance(status.get("volume"), (int, float)) else None
     status["source_volume"] = int(round(float(source_volume))) if source_volume is not None else None
     status["volume"] = get_output_volume_safe()
@@ -1752,6 +1756,7 @@ async def get_qobuz_ui_state(data: Optional[dict] = None) -> dict:
         "ok" if qobuz_unity_pin_state.get("ok") else "error"
     ) if qobuz_unity_pin_state else None
     status["playback_owner"] = _resolve_playback_owner()
+    playback_state.qobuz_state_commit_sequence = read_sequence
     playback_state.latest_qobuz_state = status
     return status
 
@@ -1829,6 +1834,8 @@ async def _spotify_volume_action(percent: float) -> dict:
 async def qobuz_play() -> dict:
     provider = streaming.get_provider("qobuz")
     data = await provider.play()
+    playback_state.qobuz_state_read_sequence += 1
+    playback_state.qobuz_state_commit_sequence = playback_state.qobuz_state_read_sequence
     playback_state.latest_qobuz_state = data
     return data
 
@@ -1836,6 +1843,8 @@ async def qobuz_play() -> dict:
 async def qobuz_pause() -> dict:
     provider = streaming.get_provider("qobuz")
     data = await provider.pause()
+    playback_state.qobuz_state_read_sequence += 1
+    playback_state.qobuz_state_commit_sequence = playback_state.qobuz_state_read_sequence
     playback_state.latest_qobuz_state = data
     return data
 
