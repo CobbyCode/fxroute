@@ -21,6 +21,7 @@ from uuid import uuid4
 import numpy as np
 
 from audio.tool_env import c_locale_env
+from measurement.reference_channels import resolve_reference_channels
 from measurement.audio import MeasurementAudioAdapter
 from measurement.file_store import MeasurementFileStore
 from measurement.host_capture import HostCaptureRunner
@@ -389,33 +390,45 @@ class MeasurementStore:
             channel_count=input_channel_count,
             field_name="reference_input_channel_right",
         )
-        if reference_input_channel_left_index is None and reference_input_channel_right_index is None:
-            # Legacy and 2-channel path: one shared electrical reference for both sides.
-            reference_input_channel_left_index = shared_reference_input_channel_index
-            reference_input_channel_right_index = shared_reference_input_channel_index
-
-        # The reference may not share the microphone channel. Disable only the
-        # affected side; the other side keeps its reference.
-        shared_reference_channels = (
-            reference_input_channel_left_index is not None
-            and reference_input_channel_left_index == reference_input_channel_right_index
+        # Opt-in multi-channel reference capture: every configured loopback
+        # candidate is recorded in one take and the capture evidence decides
+        # which one carries the sweep.  The list is never filtered by side, and
+        # the legacy single fields keep mirroring its first entry so older
+        # readers still see one primary channel.
+        candidate_indexes: list[int] = []
+        for value in (reference_candidate_channels or ()):
+            raw_candidate = str(value if value is not None else "").strip()
+            if not raw_candidate:
+                continue
+            candidate_indexes.append(self._parse_optional_input_channel_index(
+                raw_candidate,
+                channel_count=input_channel_count,
+                field_name="reference_candidate_channels",
+            ))
+        # Legacy and 2-channel path: one shared electrical reference serves both
+        # sides. The reference may not share the microphone channel: only the
+        # affected side loses it, the other side keeps its reference.
+        resolved_reference = resolve_reference_channels(
+            mic=mic_input_channel_index,
+            shared=shared_reference_input_channel_index,
+            left=reference_input_channel_left_index,
+            right=reference_input_channel_right_index,
+            candidates=candidate_indexes,
         )
         reference_disabled_reason_left = ""
         reference_disabled_reason_right = ""
-        if reference_input_channel_left_index is not None and reference_input_channel_left_index == mic_input_channel_index:
+        if resolved_reference.collided_left:
             reference_disabled_reason_left = (
                 "Mic input and electrical reference input are the same channel; reference compensation disabled."
-                if shared_reference_channels
+                if resolved_reference.shared
                 else "Mic input and electrical reference L input are the same channel; reference compensation disabled."
             )
-            reference_input_channel_left_index = None
-        if reference_input_channel_right_index is not None and reference_input_channel_right_index == mic_input_channel_index:
+        if resolved_reference.collided_right:
             reference_disabled_reason_right = (
                 "Mic input and electrical reference input are the same channel; reference compensation disabled."
-                if shared_reference_channels
+                if resolved_reference.shared
                 else "Mic input and electrical reference R input are the same channel; reference compensation disabled."
             )
-            reference_input_channel_right_index = None
         reference_disabled_reason = " ".join(
             dict.fromkeys(
                 reason
@@ -423,31 +436,9 @@ class MeasurementStore:
                 if reason
             )
         )
-
-        # Opt-in multi-channel reference capture: every configured loopback
-        # candidate is recorded in one take and the capture evidence decides
-        # which one carries the sweep.  The list is never filtered by side, and
-        # the legacy single fields keep mirroring its first entry so older
-        # readers still see one primary channel.
-        reference_candidate_input_channels: list[int] = []
-        for value in (reference_candidate_channels or ()):
-            raw_candidate = str(value if value is not None else "").strip()
-            if not raw_candidate:
-                continue
-            candidate_index = self._parse_optional_input_channel_index(
-                raw_candidate,
-                channel_count=input_channel_count,
-                field_name="reference_candidate_channels",
-            )
-            if candidate_index is None or candidate_index == mic_input_channel_index:
-                continue
-            if candidate_index + 1 not in reference_candidate_input_channels:
-                reference_candidate_input_channels.append(candidate_index + 1)
-        if reference_candidate_input_channels:
-            if reference_input_channel_left_index is None:
-                reference_input_channel_left_index = reference_candidate_input_channels[0] - 1
-            if reference_input_channel_right_index is None:
-                reference_input_channel_right_index = reference_candidate_input_channels[0] - 1
+        reference_input_channel_left_index = resolved_reference.left
+        reference_input_channel_right_index = resolved_reference.right
+        reference_candidate_input_channels = [index + 1 for index in resolved_reference.candidates]
 
         calibration_meta = self._file_store.resolve_calibration_meta(
             calibration_filename=calibration_filename,

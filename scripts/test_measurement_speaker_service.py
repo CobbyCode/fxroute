@@ -275,6 +275,27 @@ class StartValidationTests(ServiceFixture, unittest.TestCase):
         self.assertEqual(self.acquire_calls, [])
         self.assertFalse(service.active)
 
+    def test_reference_on_the_microphone_channel_fails_before_any_sweep(self):
+        # The store would drop a reference that is the microphone channel and
+        # the take would fail only after its planning sweep; judge the
+        # resolved channel indexes, not the raw fields.
+        service = self.service()
+        for side, channels in (
+                ("left", {"reference_input_channel": "1"}),
+                ("left", {"mic_input_channel": "", "reference_input_channel": "01"}),
+                ("left", {"mic_input_channel": 3, "reference_input_channel": " 3 "}),
+                ("left", {"reference_input_channel": "",
+                          "reference_input_channel_left": "1", "reference_input_channel_right": "8"}),
+                ("right", {"reference_input_channel": "7",
+                           "reference_input_channel_left": "7", "reference_input_channel_right": "1"})):
+            with self.subTest(side=side, channels=channels):
+                with self.assertRaisesRegex(ValueError, "is the microphone input"):
+                    service.start(side=side, input_id="mic", reference_id="r",
+                                  microphone_position_id="m", **channels)
+        self.assertEqual(service.jobs(), [])
+        self.assertEqual(self.acquire_calls, [])
+        self.assertFalse(service.active)
+
     def test_non_crossover_state_fails_before_job_exists(self):
         self.state["active_mode"] = "stereo"
         service = self.service()
@@ -422,6 +443,16 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
                                      reference_input_channel_left="7", dry_run=True)
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "trial-done", job)
+
+    async def test_one_sided_reference_serves_the_other_side(self):
+        # A reference configured for one side only is recorded for either
+        # side, like a shared one; the take's evidence decides whether it
+        # carries the sweep.
+        service, job_id = self.start(side="right", reference_input_channel="",
+                                     reference_input_channel_left="7", dry_run=True)
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "trial-done", job)
+        self.assertEqual(self.acquire_calls[0]["reference_input_channel_left"], "7")
 
     async def test_dry_run_confirms_without_committing(self):
         service, job_id = self.start(dry_run=True)

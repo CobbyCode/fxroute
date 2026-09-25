@@ -28,6 +28,7 @@ from contextlib import nullcontext
 from typing import Any, Callable
 from uuid import uuid4
 
+from measurement.reference_channels import require_speaker_align_reference
 from measurement.speaker_acquisition import input_chain_key
 from measurement.speaker_align import SpeakerAlignment
 from measurement.speaker_apply import apply_and_confirm
@@ -265,14 +266,14 @@ class SpeakerAlignService:
             raise ValueError("Speaker Align side must be left or right")
         if not isinstance(input_id, str) or not input_id.strip():
             raise ValueError("Speaker Align service requires a capture input id")
-        # The verification take only admits the electrical reference, so a run
-        # without one would spend the planning and every way sweep first.
-        if not any(value is not None and str(value).strip() for value in (
-                reference_input_channel, reference_input_channel_left,
-                reference_input_channel_right)):
-            raise ValueError(
-                "Speaker Align requires an electrical reference input channel; "
-                "its verification cannot run on the microphone alone")
+        # The takes only admit the electrical reference, so judge it on the
+        # channels the store will resolve: a reference on the microphone
+        # channel would be dropped only after the planning sweep was spent.
+        require_speaker_align_reference(
+            side, mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
+            reference_input_channel_left=reference_input_channel_left,
+            reference_input_channel_right=reference_input_channel_right)
         reference_id = _session_identity(reference_id, "upstream reference")
         microphone_position_id = _session_identity(microphone_position_id, "microphone position")
         state = deepcopy(self._get_state())
