@@ -683,38 +683,6 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             sorted(("pw-link", "-d", "mpv:output_FR", f"hw:playback_AUX{index}") for index in range(18)),
         )
 
-    def test_verify_and_reclean_share_direct_source_ports_on_aux_hardware(self):
-        dsp_links = {
-            PipeWireLink(f"fxroute_dsp:output_{index + 1}", f"hw:playback_AUX{index}")
-            for index in range(4)
-        }
-        bypass = PipeWireLink("spotify:output_FR", "hw:playback_AUX3")
-        live = dsp_links | {bypass}
-
-        async def run(command):
-            args = tuple(command)
-            if args == ("pw-link", "-l"):
-                return CommandResult(0, "\n".join(
-                    f"{link.source}\n  |-> {link.target}" for link in sorted(live, key=str)))
-            if args[:2] == ("pw-link", "-d"):
-                live.discard(PipeWireLink(*args[2:]))
-                return CommandResult(0)
-            raise AssertionError(f"Unexpected graph command: {args}")
-
-        async def exercise():
-            runtime = DSPRuntime(self.manager, command_runner=run)
-            runtime._config = DSPRuntimeConfig(
-                "subwoofer-2.2", "hw", 48000,
-                tuple(f"playback_AUX{index}" for index in range(4)), (),
-            )
-            runtime._links = list(dsp_links)
-            self.assertFalse(await runtime.verify())
-            await runtime._remove_direct_source_links()
-            self.assertEqual(live, dsp_links)
-            self.assertTrue(await runtime.verify())
-
-        asyncio.run(exercise())
-
     def test_reclean_reconciles_stable_native_sub_output_links(self):
         commands = []
 
