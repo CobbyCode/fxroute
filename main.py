@@ -1468,16 +1468,43 @@ def _music_library_lock() -> asyncio.Lock:
     return runtime.music_library.switch_lock
 
 
+def _prune_queue_after_scan(valid_ids: list[str]) -> None:
+    """Reconcile the committed queue with a freshly published library state.
+
+    Runs in the scan worker thread right after a successful publish. Only
+    drops queue entries the rescan retired; the live current-track snapshot
+    stays untouched (it describes the loaded MPV source, not the library).
+    """
+    queue = playback_queue.queue
+    if queue is None:
+        return
+    try:
+        summary = queue.prune_removed_tracks(valid_ids)
+    except Exception as exc:
+        logger.warning("Queue prune after library scan failed: %s", exc)
+        return
+    if summary.get("removed"):
+        logger.info(
+            "Queue pruned after library scan: removed=%s count=%s index=%s",
+            summary.get("removed"),
+            summary.get("count"),
+            summary.get("index"),
+        )
+
+
 def _library_scanner_for(root: Path, library_id: str = "local") -> LibraryScanner:
     if library_id == "local":
-        return LibraryScanner(root)
-    cache_key = hashlib.sha256(library_id.encode()).hexdigest()[:12]
-    config_dir = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "fxroute"
-    store = LibraryMetadataStore(
-        config_dir / f"library-metadata-{cache_key}.sqlite",
-        config_dir / f"library-metadata-covers-{cache_key}",
-    )
-    return LibraryScanner(root, metadata_store=store)
+        scanner = LibraryScanner(root)
+    else:
+        cache_key = hashlib.sha256(library_id.encode()).hexdigest()[:12]
+        config_dir = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "fxroute"
+        store = LibraryMetadataStore(
+            config_dir / f"library-metadata-{cache_key}.sqlite",
+            config_dir / f"library-metadata-covers-{cache_key}",
+        )
+        scanner = LibraryScanner(root, metadata_store=store)
+    scanner.set_scan_published_hook(_prune_queue_after_scan)
+    return scanner
 
 
 async def _spotify_intent_matches_live_state(

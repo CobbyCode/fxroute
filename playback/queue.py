@@ -227,6 +227,86 @@ class PlaybackQueue:
         self.shuffle = False
         self.single_track_loop = False
 
+    def prune_removed_tracks(self, valid_ids) -> dict:
+        """Drop committed entries whose library tracks no longer exist.
+
+        Called after a successful library rescan with the fresh library id
+        set so the queue cannot keep navigating to (or serving) tracks the
+        library just retired. Entries without an id are kept: they carry no
+        library identity to validate. The live ``current_track_info``
+        snapshot owned by the application shell is intentionally untouched;
+        it describes the loaded MPV source, not the library.
+
+        Returns a summary dict with the removed count and the new
+        count/index. Never raises for missing players: MPV normalization is
+        best-effort, exactly like ``normalize_after_native_loss``.
+        """
+        try:
+            valid = {str(item or "").strip() for item in (valid_ids or [])}
+        except TypeError:
+            valid = set()
+        valid.discard("")
+        old_tracks = self.tracks or []
+        old_original = self.original or []
+        old_index = self.index
+        old_mode = self.mode
+
+        def _kept(entry: dict) -> bool:
+            entry_id = str(entry.get("id") or "").strip() if isinstance(entry, dict) else ""
+            return not entry_id or entry_id in valid
+
+        new_tracks = [dict(item) for item in old_tracks if _kept(item)]
+        new_original = [dict(item) for item in old_original if _kept(item)]
+        removed = len(old_tracks) - len(new_tracks)
+        if removed <= 0 and len(new_original) == len(old_original):
+            return {"removed": 0, "count": len(new_tracks), "index": old_index}
+
+        if new_tracks:
+            current_id = ""
+            if isinstance(old_index, int) and 0 <= old_index < len(old_tracks):
+                current = old_tracks[old_index]
+                if isinstance(current, dict):
+                    current_id = str(current.get("id") or "").strip()
+            new_index = next(
+                (pos for pos, item in enumerate(new_tracks) if str(item.get("id") or "").strip() == current_id and current_id),
+                None,
+            )
+            if new_index is None:
+                base = old_index if isinstance(old_index, int) and old_index >= 0 else 0
+                new_index = min(base, len(new_tracks) - 1)
+        else:
+            new_index = -1
+
+        self.tracks = new_tracks
+        self.original = new_original
+        self.index = new_index
+
+        if old_mode == "native_mpv" and (
+            removed > 0 or len(new_tracks) <= 1 or not can_use_native_local_queue(new_tracks)
+        ):
+            # The MPV-side playlist still holds the retired entries: trim it
+            # to the current file and fall back to app-owned navigation.
+            # ``mode`` is still native here, so the normalizer acts.
+            try:
+                self.normalize_after_native_loss()
+            except Exception:
+                logger.warning("Failed to normalize MPV after queue prune", exc_info=True)
+                self.mode = "app_replace"
+
+        if not new_tracks:
+            self.mode = "app_replace"
+            self.loop = False
+            self.shuffle = False
+            self.single_track_loop = False
+        elif len(new_tracks) <= 1:
+            self.shuffle = False
+            if self.loop:
+                self.loop = False
+                self.single_track_loop = True
+            if self.mode == "native_mpv":
+                self.mode = "app_replace"
+        return {"removed": removed, "count": len(new_tracks), "index": new_index}
+
     def snapshot(self) -> QueueSnapshot:
         """Read-only copy of the committed queue state."""
         return QueueSnapshot(

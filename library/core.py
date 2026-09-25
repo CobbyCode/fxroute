@@ -10,7 +10,7 @@ import subprocess
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from mutagen import File as MutagenFile
 from mutagen.id3 import ID3NoHeaderError
 
@@ -227,7 +227,7 @@ AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".
 class LibraryScanner:
     """Scans the music directory and provides track listings."""
 
-    def __init__(self, music_root: Path | None = None, metadata_store: LibraryMetadataStore | None = None):
+    def __init__(self, music_root: Path | None = None, metadata_store: LibraryMetadataStore | None = None, on_scan_published: Callable[[List[str]], None] | None = None):
         self.settings = get_settings()
         self.music_root: Path = music_root or self.settings.MUSIC_ROOT
         self._track_cache: List[Track] = []
@@ -263,6 +263,14 @@ class LibraryScanner:
         # snapshot and the publish is therefore either seen by the overlay
         # or applied to the freshly published cache, never discarded.
         self._cache_publish_lock = threading.Lock()
+        # Optional hook with the fresh library id list after a successful
+        # publish (used by the app shell to prune queue entries the rescan
+        # retired). Never fails a scan; never imports playback (boundary).
+        self._on_scan_published = on_scan_published
+
+    def set_scan_published_hook(self, hook: Callable[[List[str]], None] | None) -> None:
+        """Install or clear the post-publish reconciler (app shell wiring)."""
+        self._on_scan_published = hook
 
     def prepare_scan_status(self):
         """Pre-mark a scan as scheduled (startup / manual refresh).
@@ -376,9 +384,13 @@ class LibraryScanner:
 
         Returns the settled cache, or None when the cache is empty and no
         scan is running, queued, or scheduled (the caller then runs a scan,
-        because an authoritative read needs data).  Never starts a scan,
-        never takes scan ownership away from a queued mandatory scan, and
-        never extends ``scanning`` beyond the real scan lifecycle.
+        because an authoritative read needs data).  A scheduled scan is
+        always awaited, even with a populated cache: the schedule marks the
+        cached state as knowingly stale (manual refresh, library switch,
+        startup), so returning it immediately would answer stale on
+        purpose.  Never starts a scan, never takes scan ownership away
+        from a queued mandatory scan, and never extends ``scanning``
+        beyond the real scan lifecycle.
         """
         with self._scan_state_cond:
             while True:
@@ -389,7 +401,7 @@ class LibraryScanner:
                 busy = (
                     self._scan_in_progress
                     or self._scan_pending > 0
-                    or (self._scan_scheduled and not self._track_cache)
+                    or self._scan_scheduled
                 )
                 if not busy and not lock_held:
                     break
@@ -432,7 +444,19 @@ class LibraryScanner:
             # music root may enter the cache, the library and playback.
             resolved_music_root = self.music_root.resolve()
             logger.info(f"Scanning music directory: {self.music_root}")
-            for root, dirs, files in os.walk(self.music_root):
+            # Traversal errors (unreadable directories) must fail the scan
+            # instead of publishing a partial track list as success. os.walk
+            # ignores scandir errors by default, so an onerror hook records
+            # them; per-file races (a file vanishing mid-scan) stay per-file
+            # warnings below and never fail the whole scan.
+            walk_errors: List[str] = []
+
+            def _on_walk_error(exc: OSError) -> None:
+                detail = str(exc.filename or exc) or repr(exc)
+                walk_errors.append(detail)
+                logger.warning("Library scan traversal error for %s: %s", detail, exc)
+
+            for root, dirs, files in os.walk(self.music_root, onerror=_on_walk_error):
                 if not self._scan_claim_is_current(scan_token):
                     logger.info("Library scan discarded: superseded by a newer scan, library switch or shutdown")
                     return self._track_cache
@@ -489,6 +513,23 @@ class LibraryScanner:
                 )
                 return self._track_cache
 
+            if walk_errors:
+                detail = "; ".join(walk_errors[:3])
+                if len(walk_errors) > 3:
+                    detail += f" (+{len(walk_errors) - 3} more)"
+                self._scan_error = (
+                    "Library scan incomplete: traversal failed "
+                    f"({detail}); previous library state kept"
+                )
+                logger.error(
+                    "Library scan incomplete: %d directorie(s) unreadable, "
+                    "keeping previous library state (%d track(s)): %s",
+                    len(walk_errors),
+                    len(self._track_cache),
+                    detail,
+                )
+                return self._track_cache
+
             self._log_metadata_fd_counts("after-track-cache-pass")
 
             # Keep large-library browsing predictable by grouping paths/folders first,
@@ -496,6 +537,7 @@ class LibraryScanner:
             tracks.sort(key=_track_sort_key)
 
             self._publish_tracks(tracks)
+            self._notify_scan_published(tracks)
             try:
                 self._scan_current_dir = "Finalizing metadata"
                 self.metadata_store.sync_tracks_seen(active_track_paths)
@@ -554,6 +596,20 @@ class LibraryScanner:
                     if track.id in fresh:
                         track.favorite = fresh[track.id]
             self._track_cache = tracks
+
+    def _notify_scan_published(self, tracks: List[Track]) -> None:
+        """Run the post-publish reconciler with the fresh library id list.
+
+        Best-effort: a failing reconciler (e.g. queue prune) is logged and
+        never fails the scan that just published successfully.
+        """
+        hook = self._on_scan_published
+        if hook is None:
+            return
+        try:
+            hook([track.id for track in tracks])
+        except Exception as exc:
+            logger.warning("Scan publish reconciler failed: %s", exc)
 
     def _create_track_from_file(self, filepath: Path) -> Optional[Track]:
         """Create a Track object with metadata from file."""
