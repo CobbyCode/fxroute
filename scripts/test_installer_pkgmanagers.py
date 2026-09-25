@@ -547,8 +547,8 @@ systemctl() {{ SYSTEMCTL_CALLS="$SYSTEMCTL_CALLS|systemctl $*"; return 0; }}
             self._run_backports_probe(noble, "1.4.9-1~bpo13+2", with_backports), 0,
         )
 
-    def test_spotify_autostart_default_is_x86_64_only(self):
-        self.assertIn('[[ "$(uname -m)" != "x86_64" ]]', self.text)
+    def test_spotify_autostart_default_follows_desktop_session(self):
+        self.assertIn('if ! spotify_desktop_supported; then', self.text)
         self.assertIn('spotify_autostart="off"', self.text)
         self.assertIn("SPOTIFY_AUTOSTART=$spotify_autostart", self.text)
 

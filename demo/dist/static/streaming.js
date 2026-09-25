@@ -1802,9 +1802,11 @@
 
     // A different TIDAL account must never see another account's cached
     // library: reset the in-memory cache/heart state when the account changes.
+    // A logout (empty user id) clears the previous account's in-memory state
+    // the same way so no stale hearts/lists survive for the next login.
     function ensureTidalAccountState() {
         const userId = tidalUserId();
-        if (!userId || state.tidal.cacheUser === userId) return;
+        if (state.tidal.cacheUser === userId) return;
         state.tidal.cache = null;
         state.tidal.snapshotPromise = null;
         state.tidal.lastItems = {};

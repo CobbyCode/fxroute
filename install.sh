@@ -2860,7 +2860,11 @@ create_env_if_missing() {
   local port="8000"
   local max_downloads="1"
   local spotify_autostart="on"
-  if [[ "$(uname -m)" != "x86_64" ]]; then
+  # The desktop autostart default follows the same predicate that decides
+  # whether Spotify Desktop is offered at all (arch plus a detectable
+  # desktop session). A headless x86_64 host must not enable desktop
+  # autostart merely because of its architecture.
+  if ! spotify_desktop_supported; then
     spotify_autostart="off"
   fi
 
@@ -7449,6 +7453,11 @@ main_providers_only() {
   configure_optional_streaming
   ensure_target_user_ownership
   write_install_state
+  # A supported --providers-only desktop install must converge to the same
+  # complete desktop setup state as the full installer path below: reconcile
+  # the FXRoute desktop autostart entry with .env and the installed app.
+  # The call is a no-op for daemon-only selections without a desktop app.
+  setup_spotify_autostart
   echo
   echo "Provider setup finished:"
   echo " - Spotify Desktop: ${SPOTIFY_DESKTOP_PROVIDER_STATUS}"

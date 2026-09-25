@@ -15,7 +15,7 @@
     'use strict';
 
     const PROVIDER_UNINSTALL_CONFIRM = {
-        spotify: 'Remove Spotify Connect (spotifyd and desktop integration) from this machine? FXRoute itself stays installed. You can reinstall it later.',
+        spotify: 'Remove Spotify Connect (spotifyd) from this machine? The Spotify desktop app stays installed. FXRoute itself stays installed. You can reinstall it later.',
         qobuz: 'Remove the Qobuz renderer (qbzd) from this machine? FXRoute itself stays installed. You can reinstall it later.',
         tidal: 'Remove the TIDAL backend from FXRoute? Your TIDAL session stays on disk. You can reinstall it later.',
     };

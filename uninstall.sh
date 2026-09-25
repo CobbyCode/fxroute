@@ -63,7 +63,7 @@ Usage: ./uninstall.sh [options]
 Options:
   --target <dir>                Uninstall from this directory (default: $INSTALL_ROOT_DEFAULT)
   --user <name>                 Select the FXRoute user when invoked as root
-  --provider <id>               Remove only one provider (spotify, qobuz, tidal, privilege); FXRoute itself stays installed
+  --provider <id>               Remove only one provider (spotify, spotify-desktop, qobuz, tidal, privilege); FXRoute itself stays installed
   --remove-project-dir          Remove the project directory after uninstall
   -y, --yes                     Assume yes for optional removals
   -h, --help                    Show this help
@@ -129,10 +129,10 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --provider)
-      [[ $# -ge 2 ]] || { echo "--provider requires an id (spotify, qobuz, tidal, privilege)" >&2; exit 1; }
+      [[ $# -ge 2 ]] || { echo "--provider requires an id (spotify, spotify-desktop, qobuz, tidal, privilege)" >&2; exit 1; }
       case "$2" in
-        spotify|qobuz|tidal|privilege) PROVIDER_ONLY_ARG="$2" ;;
-        *) echo "Unknown provider '$2'. Expected spotify, qobuz, tidal, or privilege." >&2; exit 1 ;;
+        spotify|spotify-desktop|qobuz|tidal|privilege) PROVIDER_ONLY_ARG="$2" ;;
+        *) echo "Unknown provider '$2'. Expected spotify, spotify-desktop, qobuz, tidal, or privilege." >&2; exit 1 ;;
       esac
       shift 2
       ;;
@@ -3617,12 +3617,12 @@ remove_project_dir_if_requested() {
 clear_provider_ownership_state() {
   # Rewrite install-state.json without the removed provider's ownership
   # records so a later full uninstall cannot try to remove it twice.
-  # Settings ids and state sections differ for Spotify: the UI id 'spotify'
-  # removes both spotify_desktop and spotifyd components, so all three
-  # sections must go with it. Leaving 'spotifyd' behind kept
-  # installed_by_fxroute=true with the deleted binary's sha256, and the
-  # next Spotify install refused to reinstall (identity guard) — that made
-  # provider installs order-dependent.
+  # Spotify Desktop and spotifyd have independent lifecycles: the Settings
+  # id 'spotify' installs/removes only the spotifyd Connect daemon (see
+  # streaming/api.py), while 'spotify-desktop' addresses only the desktop
+  # app. Each scoped removal therefore clears only its own state sections;
+  # clearing the other component's records would make the next install of
+  # that component skip the reinstall (identity guard) or drop ownership.
   local provider="$1"
   local state_file="$INSTALL_STATE_FILE"
   [[ -f "$state_file" && ! -L "$state_file" ]] || return 0
@@ -3633,7 +3633,8 @@ from pathlib import Path
 path = Path(sys.argv[1])
 provider = sys.argv[2]
 sections = {
-    "spotify": ["spotify", "spotify_desktop", "spotifyd"],
+    "spotify": ["spotify", "spotifyd"],
+    "spotify-desktop": ["spotify_desktop"],
     "qobuz": ["qobuz"],
     "tidal": ["tidal"],
 }.get(provider, [provider])
@@ -3657,6 +3658,11 @@ PY
 remove_single_provider() {
   # Scoped removal for Settings -> Providers: remove exactly one owned
   # provider component; the FXRoute service, helpers and records stay.
+  # Spotify Desktop and spotifyd are independent components with separate
+  # lifecycles: 'spotify' (the Settings id) removes only the spotifyd
+  # Connect daemon, mirroring the Settings install path which installs only
+  # spotifyd; 'spotify-desktop' removes only the desktop app. Neither scoped
+  # removal may touch the other component.
   local provider="$1"
   log "Removing FXRoute-owned $provider components only"
   case "$provider" in
@@ -3669,8 +3675,10 @@ remove_single_provider() {
       fi
       ;;
     spotify)
-      remove_owned_spotify_desktop
       remove_owned_spotifyd
+      ;;
+    spotify-desktop)
+      remove_owned_spotify_desktop
       ;;
     tidal)
       remove_owned_tidal_dependency

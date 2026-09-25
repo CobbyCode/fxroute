@@ -223,3 +223,11 @@ and caches are preserved by default, including:
 `--remove-project-dir` additionally removes the FXRoute installation tree and
 its virtual environment. Use it only when that is intended. Provider data in
 the home-directory config/cache paths remains outside that removal.
+
+Scoped provider removal (`./uninstall.sh --provider <id>`) keeps the
+lifecycles of Spotify Desktop and spotifyd separate: `--provider spotify`
+removes only the FXRoute-owned spotifyd Connect daemon (mirroring
+Settings → Providers, which installs only spotifyd), while
+`--provider spotify-desktop` removes only the FXRoute-owned desktop app.
+Neither scoped removal touches the other component; the full uninstall
+above still removes both when owned.

@@ -930,6 +930,10 @@ async def api_streaming_provider_uninstall(provider_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
     if provider_id not in {"spotify", "qobuz", "tidal"}:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} cannot be uninstalled from the UI")
+    # Lifecycle separation: the "spotify" id addresses only the spotifyd
+    # Connect daemon (mirroring the install endpoint, which installs only
+    # spotifyd). The Spotify desktop app has its own uninstaller id
+    # ("spotify-desktop") and is never touched by this path.
     result = await _run_provider_installer_op(
         PROVIDER_UNINSTALL_SCRIPT, f"{provider_id} uninstall", "--provider", provider_id, "--yes"
     )
