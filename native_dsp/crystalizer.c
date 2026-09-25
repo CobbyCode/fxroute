@@ -22,6 +22,10 @@
 
 #define CRYSTALIZER_BANDS 13U
 #define CRYSTALIZER_PAIRS ((CRYSTALIZER_BANDS + 1U) / 2U)
+/* Band intensity range in dB, mirroring the PEQ gain range so extreme
+ * finite values cannot overflow the linear gain into Inf/NaN. */
+#define CRYSTALIZER_INTENSITY_DB_MIN -24.0F
+#define CRYSTALIZER_INTENSITY_DB_MAX 24.0F
 #define BLOCK_SIZE 2048U
 #define FFT_SIZE (2U * BLOCK_SIZE)
 #define FFT_STAGES 12U
@@ -481,8 +485,15 @@ void fx_crystalizer_reset(fx_crystalizer *c) {
     }
 }
 
+int fx_crystalizer_intensity_db_valid(float db) {
+    float linear;
+    if (!isfinite(db) || db < CRYSTALIZER_INTENSITY_DB_MIN || db > CRYSTALIZER_INTENSITY_DB_MAX) return 0;
+    linear = powf(10.0F, db / 20.0F);
+    return isfinite(linear) && linear > 0.0F;
+}
+
 void fx_crystalizer_set_band_intensity_db(fx_crystalizer *c, size_t band, float db) {
-    if (!c || band >= CRYSTALIZER_BANDS || !isfinite(db)) return;
+    if (!c || band >= CRYSTALIZER_BANDS || !fx_crystalizer_intensity_db_valid(db)) return;
     c->base_intensity[band] = powf(10.0F, db / 20.0F);
     c->adaptive_intensity[band] = c->base_intensity[band];
 }

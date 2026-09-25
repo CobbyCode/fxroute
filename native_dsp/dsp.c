@@ -26,6 +26,16 @@
 #define MAX_LIVE_UPDATES 1024
 #define LIVE_COMMIT_TIMEOUT_NS 250000000L
 #define PI 3.14159265358979323846
+/* PEQ gain range in dB, mirroring the Python validation (-24..24) so
+ * extreme finite values cannot overflow the biquad math into Inf/NaN. */
+#define PEQ_GAIN_DB_MIN -24.0f
+#define PEQ_GAIN_DB_MAX 24.0f
+/* Delay buffer capacities in ms: ordinary stages allocate 500ms, stages
+ * whose id ends in "-delay" allocate 10000ms, outputs allocate 500ms.
+ * Config and live paths enforce these same limits. */
+#define STAGE_DELAY_MAX_MS 500.0f
+#define PEQ_STAGE_DELAY_MAX_MS 10000.0f
+#define OUTPUT_DELAY_MAX_MS 500.0f
 
 typedef struct { unsigned in, out; float gain; } route;
 typedef struct { float b0, b1, b2, a1, a2, z1, z2; } biquad;
@@ -306,6 +316,7 @@ static float convolve(fxdsp *d, convolution *c, float input) {
 
 static int design(biquad *b, const char *type, float rate, float frequency, float q, float gain_db) {
     if (!(frequency > 0 && frequency < rate * .5f && q > 0)) return -1;
+    if (!isfinite(gain_db) || gain_db < PEQ_GAIN_DB_MIN || gain_db > PEQ_GAIN_DB_MAX) return -1;
     double a = pow(10.0, gain_db / 40.0), w = 2.0 * PI * frequency / rate;
     double cs = cos(w), sn = sin(w), alpha = sn / (2.0 * q), beta = 2.0 * sqrt(a) * alpha;
     double b0, b1, b2, a0, a1, a2;
@@ -316,6 +327,7 @@ static int design(biquad *b, const char *type, float rate, float frequency, floa
     else if (!strcmp(type, "lowshelf")) { b0=a*((a+1)-(a-1)*cs+beta); b1=2*a*((a-1)-(a+1)*cs); b2=a*((a+1)-(a-1)*cs-beta); a0=(a+1)+(a-1)*cs+beta; a1=-2*((a-1)+(a+1)*cs); a2=(a+1)+(a-1)*cs-beta; }
     else if (!strcmp(type, "highshelf")) { b0=a*((a+1)+(a-1)*cs+beta); b1=-2*a*((a-1)+(a+1)*cs); b2=a*((a+1)+(a-1)*cs-beta); a0=(a+1)-(a-1)*cs+beta; a1=2*((a-1)-(a+1)*cs); a2=(a+1)-(a-1)*cs-beta; }
     else return -1;
+    if (!isfinite(b0) || !isfinite(b1) || !isfinite(b2) || !isfinite(a0) || !isfinite(a1) || !isfinite(a2) || a0 == 0.0) return -1;
     b->b0=b0/a0; b->b1=b1/a0; b->b2=b2/a0; b->a1=a1/a0; b->a2=a2/a0; b->z1=b->z2=0; return 0;
 }
 
@@ -350,6 +362,15 @@ static int parse_float_value(char *text, float *result) {
     return 0;
 }
 
+static int stage_delay_is_peq_delay(const dsp_stage *stage) {
+    size_t id_length = strlen(stage->id);
+    return id_length >= 6U && !strcmp(stage->id + id_length - 6U, "-delay");
+}
+
+static float stage_delay_limit(const dsp_stage *stage) {
+    return stage_delay_is_peq_delay(stage) ? PEQ_STAGE_DELAY_MAX_MS : STAGE_DELAY_MAX_MS;
+}
+
 static int set_native_param(dsp_stage *stage, const char *key, char *raw) {
     char *value = trim_value(raw);
     float number;
@@ -364,10 +385,8 @@ static int set_native_param(dsp_stage *stage, const char *key, char *raw) {
         return 0;
     }
     if (stage->kind == STAGE_DELAY) {
-        size_t id_length = strlen(stage->id);
-        int peq_delay = id_length >= 6U && !strcmp(stage->id + id_length - 6U, "-delay");
         if (parse_float_value(value, &number) || number < 0.0f ||
-            number > (peq_delay ? 10000.0f : 1000.0f)) return -1;
+            number > stage_delay_limit(stage)) return -1;
         if (!strcmp(key, "left_ms")) stage->left_ms = number;
         else if (!strcmp(key, "right_ms")) stage->right_ms = number;
         else return -1;
@@ -382,7 +401,8 @@ static int set_native_param(dsp_stage *stage, const char *key, char *raw) {
         stage->gain = powf(10.0f, number / 20.0f); return 0;
     }
     if (stage->kind == STAGE_CRYSTALIZER) {
-        if (strcmp(key, "intensity_band2_db") || parse_float_value(value, &number)) return -1;
+        if (strcmp(key, "intensity_band2_db") || parse_float_value(value, &number) ||
+            !fx_crystalizer_intensity_db_valid(number)) return -1;
         stage->intensity_db = number; return 0;
     }
     if (stage->kind == STAGE_AUTOGAIN) {
@@ -423,12 +443,11 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
             free(taps);
         }
     } else if (stage->kind == STAGE_DELAY) {
-        size_t id_length = strlen(stage->id);
-        int peq_delay = id_length >= 6U && !strcmp(stage->id + id_length - 6U, "-delay");
+        float capacity_ms = stage_delay_limit(stage);
         for (channel = 0; channel < d->inputs; channel++) {
             float milliseconds = channel & 1U ? stage->right_ms : stage->left_ms;
             stage->delay[channel] = (size_t)llround(milliseconds * d->rate / 1000.0f);
-            stage->delay_size[channel] = (size_t)llround((peq_delay ? 10000.0f : 500.0f) * d->rate / 1000.0f) + 1U;
+            stage->delay_size[channel] = (size_t)llround(capacity_ms * d->rate / 1000.0f) + 1U;
             stage->delay_line[channel] = calloc(stage->delay_size[channel], sizeof(float));
             if (!stage->delay_line[channel]) { fail(error, error_size, "out of memory"); return -1; }
         }
@@ -543,7 +562,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
                 conv_state->conv_in_gain = powf(10.0f, z / 20.0f); conv_state->conv_out_gain = powf(10.0f, route_gain / 20.0f);
                 conv_state->has_conv = 1;
             }
-            else if (sscanf(p,"output %u %f %f %31s %c",&out,&x,&y,arg,&extra)==4 && out<FXDSP_MAX_CHANNELS && y>=0.0f && (!strcmp(arg,"normal") || !strcmp(arg,"invert"))) { post_section=1; d->out[out].gain=powf(10,x/20); d->out[out].delay=(size_t)llround(y*d->rate/1000); d->out[out].polarity=!strcmp(arg,"invert")?-1:1; }
+            else if (sscanf(p,"output %u %f %f %31s %c",&out,&x,&y,arg,&extra)==4 && out<FXDSP_MAX_CHANNELS && isfinite(x) && isfinite(y) && y>=0.0f && y<=OUTPUT_DELAY_MAX_MS && (!strcmp(arg,"normal") || !strcmp(arg,"invert"))) { post_section=1; d->out[out].gain=powf(10,x/20); d->out[out].delay=(size_t)llround(y*d->rate/1000); d->out[out].polarity=!strcmp(arg,"invert")?-1:1; }
             else if (post_section && sscanf(p,"bypass %d %c",&enabled,&extra)==1) atomic_store_explicit(&d->effect_bypass,!!enabled,memory_order_relaxed);
             else { invalid: snprintf(line,sizeof line,"invalid config line %u",line_no); fail(error,error_size,line); goto bad; }
         }
@@ -568,7 +587,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     if(!d->fft_reverse||!d->fft_roots){fail(error,error_size,"out of memory");goto bad;}
     for(unsigned i=0;i<CONV_BLOCK*2;i++){unsigned value=i,reversed=0;for(unsigned bit=0;bit<9;bit++){reversed=(reversed<<1)|(value&1);value>>=1;}d->fft_reverse[i]=reversed;}
     for(unsigned i=0;i<CONV_BLOCK;i++){double angle=-2*PI*i/(CONV_BLOCK*2);d->fft_roots[i].re=cos(angle);d->fft_roots[i].im=sin(angle);}
-    for(out=0;out<d->outputs;out++) { output_state *s=&d->out[out]; s->delay_size=(size_t)llround(500.0*d->rate/1000.0)+1U; s->delay_line=calloc(s->delay_size,sizeof(float)); if(!s->delay_line){fail(error,error_size,"out of memory");goto bad;} }
+    for(out=0;out<d->outputs;out++) { output_state *s=&d->out[out]; s->delay_size=(size_t)llround((double)OUTPUT_DELAY_MAX_MS*d->rate/1000.0)+1U; s->delay_line=calloc(s->delay_size,sizeof(float)); if(!s->delay_line){fail(error,error_size,"out of memory");goto bad;} }
     for(out=0;out<d->outputs;out++) {
         output_state *s=&d->out[out];
         if(!s->has_conv) continue;
@@ -660,9 +679,12 @@ int fxdsp_live_param(fxdsp *d, const char *stage_id, const char *key, float valu
     if (stage->kind == STAGE_LV2) known = !strcmp(key, "output_gain_db");
     else if (stage->kind == STAGE_CONVOLVER)
         known = !strcmp(key, "wet_db") || !strcmp(key, "dry_db") || !strcmp(key, "input_gain_db") || !strcmp(key, "output_gain_db");
-    else if (stage->kind == STAGE_DELAY) known = !strcmp(key, "left_ms") || !strcmp(key, "right_ms");
+    else if (stage->kind == STAGE_DELAY)
+        known = (!strcmp(key, "left_ms") || !strcmp(key, "right_ms")) &&
+            value >= 0.0f && value <= stage_delay_limit(stage);
     else if (stage->kind == STAGE_HEADROOM || stage->kind == STAGE_MASTER_GAIN) known = !strcmp(key, "gain_db");
-    else if (stage->kind == STAGE_CRYSTALIZER) known = !strcmp(key, "intensity_band2_db");
+    else if (stage->kind == STAGE_CRYSTALIZER)
+        known = !strcmp(key, "intensity_band2_db") && fx_crystalizer_intensity_db_valid(value);
     else if (stage->kind == STAGE_AUTOGAIN) known = !strcmp(key, "target_db") || !strcmp(key, "silence_threshold_db");
     if (!known) return 0;
     snprintf(update.stage_id, sizeof update.stage_id, "%s", stage_id);
@@ -700,7 +722,7 @@ int fxdsp_live_peq(fxdsp *d, unsigned output, unsigned filter, const char *type,
 
 int fxdsp_live_output(fxdsp *d, unsigned output, float gain_db, float delay_ms, int invert) {
     live_update update = {.kind = LIVE_OUTPUT, .first = output, .values = {gain_db, delay_ms}, .invert = invert};
-    if (!d || output >= d->outputs || !isfinite(gain_db) || !isfinite(delay_ms) || delay_ms < 0.0f || delay_ms > 500.0f || (invert != 0 && invert != 1)) return 0;
+    if (!d || output >= d->outputs || !isfinite(gain_db) || !isfinite(delay_ms) || delay_ms < 0.0f || delay_ms > OUTPUT_DELAY_MAX_MS || (invert != 0 && invert != 1)) return 0;
     update.values[2] = powf(10.0f, gain_db / 20.0f);
     update.values[3] = (float)llround(delay_ms * d->rate / 1000.0f);
     return live_add(d, &update);

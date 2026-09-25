@@ -99,6 +99,7 @@ NATIVE_HELPER_TESTS=(
     "scripts/test_native_dsp_matrix.py"
     "scripts/test_native_dsp_output_conv.py"
     "scripts/test_native_dsp_plan_peak_parity.py"
+    "scripts/test_native_dsp_safety.py"
     "scripts/test_native_dsp_sos.py"
     "scripts/test_native_dsp_stages.py"
 )

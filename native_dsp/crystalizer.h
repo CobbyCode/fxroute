@@ -11,6 +11,10 @@ fx_crystalizer *fx_crystalizer_create(unsigned rate);
 void fx_crystalizer_destroy(fx_crystalizer *crystalizer);
 void fx_crystalizer_reset(fx_crystalizer *crystalizer);
 void fx_crystalizer_set_band_intensity_db(fx_crystalizer *crystalizer, size_t band, float db);
+/* Range check shared by the setter, the engine config path and the live
+ * path: rejects non-finite and extreme dB values whose linear gain would
+ * overflow to Inf, before any state is mutated. */
+int fx_crystalizer_intensity_db_valid(float db);
 void fx_crystalizer_process(fx_crystalizer *crystalizer, const float *input, float *output, size_t frames);
 /* Stereo convenience: runs both channels concurrently (results bitwise
  * identical to calling fx_crystalizer_process sequentially). */
