@@ -239,8 +239,12 @@ class PlaybackOrchestrator:
         return not samplerate.playback_rate_aligned(status, target_rate)
 
     def transition_is_active(self) -> bool:
+        """Return true while an attempt is running or waiting for the lock."""
         coordinator = self._deps.get_coordinator()
-        return bool(coordinator is not None and coordinator.transition_active)
+        if coordinator is not None and coordinator.transition_active:
+            return True
+        state = self._deps.get_playback_state()
+        return bool(getattr(state, "playback_transition_pending_attempts", 0) > 0)
 
     def coordinator_commit_context_id(self) -> str | None:
         """Return the Coordinator's latest committed transition identity.

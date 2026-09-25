@@ -204,6 +204,68 @@ class QueueNavigationTransactionalTests(unittest.IsolatedAsyncioTestCase):
             main.playback_transition_coordinator = coordinator
             self._restore(originals)
 
+    async def test_native_next_during_active_transition_is_conflict_and_noop(self):
+        queue_a = [_track(track_id) for track_id in ("a", "b", "c")]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        player = _TrueMpvPlayer(["/music/a.flac", "/music/b.flac", "/music/c.flac"])
+        main.runtime.player_instance = player
+        coordinator = main.playback_transition_coordinator
+        try:
+            main.playback_transition_coordinator = SimpleNamespace(transition_active=True)
+            with patch.object(
+                main, "build_playback_payload", side_effect=lambda _state: {"queue": playback_queue.queue.payload()}
+            ), self.assertRaises(main.HTTPException) as ctx:
+                await main.next_playback()
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(player.calls, [])
+            self.assertEqual(playback_queue.queue.index, 0)
+            self.assertEqual(main.playback_state.current_track_info, _track("a"))
+        finally:
+            main.playback_transition_coordinator = coordinator
+            self._restore(originals)
+
+    async def test_native_previous_during_active_transition_is_conflict_and_noop(self):
+        queue_a = [_track(track_id) for track_id in ("a", "b", "c")]
+        originals = self._install(queue_a, index=1, mode="native_mpv")
+        player = _TrueMpvPlayer(["/music/a.flac", "/music/b.flac", "/music/c.flac"])
+        main.runtime.player_instance = player
+        coordinator = main.playback_transition_coordinator
+        try:
+            main.playback_transition_coordinator = SimpleNamespace(transition_active=True)
+            with patch.object(
+                main, "build_playback_payload", side_effect=lambda _state: {"queue": playback_queue.queue.payload()}
+            ), self.assertRaises(main.HTTPException) as ctx:
+                await main.previous_playback()
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(player.calls, [])
+            self.assertEqual(playback_queue.queue.index, 1)
+            self.assertEqual(main.playback_state.current_track_info, _track("b"))
+        finally:
+            main.playback_transition_coordinator = coordinator
+            self._restore(originals)
+
+    async def test_native_navigation_rejects_transition_waiting_for_coordinator_lock(self):
+        queue_a = [_track(track_id) for track_id in ("a", "b", "c")]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        player = _TrueMpvPlayer(["/music/a.flac", "/music/b.flac", "/music/c.flac"])
+        main.runtime.player_instance = player
+        coordinator = main.playback_transition_coordinator
+        original_pending = main.playback_state.playback_transition_pending_attempts
+        try:
+            main.playback_state.playback_transition_pending_attempts = 1
+            main.playback_transition_coordinator = SimpleNamespace(transition_active=False)
+            with patch.object(
+                main, "build_playback_payload", side_effect=lambda _state: {"queue": playback_queue.queue.payload()}
+            ), self.assertRaises(main.HTTPException) as ctx:
+                await main.next_playback()
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(player.calls, [])
+            self.assertEqual(playback_queue.queue.index, 0)
+        finally:
+            main.playback_state.playback_transition_pending_attempts = original_pending
+            main.playback_transition_coordinator = coordinator
+            self._restore(originals)
+
     async def test_native_shuffle_failure_keeps_queue(self):
         queue_a = [_track(track_id) for track_id in ("a", "b", "c", "d")]
         originals = self._install(queue_a, index=1, mode="native_mpv")

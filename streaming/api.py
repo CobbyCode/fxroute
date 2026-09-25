@@ -807,13 +807,10 @@ async def api_streaming_provider_install(provider_id: str, request: Request):
         # so the watch may still be in its availability wait (or a previous
         # run may have ended). Rearm it here; the waiting poll is the fallback.
         try:
-            deps.spotify_playerctl_watch.notify_provider_installed()
-            if deps.spotify_playerctl_watch.watch_task is None or deps.spotify_playerctl_watch.watch_task.done():
-                deps.spotify_playerctl_watch.last_trigger_at = 0.0
-                deps.spotify_playerctl_watch.watch_task = asyncio.create_task(
-                    deps.spotify_playerctl_watch.run_watch_loop(),
-                    name="spotify-playerctl-watch",
-                )
+            await deps.spotify_playerctl_watch.rearm()
+            if deps.spotify_playerctl_watch.watch_task is not None and deps.spotify_playerctl_watch.watch_task.done():
+                logger.warning("Spotify playerctl watch exited immediately after provider install")
+            else:
                 logger.info("Spotify playerctl watch (re)started after provider install")
         except Exception as exc:
             logger.warning("Could not rearm Spotify watch after install: %s", exc)

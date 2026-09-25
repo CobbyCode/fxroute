@@ -364,6 +364,8 @@ class PlaybackQueue:
                 return False
             next_track = dict(self.tracks[index])
             if self.mode == "native_mpv":
+                if self._deps.transition_is_active():
+                    raise HTTPException(status_code=409, detail="A playback transition is in progress")
                 player = self._player
                 set_playlist_pos = getattr(player, "set_playlist_pos", None)
                 if not callable(set_playlist_pos):
@@ -663,6 +665,8 @@ class PlaybackQueue:
         return True
 
     def set_loop(self, enabled: bool) -> bool:
+        if self._deps.transition_is_active():
+            raise HTTPException(status_code=409, detail="A playback transition is in progress")
         has_local_track = bool(self._deps.get_current_track_info() and self._deps.get_current_track_info().get("source") in {"local", "tidal"})
         if not has_local_track:
             self.loop = False

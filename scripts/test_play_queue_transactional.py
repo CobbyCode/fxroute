@@ -8,6 +8,7 @@ published exactly once after the playback transition committed.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -350,6 +351,148 @@ class PlayQueueTransactionalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["track"]["id"], "c")
             self.assertEqual(playback_queue.queue.index, 2)
             self.assertEqual(main.runtime.player_instance.state["playlist_pos"], 2)
+        finally:
+            self._restore(originals)
+
+    async def test_direct_native_play_during_active_transition_is_conflict_and_noop(self):
+        queue_a = [_track("a", rate=48000), _track("b", rate=48000), _track("c", rate=48000)]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        player = _MpvPlaylistPlayer(["a", "b", "c"])
+        main.runtime.player_instance = player
+        try:
+            with patch.object(
+                main, "playback_transition_coordinator", SimpleNamespace(transition_active=True)
+            ), self._patch_context(lambda _request: self.fail("Coordinator must not run")):
+                with self.assertRaises(main.HTTPException) as ctx:
+                    await self._play(track_id="c", queue_track_ids=["a", "b", "c"])
+
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(player.pos, 0)
+            self.assertEqual(playback_queue.queue.index, 0)
+            self.assertEqual(main.playback_state.current_track_info, _track("a", rate=48000))
+        finally:
+            self._restore(originals)
+
+    async def test_native_resume_rejects_epoch_change_after_await(self):
+        queue_a = [_track("a", rate=48000), _track("b", rate=48000), _track("c", rate=48000)]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        player = _MpvPlaylistPlayer(["a", "b", "c"])
+        player.state.update({"current_file": "/music/a.flac", "playing": False, "paused": True})
+        pause_calls = []
+
+        def set_pause(paused):
+            pause_calls.append(paused)
+            player.state["paused"] = paused
+            player.state["playing"] = not paused
+
+        player.set_pause = set_pause
+        main.runtime.player_instance = player
+        original_epoch = main.playback_state.playback_transition_epoch
+        original_pending = main.playback_state.playback_transition_pending_attempts
+        mark_intent = patch.object(main, "_mark_playback_intent_changed")
+
+        async def drain_with_epoch_change(func, *args, **kwargs):
+            result = func(*args, **kwargs)
+            if func is player.set_pause:
+                main.playback_state.playback_transition_epoch += 1
+            return result
+
+        try:
+            with patch.object(
+                main, "playback_transition_coordinator", SimpleNamespace(transition_active=False)
+            ), patch.object(main, "_drain_worker", new=drain_with_epoch_change), \
+                 patch.object(main, "_mark_player_state_authoritative"), mark_intent as mark_intent_call, \
+                 self._patch_context(lambda _request: self.fail("Coordinator must not run")):
+                with self.assertRaises(main.HTTPException) as ctx:
+                    await self._play(track_id="c", queue_track_ids=["a", "b", "c"])
+
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(pause_calls, [False])
+            mark_intent_call.assert_not_called()
+        finally:
+            main.playback_state.playback_transition_epoch = original_epoch
+            main.playback_state.playback_transition_pending_attempts = original_pending
+            self._restore(originals)
+
+    async def test_native_resume_holds_coordinator_lock_until_worker_finishes(self):
+        queue_a = [_track("a", rate=48000), _track("b", rate=48000), _track("c", rate=48000)]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        player = _MpvPlaylistPlayer(["a", "b", "c"])
+        player.state.update({"current_file": "/music/a.flac", "playing": False, "paused": True})
+        player.set_pause = lambda paused: player.state.update({"paused": paused, "playing": not paused})
+        main.runtime.player_instance = player
+        pause_entered = asyncio.Event()
+        pause_release = asyncio.Event()
+        transition_entered = asyncio.Event()
+
+        class Coordinator:
+            def __init__(self):
+                self.lock = asyncio.Lock()
+
+            @property
+            def transition_active(self):
+                return self.lock.locked()
+
+        coordinator = Coordinator()
+
+        async def drain_until_released(func, *args, **kwargs):
+            pause_entered.set()
+            await pause_release.wait()
+            return func(*args, **kwargs)
+
+        async def competing_transition():
+            async with coordinator.lock:
+                transition_entered.set()
+
+        try:
+            with patch.object(main, "playback_transition_coordinator", coordinator), \
+                 patch.object(main, "_drain_worker", new=drain_until_released), \
+                 self._patch_context(lambda _request: self.fail("Coordinator must not run")):
+                play_task = asyncio.create_task(
+                    self._play(track_id="c", queue_track_ids=["a", "b", "c"])
+                )
+                await asyncio.wait_for(pause_entered.wait(), timeout=1.0)
+                transition_task = asyncio.create_task(competing_transition())
+                await asyncio.sleep(0)
+                self.assertFalse(transition_entered.is_set())
+                pause_release.set()
+                result = await play_task
+                await transition_task
+
+            self.assertEqual(result["track"]["id"], "c")
+            self.assertTrue(transition_entered.is_set())
+        finally:
+            if not pause_release.is_set():
+                pause_release.set()
+            for task in (locals().get("play_task"), locals().get("transition_task")):
+                if task is not None and not task.done():
+                    task.cancel()
+            pending = [task for task in (locals().get("play_task"), locals().get("transition_task")) if task is not None]
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            self._restore(originals)
+
+    async def test_loop_during_active_transition_is_conflict_and_noop(self):
+        queue_a = [_track("a", rate=48000), _track("b", rate=48000)]
+        originals = self._install(queue_a, index=0, mode="native_mpv")
+        player = _MpvPlaylistPlayer(["a", "b"])
+        loop_calls = []
+        player.set_loop_playlist = lambda enabled: loop_calls.append(bool(enabled))
+        main.runtime.player_instance = player
+        request = SimpleNamespace(json=AsyncMock(return_value={"enabled": True}))
+        try:
+            with patch.object(
+                main, "playback_transition_coordinator", SimpleNamespace(transition_active=True)
+            ), patch.object(main.manager, "broadcast", new=AsyncMock()), patch.object(
+                main, "build_playback_payload", side_effect=lambda _state: {"queue": playback_queue.queue.payload()}
+            ):
+                with self.assertRaises(main.HTTPException) as ctx:
+                    await main.set_playback_loop(request)
+
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertFalse(playback_queue.queue.loop)
+            self.assertFalse(playback_queue.queue.single_track_loop)
+            self.assertEqual(loop_calls, [])
         finally:
             self._restore(originals)
 

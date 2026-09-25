@@ -62,6 +62,9 @@ class SpotifyPlayerctlWatch:
         self.last_trigger_at: float = 0.0
         self.watch_task: asyncio.Task | None = None
         self.detect_task: asyncio.Task | None = None
+        self._claim_tasks: set[asyncio.Task[Any]] = set()
+        self._stopping = False
+        self._lifecycle_lock = asyncio.Lock()
         self._rescan_event = asyncio.Event()
 
     def notify_provider_installed(self) -> None:
@@ -73,6 +76,17 @@ class SpotifyPlayerctlWatch:
         """
         self.last_trigger_at = 0.0
         self._rescan_event.set()
+
+    async def rearm(self) -> None:
+        """Serialize a watch restart with any in-progress shutdown."""
+        async with self._lifecycle_lock:
+            self._stopping = False
+            self.notify_provider_installed()
+            if self.watch_task is None or self.watch_task.done():
+                self.watch_task = asyncio.create_task(
+                    self.run_watch_loop(),
+                    name="spotify-playerctl-watch",
+                )
 
     async def _event_detect_check(self, reason: str) -> None:
         deps = self._deps
@@ -192,7 +206,30 @@ class SpotifyPlayerctlWatch:
             if self.detect_task and self.detect_task.done():
                 self.detect_task = None
 
+    def _claim_task_done(self, task: asyncio.Task[Any]) -> None:
+        self._claim_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            logger.warning("Spotify external claim failed: %s", error)
+
+    def _schedule_external_claim(self, detail: str) -> None:
+        if self._stopping:
+            return
+        task = asyncio.create_task(
+            self._deps.claim_spotify_playback(detail),
+            name="spotify-external-claim",
+        )
+        self._claim_tasks.add(task)
+        task.add_done_callback(self._claim_task_done)
+
     def schedule_detect(self, reason: str) -> None:
+        if self._stopping:
+            return
         if self.detect_task and not self.detect_task.done():
             logger.debug(
                 "Spotify playerctl detect event coalesced while detect/recovery task is active: reason=%s",
@@ -276,13 +313,9 @@ class SpotifyPlayerctlWatch:
                     if status == "Playing":
                         self.schedule_detect(f"playerctl:{tail or 'playing'}")
                         # A real MPRIS Playing event is an external source
-                        # claim (Spotify Connect started playback). Fire and
-                        # forget: the claim is a no-op when spotify already
-                        # owns playback.
-                        asyncio.create_task(
-                            self._deps.claim_spotify_playback("playerctl-playing"),
-                            name="spotify-external-claim",
-                        )
+                        # claim (Spotify Connect started playback). The watcher
+                        # owns the task so shutdown can cancel and drain it.
+                        self._schedule_external_claim("playerctl-playing")
                     self._deps.schedule_spotify_state_refresh(f"playerctl:{tail or status or 'metadata'}")
                 stderr = b""
                 if proc.stderr:
@@ -305,8 +338,18 @@ class SpotifyPlayerctlWatch:
             await asyncio.sleep(1.0)
 
     async def stop(self) -> None:
-        for task in (self.watch_task, self.detect_task):
-            if task is not None and not task.done():
-                task.cancel()
-        self.watch_task = None
-        self.detect_task = None
+        async with self._lifecycle_lock:
+            self._stopping = True
+            tasks = {
+                task
+                for task in (self.watch_task, self.detect_task, *self._claim_tasks)
+                if task is not None
+            }
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._claim_tasks.clear()
+            self.watch_task = None
+            self.detect_task = None

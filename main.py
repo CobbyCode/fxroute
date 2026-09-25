@@ -2636,12 +2636,8 @@ async def lifespan(app: FastAPI):
             bluetooth_input.run_monitor_loop(),
             name="bluetooth-input-monitor",
         )
-        spotify_playerctl_watch.last_trigger_at = 0.0
         logger.info("Starting Spotify playerctl watch task")
-        spotify_playerctl_watch.watch_task = asyncio.create_task(
-            spotify_playerctl_watch.run_watch_loop(),
-            name="spotify-playerctl-watch",
-        )
+        await spotify_playerctl_watch.rearm()
         logger.info("Starting Qobuz qbzd claim watch task")
         qobuz_player_watch.watch_task = asyncio.create_task(
             qobuz_player_watch.run_watch_loop(),
@@ -3186,16 +3182,23 @@ async def play_track(req: PlayRequest):
     ):
         target_index = active_queue_ids.index(req.track_id)
         was_paused = bool(runtime.player_instance.state.get("paused"))
+        selection_epoch = playback_state.playback_transition_epoch
         if not await playback_queue.queue.load_track(target_index, transition_reason="direct queue selection"):
             raise HTTPException(status_code=409, detail="Native queue navigation failed")
         if was_paused:
             # Selecting a track from a paused native queue must start it, like
             # the app_replace/coordinator path (should_play=True).  MPV keeps
             # pause across a playlist-pos jump, so resume explicitly instead of
-            # reporting "playing" over a still-paused transport.
-            await _drain_worker(runtime.player_instance.set_pause, False)
-            _mark_player_state_authoritative(runtime.player_instance.state)
-            _mark_playback_intent_changed()
+            # reporting "playing" over a still-paused transport.  The native
+            # selection above has no await after its active-transition guard;
+            # enter the Coordinator lock immediately so the resume worker and
+            # its commit cannot overlap a newer transition.
+            async with _manual_transport_guard(expected_epoch=selection_epoch):
+                await _drain_worker(runtime.player_instance.set_pause, False)
+                if playback_state.playback_transition_epoch != selection_epoch:
+                    raise HTTPException(status_code=409, detail="A playback transition completed first")
+                _mark_player_state_authoritative(runtime.player_instance.state)
+                _mark_playback_intent_changed()
         track_info = dict(playback_queue.queue.tracks[target_index])
         new_state = runtime.player_instance.state
         return {
