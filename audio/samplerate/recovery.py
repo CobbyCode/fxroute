@@ -17,7 +17,12 @@ import logging
 import time
 from typing import Any
 
-from .parsing import _parse_pactl_sinks_short, _run_command
+from .parsing import (
+    _parse_pactl_sinks_short,
+    _run_command,
+    card_name_for_sink_key,
+    successor_sink_key,
+)
 from .persistence import _load_audio_output_selection
 
 logger = logging.getLogger(__name__)
@@ -28,13 +33,7 @@ RECOVERY_POLL_SECONDS = 1.0
 
 def _alsa_card_name_for_sink_key(key: str) -> str | None:
     """Return the ALSA card name behind a local ``alsa_output.*`` sink key."""
-    if not key.startswith("alsa_output."):
-        return None
-    body = key[len("alsa_output."):]
-    card_body, _, _profile = body.rpartition(".")
-    if not card_body:
-        return None
-    return f"alsa_card.{card_body}"
+    return card_name_for_sink_key(key)
 
 
 def _sink_names() -> set[str]:
@@ -58,9 +57,13 @@ def recover_saved_output_sink() -> dict[str, Any]:
 
     Detection: the persisted selection names a local ALSA sink that is absent
     while its ALSA card is still enumerated.  Recovery: one bounded WirePlumber
-    restart followed by polling for the sink to come back.  Returns a report
-    dict (``attempted``/``recovered``/``reason``) and never raises for
-    decisionable states; probe/command errors propagate to the caller.
+    restart followed by polling for the sink to come back.  A device that is
+    already back under a new profile/node name (same ALSA card, unique live
+    sink) counts as present without a restart; selection migration stays with
+    the persisted-selection re-apply and the watcher reconcile.  Returns a
+    report dict (``attempted``/``recovered``/``reason``, plus ``sink_key``
+    when the live name differs) and never raises for decisionable states;
+    probe/command errors propagate to the caller.
     """
     report: dict[str, Any] = {"attempted": False, "recovered": False, "reason": None}
     selected_key = (_load_audio_output_selection() or {}).get("selected_key")
@@ -71,8 +74,18 @@ def recover_saved_output_sink() -> dict[str, Any]:
     if not card_name:
         report["reason"] = "saved-selection-not-local-alsa"
         return report
-    if str(selected_key) in _sink_names():
+    live = successor_sink_key(str(selected_key), _sink_names())
+    if live == str(selected_key):
         report["reason"] = "saved-sink-present"
+        return report
+    if live is not None:
+        report["reason"] = "sink-present-under-new-name"
+        report["sink_key"] = live
+        logger.info(
+            "Saved output sink %s is already present as %s; no WirePlumber re-probe needed",
+            selected_key,
+            live,
+        )
         return report
     if card_name not in _card_names():
         report["reason"] = "card-absent"
@@ -90,10 +103,21 @@ def recover_saved_output_sink() -> dict[str, Any]:
     while time.monotonic() < deadline:
         time.sleep(RECOVERY_POLL_SECONDS)
         try:
-            if str(selected_key) in _sink_names():
+            live = successor_sink_key(str(selected_key), _sink_names())
+            if live == str(selected_key):
                 report["recovered"] = True
                 report["reason"] = "sink-restored"
                 logger.info("Saved output sink %s restored after WirePlumber re-probe", selected_key)
+                return report
+            if live is not None:
+                report["recovered"] = True
+                report["reason"] = "sink-restored-under-new-name"
+                report["sink_key"] = live
+                logger.info(
+                    "Saved output sink %s restored as %s after WirePlumber re-probe",
+                    selected_key,
+                    live,
+                )
                 return report
         except Exception:
             continue

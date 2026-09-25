@@ -188,6 +188,7 @@ from .parsing import (
     _parse_pw_node_ids,
     _parse_sample_spec_channels,
     _run_command,
+    successor_sink_key,
 )
 from .persistence import (
     _load_audio_output_selection,
@@ -852,6 +853,17 @@ def apply_persisted_audio_output_selection() -> dict[str, Any] | None:
     try:
         return set_audio_output_selection(selected_key)
     except Exception:
+        pass
+    try:
+        sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
+    except Exception:
+        return None
+    live = successor_sink_key(selected_key, [sink.get("name") for sink in sinks])
+    if not live or live == selected_key:
+        return None
+    try:
+        return set_audio_output_selection(live)
+    except Exception:
         return None
 
 def reconcile_selected_output_default() -> str | None:
@@ -859,13 +871,23 @@ def reconcile_selected_output_default() -> str | None:
 
     Call under the audio configuration lock. Missing devices retain their
     saved identity so the next device/graph watcher tick can recover them.
+    A device that reappears under a new sink/profile name is recovered
+    through its stable ALSA card identity: when exactly one live sink
+    shares the saved sink's card, the persisted selection migrates to that
+    sink and it becomes the default. Zero or several card-mates keep the
+    saved identity untouched.
     """
     selected = _load_audio_output_selection().get("selected_key")
     if not selected:
         return None
     sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
-    if not any(sink.get("name") == selected for sink in sinks):
+    live = successor_sink_key(selected, [sink.get("name") for sink in sinks])
+    if live is None:
         return None
+    if live != selected:
+        _save_audio_output_selection(live)
+        logger.info("Saved output %s reappeared as %s; migrated selection to the same device", selected, live)
+        selected = live
     current = _run_command(["pactl", "get-default-sink"]).strip()
     if current != selected:
         _set_default_sink(selected)
@@ -878,9 +900,10 @@ def selected_output_default_state() -> tuple[str | None, bool]:
 
     Returns the saved selection key and whether PipeWire's default currently
     differs while the selected device is present, i.e. exactly when
-    reconcile_selected_output_default() would write. Lets background
-    watchers diagnose drift without holding the Coordinator lock; the
-    mutating reconcile stays on the locked repair path. Read failures
+    reconcile_selected_output_default() would write. A device that is back
+    under a renamed sink reads as drifted so the watcher migrates it. Lets
+    background watchers diagnose drift without holding the Coordinator lock;
+    the mutating reconcile stays on the locked repair path. Read failures
     report no drift so a watcher never repairs from untrusted state.
     """
     selected = _load_audio_output_selection().get("selected_key")
@@ -890,8 +913,11 @@ def selected_output_default_state() -> tuple[str | None, bool]:
         sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
     except Exception:
         return selected, False
-    if not any(sink.get("name") == selected for sink in sinks):
+    live = successor_sink_key(selected, [sink.get("name") for sink in sinks])
+    if live is None:
         return selected, False
+    if live != selected:
+        return selected, True
     try:
         current = _run_command(["pactl", "get-default-sink"]).strip()
     except Exception:
@@ -908,6 +934,11 @@ def _select_relevant_sink(default_sink: dict[str, Any], sinks: list[dict[str, An
         for sink in sinks:
             if sink.get("name") == selected:
                 return sink
+        live = successor_sink_key(selected, [sink.get("name") for sink in sinks])
+        if live is not None:
+            for sink in sinks:
+                if sink.get("name") == live:
+                    return sink
 
     running = [sink for sink in sinks if sink.get("state") == "RUNNING"]
     default_name = default_sink.get("name") if default_sink else None

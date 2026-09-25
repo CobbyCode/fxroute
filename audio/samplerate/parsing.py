@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .constants import (
     COMMAND_TIMEOUT_SECONDS,
@@ -60,6 +60,46 @@ def _is_bluetooth_sink_name(name: str | None) -> bool:
 def _is_bluetooth_source_name(name: str | None) -> bool:
     normalized = (name or "").strip()
     return normalized.startswith("bluez_input.") or normalized.startswith("bluez_source.")
+
+def card_name_for_sink_key(key: str | None) -> str | None:
+    """Return the ALSA card backing a local ``alsa_output.*`` sink key.
+
+    PipeWire names an ALSA device's nodes ``alsa_output.<device>.<profile>``
+    and its card ``alsa_card.<device>``; the card is the stable identity
+    across profile switches and node re-creation. Non-ALSA keys and bare
+    names without a profile suffix have no card.
+    """
+    normalized = (key or "").strip()
+    if not normalized.startswith("alsa_output."):
+        return None
+    device, _, _profile = normalized[len("alsa_output."):].rpartition(".")
+    if not device:
+        return None
+    return f"alsa_card.{device}"
+
+
+def successor_sink_key(saved_key: str | None, sink_names: Iterable[str] | None) -> str | None:
+    """Resolve a saved sink against live sink names through stable identity.
+
+    The exact saved name wins. Otherwise the unique live sink on the same
+    ALSA card is the same physical device under a new profile/node name.
+    Zero or several card-mates resolve to None: an absent device keeps its
+    saved identity and an ambiguous card never takes over a stranger.
+    """
+    saved = (saved_key or "").strip()
+    if not saved:
+        return None
+    names = [str(name or "").strip() for name in (sink_names or [])]
+    names = [name for name in names if name]
+    if saved in names:
+        return saved
+    card = card_name_for_sink_key(saved)
+    if card is None:
+        return None
+    mates = [name for name in names if card_name_for_sink_key(name) == card]
+    if len(mates) == 1:
+        return mates[0]
+    return None
 
 def _extract_bluetooth_address(value: str | None) -> str | None:
     normalized = (value or "").strip()

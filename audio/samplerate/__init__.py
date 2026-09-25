@@ -77,6 +77,8 @@ from audio.samplerate.parsing import (
     _pipewire_bluez_plugin_available,
     _run_command,
     _safe_int,
+    card_name_for_sink_key,
+    successor_sink_key,
 )
 
 from audio.samplerate.persistence import (
@@ -185,6 +187,8 @@ __all__ = [
     "audio_output_overview_with_effective_rate",
     "authoritative_sample_rate",
     "card_name_for_output",
+    "card_name_for_sink_key",
+    "successor_sink_key",
     "clear_auto_policy_force_rate",
     "disconnect_connected_bluetooth_audio_sources",
     "effective_output_key",
