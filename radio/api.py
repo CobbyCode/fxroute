@@ -19,6 +19,7 @@ from safe_http import RADIO_BROWSER_FETCH_MAX_BYTES, safe_get
 
 from library.core import path_within_root
 from radio.stations import (
+    StationStoreCorruptedError,
     add_catalog_station,
     add_station,
     delete_station,
@@ -300,6 +301,8 @@ async def add_station_catalog_selection(catalog_id: str):
     try:
         station = await _run_locked_station_worker(add_catalog_station, catalog_id)
         return {"status": "ok", "station": _station_api_payload(station)}
+    except StationStoreCorruptedError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -396,6 +399,8 @@ async def add_station_browser_selection(station_uuid: str):
         saved_station = await _run_locked_station_worker(
             _browser_find_or_create_station_sync, item, payload
         )
+    except StationStoreCorruptedError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "ok", "station": _station_api_payload(saved_station)}
@@ -408,6 +413,8 @@ async def create_station(req: StationUpsertRequest):
             add_station, req.name, req.stream_url, req.custom_image_url
         )
         return {"status": "ok", "station": _station_api_payload(station)}
+    except StationStoreCorruptedError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -419,6 +426,8 @@ async def edit_station(station_id: str, req: StationUpsertRequest):
             update_station, station_id, req.name, req.stream_url, req.custom_image_url
         )
         return {"status": "ok", "station": _station_api_payload(station)}
+    except StationStoreCorruptedError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -430,6 +439,8 @@ async def remove_station(station_id: str):
     try:
         await _run_locked_station_worker(delete_station, station_id)
         return {"status": "ok", "deleted": station_id}
+    except StationStoreCorruptedError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -449,6 +460,8 @@ def _import_stations_sync(items: list[StationImportItem]) -> dict:
         try:
             add_station(name, stream_url, custom_image_url)
             results.append({"status": "ok", "name": name})
+        except StationStoreCorruptedError:
+            raise
         except ValueError as e:
             results.append({"status": "error", "name": name, "reason": str(e)})
     return {"results": results}
@@ -460,4 +473,7 @@ async def import_stations(items: list[StationImportItem]):
         raise HTTPException(
             status_code=413, detail=f"Station import accepts at most {STATION_IMPORT_MAX_ITEMS} entries"
         )
-    return await _run_locked_station_worker(_import_stations_sync, items)
+    try:
+        return await _run_locked_station_worker(_import_stations_sync, items)
+    except StationStoreCorruptedError as e:
+        raise HTTPException(status_code=500, detail=str(e))

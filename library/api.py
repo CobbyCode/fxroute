@@ -33,7 +33,7 @@ from models import (
     DownloadTracksRequest,
     PlaylistSaveRequest,
 )
-from library.playlists import delete_playlist, get_playlists, save_playlist
+from library.playlists import PlaylistStoreCorruptedError, delete_playlist, get_playlists, save_playlist
 from zip_album import PLAYLIST_FILE_EXTENSIONS, UPLOAD_AUDIO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
@@ -585,6 +585,8 @@ async def create_or_update_playlist(req: PlaylistSaveRequest):
                 "track_count": len(playlist.track_ids),
             },
         }
+    except PlaylistStoreCorruptedError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -615,6 +617,8 @@ async def remove_playlist(playlist_id: str):
     try:
         delete_playlist(playlist_id)
         return {"status": "ok", "deleted": playlist_id}
+    except PlaylistStoreCorruptedError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

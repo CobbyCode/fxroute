@@ -49,6 +49,17 @@ SOMAFM_SLUG_TO_NAME = {
 }
 
 
+class StationStoreCorruptedError(ValueError):
+    """The persisted stations.json cannot be reliably parsed.
+
+    Raised by the strict load path used for every mutation, so a damaged
+    store is never silently overwritten (previously a corrupt file fell
+    back to DEFAULT_STATIONS in memory and the next save persisted
+    defaults plus the new change, losing all user stations).  A ValueError
+    subclass, matching the store-corruption convention used elsewhere.
+    """
+
+
 @dataclass
 class Station:
     id: str
@@ -333,12 +344,18 @@ def _ensure_storage() -> Path:
 
 
 def _load_raw_stations() -> List[dict]:
+    """Load the raw station documents, fail-closed on corruption.
+
+    An unreadable or unparsable store raises StationStoreCorruptedError
+    so no mutation can overwrite the damaged file.  Reads that must stay
+    available catch it and fall back explicitly.
+    """
     path = _ensure_storage()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
         logger.error(f"Failed to load stations.json: {e}")
-        data = DEFAULT_STATIONS
+        raise StationStoreCorruptedError(f"stations.json is corrupted and cannot be parsed: {e}") from e
     if not isinstance(data, list):
         raise ValueError("stations.json must contain a JSON array")
     return data
@@ -607,7 +624,14 @@ def get_stations(enrich_missing_art: bool = False) -> List[Station]:
             with _cache_lock:
                 generation_before = _cache_generation
 
-        raw = _load_raw_stations()
+        try:
+            raw = _load_raw_stations()
+        except StationStoreCorruptedError:
+            # Fail-open read: stay available on defaults, but never publish
+            # the fallback to the cache and never persist it back, so
+            # mutations keep failing closed and a later restore is picked up.
+            # Copies protect DEFAULT_STATIONS from caller mutation.
+            return [Station(**dict(item)) for item in DEFAULT_STATIONS]
         changed = False
         stations: List[Station] = []
         for item in raw:

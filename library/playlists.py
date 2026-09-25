@@ -13,6 +13,15 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 
+class PlaylistStoreCorruptedError(ValueError):
+    """The persisted playlists.json cannot be reliably parsed.
+
+    Raised by the strict load path used for every mutation, so a damaged
+    store is never silently overwritten.  A ValueError subclass, matching
+    the store-corruption convention used elsewhere in the codebase.
+    """
+
+
 @dataclass
 class Playlist:
     id: str
@@ -67,12 +76,18 @@ def _ensure_storage() -> Path:
 
 
 def _load_raw_playlists() -> List[dict]:
+    """Load the raw playlist documents, fail-closed on corruption.
+
+    An unreadable or unparsable store raises PlaylistStoreCorruptedError
+    so no mutation can overwrite the damaged file.  Reads that must stay
+    available catch it and fall back explicitly.
+    """
     path = _ensure_storage()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
         logger.error(f"Failed to load playlists.json: {e}")
-        data = []
+        raise PlaylistStoreCorruptedError(f"playlists.json is corrupted and cannot be parsed: {e}") from e
     if not isinstance(data, list):
         raise ValueError("playlists.json must contain a JSON array")
     return data
@@ -132,7 +147,14 @@ def get_playlists() -> List[Playlist]:
             generation_before = _cache_generation
 
         playlists: List[Playlist] = []
-        for item in _load_raw_playlists():
+        try:
+            raw = _load_raw_playlists()
+        except PlaylistStoreCorruptedError:
+            # Fail-open read: stay available, but never publish the fallback
+            # to the cache and never touch the damaged file, so mutations
+            # keep failing closed and a later restore is picked up.
+            return []
+        for item in raw:
             if not isinstance(item, dict):
                 continue
             playlist_id = str(item.get("id") or "").strip()
