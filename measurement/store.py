@@ -1533,7 +1533,7 @@ class MeasurementStore:
         return f"Peak {round(peak_dbfs):.0f} dBFS"
 
     def _format_capture_input_level_message(self, peak_dbfs: float, clipped: bool) -> str:
-        return f"Running sweep… {self._format_capture_input_level_label(peak_dbfs, clipped)}"
+        return f"Running sweep… · {self._format_capture_input_level_label(peak_dbfs, clipped)}"
 
     @staticmethod
     def _format_measurement_timing_summary(analysis: dict[str, Any]) -> str:

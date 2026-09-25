@@ -136,7 +136,6 @@ function makeContext() {
         fetch: context.fetch,
         renderMeasurementPanel: context.renderMeasurementPanel,
         measurementModeNoteText: () => context.measurementModeNoteText(),
-        describeMeasurementScope: (note) => context.describeMeasurementScope(note),
     });
     for (const name of ['applyMeasurementSetupSettings', 'saveMeasurementSetupSettings',
         'applyMeasurementInputSelection', 'fetchMeasurementInputs']) {
@@ -259,6 +258,19 @@ async function main() {
         assert.equal(state.measurement.selectedInputUnavailable, false);
         assert.equal(context.measurementInputAvailabilityMessage(), '');
         assert.match(context.measurementSetupStatusText(), /sweep ready/i);
+        // The idle text is derived, never stored: an empty status line shows
+        // it, a run outcome is not replaced by a later scan.
+        state.measurement.statusText = '';
+        assert.equal(context.measurementSetupStatusText(), 'Ready to measure.');
+        state.measurement.statusText = 'Sweep finished · Acoustic-only timing · delay 3.21 ms · timing stable';
+        const rescan = context.fetchMeasurementInputs();
+        resolveInputsFetch(inputsResolvers, inputsPayload(
+            [UMIK('pw-source-65')],
+            { configured: true, unavailable: false, input_id: 'pw-source-65', persistent_id: 'device-serial:miniDSP-UMIK-123' },
+        ));
+        await rescan;
+        assert.equal(context.measurementSetupStatusText(), state.measurement.statusText);
+        assert.match(state.measurement.statusText, /^Sweep finished/);
         assert.equal(context.getRevision(), 1, 'reconciliation save must persist the resolved device');
     }
 

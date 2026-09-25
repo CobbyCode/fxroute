@@ -12,10 +12,10 @@
         fetch: (...args) => root.fetch(...args),
         renderMeasurementPanel: () => {},
         measurementModeNoteText: () => '',
-        describeMeasurementScope: () => '',
     };
     let measurementSettingsRevision = 0;
     let measurementInputsRequestRevision = 0;
+    let inputsLoadErrorText = '';
 
     function init(overrides) {
         deps = Object.assign(deps, overrides || {});
@@ -136,9 +136,10 @@
                 deps.getState().measurement.measurementSampleRate = String(selectedMeasurementInput.measurementSampleRate);
             }
             normalizeMeasurementInputChannelSelections();
-            if (!selectionStale && !deps.getState().measurement.startInFlight && !deps.getState().measurement.activeJobId
-                && !deps.getState().measurement.selectedInputUnavailable && deps.getState().measurement.hostCaptureAvailable) {
-                deps.getState().measurement.statusText = deps.describeMeasurementScope(data.scope_note);
+            // A successful scan clears its own earlier load error; outcomes of
+            // measurement runs stay on the status line.
+            if (!selectionStale && deps.getState().measurement.statusText === inputsLoadErrorText) {
+                deps.getState().measurement.statusText = '';
             }
             if (!selectionStale && deps.getState().measurement.selectedInputId && (
                 !deps.getState().measurement.selectedInputConfigured
@@ -161,7 +162,8 @@
             if (measurementSettingsRevision === revisionAtStart) {
                 deps.getState().measurement.selectedInputId = '';
                 deps.getState().measurement.selectedInputUnavailable = deps.getState().measurement.selectedInputConfigured;
-                deps.getState().measurement.statusText = error.message || 'Failed to load capture inputs';
+                inputsLoadErrorText = error.message || 'Failed to load capture inputs';
+                deps.getState().measurement.statusText = inputsLoadErrorText;
             }
         } finally {
             if (requestRevision === measurementInputsRequestRevision) {

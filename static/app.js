@@ -460,7 +460,6 @@ window.FXRouteMeasurementSetup?.init({
     fetch: (...args) => fetch(...args),
     renderMeasurementPanel: () => renderMeasurementPanel(),
     measurementModeNoteText: () => measurementModeNoteText(),
-    describeMeasurementScope: (note) => describeMeasurementScope(note),
 });
 window.FXRouteMeasurementCalibration?.init({
     getState: () => state,
@@ -927,6 +926,7 @@ let libraryModeRequestInFlight = false;
 let settingsStatusPollTimer = null;
 let settingsOutputScanOnFocusDone = false;
 let measurementInputScanOnFocusDone = false;
+let measurementsLoadErrorText = '';
 let measurementGraphResizeObserver = null;
 let measurementGraphPointerId = null;
 let measurementWindowHeartbeatTimer = null;
@@ -3876,9 +3876,10 @@ function measurementModeReady() {
     return !!state.measurement.hostCaptureAvailable && !!state.measurement.selectedInputId;
 }
 
-function describeMeasurementScope(scopeNote = '') {
-    if (scopeNote) return 'Host-local sweep ready. Full graph view is available after capture.';
-    return 'Host-local sweep ready. Calibration file is optional.';
+// Idle text of the panel status line. It is derived on render and never
+// stored in statusText, so it cannot replace an outcome.
+function describeMeasurementScope() {
+    return 'Ready to measure.';
 }
 
 function measurementModeNoteText() {
@@ -3904,13 +3905,13 @@ async function fetchMeasurements() {
             window.FXRouteMeasurementSetup.applyMeasurementSetupSettings(data.measurement_settings || {});
         }
         window.FXRouteMeasurementCalibration.validateMeasurementCalibrationSelection();
-        if (!state.measurement.startInFlight && !state.measurement.saveInFlight && !state.measurement.activeJobId && !state.measurement.currentMeasurement) {
-            state.measurement.statusText = describeMeasurementScope(data.scope_note);
-        }
+        // A successful load clears its own earlier error; outcomes stay.
+        if (state.measurement.statusText === measurementsLoadErrorText) state.measurement.statusText = '';
     } catch (error) {
         console.error('fetchMeasurements failed', error);
-        state.measurement.statusText = error.message || 'Failed to load measurements';
-        showToast(state.measurement.statusText, 'error');
+        measurementsLoadErrorText = error.message || 'Failed to load measurements';
+        state.measurement.statusText = measurementsLoadErrorText;
+        showToast('Measurements could not be loaded', 'error');
     } finally {
         state.measurement.loading = false;
         renderMeasurementPanel();
