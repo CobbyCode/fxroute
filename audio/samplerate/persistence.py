@@ -79,8 +79,7 @@ def normalize_sample_rate_policy(mode: Any, rate: Any = None) -> dict[str, Any]:
 def persist_sample_rate_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     normalized = normalize_sample_rate_policy(policy.get("mode"), policy.get("rate"))
     path = _sample_rate_policy_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(normalized, indent=2) + "\n")
+    atomic_write_text(path, json.dumps(normalized, indent=2) + "\n")
     return normalized
 
 def effective_playback_rate(source_rate: int | None, policy: Mapping[str, Any] | None = None) -> int | None:

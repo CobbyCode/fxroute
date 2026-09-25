@@ -80,7 +80,8 @@ class OutputService:
         """Apply a pure state mutation under the measurement and revision guards."""
         if self._deps.measurement_active():
             raise MeasurementActiveError("Measurement is active; output state is locked")
-        return self.commit(mutate(self._deps.store.load()), expected_revision=expected_revision)
+        candidate = mutate(self._deps.store.load())
+        return self.commit_unowned(candidate, expected_revision=expected_revision)
 
     def commit_unowned(self, candidate: dict, *, expected_revision: int) -> dict:
         """Commit a prepared candidate only while no measurement owns the graph.

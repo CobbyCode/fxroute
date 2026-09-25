@@ -377,13 +377,6 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
         selection_state = _load_audio_output_selection()
         if selection_key is not None:
             selection_state = {**selection_state, "selected_key": selection_key}
-        # The v2 output state is the only source of truth; without a usable
-        # head the overview degrades to stereo exactly like a missing file.
-        output_mode = (
-            _derived_output_mode_from_head(selection_state)
-            or {"mode": OUTPUT_MODE_STEREO,
-                "subwoofer": _normalize_subwoofer_config(None)}
-        )
 
         sinks: list[dict[str, Any]] = []
         sink_details: dict[str, dict[str, Any]] = {}
@@ -506,6 +499,16 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
         if fallback_key is not None:
             selected_output = _build_selected_output_payload(fallback_key, None, explicit_outputs)
     effective_output = next((item for item in explicit_outputs if item.get("key") == (selected_output or {}).get("key")), None) or current_output
+    # The v2 output state is the only source of truth; without a usable
+    # head the overview degrades to stereo exactly like a missing file.
+    # Derive from the validated effective device: a stale saved selection
+    # for a missing device must not attribute its routing to the fallback.
+    effective_selection_state = {"selected_key": str((effective_output or {}).get("key") or "")}
+    output_mode = (
+        _derived_output_mode_from_head(effective_selection_state)
+        or {"mode": OUTPUT_MODE_STEREO,
+            "subwoofer": _normalize_subwoofer_config(None)}
+    )
     # Resolve the effective sink's real playback ports once, here in output
     # discovery, so DSP link build, graph diagnosis, link repair/readback and
     # the silent-active watcher all describe the same port topology instead
