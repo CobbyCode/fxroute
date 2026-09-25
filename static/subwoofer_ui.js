@@ -267,9 +267,13 @@
         });
     }
 
-    function formatSubwooferDelayMs(value) {
+    function formatSubwooferTrimValue(value) {
         const numeric = Number(value);
         return Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00';
+    }
+
+    function formatSubwooferDelayMs(value) {
+        return formatSubwooferTrimValue(value);
     }
 
     function subwooferSelectedSide() {
@@ -368,19 +372,19 @@
         deps.getElements().effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
         applySubMainHighpass(subwoofer.main_highpass_enabled !== false);
         if (deps.getElements().effectsSubwooferLevel && !_activeEditing.has(deps.getElements().effectsSubwooferLevel)) {
-            deps.getElements().effectsSubwooferLevel.value = String(subwoofer.sub_level_db);
+            deps.getElements().effectsSubwooferLevel.value = formatSubwooferTrimValue(subwoofer.sub_level_db);
         }
         if (deps.getElements().effectsSubwooferDelay && !_activeEditing.has(deps.getElements().effectsSubwooferDelay)) {
-            deps.getElements().effectsSubwooferDelay.value = String(subwoofer.sub_alignment_ms);
+            deps.getElements().effectsSubwooferDelay.value = formatSubwooferTrimValue(subwoofer.sub_alignment_ms);
         }
         if (deps.getElements().effectsSubwooferPolarity && !_activeEditing.has(deps.getElements().effectsSubwooferPolarity)) {
             deps.getElements().effectsSubwooferPolarity.value = subwoofer.sub_polarity;
         }
         if (deps.getElements().effectsSubwooferSub2Level && !_activeEditing.has(deps.getElements().effectsSubwooferSub2Level)) {
-            deps.getElements().effectsSubwooferSub2Level.value = String(subwoofers.sub2.level_db);
+            deps.getElements().effectsSubwooferSub2Level.value = formatSubwooferTrimValue(subwoofers.sub2.level_db);
         }
         if (deps.getElements().effectsSubwooferSub2Delay && !_activeEditing.has(deps.getElements().effectsSubwooferSub2Delay)) {
-            deps.getElements().effectsSubwooferSub2Delay.value = String(subwoofers.sub2.alignment_ms);
+            deps.getElements().effectsSubwooferSub2Delay.value = formatSubwooferTrimValue(subwoofers.sub2.alignment_ms);
         }
         if (deps.getElements().effectsSubwooferSub2Polarity && !_activeEditing.has(deps.getElements().effectsSubwooferSub2Polarity)) {
             deps.getElements().effectsSubwooferSub2Polarity.value = subwoofers.sub2.polarity;
@@ -758,6 +762,15 @@
 
         function wireSubwooferControls() {
             const _activeEditing = deps.getActiveEditing();
+            const levelInputs = [deps.getElements().effectsSubwooferLevel, deps.getElements().effectsSubwooferSub2Level];
+            const delayInputs = [deps.getElements().effectsSubwooferDelay, deps.getElements().effectsSubwooferSub2Delay];
+            const showCommittedTrim = (el) => {
+                if (levelInputs.includes(el)) {
+                    el.value = formatSubwooferTrimValue(normalizeSingleSubwooferSettings({ level_db: el.value }).level_db);
+                } else if (delayInputs.includes(el)) {
+                    el.value = formatSubwooferTrimValue(normalizeSingleSubwooferSettings({ alignment_ms: el.value }).alignment_ms);
+                }
+            };
             [
                 deps.getElements().effectsSubwooferFrequencyNumber,
                 deps.getElements().effectsSubwooferFamily,
@@ -780,10 +793,14 @@
                 el.addEventListener('input', () => {
                     updateSubwooferDraftFromControls();
                 });
-                el.addEventListener('change', () => saveSubwooferDebounced(0));
+                el.addEventListener('change', () => {
+                    saveSubwooferDebounced(0);
+                    showCommittedTrim(el);
+                });
                 el.addEventListener('blur', () => {
                     _activeEditing.delete(el);
                     saveSubwooferDebounced(0);
+                    showCommittedTrim(el);
                 });
             });
             // A family switch can invalidate the stored slope (a 24 dB/oct

@@ -46,9 +46,12 @@ function stubClassList(initial = []) {
 }
 
 function stubEl(overrides = {}) {
+    const listeners = {};
     return { value: '', textContent: '', innerHTML: '', disabled: false,
         checked: false, dataset: {}, classList: stubClassList(),
-        setAttribute() {}, addEventListener() {}, focus() {}, select() {},
+        setAttribute() {}, addEventListener(type, listener) { (listeners[type] ||= []).push(listener); },
+        emit(type) { for (const listener of listeners[type] || []) listener({ target: this }); },
+        focus() {}, select() {},
         closest: () => null, ...overrides };
 }
 
@@ -151,6 +154,41 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         assert.equal(elements.effectsSubwooferCard.classList.has('hidden'), false);
         assert.match(elements.effectsSubwooferRouting.textContent, /Crossover 80 Hz/);
         assert.equal(elements.effectsSubwooferFrequencyNumber.value, '80');
+        assert.equal(elements.effectsSubwooferLevel.value, '0.00');
+        assert.equal(elements.effectsSubwooferDelay.value, '0.00');
+    }
+
+    // Sub 1 and Sub 2 trims share the crossover's compact display; the
+    // collection still sees the original numeric values on unrelated saves.
+    {
+        const catalog = subCatalog();
+        catalog.modes['stereo-sub'].topology.sub_roles = ['sub1', 'sub2'];
+        catalog.modes['stereo-sub'].processing = {
+            sub1: { level_db: -4.5, alignment_ms: 7.81 },
+            sub2: { level_db: -3.2, alignment_ms: -39.99 },
+        };
+        const state = { outputSystem: { catalog } };
+        const elements = subElementsFixture();
+        initSubUI(state, elements, { applyMutation: async () => ({ ok: true }) });
+        SubwooferUI.renderSubwooferPanel();
+        assert.equal(elements.effectsSubwooferLevel.value, '-4.50');
+        assert.equal(elements.effectsSubwooferDelay.value, '7.81');
+        assert.equal(elements.effectsSubwooferSub2Level.value, '-3.20');
+        assert.equal(elements.effectsSubwooferSub2Delay.value, '-39.99');
+        const collected = SubwooferUI.collectSubwoofer22Settings();
+        assert.equal(collected.subwoofers.sub1.level_db, -4.5);
+        assert.equal(collected.subwoofers.sub1.alignment_ms, 7.81);
+        assert.equal(collected.subwoofers.sub2.level_db, -3.2);
+        assert.equal(collected.subwoofers.sub2.alignment_ms, -39.99);
+
+        SubwooferUI.wireSubwooferControls();
+        elements.effectsSubwooferLevel.value = '-2.567';
+        elements.effectsSubwooferLevel.emit('change');
+        assert.equal(elements.effectsSubwooferLevel.value, '-2.60');
+        elements.effectsSubwooferSub2Delay.value = '8.316';
+        elements.effectsSubwooferSub2Delay.emit('change');
+        assert.equal(elements.effectsSubwooferSub2Delay.value, '8.32');
+        await SubwooferUI.flushSubwooferSettingsBeforeMeasurement();
     }
 
     // Collect reads the DOM values into one committable shape.

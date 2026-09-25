@@ -6115,17 +6115,15 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     border-color: rgba(110, 231, 183, 0.26);
 }
 
-/* Wide desktop is the tightest fit (three ~360px cards): trim the value
-   field and the polarity select inside the sub cards only, so the even
-   columns keep a real gap without touching or clipping. Touch layouts keep
-   their own sizing (max-width rules below stay untouched). */
+/* Wide desktop is the tightest fit (three ~360px cards): keep the two-decimal
+   -80.00 value readable, with enough room for the unit and polarity select. */
 @media (min-width: 1101px) {
     .effects-subwoofer-channel-group {
         padding-left: 0.6rem;
         padding-right: 0.6rem;
     }
     #tab-effects .effects-subwoofer-channel-group .stepper-control .stepper-input {
-        width: 2.9rem;
+        width: 3.4rem;
     }
     #tab-effects .effects-subwoofer-channel-group select.effects-subwoofer-polarity-select {
         width: min(100%, 3.5rem);
@@ -9611,6 +9609,16 @@ input[type="number"]::-webkit-outer-spin-button {
        would cost a full row per control for nothing. */
     .effects-subwoofer-channel-group {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 360px) {
+    /* Two full steppers cannot share the narrowest card without clipping. */
+    .effects-subwoofer-channel-group {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .effects-subwoofer-channel-group .field-group {
+        justify-self: center;
     }
 }
 

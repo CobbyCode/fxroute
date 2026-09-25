@@ -1948,6 +1948,16 @@
     }
 }
 
+@media (max-width: 360px) {
+    /* Two full steppers cannot share the narrowest card without clipping. */
+    .effects-subwoofer-channel-group {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .effects-subwoofer-channel-group .field-group {
+        justify-self: center;
+    }
+}
+
 /* Detail heroes keep the shared single-row composition on tablets; only the
    cover column narrows to preserve the available reading width. */
 @media (min-width: 601px) and (max-width: 1100px) {
