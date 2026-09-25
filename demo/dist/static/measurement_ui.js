@@ -69,10 +69,6 @@ function normalizeMeasurementEntry(measurement = {}, index = 0) {
     const safeMeasurement = measurement || {};
     const traces = Array.isArray(safeMeasurement.traces) ? safeMeasurement.traces.map((trace, traceIndex) => normalizeMeasurementTrace(trace, traceIndex)).filter(trace => trace.points.length) : [];
     const reviewTraces = Array.isArray(safeMeasurement.review_traces) ? safeMeasurement.review_traces.map((trace, traceIndex) => normalizeMeasurementTrace(trace, traceIndex)).filter(trace => trace.points.length) : [];
-    const speakerRun = safeMeasurement.speaker_align && typeof safeMeasurement.speaker_align === 'object'
-        ? safeMeasurement.speaker_align
-        : (safeMeasurement.analysis && safeMeasurement.analysis.speaker_align && typeof safeMeasurement.analysis.speaker_align === 'object'
-            ? safeMeasurement.analysis.speaker_align : null);
     return {
         id: String(safeMeasurement.id || `measurement-${index + 1}`),
         name: String(safeMeasurement.name || `Measurement ${index + 1}`),
@@ -84,7 +80,9 @@ function normalizeMeasurementEntry(measurement = {}, index = 0) {
         input_channels: safeMeasurement.input_channels || {},
         calibration: safeMeasurement.calibration || {},
         autosub_meta: safeMeasurement.autosub_meta || null,
-        speaker_align: speakerRun,
+        // Speaker Align Before/After take ({ side, take }); names the pair on save.
+        speaker_align_take: safeMeasurement.speaker_align_take && typeof safeMeasurement.speaker_align_take === 'object'
+            ? { ...safeMeasurement.speaker_align_take } : null,
         summary: safeMeasurement.summary || {},
         review_summary: safeMeasurement.review_summary || {},
         analysis: safeMeasurement.analysis || {},
@@ -670,15 +668,6 @@ function formatMeasurementUpperLimit(maxHz) {
 }
 
 function summarizeMeasurementEntry(measurement = {}) {
-    const run = measurement?.speaker_align || measurement?.analysis?.speaker_align;
-    if (String(measurement?.measurement_kind || '') === 'speaker-align-run-v1' && run) {
-        const ways = Array.isArray(run.ways) ? run.ways.length : 0;
-        const before = Number(run?.qc?.before_spread_ms);
-        const after = Number(run?.qc?.max_residual_ms);
-        const spread = Number.isFinite(before) && Number.isFinite(after)
-            ? `${before.toFixed(3)} → ${after.toFixed(3)} ms` : 'time domain';
-        return `${ways || '—'} ways · ${spread}`;
-    }
     const displaySummary = (measurement.review_summary || {}).point_count ? (measurement.review_summary || {}) : (measurement.summary || {});
     return summarizeMeasurementBand(displaySummary, 'No graph data');
 }
@@ -845,27 +834,6 @@ function getMeasurementAutoSubSummary(measurement = {}) {
 }
 
 function getMeasurementTimingInfo(measurement = {}) {
-    if (String(measurement?.measurement_kind || '').trim() === 'speaker-align-run-v1') {
-        const run = measurement?.speaker_align || measurement?.analysis?.speaker_align;
-        if (run && typeof run === 'object') {
-            const before = Number(run?.qc?.before_spread_ms);
-            const after = Number(run?.qc?.max_residual_ms);
-            const limit = Number(run?.qc?.tolerance_ms);
-            const side = run.side === 'right' ? 'Right' : run.side === 'left' ? 'Left' : 'Speaker';
-            const spread = Number.isFinite(before) && Number.isFinite(after)
-                ? `${before.toFixed(3)} → ${after.toFixed(3)} ms` : 'spread unavailable';
-            const limitText = Number.isFinite(limit) ? ` · limit ${limit.toFixed(3)} ms` : '';
-            return {
-                status: 'speaker-align',
-                label: 'Speaker Align time domain',
-                line: `${side} align · Before (planning) → After (verification) · ${spread}${limitText}`,
-                detail: `${side} align run ${run.id || ''} · Before from planning take, After from verification take, shared ms axis${limitText}`,
-                delayMs: Number.isFinite(after) ? after : null,
-                arrivalSamples: null,
-                source: 'speaker_align_run',
-            };
-        }
-    }
     if (String(measurement?.measurement_kind || '').trim() === 'auto_sub') {
         const autoSubSummary = getMeasurementAutoSubSummary(measurement);
         if (autoSubSummary) return autoSubSummary;

@@ -12,7 +12,9 @@ real store and session later. No HTTP lives here.
 Only one job may be active at a time (the measurement graph is
 single-owner). Request validation raises synchronously before any job
 record exists. Results are JSON-safe summaries: arrival/delay evidence and
-overlap checks as plain floats, never IR waveforms or numpy values.
+overlap checks as plain floats, plus the planning (Before) and verification
+(After) takes as normal measurements with the bounded IR preview every sweep
+carries; never full-rate IR waveforms or numpy values.
 """
 
 from __future__ import annotations
@@ -111,77 +113,36 @@ def _summarize_check(check: dict[str, Any]) -> dict[str, Any]:
     return _jsonable(summary)
 
 
-def _summarize_frequency(captures: Any) -> dict[str, Any]:
-    """Pass through per-way frequency points when the takes captured them.
+TAKE_LABELS = {"before": "Before (planning)", "after": "After (verification)"}
 
-    Only finite [frequency, level] pairs survive; ways without points are
-    omitted so a timing-only run stays timing-only. Never includes IRs.
+
+def _take_measurement(measurement: Any, *, side: str, take: str) -> dict[str, Any] | None:
+    """One shared take as a normal measurement named for the alignment.
+
+    The take is display evidence only: a missing or non-JSON-safe
+    measurement is dropped with a warning instead of failing the alignment.
     """
-    panels: dict[str, Any] = {}
-    if not isinstance(captures, (list, tuple)):
-        return panels
-    for capture in captures:
-        if not isinstance(capture, dict):
-            continue
-        role = capture.get("role")
-        analysis = capture.get("analysis")
-        if not isinstance(role, str) or not isinstance(analysis, dict):
-            continue
-        entry: dict[str, Any] = {}
-        for key in ("trusted_points", "review_points"):
-            points = analysis.get(key)
-            if not isinstance(points, (list, tuple)) or not points:
-                continue
-            cleaned: list[list[float]] = []
-            valid = True
-            for point in points:
-                if (not isinstance(point, (list, tuple)) or len(point) != 2
-                        or isinstance(point[0], bool) or isinstance(point[1], bool)):
-                    valid = False
-                    break
-                try:
-                    frequency = float(point[0])
-                    level = float(point[1])
-                except (TypeError, ValueError):
-                    valid = False
-                    break
-                if not math.isfinite(frequency) or not math.isfinite(level) or frequency <= 0:
-                    valid = False
-                    break
-                cleaned.append([frequency, level])
-            if valid and cleaned:
-                entry[key] = cleaned
-        if entry:
-            panels[str(role)] = entry
-    return _jsonable(panels)
+    if not isinstance(measurement, dict):
+        return None
+    label = f"Speaker Align {side.capitalize()} · {TAKE_LABELS[take]}"
+    try:
+        copy = _jsonable(deepcopy(measurement))
+    except (TypeError, ValueError) as exc:
+        logger.warning("Speaker Align %s %s take measurement dropped: %s", side, take, exc)
+        return None
+    copy["name"] = label
+    for key, suffix in (("traces", "trusted"), ("review_traces", "raw/full-band review")):
+        for trace in copy.get(key) or []:
+            if isinstance(trace, dict):
+                trace["label"] = f"{label} · {suffix}"
+    copy["speaker_align_take"] = {"side": side, "take": take}
+    return copy
 
 
-def _summarize_time_domain(proposal: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
-    """Shared ms-axis view: Before from planning, After from verification.
-
-    Pure derivation from the two stored take documents; never measures.
-    Both lanes share one window so the relative way offset before and
-    after the alignment is directly visible.
-    """
-    before = {str(role): float(value) for role, value in dict(proposal["arrival_ms"]).items()}
-    after = {str(role): float(value) for role, value in dict(check["after_arrival_ms"]).items()}
-    if set(before) != set(after):
-        raise ValueError("Speaker Align time domain needs the same ways before and after")
-    ways = sorted(before)
-    lowest = min(min(before.values()), min(after.values()))
-    highest = max(max(before.values()), max(after.values()))
-    span = highest - lowest
-    margin = max(0.25, span * 0.15)
-    return _jsonable({
-        "ways": ways,
-        "window_ms": [lowest - margin, highest + margin],
-        "before": {"source": "planning-take",
-                   "arrival_ms": {role: before[role] for role in ways},
-                   "spread_ms": max(before.values()) - min(before.values())},
-        "after": {"source": "verification-take",
-                  "arrival_ms": {role: after[role] for role in ways},
-                  "spread_ms": max(after.values()) - min(after.values())},
-    })
+def _take_measurements(side: str, before: Any, after: Any) -> dict[str, Any]:
+    takes = {"before": _take_measurement(before, side=side, take="before"),
+             "after": _take_measurement(after, side=side, take="after")}
+    return {take: measurement for take, measurement in takes.items() if measurement is not None}
 
 
 def _session_identity(value: object, label: str) -> str:
@@ -445,6 +406,8 @@ class SpeakerAlignService:
         # The shared planning take's evidence, once measured: a job that fails
         # on it (the planning gate) keeps what it failed on.
         planning_evidence: dict[str, Any] | None = None
+        # The verification take's normal measurement, kept by confirm().
+        verification_measurement: dict[str, Any] | None = None
         try:
             # The worker reuses the frozen start snapshot: the fresh-head
             # drift gate below fails the job as stale instead of silently
@@ -503,6 +466,7 @@ class SpeakerAlignService:
 
             async def confirm() -> dict:
                 """One shared take per side; the residual is a real acoustic offset."""
+                nonlocal verification_measurement
                 verification = await self._confirm(
                     alignment, input_id=params["input_id"],
                     mic_input_channel=params["mic_input_channel"],
@@ -519,7 +483,20 @@ class SpeakerAlignService:
                 if input_chain_key(first.get("provenance")) != input_chain_key(
                         (verification or {}).get("provenance")):
                     raise ValueError("Speaker Align input chain changed before verification")
+                verification_measurement = verification.get("measurement")
                 return verification["confirmation"]
+
+            def result(check: dict[str, Any], *, committed_revision: Any = None) -> dict[str, Any]:
+                return {"confirmed": check["confirmed"], "check": check,
+                        "proposal": _summarize_proposal(proposal),
+                        "measurements": _take_measurements(
+                            side, first.get("measurement"), verification_measurement),
+                        "sample_rate_hz": context["sample_rate_hz"],
+                        "side": side,
+                        "params": _jsonable(params),
+                        "provenance": _jsonable(first.get("provenance") or {}),
+                        "committed_revision": _jsonable(committed_revision),
+                        "dry_run": dry_run}
 
             if dry_run:
                 outcome = await apply_and_confirm(
@@ -527,55 +504,27 @@ class SpeakerAlignService:
                     confirm=confirm, proposal=proposal,
                     live_target=live_target, cancel_requested=probe)
                 check = _summarize_check(outcome["check"])
-                summarized_proposal = _summarize_proposal(proposal)
                 self._finish(
                     job_id, "trial-done",
                     "Trial alignment confirmed without committing."
                     if check["confirmed"] else "Trial alignment did not confirm; nothing changed.",
-                    result={"confirmed": check["confirmed"], "check": check,
-                            "proposal": summarized_proposal,
-                            "time_domain": _summarize_time_domain(summarized_proposal, check),
-                            "way_frequency": _summarize_frequency(first.get("captures")),
-                            "sample_rate_hz": context["sample_rate_hz"],
-                            "side": side,
-                            "params": _jsonable(params),
-                            "provenance": _jsonable(first.get("provenance") or {}),
-                            "committed_revision": None, "dry_run": True})
+                    result=result(check))
                 return
             outcome = await session.confirm_and_commit(
                 confirm=confirm, proposal=proposal,
                 live_target=live_target, cancel_requested=probe)
             check = _summarize_check(outcome["check"])
             if not check["confirmed"]:
-                summarized_proposal = _summarize_proposal(proposal)
                 self._finish(
                     job_id, "unconfirmed",
                     "Alignment did not confirm acoustically; the start rendering was retained.",
-                    result={"confirmed": False, "check": check,
-                            "proposal": summarized_proposal,
-                            "time_domain": _summarize_time_domain(summarized_proposal, check),
-                            "way_frequency": _summarize_frequency(first.get("captures")),
-                            "sample_rate_hz": context["sample_rate_hz"],
-                            "side": side,
-                            "params": _jsonable(params),
-                            "provenance": _jsonable(first.get("provenance") or {}),
-                            "committed_revision": None, "dry_run": False})
+                    result=result(check))
                 return
             committed = outcome.get("committed") or {}
-            summarized_proposal = _summarize_proposal(proposal)
             self._finish(
                 job_id, "committed",
                 f"Committed speaker alignment at revision {committed.get('revision')}.",
-                result={"confirmed": True, "check": check,
-                        "proposal": summarized_proposal,
-                        "time_domain": _summarize_time_domain(summarized_proposal, check),
-                        "way_frequency": _summarize_frequency(first.get("captures")),
-                        "sample_rate_hz": context["sample_rate_hz"],
-                        "side": side,
-                        "params": _jsonable(params),
-                        "provenance": _jsonable(first.get("provenance") or {}),
-                        "committed_revision": _jsonable(committed.get("revision")),
-                        "dry_run": False})
+                result=result(check, committed_revision=committed.get("revision")))
             await self._notify_committed(
                 output_key=context["output_key"], channels=context["channels"],
                 committed_revision=committed.get("revision"), job_id=job_id)

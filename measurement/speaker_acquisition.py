@@ -9,7 +9,9 @@ from the shared take is what ``propose`` reads the relative way delays from; the
 per-way takes stay the evidence for every way's own level and reference quality.
 ``verify_speaker_alignment`` runs the same kind of shared take as the
 verification and returns the confirmation document built from its band-limited
-arrivals. Neither stages, applies or commits anything.
+arrivals. Neither stages, applies or commits anything. Both shared takes also
+return the store's normal measurement of that take (traces and IR preview), so
+the frontend can show Before and After like any other sweep.
 
 Each way records the configured electrical-reference candidate channels in a
 single take; the store's electrical-reference evaluation then admits the
@@ -235,15 +237,16 @@ async def _run_side_take(
     sweep_profile: dict[str, float] | None,
     cancel_requested: Callable[[], bool] | None,
     expected_native_context: dict[str, Any] | None,
-) -> tuple[dict[str, Any], dict[str, Any], tuple]:
-    """Run one side-wide take; return its evidence, observed chain and input key.
+) -> tuple[dict[str, Any], dict[str, Any], tuple, dict[str, Any] | None]:
+    """Run one side-wide take; return evidence, observed chain, input key, measurement.
 
     Every way of one side plays the same sweep at once, the rest of the plan
     muted, so the side's ways share one capture time base. The frozen target,
     the mute mask and the capture input identity are all checked before the
     worker's first sweep, so a stale request or a changed input costs no
     capture. The returned key is the pre-sweep identity the caller attests the
-    side's per-way captures against.
+    side's per-way captures against. The measurement is the store's normal
+    result of the take, or ``None`` when the job published none.
     """
     if request.get("reference_id") != reference_id:
         raise ValueError(f"Speaker Align {label} reference_id differs from the frozen requests")
@@ -332,7 +335,9 @@ async def _run_side_take(
         "analysis": analysis,
         "calibration_curve": evidence.get("calibration_curve"),
     }
-    return take, {**observed, "job_id": job_id}, input_key
+    result = finished.get("result") if isinstance(finished.get("result"), dict) else {}
+    measurement = result.get("measurement") if isinstance(result.get("measurement"), dict) else None
+    return take, {**observed, "job_id": job_id}, input_key, measurement
 
 
 async def acquire_speaker_captures(
@@ -353,12 +358,14 @@ async def acquire_speaker_captures(
 ) -> dict[str, Any]:
     """Capture the side's shared planning take and every way serially.
 
-    Returns ``{"captures": [...], "planning": {...}, "provenance": {...}}``.
+    Returns ``{"captures": [...], "planning": {...}, "provenance": {...},
+    "measurement": {...} | None}``.
     ``planning`` is the shared planning take's document: one take in which
     every way of the side played at once, giving each way's arrival on one
     capture time base -- that is where ``propose`` reads the relative delays
     from.  The per-way captures stay the evidence for the ways' levels, their
-    reference quality and the observed input chain.
+    reference quality and the observed input chain. ``measurement`` is the
+    planning take's normal measurement (the Before view).
     """
     reference_id = _session_identity(reference_id, "upstream reference")
     microphone_position_id = _session_identity(microphone_position_id, "microphone position")
@@ -388,7 +395,7 @@ async def acquire_speaker_captures(
     planning_request = alignment.planning_request()
     if on_progress is not None:
         on_progress(f"{str(planning_request['side'])}_ways", 1, len(requests) + 1)
-    planning_take, planning_observed, expected_key = await _run_side_take(
+    planning_take, planning_observed, expected_key, planning_measurement = await _run_side_take(
         store, planning_request, label="planning", reference_id=reference_id,
         microphone_position_id=microphone_position_id, input_id=input_id,
         mic_input_channel=mic_input_channel,
@@ -504,7 +511,8 @@ async def acquire_speaker_captures(
     provenance["planning"] = {
         key: value for key, value in planning.items() if key != "bands"
     }
-    return {"captures": captures, "planning": planning, "provenance": provenance}
+    return {"captures": captures, "planning": planning, "provenance": provenance,
+            "measurement": planning_measurement}
 
 
 async def verify_speaker_alignment(
@@ -525,11 +533,12 @@ async def verify_speaker_alignment(
 ) -> dict[str, Any]:
     """Run the side's single shared verification take and judge it acoustically.
 
-    Returns ``{"confirmation": {...}, "provenance": {...}}``: the confirmation
-    document ``verify_confirmation`` consumes, built from this take's
-    band-limited way arrivals, plus the observed input chain the caller attests
-    against the planning acquisition. One take, one time base: no way is judged
-    against its own post-delay reference here.
+    Returns ``{"confirmation": {...}, "provenance": {...}, "measurement": ...}``:
+    the confirmation document ``verify_confirmation`` consumes, built from this
+    take's band-limited way arrivals, the observed input chain the caller
+    attests against the planning acquisition, and the take's normal measurement
+    (the After view). One take, one time base: no way is judged against its own
+    post-delay reference here.
     """
     request = alignment.verification_request()
     reference_id = _session_identity(reference_id, "upstream reference")
@@ -541,7 +550,7 @@ async def verify_speaker_alignment(
         raise ValueError("Speaker Align verification requires a measurement target provider")
     if on_progress is not None:
         on_progress(f"{str(request['side'])}_ways", 1, 1)
-    take, observed, _ = await _run_side_take(
+    take, observed, _, measurement = await _run_side_take(
         store, request, label="verification", reference_id=reference_id,
         microphone_position_id=microphone_position_id, input_id=input_id,
         mic_input_channel=mic_input_channel,
@@ -559,4 +568,5 @@ async def verify_speaker_alignment(
             "microphone_position_id": microphone_position_id,
             "job_ids": [str(observed["job_id"])],
         },
+        "measurement": measurement,
     }

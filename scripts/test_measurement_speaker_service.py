@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Speaker service owns one alignment job at a time and never leaks IRs."""
+"""Speaker service owns one alignment job at a time and never leaks full-rate IRs."""
 
 import asyncio
 import os
@@ -97,6 +97,23 @@ def captures_for(alignment, arrivals):
     return captures
 
 
+def take_measurement(name):
+    """A store-shaped normal measurement of one shared take."""
+    return {
+        "id": f"sweep-{name}", "name": f"Current sweep {name}", "channel": "left",
+        "measurement_kind": "sweep-response-v3",
+        "traces": [{"kind": "sweep-response", "label": f"Current sweep {name} · trusted",
+                    "role": "trusted", "points": [[20.0, -3.0], [20000.0, -6.0]]}],
+        "review_traces": [{"kind": "sweep-response-review", "label": f"Current sweep {name} · raw",
+                           "role": "raw-review", "points": [[20.0, -4.0], [20000.0, -7.0]]}],
+        "analysis": {"impulse_response": {
+            "arrival_ms": 2.5,
+            "preview": {"schema": "fxroute.ir-preview.v1", "window_ms": [-2.0, 30.0],
+                        "points": [[round(-2.0 + index * 0.064, 3), 0.0] for index in range(500)]},
+        }},
+    }
+
+
 class FakeSession:
     """Test double with the SpeakerAlignSession surface; records its calls."""
 
@@ -178,7 +195,8 @@ class ServiceFixture:
             return behaviour
         return {"captures": captures_for(alignment, self.first_arrivals),
                 "planning": planning_for(alignment, self.first_arrivals),
-                "provenance": {"job_ids": [f"job-{len(self.acquire_calls)}"]}}
+                "provenance": {"job_ids": [f"job-{len(self.acquire_calls)}"]},
+                "measurement": take_measurement("planning")}
 
     def confirmation_document(self, alignment):
         """A proposal-shaped verification document; the DSP is tested elsewhere."""
@@ -199,7 +217,8 @@ class ServiceFixture:
                 raise behaviour
             return behaviour
         return {"confirmation": self.confirmation_document(alignment),
-                "provenance": dict(self.verification_provenance)}
+                "provenance": dict(self.verification_provenance),
+                "measurement": take_measurement("verification")}
 
     def service(self, **overrides):
         options = dict(get_state=lambda: deepcopy(self.state), describe=self.describe,
@@ -301,9 +320,71 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         import json
         service, job_id = self.start()
         job = await self.wait_terminal(service, job_id)
-        text = json.dumps(job, allow_nan=False)
-        self.assertNotIn("impulse_response", text)
-        self.assertIn("added_delay_ms", text)
+        json.dumps(job, allow_nan=False)
+        # IR data travels only as the takes' bounded diagnostic previews; the
+        # alignment evidence itself stays plain floats.
+        result = dict(job["result"])
+        measurements = result.pop("measurements")
+        self.assertNotIn("impulse_response", json.dumps(result))
+        self.assertIn("added_delay_ms", json.dumps(result))
+        for measurement in measurements.values():
+            impulse = measurement["analysis"]["impulse_response"]
+            self.assertLessEqual(len(impulse["preview"]["points"]), 500)
+            self.assertNotIn("samples", impulse)
+
+    async def test_result_carries_before_and_after_as_normal_measurements(self):
+        service, job_id = self.start()
+        job = await self.wait_terminal(service, job_id)
+        before = job["result"]["measurements"]["before"]
+        after = job["result"]["measurements"]["after"]
+        self.assertEqual(before["id"], "sweep-planning")
+        self.assertEqual(after["id"], "sweep-verification")
+        self.assertEqual(before["name"], "Speaker Align Left · Before (planning)")
+        self.assertEqual(after["name"], "Speaker Align Left · After (verification)")
+        self.assertEqual(before["speaker_align_take"], {"side": "left", "take": "before"})
+        self.assertEqual(after["speaker_align_take"], {"side": "left", "take": "after"})
+        self.assertEqual(before["traces"][0]["label"], "Speaker Align Left · Before (planning) · trusted")
+        self.assertEqual(after["review_traces"][0]["label"],
+                         "Speaker Align Left · After (verification) · raw/full-band review")
+        self.assertEqual(before["measurement_kind"], "sweep-response-v3")
+
+    async def test_unconfirmed_and_trial_runs_keep_both_takes(self):
+        self.second_arrivals = (500, 548)
+        service, job_id = self.start()
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "unconfirmed")
+        self.assertEqual(set(job["result"]["measurements"]), {"before", "after"})
+        self.second_arrivals = (500, 500)
+        service, job_id = self.start(dry_run=True)
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "trial-done")
+        self.assertEqual(set(job["result"]["measurements"]), {"before", "after"})
+
+    async def test_unsafe_take_measurement_is_dropped_without_failing(self):
+        planning = take_measurement("planning")
+        planning["analysis"]["impulse_response"]["arrival_ms"] = float("nan")
+
+        async def acquire(alignment, **kwargs):
+            result = await self.acquire(alignment, **kwargs)
+            result["measurement"] = planning
+            return result
+
+        service, job_id = self.start(self.service(acquire=acquire))
+        with self.assertLogs("measurement.speaker_service", level="WARNING"):
+            job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "committed")
+        self.assertEqual(set(job["result"]["measurements"]), {"after"})
+
+    async def test_take_without_measurement_is_omitted(self):
+        async def acquire(alignment, **kwargs):
+            result = await self.acquire(alignment, **kwargs)
+            result.pop("measurement")
+            return result
+
+        service, job_id = self.start(self.service(acquire=acquire))
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "committed")
+        self.assertEqual(set(job["result"]["measurements"]), {"after"})
 
     async def test_unconfirmed_run_never_commits(self):
         self.second_arrivals = (500, 548)

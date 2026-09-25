@@ -47,6 +47,7 @@
         normalizeMeasurementEntry: (m) => m,
         getMeasurementJobResultMeasurement: () => null,
         setMeasurementAssistMode: () => {},
+        setMeasurementGraphView: (view) => { deps.getState().measurement.measurementView = view; },
         escapeHtml: (v) => String(v == null ? '' : v),
         sleep: async () => {},
     };
@@ -659,8 +660,6 @@ async function startSpeakerAlign(side) {
     measurementState.activeMeasurementKind = 'speaker_align';
     measurementState.speakerAlignJobId = '';
     measurementState.speakerAlignResult = null;
-    measurementState.speakerAlignResultSaved = false;
-    renderSpeakerAlignResultActions();
     syncSpeakerAlignButton();
     deps.renderMeasurementPanel();
     try {
@@ -687,9 +686,6 @@ async function startSpeakerAlign(side) {
         measurementState.activeMeasurementKind = '';
         measurementState.speakerAlignJobId = '';
         measurementState.speakerAlignCancelRequested = false;
-        // The result arrived while the run was still in flight, which hides
-        // the Save action; render it again now that the run is over.
-        renderSpeakerAlignResultActions();
         deps.fetchAudioOutputOverview().catch(() => {});
         deps.renderMeasurementPanel();
     }
@@ -803,202 +799,35 @@ async function pollSpeakerAlignJob(jobId) {
     }
 }
 
-function speakerAlignRunLabel(measurement) {
-    const run = measurement?.speaker_align || measurement?.analysis?.speaker_align;
-    const side = run?.side || measurement?.channel || '';
-    const name = measurement?.name || '';
-    const created = measurement?.created_at || run?.created_at || '';
-    const verified = run?.confirmed ? 'verified' : 'not verified';
-    const sideLabel = side === 'right' ? 'Right' : side === 'left' ? 'Left' : 'Speaker';
-    return `${name || `${sideLabel} align run`} · ${verified}${created ? ` · ${created}` : ''}`;
-}
-
-function listSpeakerAlignRuns() {
-    const measurements = deps.getState().measurement?.measurements || [];
-    return measurements.filter(measurement => measurement
-        && (measurement.measurement_kind === 'speaker-align-run-v1'
-            || measurement.speaker_align
-            || measurement.analysis?.speaker_align));
-}
-
-function isSpeakerAlignRunEntry(measurement) {
-    return !!measurement && (measurement.measurement_kind === 'speaker-align-run-v1'
-        || !!measurement.speaker_align || !!measurement.analysis?.speaker_align);
-}
-
-function renderSpeakerAlignResultActions() {
-    const elements = deps.getElements();
-    const actionsEl = elements.measurementSpeakerAlignActions;
-    if (!actionsEl) return;
-    const measurementState = deps.getState().measurement || {};
-    const results = measurementState.speakerAlignResults || {};
-    const result = measurementState.speakerAlignResult
-        || results.left || results.right || null;
-    const busy = !!(measurementState.speakerAlignInFlight || measurementState.startInFlight
-        || deps.hasActiveMeasurementJob());
-    if (!result?.proposal || !result?.check || busy) {
-        actionsEl.innerHTML = '';
-        return;
-    }
-    const side = result.side === 'right' ? 'right' : result.side === 'left' ? 'left' : '';
-    if (measurementState.speakerAlignResultSaved) {
-        actionsEl.innerHTML = `<div class="measurement-workflow-speaker-row speaker-align-result-actions">`
-            + `<div class="measurement-workflow-speaker-buttons">`
-            + `<button type="button" class="btn-secondary" disabled>Saved</button>`
-            + `</div><span class="measurement-repeat-help">Align run is in the saved measurements.</span></div>`;
-        return;
-    }
-    const escape = (value) => deps.escapeHtml(String(value ?? ''));
-    actionsEl.innerHTML = `<div class="measurement-workflow-speaker-row speaker-align-result-actions">`
-        + `<div class="measurement-workflow-speaker-buttons">`
-        + `<button type="button" class="btn-secondary" data-speaker-align-save="${escape(side)}">Save align run</button>`
-        + `</div><span class="measurement-repeat-help">Before: planning take · After: verification take · no extra sweep.</span></div>`;
-}
-
-async function saveSpeakerAlignRun(side) {
-    const measurementState = deps.getState().measurement || {};
-    const results = measurementState.speakerAlignResults || {};
-    const wanted = side === 'left' || side === 'right' ? side : null;
-    const availableSides = ['left', 'right'].filter(key => results[key]?.proposal && results[key]?.check);
-    const chosen = wanted && results[wanted] ? wanted
-        : (measurementState.speakerAlignResult && availableSides.length === 1 ? availableSides[0]
-            : (results.right ? 'right' : results.left ? 'left' : null));
-    const result = (chosen && results[chosen]) || measurementState.speakerAlignResult;
-    if (!result?.proposal || !result?.check) {
-        deps.showToast('No align run to save yet', 'warning');
-        return;
-    }
-    const runSide = chosen || result.side || 'left';
-    if (typeof SpeakerAlign.buildSpeakerAlignRun !== 'function'
-        || typeof SpeakerAlign.runToMeasurement !== 'function') {
-        deps.showToast('Speaker Align save support is unavailable', 'error');
-        return;
-    }
-    let payload;
-    try {
-        const run = SpeakerAlign.buildSpeakerAlignRun(result, {
-            side: runSide,
-            jobId: measurementState.speakerAlignJobId || result.job_id || '',
-            sampleRateHz: Number.isInteger(result.sample_rate_hz) ? result.sample_rate_hz : null,
-            committedRevision: result.committed_revision ?? null,
-            confirmed: result.confirmed,
-            params: result.provenance ? {} : {},
-        });
-        payload = SpeakerAlign.runToMeasurement(run);
-    } catch (error) {
-        deps.showToast(error?.message || 'Speaker Align run is not saveable', 'error');
-        return;
-    }
-    try {
-        const resp = await api.saveSpeakerAlignMeasurement(payload);
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to save align run'));
-        if (typeof deps.fetchSavedMeasurements === 'function') {
-            await deps.fetchSavedMeasurements().catch(() => {});
-        }
-        measurementState.speakerAlignResultSaved = true;
-        renderSpeakerAlignResultActions();
-        deps.showToast('Align run saved', 'success');
-    } catch (error) {
-        deps.showToast(error?.message || 'Failed to save align run', 'error');
-    } finally {
-        deps.renderMeasurementPanel();
-    }
-}
-
-async function openSpeakerAlignRunById(measurementId) {
-    const elements = deps.getElements();
-    const measurementState = deps.getState().measurement || {};
-    const trimmedId = String(measurementId || '').trim();
-    if (!trimmedId) {
-        deps.showToast('Select a saved align run first', 'warning');
-        return;
-    }
-    const measurement = listSpeakerAlignRuns().find(item => String(item.id) === trimmedId);
-    if (!measurement) {
-        deps.showToast('Saved align run is no longer available', 'error');
-        return;
-    }
-    if (typeof SpeakerAlign.measurementToRun !== 'function') {
-        deps.showToast('Speaker Align open support is unavailable', 'error');
-        return;
-    }
-    let run;
-    try {
-        run = SpeakerAlign.measurementToRun(measurement);
-    } catch (error) {
-        deps.showToast(error?.message || 'Saved align run could not be opened', 'error');
-        return;
-    }
-    const result = {
-        confirmed: !!run.confirmed,
-        committed_revision: run.committed_revision ?? null,
-        dry_run: !!run.dry_run,
-        side: run.side,
-        sample_rate_hz: run.sample_rate_hz,
-        provenance: run.metadata?.provenance || {},
-        proposal: {
-            start_revision: run.metadata.start_revision,
-            processing_fingerprint: run.metadata.processing_fingerprint,
-            arrival_ms: { ...run.before.arrival_ms },
-            added_delay_ms: { ...run.corrections.added_delay_ms },
-            added_gain_db: { ...run.corrections.added_gain_db },
-            way_levels_db: { ...(run.before.way_levels_db || {}) },
-            planning_isolation_db: { ...(run.before.way_isolation_db || {}) },
-            reference_role: run.reference_role,
-            arrival_source: run.arrival_source || 'shared-planning-take',
-        },
-        check: {
-            confirmed: !!run.confirmed,
-            reasons: [...(run.qc.reasons || [])],
-            warnings: [...(run.qc.warnings || [])],
-            max_residual_ms: run.qc.max_residual_ms,
-            before_spread_ms: run.qc.before_spread_ms,
-            after_arrival_ms: { ...run.after.arrival_ms },
-            tolerance_ms: run.qc.tolerance_ms,
-            pairs: run.qc.pairs || [],
-            gain_spread_db: run.qc.gain_spread_db ?? null,
-            before_gain_spread_db: run.qc.before_gain_spread_db ?? null,
-            gain_tolerance_db: run.qc.gain_tolerance_db ?? null,
-            after_way_levels_db: { ...(run.after.way_levels_db || {}) },
-            way_isolation_db: { ...(run.after.way_isolation_db || {}) },
-            isolation_margin_db: run.qc.isolation_margin_db ?? null,
-        },
-    };
-    if (run.frequency) result.way_frequency = JSON.parse(JSON.stringify(run.frequency));
-    measurementState.speakerAlignResult = result;
-    measurementState.speakerAlignResults = { ...measurementState.speakerAlignResults, [run.side]: result };
-    const resultsEl = elements.measurementSpeakerAlignResults;
-    if (resultsEl) {
-        resultsEl.innerHTML = ['left', 'right'].map(side =>
-            SpeakerAlign.renderSpeakerAlignResult(measurementState.speakerAlignResults?.[side], side)).join('');
-    }
-    const statusEl = elements.measurementSpeakerAlignStatus;
-    const pseudoJob = {
-        side: run.side,
-        status: run.committed_revision !== null && run.committed_revision !== undefined ? 'committed'
-            : run.confirmed ? 'trial-done' : 'unconfirmed',
-        result,
-    };
-    const text = formatSpeakerStatus(pseudoJob);
-    measurementState.statusText = `${text} (saved run ${run.id})`;
-    if (statusEl) statusEl.textContent = measurementState.statusText;
-    measurementState.speakerAlignResultSaved = true;
-    renderSpeakerAlignResultActions();
-    deps.showToast(`Opened align run ${run.id}`, 'success');
-    deps.renderMeasurementPanel();
-}
-
-
 // A failed or cancelled run leaves no result behind: an earlier Verified
 // table must not stay on screen as if it belonged to this run.
 function discardSpeakerAlignResults() {
     const measurementState = deps.getState().measurement || {};
     measurementState.speakerAlignResult = null;
     measurementState.speakerAlignResults = null;
-    measurementState.speakerAlignResultSaved = false;
     const resultsEl = deps.getElements().measurementSpeakerAlignResults;
     if (resultsEl) resultsEl.innerHTML = '';
+}
+
+// Before (planning take) and After (verification take) are normal sweeps:
+// they become the pending pair of the normal measurement flow, drawn in the
+// IR view first and stored through "Save current" like any other pair.
+function adoptSpeakerAlignMeasurements(job) {
+    const takes = typeof SpeakerAlign.takeMeasurements === 'function'
+        ? SpeakerAlign.takeMeasurements(job.result) : [];
+    if (!takes.length) return;
+    const measurementState = deps.getState().measurement || {};
+    const pending = takes.map((measurement, index) => deps.normalizeMeasurementEntry(measurement, index));
+    measurementState.autoSubMeasurements = [];
+    measurementState.pendingRepeatMeasurements = pending;
+    measurementState.currentMeasurement = pending[0];
+    measurementState.currentMeasurementName = `Speaker Align ${job.side === 'right' ? 'Right' : 'Left'}`;
+    measurementState.currentMeasurementSaved = false;
+    measurementState.reviewVisibilityById = measurementState.reviewVisibilityById || {};
+    pending.forEach((measurement) => {
+        measurementState.reviewVisibilityById[measurement.id] = !!measurement.review_traces?.length;
+    });
+    deps.setMeasurementGraphView('ir');
 }
 
 async function handleSpeakerAlignResult(job) {
@@ -1009,7 +838,6 @@ async function handleSpeakerAlignResult(job) {
         measurementState.statusText = text;
         discardSpeakerAlignResults();
         if (statusEl) statusEl.textContent = text;
-        renderSpeakerAlignResultActions();
         deps.showToast(text, 'success');
         return;
     }
@@ -1017,7 +845,6 @@ async function handleSpeakerAlignResult(job) {
         measurementState.statusText = text;
         discardSpeakerAlignResults();
         if (statusEl) statusEl.textContent = '';
-        renderSpeakerAlignResultActions();
         deps.showToast(text, 'error');
         return;
     }
@@ -1035,8 +862,7 @@ async function handleSpeakerAlignResult(job) {
     }
     measurementState.statusText = text;
     if (statusEl) statusEl.textContent = text;
-    measurementState.speakerAlignResultSaved = false;
-    renderSpeakerAlignResultActions();
+    adoptSpeakerAlignMeasurements(job);
     if (job.status === 'committed') {
         deps.showToast(text, 'success');
     } else if (job.status === 'trial-done') {
@@ -1054,11 +880,9 @@ function clearSpeakerAlignResult() {
         || measurementState.activeMeasurementKind === 'speaker_align') return;
     measurementState.speakerAlignResult = null;
     measurementState.speakerAlignResults = null;
-    measurementState.speakerAlignResultSaved = false;
     const elements = deps.getElements();
     if (elements.measurementSpeakerAlignStatus) elements.measurementSpeakerAlignStatus.textContent = '';
     if (elements.measurementSpeakerAlignResults) elements.measurementSpeakerAlignResults.innerHTML = '';
-    renderSpeakerAlignResultActions();
 }
 
 
@@ -1486,11 +1310,6 @@ function setupHybridMeasurementWizard() {
         pollSpeakerAlignJob,
         handleSpeakerAlignResult,
         clearSpeakerAlignResult,
-        listSpeakerAlignRuns,
-        isSpeakerAlignRunEntry,
-        renderSpeakerAlignResultActions,
-        saveSpeakerAlignRun,
-        openSpeakerAlignRunById,
         getHybridWizardState,
         getCurrentOutputModeName,
         openHybridMeasurementWizard,

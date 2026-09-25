@@ -1497,6 +1497,39 @@
     const speakerAlignJobs = {};
     let speakerAlignSeq = 0;
 
+    // Before/After as normal measurements, like the real job result: a
+    // fixture sweep of the side whose IR preview shows the ways arriving
+    // apart (planning take) or together (verification take).
+    function speakerAlignTakeMeasurement(job, take, offsetsMs) {
+        const label = `Speaker Align ${job.side === 'right' ? 'Right' : 'Left'} · ${take === 'before' ? 'Before (planning)' : 'After (verification)'}`;
+        const measurement = S.makeMeasurement({ id: `${job.id}_${take}`, name: label, channel: job.side });
+        const ringing = [[1.1, 0.35], [0.45, 0.9], [0.22, 1.8], [0.12, 3.0]];
+        const points = [];
+        for (let index = 0; index < 500; index += 1) {
+            const timeMs = -2 + index * (32 / 499);
+            let value = 0;
+            offsetsMs.forEach((offset, way) => {
+                const local = timeMs - offset;
+                if (local < 0) return;
+                const [tauMs, freqKhz] = ringing[Math.min(way, ringing.length - 1)];
+                value += Math.exp(-local / tauMs) * Math.sin(2 * Math.PI * freqKhz * local + Math.PI / 2);
+            });
+            points.push([Number(timeMs.toFixed(3)), value]);
+        }
+        const peak = Math.max(...points.map(point => Math.abs(point[1]))) || 1;
+        const analysis = measurement.analysis = measurement.analysis || {};
+        analysis.impulse_response = {
+            ...(analysis.impulse_response || {}),
+            preview: { schema: 'fxroute.ir-preview.v1', window_ms: [-2.0, 30.0],
+                normalization: 'max_abs_in_preview_window',
+                points: points.map(([timeMs, value]) => [timeMs, Number((value / peak).toFixed(6))]) },
+        };
+        (measurement.traces || []).forEach(trace => { trace.label = `${label} · trusted`; });
+        (measurement.review_traces || []).forEach(trace => { trace.label = `${label} · raw/full-band review`; });
+        measurement.speaker_align_take = { side: job.side, take };
+        return measurement;
+    }
+
     function speakerAlignPayload(id, elapsedMs) {
         const job = speakerAlignJobs[id];
         if (!job) return null;
@@ -1512,6 +1545,10 @@
         if (elapsed < 900) return { ...base, status: 'queued', message: 'Speaker alignment queued.', result: null, error: null };
         if (elapsed < 4000) return { ...base, status: 'acquiring', message: 'Acquiring speaker ways…', result: null, error: null };
         if (elapsed < 6000) return { ...base, status: 'confirming', message: 'Confirming alignment acoustically…', result: null, error: null };
+        job.measurements = job.measurements || {
+            before: speakerAlignTakeMeasurement(job, 'before', roles.map((role, index) => index)),
+            after: speakerAlignTakeMeasurement(job, 'after', roles.map((role, index) => (index ? 0.05 : 0))),
+        };
         return {
             ...base,
             status: 'committed',
@@ -1532,15 +1569,7 @@
                     added_gain_db: Object.fromEntries(roles.map((role) => [role, 0.0])),
                     planning_isolation_db: Object.fromEntries(roles.map((role) => [role, 18.0])),
                     arrival_source: 'shared-planning-take' },
-                time_domain: {
-                    ways: roles.slice().sort(),
-                    window_ms: [1.75, latest + 0.3],
-                    before: { source: 'planning-take', arrival_ms: arrival, spread_ms: roles.length - 1 },
-                    after: { source: 'verification-take',
-                        arrival_ms: Object.fromEntries(roles.map((role, index) => [role, latest + (index ? 0.05 : 0)])),
-                        spread_ms: 0.05 },
-                },
-                way_frequency: {},
+                measurements: JSON.parse(JSON.stringify(job.measurements)),
                 provenance: {},
                 committed_revision: 8,
                 dry_run: !!job.dryRun,

@@ -67,9 +67,6 @@
             const areaBadgeHtml = areaBadge
                 ? `<span class="measurement-area-badge${areaBadge.stale ? ' is-stale' : ''}" title="${deps.escapeHtml(areaBadge.title)}">${deps.escapeHtml(areaBadge.label)}</span>`
                 : '';
-            const alignOpenHtml = (typeof deps.isSpeakerAlignRunEntry === 'function' && deps.isSpeakerAlignRunEntry(measurement))
-                ? `<div class="measurement-list-row"><button type="button" class="btn-secondary" data-measurement-open-align-run="${deps.escapeHtml(measurement.id)}">Open run</button></div>`
-                : '';
             return `
                 <div class="measurement-list-item" style="${isVisibleInGraph ? `border-color:${traceColor}; box-shadow: inset 0 0 0 1px ${traceColor}33; background: linear-gradient(180deg, rgba(255,255,255,0.03), ${traceColor}12);` : ''}">
                     <div class="measurement-list-row">
@@ -91,7 +88,6 @@
                     <div class="measurement-list-row">
                         <span class="measurement-list-meta" title="${deps.escapeHtml(qualityTitle)}">${deps.escapeHtml(qualitySummary)} · ${isVisibleInGraph ? 'visible, dashed compare trace' : 'hidden compare trace'}</span>
                     </div>
-                    ${alignOpenHtml}
                 </div>
             `;
         }).join('');
@@ -170,11 +166,6 @@
             if (closeButton) {
                 deps.getState().measurement.savedGroupOpen = false;
                 deps.renderMeasurementPanel();
-                return;
-            }
-            const openRunButton = event.target.closest('[data-measurement-open-align-run]');
-            if (openRunButton && typeof deps.openSpeakerAlignRunById === 'function') {
-                deps.openSpeakerAlignRunById(openRunButton.dataset.measurementOpenAlignRun);
             }
         });
     }

@@ -4617,7 +4617,7 @@ select.url-input {
 }
 
 .speaker-align-table {
-    min-width: 420px;
+    min-width: 340px;
     width: 100%;
     margin-top: 12px;
     border-collapse: collapse;
@@ -4640,6 +4640,13 @@ select.url-input {
 
 .speaker-align-table th:first-child {
     text-align: left;
+}
+
+.speaker-align-verification {
+    margin: 6px 0 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
 }
 
 .measurement-workflow-row {
@@ -4680,51 +4687,6 @@ select.url-input {
 #measurement-speaker-align-status:empty,
 #measurement-speaker-align-results:empty {
     display: none;
-}
-
-.speaker-align-time {
-    margin: 12px 0 0;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-}
-
-.speaker-align-time figcaption {
-    font-size: 0.8rem;
-    font-weight: 600;
-    margin-bottom: 6px;
-}
-
-.speaker-align-time-svg {
-    display: block;
-    width: 100%;
-    height: auto;
-}
-
-.speaker-align-time-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem 0.9rem;
-    margin-top: 6px;
-    font-size: 0.75rem;
-    font-variant-numeric: tabular-nums;
-}
-
-.speaker-align-time-legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-}
-
-.speaker-align-time-swatch {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 2px;
-}
-
-.speaker-align-result-actions {
-    margin-top: 10px;
 }
 
 #measurement-sweep-start,

@@ -50,7 +50,6 @@ window.FXRouteMeasurementFlows?.init({
         startSpeakerAlign: (payload) => fetch('/api/speaker-align/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
         cancelSpeakerAlignJob: (jobId) => fetch(`/api/speaker-align/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
         pollSpeakerAlignJob: (jobId) => fetch(`/api/speaker-align/jobs/${encodeURIComponent(jobId)}`),
-        saveSpeakerAlignMeasurement: (payload) => fetch('/api/measurements/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
         startMeasurement: (formData) => fetch('/api/measurements/start', { method: 'POST', body: formData }),
         cancelMeasurementJob: (jobId) => fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
         pollMeasurementJob: (jobId) => fetch(`/api/measurements/jobs/${encodeURIComponent(jobId)}`),
@@ -82,9 +81,9 @@ window.FXRouteMeasurementFlows?.init({
     normalizeMeasurementEntry: (measurement, index) => MeasurementUI.normalizeMeasurementEntry(measurement, index),
     getMeasurementJobResultMeasurement: (job) => MeasurementUI.getMeasurementJobResultMeasurement(job),
     setMeasurementAssistMode,
+    setMeasurementGraphView,
     escapeHtml,
     sleep,
-    fetchSavedMeasurements: () => fetchMeasurements(),
 });
 // Provider settings module: state/DOM through lazy getters, app-owned rows
 // (device name) and streaming refreshes through explicit callbacks. Runtime
@@ -415,8 +414,6 @@ window.FXRouteMeasurementSavedUI?.init({
     renderMeasurementPanel: () => renderMeasurementPanel(),
     mergeSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.mergeSelectedMeasurements(),
     deleteSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.deleteSelectedMeasurements(),
-    openSpeakerAlignRunById: (measurementId) => window.FXRouteMeasurementFlows.openSpeakerAlignRunById(measurementId),
-    isSpeakerAlignRunEntry: (measurement) => window.FXRouteMeasurementFlows.isSpeakerAlignRunEntry(measurement),
 });
 window.FXRouteMeasurementEditorsUI?.init({
     getState: () => state,
@@ -768,7 +765,6 @@ let state = {
         speakerAlignCancelRequested: false,
         speakerAlignResult: null,
         speakerAlignResults: null,
-        speakerAlignResultSaved: false,
         statusText: 'Sweep ready. Calibration file is optional.',
         measurementSampleRate: '48000',
         assistMode: 'peq',
@@ -1141,7 +1137,6 @@ const elements = {
     measurementSpeakerAlignGroup: document.getElementById('measurement-speaker-align-group'),
     measurementSpeakerAlignStatus: document.getElementById('measurement-speaker-align-status'),
     measurementSpeakerAlignResults: document.getElementById('measurement-speaker-align-results'),
-    measurementSpeakerAlignActions: document.getElementById('measurement-speaker-align-actions'),
     measurementHybridOpenBtn: document.getElementById('measurement-hybrid-open'),
     measurementHybridPanel: document.getElementById('measurement-hybrid-panel'),
     measurementHybridCloseBtn: document.getElementById('measurement-hybrid-close'),
@@ -3467,6 +3462,14 @@ function getMeasurementGraphView() {
     return state.measurement?.measurementView === 'ir' ? 'ir' : 'freq';
 }
 
+function setMeasurementGraphView(view) {
+    state.measurement.measurementView = view === 'ir' ? 'ir' : 'freq';
+    window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState().dragFilterId = null;
+    window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState().dragPointId = null;
+    window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState().dragMode = null;
+    measurementGraphPointerId = null;
+}
+
 
 function buildMeasurementIrGraphEntry(measurement = {}, { current = false, graphColor = '' } = {}) {
     const displayTraces = getMeasurementDisplayTraces(measurement)
@@ -4273,11 +4276,7 @@ function setupMeasurementActions() {
     });
     document.querySelectorAll('[data-measurement-view]').forEach((button) => {
         button.addEventListener('click', () => {
-            state.measurement.measurementView = button.getAttribute('data-measurement-view') || 'freq';
-            window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState().dragFilterId = null;
-            window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState().dragPointId = null;
-            window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState().dragMode = null;
-            measurementGraphPointerId = null;
+            setMeasurementGraphView(button.getAttribute('data-measurement-view') || 'freq');
             renderMeasurementPanel();
             MeasurementGraph.scheduleMeasurementGraphRender();
         });
@@ -4364,12 +4363,6 @@ function setupMeasurementActions() {
     elements.measurementSpeakerAlignLeftBtn?.addEventListener('click', () => { void MeasurementFlows.startSpeakerAlign('left'); });
     elements.measurementSpeakerAlignRightBtn?.addEventListener('click', () => { void MeasurementFlows.startSpeakerAlign('right'); });
     elements.measurementSpeakerAlignCancelBtn?.addEventListener('click', () => { void MeasurementFlows.cancelSpeakerAlign(); });
-    // Align-run Save lives in the result actions (rendered only with a
-    // result); saved runs open from the normal saved-measurements list.
-    elements.measurementSpeakerAlignResults?.addEventListener('click', (event) => {
-        const save = event.target instanceof Element ? event.target.closest('[data-speaker-align-save]') : null;
-        if (save) void MeasurementFlows.saveSpeakerAlignRun(save.dataset.speakerAlignSave || undefined);
-    });
     if (elements.measurementSaveBtn) {
         elements.measurementSaveBtn.addEventListener('click', () => { void window.FXRouteMeasurementSavedActions.saveCurrentMeasurement(); });
     }

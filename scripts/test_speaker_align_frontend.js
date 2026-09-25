@@ -44,14 +44,25 @@ async function main() {
 
     const state = { outputSystem: { catalog: catalog() }, measurement: {
         selectedInputId: 'mic-1', selectedMicInputChannel: '1', selectedReferenceInputChannel: '',
+        measurementView: 'freq',
     } };
     const elements = Object.fromEntries(['LeftBtn', 'RightBtn', 'CancelBtn', 'Group', 'Status', 'Results', 'Sequence']
         .map(key => [`measurementSpeakerAlign${key}`, element()]));
     const calls = [];
-    const result = { confirmed: true, committed_revision: 8,
-        proposal: { arrival_ms: { right_low: 2, right_high: 5 }, added_delay_ms: { right_low: 3, right_high: 0 }, reference_role: 'right_high' },
-        check: { before_spread_ms: 3, max_residual_ms: 0.021, tolerance_ms: 0.25,
-            after_arrival_ms: { right_low: 5, right_high: 5.021 } } };
+    const take = (name, takeName) => ({ id: `sweep-${name}`, name: `Speaker Align Right · ${name}`, channel: 'right',
+        measurement_kind: 'sweep-response-v3', speaker_align_take: { side: 'right', take: takeName },
+        traces: [{ kind: 'sweep-response', role: 'trusted', points: [[20, -3], [20000, -6]] }],
+        review_traces: [{ kind: 'sweep-response-review', role: 'raw-review', points: [[20, -4], [20000, -7]] }],
+        analysis: { impulse_response: { preview: { points: [[-2, 0], [0, 1], [30, 0]] } } } });
+    const result = { confirmed: true, committed_revision: 8, side: 'right', dry_run: false,
+        proposal: { arrival_ms: { right_low: 2, right_high: 5 }, added_delay_ms: { right_low: 3, right_high: 0 },
+            added_gain_db: { right_low: 2, right_high: -2 }, reference_role: 'right_high',
+            planning_isolation_db: { right_low: 18.5, right_high: null } },
+        check: { confirmed: true, warnings: [], before_spread_ms: 3, max_residual_ms: 0.021, tolerance_ms: 0.25,
+            after_arrival_ms: { right_low: 5, right_high: 5.021 },
+            gain_spread_db: 0.2, before_gain_spread_db: 0.4, gain_tolerance_db: 1.0,
+            way_isolation_db: { right_low: 19.0, right_high: null } },
+        measurements: { before: take('Before (planning)', 'before'), after: take('After (verification)', 'after') } };
     const context = { console, window: {} };
     vm.createContext(context);
     const shell = fs.readFileSync(require.resolve('../static/index.html'), 'utf8');
@@ -59,15 +70,27 @@ async function main() {
         vm.runInContext(fs.readFileSync(require.resolve(`../static/${match[1]}.js`), 'utf8'), context);
     }
     const flows = context.window.FXRouteMeasurementFlows;
+    for (const removed of ['saveSpeakerAlignRun', 'openSpeakerAlignRunById', 'renderSpeakerAlignResultActions',
+        'listSpeakerAlignRuns', 'isSpeakerAlignRunEntry']) {
+        assert.equal(flows[removed], undefined, `${removed} is gone with the separate run flow`);
+    }
+    for (const removed of ['timeDomainView', 'renderSpeakerAlignTimeDomain', 'buildSpeakerAlignRun',
+        'runToMeasurement', 'measurementToRun']) {
+        assert.equal(Speaker[removed], undefined, `${removed} is gone with the time-domain graph`);
+    }
     const response = job => ({ ok: true, json: async () => ({ job }) });
+    let pollJob = { id: 'alignment', side: 'right', status: 'committed', result };
     const speakerApi = { startSpeakerAlign: async payload => {
         calls.push(payload);
         assert.equal(elements.measurementSpeakerAlignLeftBtn.disabled, true);
         assert.equal(elements.measurementSpeakerAlignRightBtn.disabled, true);
         return response({ id: 'alignment', side: payload.side, status: 'queued' });
-    }, pollSpeakerAlignJob: async () => response({ id: 'alignment', side: 'right', status: 'committed', result }) };
+    }, pollSpeakerAlignJob: async () => response(pollJob) };
+    const normalized = [];
     flows.init({ getState: () => state, getElements: () => elements, measurementModeReady: () => true,
         getActiveMeasurementKind: () => state.measurement.activeMeasurementKind,
+        normalizeMeasurementEntry: (measurement, index) => { normalized.push(index); return { ...measurement, normalized: true }; },
+        setMeasurementGraphView: view => { state.measurement.measurementView = view; },
         api: speakerApi,
     });
     flows.syncSpeakerAlignButton();
@@ -79,72 +102,60 @@ async function main() {
     assert.equal(calls[0].reference_input_channel, '');
     assert.equal(calls[0].reference_id, 'fxroute_dsp_sink.monitor');
     assert.equal(calls[0].dry_run, false);
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-table-wrap/);
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-table/);
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /5\.021/);
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /3\.000/);
+
+    // Compact numbers in the Speaker Align section: delay, gain, isolation,
+    // verification and status; no time-domain graph there any more.
+    const html = elements.measurementSpeakerAlignResults.innerHTML;
+    assert.match(html, /speaker-align-table-wrap/);
+    assert.match(html, /<th scope="col">Delay<\/th><th scope="col">Gain<\/th><th scope="col"[^>]*>Isolation<\/th>/);
+    assert.match(html, /Right speaker · Verified · committed rev 8/);
+    assert.match(html, /<th scope="row">Low<\/th><td>\+3\.000 ms<\/td><td>\+2\.00 dB<\/td><td>18\.5 → 19\.0 dB<\/td>/);
+    assert.match(html, /<th scope="row">High · ref<\/th><td>\+0\.000 ms<\/td><td>-2\.00 dB<\/td><td>—<\/td>/);
+    assert.match(html, /Verification: spread 3\.000 → 0\.021 ms \(limit 0\.250 ms\) · level spread 0\.40 → 0\.20 dB \(advisory 1\.00 dB\)/);
+    assert.doesNotMatch(html, /speaker-align-time|<svg|Before level|data-speaker-align-save/);
+    assert.equal(elements.measurementSpeakerAlignStatus.textContent,
+        'Speaker Align right timing verified and committed at revision 8.');
     assert.match(measurementCss, /\.speaker-align-table-wrap\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/);
     assert.match(measurementCss, /\.speaker-align-table\s*\{[^}]*min-width:\s*\d+px/);
-    assert.match(measurementCss, /\.speaker-align-time\s*\{[^}]*border:\s*1px solid var\(--border\)/);
-    assert.match(measurementCss, /\.speaker-align-time-svg\s*\{[^}]*width:\s*100%/);
-    const indexSource = fs.readFileSync(require.resolve('../static/index.html'), 'utf8');
-    assert.doesNotMatch(indexSource, /measurement-speaker-align-save/, 'no permanent setup Save row');
-    assert.doesNotMatch(indexSource, /speaker-align-run-row/, 'no permanent setup run row');
-    assert.match(indexSource, /id="measurement-speaker-align-actions"/, 'result actions outlet exists');
-    assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.021/);
-    assert.match(elements.measurementSpeakerAlignStatus.textContent, /0\.250/);
-    // Saveable time-domain run: Before from planning, After from
-    // verification, no extra measurement; reopening renders the same view
-    // plus alignment data. Guards the accidental helper removal.
-    const runResult = { confirmed: true, committed_revision: 8, side: 'right', sample_rate_hz: 48000,
-        proposal: { start_revision: 7, processing_fingerprint: 'test-fingerprint',
-            arrival_ms: { right_low: 2, right_high: 5 }, added_delay_ms: { right_low: 3, right_high: 0 }, reference_role: 'right_high',
-            way_levels_db: { right_low: -12, right_high: -8 }, added_gain_db: { right_low: 2, right_high: -2 },
-            planning_isolation_db: { right_low: 18.5, right_high: 21.0 }, arrival_source: 'shared-planning-take' },
-        check: { confirmed: true, reasons: [], warnings: [], before_spread_ms: 3, max_residual_ms: 0.021, tolerance_ms: 0.25,
-            after_arrival_ms: { right_low: 5, right_high: 5.021 }, pairs: [],
-            gain_spread_db: 0.2, gain_tolerance_db: 1.0, after_way_levels_db: { right_low: -10, right_high: -10.2 },
-            way_isolation_db: { right_low: 19.0, right_high: 20.0 }, isolation_margin_db: 19.0 } };
-    const run = Speaker.buildSpeakerAlignRun(runResult, {
-        side: 'right', jobId: 'job-1', sampleRateHz: 48000, committedRevision: 8,
-        params: { input_id: 'mic-1' },
-        frequency: { right_low: { trusted_points: [[20, -12], [1000, -10]] } },
-    });
-    assert.equal(run.schema, 'speaker-align-run-v1');
-    assert.equal(run.before.source, 'planning-take');
-    assert.equal(run.after.source, 'verification-take');
-    assert.deepEqual(run.ways, ['right_high', 'right_low']);
-    assert.equal(run.corrections.added_delay_ms.right_low, 3);
-    assert.equal(run.metadata.params.input_id, 'mic-1');
-    assert.deepEqual(run.frequency.right_low.trusted_points, [[20, -12], [1000, -10]]);
-    const view = Speaker.timeDomainView(run);
-    assert.deepEqual(view.ways, ['right_high', 'right_low']);
-    assert.equal(view.lanes.before.source, 'planning-take');
-    assert.equal(view.lanes.after.source, 'verification-take');
-    assert.ok(view.window_ms[0] <= 2 && view.window_ms[1] >= 5.021);
-    const timeHtml = Speaker.renderSpeakerAlignTimeDomain(run, 'right');
-    assert.match(timeHtml, /planning take/);
-    assert.match(timeHtml, /verification take/);
-    assert.match(timeHtml, /shared ms axis/);
-    // Gain evidence (known-good display): per-way gain/level columns and
-    // the advisory post-check spread in the committed status line.
-    const gainHtml = Speaker.renderSpeakerAlignResult(runResult, 'right');
-    assert.match(gainHtml, /Gain added/);
-    assert.match(gainHtml, /Before level/);
-    assert.match(gainHtml, /\+2\.00 dB/);
-    assert.match(gainHtml, /-12\.0/);
-    const committedText = Speaker.formatSpeakerAlignStatus(
-        { side: 'right', status: 'committed', result: { ...runResult, committed_revision: 8 } });
-    assert.match(committedText, /Timing spread 3\.000 → 0\.021 ms/);
-    assert.match(committedText, /Post-check level spread 0\.20 dB/);
-    const measurement = Speaker.runToMeasurement(run, 'Right align');
-    assert.equal(measurement.measurement_kind, 'speaker-align-run-v1');
-    assert.ok(Array.isArray(measurement.traces) && measurement.traces.length === 1);
-    const reopened = Speaker.measurementToRun(measurement);
-    assert.deepEqual(reopened.ways, run.ways);
-    // Finished results render the time-domain view next to the table.
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-time/);
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /shared ms axis/);
+    assert.match(measurementCss, /\.speaker-align-verification\s*\{/);
+    assert.doesNotMatch(measurementCss, /\.speaker-align-time|\.speaker-align-result-actions/);
+    assert.doesNotMatch(shell, /measurement-speaker-align-actions|measurement-speaker-align-save|speaker-align-run-row/,
+        'no separate align-run controls');
+
+    // Before (planning) and After (verification) are the pending pair of the
+    // normal measurement flow, shown in the IR view and saved via Save current.
+    // The pair is built inside the vm realm; compare as a plain array.
+    assert.deepEqual(Array.from(state.measurement.pendingRepeatMeasurements, item => item.id),
+        ['sweep-Before (planning)', 'sweep-After (verification)']);
+    assert.ok(state.measurement.pendingRepeatMeasurements.every(item => item.normalized));
+    assert.deepEqual(normalized, [0, 1]);
+    assert.equal(state.measurement.currentMeasurement.id, 'sweep-Before (planning)');
+    assert.equal(state.measurement.currentMeasurementName, 'Speaker Align Right');
+    assert.equal(state.measurement.currentMeasurementSaved, false);
+    assert.equal(state.measurement.measurementView, 'ir');
+    assert.equal(state.measurement.reviewVisibilityById['sweep-After (verification)'], true);
+    assert.deepEqual(Speaker.takeMeasurements({ measurements: { after: result.measurements.after,
+        before: { id: 'empty', traces: [] } } }).map(item => item.id), ['sweep-After (verification)']);
+    assert.deepEqual(Speaker.takeMeasurements({}), []);
+
+    // Trial and unconfirmed outcomes read as such in the compact caption.
+    assert.match(Speaker.renderSpeakerAlignResult({ ...result, committed_revision: null, dry_run: true }, 'right'),
+        /Right speaker · Trial confirmed · not committed/);
+    assert.match(Speaker.renderSpeakerAlignResult({ ...result, committed_revision: null, confirmed: false }, 'left'),
+        /Left speaker · Not verified · previous delays kept/);
+    assert.equal(Speaker.renderSpeakerAlignResult({ proposal: null }, 'left'), '');
+
+    // A failed run clears the numbers but leaves the pending pair alone: it
+    // is unsaved measurement data, not transient status.
+    pollJob = { id: 'alignment', side: 'right', status: 'failed', error: 'mic unplugged' };
+    state.measurement.speakerAlignInFlight = false;
+    state.measurement.startInFlight = false;
+    state.measurement.activeMeasurementKind = '';
+    await flows.startSpeakerAlign('right');
+    assert.equal(elements.measurementSpeakerAlignResults.innerHTML, '');
+    assert.equal(state.measurement.pendingRepeatMeasurements.length, 2);
+    pollJob = { id: 'alignment', side: 'right', status: 'committed', result };
+
     // Per-side loopback references: a right run carries the right loopback
     // in the start payload, never only the shared/left one.
     state.measurement.selectedReferenceInputChannel = '7';
@@ -156,56 +167,16 @@ async function main() {
     state.measurement.activeJobId = '';
     flows.init({ getSelectedMeasurementInputChannelCount: () => 18, api: speakerApi });
     await flows.startSpeakerAlign('right');
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1].reference_input_channel, '7');
-    assert.equal(calls[1].reference_input_channel_left, '7');
-    assert.equal(calls[1].reference_input_channel_right, '8');
-    assert.equal(calls[1].reference_id, 'mic-1:ch8:upstream');
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].reference_input_channel, '7');
+    assert.equal(calls[2].reference_input_channel_left, '7');
+    assert.equal(calls[2].reference_input_channel_right, '8');
+    assert.equal(calls[2].reference_id, 'mic-1:ch8:upstream');
     state.outputSystem.catalog.modes.stereo.selected_bank = 'all';
     flows.syncSpeakerAlignButton();
     await flows.startSpeakerAlign('left');
-    assert.equal(calls.length, 2, 'Hidden alignment must not be startable');
+    assert.equal(calls.length, 3, 'Hidden alignment must not be startable');
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), true);
-    // Save/Open run through the flows module: seeded result saves a
-    // speaker-align-run-v1 payload, reopening restores the same view data.
-    // Save lives in the result actions (not the setup), Open resolves by id.
-    state.outputSystem.catalog.modes.stereo.selected_bank = 'global';
-    state.measurement.speakerAlignResults = { right: runResult };
-    state.measurement.speakerAlignResult = runResult;
-    state.measurement.speakerAlignResultSaved = false;
-    const saveCalls = [];
-    elements.measurementSpeakerAlignActions = element();
-    flows.init({
-        showToast: (message, kind) => calls.push(['toast', message, kind]),
-        renderMeasurementPanel: () => {},
-        formatTransitionErrorDetail: (detail, fallback) => (typeof detail === 'string' ? detail : fallback),
-        fetchSavedMeasurements: async () => calls.push('reload-measurements'),
-        hasActiveMeasurementJob: () => false,
-        api: { ...speakerApi,
-            saveSpeakerAlignMeasurement: async payload => {
-                saveCalls.push(payload);
-                return { ok: true, json: async () => ({}) };
-            } },
-    });
-    flows.renderSpeakerAlignResultActions();
-    assert.match(elements.measurementSpeakerAlignActions.innerHTML, /data-speaker-align-save="right"/,
-        'result actions offer Save');
-    await flows.saveSpeakerAlignRun('right');
-    assert.equal(saveCalls.length, 1, 'save posts one run payload');
-    assert.equal(saveCalls[0].measurement_kind, 'speaker-align-run-v1');
-    assert.ok(saveCalls[0].speaker_align, 'payload carries the run');
-    state.measurement.measurements = [{ id: saveCalls[0].id, name: 'Right align',
-        measurement_kind: 'speaker-align-run-v1', speaker_align: saveCalls[0].speaker_align,
-        analysis: saveCalls[0].analysis, traces: saveCalls[0].traces || [] }];
-    assert.match(elements.measurementSpeakerAlignActions.innerHTML, /disabled>Saved</,
-        'saved result shows Saved, not Save');
-    assert.ok(flows.isSpeakerAlignRunEntry(state.measurement.measurements[0]), 'run entry recognized');
-    assert.equal(flows.isSpeakerAlignRunEntry({ id: 'x', measurement_kind: 'sweep' }), false);
-    await flows.openSpeakerAlignRunById(saveCalls[0].id);
-    assert.ok(state.measurement.speakerAlignResult?.proposal, 'reopened result restored');
-    assert.deepEqual(Object.keys(state.measurement.speakerAlignResult.proposal.arrival_ms).sort(),
-        ['right_high', 'right_low']);
-    assert.match(elements.measurementSpeakerAlignResults.innerHTML, /speaker-align-time/);
     console.log('Speaker alignment UI flow: passed');
 }
 

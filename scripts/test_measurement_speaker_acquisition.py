@@ -238,6 +238,14 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provenance["reference_node"], "capture_1")
         self.assertEqual(provenance["sample_rate_hz"], RATE)
         self.assertEqual(len(provenance["job_ids"]), 3)
+        # The shared planning take comes back as the store's normal
+        # measurement of that take: the Before view with its IR preview.
+        planning_job = self.store.get_job(provenance["job_ids"][0])
+        measurement = result["measurement"]
+        self.assertEqual(measurement, planning_job["result"]["measurement"])
+        self.assertEqual(measurement["channel"], "left")
+        self.assertTrue(measurement["traces"][0]["points"])
+        self.assertTrue(measurement["analysis"]["impulse_response"]["preview"]["points"])
         proposal = self.alignment.propose(
             captures, planning=planning_for(self.alignment, (96, 336)),
             live_target=live_global_target(self.state))
@@ -276,6 +284,11 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provenance["electrical_reference_channel"], 7)
         self.assertEqual(provenance["reference_node"], "capture_1")
         self.assertEqual(len(provenance["job_ids"]), 1)
+        # The verification take is the After view: the store's normal
+        # measurement of that one take.
+        verification_job = self.store.get_job(provenance["job_ids"][0])
+        self.assertEqual(result["measurement"], verification_job["result"]["measurement"])
+        self.assertTrue(result["measurement"]["analysis"]["impulse_response"]["preview"]["points"])
 
     async def test_verification_target_is_the_narrowed_side_plan(self):
         self.use_scarlett_input()

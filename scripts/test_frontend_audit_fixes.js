@@ -370,37 +370,60 @@ async function main() {
         assert.ok(toasts.some(([, k]) => k === 'error'), 'partial failure toasts');
     }
 
-    // 11. Saved list offers Open run only on align-run entries, wired by id.
+    // 11. Speaker Align Before/After save through the normal Save current as
+    // one pair named by take; other pending pairs keep their L/R suffix. The
+    // saved list shows them as normal entries without a separate Open control.
     {
-        const opened = [];
-        let clickHandler = null;
-        const listEl = { innerHTML: '', addEventListener: (type, fn) => { if (type === 'click') clickHandler = fn; } };
-        const state = { measurement: { measurements: [
-            { id: 'm-sweep', name: 'Sweep', measurement_kind: 'sweep', created_at: '2026-01-01', channel: 'left', traces: [] },
-            { id: 'm-align', name: 'Right align', measurement_kind: 'speaker-align-run-v1', created_at: '2026-01-02', channel: 'right', traces: [], speaker_align: { side: 'right' } },
-        ], visibilityById: {}, saveInFlight: false, startInFlight: false, savedGroupOpen: true } };
-        SavedUI.init({
+        const posted = [];
+        const pair = (tagged) => ['before', 'after'].map((take, index) => ({
+            id: `take-${take}`, name: `Speaker Align Right · ${take}`, channel: tagged ? 'right' : ['left', 'right'][index],
+            traces: [{ kind: 'sweep-response', points: [[20, -3], [20000, -6]] }],
+            speaker_align_take: tagged ? { side: 'right', take } : null,
+        }));
+        const state = { measurement: { currentMeasurement: null, currentMeasurementName: 'Speaker Align Right',
+            currentMeasurementSaved: false, pendingRepeatMeasurements: pair(true), autoSubMeasurements: [],
+            visibilityById: {}, reviewVisibilityById: {}, saveInFlight: false } };
+        state.measurement.currentMeasurement = state.measurement.pendingRepeatMeasurements[0];
+        SavedActions.init({
             getState: () => state,
+            fetch: async (url, options) => {
+                posted.push([url, JSON.parse(options.body)]);
+                return { ok: true, json: async () => ({ measurements: JSON.parse(options.body).measurements }) };
+            },
+            showToast: () => {},
+            renderMeasurementPanel: () => {},
+            fetchMeasurements: async () => {},
+            formatTransitionErrorDetail: (d, f) => f,
+            normalizeMeasurementEntry: (entry) => entry,
+        });
+        await SavedActions.saveCurrentMeasurement();
+        assert.equal(posted[0][0], '/api/measurements/save', 'normal save endpoint');
+        assert.deepEqual(posted[0][1].measurements.map(item => item.name),
+            ['Speaker Align Right · Before', 'Speaker Align Right · After']);
+        assert.deepEqual(posted[0][1].measurements.map(item => item.speaker_align_take.take), ['before', 'after']);
+        assert.deepEqual(state.measurement.pendingRepeatMeasurements, [], 'pair is no longer pending');
+        state.measurement.pendingRepeatMeasurements = pair(false);
+        state.measurement.currentMeasurement = state.measurement.pendingRepeatMeasurements[0];
+        state.measurement.currentMeasurementName = 'Advanced';
+        await SavedActions.saveCurrentMeasurement();
+        assert.deepEqual(posted[1][1].measurements.map(item => item.name), ['Advanced · L', 'Advanced · R']);
+
+        const listEl = { innerHTML: '', addEventListener: () => {} };
+        const saved = posted[0][1].measurements.map(item => ({ ...item, created_at: '2026-01-02' }));
+        SavedUI.init({
+            getState: () => ({ measurement: { measurements: saved, visibilityById: {}, savedGroupOpen: true } }),
             getElements: () => ({ measurementList: listEl }),
             getCurrentMeasurementEntry: () => null,
             getVisibleMeasurementColorById: () => ({}),
             getCompactDisplayName: (name) => String(name),
             escapeHtml: (value) => String(value ?? ''),
-            renderMeasurementPanel: () => {},
-            openSpeakerAlignRunById: (id) => opened.push(id),
-            isSpeakerAlignRunEntry: (measurement) => !!measurement
-                && (measurement.measurement_kind === 'speaker-align-run-v1' || !!measurement.speaker_align),
         });
-        SavedUI.bindMeasurementSavedListDelegation();
-        SavedUI.renderMeasurementPanelSavedListSection({ measurementState: state.measurement, current: null,
-            measurements: state.measurement.measurements, graphEntries: [], assistMode: 'peq',
+        SavedUI.renderMeasurementPanelSavedListSection({ measurementState: { visibilityById: {}, savedGroupOpen: true },
+            current: null, measurements: saved, graphEntries: [], assistMode: 'peq',
             activeEditor: null, graphView: null, frequencyView: null, peq: {}, conv: {}, activePeqFilter: null });
-        assert.match(listEl.innerHTML, /data-measurement-open-align-run="m-align"/, 'align entry offers Open run');
-        assert.doesNotMatch(listEl.innerHTML, /data-measurement-open-align-run="m-sweep"/, 'sweep entry has no Open run');
-        assert.ok(typeof clickHandler === 'function', 'click delegation bound');
-        clickHandler({ target: { closest: (selector) => (selector === '[data-measurement-open-align-run]'
-            ? { dataset: { measurementOpenAlignRun: 'm-align' } } : null) } });
-        assert.deepEqual(opened, ['m-align'], 'Open run resolves by measurement id');
+        assert.match(listEl.innerHTML, /data-measurement-toggle="take-before"/, 'Before is a normal saved entry');
+        assert.match(listEl.innerHTML, /data-measurement-toggle="take-after"/, 'After is a normal saved entry');
+        assert.doesNotMatch(listEl.innerHTML, /open-align-run|Open run/, 'no separate Open run control');
     }
 
     console.log('frontend audit fixes: ok');

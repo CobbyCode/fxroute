@@ -63,10 +63,14 @@
             });
             payload = { measurements };
         } else if (repeatMeasurements.length) {
+            // Speaker Align pairs are one side's Before/After takes; every
+            // other pending pair is one sweep per side.
+            const takeSuffix = { before: 'Before', after: 'After' };
             payload = {
                 measurements: repeatMeasurements.map((measurement) => {
                     const item = JSON.parse(JSON.stringify(measurement));
-                    item.name = `${baseName} · ${String(item.channel || '').toLowerCase() === 'right' ? 'R' : 'L'}`;
+                    const sideSuffix = String(item.channel || '').toLowerCase() === 'right' ? 'R' : 'L';
+                    item.name = `${baseName} · ${takeSuffix[item.speaker_align_take?.take] || sideSuffix}`;
                     return item;
                 }),
             };
