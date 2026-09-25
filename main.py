@@ -1313,6 +1313,16 @@ def _create_lifecycle_background_task(coro, *, name: str) -> asyncio.Task:
     return task
 
 
+async def _json_object(request: Request, *, detail: str = "Invalid JSON body") -> dict:
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=detail) from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail=detail)
+    return body
+
+
 def _create_library_refresh_task(scanner: LibraryScanner, *, name: str) -> asyncio.Task:
     task = asyncio.create_task(asyncio.to_thread(scanner.refresh, True), name=name)
     runtime.library_refresh_tasks.add(task)
@@ -3387,8 +3397,12 @@ async def _spotify_global_control(action: str, request: Request | None = None) -
     if action == "previous":
         return await broadcast_spotify_state(await spotify_previous())
     if action == "seek":
-        body = await request.json() if request is not None else {}
-        return await broadcast_spotify_state(await spotify_seek_to(float(body.get("position", 0))))
+        body = await _json_object(request) if request is not None else {}
+        try:
+            position = float(body.get("position", 0))
+        except (ValueError, TypeError) as exc:
+            raise bad_request(exc) from exc
+        return await broadcast_spotify_state(await spotify_seek_to(position))
     if action == "shuffle":
         return await broadcast_spotify_state(await spotify_shuffle_toggle())
     if action == "loop":
@@ -3411,8 +3425,12 @@ async def _qobuz_global_control(action: str, request: Request | None = None) -> 
     if action == "previous":
         return await broadcast_qobuz_state(await provider.previous())
     if action == "seek":
-        body = await request.json() if request is not None else {}
-        return await broadcast_qobuz_state(await provider.seek(float(body.get("position", 0))))
+        body = await _json_object(request) if request is not None else {}
+        try:
+            position = float(body.get("position", 0))
+        except (ValueError, TypeError) as exc:
+            raise bad_request(exc) from exc
+        return await broadcast_qobuz_state(await provider.seek(position))
     if action == "shuffle":
         return await broadcast_qobuz_state(await provider.shuffle())
     if action == "loop":
@@ -3683,10 +3701,7 @@ async def clear_playback_queue():
 
 @app.post("/api/playback/shuffle")
 async def set_playback_shuffle(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"enabled\": <bool>}")
+    body = await _json_object(request, detail='Invalid JSON, expected {"enabled": <bool>}')
     if not isinstance(body.get("enabled"), bool):
         # No explicit target state: legacy global behavior, route to the
         # current playback owner (e.g. Spotify/Qobuz toggle).
@@ -3753,11 +3768,8 @@ async def seek_playback(request: Request):
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
-    if not _can_send_play_command():
-        state = runtime.player_instance.state
-        return {"status": "ok", "position": state.get("position", 0), "playback": build_playback_payload(state)}
     try:
-        body = await request.json()
+        body = await _json_object(request)
         pos = float(body.get("position", 0))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON, expected {\"position\": <float>}")
@@ -3767,6 +3779,9 @@ async def seek_playback(request: Request):
     # request body was being read.  Never seek or mark intent mid-transition.
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
+    if not _can_send_play_command():
+        state = runtime.player_instance.state
+        return {"status": "ok", "position": state.get("position", 0), "playback": build_playback_payload(state)}
     async with _manual_transport_guard(expected_epoch=seek_epoch):
         await _drain_worker(runtime.player_instance.seek, pos)
         _mark_playback_intent_changed()
@@ -3859,10 +3874,7 @@ async def get_power_state():
 @app.post("/api/power/measurement-heartbeat")
 async def measurement_window_heartbeat(request: Request):
     global last_measurement_window_seen_at
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _json_object(request)
     if body.get("open") is False:
         last_measurement_window_seen_at = 0.0
         if measurement_sr_session is not None:
@@ -3908,7 +3920,9 @@ async def _system_update_or_restore(request: Request, *script_args: str) -> dict
         returncode=result["returncode"], stdout=stdout, restore=restore
     )
     if update_applied:
-        asyncio.create_task(_restart_fxroute_service_after_response(service_name))
+        _create_lifecycle_background_task(
+            _restart_fxroute_service_after_response(service_name), name="service-restart"
+        )
     return {
         "ok": ok,
         "installed_version": _read_version_file(),
@@ -5263,7 +5277,7 @@ async def _request_library_discovery_refresh(manager, *, force: bool = False) ->
                 await asyncio.to_thread(manager.run_claimed_refresh)
             except Exception:
                 logger.exception("Background music library discovery refresh failed")
-        asyncio.create_task(_run_claimed_refresh())
+        _create_lifecycle_background_task(_run_claimed_refresh(), name="library-discovery-refresh")
         return True
     return await asyncio.to_thread(manager.discovery_running)
 
@@ -5284,8 +5298,8 @@ async def add_manual_music_library(request: Request):
     manager = runtime.music_library.manager
     if manager is None:
         raise HTTPException(status_code=503, detail="Music libraries are not initialized")
+    body = await _json_object(request)
     try:
-        body = await request.json()
         entry = manager.add_manual_url(str(body.get("url") or ""))
     except (ValueError, TypeError) as exc:
         raise bad_request(exc) from exc
@@ -5447,10 +5461,7 @@ async def api_set_device_name(request: Request):
     """
     if not is_request_origin_trusted(request):
         raise HTTPException(status_code=403, detail="cross-site request rejected")
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _json_object(request)
     if shutil.which("hostnamectl") is None:
         raise HTTPException(status_code=503, detail="hostnamectl is not available on this system")
     value = str(body.get("hostname") or "").strip().strip(".")
@@ -5688,8 +5699,11 @@ async def api_spotify_loop():
 
 @app.post("/api/spotify/seek")
 async def api_spotify_seek(request: Request):
-    body = await request.json()
-    position = float(body.get("position", 0))
+    body = await _json_object(request)
+    try:
+        position = float(body.get("position", 0))
+    except (ValueError, TypeError) as exc:
+        raise bad_request(exc) from exc
     data = await spotify_seek_to(position)
     return await broadcast_spotify_state(data)
 
