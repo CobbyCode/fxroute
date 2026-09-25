@@ -94,8 +94,12 @@ def _run():
                     ".gridTemplateColumns.trim().split(/\\s+/).length"
                 )
 
-            # Mobile ≤760px: exactly one column.
-            for width in (760, 700, 600, 520):
+            # Stacked cards: the split only starts where each card can hold
+            # the trim row, so the single column runs up to ~800px. Below
+            # that a card is ~290px of content, less than the two digit-safe
+            # steppers need (~298px), and the split also made an 8px viewport
+            # change halve the card.
+            for width in (800, 760, 700, 600, 520):
                 page.set_viewport_size({"width": width, "height": 900})
                 page.wait_for_timeout(80)
                 n = column_count()
@@ -109,7 +113,8 @@ def _run():
             trim = page.evaluate("""
                 (() => {
                     const box = (el) => { const b = el.getBoundingClientRect();
-                        return { x: Math.round(b.x), top: Math.round(b.top),
+                        return { x: Math.round(b.x), y: Math.round(b.y), top: Math.round(b.top),
+                                 bottom: Math.round(b.bottom),
                                  right: Math.round(b.right), width: Math.round(b.width) }; };
                     const group = document.querySelector('.effects-subwoofer-sub1-group');
                     const lvl = box(document.querySelector('#effects-subwoofer-level').closest('.stepper-control'));
@@ -117,25 +122,67 @@ def _run():
                     const pol = box(document.querySelector('#effects-subwoofer-polarity'));
                     const g = box(group);
                     const pcs = getComputedStyle(group.querySelector('.effects-subwoofer-polarity-field')).gridColumn;
-                    return { lvl, aln, pol, g, pcs };
+                    // A number input clips silently, so every value field has
+                    // to be at least as wide as its own declared floor, and
+                    // that floor has to hold the widest value the app can
+                    // render ("-40.00" measures ~60px at this font size).
+                    const inputs = [...group.querySelectorAll('.stepper-input')];
+                    const valueOk = inputs.every((i) => {
+                        const cs = getComputedStyle(i);
+                        return i.getBoundingClientRect().width + 0.5 >= parseFloat(cs.minWidth)
+                            && i.getBoundingClientRect().width >= 60;
+                    });
+                    const btnOut = Math.max(0, ...[...group.querySelectorAll('.stepper-control')].map((sc) => {
+                        const sbox = sc.getBoundingClientRect();
+                        return Math.round(Math.max(...[...sc.children].map((c) => {
+                            const cb = c.getBoundingClientRect();
+                            return Math.max(cb.right - sbox.right, sbox.left - cb.left);
+                        })));
+                    }));
+                    return { lvl, aln, pol, g, pcs, valueOk, btnOut };
                 })()
             """)
-            check(f"[390px] Level + Align share one row ({trim})",
-                  abs(trim["lvl"]["top"] - trim["aln"]["top"]) <= 2)
-            check(f"[390px] real gap between the steppers ({trim})",
-                  trim["aln"]["x"] - trim["lvl"]["right"] >= 4)
-            check(f"[390px] Polarity spans the full row below ({trim})",
-                  trim["pcs"] == "1 / -1" and trim["pol"]["top"] > trim["aln"]["top"])
-            check(f"[390px] Polarity centered ({trim})",
-                  abs((trim["g"]["x"] + trim["g"]["width"] / 2) - (trim["pol"]["x"] + trim["pol"]["width"] / 2)) <= 2)
             check(f"[390px] no control overflows the card ({trim})",
                   trim["lvl"]["x"] >= trim["g"]["x"] - 1
                   and trim["aln"]["right"] <= trim["g"]["right"] + 1
                   and trim["pol"]["right"] <= trim["g"]["right"] + 1
                   and trim["pol"]["x"] >= trim["g"]["x"] - 1)
+            # Two boxes do not overlap when they are separated on either axis.
+            def separated(a, b):
+                return (a["right"] <= b["x"] + 1 or b["right"] <= a["x"] + 1
+                        or a["bottom"] <= b["top"] + 1 or b["bottom"] <= a["top"] + 1)
 
-            # Tablet 761-1100px: two columns unchanged.
-            for width in (761, 900, 1100):
+            check(f"[390px] no two controls overlap ({trim})",
+                  all(separated(trim[a], trim[b])
+                      for a, b in (("lvl", "aln"), ("lvl", "pol"), ("aln", "pol"))))
+            check(f"[390px] every stepper keeps its value field ({trim})", trim["valueOk"])
+            check(f"[390px] no stepper button leaves its own frame ({trim})",
+                  trim["btnOut"] <= 0)
+            # Above the phone range the two steppers do share one row again.
+            page.set_viewport_size({"width": 480, "height": 900})
+            page.wait_for_timeout(80)
+            wide = page.evaluate("""
+                (() => {
+                    const box = (el) => { const b = el.getBoundingClientRect();
+                        return { x: Math.round(b.x), top: Math.round(b.top),
+                                 right: Math.round(b.right), width: Math.round(b.width) }; };
+                    return {
+                        lvl: box(document.querySelector('#effects-subwoofer-level').closest('.stepper-control')),
+                        aln: box(document.querySelector('#effects-subwoofer-delay').closest('.stepper-control')),
+                    };
+                })()
+            """)
+            check(f"[480px] Level + Align share one row ({wide})",
+                  abs(wide["lvl"]["top"] - wide["aln"]["top"]) <= 2)
+            check(f"[480px] both steppers equally wide ({wide})",
+                  abs(wide["lvl"]["width"] - wide["aln"]["width"]) <= 1)
+            check(f"[480px] real gap between the steppers ({wide})",
+                  wide["aln"]["x"] - wide["lvl"]["right"] >= 4)
+            page.set_viewport_size({"width": 390, "height": 900})
+            page.wait_for_timeout(80)
+
+            # Tablet 801-1100px: two columns.
+            for width in (801, 900, 1100):
                 page.set_viewport_size({"width": width, "height": 900})
                 page.wait_for_timeout(80)
                 n = column_count()
@@ -191,24 +238,36 @@ def _run():
                     hidden.forEach((el) => el.classList.remove('hidden'));
                     const n = getComputedStyle(document.querySelector('.effects-subwoofer-controls'))
                         .gridTemplateColumns.trim().split(/\\s+/).length;
-                    const rects = [...document.querySelectorAll(
+                    const align = getComputedStyle(document.querySelector('.effects-subwoofer-controls'))
+                    .alignItems;
+                const rects = [...document.querySelectorAll(
                         '.effects-subwoofer-global-group, .effects-subwoofer-sub1-group, .effects-subwoofer-sub2-group')]
                         .map((el) => el.getBoundingClientRect());
                     hidden.forEach((el) => el.classList.add('hidden'));
                     card.classList.remove('is-subwoofer-22');
-                    return { n, widths: rects.map((r) => Math.round(r.width)),
+                    return { n, align, widths: rects.map((r) => Math.round(r.width)),
                              heights: rects.map((r) => Math.round(r.height)) };
                 })()
             """)
             check(f"2.2 desktop uses 3 columns ({three_col})", three_col["n"] == 3)
             check(f"2.2 cards share one width ({three_col})",
                   max(three_col["widths"]) - min(three_col["widths"]) <= 2)
-            check(f"2.2 cards are not stretched to one height ({three_col})",
-                  max(three_col["heights"]) - min(three_col["heights"]) > 4)
+            # "Cards hug their own content" is the contract, not one fixed
+            # height spread: the grid must align to start and each card must
+            # keep its own height. The sub trims are two rows now (the value
+            # fields keep their digit floor), which lands them close to
+            # Global's height, so a hard spread would only pin a coincidence.
+            check(f"2.2 cards align to start and keep their own heights ({three_col})",
+                  three_col["align"] == "start" and len(set(three_col["heights"])) > 1
+                  and max(three_col["heights"]) - min(three_col["heights"]) >= 1)
 
-            # Desktop 2.2: the timing readout tucks under the sub cards
-            # (columns 2-3, second row) with its bottom edge on Global's
-            # bottom instead of costing another full row.
+            # Desktop 2.2: the timing readout takes the second row under the
+            # sub cards (columns 2-3) instead of costing another full row.
+            # It used to end exactly on Global's bottom edge; the sub trims
+            # are two rows now (the value fields keep the digit floor that
+            # "-40.00" needs), so the readout follows them down instead. What
+            # matters is that it shares the sub columns, sits below the sub
+            # cards and never overlaps them.
             timing = page.evaluate("""
                 (() => {
                     const card = document.querySelector('.effects-card-subwoofer');
@@ -233,9 +292,9 @@ def _run():
             """)
             check(f"timing tucks under the sub cards ({timing})",
                   timing["column"] == "2 / -1" and str(timing["row"]).startswith("2"))
-            check(f"timing bottom edge meets Global bottom ({timing})",
-                  abs(timing["bottomDelta"]) <= 2)
-            check(f"timing sits below the sub cards ({timing})",
+            check(f"timing starts on the sub cards' bottom edge ({timing})",
+                  0 <= timing["belowSubs"] <= 24)
+            check(f"timing never overlaps the sub cards ({timing})",
                   timing["belowSubs"] >= 0)
 
             # Single shared crossover plus one block per side, and the L/R

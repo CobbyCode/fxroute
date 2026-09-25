@@ -1018,7 +1018,10 @@
         border-radius: var(--radius-lg);
     }
 
-    .hybrid-wizard-grid { grid-template-columns: 1fr; }
+    /* minmax(0, …), not 1fr: an auto-floored track took its min-content
+       width here and dragged the room view and the action row out of the
+       panel on a 320px screen. */
+    .hybrid-wizard-grid { grid-template-columns: minmax(0, 1fr); }
     .hybrid-room-view { min-height: 300px; }
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
@@ -1599,8 +1602,10 @@
         flex: 0 0 auto;
     }
 
-    .effects-peq-add-row {
-        grid-template-columns: 1fr auto;
+    /* The row wraps on its own once the card is too narrow; on a phone the
+       Add button drops to its own line and starts at the leading edge. */
+    .effects-peq-add-row .btn-inline {
+        margin-right: auto;
     }
 
     .effects-peq-mode-field {
@@ -1680,14 +1685,21 @@
 
 /* Narrow tablet: before the three channel columns could ever run into each
    other, Polarity wraps centered below Level and Alignment. */
+/* The three sub cards only go two-across once each card can hold the trim
+   row: below ~800px a card is ~290px of content, less than the two
+   digit-safe steppers need (~298px). Splitting there also made an 8px
+   viewport change halve the card, so the cards stay stacked until the split
+   actually fits. */
+@media (min-width: 761px) and (max-width: 800px) {
+    .effects-subwoofer-controls,
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 @media (min-width: 761px) and (max-width: 860px) {
     .effects-subwoofer-channel-group {
-        grid-template-columns: repeat(2, auto);
-    }
-
-    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
-        grid-column: 1 / -1;
-        justify-self: center;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 
@@ -1940,13 +1952,47 @@
     }
 }
 
-@media (max-width: 360px) {
-    /* Two full steppers cannot share the narrowest card without clipping. */
+/* Narrow cards: the way trim row (Level / Alignment / Polarity) needs ~365px
+   of card content, which only exists from ~520px up. Below that the two
+   steppers share one row and Polarity takes a line of its own; the steppers
+   still split the row equally, so they stay flush and equally wide. */
+@media (max-width: 519px) {
+    #effects-crossover-trim-group > .field-group:has(#effects-crossover-polarity) {
+        flex: 1 1 100%;
+    }
+}
+
+@media (max-width: 420px) {
+    #effects-crossover-trim-group > .field-group:has(.stepper-control) {
+        flex: 1 1 100%;
+    }
+}
+
+/* Phone widths: two value-field steppers cannot share one row. Each needs
+   ~154px (two touch buttons, a value field that keeps the digit floor for
+   "-40.00", its unit and the frame), so the pair needs ~322px of card
+   content; this card only offers that above ~420px of viewport. Below that
+   they stack, and the fields then span the full row so every control stays
+   flush, equally wide and complete instead of pushing its "+" button out
+   of its own frame. */
+@media (max-width: 420px) {
     .effects-subwoofer-channel-group {
         grid-template-columns: minmax(0, 1fr);
     }
+    #effects-crossover-trim-group > .field-group {
+        flex: 1 1 100%;
+    }
     .effects-subwoofer-channel-group .field-group {
-        justify-self: center;
+        justify-self: stretch;
+    }
+    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
+        grid-column: 1;
+    }
+
+    /* Same floor for the crossover row: the Frequency stepper needs the
+       full card width before it fits beside the Type select. */
+    .effects-subwoofer-crossover-block {
+        grid-template-columns: minmax(0, 1fr);
     }
 }
 

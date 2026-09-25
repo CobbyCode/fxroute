@@ -693,7 +693,10 @@
 @keyframes hybrid-status-spin { to { transform: rotate(360deg); } }
 .hybrid-status[data-level="ok"] { color: var(--success); }
 .hybrid-status[data-level="error"] { color: var(--danger); }
-.hybrid-action-row { display: grid; grid-template-columns: minmax(90px, 0.35fr) minmax(180px, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
+/* The tracks must be allowed to shrink: the wizard's right column is narrower
+   than 90 + 180px well before the phone stack, and the fixed minimums pushed
+   "Start measurement" out of the dialog. */
+.hybrid-action-row { display: grid; grid-template-columns: minmax(0, 0.35fr) minmax(0, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
 .hybrid-action-row button { min-height: 54px; }
 .hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
 .hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }

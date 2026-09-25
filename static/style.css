@@ -4956,7 +4956,10 @@ select.url-input {
 @keyframes hybrid-status-spin { to { transform: rotate(360deg); } }
 .hybrid-status[data-level="ok"] { color: var(--success); }
 .hybrid-status[data-level="error"] { color: var(--danger); }
-.hybrid-action-row { display: grid; grid-template-columns: minmax(90px, 0.35fr) minmax(180px, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
+/* The tracks must be allowed to shrink: the wizard's right column is narrower
+   than 90 + 180px well before the phone stack, and the fixed minimums pushed
+   "Start measurement" out of the dialog. */
+.hybrid-action-row { display: grid; grid-template-columns: minmax(0, 0.35fr) minmax(0, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
 .hybrid-action-row button { min-height: 54px; }
 .hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
 .hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
@@ -5985,18 +5988,23 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .crossover-trio-group > .effects-subwoofer-group-label {
     flex: 1 1 100%;
 }
-#tab-effects .crossover-control-groups .stepper-input-freq {
-    /* Five-digit crossover frequencies need more room than the compact
-       sub-tile value field. */
-    width: 3.9rem;
-}
 #tab-effects select.effects-crossover-type-select {
-    width: min(100%, 9rem);
+    /* 9.5rem is the widest option ("Linkwitz-Riley") plus the native arrow;
+       the old 9rem cap cut the closed label by ~5px on narrow cards. */
+    width: min(100%, 9.5rem);
     min-width: 0;
     max-width: 100%;
     /* Left-aligned like every other app select, closed and open. */
     text-align: left;
 }
+/* The way trim row (Level / Alignment / Polarity): the two steppers keep
+   their own width (the shared unit block makes them identical) and are never
+   squeezed below it, so the row wraps to a second line on a narrow card
+   instead of clipping a digit behind the decimal comma. */
+#effects-crossover-trim-group > .field-group:has(.stepper-control) {
+    min-width: min-content;
+}
+
 .crossover-link-label {
     display: flex;
     align-items: center;
@@ -6158,12 +6166,15 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-channel-group {
     grid-column: auto;
     display: grid;
-    /* Three columns like the speaker Trim group: one control per
-       auto-sized column (Level / Align / Polarity), evenly spread with a
-       calm horizontal gap so the steppers never touch. Sub 1 / Sub 2 share
-       the class and stay symmetric; headings and controls share one center
-       axis (field-group centering below). */
-    grid-template-columns: repeat(3, auto);
+    /* Level and Alignment share the two flexible tracks, so the two steppers
+       come out exactly as wide as each other and stay flush in their column;
+       Polarity spans both tracks below, centered on its own single-letter
+       values. A three-across row cannot work: two value fields that keep
+       their digit floor plus the polarity select are wider than this card on
+       every desktop size, which is what used to clip the alignment value.
+       Sub 1 / Sub 2 share the class and stay symmetric; headings and
+       controls share one center axis (field-group centering below). */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     justify-content: space-evenly;
     align-items: end;
     gap: 0.55rem 0.9rem;
@@ -6177,9 +6188,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     .effects-subwoofer-channel-group {
         padding-left: 0.6rem;
         padding-right: 0.6rem;
-    }
-    #tab-effects .effects-subwoofer-channel-group .stepper-control .stepper-input {
-        width: 3.4rem;
     }
     #tab-effects .effects-subwoofer-channel-group select.effects-subwoofer-polarity-select {
         width: min(100%, 3.5rem);
@@ -6217,6 +6225,17 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     color: var(--text-secondary);
     font-size: 0.8rem;
     line-height: 1.14;
+}
+
+/* The stepper fills its field-group exactly like the sibling selects do
+   (flex: 1 1 0%), so a control never overhangs its own column and the two
+   sub trims line up edge to edge. The value field absorbs the extra width. */
+.effects-subwoofer-control-group .delay-input-wrap {
+    width: 100%;
+}
+
+.effects-subwoofer-control-group .stepper-control {
+    width: 100%;
 }
 
 .effects-subwoofer-derived-delays {
@@ -6268,6 +6287,11 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 .effects-subwoofer-highpass-field {
     min-width: 0;
     align-self: end;
+}
+
+.effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
+    grid-column: 1 / -1;
+    justify-self: center;
 }
 
 /* Subwoofer selects share the common #tab-effects control metrics; the
@@ -6406,12 +6430,22 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-peq-add-row {
-    display: grid;
-    grid-template-columns: minmax(0, 220px) auto;
+    /* Flex, not a fixed two-column grid: the mode select and the Add button
+       need a combined width that the PEQ card only offers on wide layouts
+       (it is one of several cards side by side), so the row now wraps when
+       the card is too narrow instead of letting the select overrun its
+       column. The mode field still takes all the space on one row. */
+    display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: end;
     gap: 1rem;
     margin-bottom: 0.35rem;
+}
+
+.effects-peq-mode-field {
+    flex: 1 1 12rem;
+    min-width: 0;
 }
 
 .effects-peq-mode-field {
@@ -6969,29 +7003,37 @@ input[type="number"]::-webkit-outer-spin-button {
     font-weight: 600;
     line-height: 1;
     user-select: none;
+    /* One width for every unit ("dB", "ms", "Hz"): steppers next to each
+       other then share one intrinsic width, so a row of them lines up
+       flush without stretching the controls or hand-tuned per-row sizes. */
+    min-width: 1.5rem;
+    text-align: center;
 }
 
 #tab-effects .stepper-control .stepper-input {
-    width: 3.1rem;
-    min-width: 0;
+    /* 4rem is the floor for every value field here. The app renders two
+       decimals, so the widest reachable values are "-40.00" (sub alignment),
+       "-24.00" (sub level), "-80.00" (way trim) and "20000" (crossover);
+       all of them measure ~60px at this font size. A number input clips its
+       text silently and without an ellipsis, so the field may grow with the
+       control but must never shrink below that: no digit may be lost behind
+       the decimal comma. The unit stays snug against the value area. */
+    width: 4rem;
+    min-width: 4rem;
+    flex: 1 1 auto;
     min-height: 0;
     height: auto;
     border: 0;
     background: transparent;
-    /* Centering and readability come only from internal presentation: the
-       compact outer size is load-bearing for the 3-column sub rows (Level /
-       Alignment / Polarity share tight tracks) and must stay near the
-       original footprint. 3.1rem fits the widest alignment value ("-39.9")
-       unclipped next to its unit; the unit stays snug against the value
-       area. */
     text-align: center;
     padding: 0.35rem 0;
     font-size: 0.92rem;
 }
 
-/* Two-decimal way trims need space for -80.00 without squeezing the unit. */
+/* Two-decimal way trims get a little more headroom for "-80.00". */
 #tab-effects #effects-crossover-trim-group .stepper-control .stepper-input {
-    width: 4.1rem;
+    width: 4.3rem;
+    min-width: 4.3rem;
 }
 
 .stepper-control input[type="number"]::-webkit-inner-spin-button,
@@ -7006,13 +7048,12 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 /* Stacked mobile fields have full cell width: restore comfortable touch
-   targets for the stepper buttons. */
+   targets for the stepper buttons. The value field keeps the shared floor
+   from the rules above, so the wider touch buttons never eat into the
+   digits and the five-digit frequency override stays in force. */
 @media (max-width: 520px) {
     .stepper-btn {
         width: 34px;
-    }
-    #tab-effects .stepper-control .stepper-input {
-        width: 3.4rem;
     }
 }
 /* ============================================================
@@ -8738,7 +8779,10 @@ input[type="number"]::-webkit-outer-spin-button {
         border-radius: var(--radius-lg);
     }
 
-    .hybrid-wizard-grid { grid-template-columns: 1fr; }
+    /* minmax(0, …), not 1fr: an auto-floored track took its min-content
+       width here and dragged the room view and the action row out of the
+       panel on a 320px screen. */
+    .hybrid-wizard-grid { grid-template-columns: minmax(0, 1fr); }
     .hybrid-room-view { min-height: 300px; }
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
@@ -9319,8 +9363,10 @@ input[type="number"]::-webkit-outer-spin-button {
         flex: 0 0 auto;
     }
 
-    .effects-peq-add-row {
-        grid-template-columns: 1fr auto;
+    /* The row wraps on its own once the card is too narrow; on a phone the
+       Add button drops to its own line and starts at the leading edge. */
+    .effects-peq-add-row .btn-inline {
+        margin-right: auto;
     }
 
     .effects-peq-mode-field {
@@ -9400,14 +9446,21 @@ input[type="number"]::-webkit-outer-spin-button {
 
 /* Narrow tablet: before the three channel columns could ever run into each
    other, Polarity wraps centered below Level and Alignment. */
+/* The three sub cards only go two-across once each card can hold the trim
+   row: below ~800px a card is ~290px of content, less than the two
+   digit-safe steppers need (~298px). Splitting there also made an 8px
+   viewport change halve the card, so the cards stay stacked until the split
+   actually fits. */
+@media (min-width: 761px) and (max-width: 800px) {
+    .effects-subwoofer-controls,
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 @media (min-width: 761px) and (max-width: 860px) {
     .effects-subwoofer-channel-group {
-        grid-template-columns: repeat(2, auto);
-    }
-
-    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
-        grid-column: 1 / -1;
-        justify-self: center;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 
@@ -9660,13 +9713,47 @@ input[type="number"]::-webkit-outer-spin-button {
     }
 }
 
-@media (max-width: 360px) {
-    /* Two full steppers cannot share the narrowest card without clipping. */
+/* Narrow cards: the way trim row (Level / Alignment / Polarity) needs ~365px
+   of card content, which only exists from ~520px up. Below that the two
+   steppers share one row and Polarity takes a line of its own; the steppers
+   still split the row equally, so they stay flush and equally wide. */
+@media (max-width: 519px) {
+    #effects-crossover-trim-group > .field-group:has(#effects-crossover-polarity) {
+        flex: 1 1 100%;
+    }
+}
+
+@media (max-width: 420px) {
+    #effects-crossover-trim-group > .field-group:has(.stepper-control) {
+        flex: 1 1 100%;
+    }
+}
+
+/* Phone widths: two value-field steppers cannot share one row. Each needs
+   ~154px (two touch buttons, a value field that keeps the digit floor for
+   "-40.00", its unit and the frame), so the pair needs ~322px of card
+   content; this card only offers that above ~420px of viewport. Below that
+   they stack, and the fields then span the full row so every control stays
+   flush, equally wide and complete instead of pushing its "+" button out
+   of its own frame. */
+@media (max-width: 420px) {
     .effects-subwoofer-channel-group {
         grid-template-columns: minmax(0, 1fr);
     }
+    #effects-crossover-trim-group > .field-group {
+        flex: 1 1 100%;
+    }
     .effects-subwoofer-channel-group .field-group {
-        justify-self: center;
+        justify-self: stretch;
+    }
+    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
+        grid-column: 1;
+    }
+
+    /* Same floor for the crossover row: the Frequency stepper needs the
+       full card width before it fits beside the Type select. */
+    .effects-subwoofer-crossover-block {
+        grid-template-columns: minmax(0, 1fr);
     }
 }
 
