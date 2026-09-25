@@ -169,6 +169,12 @@ class MeasurementStore:
             directory.mkdir(parents=True, exist_ok=True)
         self._jobs: dict[str, dict[str, Any]] = {}
         self._shutdown = False
+        # Single-job ownership slot: a start reserves it synchronously
+        # before its first await so two concurrent starts cannot both pass
+        # the active check. The flag is held across the preparation awaits
+        # and handed over to the registered job atomically.
+        self._start_slot_lock = threading.Lock()
+        self._start_slot_reserved = False
         self._last_successful_lag: int | None = None
         # Short-lived input inventory: discovery shells out to wpctl/pactl
         # per source, so back-to-back sweeps reuse a fresh listing instead of
@@ -329,167 +335,160 @@ class MeasurementStore:
     ) -> dict[str, Any]:
         if self._shutdown:
             raise RuntimeError("Measurement store is shutting down")
-        # Normalize stale jobs before checking the single-job ownership guard.
-        self._normalize_stale_jobs()
-        active_job = self._find_active_or_cancelling_job()
-        if active_job is not None:
-            active_id = active_job["id"]
-            active_status = active_job.get("status", "unknown")
-            logger.warning(
-                "MEASUREMENT-CANCEL-DIAG new job blocked: existing_job=%s status=%s",
-                active_id,
-                active_status,
-            )
-            raise RuntimeError(
-                f"Another measurement is still active ({active_id}, status={active_status}). "
-                "Wait for it to finish or cancel it first."
-            )
-
-        inputs = self._measurement_inputs_with_sample_rate(
-            await asyncio.to_thread(self._cached_capture_inputs)
-        )
+        # Claim the single-job slot synchronously before the first await:
+        # two concurrent starts cannot both pass the ownership guard.
+        self._claim_measurement_start_slot()
         try:
-            selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
-        except ValueError:
-            self.invalidate_capture_inputs_cache()
-            fresh_raw = await asyncio.to_thread(self._discover_capture_inputs)
+            inputs = self._measurement_inputs_with_sample_rate(
+                await asyncio.to_thread(self._cached_capture_inputs)
+            )
             try:
-                self._capture_inputs_cache = {"at": time.monotonic(), "inputs": deepcopy(fresh_raw)}
-            except Exception:
-                pass
-            fresh_inputs = self._measurement_inputs_with_sample_rate(fresh_raw)
-            selected_input = self._resolve_capture_input(fresh_inputs, input_id=input_id, input_key=input_key)
-        if not selected_input.get("available"):
-            raise ValueError("Selected capture input is not available")
+                selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
+            except ValueError:
+                self.invalidate_capture_inputs_cache()
+                fresh_raw = await asyncio.to_thread(self._discover_capture_inputs)
+                try:
+                    self._capture_inputs_cache = {"at": time.monotonic(), "inputs": deepcopy(fresh_raw)}
+                except Exception:
+                    pass
+                fresh_inputs = self._measurement_inputs_with_sample_rate(fresh_raw)
+                selected_input = self._resolve_capture_input(fresh_inputs, input_id=input_id, input_key=input_key)
+            if not selected_input.get("available"):
+                raise ValueError("Selected capture input is not available")
 
-        normalized_channel = None
-        if channel is not None:
-            normalized_channel = str(channel or "left").strip().lower()
-            if normalized_channel not in {"left", "right", "stereo"}:
-                raise ValueError("channel must be left, right, or stereo")
+            normalized_channel = None
+            if channel is not None:
+                normalized_channel = str(channel or "left").strip().lower()
+                if normalized_channel not in {"left", "right", "stereo"}:
+                    raise ValueError("channel must be left, right, or stereo")
 
-        input_channel_count = max(1, int(selected_input.get("channels") or 1))
-        mic_input_channel_index = self._parse_input_channel_index(
-            mic_input_channel,
-            channel_count=input_channel_count,
-            default=0,
-            field_name="mic_input_channel",
-        )
-        shared_reference_input_channel_index = self._parse_optional_input_channel_index(
-            reference_input_channel,
-            channel_count=input_channel_count,
-            field_name="reference_input_channel",
-        )
-        reference_input_channel_left_index = self._parse_optional_input_channel_index(
-            reference_input_channel_left,
-            channel_count=input_channel_count,
-            field_name="reference_input_channel_left",
-        )
-        reference_input_channel_right_index = self._parse_optional_input_channel_index(
-            reference_input_channel_right,
-            channel_count=input_channel_count,
-            field_name="reference_input_channel_right",
-        )
-        # Opt-in multi-channel reference capture: every configured loopback
-        # candidate is recorded in one take and the capture evidence decides
-        # which one carries the sweep.  The list is never filtered by side, and
-        # the legacy single fields keep mirroring its first entry so older
-        # readers still see one primary channel.
-        candidate_indexes: list[int] = []
-        for value in (reference_candidate_channels or ()):
-            raw_candidate = str(value if value is not None else "").strip()
-            if not raw_candidate:
-                continue
-            candidate_indexes.append(self._parse_optional_input_channel_index(
-                raw_candidate,
+            input_channel_count = max(1, int(selected_input.get("channels") or 1))
+            mic_input_channel_index = self._parse_input_channel_index(
+                mic_input_channel,
                 channel_count=input_channel_count,
-                field_name="reference_candidate_channels",
-            ))
-        # Legacy and 2-channel path: one shared electrical reference serves both
-        # sides. The reference may not share the microphone channel: only the
-        # affected side loses it, the other side keeps its reference.
-        resolved_reference = resolve_reference_channels(
-            mic=mic_input_channel_index,
-            shared=shared_reference_input_channel_index,
-            left=reference_input_channel_left_index,
-            right=reference_input_channel_right_index,
-            candidates=candidate_indexes,
-        )
-        reference_disabled_reason_left = ""
-        reference_disabled_reason_right = ""
-        if resolved_reference.collided_left:
-            reference_disabled_reason_left = (
-                "Mic input and electrical reference input are the same channel; reference compensation disabled."
-                if resolved_reference.shared
-                else "Mic input and electrical reference L input are the same channel; reference compensation disabled."
+                default=0,
+                field_name="mic_input_channel",
             )
-        if resolved_reference.collided_right:
-            reference_disabled_reason_right = (
-                "Mic input and electrical reference input are the same channel; reference compensation disabled."
-                if resolved_reference.shared
-                else "Mic input and electrical reference R input are the same channel; reference compensation disabled."
+            shared_reference_input_channel_index = self._parse_optional_input_channel_index(
+                reference_input_channel,
+                channel_count=input_channel_count,
+                field_name="reference_input_channel",
             )
-        reference_disabled_reason = " ".join(
-            dict.fromkeys(
-                reason
-                for reason in (reference_disabled_reason_left, reference_disabled_reason_right)
-                if reason
+            reference_input_channel_left_index = self._parse_optional_input_channel_index(
+                reference_input_channel_left,
+                channel_count=input_channel_count,
+                field_name="reference_input_channel_left",
             )
-        )
-        reference_input_channel_left_index = resolved_reference.left
-        reference_input_channel_right_index = resolved_reference.right
-        reference_candidate_input_channels = [index + 1 for index in resolved_reference.candidates]
+            reference_input_channel_right_index = self._parse_optional_input_channel_index(
+                reference_input_channel_right,
+                channel_count=input_channel_count,
+                field_name="reference_input_channel_right",
+            )
+            # Opt-in multi-channel reference capture: every configured loopback
+            # candidate is recorded in one take and the capture evidence decides
+            # which one carries the sweep.  The list is never filtered by side, and
+            # the legacy single fields keep mirroring its first entry so older
+            # readers still see one primary channel.
+            candidate_indexes: list[int] = []
+            for value in (reference_candidate_channels or ()):
+                raw_candidate = str(value if value is not None else "").strip()
+                if not raw_candidate:
+                    continue
+                candidate_indexes.append(self._parse_optional_input_channel_index(
+                    raw_candidate,
+                    channel_count=input_channel_count,
+                    field_name="reference_candidate_channels",
+                ))
+            # Legacy and 2-channel path: one shared electrical reference serves both
+            # sides. The reference may not share the microphone channel: only the
+            # affected side loses it, the other side keeps its reference.
+            resolved_reference = resolve_reference_channels(
+                mic=mic_input_channel_index,
+                shared=shared_reference_input_channel_index,
+                left=reference_input_channel_left_index,
+                right=reference_input_channel_right_index,
+                candidates=candidate_indexes,
+            )
+            reference_disabled_reason_left = ""
+            reference_disabled_reason_right = ""
+            if resolved_reference.collided_left:
+                reference_disabled_reason_left = (
+                    "Mic input and electrical reference input are the same channel; reference compensation disabled."
+                    if resolved_reference.shared
+                    else "Mic input and electrical reference L input are the same channel; reference compensation disabled."
+                )
+            if resolved_reference.collided_right:
+                reference_disabled_reason_right = (
+                    "Mic input and electrical reference input are the same channel; reference compensation disabled."
+                    if resolved_reference.shared
+                    else "Mic input and electrical reference R input are the same channel; reference compensation disabled."
+                )
+            reference_disabled_reason = " ".join(
+                dict.fromkeys(
+                    reason
+                    for reason in (reference_disabled_reason_left, reference_disabled_reason_right)
+                    if reason
+                )
+            )
+            reference_input_channel_left_index = resolved_reference.left
+            reference_input_channel_right_index = resolved_reference.right
+            reference_candidate_input_channels = [index + 1 for index in resolved_reference.candidates]
 
-        calibration_meta = self._file_store.resolve_calibration_meta(
-            calibration_filename=calibration_filename,
-            calibration_bytes=calibration_bytes,
-            calibration_ref=calibration_ref,
-        )
-        normalized_scope = self._normalize_measurement_scope(measurement_scope)
-        now = self._utc_now()
-        job_id = f"{job_prefix}{uuid4().hex[:12]}"
-        job_input_channels: dict[str, Any] = {
-            "mic": mic_input_channel_index + 1,
-            "electrical_reference": (
-                reference_input_channel_left_index + 1
-                if reference_input_channel_left_index is not None
-                else (reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None)
-            ),
-            "electrical_reference_left": (
-                reference_input_channel_left_index + 1 if reference_input_channel_left_index is not None else None
-            ),
-            "electrical_reference_right": (
-                reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None
-            ),
-            "reference_disabled_reason": reference_disabled_reason,
-            "reference_disabled_reason_left": reference_disabled_reason_left,
-            "reference_disabled_reason_right": reference_disabled_reason_right,
-        }
-        if reference_candidate_input_channels:
-            job_input_channels["electrical_reference_candidates"] = reference_candidate_input_channels
-        job = {
-            "id": job_id,
-            "status": "queued",
-            "created_at": now,
-            "updated_at": now,
-            "input": {
-                "id": selected_input["id"],
-                "label": selected_input["label"],
-                "node_serial": selected_input.get("node_serial"),
-                "node_name": selected_input.get("node_name"),
-                "channels": selected_input.get("channels"),
-                "sample_rate": selected_input.get("sample_rate"),
-                "measurement_sample_rate": selected_input.get("measurement_sample_rate"),
-                "supported_rates": selected_input.get("supported_rates", []),
-            },
-            "input_channels": job_input_channels,
-            "calibration": calibration_meta or {"filename": "", "applied": False},
-            "scope_note": MEASUREMENT_SCOPE_NOTE,
-            "measurement_scope": normalized_scope,
-            "result": None,
-            "error": None,
-        }
-        return {"job": job, "channel": normalized_channel}
+            calibration_meta = self._file_store.resolve_calibration_meta(
+                calibration_filename=calibration_filename,
+                calibration_bytes=calibration_bytes,
+                calibration_ref=calibration_ref,
+            )
+            normalized_scope = self._normalize_measurement_scope(measurement_scope)
+            now = self._utc_now()
+            job_id = f"{job_prefix}{uuid4().hex[:12]}"
+            job_input_channels: dict[str, Any] = {
+                "mic": mic_input_channel_index + 1,
+                "electrical_reference": (
+                    reference_input_channel_left_index + 1
+                    if reference_input_channel_left_index is not None
+                    else (reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None)
+                ),
+                "electrical_reference_left": (
+                    reference_input_channel_left_index + 1 if reference_input_channel_left_index is not None else None
+                ),
+                "electrical_reference_right": (
+                    reference_input_channel_right_index + 1 if reference_input_channel_right_index is not None else None
+                ),
+                "reference_disabled_reason": reference_disabled_reason,
+                "reference_disabled_reason_left": reference_disabled_reason_left,
+                "reference_disabled_reason_right": reference_disabled_reason_right,
+            }
+            if reference_candidate_input_channels:
+                job_input_channels["electrical_reference_candidates"] = reference_candidate_input_channels
+            job = {
+                "id": job_id,
+                "status": "queued",
+                "created_at": now,
+                "updated_at": now,
+                "input": {
+                    "id": selected_input["id"],
+                    "label": selected_input["label"],
+                    "node_serial": selected_input.get("node_serial"),
+                    "node_name": selected_input.get("node_name"),
+                    "channels": selected_input.get("channels"),
+                    "sample_rate": selected_input.get("sample_rate"),
+                    "measurement_sample_rate": selected_input.get("measurement_sample_rate"),
+                    "supported_rates": selected_input.get("supported_rates", []),
+                },
+                "input_channels": job_input_channels,
+                "calibration": calibration_meta or {"filename": "", "applied": False},
+                "scope_note": MEASUREMENT_SCOPE_NOTE,
+                "measurement_scope": normalized_scope,
+                "result": None,
+                "error": None,
+            }
+            return {"job": job, "channel": normalized_channel}
+        except BaseException:
+            # A cancelled or failed preparation must not leave the slot
+            # reserved: the next start would otherwise be blocked forever.
+            self._release_measurement_start_slot()
+            raise
 
     def _freeze_measurement_job_target(self, job: dict[str, Any], measurement_bank: str,
                                        target: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -563,9 +562,37 @@ class MeasurementStore:
         self._job_runner._active_scope_exit = self.active_scope_exit
         self._job_runner._output_mask_apply = self.output_mask_apply
         self._job_runner._output_mask_clear = self.output_mask_clear
-        self._jobs[job_id] = job
-        self._persistence._persist_job(job)
-        self._job_runner.start(job_id, job, executor)
+        # Handover the start reservation to the concrete job atomically:
+        # the slot stays taken while the job becomes visible, so a
+        # concurrent start can never slip between release and insert.
+        with self._start_slot_lock:
+            if not self._start_slot_reserved:
+                active_job = self._find_active_or_cancelling_job()
+                if active_job is not None and str(active_job.get("id") or "") != job_id:
+                    active_status = active_job.get("status", "unknown")
+                    raise RuntimeError(
+                        f"Another measurement is still active ({active_job['id']}, status={active_status}). "
+                        "Wait for it to finish or cancel it first."
+                    )
+            self._jobs[job_id] = job
+            self._start_slot_reserved = False
+        try:
+            self._persistence._persist_job(job)
+            self._job_runner.start(job_id, job, executor)
+        except BaseException:
+            # No orphan job or reservation: a failed registration frees
+            # the slot for the next start.
+            with self._start_slot_lock:
+                if self._jobs.get(job_id) is job:
+                    self._jobs.pop(job_id, None)
+                self._start_slot_reserved = False
+            task = self._job_tasks.pop(job_id, None)
+            if task is not None and not task.done():
+                try:
+                    task.cancel()
+                except Exception:
+                    pass
+            raise
         return self.get_job(job_id)
 
     async def start_measurement(
@@ -622,41 +649,51 @@ class MeasurementStore:
             job_prefix="measurement-job-",
             channel=channel,
         )
-        job = setup["job"]
-        normalized_channel = setup["channel"]
-        normalized_role = str(measurement_role or "").strip().lower()
-        if normalized_role not in {"", "direct", "mlp", "secondary", "integration"}:
-            raise ValueError("measurement_role must be direct, mlp, secondary, or integration")
-        normalized_playback_gain = None
-        if playback_gain is not None:
-            try:
-                normalized_playback_gain = float(playback_gain)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("playback_gain must be a finite non-negative number") from exc
-            if not math.isfinite(normalized_playback_gain) or normalized_playback_gain < 0.0:
-                raise ValueError("playback_gain must be a finite non-negative number")
-        job.update({
-            "channel": normalized_channel,
-            "message": "Sweep queued.",
-            "playback_gain": normalized_playback_gain,
-            "measurement_role": normalized_role,
-            "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
-            "_skip_pre_sweep_diagnostics": bool(skip_pre_sweep_diagnostics),
-        })
-        job.update(self._freeze_measurement_job_target(job, measurement_bank, frozen_target))
-        job.update({f"_{key}": value for key, value in expected.items()})
-        if capture_evidence is not None:
-            capture_evidence._bind(job["id"])
-            try:
-                result = self._register_measurement_job(
-                    job, lambda current: self._execute_capture_job(current, capture_evidence=capture_evidence),
-                )
-            except BaseException:
-                capture_evidence._discard()
-                raise
-            capture_evidence._attach(self._job_tasks[job["id"]], job)
-            return result
-        return self._register_measurement_job(job, self._execute_capture_job)
+        # The start slot is reserved until registration: any failure here
+        # must release it, while a successful registration hands it over.
+        try:
+            job = setup["job"]
+            normalized_channel = setup["channel"]
+            normalized_role = str(measurement_role or "").strip().lower()
+            if normalized_role not in {"", "direct", "mlp", "secondary", "integration"}:
+                raise ValueError("measurement_role must be direct, mlp, secondary, or integration")
+            normalized_playback_gain = None
+            if playback_gain is not None:
+                try:
+                    normalized_playback_gain = float(playback_gain)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("playback_gain must be a finite non-negative number") from exc
+                if not math.isfinite(normalized_playback_gain) or normalized_playback_gain < 0.0:
+                    raise ValueError("playback_gain must be a finite non-negative number")
+            job.update({
+                "channel": normalized_channel,
+                "message": "Sweep queued.",
+                "playback_gain": normalized_playback_gain,
+                "measurement_role": normalized_role,
+                "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
+                "_skip_pre_sweep_diagnostics": bool(skip_pre_sweep_diagnostics),
+            })
+            job.update(self._freeze_measurement_job_target(job, measurement_bank, frozen_target))
+            job.update({f"_{key}": value for key, value in expected.items()})
+            if capture_evidence is not None:
+                capture_evidence._bind(job["id"])
+                try:
+                    result = self._register_measurement_job(
+                        job, lambda current: self._execute_capture_job(current, capture_evidence=capture_evidence),
+                    )
+                except BaseException:
+                    capture_evidence._discard()
+                    raise
+                capture_evidence._attach(self._job_tasks[job["id"]], job)
+                return result
+            return self._register_measurement_job(job, self._execute_capture_job)
+        except BaseException:
+            # _register_measurement_job already released the slot on both
+            # success (handover) and failure (cleanup); releasing again is
+            # a harmless no-op in those cases and required when validation
+            # before it failed.
+            self._release_measurement_start_slot()
+            raise
 
     async def start_lr_repeat_measurement(
         self,
@@ -688,17 +725,21 @@ class MeasurementStore:
             measurement_scope=measurement_scope,
             job_prefix="measurement-repeat-job-",
         )
-        job = setup["job"]
-        now = job["created_at"]
-        job.update({
-            "job_kind": "lr-repeat",
-            "repeat_count": normalized_repeat_count,
-            "base_name": str(base_name or "").strip() or f"L/R Repeat {now[:19].replace('T', ' ')}",
-            "channel": "stereo",
-            "message": "L/R repeat queued.",
-        })
-        job.update(self._freeze_repeat_job_target(job, measurement_bank))
-        return self._register_measurement_job(job, self._execute_lr_repeat_job)
+        try:
+            job = setup["job"]
+            now = job["created_at"]
+            job.update({
+                "job_kind": "lr-repeat",
+                "repeat_count": normalized_repeat_count,
+                "base_name": str(base_name or "").strip() or f"L/R Repeat {now[:19].replace('T', ' ')}",
+                "channel": "stereo",
+                "message": "L/R repeat queued.",
+            })
+            job.update(self._freeze_repeat_job_target(job, measurement_bank))
+            return self._register_measurement_job(job, self._execute_lr_repeat_job)
+        except BaseException:
+            self._release_measurement_start_slot()
+            raise
 
     @staticmethod
     def _resolve_capture_input(
@@ -801,7 +842,20 @@ class MeasurementStore:
             raise cancel_error
 
     def has_active_measurement_job(self) -> bool:
-        self._normalize_stale_jobs()
+        """Return whether the single-job slot is taken (active job or reservation).
+
+        A predicate for the 423/ownership guard: stale-job normalization may
+        persist, but a disk error there must not raise and break the actual
+        commit path with a 500. On unexpected normalization failure the
+        in-memory state decides.
+        """
+        try:
+            self._normalize_stale_jobs()
+        except Exception:
+            logger.exception("MEASUREMENT-CANCEL-DIAG stale job normalization failed")
+        with self._start_slot_lock:
+            if self._start_slot_reserved:
+                return True
         return any(
             str(job.get("status") or "") in {"queued", "running", "cancelling"}
             for job in self._jobs.values()
@@ -1299,6 +1353,52 @@ class MeasurementStore:
                 return job
         return None
 
+    def _is_start_slot_reserved(self) -> bool:
+        with self._start_slot_lock:
+            return bool(self._start_slot_reserved)
+
+    def _claim_measurement_start_slot(self) -> None:
+        """Reserve the single-job slot synchronously before the first await.
+
+        Normalizes stale jobs (best-effort, never raises for persist
+        errors), then atomically checks the active job plus the reservation
+        flag and reserves the slot. Exactly one concurrent start wins; the
+        loser gets the existing "Another measurement is still active" error.
+        Must run without any await between check and reservation.
+        """
+        try:
+            self._normalize_stale_jobs()
+        except Exception:
+            logger.exception("MEASUREMENT-CANCEL-DIAG stale job normalization failed")
+        with self._start_slot_lock:
+            if self._start_slot_reserved:
+                logger.warning(
+                    "MEASUREMENT-CANCEL-DIAG new job blocked: existing_job=starting status=queued",
+                )
+                raise RuntimeError(
+                    "Another measurement is still active (starting, status=queued). "
+                    "Wait for it to finish or cancel it first."
+                )
+            active_job = self._find_active_or_cancelling_job()
+            if active_job is not None:
+                active_id = active_job["id"]
+                active_status = active_job.get("status", "unknown")
+                logger.warning(
+                    "MEASUREMENT-CANCEL-DIAG new job blocked: existing_job=%s status=%s",
+                    active_id,
+                    active_status,
+                )
+                raise RuntimeError(
+                    f"Another measurement is still active ({active_id}, status={active_status}). "
+                    "Wait for it to finish or cancel it first."
+                )
+            self._start_slot_reserved = True
+
+    def _release_measurement_start_slot(self) -> None:
+        """Release a held start reservation (preparation failure path)."""
+        with self._start_slot_lock:
+            self._start_slot_reserved = False
+
     def _normalize_stale_jobs(self) -> None:
         """Promote non-terminal jobs without a live worker to a terminal state.
 
@@ -1306,6 +1406,10 @@ class MeasurementStore:
         further progress (e.g. a persisted record resurrected after a service
         restart, or a runner task that was lost).  Such jobs must not block
         future measurements forever; genuinely running jobs are untouched.
+
+        Persisting the promotion is best-effort: the in-memory state is
+        authoritative for the ownership guard, so a disk error must never
+        break the caller (notably the 423/output-commit predicate).
         """
         for job_id, job in list(self._jobs.items()):
             if str(job.get("status") or "") in TERMINAL_JOB_STATUSES:
@@ -1313,10 +1417,21 @@ class MeasurementStore:
             task = self._job_tasks.get(job_id)
             if task is not None and not task.done():
                 continue
-            self._promote_stale_job_to_terminal(job_id, job)
+            try:
+                self._promote_stale_job_to_terminal(job_id, job)
+            except Exception:
+                logger.exception(
+                    "MEASUREMENT-CANCEL-DIAG stale job normalization failed: job_id=%s",
+                    job_id,
+                )
 
     def _promote_stale_job_to_terminal(self, job_id: str, job: dict[str, Any]) -> None:
-        """Normalize a stale non-terminal job to cancelled and persist it."""
+        """Normalize a stale non-terminal job to cancelled and persist it.
+
+        The in-memory promotion always happens; a persist failure is logged
+        and swallowed so a predicate like ``has_active_measurement_job``
+        never turns a stale-disk problem into a 500 on the commit path.
+        """
         if self._is_terminal_job_status(job.get("status")):
             return
         previous_status = str(job.get("status") or "")
@@ -1326,7 +1441,15 @@ class MeasurementStore:
         job["message"] = "Measurement interrupted (no live worker)."
         job["result"] = None
         job["error"] = None
-        self._persistence._persist_job(job)
+        try:
+            self._persistence._persist_job(job)
+        except Exception:
+            logger.exception(
+                "MEASUREMENT-CANCEL-DIAG stale job persist failed, "
+                "keeping in-memory terminal state: job_id=%s",
+                job_id,
+            )
+            return
         logger.warning(
             "MEASUREMENT-CANCEL-DIAG stale job without live worker promoted to terminal state: "
             "job_id=%s previous_status=%s",
