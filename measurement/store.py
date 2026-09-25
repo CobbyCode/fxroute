@@ -2920,6 +2920,22 @@ def measurement_input_persistent_id(input_item: dict[str, Any]) -> str:
     return f"hardware:{'|'.join(hardware_parts)}" if hardware_parts else ""
 
 
+def persistent_id_node_name(persistent_id: str) -> str:
+    """Return the node-name component of a persistent id, or "" if it has none.
+
+    A persistent id is ``device-serial:<serial>|node-name:<name>`` when the
+    device serial was discovered and the bare ``node-name:<name>`` otherwise.
+    The node name is the stable part across PipeWire node renumbering, so it
+    is the identity a stored key can always be matched on.
+    """
+    text = str(persistent_id or "").strip()
+    if "|node-name:" in text:
+        return text.split("|node-name:", 1)[1].strip()
+    if text.startswith("node-name:"):
+        return text[len("node-name:"):].strip()
+    return ""
+
+
 def resolve_measurement_input_selection(
     inputs: list[dict[str, Any]],
     measure_settings: dict[str, Any],
@@ -2927,16 +2943,34 @@ def resolve_measurement_input_selection(
     persistent_id = str(measure_settings.get("selectedInputKey") or "").strip()
     legacy_id = str(measure_settings.get("selectedInputId") or "").strip()
     configured = bool(persistent_id or legacy_id)
+
+    def input_persistent_id(item: dict[str, Any]) -> str:
+        return str(item.get("persistent_id") or measurement_input_persistent_id(item))
+
+    def unique_match(predicate) -> dict[str, Any] | None:
+        matches = [item for item in inputs if predicate(item)]
+        return matches[0] if len(matches) == 1 else None
+
     selected = None
     if persistent_id:
-        matches = [
-            item for item in inputs
-            if str(item.get("persistent_id") or measurement_input_persistent_id(item)) == persistent_id
-        ]
-        selected = matches[0] if len(matches) == 1 else None
-    elif legacy_id:
-        selected = next((item for item in inputs if str(item.get("id") or "") == legacy_id), None)
-    elif inputs:
+        selected = unique_match(lambda item: input_persistent_id(item) == persistent_id)
+        if selected is None:
+            # Discovery derives the persistent id from per-source detail
+            # probes, and a failed or timed-out `wpctl inspect <device.id>`
+            # drops device_serial. The same microphone then shows up under
+            # the bare node-name id while the stored key still carries the
+            # device-serial prefix, which used to discard a selection that
+            # was still perfectly valid. Match on the stable node name.
+            stored_node_name = persistent_id_node_name(persistent_id)
+            if stored_node_name:
+                selected = unique_match(
+                    lambda item: persistent_id_node_name(input_persistent_id(item)) == stored_node_name
+                )
+    if selected is None and legacy_id:
+        # A key that no longer matches must not mask a legacy id that still
+        # names a present source.
+        selected = unique_match(lambda item: str(item.get("id") or "") == legacy_id)
+    if selected is None and not configured and inputs:
         selected = inputs[0]
 
     resolved_persistent_id = (

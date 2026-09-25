@@ -195,6 +195,43 @@ class MeasurementInputPersistenceTests(unittest.TestCase):
         self.assertEqual(selection["persistent_id"], stable_id)
         self.assertFalse(selection["unavailable"])
 
+    def test_saved_selection_survives_discovery_without_device_serial(self):
+        # A failed/timeout `wpctl inspect <device.id>` drops device_serial, so
+        # discovery reports the same microphone under the bare node-name id
+        # while the stored key still carries the device-serial prefix.
+        stored_key = measurement_input_persistent_id(self._umik("pw-source-54"))
+        discovered = {
+            "id": "pw-source-111",
+            "node_name": "alsa_input.usb-miniDSP_UMIK-1_123.analog-stereo",
+        }
+        discovered["persistent_id"] = measurement_input_persistent_id(discovered)
+        self.assertNotEqual(discovered["persistent_id"], stored_key)
+
+        selection = resolve_measurement_input_selection(
+            [discovered],
+            {"selectedInputId": "pw-source-111", "selectedInputKey": stored_key},
+        )
+
+        self.assertEqual(selection["input_id"], "pw-source-111")
+        self.assertFalse(selection["unavailable"])
+        # The resolved key is the current shape, so the frontend auto-heal
+        # persists it and the selection converges instead of flapping.
+        self.assertEqual(selection["persistent_id"], discovered["persistent_id"])
+
+    def test_stale_saved_key_still_falls_back_to_present_legacy_id(self):
+        # The stored key names hardware that is gone, but the legacy id still
+        # resolves to a present source: that source wins over "unavailable".
+        present = self._umik("pw-source-111")
+        present["persistent_id"] = measurement_input_persistent_id(present)
+
+        selection = resolve_measurement_input_selection(
+            [present],
+            {"selectedInputId": "pw-source-111", "selectedInputKey": "device-serial:REMOVED-999"},
+        )
+
+        self.assertEqual(selection["input_id"], "pw-source-111")
+        self.assertFalse(selection["unavailable"])
+
     def test_missing_saved_source_never_falls_back_to_first_input(self):
         other = {
             "id": "pw-source-10",
