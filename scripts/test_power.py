@@ -31,10 +31,12 @@ The behaviour covered here:
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import sys
 import unittest
 from typing import List, Tuple
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -438,6 +440,98 @@ class ParsingTests(unittest.TestCase):
         )
         self.assertEqual(name, "org.freedesktop.DBus.Error.AccessDenied")
         self.assertEqual(msg, "nope")
+
+
+class DefaultRunnerLifecycleTests(unittest.TestCase):
+    """Real-subprocess lifecycle tests for ``power._default_runner``.
+
+    These tests spawn ``sleep`` / the interpreter itself -- never
+    dbus-send or the system bus -- to pin the runner contract:
+
+    * the success path returns captured streams untouched,
+    * the timeout path kills and reaps the child,
+    * asyncio cancellation kills and reaps the child before the
+      ``CancelledError`` propagates, leaving no process behind,
+    * a cancelled suspend call surfaces the ``CancelledError`` instead
+      of swallowing it into a result.
+    """
+
+    @staticmethod
+    def _spawning_spy(procs):
+        real_create = asyncio.create_subprocess_exec
+
+        async def spy(*args, **kwargs):
+            proc = await real_create(*args, **kwargs)
+            procs.append(proc)
+            return proc
+
+        return spy
+
+    def test_success_path_returns_captured_streams(self):
+        result = _run(power._default_runner(
+            sys.executable, "-c", "print('hello-stdout', flush=True)",
+            timeout=10.0,
+        ))
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("hello-stdout", result.stdout)
+
+    def test_timeout_path_kills_and_reaps_child(self):
+        procs = []
+
+        async def scenario():
+            with mock.patch.object(
+                asyncio, "create_subprocess_exec", self._spawning_spy(procs)
+            ):
+                return await power._default_runner("sleep", "30", timeout=0.2)
+
+        result = _run(scenario())
+        self.assertEqual(result.returncode, -1)
+        self.assertIn("timed out", result.stderr)
+        self.assertEqual(len(procs), 1)
+        self.assertIsNotNone(procs[0].returncode)
+
+    def test_cancellation_kills_and_reaps_child(self):
+        procs = []
+
+        async def scenario():
+            with mock.patch.object(
+                asyncio, "create_subprocess_exec", self._spawning_spy(procs)
+            ):
+                task = asyncio.create_task(
+                    power._default_runner("sleep", "60", timeout=30.0)
+                )
+                for _ in range(200):
+                    if procs:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertTrue(procs, "child was never spawned")
+                proc = procs[0]
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                return proc
+
+        proc = _run(scenario())
+        # Reaped before the CancelledError propagated ...
+        self.assertIsNotNone(proc.returncode)
+        # ... and no process with the child pid is left behind.
+        with self.assertRaises(ProcessLookupError):
+            os.kill(proc.pid, 0)
+
+    def test_backend_request_propagates_cancellation(self):
+        async def hanging_runner(*args, **kwargs):
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
+
+        async def scenario():
+            backend = power.PowerBackend(runner=hanging_runner)
+            task = asyncio.create_task(backend.request_suspend())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        _run(scenario())
 
 
 if __name__ == "__main__":

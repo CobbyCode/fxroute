@@ -142,7 +142,9 @@ async def _default_runner(
     list cannot be reinterpreted as a shell command, and so there is no
     quoting context to manipulate.  A TIMEOUT/SIGKILL terminates the
     entire process group so a runaway dbus-send cannot leak past the
-    configured bound.
+    configured bound.  asyncio cancellation is handled the same way: the
+    child is killed and reaped before the ``CancelledError`` propagates,
+    so a cancelled caller never leaves the process behind.
     """
 
     proc = await asyncio.create_subprocess_exec(
@@ -156,10 +158,7 @@ async def _default_runner(
             proc.communicate(), timeout=timeout
         )
     except asyncio.TimeoutError:
-        try:
-            os.killpg(proc.pid, 9)
-        except ProcessLookupError:
-            pass
+        _kill_process_group(proc)
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(), timeout=2.0
@@ -172,11 +171,35 @@ async def _default_runner(
             stderr=stderr_b.decode(errors="replace")
             + f"\ndbus-send timed out after {timeout:.0f}s",
         )
+    except asyncio.CancelledError:
+        _kill_process_group(proc)
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        except Exception:
+            # Reap failed (or was cancelled again): the SIGKILL above is
+            # already on its way.  CancelledError derives from
+            # BaseException, so it is intentionally not swallowed here.
+            pass
+        raise
     return _SubprocessResult(
         returncode=proc.returncode,
         stdout=stdout_b.decode(errors="replace"),
         stderr=stderr_b.decode(errors="replace"),
     )
+
+
+def _kill_process_group(proc) -> None:
+    """Best-effort SIGKILL of a runner child's process group.
+
+    Children start with ``start_new_session=True``, so the group holds
+    only the child itself.  A missing process just means it already
+    exited; anything else is the caller's problem, not the killer's.
+    """
+
+    try:
+        os.killpg(proc.pid, 9)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 # ---------------------------------------------------------------------------
