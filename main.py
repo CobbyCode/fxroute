@@ -1573,7 +1573,9 @@ def _library_scanner_for(root: Path, library_id: str = "local") -> LibraryScanne
             config_dir / f"library-metadata-covers-{cache_key}",
         )
         scanner = LibraryScanner(root, metadata_store=store)
-    scanner.set_scan_published_hook(_prune_queue_after_scan)
+    hook_setter = getattr(scanner, "set_scan_published_hook", None)
+    if callable(hook_setter):
+        hook_setter(_prune_queue_after_scan)
     return scanner
 
 
