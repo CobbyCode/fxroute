@@ -275,7 +275,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.kill_calls, 1)
         self.assertEqual(process.wait_calls, 2)
 
-    def test_restore_failure_does_not_skip_other_resources(self):
+    def test_restore_failure_keeps_state_for_retry(self):
         class Manager:
             temporary_runtime_transition_callback = object()
 
@@ -310,10 +310,135 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        spl_calibration._restore_spl_calibration_audio(operation)
+        with self.assertRaisesRegex(RuntimeError, "native transition failed"):
+            spl_calibration._restore_spl_calibration_audio(operation)
 
         self.assertEqual(volume_writes, [37])
+        self.assertIsNotNone(operation.restore_state)
+
+    def test_volume_restore_failure_defers_gain_bearing_dsp_restore(self):
+        class Manager:
+            def __init__(self):
+                self.transitions = 0
+
+            def load_global_extras(self):
+                return {"loudness": {"enabled": True}}
+
+            def apply_temporary_effects_runtime(self, _previous, _candidate):
+                self.transitions += 1
+
+        manager = Manager()
+        main.dsp_manager = manager
+        volume = [100.0]
+        fail_volume = [True]
+        main.get_output_volume = lambda: volume[0]
+
+        def set_volume(value):
+            if fail_volume[0]:
+                raise RuntimeError("volume unavailable")
+            volume[0] = value
+
+        main.set_output_volume = set_volume
+        operation = spl_calibration._SplCalibrationOperation(
+            id="volume-restore", kind="manual-noise", session_job_id="spl-calibration:volume-restore",
+            restore_state={
+                "system_volume_percent": 37.0,
+                "native_effects_extras": {"loudness": {"enabled": True}},
+                "neutral_effects_extras": {"loudness": {"enabled": False}},
+            },
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "volume unavailable"):
+            spl_calibration._restore_spl_calibration_audio(operation)
+        self.assertEqual(manager.transitions, 0)
+        self.assertIsNotNone(operation.restore_state)
+
+        fail_volume[0] = False
+        spl_calibration._restore_spl_calibration_audio(operation)
+        self.assertEqual(volume, [37.0])
+        self.assertEqual(manager.transitions, 1)
         self.assertIsNone(operation.restore_state)
+
+    async def test_dsp_restore_failure_blocks_new_operation_until_retry_succeeds(self):
+        class Manager:
+            def __init__(self):
+                self.fail_restore = True
+                self.restores = 0
+
+            def load_global_extras(self):
+                return {"autogain": {"enabled": True}, "loudness": {"enabled": True}}
+
+            def apply_temporary_effects_runtime(self, _previous, _candidate):
+                self.restores += 1
+                if self.fail_restore:
+                    raise RuntimeError("DSP restore unavailable")
+
+        manager = Manager()
+        main.dsp_manager = manager
+        volume = [100.0]
+        main.get_output_volume = lambda: volume[0]
+        main.set_output_volume = lambda value: volume.__setitem__(0, value)
+        operation = await spl_calibration._acquire_operation("manual-noise")
+        operation.restore_state = {
+            "system_volume_percent": 37.0,
+            "native_effects_extras": {"autogain": {"enabled": True}},
+            "neutral_effects_extras": {"autogain": {"enabled": False}},
+        }
+        session = FakeSession()
+        operation.session = session
+        operation.registration_attempted = True
+        session.active_ids.add(operation.session_job_id)
+
+        with self.assertRaisesRegex(RuntimeError, "cleanup did not release"):
+            await spl_calibration._cleanup_operation(operation)
+
+        self.assertTrue(operation.completed.is_set())
+        self.assertIs(spl_calibration._runtime.operation, operation)
+        self.assertIsNotNone(operation.restore_state)
+        self.assertEqual(volume, [37.0])
+        self.assertEqual(session.active_ids, {operation.session_job_id})
+        done = asyncio.create_task(asyncio.sleep(0))
+        await done
+        operation.worker_task = done
+        with self.assertRaises(Exception) as raised:
+            await spl_calibration._acquire_operation("automatic")
+        self.assertEqual(getattr(raised.exception, "status_code", None), 409)
+
+        manager.fail_restore = False
+        await spl_calibration._stop_active_operation()
+        self.assertEqual(manager.restores, 2)
+        self.assertIsNone(operation.restore_state)
+        self.assertEqual(session.active_ids, set())
+        self.assertIsNone(spl_calibration._runtime.operation)
+        successor = await spl_calibration._acquire_operation("automatic")
+        await spl_calibration._cleanup_operation(successor)
+
+    async def test_manual_noise_watcher_exception_is_logged(self):
+        class FailingProcess:
+            def wait(self):
+                raise RuntimeError("noise wait failed")
+
+            def poll(self):
+                return 0
+
+        started = []
+
+        def start(operation):
+            operation.noise_process = FailingProcess()
+            started.append(operation)
+            return {"status": "playing"}
+
+        with mock.patch.object(spl_calibration, "_register_operation", mock.AsyncMock()), \
+                mock.patch.object(spl_calibration, "_start_spl_calibration_noise", side_effect=start), \
+                self.assertLogs(spl_calibration.logger, level="ERROR") as logged:
+            await spl_calibration.set_spl_calibration_noise(FakeRequest())
+            operation = started[0]
+            await asyncio.wait_for(operation.completed.wait(), timeout=2)
+            await asyncio.gather(operation.worker_task, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        self.assertTrue(operation.worker_task.done())
+        self.assertTrue(any("noise wait failed" in message for message in logged.output))
 
     def test_cleanup_preserves_newer_external_gain_and_volume(self):
         class Manager:

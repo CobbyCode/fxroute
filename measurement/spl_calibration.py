@@ -663,7 +663,6 @@ def _link_spl_noise_to_dsp_sink(operation: _SplCalibrationOperation) -> None:
     """
     noise_node = _spl_noise_node_name(operation)
     ports = _spl_noise_link_ports(noise_node)
-    links: list[tuple[str, str]] = []
     for source, target in (
         (ports["left"], f"{SPL_NOISE_SINK_NAME}:playback_FL"),
         (ports["right"], f"{SPL_NOISE_SINK_NAME}:playback_FR"),
@@ -681,8 +680,10 @@ def _link_spl_noise_to_dsp_sink(operation: _SplCalibrationOperation) -> None:
                 f"Could not link SPL calibration noise to the DSP chain "
                 f"({source} -> {target}): {(result.stderr or result.stdout).strip()}"
             )
-        links.append((source, target))
-    operation.noise_links = links
+        if result.returncode == 0:
+            if operation.noise_links is None:
+                operation.noise_links = []
+            operation.noise_links.append((source, target))
 
 
 def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
@@ -691,8 +692,6 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
     restore = operation.restore_state
     if not restore:
         return
-    operation.restore_state = None
-
     # Restore attenuation before re-enabling gain-bearing plugins.
     try:
         current_volume = dependencies.get_output_volume()
@@ -709,17 +708,19 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
             )
     except Exception:
         logger.exception("Failed to restore system volume after SPL calibration")
-
-    if dsp_manager is None:
-        return
+        raise
 
     if restore.get("native_effects_extras") is not None:
         try:
+            if dsp_manager is None:
+                raise RuntimeError("Native DSP unavailable during SPL calibration restore")
             current_extras = dsp_manager.load_global_extras()
             dsp_manager.apply_temporary_effects_runtime(
                 restore["neutral_effects_extras"], current_extras)
         except Exception:
             logger.exception("Failed to restore native DSP after SPL calibration")
+            raise
+    operation.restore_state = None
 
 
 def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[str, Any]:
@@ -818,6 +819,8 @@ def _operation_owns_no_resources(operation: _SplCalibrationOperation) -> bool:
     """
     if not operation.completed.is_set():
         return False
+    if operation.restore_state is not None or operation.noise_links:
+        return False
     worker_task = operation.worker_task
     if worker_task is not None and not worker_task.done():
         return False
@@ -915,9 +918,10 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
         operation.completed.clear()
         cleanup_failed = False
         if operation.noise_links:
+            remaining_links = []
             for source, target in operation.noise_links:
                 try:
-                    await asyncio.to_thread(
+                    result = await asyncio.to_thread(
                         subprocess.run,
                         ["pw-link", "-d", source, target],
                         capture_output=True,
@@ -925,9 +929,15 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
                         timeout=3,
                         check=False,
                     )
+                    if result.returncode != 0 and "does not exist" not in (result.stderr or "").lower():
+                        logger.error("Failed to remove SPL calibration noise link: %s", result.stderr)
+                        remaining_links.append((source, target))
+                        cleanup_failed = True
                 except BaseException:
                     logger.exception("Failed to remove SPL calibration noise link")
-            operation.noise_links = None
+                    remaining_links.append((source, target))
+                    cleanup_failed = True
+            operation.noise_links = remaining_links or None
         for label, process in (
             ("capture", operation.recorder),
             ("noise", operation.noise_process),
@@ -947,8 +957,9 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
             await asyncio.to_thread(_restore_spl_calibration_audio, operation)
         except BaseException:
             logger.exception("Failed to restore SPL calibration audio state")
+            cleanup_failed = True
 
-        if operation.registration_attempted:
+        if operation.registration_attempted and operation.restore_state is None:
             released = operation.session is None
             for _ in range(2):
                 if released:
@@ -1056,6 +1067,15 @@ async def _watch_manual_noise(operation: _SplCalibrationOperation) -> None:
         await _cleanup_operation_shielded(operation)
 
 
+def _log_manual_noise_watcher_result(task: asyncio.Task[Any]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        logger.info("SPL calibration noise watcher was cancelled")
+    except Exception:
+        logger.exception("SPL calibration noise watcher failed")
+
+
 async def _stop_active_operation() -> None:
     async with _operation_lock():
         operation = _runtime.operation
@@ -1123,6 +1143,7 @@ async def set_spl_calibration_noise(request: Request):
             _watch_manual_noise(operation),
             name=f"spl-noise-watch:{operation.id}",
         )
+        watcher.add_done_callback(_log_manual_noise_watcher_result)
         operation.worker_task = watcher
         return result
     except MeasurementEntryInvalidated:

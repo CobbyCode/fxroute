@@ -9,6 +9,7 @@ Headroom changes.  The noise node must be started with autoconnect disabled
 and linked explicitly to fxroute_dsp_sink playback ports.
 """
 
+import asyncio
 import pathlib
 import subprocess
 import sys
@@ -212,6 +213,44 @@ class SplNoiseRoutingTests(unittest.TestCase):
         self.assertEqual(terminated, [True])
         self.assertIsNone(op.noise_links)
 
+    def test_second_link_failure_leaves_first_owned_for_cleanup(self):
+        op = operation()
+        noise_node = "fxroute-spl-noise-1234abcd"
+        removed = []
+
+        class Process(FakePwPlayProcess):
+            def __init__(self):
+                self.returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                self.returncode = 0
+                return 0
+
+        def run_command(command, **_kwargs):
+            if command[:2] == ["pw-link", "-o"]:
+                return FakeRunResult(stdout=f"{noise_node}:output_FL\n{noise_node}:output_FR\n")
+            if command[:2] == ["pw-link", "-d"]:
+                removed.append(tuple(command[2:]))
+                return FakeRunResult()
+            if command[:1] == ["pw-link"] and command[1].endswith("output_FR"):
+                return FakeRunResult(returncode=1, stderr="Permission denied")
+            return FakeRunResult()
+
+        with patch("tempfile.gettempdir", return_value=self.tmpdir.name), \
+                patch.object(spl_calibration.subprocess, "Popen", side_effect=lambda *_a, **_kw: Process()), \
+                patch.object(spl_calibration.subprocess, "run", side_effect=run_command):
+            with self.assertRaisesRegex(RuntimeError, "Could not link SPL calibration noise"):
+                _start_spl_calibration_noise(op)
+            asyncio.run(spl_calibration._cleanup_operation(op))
+
+        self.assertEqual(removed, [
+            (f"{noise_node}:output_FL", f"{SPL_NOISE_SINK_NAME}:playback_FL"),
+        ])
+        self.assertIsNone(op.noise_links)
+
 
 class SplNoiseCleanupTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -262,6 +301,30 @@ class SplNoiseCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(spl_calibration.subprocess, "run", side_effect=run_command):
             await spl_calibration._cleanup_operation(op)
+        self.assertIsNone(op.noise_links)
+
+    async def test_failed_link_removal_remains_owned_for_retry(self):
+        op = operation()
+        previous_operation = spl_calibration._runtime.operation
+        spl_calibration._runtime.operation = op
+        self.addCleanup(setattr, spl_calibration._runtime, "operation", previous_operation)
+        link = ("fxroute-spl-noise-1234abcd:output_FL", f"{SPL_NOISE_SINK_NAME}:playback_FL")
+        op.noise_links = [link]
+        attempts = []
+
+        def run_command(command, **_kwargs):
+            attempts.append(tuple(command))
+            if len(attempts) == 1:
+                return FakeRunResult(returncode=1, stderr="Permission denied")
+            return FakeRunResult()
+
+        with patch.object(spl_calibration.subprocess, "run", side_effect=run_command):
+            with self.assertRaisesRegex(RuntimeError, "cleanup did not release"):
+                await spl_calibration._cleanup_operation(op)
+            self.assertEqual(op.noise_links, [link])
+            await spl_calibration._cleanup_operation(op)
+
+        self.assertEqual(len(attempts), 2)
         self.assertIsNone(op.noise_links)
 
 
