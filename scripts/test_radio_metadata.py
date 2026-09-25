@@ -16,6 +16,7 @@ from radio.metadata import (
     RadioMetadataService, parse_fip, parse_kexp, parse_radio_paradise, parse_somafm,
 )
 import safe_http
+import radio.stations as stations
 
 
 NOW = 1_785_650_000.0
@@ -142,6 +143,31 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     def test_provider_mapping_does_not_use_display_name(self):
         self.assertIsNone(RadioMetadataService.provider_for("my-radio-paradise-copy", "https://example.test/radio"))
         self.assertEqual(RadioMetadataService.provider_for("custom", "https://ice5.somafm.com/lush-128-aac")[0], "soma")
+
+    def test_somafm_domain_and_subdomain_not_lookalike(self):
+        for url in ("https://somafm.com/lush130.pls", "https://Ice5.SomaFM.Com:443/lush-128-aac"):
+            with self.subTest(url=url):
+                self.assertEqual(stations._extract_somafm_slug("", url), "lush")
+                self.assertEqual(RadioMetadataService.provider_for("custom", url), ("soma", "lush"))
+        for url in (
+            "https://somafm.com.evil.example/lush130.pls",
+            "https://evil-somafm.com/lush130.pls",
+            "https://somafm.com@evil.example/lush130.pls",
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(stations._extract_somafm_slug("", url))
+                self.assertIsNone(stations._resolve_somafm_url(url))
+                self.assertIsNone(RadioMetadataService.provider_for("custom", url))
+                self.assertIsNone(stations._extract_somafm_slug("Groove Salad", url))
+                self.assertIsNone(RadioMetadataService.provider_for("groovesalad", url))
+
+    def test_somafm_playlist_resolution_accepts_real_host(self):
+        response = MagicMock(ok=True, text="[playlist]\nFile1=https://ice5.somafm.com/lush-128-aac")
+        with patch.object(stations, "safe_get", return_value=response):
+            self.assertEqual(
+                stations._resolve_somafm_url("https://api.somafm.com/lush130.pls"),
+                "https://ice5.somafm.com/lush-128-aac",
+            )
 
 
 if __name__ == "__main__":

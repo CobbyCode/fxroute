@@ -8,7 +8,7 @@ lifecycle of scripts/update_fxroute.sh (own session, exactly one
 communicate() drain, TERM -> grace -> group SIGKILL escalation, identical
 cleanup on timeout and on caller cancellation, timeout reported through
 the established result shape), the exclusive update-operation guard (a
-second check/update/restore is rejected with HTTP 409 and the guard is
+    second check/update/restore/provider admin request is rejected with HTTP 409 and the guard is
 released on success, timeout, cancellation and ordinary exceptions), the
 bounded deferred FXRoute service restart (systemd --user --no-block
 enqueue, bounded systemctl client, timeout only logged) and the pure
@@ -27,6 +27,7 @@ be imported cheaply are injected through :class:`SystemUpdateDeps`
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -136,6 +137,7 @@ async def run_update_script(
 
 
 _update_operation_lock: asyncio.Lock | None = None
+_restart_pending = False
 
 
 def get_update_operation_lock() -> asyncio.Lock:
@@ -145,34 +147,52 @@ def get_update_operation_lock() -> asyncio.Lock:
     return _update_operation_lock
 
 
+@asynccontextmanager
+async def maintenance_operation():
+    """Reject overlapping update and provider maintenance without queuing."""
+    lock = get_update_operation_lock()
+    if lock.locked() or _restart_pending:
+        raise HTTPException(status_code=409, detail="A maintenance operation is already in progress")
+    async with lock:
+        yield
+
+
+def reserve_deferred_restart() -> None:
+    """Called while the maintenance guard is held, before scheduling a restart."""
+    global _restart_pending
+    _restart_pending = True
+
+
+def finish_deferred_restart() -> None:
+    global _restart_pending
+    _restart_pending = False
+
+
 async def run_update_operation(
     timeout: float,
     *args: str,
     script_path: Path,
     terminate_grace_seconds: float,
     deps: SystemUpdateDeps,
+    on_result: Callable[[dict], None] | None = None,
 ) -> dict:
-    """Run an update-script invocation under the exclusive update guard.
+    """Run an update-script invocation under the shared maintenance guard.
 
-    Only one update/check/restore may use update_fxroute.sh at a time; a
-    second operation is rejected immediately with HTTP 409 instead of
-    silently waiting behind the first one.  The guard is released in a
-    finally, so success, timeout, cancellation and ordinary exceptions all
-    free it again.
+    Update/check/restore and provider admin requests never overlap. The
+    result callback runs while guarded so the caller can reserve the guard
+    for a deferred restart without a race window.
     """
-    lock = get_update_operation_lock()
-    if lock.locked():
-        raise HTTPException(
-            status_code=409, detail="An update operation is already in progress"
-        )
-    async with lock:
-        return await run_update_script(
+    async with maintenance_operation():
+        result = await run_update_script(
             script_path,
             timeout,
             *args,
             terminate_grace_seconds=terminate_grace_seconds,
             deps=deps,
         )
+        if on_result is not None:
+            on_result(result)
+        return result
 
 
 async def restart_service_after_response(

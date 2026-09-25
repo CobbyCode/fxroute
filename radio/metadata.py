@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from safe_http import RADIO_METADATA_FETCH_MAX_BYTES, safe_get
+from radio.domains import is_somafm_url
 
 
 RP_CHANNELS = {"rp-main": 0, "rp-mellow": 1, "rp-rock": 2, "rp-global": 3}
@@ -172,7 +173,7 @@ class RadioMetadataService:
             return "kexp", None
         if sid in {"live", "defcon"}:
             return None
-        if "somafm.com" in url or sid in {"groovesalad", "dronezone", "secretagent"}:
+        if is_somafm_url(url) or (not url and sid in {"groovesalad", "dronezone", "secretagent"}):
             match = re.search(r"/(?:songs/)?([a-z0-9]+?)(?:-128-aac|130\.pls|\.json)(?:[/?]|$)", url)
             return "soma", match.group(1) if match else sid
         return None

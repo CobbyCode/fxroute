@@ -159,7 +159,7 @@ def _get_update_operation_lock() -> asyncio.Lock:
     return update_lifecycle.get_update_operation_lock()
 
 
-async def _run_update_operation(timeout: float, *args: str) -> dict:
+async def _run_update_operation(timeout: float, *args: str, on_result=None) -> dict:
     """Thin wrapper: exclusive update guard lives in system_update (REFACTOR-012)."""
     return await update_lifecycle.run_update_operation(
         timeout,
@@ -167,17 +167,21 @@ async def _run_update_operation(timeout: float, *args: str) -> dict:
         script_path=UPDATE_SCRIPT,
         terminate_grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS,
         deps=_make_system_update_deps(),
+        on_result=on_result,
     )
 
 
 async def _restart_fxroute_service_after_response(service_name: str) -> None:
     """Thin wrapper: deferred service restart lives in system_update (REFACTOR-012)."""
-    await update_lifecycle.restart_service_after_response(
-        service_name,
-        restart_timeout_seconds=_SERVICE_RESTART_TIMEOUT_SECONDS,
-        restart_terminate_grace_seconds=_SERVICE_RESTART_TERMINATE_GRACE_SECONDS,
-        deps=_make_system_update_deps(),
-    )
+    try:
+        await update_lifecycle.restart_service_after_response(
+            service_name,
+            restart_timeout_seconds=_SERVICE_RESTART_TIMEOUT_SECONDS,
+            restart_terminate_grace_seconds=_SERVICE_RESTART_TERMINATE_GRACE_SECONDS,
+            deps=_make_system_update_deps(),
+        )
+    finally:
+        update_lifecycle.finish_deferred_restart()
 
 
 def _measurement_blocks_playback_rate(expected_rate: Optional[int]) -> Optional[int]:
@@ -3913,16 +3917,23 @@ async def _system_update_or_restore(request: Request, *script_args: str) -> dict
         raise HTTPException(status_code=403, detail="cross-site request rejected")
     restore = "--restore" in script_args
     service_name = _configured_service_name()
-    result = await _run_update_operation(_UPDATE_APPLY_TIMEOUT_SECONDS, *script_args)
-    ok = result["returncode"] == 0
-    stdout = result.get("stdout", "")
-    update_applied = update_lifecycle.should_schedule_restart(
-        returncode=result["returncode"], stdout=stdout, restore=restore
-    )
-    if update_applied:
-        _create_lifecycle_background_task(
-            _restart_fxroute_service_after_response(service_name), name="service-restart"
+    update_applied = False
+
+    def schedule_restart(result: dict) -> None:
+        nonlocal update_applied
+        update_applied = update_lifecycle.should_schedule_restart(
+            returncode=result["returncode"], stdout=result.get("stdout", ""), restore=restore
         )
+        if update_applied:
+            _create_lifecycle_background_task(
+                _restart_fxroute_service_after_response(service_name), name="service-restart"
+            )
+            update_lifecycle.reserve_deferred_restart()
+
+    result = await _run_update_operation(
+        _UPDATE_APPLY_TIMEOUT_SECONDS, *script_args, on_result=schedule_restart
+    )
+    ok = result["returncode"] == 0
     return {
         "ok": ok,
         "installed_version": _read_version_file(),

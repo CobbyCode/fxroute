@@ -20,6 +20,7 @@ from safe_http import (
 )
 
 import requests
+from radio.domains import is_somafm_url
 
 logger = logging.getLogger(__name__)
 
@@ -388,8 +389,7 @@ def _extract_somafm_slug(name: str, input_url: str, stream_url: Optional[str] = 
     candidates = [input_url or "", stream_url or ""]
     for value in candidates:
         parsed = urlparse(value)
-        host = (parsed.netloc or "").lower()
-        if "somafm.com" not in host:
+        if not is_somafm_url(value):
             continue
 
         path = parsed.path.strip("/")
@@ -413,7 +413,9 @@ def _extract_somafm_slug(name: str, input_url: str, stream_url: Optional[str] = 
             if candidate and candidate not in {"logos", "img3", "img", "channels", "banner"}:
                 return candidate
 
-    return SOMAFM_NAME_TO_SLUG.get(name.strip().lower())
+    if not any(candidates):
+        return SOMAFM_NAME_TO_SLUG.get(name.strip().lower())
+    return None
 
 
 def _existing_station_art_path(slug: str) -> Optional[Path]:
@@ -516,7 +518,7 @@ def _parse_m3u(text: str) -> Optional[str]:
 
 def _resolve_somafm_url(url: str) -> Optional[str]:
     parsed = urlparse(url)
-    if "somafm.com" not in parsed.netloc:
+    if not is_somafm_url(url):
         return None
 
     path = parsed.path.strip("/")

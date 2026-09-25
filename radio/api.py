@@ -44,6 +44,7 @@ RADIO_BROWSER_RETRY_DELAY_SECONDS = 0.3
 RADIO_BROWSER_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 RADIO_BROWSER_RESULT_LIMIT = 30
 RADIO_BROWSER_QUERY_LIMIT = 12
+STATION_IMPORT_MAX_ITEMS = 5
 router = APIRouter()
 
 # App-wide ownership for station store mutations (stations.json writes,
@@ -455,4 +456,8 @@ def _import_stations_sync(items: list[StationImportItem]) -> dict:
 
 @router.post("/api/stations/import")
 async def import_stations(items: list[StationImportItem]):
+    if len(items) > STATION_IMPORT_MAX_ITEMS:
+        raise HTTPException(
+            status_code=413, detail=f"Station import accepts at most {STATION_IMPORT_MAX_ITEMS} entries"
+        )
     return await _run_locked_station_worker(_import_stations_sync, items)

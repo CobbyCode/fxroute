@@ -303,8 +303,11 @@ class ServiceRestartLifecycleTests(unittest.IsolatedAsyncioTestCase):
         }
         captured: dict = {}
 
-        async def fake_update(timeout: float, *args: str) -> dict:
-            return dict(payload)
+        async def fake_update(timeout: float, *args: str, on_result=None) -> dict:
+            result = dict(payload)
+            if on_result:
+                on_result(result)
+            return result
 
         with patch.object(
             main.asyncio, "create_subprocess_exec",
@@ -342,8 +345,11 @@ class ServiceRestartLifecycleTests(unittest.IsolatedAsyncioTestCase):
         payload = {"returncode": 0, "stdout": "", "stderr": ""}
         captured: dict = {}
 
-        async def fake_update(timeout: float, *args: str) -> dict:
-            return dict(payload)
+        async def fake_update(timeout: float, *args: str, on_result=None) -> dict:
+            result = dict(payload)
+            if on_result:
+                on_result(result)
+            return result
 
         with patch.object(
             main.asyncio, "create_subprocess_exec",
@@ -384,8 +390,11 @@ class ServiceRestartLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "stderr": "git fetch failed",
         }
 
-        async def fake_update(timeout: float, *args: str) -> dict:
-            return dict(payload)
+        async def fake_update(timeout: float, *args: str, on_result=None) -> dict:
+            result = dict(payload)
+            if on_result:
+                on_result(result)
+            return result
 
         with patch.object(main, "_run_update_operation", new=fake_update), \
                 patch.object(main, "_read_version_file", return_value="9.9.9"), \

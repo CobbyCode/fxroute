@@ -14,6 +14,7 @@ from __future__ import annotations
 import pathlib
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -90,6 +91,11 @@ class _FakeProvider:
     async def finish_pkce_login(self, redirect_url):
         return {"authenticated": True, "is_pkce": True}
 
+    async def finish_login(self, redirect_url):
+        if not redirect_url:
+            raise ValueError("redirect URL required")
+        return {"authenticated": True}
+
     async def logout(self):
         return None
 
@@ -122,6 +128,54 @@ class StreamingApiDispatchTests(unittest.TestCase):
 
     def _patch(self, provider):
         return mock.patch.object(streaming_module, "get_provider", return_value=provider)
+
+    def test_transport_and_auth_finish_require_json_objects(self):
+        routes = (
+            "/api/streaming/spotify/seek", "/api/streaming/qobuz/seek",
+            "/api/streaming/tidal/seek", "/api/streaming/spotify/volume",
+            "/api/streaming/qobuz/volume", "/api/streaming/tidal/volume",
+            "/api/streaming/tidal/auth/pkce/finish",
+            "/api/streaming/qobuz/auth/login/finish",
+        )
+        with self._patch(_NoTransportProvider()):
+            for route in routes:
+                for payload in ("[]", "123", "null", "{broken"):
+                    with self.subTest(route=route, payload=payload):
+                        resp = self.client.post(route, content=payload, headers={"Content-Type": "application/json"})
+                        self.assertEqual(resp.status_code, 400, resp.text)
+
+    def test_empty_and_valid_transport_objects_keep_existing_behavior(self):
+        with self._patch(_NoTransportProvider()):
+            for route in ("/api/streaming/tidal/seek", "/api/streaming/tidal/volume"):
+                for payload in ({}, {"position": 30, "volume": 45}):
+                    with self.subTest(route=route, payload=payload):
+                        resp = self.client.post(route, json=payload)
+                        self.assertEqual(resp.status_code, 501, resp.text)
+            self.assertEqual(self.client.post("/api/streaming/tidal/auth/pkce/finish", json={}).status_code, 400)
+            self.assertEqual(self.client.post("/api/streaming/qobuz/auth/login/finish", json={}).status_code, 400)
+            resp = self.client.post("/api/streaming/tidal/auth/pkce/finish", json={"redirect_url": "https://example.test/callback"})
+            self.assertEqual(resp.status_code, 200, resp.text)
+            resp = self.client.post("/api/streaming/qobuz/auth/login/finish", json={"url": "https://example.test/callback"})
+            self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_object_transport_for_all_providers_uses_existing_defaults_and_values(self):
+        provider = _FakeProvider()
+        provider.seek = mock.AsyncMock(side_effect=lambda position: {"position": position})
+        provider.set_volume = mock.AsyncMock(side_effect=lambda volume: {"volume": volume})
+        deps = SimpleNamespace(
+            spotify_volume_action=mock.AsyncMock(side_effect=lambda volume: {"volume": volume}),
+            qobuz_volume_action=mock.AsyncMock(side_effect=lambda volume: {"volume": volume}),
+        )
+        with self._patch(provider), mock.patch.object(streaming_api, "_deps", return_value=deps):
+            for provider_id in ("spotify", "qobuz", "tidal"):
+                for action, key, default, value in (
+                    ("seek", "position", 0.0, 30.0),
+                    ("volume", "volume", 100.0, 45.0),
+                ):
+                    route = f"/api/streaming/{provider_id}/{action}"
+                    with self.subTest(route=route):
+                        self.assertEqual(self.client.post(route, json={}).json()[key], default)
+                        self.assertEqual(self.client.post(route, json={key: value}).json()[key], value)
 
     def test_provider_discovery_uses_lightweight_registry_contract(self):
         payload = [{"id": "tidal", "name": "TIDAL", "implemented": True, "installed": True, "capabilities": {}}]

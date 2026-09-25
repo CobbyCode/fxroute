@@ -143,13 +143,21 @@ class BackgroundTaskOwnershipTests(unittest.IsolatedAsyncioTestCase):
         tasks = []
 
         async def restart(_service):
-            started.set()
-            await release.wait()
+            try:
+                started.set()
+                await release.wait()
+            finally:
+                main.update_lifecycle.finish_deferred_restart()
+
+        async def update(_timeout, *_args, on_result=None):
+            result = {"returncode": 0, "stdout": "Pulling updates with fast-forward only.\n", "stderr": ""}
+            if on_result:
+                on_result(result)
+            return result
 
         try:
-            with mock.patch.object(main, "_run_update_operation", new=mock.AsyncMock(return_value={
-                "returncode": 0, "stdout": "Pulling updates with fast-forward only.\n", "stderr": ""
-            })), mock.patch.object(main, "_restart_fxroute_service_after_response", restart):
+            with mock.patch.object(main, "_run_update_operation", new=update), \
+                 mock.patch.object(main, "_restart_fxroute_service_after_response", restart):
                 request = Request({"type": "http", "method": "POST", "path": "/api/system/update",
                                    "scheme": "http", "server": ("testserver", 80), "headers": [], "query_string": b""})
                 response = await main.system_update(request)

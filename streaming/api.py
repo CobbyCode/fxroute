@@ -16,6 +16,7 @@ import shutil
 import socket
 import sys
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -28,6 +29,7 @@ from streaming.tidal import playback as tidal_playback
 from streaming.tidal.cache import library_cache as tidal_library_cache
 
 import installer_contract as provider_contract
+import system_update
 from http_errors import bad_request, internal_error
 from audio import pw_link
 from playback.transition import PlaybackTransitionFailure, TransitionRequest
@@ -112,6 +114,16 @@ def _deps() -> StreamingApiDeps:
     if _runtime.deps is None:
         raise RuntimeError("Streaming API runtime is not configured")
     return _runtime.deps
+
+
+async def _json_object(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -221,19 +233,13 @@ async def api_streaming_provider_action(provider_id: str, action: str, request: 
     if provider_id == "qobuz" and action in ("play", "toggle"):
         return await _qobuz_ui_start_action(action)
     if action == "seek":
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
+        body = await _json_object(request)
         try:
             return await provider.seek(float(body.get("position", 0)))
         except streaming.ProviderNotImplemented as exc:
             raise HTTPException(status_code=501, detail=str(exc)) from exc
     if action == "volume":
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
+        body = await _json_object(request)
         if provider_id == "qobuz":
             # Qobuz volume is the canonical FXRoute master (qbzd gain stays
             # pinned at 100%).
@@ -529,10 +535,7 @@ async def api_tidal_pkce_login_url():
 @router.post("/api/streaming/tidal/auth/pkce/finish")
 async def api_tidal_finish_pkce_login(request: Request):
     provider = _streaming_provider("tidal")
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _json_object(request)
     redirect_url = str(body.get("redirect_url") or body.get("url") or "")
     if not redirect_url:
         raise HTTPException(status_code=400, detail="redirect_url is required")
@@ -596,10 +599,7 @@ async def api_qobuz_auth_login_finish(request: Request):
     if not _deps().request_origin_is_trusted(request):
         raise HTTPException(status_code=403, detail="cross-site request rejected")
     provider = _qobuz_provider_or_404()
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _json_object(request)
     pasted = str(body.get("redirect_url") or body.get("url") or body.get("code") or "")
     try:
         return await provider.finish_login(pasted)
@@ -636,6 +636,17 @@ async def api_qobuz_auth_logout(request: Request):
 # ---------------------------------------------------------------------------
 # Provider administration (Settings -> Providers)
 # ---------------------------------------------------------------------------
+
+
+def _guard_provider_admin(handler):
+    @wraps(handler)
+    async def guarded(*args, **kwargs):
+        if not _deps().request_origin_is_trusted(kwargs["request"]):
+            raise HTTPException(status_code=403, detail="cross-site request rejected")
+        async with system_update.maintenance_operation():
+            return await handler(*args, **kwargs)
+
+    return guarded
 
 
 def _provider_op_log_tail(result: dict) -> str:
@@ -774,11 +785,10 @@ def _refresh_tidalapi_import_verdict() -> None:
 
 
 @router.post("/api/streaming/providers/{provider_id}/install")
+@_guard_provider_admin
 async def api_streaming_provider_install(provider_id: str, request: Request):
     """Install a provider's backend via the existing installer path."""
     deps = _deps()
-    if not deps.request_origin_is_trusted(request):
-        raise HTTPException(status_code=403, detail="cross-site request rejected")
     if streaming.get_provider(provider_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
     flag = {
@@ -833,10 +843,9 @@ async def api_streaming_provider_install(provider_id: str, request: Request):
 
 
 @router.post("/api/streaming/providers/{provider_id}/uninstall")
+@_guard_provider_admin
 async def api_streaming_provider_uninstall(provider_id: str, request: Request):
     """Uninstall a provider's backend via the existing uninstaller (explicit action)."""
-    if not _deps().request_origin_is_trusted(request):
-        raise HTTPException(status_code=403, detail="cross-site request rejected")
     if streaming.get_provider(provider_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown streaming provider: {provider_id}")
     if provider_id not in {"spotify", "qobuz", "tidal"}:
@@ -861,10 +870,9 @@ async def api_streaming_provider_uninstall(provider_id: str, request: Request):
 
 
 @router.post("/api/streaming/providers/{provider_id}/service/{action}")
+@_guard_provider_admin
 async def api_streaming_provider_service_action(provider_id: str, action: str, request: Request):
     """Start/stop/restart a provider's user service (Connect readiness)."""
-    if not _deps().request_origin_is_trusted(request):
-        raise HTTPException(status_code=403, detail="cross-site request rejected")
     unit = {"spotify": "spotifyd.service", "qobuz": "qbzd.service"}.get(provider_id)
     if unit is None:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} has no service to control")
@@ -941,4 +949,3 @@ async def _sync_spotify_connect_name_best_effort() -> dict:
         logger.info("Spotify Connect name set to %s", result.get("desired"))
         result["restarted"] = await _restart_spotifyd_best_effort()
     return result
-
