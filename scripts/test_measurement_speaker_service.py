@@ -289,7 +289,7 @@ class StartValidationTests(ServiceFixture, unittest.TestCase):
                 ("right", {"reference_input_channel": "7",
                            "reference_input_channel_left": "7", "reference_input_channel_right": "1"})):
             with self.subTest(side=side, channels=channels):
-                with self.assertRaisesRegex(ValueError, "is the microphone input"):
+                with self.assertRaisesRegex(ValueError, "the microphone input"):
                     service.start(side=side, input_id="mic", reference_id="r",
                                   microphone_position_id="m", **channels)
         self.assertEqual(service.jobs(), [])

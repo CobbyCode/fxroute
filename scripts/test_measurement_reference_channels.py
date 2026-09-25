@@ -7,16 +7,21 @@ the Speaker Align start check judges the same resolution before any sweep, so a
 reference that the take would drop never starts a run.
 """
 
+import asyncio
+import itertools
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from measurement.reference_channels import (
+    reference_candidate_channels,
     require_speaker_align_reference,
     resolve_reference_channels,
 )
+from measurement.store import MeasurementStore
 
 
 def speaker(side, mic="1", shared="", left=None, right=None):
@@ -54,7 +59,7 @@ class SpeakerAlignReferenceTests(unittest.TestCase):
                         {"shared": 1}, {"mic": "", "shared": "1"}, {"mic": None, "shared": "1"},
                         {"mic": "3", "shared": "03"}):
             with self.subTest(options=options):
-                with self.assertRaisesRegex(ValueError, "is the microphone input"):
+                with self.assertRaisesRegex(ValueError, "the microphone input"):
                     speaker("left", **options)
 
     def test_split_reference_resolves_per_side(self):
@@ -63,7 +68,7 @@ class SpeakerAlignReferenceTests(unittest.TestCase):
 
     def test_a_configured_side_on_the_microphone_channel_is_refused(self):
         # The store would silently record the other side's loopback instead.
-        with self.assertRaisesRegex(ValueError, "is the microphone input"):
+        with self.assertRaisesRegex(ValueError, "the microphone input"):
             speaker("left", left="1", right="8")
         self.assertEqual(speaker("right", left="1", right="8"), 8)
 
@@ -76,7 +81,7 @@ class SpeakerAlignReferenceTests(unittest.TestCase):
     def test_one_sided_reference_on_the_microphone_leaves_no_reference(self):
         for side in ("left", "right"):
             with self.subTest(side=side):
-                with self.assertRaisesRegex(ValueError, "is the microphone input"):
+                with self.assertRaisesRegex(ValueError, "the microphone input"):
                     speaker(side, left="1")
 
     def test_a_stale_shared_value_on_the_microphone_does_not_block_split_references(self):
@@ -87,14 +92,88 @@ class SpeakerAlignReferenceTests(unittest.TestCase):
     def test_no_reference_is_refused(self):
         for options in ({}, {"shared": None}, {"shared": " ", "left": "", "right": None}):
             with self.subTest(options=options):
-                with self.assertRaisesRegex(ValueError, "requires an electrical reference"):
+                with self.assertRaisesRegex(ValueError, "has no electrical reference"):
                     speaker("left", **options)
+
+    def test_shared_with_only_the_other_side_configured(self):
+        # Mic 1, shared 2, left empty, right 3: the shared field serves no
+        # side once a side field is set, but it is a recorded candidate, so
+        # the store resolves the left side to input 2 -- decided before any
+        # sweep, the same way the store decides it for every take.
+        self.assertEqual(speaker("left", shared="2", left="", right="3"), 2)
+        self.assertEqual(speaker("right", shared="2", left="", right="3"), 3)
+
+    def test_error_names_the_field_to_fix(self):
+        cases = (
+            ({"shared": "1"}, "left", "Electrical reference input is input 1"),
+            ({"left": "1", "right": "8"}, "left", "Electrical Ref L is input 1"),
+            ({"left": "7", "right": "1"}, "right", "Electrical Ref R is input 1"),
+            ({"right": "1"}, "left", "Electrical Ref R is input 1"),
+        )
+        for options, side, message in cases:
+            with self.subTest(options=options, side=side):
+                with self.assertRaisesRegex(ValueError, message):
+                    speaker(side, **options)
+        with self.assertRaisesRegex(ValueError, "Speaker Align right has no electrical reference"):
+            speaker("right")
 
     def test_malformed_channel_is_refused(self):
         for options in ({"shared": "x"}, {"shared": "0"}, {"mic": "-1", "shared": "2"}):
             with self.subTest(options=options):
                 with self.assertRaisesRegex(ValueError, "input channel number"):
                     speaker("left", **options)
+
+
+
+class StoreParityTests(unittest.TestCase):
+    """The start check accepts exactly what the store resolves for the take.
+
+    Every combination runs through the real store setup with the candidate
+    list the Speaker Align takes pass. An accepted start must name the side
+    reference the store records; a refused one must be a side the store
+    leaves without a reference or whose configured reference it drops.
+    """
+
+    VALUES = ("", "1", "2", "3")
+
+    def store_channels(self, store, *, mic, shared, left, right, side):
+        async def setup():
+            result = await store._prepare_measurement_job_setup(
+                input_id="mic", input_key="", mic_input_channel=mic,
+                reference_input_channel=shared, reference_input_channel_left=left,
+                reference_input_channel_right=right,
+                reference_candidate_channels=reference_candidate_channels(shared, left, right),
+                channel=side, calibration_filename=None, calibration_bytes=None,
+                calibration_ref=None, measurement_scope="active-chain",
+                job_prefix="measurement-job-")
+            return result["job"]["input_channels"]
+        return asyncio.run(setup())
+
+    def test_start_check_matches_the_store_resolution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MeasurementStore(home=Path(directory))
+            store._discover_capture_inputs = lambda: [{
+                "id": "mic", "label": "Mic", "node_serial": "serial-1", "node_name": "capture_1",
+                "channels": 4, "sample_rate": 48_000, "available": True}]
+            store._measurement_inputs_with_sample_rate = lambda inputs: inputs
+            checked = 0
+            for mic, shared, left, right, side in itertools.product(
+                    ("", "1", "3"), self.VALUES, self.VALUES, self.VALUES, ("left", "right")):
+                channels = self.store_channels(store, mic=mic, shared=shared, left=left,
+                                               right=right, side=side)
+                side_reference = channels[f"electrical_reference_{side}"]
+                dropped = bool(channels[f"reference_disabled_reason_{side}"])
+                with self.subTest(mic=mic, shared=shared, left=left, right=right, side=side):
+                    try:
+                        accepted = speaker(side, mic=mic, shared=shared, left=left, right=right)
+                    except ValueError:
+                        self.assertTrue(side_reference is None or dropped, channels)
+                    else:
+                        self.assertEqual(accepted, side_reference, channels)
+                        self.assertIn(accepted, channels["electrical_reference_candidates"])
+                        self.assertFalse(dropped, channels)
+                checked += 1
+            self.assertEqual(checked, 3 * 4 ** 3 * 2)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ from typing import Any, Callable
 
 from common.run_to_completion import restore_after
 from measurement.capture_evidence import CaptureEvidence
+from measurement.reference_channels import reference_candidate_channels as configured_reference_channels
 from measurement.speaker_align import require_timing_reference
 from measurement.target import REFERENCE_TAP_INGRESS
 
@@ -47,22 +48,6 @@ def _session_identity(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise ValueError(f"Speaker Align acquisition requires a {label} identity")
     return value
-
-
-def _reference_candidate_channels(*values: str | int | None) -> list[str]:
-    """List the distinct configured loopback channels that may carry the sweep.
-
-    Every candidate is recorded in the same capture and the store's
-    electrical-reference evaluation decides which channel actually carries the
-    way.  Nothing here maps a side, a way or an output role to a specific
-    input channel.
-    """
-    candidates: list[str] = []
-    for value in values:
-        token = str(value).strip() if value is not None else ""
-        if token and token not in candidates:
-            candidates.append(token)
-    return candidates
 
 
 def _job_input_key(job: dict[str, Any], role: str) -> tuple:
@@ -373,7 +358,7 @@ async def acquire_speaker_captures(
     """
     reference_id = _session_identity(reference_id, "upstream reference")
     microphone_position_id = _session_identity(microphone_position_id, "microphone position")
-    reference_candidate_channels = _reference_candidate_channels(
+    reference_candidate_channels = configured_reference_channels(
         reference_input_channel, reference_input_channel_left, reference_input_channel_right
     )
     electrical_requested = bool(reference_candidate_channels)
@@ -547,7 +532,7 @@ async def verify_speaker_alignment(
     request = alignment.verification_request()
     reference_id = _session_identity(reference_id, "upstream reference")
     microphone_position_id = _session_identity(microphone_position_id, "microphone position")
-    reference_candidate_channels = _reference_candidate_channels(
+    reference_candidate_channels = configured_reference_channels(
         reference_input_channel, reference_input_channel_left, reference_input_channel_right
     )
     if getattr(store, "measurement_target_provider", None) is None:
