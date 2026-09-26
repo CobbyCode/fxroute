@@ -61,6 +61,7 @@ __all__ = [
     "band_response_db",
     "calibration_offsets_db",
     "side_confirmation",
+    "take_traces",
     "way_band_impulse_response",
 ]
 
@@ -109,6 +110,11 @@ LEAK_MODEL_SAMPLES = 1 << 15
 BAND_LEVEL_POINTS = 240
 BAND_LEVEL_LOW_HZ = 20.0
 BAND_LEVEL_HIGH_HZ = 18000.0
+# Display slices of a take around its way arrivals: from the earliest arrival
+# minus the lead to the latest plus the tail, at most this many points each.
+TRACE_LEAD_MS = 2.0
+TRACE_TAIL_MS = 4.0
+TRACE_MAX_POINTS = 600
 
 
 def _finite(value: object, label: str) -> float:
@@ -427,6 +433,45 @@ def _leak_shares(processing: dict, roles: Sequence[str], *, sample_rate_hz: int,
     return shares
 
 
+def take_traces(
+    impulse_response: object,
+    bands: dict[str, np.ndarray],
+    arrival_indexes: dict[str, int],
+    *,
+    sample_rate_hz: int,
+) -> dict:
+    """Bounded display slices of one shared take and of its isolated way bands.
+
+    One window for the whole take, from the earliest way arrival minus
+    ``TRACE_LEAD_MS`` to the latest plus ``TRACE_TAIL_MS``, on the take's own
+    sample origin, so the slices keep the arrivals' relative timing exactly as
+    the estimate read it. Each slice is normalized to its own peak inside the
+    window and decimated to at most ``TRACE_MAX_POINTS`` values on a grid
+    through the earliest arrival. Display evidence only; no gate reads it.
+    """
+    ir = np.asarray(impulse_response, dtype=np.float64)
+    earliest = min(arrival_indexes.values())
+    latest = max(arrival_indexes.values())
+    first = max(0, earliest - int(round(sample_rate_hz * TRACE_LEAD_MS / 1000.0)))
+    stop = min(ir.size, latest + int(round(sample_rate_hz * TRACE_TAIL_MS / 1000.0)) + 1)
+    step = max(1, math.ceil((stop - first) / TRACE_MAX_POINTS))
+    first += (earliest - first) % step
+
+    def normalized(values: np.ndarray) -> list[float]:
+        window = np.asarray(values, dtype=np.float64)[first:stop]
+        peak = float(np.max(np.abs(window)))
+        if not peak > 0.0:
+            return [0.0] * len(window[::step])
+        return [round(float(value), 5) for value in window[::step] / peak]
+
+    return {
+        "start_index": int(first),
+        "step": int(step),
+        "full_band": normalized(ir),
+        "ways": {role: normalized(band) for role, band in bands.items()},
+    }
+
+
 def side_confirmation(
     *,
     impulse_response: object,
@@ -459,7 +504,9 @@ def side_confirmation(
     measures: the band weighting (``band_response_db``) is removed and the take's
     ``calibration_curve`` (the microphone calibration its capture applied, or
     ``None``) corrects the microphone, so a post-apply level spread compares
-    like with like.
+    like with like. ``traces`` holds the take's bounded display slices
+    (``take_traces``): the full-band IR and every isolated band the arrivals
+    were read from, on the take's own sample origin.
     """
     if type(start_revision) is not int:
         raise ValueError("Speaker verification confirmation needs a start revision")
@@ -476,11 +523,13 @@ def side_confirmation(
     ir = np.asarray(impulse_response, dtype=np.float64)
     bands: dict[str, dict] = {}
     energy: dict[str, np.ndarray] = {}
+    isolated_bands: dict[str, np.ndarray] = {}
     for role in ordered_roles:
         others = [processing[other] for other in ordered_roles if other != role]
         isolated = way_band_impulse_response(
             ir, processing[role], sample_rate_hz=sample_rate_hz,
             isolation_power=isolation_power, foreign=others)
+        isolated_bands[role] = isolated
         arrival = band_arrival(isolated, sample_rate_hz=sample_rate_hz)
 
         def correction(frequencies: np.ndarray, role: str = role, others: list = others) -> np.ndarray:
@@ -564,4 +613,8 @@ def side_confirmation(
         "level_origin": "loudest-way-of-take",
         "isolation_power": float(isolation_power),
         "bands": copy.deepcopy(bands),
+        "traces": take_traces(
+            ir, isolated_bands,
+            {role: band["arrival_index"] for role, band in bands.items()},
+            sample_rate_hz=sample_rate_hz),
     }

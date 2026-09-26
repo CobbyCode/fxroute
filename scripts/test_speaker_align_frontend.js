@@ -140,6 +140,29 @@ async function main() {
         before: { id: 'empty', traces: [] } } }).map(item => item.id), ['sweep-After (verification)']);
     assert.deepEqual(Speaker.takeMeasurements({}), []);
 
+    // Before/After is one current run like an L/R pair: the next run
+    // replaces the unsaved pair. Saved runs keep their checkbox visibility;
+    // a new run never changes it.
+    const savedPair = Array.from(state.measurement.pendingRepeatMeasurements, item => ({ ...item, id: `saved-${item.id}` }));
+    const roomSweep = { id: 'saved-room', name: 'Room sweep', traces: [] };
+    state.measurement.measurements = [...savedPair, roomSweep];
+    state.measurement.visibilityById = { 'saved-sweep-Before (planning)': true,
+        'saved-sweep-After (verification)': true, 'saved-room': true };
+    state.measurement.pendingRepeatMeasurements = [];
+    state.measurement.currentMeasurement = null;
+    await flows.startSpeakerAlign('right');
+    assert.deepEqual({ ...state.measurement.visibilityById }, { 'saved-sweep-Before (planning)': true,
+        'saved-sweep-After (verification)': true, 'saved-room': true });
+    assert.deepEqual(Array.from(state.measurement.measurements, item => item.id),
+        ['saved-sweep-Before (planning)', 'saved-sweep-After (verification)', 'saved-room']);
+    assert.deepEqual(Array.from(state.measurement.pendingRepeatMeasurements, item => item.id),
+        ['sweep-Before (planning)', 'sweep-After (verification)']);
+    assert.equal(state.measurement.currentMeasurement.id, 'sweep-Before (planning)');
+    assert.equal(state.measurement.currentMeasurementSaved, false);
+    assert.equal(flows.hideSpeakerAlignTakes, undefined, 'no Speaker Align special case for saved runs');
+    state.measurement.measurements = [];
+    state.measurement.visibilityById = {};
+
     // Trial and unconfirmed outcomes read as such in the compact caption.
     assert.match(Speaker.renderSpeakerAlignResult({ ...result, committed_revision: null, dry_run: true }, 'right'),
         /Right speaker · Trial confirmed · not committed/);
@@ -170,17 +193,91 @@ async function main() {
     state.measurement.activeJobId = '';
     flows.init({ getSelectedMeasurementInputChannelCount: () => 18, api: speakerApi });
     await flows.startSpeakerAlign('right');
-    assert.equal(calls.length, 3);
-    assert.equal(calls[2].reference_input_channel, '7');
-    assert.equal(calls[2].reference_input_channel_left, '7');
-    assert.equal(calls[2].reference_input_channel_right, '8');
-    assert.equal(calls[2].reference_id, 'mic-1:ch8:upstream');
+    const splitCall = calls.at(-1);
+    assert.equal(splitCall.reference_input_channel, '7');
+    assert.equal(splitCall.reference_input_channel_left, '7');
+    assert.equal(splitCall.reference_input_channel_right, '8');
+    assert.equal(splitCall.reference_id, 'mic-1:ch8:upstream');
+    const startedRuns = calls.length;
     state.outputSystem.catalog.modes.stereo.selected_bank = 'all';
     flows.syncSpeakerAlignButton();
     await flows.startSpeakerAlign('left');
-    assert.equal(calls.length, 3, 'Hidden alignment must not be startable');
+    assert.equal(calls.length, startedRuns, 'Hidden alignment must not be startable');
     assert.equal(elements.measurementSpeakerAlignGroup.classList.contains('hidden'), true);
+    timelineViewChecks(take);
     console.log('Speaker alignment UI flow: passed');
+}
+
+// Before and After share one time base: zero is the reference way, so the
+// delayed way moves from minus its delay onto it.
+function timelineViewChecks(take) {
+    const pulse = arrival => [[arrival - 0.1, 0], [arrival, 1], [arrival + 0.1, 0]];
+    const withTimeline = (measurement, arrivals, current = true) => ({
+        ...measurement, current, graphColor: current ? '#22c55e' : '#60a5fa',
+        analysis: { ...measurement.analysis, speaker_align_timeline: {
+            schema: 'fxroute.speaker-align-timeline.v1', time_origin: 'reference-way-arrival',
+            reference_role: 'right_high', sample_rate: 48000, arrival_ms: arrivals,
+            full_band: pulse(0),
+            ways: Object.fromEntries(Object.entries(arrivals).map(([role, arrival]) => [role, pulse(arrival)])),
+        } } });
+    const before = withTimeline(take('Before (planning)', 'before'), { right_low: -0.375, right_high: 0 });
+    const after = withTimeline(take('After (verification)', 'after'), { right_low: 0.020833, right_high: 0 });
+
+    const timeline = Speaker.takeTimeline(before);
+    assert.equal(timeline.referenceRole, 'right_high');
+    assert.deepEqual(timeline.ways.map(way => [way.label, way.arrivalMs]), [['Low', -0.375], ['High', 0]]);
+    assert.equal(Speaker.takeTimeline(take('Before (planning)', 'before')), null);
+    const unanchored = withTimeline(take('Before', 'before'), { right_low: -0.375, right_high: 0 });
+    unanchored.analysis.speaker_align_timeline.reference_role = 'right_mid';
+    assert.equal(Speaker.takeTimeline(unanchored), null);
+
+    const view = Speaker.timelineView([before, after], { widthPx: 700 });
+    assert.deepEqual(view.lanes.map(lane => lane.label), ['Right · Before', 'Right · After']);
+    assert.ok(view.minMs < -0.375 && view.maxMs > 0.020833, 'both takes fit one axis');
+    assert.ok(view.ticks.includes(0));
+    assert.equal(Speaker.timelineSpreadText(view.lanes[0]), 'spread 0.375 ms');
+    assert.equal(Speaker.timelineSpreadText(view.lanes[1]), 'residual 0.021 ms');
+    assert.equal(Speaker.timelineSummary(view),
+        'Timing: 0 ms = High arrival (not delayed) · Right · Before spread 0.375 ms · Right · After residual 0.021 ms');
+    assert.equal(Speaker.timelineHoverText(view, 0, -0.4), 'Right · Before · −0.400 ms · Low arrival −0.375 ms');
+    assert.equal(Speaker.timelineHoverText(view, 1, 0.018), 'Right · After · +0.018 ms · Low arrival +0.021 ms');
+
+    // Each entry decides its own part of the IR graph: an Align take with a
+    // timeline is always a timing lane, everything else stays in the normal
+    // IR overlay, whatever the order or the other visible entries.
+    const plain = { ...take('Plain', 'before'), speaker_align_take: undefined, current: false };
+    const savedBefore = withTimeline(before, { right_low: -0.375, right_high: 0 }, false);
+    const lanes = parts => parts.timeline.lanes.map(lane => [lane.label, lane.ways.map(way => way.arrivalMs)]);
+    const alone = Speaker.irParts([before, after]);
+    for (const order of [[plain, before, after], [before, plain, after], [before, after, plain]]) {
+        const parts = Speaker.irParts(order);
+        assert.deepEqual(lanes(parts), lanes(alone));
+        assert.deepEqual(parts.plainEntries.map(entry => entry.name), [plain.name]);
+    }
+    assert.deepEqual(Speaker.irParts([plain]), { timeline: null, plainEntries: [plain] });
+    // Lanes keep the graph's entry order (current run, then saved runs in
+    // saved-list order); only within one pair Before goes above After.
+    const withSaved = Speaker.irParts([before, after, plain, savedBefore]);
+    assert.deepEqual(withSaved.timeline.lanes.map(lane => lane.label),
+        ['Right · Before', 'Right · After', 'Right · Before (saved)']);
+    const savedAfter = withTimeline(after, { right_low: 0.020833, right_high: 0 }, false);
+    const leftAfter = { ...savedAfter, speaker_align_take: { side: 'left', take: 'after' } };
+    const labels = entries => Speaker.irParts(entries).timeline.lanes.map(lane => lane.label);
+    // The saved list is newest first, so a saved pair arrives After, Before.
+    assert.deepEqual(labels([before, after, savedAfter, savedBefore, savedAfter, savedBefore]),
+        ['Right · Before', 'Right · After', 'Right · Before (saved)', 'Right · After (saved)',
+            'Right · Before (saved)', 'Right · After (saved)']);
+    // No reordering beyond that: other sides, a current After next to a
+    // saved Before, and lone takes stay where they are.
+    assert.deepEqual(labels([leftAfter, savedBefore]), ['Left · After (saved)', 'Right · Before (saved)']);
+    assert.deepEqual(labels([before, after, savedBefore]), ['Right · Before', 'Right · After', 'Right · Before (saved)']);
+    assert.deepEqual(labels([after, savedBefore]), ['Right · After', 'Right · Before (saved)']);
+    assert.doesNotMatch(Speaker.timelineSummary(withSaved.timeline), /hidden/);
+    // A take without timeline data (saved before timelines existed) stays in
+    // the normal IR overlay: there is no shared time base to draw it on.
+    assert.deepEqual(Speaker.irParts([take('Old', 'before')]).plainEntries.length, 1);
+    // Narrow graphs get fewer ticks.
+    assert.ok(Speaker.timelineView([before, after], { widthPx: 260 }).ticks.length < view.ticks.length);
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

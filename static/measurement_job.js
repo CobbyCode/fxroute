@@ -20,6 +20,7 @@
         getMeasurementJobResultMeasurement: () => null,
         getMeasurementTimingInfo: () => ({}),
         normalizeMeasurementEntry: (entry) => entry,
+        setMeasurementGraphView: () => {},
         measurementModeReady: () => false,
         measurementRepeatBlockedReason: () => '',
         syncMeasurementRepeatNote: () => {},
@@ -315,6 +316,9 @@
                     deps.getState().measurement.pendingRepeatMeasurements.forEach((measurement) => {
                         deps.getState().measurement.reviewVisibilityById[measurement.id] = !!measurement.review_traces?.length;
                     });
+                    // A sweep result opens in the frequency view, a Speaker
+                    // Align result in the IR view.
+                    deps.setMeasurementGraphView('freq');
                     deps.getState().measurement.statusText = 'L/R repeat finished. Review the L and R results and save them together.';
                     renderMeasurementPanelDefensively('L/R repeat completion render');
                     deps.showToast('L/R repeat finished', 'success');
@@ -327,6 +331,7 @@
                         deps.getState().measurement.currentMeasurementName = deps.getState().measurement.currentMeasurement.name || '';
                         deps.getState().measurement.currentMeasurementSaved = false;
                         deps.getState().measurement.reviewVisibilityById[deps.getState().measurement.currentMeasurement.id] = !!deps.getState().measurement.currentMeasurement.review_traces?.length;
+                        deps.setMeasurementGraphView('freq');
                         const timingInfo = deps.getMeasurementTimingInfo(deps.getState().measurement.currentMeasurement);
                         if (timingInfo.line) deps.getState().measurement.statusText = `${label} finished · ${timingInfo.line}`;
                     } catch (error) {

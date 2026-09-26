@@ -51,6 +51,24 @@ class SpeakerAlignTakePersistenceTests(unittest.TestCase):
                 self.assertEqual(
                     measurement["analysis"]["impulse_response"]["preview"]["points"][1], [0.0, 1.0])
 
+    def test_save_reload_keeps_the_timing_timeline(self) -> None:
+        timeline = {
+            "schema": "fxroute.speaker-align-timeline.v1", "time_origin": "reference-way-arrival",
+            "reference_role": "right_low", "sample_rate": 48000,
+            "arrival_ms": {"right_low": 0.0, "right_high": -0.458333},
+            "full_band": [[-0.5, 0.1], [0.0, 1.0]],
+            "ways": {"right_low": [[0.0, -1.0]], "right_high": [[-0.4583, 1.0]]},
+        }
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {
+                "XDG_CONFIG_HOME": str(Path(root) / "config"),
+                "XDG_STATE_HOME": str(Path(root) / "state")}):
+            store = self.store(root)
+            payload = take_payload("before", {"side": "right", "take": "before"})
+            payload["analysis"]["speaker_align_timeline"] = timeline
+            store.save_measurements([payload])
+            reloaded = store.list_measurements()["measurements"][0]
+            self.assertEqual(reloaded["analysis"]["speaker_align_timeline"], timeline)
+
     def test_invalid_take_tags_are_dropped(self) -> None:
         with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {
                 "XDG_CONFIG_HOME": str(Path(root) / "config"),

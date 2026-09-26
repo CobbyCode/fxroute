@@ -34,6 +34,7 @@ window.FXRouteMeasurementGraph?.init({
     drawCustomHouseCurveHandles,
 });
 const MeasurementFlows = window.FXRouteMeasurementFlows || {};
+const SpeakerAlign = window.FXRouteSpeakerAlign || {};
 const SettingsSystem = window.FXRouteSettingsSystem || {};
 const EffectsUI = window.FXRouteEffectsUI || {};
 const LibraryUI = window.FXRouteLibraryUI || {};
@@ -402,6 +403,8 @@ window.FXRouteMeasurementPanelUI?.init({
     buildMeasurementIrSummary: (diagnostics) => MeasurementUI.buildMeasurementIrSummary(diagnostics),
     buildMeasurementIrDiagnosticsTooltip: (diagnostics) => MeasurementUI.buildMeasurementIrDiagnosticsTooltip(diagnostics),
     renderMeasurementIrDiagnostics: (entries, frequencyView) => renderMeasurementIrDiagnostics(entries, frequencyView),
+    getMeasurementIrParts: (entries) => getMeasurementIrParts(entries),
+    speakerAlignTimelineSummary: (view) => SpeakerAlign.timelineSummary(view),
 });
 window.FXRouteMeasurementSavedUI?.init({
     getState: () => state,
@@ -562,6 +565,7 @@ window.FXRouteMeasurementJob?.init({
     getMeasurementJobResultMeasurement: (job) => MeasurementUI.getMeasurementJobResultMeasurement(job),
     getMeasurementTimingInfo: (measurement) => MeasurementUI.getMeasurementTimingInfo(measurement),
     normalizeMeasurementEntry: (measurement, index) => MeasurementUI.normalizeMeasurementEntry(measurement, index),
+    setMeasurementGraphView: (view) => setMeasurementGraphView(view),
     measurementModeReady: () => measurementModeReady(),
     measurementRepeatBlockedReason: () => measurementRepeatBlockedReason(),
     syncMeasurementRepeatNote: (lrActive, reason) => syncMeasurementRepeatNote(lrActive, reason),
@@ -3687,14 +3691,24 @@ function getMeasurementIrHoverTooltip(event) {
     if (!pointer) return '';
     const { x, y, bounds } = pointer;
     if (x < bounds.left || x > bounds.left + bounds.width || y < bounds.top || y > bounds.top + bounds.height) return '';
-    const targetTimeMs = MeasurementUI.measurementXToIrTime(x, bounds);
-    const graphEntries = MeasurementGraph.getGraphMeasurementEntries();
-    const candidates = graphEntries.map((entry) => {
+    const layout = getMeasurementIrLayout(MeasurementGraph.getGraphMeasurementEntries(), bounds);
+    const inside = area => !!area && y >= area.top && y <= area.top + area.height;
+    if (inside(layout.laneBounds)) {
+        const { timeline, laneBounds } = layout;
+        const laneIndex = Math.min(timeline.lanes.length - 1,
+            Math.floor((y - laneBounds.top) / (laneBounds.height / timeline.lanes.length)));
+        const timeMs = timeline.minMs + ((x - laneBounds.left) / laneBounds.width) * (timeline.maxMs - timeline.minMs);
+        return SpeakerAlign.timelineHoverText(timeline, laneIndex, timeMs);
+    }
+    if (!inside(layout.plainBounds)) return '';
+    const plainBounds = layout.plainBounds;
+    const targetTimeMs = MeasurementUI.measurementXToIrTime(x, plainBounds);
+    const candidates = layout.plainEntries.map((entry) => {
         const trace = (entry.traces || [])[0] || {};
         const nearest = MeasurementUI.getNearestMeasurementIrPoint(trace.points || [], targetTimeMs);
         if (!nearest) return null;
-        const pointX = MeasurementUI.measurementIrTimeToX(nearest.timeMs, bounds);
-        const pointY = MeasurementUI.measurementIrAmplitudeToY(nearest.amplitude, bounds);
+        const pointX = MeasurementUI.measurementIrTimeToX(nearest.timeMs, plainBounds);
+        const pointY = MeasurementUI.measurementIrAmplitudeToY(nearest.amplitude, plainBounds);
         return {
             nearest,
             distancePx: Math.hypot(pointX - x, pointY - y),
@@ -3706,7 +3720,150 @@ function getMeasurementIrHoverTooltip(event) {
     return `${MeasurementUI.formatMeasurementIrMs(nearest.timeMs)} · amp ${MeasurementUI.formatMeasurementIrAmplitude(nearest.amplitude)}`;
 }
 
+function getMeasurementIrParts(graphEntries = [], bounds = null) {
+    if (typeof SpeakerAlign.irParts !== 'function') return { timeline: null, plainEntries: graphEntries };
+    return SpeakerAlign.irParts(graphEntries, { widthPx: bounds?.width });
+}
+
+// Speaker Align takes with a timeline draw as timing lanes, every other
+// entry in the normal IR overlay below them; with only one kind visible it
+// gets the whole plot, so a graph without Align takes is drawn as before.
+function getMeasurementIrLayout(graphEntries = [], bounds) {
+    const { timeline, plainEntries } = getMeasurementIrParts(graphEntries, bounds);
+    if (!timeline) return { timeline: null, plainEntries, laneBounds: null, plainBounds: bounds };
+    if (!plainEntries.length) return { timeline, plainEntries, laneBounds: bounds, plainBounds: null };
+    const tickGap = 30;
+    const laneUnits = timeline.lanes.length;
+    const laneHeight = Math.round((bounds.height - tickGap) * laneUnits / (laneUnits + 2));
+    return {
+        timeline, plainEntries,
+        laneBounds: { ...bounds, height: laneHeight },
+        plainBounds: { ...bounds, top: bounds.top + laneHeight + tickGap,
+            height: bounds.height - laneHeight - tickGap },
+    };
+}
+
+function drawSpeakerAlignTimelineLabel(ctx, text, x, y, color, align = 'left') {
+    ctx.font = '11px sans-serif';
+    const width = ctx.measureText(text).width + 8;
+    const left = align === 'right' ? x - width : x;
+    ctx.fillStyle = 'rgba(12,18,28,0.82)';
+    ctx.fillRect(left, y - 8, width, 16);
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, left + 4, y);
+    return { left, width };
+}
+
+// Speaker Align timing lanes: one lane per take on one millisecond axis whose
+// zero is the reference-way arrival, so a way the alignment delayed visibly
+// moves onto it between Before and After.
+function drawSpeakerAlignTimeline(ctx, bounds, view) {
+    const toX = timeMs => bounds.left + ((timeMs - view.minMs) / (view.maxMs - view.minMs)) * bounds.width;
+    const tickText = timeMs => (Math.abs(timeMs) < 1e-9 ? '0'
+        : `${timeMs < 0 ? '−' : ''}${Number(Math.abs(timeMs).toFixed(3))}`);
+    ctx.save();
+    ctx.lineWidth = 1;
+    view.ticks.forEach((timeMs) => {
+        const x = toX(timeMs);
+        const zero = Math.abs(timeMs) < 1e-9;
+        ctx.strokeStyle = zero ? 'rgba(209,250,229,0.45)' : 'rgba(255,255,255,0.08)';
+        ctx.setLineDash(zero ? [4, 4] : []);
+        ctx.beginPath();
+        ctx.moveTo(x, bounds.top);
+        ctx.lineTo(x, bounds.top + bounds.height);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(236,236,240,0.72)';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(`${tickText(timeMs)} ms`, x, bounds.top + bounds.height + 10);
+    });
+
+    const laneHeight = bounds.height / view.lanes.length;
+    view.lanes.forEach((lane, index) => {
+        const top = bounds.top + (index * laneHeight);
+        const middle = top + (laneHeight * 0.55);
+        const amplitude = laneHeight * 0.32;
+        const toY = value => middle - (Math.max(-1, Math.min(1, value)) * amplitude);
+        ctx.strokeStyle = index ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0)';
+        ctx.beginPath();
+        ctx.moveTo(bounds.left, top);
+        ctx.lineTo(bounds.left + bounds.width, top);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+        ctx.beginPath();
+        ctx.moveTo(bounds.left, middle);
+        ctx.lineTo(bounds.left + bounds.width, middle);
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(bounds.left, top, bounds.width, laneHeight);
+        ctx.clip();
+        const drawTrace = (points, color, width) => {
+            if (!points.length) return;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.beginPath();
+            points.forEach(([timeMs, value], pointIndex) => {
+                if (pointIndex === 0) ctx.moveTo(toX(timeMs), toY(value));
+                else ctx.lineTo(toX(timeMs), toY(value));
+            });
+            ctx.stroke();
+        };
+        drawTrace(lane.fullBand, 'rgba(236,236,240,0.22)', 1.2);
+        lane.ways.forEach(way => drawTrace(way.points, way.color, lane.current ? 2 : 1.5));
+        lane.ways.forEach((way) => {
+            const x = toX(way.arrivalMs);
+            ctx.strokeStyle = way.color;
+            ctx.lineWidth = 1.4;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x, top + 20);
+            ctx.lineTo(x, top + laneHeight - 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        });
+        ctx.restore();
+
+        const title = drawSpeakerAlignTimelineLabel(ctx, lane.label, bounds.left + 18, top + 11, '#e5e7eb');
+        ctx.fillStyle = lane.color || '#e5e7eb';
+        ctx.fillRect(title.left - 12, top + 7, 8, 8);
+        drawSpeakerAlignTimelineLabel(ctx, SpeakerAlign.timelineSpreadText(lane),
+            bounds.left + bounds.width - 6, top + 11, '#e5e7eb', 'right');
+        lane.ways.forEach((way, wayIndex) => {
+            const reference = way.role === lane.referenceRole ? ' · ref' : '';
+            const text = `${way.label}${reference} ${SpeakerAlign.signedMs(way.arrivalMs)} ms`;
+            const x = toX(way.arrivalMs);
+            const y = top + laneHeight - 11 - (wayIndex * 17);
+            ctx.font = '11px sans-serif';
+            const fitsRight = x + 4 + ctx.measureText(text).width + 8 <= bounds.left + bounds.width;
+            drawSpeakerAlignTimelineLabel(ctx, text, fitsRight ? x + 4 : x - 4, y, way.color,
+                fitsRight ? 'left' : 'right');
+        });
+    });
+    ctx.restore();
+}
+
 function drawMeasurementIrGraph(ctx, bounds, graphEntries) {
+    const layout = getMeasurementIrLayout(graphEntries, bounds);
+    if (layout.laneBounds) drawSpeakerAlignTimeline(ctx, layout.laneBounds, layout.timeline);
+    if (!layout.plainBounds) return;
+    if (layout.laneBounds) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(layout.laneBounds.left, layout.laneBounds.top,
+            layout.laneBounds.width, layout.laneBounds.height);
+        ctx.strokeRect(layout.plainBounds.left, layout.plainBounds.top,
+            layout.plainBounds.width, layout.plainBounds.height);
+    }
+    drawMeasurementIrOverlay(ctx, layout.plainBounds, layout.plainEntries);
+}
+
+function drawMeasurementIrOverlay(ctx, bounds, graphEntries) {
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1;
     [-1, -0.5, 0, 0.5, 1].forEach((amplitude) => {

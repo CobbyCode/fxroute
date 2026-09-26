@@ -14,7 +14,8 @@ single-owner). Request validation raises synchronously before any job
 record exists. Results are JSON-safe summaries: arrival/delay evidence and
 overlap checks as plain floats, plus the planning (Before) and verification
 (After) takes as normal measurements with the bounded IR preview every sweep
-carries; never full-rate IR waveforms or numpy values.
+carries and a bounded timing timeline of their ways on one common time base;
+never full-rate IR waveforms or numpy values.
 """
 
 from __future__ import annotations
@@ -115,13 +116,62 @@ def _summarize_check(check: dict[str, Any]) -> dict[str, Any]:
 
 
 TAKE_LABELS = {"before": "Before (planning)", "after": "After (verification)"}
+TIMELINE_SCHEMA = "fxroute.speaker-align-timeline.v1"
 
 
-def _take_measurement(measurement: Any, *, side: str, take: str) -> dict[str, Any] | None:
+def _take_timeline(document: Any, *, reference_role: str,
+                   sample_rate_hz: int) -> dict[str, Any] | None:
+    """One take's way arrivals and display traces on the alignment's common time base.
+
+    Zero is the reference way's arrival: the alignment leaves that way
+    undelayed, so it is the same acoustic event in the Before and the After
+    take and anchors both on one time base. On it every other way sits at
+    minus its planned delay before and at its residual after, exactly the
+    numbers the proposal and the verification report. The electrical
+    reference is no such anchor: its loopback may carry a way whose delay
+    changed. ``None`` when the document carries no band evidence.
+    """
+    if not isinstance(document, dict):
+        return None
+    bands = document.get("bands")
+    traces = document.get("traces")
+    if (not isinstance(bands, dict) or not isinstance(traces, dict)
+            or not isinstance(bands.get(reference_role), dict)):
+        return None
+    try:
+        anchor = int(bands[reference_role]["arrival_index"])
+        start = int(traces["start_index"])
+        step = int(traces["step"])
+
+        def ms(index: int) -> float:
+            return (index - anchor) * 1000.0 / sample_rate_hz
+
+        def points(values: list) -> list[list[float]]:
+            return [[round(ms(start + position * step), 4), float(value)]
+                    for position, value in enumerate(values)]
+
+        return {
+            "schema": TIMELINE_SCHEMA,
+            "time_origin": "reference-way-arrival",
+            "reference_role": reference_role,
+            "sample_rate": int(sample_rate_hz),
+            "arrival_ms": {role: round(ms(int(band["arrival_index"])), 6)
+                           for role, band in bands.items()},
+            "full_band": points(traces["full_band"]),
+            "ways": {role: points(traces["ways"][role]) for role in bands},
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.warning("Speaker Align take timeline dropped: %s", exc)
+        return None
+
+
+def _take_measurement(measurement: Any, *, side: str, take: str,
+                      timeline: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """One shared take as a normal measurement named for the alignment.
 
     The take is display evidence only: a missing or non-JSON-safe
-    measurement is dropped with a warning instead of failing the alignment.
+    measurement is dropped with a warning instead of failing the alignment,
+    and so is a timeline that is not JSON-safe.
     """
     if not isinstance(measurement, dict):
         return None
@@ -137,12 +187,21 @@ def _take_measurement(measurement: Any, *, side: str, take: str) -> dict[str, An
             if isinstance(trace, dict):
                 trace["label"] = f"{label} · {suffix}"
     copy["speaker_align_take"] = {"side": side, "take": take}
+    if timeline is not None and isinstance(copy.get("analysis"), dict):
+        try:
+            copy["analysis"]["speaker_align_timeline"] = _jsonable(timeline)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Speaker Align %s %s take timeline dropped: %s", side, take, exc)
     return copy
 
 
-def _take_measurements(side: str, before: Any, after: Any) -> dict[str, Any]:
-    takes = {"before": _take_measurement(before, side=side, take="before"),
-             "after": _take_measurement(after, side=side, take="after")}
+def _take_measurements(side: str, before: Any, after: Any,
+                       timelines: dict[str, Any] | None = None) -> dict[str, Any]:
+    timelines = timelines or {}
+    takes = {"before": _take_measurement(before, side=side, take="before",
+                                         timeline=timelines.get("before")),
+             "after": _take_measurement(after, side=side, take="after",
+                                        timeline=timelines.get("after"))}
     return {take: measurement for take, measurement in takes.items() if measurement is not None}
 
 
@@ -407,8 +466,9 @@ class SpeakerAlignService:
         # The shared planning take's evidence, once measured: a job that fails
         # on it (the planning gate) keeps what it failed on.
         planning_evidence: dict[str, Any] | None = None
-        # The verification take's normal measurement, kept by confirm().
+        # The verification take's normal measurement and document, kept by confirm().
         verification_measurement: dict[str, Any] | None = None
+        verification_document: dict[str, Any] | None = None
         try:
             # The worker reuses the frozen start snapshot: the fresh-head
             # drift gate below fails the job as stale instead of silently
@@ -467,7 +527,7 @@ class SpeakerAlignService:
 
             async def confirm() -> dict:
                 """One shared take per side; the residual is a real acoustic offset."""
-                nonlocal verification_measurement
+                nonlocal verification_measurement, verification_document
                 verification = await self._confirm(
                     alignment, input_id=params["input_id"],
                     mic_input_channel=params["mic_input_channel"],
@@ -485,13 +545,18 @@ class SpeakerAlignService:
                         (verification or {}).get("provenance")):
                     raise ValueError("Speaker Align input chain changed before verification")
                 verification_measurement = verification.get("measurement")
+                verification_document = verification["confirmation"]
                 return verification["confirmation"]
 
             def result(check: dict[str, Any], *, committed_revision: Any = None) -> dict[str, Any]:
+                timeline = {"reference_role": proposal["reference_role"],
+                            "sample_rate_hz": context["sample_rate_hz"]}
+                timelines = {"before": _take_timeline(first.get("planning"), **timeline),
+                             "after": _take_timeline(verification_document, **timeline)}
                 return {"confirmed": check["confirmed"], "check": check,
                         "proposal": _summarize_proposal(proposal),
                         "measurements": _take_measurements(
-                            side, first.get("measurement"), verification_measurement),
+                            side, first.get("measurement"), verification_measurement, timelines),
                         "sample_rate_hz": context["sample_rate_hz"],
                         "side": side,
                         "params": _jsonable(params),

@@ -203,7 +203,9 @@ async function main() {
         const h = makeJobHarness({
             getMeasurementTimingInfo: () => ({ line: 'Acoustic-only timing · delay 3.21 ms · timing stable' }),
             getMeasurementJobResultMeasurement: (j) => j.result?.measurement || null,
+            setMeasurementGraphView: (view) => { h.state.measurement.measurementView = view; },
         });
+        h.state.measurement.measurementView = 'ir';
         const sweepStatus = { textContent: 'Measures frequency and impulse response.', dataset: {} };
         h.elements.measurementSweepStatus = sweepStatus;
         h.state.measurement.activeJobId = 'j1';
@@ -220,6 +222,25 @@ async function main() {
         assert.equal(h.state.measurement.statusText, 'Sweep finished · Acoustic-only timing · delay 3.21 ms · timing stable');
         assert.equal(sweepStatus.textContent, 'Measures frequency and impulse response.');
         assert.ok(h.calls.some((c) => Array.isArray(c) && c[0] === 'toast' && c[1] === 'Sweep finished'));
+        // A sweep result opens in the frequency view, even after an IR one.
+        assert.equal(h.state.measurement.measurementView, 'freq');
+    }
+
+    // 7b. An L/R repeat result opens in the frequency view too.
+    {
+        const h = makeJobHarness({
+            setMeasurementGraphView: (view) => { h.state.measurement.measurementView = view; },
+        });
+        h.state.measurement.measurementView = 'ir';
+        h.state.measurement.activeJobId = 'j3';
+        h.state.measurement.activeMeasurementKind = 'lr_repeat';
+        h.state.measurement.repeatJobActive = true;
+        h.fetchResponses.push({ ok: true, json: async () => ({ job: { id: 'j3', status: 'completed',
+            message: 'Measurement finished.', result: { base_name: 'Seat',
+                measurements: [{ id: 'l', review_traces: [] }, { id: 'r', review_traces: [] }] } } }) });
+        await job.pollMeasurementJob('j3', 7);
+        assert.deepEqual(h.state.measurement.pendingRepeatMeasurements.map((item) => item.id), ['l', 'r']);
+        assert.equal(h.state.measurement.measurementView, 'freq');
     }
 
     // 8. An L/R repeat cancel is labelled as such.

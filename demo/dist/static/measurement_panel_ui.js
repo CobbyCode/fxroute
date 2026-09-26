@@ -32,6 +32,8 @@
         buildMeasurementIrSummary: () => '',
         buildMeasurementIrDiagnosticsTooltip: () => '',
         renderMeasurementIrDiagnostics: () => {},
+        getMeasurementIrParts: (entries) => ({ timeline: null, plainEntries: entries }),
+        speakerAlignTimelineSummary: () => '',
     };
 
     function init(overrides) {
@@ -278,12 +280,20 @@
 
     function renderMeasurementPanelStatusSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
         const elements = deps.getElements();
+        // IR view parts: Speaker Align timing lanes and the normal IR overlay.
+        const irParts = frequencyView ? { timeline: null, plainEntries: graphEntries }
+            : deps.getMeasurementIrParts(graphEntries);
+        const timeline = irParts.timeline;
+        const plainEntries = irParts.plainEntries;
+        const timingRange = timeline ? `Timing ${timeline.minMs.toFixed(1)}–${timeline.maxMs.toFixed(1)} ms` : '';
         if (elements.measurementSetupStatus) {
             elements.measurementSetupStatus.textContent = deps.measurementSetupStatusText();
         }
         if (elements.measurementSummary) {
             if (!frequencyView) {
-                elements.measurementSummary.textContent = 'IR -2–30 ms';
+                elements.measurementSummary.textContent = [
+                    timeline && !plainEntries.length ? '' : 'IR -2–30 ms', timingRange,
+                ].filter(Boolean).join(' · ');
             } else if (assistMode === 'convolver') {
                 elements.measurementSummary.textContent = `${Math.round(conv.rangeStartHz)}–${Math.round(conv.rangeEndHz)} Hz`;
             } else {
@@ -293,6 +303,9 @@
         if (elements.measurementGraphSubtitle) {
             elements.measurementGraphSubtitle.textContent = frequencyView
                 ? 'Frequency view: 20 Hz to 20 kHz.'
+                : timeline
+                ? `Impulse response view: Speaker Align takes on their shared time base${
+                    plainEntries.length ? '; other measurements -2 ms to +30 ms' : ''}.`
                 : 'Impulse response view: -2 ms to +30 ms.';
         }
         if (elements.measurementEmpty) {
@@ -302,11 +315,13 @@
             elements.measurementEmpty.classList.toggle('hidden', graphEntries.length > 0);
         }
         if (elements.measurementGraphControls) {
-            const irDiagnostics = deps.buildMeasurementIrDiagnostics(graphEntries, frequencyView);
+            const irDiagnostics = deps.buildMeasurementIrDiagnostics(plainEntries, frequencyView);
             const irSummary = deps.buildMeasurementIrSummary(irDiagnostics);
             const irTooltip = deps.buildMeasurementIrDiagnosticsTooltip(irDiagnostics);
+            const irText = plainEntries.length ? (irSummary || 'IR: previews aligned to 0 ms') : '';
             elements.measurementGraphControls.textContent = !frequencyView
-                ? (irSummary || (graphEntries.length ? 'IR: previews aligned to 0 ms' : 'Run a new sweep to capture an IR preview.'))
+                ? ([timeline ? deps.speakerAlignTimelineSummary(timeline) : '', irText].filter(Boolean).join(' | ')
+                    || 'Run a new sweep to capture an IR preview.')
                 : current
                 ? (assistMode === 'convolver' ? 'Drag the blue range block or its edges to set the FIR correction range.' : 'Tap/click near 0 dB to add a filter, drag handles for freq/gain.')
                 : 'Run a sweep to see the graph.';

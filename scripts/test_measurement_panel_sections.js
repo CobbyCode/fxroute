@@ -118,6 +118,22 @@ panel.renderMeasurementPanelViewSection(context);
 assert.equal(elements.measurementTargetCurve.value, 'house:curve-1');
 assert.match(elements.measurementTargetCurve.innerHTML, /Room &amp; &lt;curve&gt;/);
 assert.equal(elements.measurementClearBtn.disabled, false);
+// Reset follows one lifecycle for every run, Speaker Align included: the
+// current unsaved run resets in the frequency view; a saved run has no Reset.
+const irResetContext = { ...context, graphView: 'ir', frequencyView: false };
+panel.renderMeasurementPanelViewSection(irResetContext);
+assert.equal(elements.measurementClearBtn.disabled, true);
+assert.equal(elements.measurementClearBtn.title, 'Only available in frequency view.');
+const savedTake = { id: 'take-before', speaker_align_take: { side: 'right', take: 'before' } };
+const savedOnlyContext = { ...context, current: null, peq: { filters: [] },
+    conv: { targetCurve: 'neutral', rangeStartHz: 20, rangeEndHz: 250,
+        maxBoostDb: 6, maxCutDb: -9, dipGuard: 'off', quality: 'minimum_8192' },
+    measurements: [savedTake], measurementState: { ...measurementState, visibilityById: { 'take-before': true } } };
+panel.renderMeasurementPanelViewSection(savedOnlyContext);
+assert.equal(elements.measurementClearBtn.disabled, true);
+panel.renderMeasurementPanelViewSection({ ...savedOnlyContext, current: { id: 'align-before' } });
+assert.equal(elements.measurementClearBtn.disabled, false);
+panel.renderMeasurementPanelViewSection(context);
 panel.renderMeasurementPanelStatusSection(context);
 assert.equal(elements.measurementSetupStatus.textContent, 'Host capture ready');
 assert.equal(elements.measurementSummary.textContent, '1/12 assistant filters');
@@ -158,5 +174,31 @@ assert.equal(elements.measurementSummary.textContent, 'IR -2–30 ms');
 assert.equal(elements.measurementGraphControls.textContent, 'IR aligned');
 assert.equal(elements.measurementGraphControls.title, 'IR timing detail');
 assert.deepEqual(calls.slice(-2), [['diagnostics', 1, false], ['ir-render', 1, false]]);
+
+// IR texts follow the two IR parts: Align takes on their timing lanes and
+// the normal IR overlay; each part only reports what it draws.
+const timeline = { minMs: -1.5, maxMs: 2, lanes: [{}] };
+const alignEntry = { id: 'align-before' };
+const plainEntry = { id: 'room-sweep' };
+panel.init({
+    getMeasurementIrParts: (entries) => ({ timeline: entries.includes(alignEntry) ? timeline : null,
+        plainEntries: entries.filter((entry) => entry !== alignEntry) }),
+    speakerAlignTimelineSummary: () => 'Timing: lanes',
+});
+const irTextContext = { ...irContext, activeEditor: 'none' };
+panel.renderMeasurementPanelStatusSection({ ...irTextContext, graphEntries: [alignEntry] });
+assert.equal(elements.measurementSummary.textContent, 'Timing -1.5–2.0 ms');
+assert.equal(elements.measurementGraphControls.textContent, 'Timing: lanes');
+assert.equal(elements.measurementGraphSubtitle.textContent,
+    'Impulse response view: Speaker Align takes on their shared time base.');
+panel.renderMeasurementPanelStatusSection({ ...irTextContext, graphEntries: [plainEntry, alignEntry] });
+assert.equal(elements.measurementSummary.textContent, 'IR -2–30 ms · Timing -1.5–2.0 ms');
+assert.equal(elements.measurementGraphControls.textContent, 'Timing: lanes | IR aligned');
+assert.equal(elements.measurementGraphSubtitle.textContent,
+    'Impulse response view: Speaker Align takes on their shared time base; other measurements -2 ms to +30 ms.');
+panel.renderMeasurementPanelStatusSection({ ...irTextContext, graphEntries: [plainEntry] });
+assert.equal(elements.measurementSummary.textContent, 'IR -2–30 ms');
+assert.equal(elements.measurementGraphControls.textContent, 'IR aligned');
+assert.equal(elements.measurementGraphSubtitle.textContent, 'Impulse response view: -2 ms to +30 ms.');
 
 console.log('measurement panel file/action/view/status sections: ok');

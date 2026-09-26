@@ -496,9 +496,10 @@ async def acquire_speaker_captures(
         })
     provenance["electrical_reference_channels_by_role"] = channels_by_role
     # The planning evidence travels with the job record; the estimator's raw
-    # per-band internals stay out of it, like the check summary's.
+    # per-band internals and display traces stay out of it, like the check
+    # summary's. The traces reach the Before take measurement instead.
     provenance["planning"] = {
-        key: value for key, value in planning.items() if key != "bands"
+        key: value for key, value in planning.items() if key not in ("bands", "traces")
     }
     return {"captures": captures, "planning": planning, "provenance": provenance,
             "measurement": planning_measurement}

@@ -369,6 +369,52 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
                          "Speaker Align Left · After (verification) · raw/full-band review")
         self.assertEqual(before["measurement_kind"], "sweep-response-v3")
 
+    async def test_takes_share_the_reference_way_time_base(self):
+        # The planning take puts the high way 3 ms after the low way; the
+        # verification take renders the low way with its 3 ms delay applied.
+        async def confirm(alignment, **kwargs):
+            result = await self.confirm(alignment, **kwargs)
+            result["confirmation"] = takes.confirmation_document(
+                alignment, {"left_low": 5.0, "left_high": 5.0})
+            return result
+
+        service, job_id = self.start(self.service(confirm=confirm))
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "committed")
+        result = job["result"]
+        reference = result["proposal"]["reference_role"]
+        self.assertEqual(reference, "left_high")
+        timelines = {take: result["measurements"][take]["analysis"]["speaker_align_timeline"]
+                     for take in ("before", "after")}
+        for timeline in timelines.values():
+            self.assertEqual(timeline["schema"], "fxroute.speaker-align-timeline.v1")
+            self.assertEqual(timeline["time_origin"], "reference-way-arrival")
+            self.assertEqual(timeline["reference_role"], reference)
+            self.assertEqual(timeline["arrival_ms"][reference], 0.0)
+            self.assertEqual(list(timeline["ways"]), ["left_low", "left_high"])
+            for role, points in timeline["ways"].items():
+                peak_ms = max(points, key=lambda point: abs(point[1]))[0]
+                self.assertAlmostEqual(peak_ms, timeline["arrival_ms"][role], places=3)
+        # Before: every way at minus its planned delay. After: the residual.
+        for role, delay in result["proposal"]["added_delay_ms"].items():
+            self.assertAlmostEqual(timelines["before"]["arrival_ms"][role], -delay, places=5)
+        after_arrivals = result["check"]["after_arrival_ms"]
+        for role, arrival in after_arrivals.items():
+            self.assertAlmostEqual(timelines["after"]["arrival_ms"][role],
+                                   arrival - after_arrivals[reference], places=5)
+        after_spread = (max(timelines["after"]["arrival_ms"].values())
+                        - min(timelines["after"]["arrival_ms"].values()))
+        self.assertAlmostEqual(after_spread, result["check"]["max_residual_ms"], places=5)
+        self.assertAlmostEqual(timelines["before"]["arrival_ms"]["left_low"], -3.0, delta=0.05)
+        self.assertLess(abs(timelines["after"]["arrival_ms"]["left_low"]), 0.05)
+
+    async def test_take_without_band_evidence_has_no_timeline(self):
+        service, job_id = self.start()
+        job = await self.wait_terminal(service, job_id)
+        measurements = job["result"]["measurements"]
+        self.assertIn("speaker_align_timeline", measurements["before"]["analysis"])
+        self.assertNotIn("speaker_align_timeline", measurements["after"]["analysis"])
+
     async def test_unconfirmed_and_trial_runs_keep_both_takes(self):
         self.second_arrivals = (500, 548)
         service, job_id = self.start()

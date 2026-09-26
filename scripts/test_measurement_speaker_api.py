@@ -175,6 +175,36 @@ class SpeakerApiTests(unittest.IsolatedAsyncioTestCase):
 
 class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_factory_wires_boundaries_end_to_end(self):
+        composed = await self.compose_and_run()
+        job, head = composed["job"], composed["head"]
+        self.assertEqual(job["status"], "committed", job)
+        self.assertEqual(job["result"]["committed_revision"], head["revision"] + 1)
+        # One acquisition (its shared planning take plus both ways) plus one
+        # shared verification take.
+        self.assertEqual(composed["calls"]["n"], 1)
+        self.assertEqual(composed["verifications"]["n"], 1)
+        self.assertEqual(composed["output_service"].load()["revision"], head["revision"] + 1)
+
+    async def test_every_job_ends_on_the_plan_a_normal_sweep_expects(self):
+        # The run stages the alignment plan (banks bypassed); before the job
+        # lets go of the session the runtime is back on the head's normal
+        # plan at the measurement rate, whether the run committed or not.
+        for residual_ms, status in ((0.0, "committed"), (3.0, "unconfirmed")):
+            with self.subTest(status=status):
+                composed = await self.compose_and_run(with_session=True, residual_ms=residual_ms)
+                self.assertEqual(composed["job"]["status"], status, composed["job"])
+                output_service = composed["output_service"]
+                context = dict(output_key="dev", channels=6, sample_rate_hz=48000)
+                head = output_service.load()
+                normal = output_service.fingerprint_plan(output_service.compile_plan(head, **context))
+                alignment = output_service.fingerprint_plan(
+                    output_service.compile_alignment_plan(head, **context))
+                self.assertNotEqual(normal, alignment)
+                self.assertEqual(composed["session_events"][0], "register")
+                self.assertEqual(composed["session_events"][-1], ("unregister", normal))
+                self.assertEqual(composed["runtime"]["fingerprint"], normal)
+
+    async def compose_and_run(self, *, with_session: bool = False, residual_ms: float = 0.0) -> dict:
         import tempfile
         import numpy as np
         from audio.output_service import OutputService, OutputServiceDeps
@@ -226,6 +256,9 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
 
             async def verify(self):
                 return True
+
+            async def sync_rendered(self, target):
+                runtime["fingerprint"] = target.config.plan_fingerprint
 
             def snapshot(self):
                 return {"active": True, "helper_pid": 7,
@@ -296,10 +329,39 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
                 "confirmation": {
                     "start_revision": request["measurement_target"]["revision"],
                     "processing_fingerprint": request["measurement_target"]["processing_fingerprint"],
-                    "arrival_ms": {role: 0.0 for role in request["roles"]},
+                    "arrival_ms": {role: index * residual_ms
+                                   for index, role in enumerate(request["roles"])},
                     "way_levels_db": {role: 0.0 for role in request["roles"]}},
                 "provenance": {"job_ids": ["composed-verify"]},
             }
+
+        session_events = []
+        session_wiring = {}
+        if with_session:
+            from measurement.speaker_commit import create_speaker_release_adapter
+
+            class Session:
+                has_active_jobs = False
+
+                def capture_entry_epoch(self):
+                    return 1
+
+                async def register_speaker_job(self, job_id, entry_epoch=None):
+                    session_events.append("register")
+                    return 1, False
+
+                async def unregister_speaker_job(self, job_id):
+                    session_events.append(("unregister", runtime["fingerprint"]))
+
+                async def register_speaker_align_release_adapter(self, adapter):
+                    session_events.append("release-adapter")
+
+            session = Session()
+            session_wiring = dict(
+                get_measurement_session=lambda: session,
+                build_release_adapter=lambda *, output_key, channels: create_speaker_release_adapter(
+                    service=output_service, dsp_manager=manager, hardware_ports=list(ports),
+                    get_native_runtime=lambda: native, output_key=output_key, channels=channels))
 
         service = build_speaker_align_service(
             output_service=output_service, measurement_store=None, dsp_manager=manager,
@@ -308,20 +370,16 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
                                            "hardware_ports": list(ports)},
             get_measurement_rate=lambda: rate,
             capture_runner=capture_runner,
-            verification_runner=verification_runner)
+            verification_runner=verification_runner, **session_wiring)
         self.assertIsInstance(service, SpeakerAlignService)
         job_id = service.start(
             "left", input_id="mic", reference_input_channel="2",
             reference_id="interface:input-2:upstream",
             microphone_position_id="seat-1-fixed")
         job = await service.wait_for(job_id, timeout_seconds=30)
-        self.assertEqual(job["status"], "committed", job)
-        self.assertEqual(job["result"]["committed_revision"], head["revision"] + 1)
-        # One acquisition (its shared planning take plus both ways) plus one
-        # shared verification take.
-        self.assertEqual(calls["n"], 1)
-        self.assertEqual(verifications["n"], 1)
-        self.assertEqual(output_service.load()["revision"], head["revision"] + 1)
+        return {"job": job, "head": head, "calls": calls, "verifications": verifications,
+                "output_service": output_service, "runtime": runtime,
+                "session_events": session_events}
 
 
 if __name__ == "__main__":

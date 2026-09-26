@@ -238,6 +238,12 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provenance["reference_node"], "capture_1")
         self.assertEqual(provenance["sample_rate_hz"], RATE)
         self.assertEqual(len(provenance["job_ids"]), 3)
+        # The job record keeps the planning numbers only; the display traces
+        # stay with the planning document the Before take is drawn from.
+        self.assertIn("arrival_ms", provenance["planning"])
+        self.assertNotIn("bands", provenance["planning"])
+        self.assertNotIn("traces", provenance["planning"])
+        self.assertIn("traces", result["planning"])
         # The shared planning take comes back as the store's normal
         # measurement of that take: the Before view with its IR preview.
         planning_job = self.store.get_job(provenance["job_ids"][0])

@@ -9,7 +9,10 @@
  * The Speaker Align section shows the numeric result only (delay, gain,
  * isolation, verification, status). Before (planning take) and After
  * (verification take) are normal measurements in the job result; the flow
- * module hands them to the normal measurement graph and save flow.
+ * module hands them to the normal measurement graph and save flow. Their
+ * timing timeline puts both takes on one time base anchored on the
+ * reference way; the IR graph always draws a take that carries it as one
+ * lane on that time base, whatever else is visible.
  */
 (function (root, factory) {
     const api = factory(root);
@@ -21,6 +24,8 @@
     const SIDES = ['left', 'right'];
     const TERMINAL_STATUSES = ['committed', 'trial-done', 'unconfirmed', 'failed', 'cancelled'];
     const TAKES = ['before', 'after'];
+    const TIMELINE_SCHEMA = 'fxroute.speaker-align-timeline.v1';
+    const WAY_COLORS = { low: '#60a5fa', low_mid: '#a78bfa', mid: '#f472b6', high: '#f59e0b' };
 
     function trimmed(value) {
         return String(value == null ? '' : value).trim();
@@ -141,8 +146,128 @@
         return trimmed(record.message) || `${name}: ${status}.`;
     }
 
+    function wayKey(role) {
+        return String(role).replace(/^(left|right)_/, '');
+    }
+
     function wayLabel(role) {
-        return { low: 'Low', low_mid: 'Low-Mid', mid: 'Mid', high: 'High' }[String(role).replace(/^(left|right)_/, '')] || 'Way';
+        return { low: 'Low', low_mid: 'Low-Mid', mid: 'Mid', high: 'High' }[wayKey(role)] || 'Way';
+    }
+
+    function wayColor(role) {
+        return WAY_COLORS[wayKey(role)] || '#e5e7eb';
+    }
+
+    function finitePoints(points) {
+        return (Array.isArray(points) ? points : [])
+            .filter(point => Array.isArray(point) && point.length === 2
+                && Number.isFinite(numberOrNaN(point[0])) && Number.isFinite(numberOrNaN(point[1])))
+            .map(point => [Number(point[0]), Number(point[1])]);
+    }
+
+    // One take's ways on the alignment's common time base: zero is the
+    // reference way's arrival, the way the alignment leaves undelayed.
+    function takeTimeline(measurement) {
+        const timeline = measurement?.analysis?.speaker_align_timeline;
+        if (!timeline || timeline.schema !== TIMELINE_SCHEMA) return null;
+        const arrivals = timeline.arrival_ms || {};
+        const ways = Object.keys(timeline.ways || {})
+            .filter(role => Number.isFinite(numberOrNaN(arrivals[role])))
+            .map(role => ({ role, label: wayLabel(role), color: wayColor(role),
+                arrivalMs: Number(arrivals[role]), points: finitePoints(timeline.ways[role]) }));
+        if (ways.length < 2 || !ways.some(way => way.role === timeline.reference_role)) return null;
+        return { referenceRole: timeline.reference_role, ways, fullBand: finitePoints(timeline.full_band) };
+    }
+
+    function timelineTicks(minMs, maxMs, widthPx) {
+        const target = Math.max(4, Math.floor((Number(widthPx) || 640) / 72));
+        const step = [0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 20, 50]
+            .find(candidate => (maxMs - minMs) / candidate <= target) || 100;
+        const ticks = [];
+        for (let tick = Math.ceil(minMs / step) * step; tick <= maxMs + 1e-9; tick += step) {
+            ticks.push(Number(tick.toFixed(6)));
+        }
+        return ticks;
+    }
+
+    // Timing lanes of the IR graph: one lane per take that carries a
+    // timeline, all on one millisecond axis. The axis auto-ranges over the
+    // lanes' arrivals like the frequency view's dB range over its traces.
+    function timelineView(entries, { widthPx } = {}) {
+        const lanes = [];
+        (Array.isArray(entries) ? entries : []).forEach((entry) => {
+            const timeline = takeTimeline(entry);
+            if (!timeline) return;
+            const take = entry.speaker_align_take?.take === 'after' ? 'after' : 'before';
+            const side = entry.speaker_align_take?.side === 'right' ? 'Right' : 'Left';
+            const arrivals = timeline.ways.map(way => way.arrivalMs);
+            lanes.push({
+                ...timeline,
+                take,
+                label: `${side} · ${take === 'after' ? 'After' : 'Before'}${entry.current ? '' : ' (saved)'}`,
+                color: entry.graphColor || '',
+                side,
+                current: !!entry.current,
+                spreadMs: Math.max(...arrivals) - Math.min(...arrivals),
+            });
+        });
+        if (!lanes.length) return null;
+        // Lanes keep the graph's entry order. Only within one pair (After
+        // directly followed by Before of the same side, both current or both
+        // saved) Before goes on top.
+        for (let index = 0; index + 1 < lanes.length; index += 1) {
+            const [first, second] = [lanes[index], lanes[index + 1]];
+            if (first.take === 'after' && second.take === 'before'
+                    && first.side === second.side && first.current === second.current) {
+                lanes[index] = second;
+                lanes[index + 1] = first;
+                index += 1;
+            }
+        }
+        const arrivals = lanes.flatMap(lane => lane.ways.map(way => way.arrivalMs));
+        const earliest = Math.min(0, ...arrivals);
+        const latest = Math.max(0, ...arrivals);
+        const span = latest - earliest;
+        const minMs = earliest - Math.max(1, span * 0.5);
+        const maxMs = latest + Math.max(2, span * 0.75);
+        return { lanes, minMs, maxMs, ticks: timelineTicks(minMs, maxMs, widthPx) };
+    }
+
+    // The IR graph's two parts. A Speaker Align take with a timeline always
+    // draws as a timing lane; every other entry keeps the normal IR overlay.
+    // Where an entry lands depends on that entry alone, never on the order or
+    // visibility of the others.
+    function irParts(entries, { widthPx } = {}) {
+        const list = Array.isArray(entries) ? entries : [];
+        return { timeline: timelineView(list, { widthPx }),
+            plainEntries: list.filter(entry => !takeTimeline(entry)) };
+    }
+
+    function signedMs(value) {
+        const rounded = Math.abs(value) < 0.0005 ? 0 : value;
+        return `${rounded > 0 ? '+' : rounded < 0 ? '−' : ''}${Math.abs(rounded).toFixed(3)}`;
+    }
+
+    // Before reads the spread the proposal corrects, After the residual the
+    // verification judged: the same numbers as the result table.
+    function timelineSpreadText(lane) {
+        return `${lane.take === 'after' ? 'residual' : 'spread'} ${lane.spreadMs.toFixed(3)} ms`;
+    }
+
+    function timelineSummary(view) {
+        if (!view?.lanes?.length) return '';
+        const references = [...new Set(view.lanes.map(lane => wayLabel(lane.referenceRole)))];
+        const reference = references.length === 1 ? references[0] : 'reference way';
+        const lanes = view.lanes.map(lane => `${lane.label} ${timelineSpreadText(lane)}`).join(' · ');
+        return `Timing: 0 ms = ${reference} arrival (not delayed) · ${lanes}`;
+    }
+
+    function timelineHoverText(view, laneIndex, timeMs) {
+        const lane = view?.lanes?.[laneIndex];
+        if (!lane || !Number.isFinite(timeMs)) return '';
+        const nearest = lane.ways.reduce((best, way) =>
+            (!best || Math.abs(way.arrivalMs - timeMs) < Math.abs(best.arrivalMs - timeMs) ? way : best), null);
+        return `${lane.label} · ${signedMs(timeMs)} ms · ${nearest.label} arrival ${signedMs(nearest.arrivalMs)} ms`;
     }
 
     function takeMeasurements(result) {
@@ -204,7 +329,15 @@
         speakerAlignVisible,
         formatSpeakerAlignStatus,
         wayLabel,
+        wayColor,
         takeMeasurements,
         renderSpeakerAlignResult,
+        takeTimeline,
+        timelineView,
+        irParts,
+        timelineSpreadText,
+        timelineSummary,
+        timelineHoverText,
+        signedMs,
     };
 });

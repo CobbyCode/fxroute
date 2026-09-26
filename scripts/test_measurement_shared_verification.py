@@ -34,9 +34,13 @@ from measurement.alignment_backend import way_crossover_specs
 from measurement.speaker_verification import (
     MIN_WAY_ISOLATION_DB,
     ARRIVAL_LOBE_MAX_MS,
+    TRACE_LEAD_MS,
+    TRACE_MAX_POINTS,
+    TRACE_TAIL_MS,
     band_arrival,
     band_level,
     side_confirmation,
+    take_traces,
     way_band_impulse_response,
 )
 
@@ -566,6 +570,42 @@ class ConfirmationDocumentTests(unittest.TestCase):
         self.assertAlmostEqual(document["arrival_ms"]["left_mid"], 2.0, delta=0.05)
         self.assertAlmostEqual(document["arrival_ms"]["left_high"], 2.0, delta=0.05)
         self.assertAlmostEqual(document["arrival_ms"]["left_low"], 0.0, delta=0.05)
+
+
+class DisplayTraceTests(unittest.TestCase):
+    """The take's display slices show the arrivals exactly where they were read."""
+
+    def test_every_band_slice_peaks_on_its_own_arrival(self):
+        document = confirm_take(synthetic_take({"left_low": 0.5, "left_high": 0.0}))
+        traces = document["traces"]
+        start, step = traces["start_index"], traces["step"]
+        self.assertEqual(step, 1)
+        earliest = min(band["arrival_index"] for band in document["bands"].values())
+        latest = max(band["arrival_index"] for band in document["bands"].values())
+        self.assertEqual(start, earliest - round(RATE * TRACE_LEAD_MS / 1000.0))
+        self.assertEqual(len(traces["full_band"]),
+                         latest + round(RATE * TRACE_TAIL_MS / 1000.0) + 1 - start)
+        self.assertEqual(set(traces["ways"]), set(ROLES))
+        for role, band in document["bands"].items():
+            values = np.abs(np.asarray(traces["ways"][role]))
+            self.assertEqual(len(values), len(traces["full_band"]))
+            self.assertEqual(start + int(np.argmax(values)) * step, band["arrival_index"])
+            self.assertAlmostEqual(float(values.max()), 1.0)
+        self.assertAlmostEqual(float(np.max(np.abs(traces["full_band"]))), 1.0)
+
+    def test_a_wide_take_is_decimated_on_a_grid_through_the_earliest_arrival(self):
+        ir = np.zeros(RATE)
+        arrivals = {"left_low": 30001, "left_high": 1000}
+        bands = {role: np.zeros(RATE) for role in arrivals}
+        for role, index in arrivals.items():
+            ir[index] = 1.0
+            bands[role][index] = -2.0
+        traces = take_traces(ir, bands, arrivals, sample_rate_hz=RATE)
+        start, step = traces["start_index"], traces["step"]
+        self.assertGreater(step, 1)
+        self.assertLessEqual(len(traces["full_band"]), TRACE_MAX_POINTS)
+        self.assertEqual((1000 - start) % step, 0)
+        self.assertEqual(traces["ways"]["left_high"][(1000 - start) // step], -1.0)
 
 
 if __name__ == "__main__":

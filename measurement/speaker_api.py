@@ -9,10 +9,14 @@ injected parts so this module never imports ``main``. Committed jobs
 register a release adapter on the measurement session so a later session
 release rebuilds the committed plan at the restore rate; without release
 wiring the persisted head still keeps the commit for the next transition.
+Every job also ends with the runtime back on the head's normal plan at the
+measurement rate, so the next sweep of the still open window matches it.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -32,6 +36,7 @@ from measurement.speaker_service import (
 from measurement.target import freeze_measurement_target
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -254,6 +259,36 @@ def build_speaker_align_service(
                 or (measurement_store is not None and measurement_store.has_active_measurement_job())):
             raise SpeakerAlignBusyError("Another measurement is already running")
 
+    async def restore_measurement_plan() -> None:
+        """Put the runtime back on the head's normal plan at the measurement rate.
+
+        A run stages the neutralized alignment plan (Global/area banks
+        bypassed) and keeps it after its own commit or restore. The session
+        release rebuilds the normal plan only once the measurement window
+        closes, so a normal sweep in the still open window would compile the
+        full plan and refuse the runtime as a fingerprint mismatch. Never
+        raises: on failure that sweep still fails closed.
+        """
+        if build_release_adapter is None:
+            return
+        try:
+            device = describe_device(output_service.load())
+            adapter = build_release_adapter(
+                output_key=device["output_key"], channels=device["channels"])
+            rendered = await adapter(int(get_measurement_rate()))
+            logger.info("Speaker Align restored the measurement plan: %s", rendered)
+        except Exception as exc:
+            logger.warning("Speaker Align could not restore the measurement plan: %s", exc)
+
+    async def run_to_end(step: Awaitable[Any]) -> None:
+        cleanup = asyncio.create_task(step)
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        cleanup.result()
+
     def job_scope(job_id: str):
         session = get_measurement_session() if get_measurement_session else None
         epoch = session.capture_entry_epoch() if session is not None else None
@@ -270,14 +305,10 @@ def build_speaker_align_service(
                 yield
             finally:
                 if registered:
-                    import asyncio
-                    cleanup = asyncio.create_task(session.unregister_speaker_job(job_id))
-                    while not cleanup.done():
-                        try:
-                            await asyncio.shield(cleanup)
-                        except asyncio.CancelledError:
-                            continue
-                    cleanup.result()
+                    # Still owned by this job: no sweep can start before the
+                    # normal plan is back, and the job reads terminal only after.
+                    await run_to_end(restore_measurement_plan())
+                    await run_to_end(session.unregister_speaker_job(job_id))
 
         return owned()
 
