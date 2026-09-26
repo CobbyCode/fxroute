@@ -42,11 +42,12 @@ const dsp = require(path.join(__dirname, '..', 'static', 'measurement_dsp.js'));
 const convolverEditor = require(path.join(__dirname, '..', 'static', 'measurement_convolver_editor.js'));
 const state = {
     measurement: {
+        assistMode: 'convolver',
         activeEditor: 'none',
         houseCurveOptions: [],
         customHouseCurve: { open: false, displayTarget: 'actual', points: [], activePointId: null, dragPointId: null, name: '', nameTouched: false, saving: false },
         peqAssistant: { filters: [], enabled: false, activeFilterId: null, dragFilterId: null },
-        convolverAssistant: { targetCurve: 'neutral', dragMode: null },
+        convolverAssistant: { ...MeasurementUI.getDefaultMeasurementConvolverState() },
     },
 };
 const pointerState = { x: 0, y: 0, bounds: { left: 50, top: 20, width: 1000, height: 400 }, range: { minDb: -18, maxDb: 18 } };
@@ -157,10 +158,18 @@ assert.equal(state.measurement.customHouseCurve.points.length, 1);
 assert.equal(context.getCustomHouseCurvePointSlot(state.measurement.customHouseCurve.points[0].id), 0);
 assert.equal(context.getCustomHouseCurvePointColor(state.measurement.customHouseCurve.points[0]), context.getCustomHouseCurvePointColor(state.measurement.customHouseCurve.points[0], 0));
 
-// The visible Reset button uses the same path and keeps the editor open.
+// Neutral target and default settings do not offer a mode Reset, even in the custom editor.
 context.resetMeasurementGraph();
 assert.equal(state.measurement.activeEditor, 'houseCurve');
 assert.deepEqual(JSON.parse(JSON.stringify(state.measurement.customHouseCurve.points.map((point) => ({ slot: point.slot, freqHz: point.freqHz, gainDb: point.gainDb }))),), [{ slot: 0, freqHz: 20, gainDb: 0 }]);
+
+// Reset with a selected house curve returns to Neutral rather than resetting the unsaved draft.
+context.handleMeasurementTargetCurveSelection('harman');
+context.handleMeasurementTargetCurveSelection('create-custom-house-curve');
+context.resetMeasurementGraph();
+assert.equal(state.measurement.convolverAssistant.targetCurve, 'neutral');
+assert.equal(state.measurement.activeEditor, 'none');
+context.handleMeasurementTargetCurveSelection('create-custom-house-curve');
 
 // A free graph click uses the next free slot, maps log-X/Y, selects it, and is bounded.
 const clickPoint = context.addCustomHouseCurvePointAtPosition({ x: bounds.left + bounds.width * 0.5, y: bounds.top + bounds.height * 0.25, bounds, range });

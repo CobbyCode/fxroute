@@ -262,18 +262,9 @@
             elements.measurementTargetCurve.classList.remove('hidden');
         }
         if (elements.measurementClearBtn) {
-            const defaultConv = deps.getDefaultMeasurementConvolverState();
-            const hasConvolverResettableState = assistMode === 'convolver' && (
-                conv.targetCurve !== defaultConv.targetCurve
-                || Math.round(conv.rangeStartHz) !== defaultConv.rangeStartHz
-                || Math.round(conv.rangeEndHz) !== defaultConv.rangeEndHz
-                || Number(conv.maxBoostDb) !== defaultConv.maxBoostDb
-                || Number(conv.maxCutDb) !== defaultConv.maxCutDb
-                || String(conv.dipGuard) !== defaultConv.dipGuard
-                || String(conv.quality) !== defaultConv.quality
-            );
-            const hasResettableGraphState = !!current || !!peq.filters.length || hasConvolverResettableState || activeEditor === 'houseCurve';
-            elements.measurementClearBtn.disabled = !frequencyView || !hasResettableGraphState || measurementState.startInFlight || !!measurementState.activeJobId;
+            const hasResettableSettings = root.FXRouteMeasurementUI.hasResettableMeasurementSettings(
+                assistMode, peq, conv, deps.getDefaultMeasurementConvolverState());
+            elements.measurementClearBtn.disabled = !frequencyView || !hasResettableSettings || measurementState.startInFlight || !!measurementState.activeJobId;
             elements.measurementClearBtn.title = frequencyView ? '' : 'Only available in frequency view.';
         }
     }

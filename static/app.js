@@ -785,7 +785,7 @@ let state = {
             dipGuard: 'off',
             safetyMarginDb: 1,
             autoGainEnabled: true,
-            quality: 'linear_8192',
+            quality: 'minimum_8192',
             phaseMode: 'minimum',
             irLength: '8192',
             dragMode: null,
@@ -3421,25 +3421,24 @@ function getMeasurementTargetCurvePreview() {
 
 
 function resetMeasurementGraph() {
-    if (getMeasurementActiveEditor() === 'houseCurve') {
-        window.FXRouteMeasurementCalibration.resetCustomHouseCurveDraft();
-        renderMeasurementPanel();
-        MeasurementGraph.scheduleMeasurementGraphRender();
-        return;
-    }
-    setMeasurementActiveEditor('none');
+    if (getMeasurementGraphView() !== 'freq' || state.measurement.startInFlight || state.measurement.activeJobId) return;
     const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
     const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
-    state.measurement.currentMeasurement = null;
-    state.measurement.pendingRepeatMeasurements = [];
-    state.measurement.autoSubMeasurements = [];
-    state.measurement.currentMeasurementSaved = false;
-    state.measurement.currentMeasurementName = '';
-    peq.enabled = false;
-    peq.filters = [];
-    peq.activeFilterId = null;
-    peq.dragFilterId = null;
-    Object.assign(conv, window.FXRouteMeasurementConvolverEditor.getDefaultMeasurementConvolverState());
+    const defaults = window.FXRouteMeasurementConvolverEditor.getDefaultMeasurementConvolverState();
+    const assistMode = state.measurement.assistMode;
+    if (!MeasurementUI.hasResettableMeasurementSettings(assistMode, peq, conv, defaults)) return;
+    setMeasurementActiveEditor(assistMode === 'peq' ? 'peq' : 'none');
+    if (assistMode === 'peq') {
+        peq.filters = [];
+        peq.activeFilterId = null;
+        peq.dragFilterId = null;
+        if (conv.targetCurve !== defaults.targetCurve) {
+            window.FXRouteMeasurementConvolverEditor.clearMeasurementConvolverDraftForSettingsChange('Target curve changed. Take L/R again.');
+        }
+        conv.targetCurve = defaults.targetCurve;
+    } else {
+        Object.assign(conv, defaults);
+    }
     renderMeasurementPanel();
     MeasurementGraph.scheduleMeasurementGraphRender();
 }

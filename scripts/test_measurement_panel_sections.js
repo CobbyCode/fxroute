@@ -4,6 +4,7 @@
 
 const assert = require('node:assert/strict');
 const panel = require('../static/measurement_panel_ui.js');
+const measurementUI = require('../static/measurement_ui.js');
 const { escapeHtml } = require('../static/ui_helpers.js');
 
 function element() {
@@ -63,10 +64,7 @@ panel.init({
     getMeasurementConvolverCurveOptions: () => [
         { key: 'neutral', label: 'Neutral' }, { key: 'house:curve-1', label: 'Room & <curve>' },
     ],
-    getDefaultMeasurementConvolverState: () => ({
-        targetCurve: 'neutral', rangeStartHz: 20, rangeEndHz: 250,
-        maxBoostDb: 6, maxCutDb: -9, dipGuard: 'off', quality: 'minimum_8192',
-    }),
+    getDefaultMeasurementConvolverState: measurementUI.getDefaultMeasurementConvolverState,
     measurementSetupStatusText: () => 'Host capture ready',
     buildMeasurementIrDiagnostics: (entries, frequencyView) => {
         calls.push(['diagnostics', entries.length, frequencyView]);
@@ -84,10 +82,7 @@ const measurementState = {
     houseCurveOptions: [{ id: 'curve-1', filename: 'Room & <curve>.txt' }],
     currentMeasurementName: 'Sweep 1',
 };
-const conv = {
-    targetCurve: 'house:curve-1', rangeStartHz: 30, rangeEndHz: 500,
-    maxBoostDb: 6, maxCutDb: -9, dipGuard: 'off', quality: 'minimum_8192',
-};
+const conv = { ...measurementUI.getDefaultMeasurementConvolverState(), targetCurve: 'house:curve-1', rangeStartHz: 30, rangeEndHz: 500 };
 const peq = { filters: [{ id: 'f1' }] };
 const graphEntries = [{ id: 'measurement-1' }];
 const context = { measurementState, conv, peq, graphEntries, current: { id: 'measurement-1' },
@@ -118,21 +113,40 @@ panel.renderMeasurementPanelViewSection(context);
 assert.equal(elements.measurementTargetCurve.value, 'house:curve-1');
 assert.match(elements.measurementTargetCurve.innerHTML, /Room &amp; &lt;curve&gt;/);
 assert.equal(elements.measurementClearBtn.disabled, false);
-// Reset follows one lifecycle for every run, Speaker Align included: the
-// current unsaved run resets in the frequency view; a saved run has no Reset.
+// IR never offers Reset, even when the frequency editors have pending changes.
 const irResetContext = { ...context, graphView: 'ir', frequencyView: false };
 panel.renderMeasurementPanelViewSection(irResetContext);
 assert.equal(elements.measurementClearBtn.disabled, true);
 assert.equal(elements.measurementClearBtn.title, 'Only available in frequency view.');
 const savedTake = { id: 'take-before', speaker_align_take: { side: 'right', take: 'before' } };
 const savedOnlyContext = { ...context, current: null, peq: { filters: [] },
-    conv: { targetCurve: 'neutral', rangeStartHz: 20, rangeEndHz: 250,
-        maxBoostDb: 6, maxCutDb: -9, dipGuard: 'off', quality: 'minimum_8192' },
+    conv: measurementUI.getDefaultMeasurementConvolverState(),
     measurements: [savedTake], measurementState: { ...measurementState, visibilityById: { 'take-before': true } } };
 panel.renderMeasurementPanelViewSection(savedOnlyContext);
 assert.equal(elements.measurementClearBtn.disabled, true);
 panel.renderMeasurementPanelViewSection({ ...savedOnlyContext, current: { id: 'align-before' } });
-assert.equal(elements.measurementClearBtn.disabled, false);
+assert.equal(elements.measurementClearBtn.disabled, true, 'a measurement alone does not enable Reset');
+for (const [label, overrides, enabled] of [
+    ['neutral PEQ', {}, false],
+    ['PEQ filters', { peq: { filters: [{ id: 'f1' }] } }, true],
+    ['PEQ house curve', { conv: { ...savedOnlyContext.conv, targetCurve: 'harman' } }, true],
+    ['PEQ ignores convolver settings', { conv: { ...savedOnlyContext.conv, maxCutDb: -12 } }, false],
+    ['neutral convolver', { assistMode: 'convolver' }, false],
+    ['convolver ignores PEQ filters', { assistMode: 'convolver', peq: { filters: [{ id: 'f1' }] } }, false],
+    ['convolver range', { assistMode: 'convolver', conv: { ...savedOnlyContext.conv, rangeStartHz: 35 } }, true],
+    ['convolver phase', { assistMode: 'convolver', conv: { ...savedOnlyContext.conv, phaseMode: 'linear', quality: 'linear_8192' } }, true],
+    ['convolver taps', { assistMode: 'convolver', conv: { ...savedOnlyContext.conv, irLength: '4096', quality: 'minimum_4096' } }, true],
+    ['convolver quality', { assistMode: 'convolver', conv: { ...savedOnlyContext.conv, quality: 'linear_8192' } }, true],
+    ['convolver house curve', { assistMode: 'convolver', conv: { ...savedOnlyContext.conv, targetCurve: 'harman' } }, true],
+    ['neutral custom editor', { assistMode: 'convolver', activeEditor: 'houseCurve' }, false],
+    ['convolver safety margin', { assistMode: 'convolver', conv: { ...savedOnlyContext.conv, safetyMarginDb: 2 } }, true],
+    ['convolver auto gain', { assistMode: 'convolver', conv: { ...savedOnlyContext.conv, autoGainEnabled: false } }, true],
+]) {
+    panel.renderMeasurementPanelViewSection({ ...savedOnlyContext, ...overrides });
+    assert.equal(elements.measurementClearBtn.disabled, !enabled, label);
+}
+panel.renderMeasurementPanelViewSection({ ...savedOnlyContext, conv: { ...savedOnlyContext.conv, targetCurve: 'harman' }, measurementState: { ...measurementState, activeJobId: 'job-1' } });
+assert.equal(elements.measurementClearBtn.disabled, true, 'active jobs lock Reset');
 panel.renderMeasurementPanelViewSection(context);
 panel.renderMeasurementPanelStatusSection(context);
 assert.equal(elements.measurementSetupStatus.textContent, 'Host capture ready');

@@ -163,13 +163,29 @@ function getDefaultMeasurementConvolverState() {
         dipGuard: 'off',
         safetyMarginDb: 1,
         autoGainEnabled: true,
-        quality: 'linear_8192',
+        quality: 'minimum_8192',
         phaseMode: 'minimum',
         irLength: '8192',
         dragMode: null,
         creatingPreset: false,
         draft: { left: null, right: null, presetName: '', nameTouched: false, notice: '' },
     };
+}
+
+function hasResettableMeasurementSettings(assistMode, peq, conv, defaults = getDefaultMeasurementConvolverState()) {
+    if (assistMode !== 'peq' && assistMode !== 'convolver') return false;
+    if (conv.targetCurve !== defaults.targetCurve) return true;
+    if (assistMode === 'peq') return peq.filters.length > 0;
+    return Number(conv.rangeStartHz) !== defaults.rangeStartHz
+        || Number(conv.rangeEndHz) !== defaults.rangeEndHz
+        || Number(conv.maxBoostDb) !== defaults.maxBoostDb
+        || Number(conv.maxCutDb) !== defaults.maxCutDb
+        || conv.dipGuard !== defaults.dipGuard
+        || Number(conv.safetyMarginDb) !== defaults.safetyMarginDb
+        || conv.autoGainEnabled !== defaults.autoGainEnabled
+        || conv.phaseMode !== defaults.phaseMode
+        || String(conv.irLength) !== defaults.irLength
+        || conv.quality !== defaults.quality;
 }
 
 function getMeasurementConvolverDraftPhaseMode(draft = null) {
@@ -991,6 +1007,7 @@ function hybridSpeakerName(channel) {
         getDefaultMeasurementPeqFilter,
         getDefaultMeasurementPeqState,
         getDefaultMeasurementConvolverState,
+        hasResettableMeasurementSettings,
         getMeasurementConvolverDraftPhaseMode,
         getMeasurementPeqNameSuffix,
         getMeasurementConvolverMultiSourceWarning,
