@@ -52,6 +52,8 @@
         sleep: async () => {},
     };
     let api = {};
+    let autoSubRecoveryPending = false;
+    let lastAutoSubHandledJobId = '';
 
     function init(overrides) {
         const cfg = Object.assign({}, overrides || {});
@@ -275,6 +277,59 @@ async function startAutoSubOptimize() {
 }
 
 
+async function recoverAutoSubJob() {
+    const measurementState = deps.getState().measurement || {};
+    if (autoSubRecoveryPending || measurementState.autoSubInFlight || measurementState.startInFlight
+            || measurementState.activeJobId || measurementState.speakerAlignInFlight
+            || measurementState.hybridWizard?.running) return;
+    const generation = Number(measurementState.jobGeneration || 0);
+    autoSubRecoveryPending = true;
+    try {
+        const resp = await api.getCurrentAutoSubJob();
+        if (!resp.ok) throw new Error('Auto Sub job discovery failed');
+        const data = await resp.json();
+        const job = data.job;
+        if (!job?.id || String(job.id) === lastAutoSubHandledJobId) return;
+        const live = deps.getState().measurement || {};
+        if (Number(live.jobGeneration || 0) !== generation || live.autoSubInFlight
+                || live.startInFlight || live.activeJobId || live.speakerAlignInFlight
+                || live.hybridWizard?.running) return;
+
+        live.autoSubInFlight = true;
+        live.activeMeasurementKind = 'auto_sub';
+        live.autoSubJobId = String(job.id);
+        live.autoSubCancelRequested = job.status === 'cancelling';
+        live.autoSubResult = null;
+        live.autoSubMeasurements = [];
+        live.statusText = '';
+        setProgress('auto_sub', autoSubProgressText(job));
+        deps.renderMeasurementPanel();
+        try {
+            if (['completed', 'failed', 'cancelled'].includes(job.status)) {
+                await handleAutoSubResult(job);
+                lastAutoSubHandledJobId = String(job.id);
+            } else {
+                await pollAutoSubJob(live.autoSubJobId);
+            }
+        } finally {
+            if (isCurrentAutoSubPoll(job.id, generation)) {
+                live.autoSubInFlight = false;
+                live.activeMeasurementKind = '';
+                live.autoSubJobId = '';
+                live.autoSubCancelRequested = false;
+                clearProgress('auto_sub');
+                deps.fetchAudioOutputOverview().catch(() => {});
+                deps.renderMeasurementPanel();
+            }
+        }
+    } catch (error) {
+        console.warn('recoverAutoSubJob failed', error);
+    } finally {
+        autoSubRecoveryPending = false;
+    }
+}
+
+
 async function cancelAutoSubOptimize() {
     const measurementState = deps.getState().measurement;
     const jobId = String(measurementState.autoSubJobId || '');
@@ -368,6 +423,7 @@ async function pollAutoSubJob(jobId) {
 
             if (status === 'completed' || status === 'failed' || status === 'cancelled') {
                 await handleAutoSubResult(job);
+                lastAutoSubHandledJobId = String(jobId);
                 return;
             }
         } catch (error) {
@@ -1356,6 +1412,7 @@ function setupHybridMeasurementWizard() {
         syncSubwooferControlsDuringAutoSub,
         syncAutoSubButton,
         startAutoSubOptimize,
+        recoverAutoSubJob,
         cancelAutoSubOptimize,
         pollAutoSubJob,
         handleAutoSubResult,

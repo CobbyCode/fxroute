@@ -157,6 +157,12 @@ def _auto_sub_job_playback_gain(job: Mapping[str, Any]) -> float:
         raise RuntimeError("AutoSub job playback gain is invalid")
     return playback_gain
 
+@router.get("/api/measurements/auto-sub-optimize/current")
+async def get_current_auto_sub_optimize_job():
+    """Discover the newest live or briefly retained job after a browser reload."""
+    return {"status": "ok", "job": next(reversed(_AUTO_SUB_JOBS.values()), None)}
+
+
 @router.get("/api/measurements/auto-sub-optimize/jobs/{job_id}")
 async def get_auto_sub_optimize_job(job_id: str):
     job = _AUTO_SUB_JOBS.get(job_id)

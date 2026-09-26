@@ -46,6 +46,7 @@ const StreamingRuntime = window.FXRouteStreamingRuntime || {};
 window.FXRouteMeasurementFlows?.init({
     api: {
         startAutoSubOptimize: (formData) => fetch('/api/measurements/auto-sub-optimize/start', { method: 'POST', body: formData }),
+        getCurrentAutoSubJob: () => fetch('/api/measurements/auto-sub-optimize/current', { cache: 'no-store' }),
         cancelAutoSubJob: (jobId) => fetch(`/api/measurements/auto-sub-optimize/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
         pollAutoSubJob: (jobId) => fetch(`/api/measurements/auto-sub-optimize/jobs/${encodeURIComponent(jobId)}`),
         startSpeakerAlign: (payload) => fetch('/api/speaker-align/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
@@ -1472,6 +1473,7 @@ function connectWebSocket() {
         PlaybackCore.stopMetadataPolling();
         PlaybackCore.startPeakStatusPolling();
         void PlaybackCore.resyncPlaybackAfterReconnect();
+        if (isMeasurementPanelOpen()) void MeasurementFlows.recoverAutoSubJob();
     };
     socket.onclose = (event) => {
         if (ws === socket) ws = null;
@@ -4189,6 +4191,7 @@ function toggleMeasurementPanel(forceOpen = null) {
         measurementInputScanOnFocusDone = false;
         resetMeasurementTransientStatus();
         renderMeasurementPanel();
+        void MeasurementFlows.recoverAutoSubJob();
         void window.FXRouteMeasurementSetup.fetchMeasurementInputs();
         void ensureMeasurementAreaCatalog();
         MeasurementGraph.scheduleMeasurementGraphRender();
