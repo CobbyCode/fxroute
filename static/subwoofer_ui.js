@@ -323,9 +323,10 @@
         deps.getElements().effectsSubwooferSharedCrossover?.classList.toggle('hidden', splitSides);
         deps.getElements().effectsSubwooferLeftCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'left');
         deps.getElements().effectsSubwooferRightCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'right');
-        // Crossover card label follows the link state: unlinked shows the
-        // selected side, linked shows Global.
-        if (deps.getElements().effectsSubwooferGlobalLabel) deps.getElements().effectsSubwooferGlobalLabel.textContent = splitSides ? (selectedSide === 'right' ? 'Sub R' : 'Sub L') : 'Global';
+        // Crossover card label follows the link state: unlinked names the
+        // selected side's crossover (the trim cards below keep "Sub L" /
+        // "Sub R"), linked shows Global.
+        if (deps.getElements().effectsSubwooferGlobalLabel) deps.getElements().effectsSubwooferGlobalLabel.textContent = splitSides ? (selectedSide === 'right' ? 'Sub R · Crossover' : 'Sub L · Crossover') : 'Global';
         // The tab row mirrors the speaker tile: Link L/R plus the side tabs sit
         // above the graph instead of inside a card. Linked stereo shows one
         // common Sub L/R tab; unlinked shows Sub L and Sub R separately. The

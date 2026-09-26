@@ -9735,8 +9735,14 @@ input[type="number"]::-webkit-outer-spin-button {
         min-height: 0;
         font-weight: 500;
     }
+    /* Short select values (LR, 24, On, N) sit centered in the control: the
+       left padding mirrors the chevron reserve, so the text box is
+       symmetric. Stepper values keep their own layout. */
     #tab-effects .effects-subwoofer-control-group select {
         width: 100%;
+        padding-left: var(--arrow-reserve);
+        text-align: center;
+        text-align-last: center;
     }
     /* Between 9rem and 10rem the stepper buttons give up the difference
        (34px preferred, 26px minimum); the value field keeps its digit floor. */
