@@ -228,6 +228,7 @@ assert.match(crossoverUiSource, /-Way Stereo System/);
 const subwooferUiSource = fs.readFileSync(path.join(repoRoot, 'static', 'subwoofer_ui.js'), 'utf8');
 assert.match(subwooferUiSource, /Crossover \$/);
 assert.match(subwooferUiSource, /Main HPF/);
+const effectsCssSource = fs.readFileSync(path.join(repoRoot, 'static', 'css', '_effects.css'), 'utf8');
 for (const id of ['effects-crossover-card', 'effects-crossover-tabs', 'effects-crossover-graph',
     'effects-crossover-frequency-highpass', 'effects-crossover-frequency-lowpass',
     'effects-crossover-frequency-highpass-group', 'effects-crossover-slope-highpass-group',
@@ -264,8 +265,20 @@ assert.match(crossoverUiSource, /effectsCrossoverTrimGroup.*linkedCrossover \? '
 assert.match(indexSource, /crossover_view\.js\?v=\d+\.\d+\.\d+/);
 const CrossoverView = require('../static/crossover_view.js');
 assert.equal(typeof CrossoverView.drawCrossoverResponse, 'function');
-assert.match(appSource, /function drawCrossoverResponse\(canvas, ways, activeRole\)/);
+assert.match(appSource, /function drawCrossoverResponse\(canvas, ways, activeRole, preview\)/);
 assert.match(appSource, /FXRouteCrossoverView/);
+// The editable cutoff lines are dragged on the graph: the tile owns the
+// pointer handling, the painter owns the geometry (marker list, hit test,
+// frequency at a pointer) the handles are placed with.
+for (const name of ['crossoverMarkers', 'crossoverGraphFrequencyAt', 'crossoverGraphHandleAt']) {
+    assert.equal(typeof CrossoverView[name], 'function', `crossover_view.js must own ${name}`);
+}
+assert.match(crossoverUiSource, /function wireCrossoverGraphDrag\(/);
+assert.match(crossoverUiSource, /crossoverGraphHandleAt/);
+assert.match(crossoverUiSource, /crossoverGraphFrequencyAt/);
+assert.match(crossoverUiSource, /crossoverGraphPreview/);
+assert.match(effectsCssSource, /\.crossover-graph\.is-handle-hover/);
+assert.match(effectsCssSource, /\.crossover-graph\.is-handle-drag/);
 
 // Behavioral pin: the extracted painter handles edge cases and paints the
 // same primitives (axes, dimmed/active ways, dashed Off-direction, cutoff
@@ -316,6 +329,66 @@ assert.equal(CrossoverView.drawCrossoverResponse({ getContext: () => null }, {},
         'cleared (Off) direction renders dashed');
 }
 
+// Cutoff drag geometry: the handles are the painted cutoff lines, with a
+// grabbable hit column around them. A 3 kHz boundary in a 2-way setup is
+// caught near its line, never far from it.
+{
+    const canvas = { clientWidth: 600, clientHeight: 136,
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 136 }) };
+    const ways = {
+        left_low: { complete: true, filters: { highpass: null,
+            lowpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 3000 } } },
+        left_high: { complete: true, filters: { highpass: { family: 'linkwitz-riley',
+            slope_db_oct: 24, frequency_hz: 3000 }, lowpass: null } },
+    };
+    const xForHz = (hz) => 56 + (Math.log10(hz) - Math.log10(20))
+        / (Math.log10(20000) - Math.log10(20)) * 520;
+    // Frequency round trip: the pixel of a cutoff maps back to its frequency.
+    const lineX = xForHz(3000);
+    assert.equal(CrossoverView.crossoverGraphFrequencyAt(canvas, lineX), 3000);
+    // A press on the line and a press up to 12px beside it both grab it.
+    const onLine = CrossoverView.crossoverGraphHandleAt(ways, 'left_low', lineX, { canvas });
+    assert.ok(onLine, 'the 3 kHz line is a handle');
+    assert.deepEqual({ kind: onLine.kind, hz: onLine.frequency_hz, editable: onLine.editable },
+        { kind: 'lowpass', hz: 3000, editable: true });
+    assert.equal(CrossoverView.crossoverGraphHandleAt(ways, 'left_low', lineX + 12, { canvas }).kind, 'lowpass',
+        'the hit area is wider than the 1px line');
+    assert.equal(CrossoverView.crossoverGraphHandleAt(ways, 'left_low', lineX + 60, { canvas }), null,
+        'plot space away from a line is not a handle');
+    assert.equal(CrossoverView.crossoverGraphHandleAt(ways, 'left_high', xForHz(3000), { canvas }).kind, 'highpass',
+        'the high way carries its own high-pass handle');
+    // A cleared direction has no line to grab; an Off filter is read-only.
+    assert.equal(CrossoverView.crossoverGraphHandleAt(ways, 'left_high', xForHz(80), { canvas }), null);
+    const off = { left_low: { filters: { highpass: null,
+        lowpass: { family: 'off', slope_db_oct: null, frequency_hz: 3000 } } } };
+    assert.equal(CrossoverView.crossoverGraphHandleAt(off, 'left_low', xForHz(3000), { canvas }), null,
+        'an Off filter is not draggable');
+    // The caller decides the other editability gates (busy, non-applicable).
+    const refused = CrossoverView.crossoverGraphHandleAt(ways, 'left_low', lineX,
+        { canvas, canEdit: (kind) => kind !== 'lowpass' });
+    assert.equal(refused, null, 'a direction the tile refuses is not a handle');
+    // Derived (sub-owned) high-pass: painted, but never a handle.
+    const derived = { left_low: { filters: { highpass: null,
+        lowpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 3000 } },
+        derived_highpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 80 } } };
+    const derivedMarkers = CrossoverView.crossoverMarkers(derived, 'left_low');
+    assert.deepEqual(derivedMarkers.map((marker) => [marker.kind, marker.frequency_hz, marker.editable]),
+        [['lowpass', 3000, true], ['highpass', 80, false]]);
+    assert.equal(CrossoverView.crossoverGraphHandleAt(derived, 'left_low', xForHz(80), { canvas }), null,
+        'the derived sub HPF line is not draggable');
+    // A live drag moves the line (and its handle) with the pointer.
+    const dragged = CrossoverView.crossoverMarkers(derived, 'left_low',
+        { frequency: { kind: 'lowpass', frequency_hz: 6000 } });
+    assert.equal(dragged[0].frequency_hz, 6000);
+    assert.equal(CrossoverView.crossoverGraphHandleAt(derived, 'left_low', xForHz(6000), {
+        canvas, frequency: { kind: 'lowpass', frequency_hz: 6000 } }).frequency_hz, 6000);
+    // Plot edges clamp to the visible range instead of overshooting.
+    assert.equal(CrossoverView.crossoverGraphFrequencyAt(canvas, -500), 20);
+    assert.equal(CrossoverView.crossoverGraphFrequencyAt(canvas, 5000), 20000);
+    assert.equal(CrossoverView.crossoverGraphFrequencyAt({ clientWidth: 0 }, lineX), null,
+        'a hidden card has no handles');
+}
+
 // Behavioral pin: the tile mutation capture (Off clears, linked omits trim,
 // sub-owned high-pass stays display-only), the starter autofill and the
 // linked mirror save all run through crossover_ui.js with the app mutation
@@ -346,6 +419,25 @@ function crossoverInput(value) {
     const listeners = {};
     return { value, addEventListener(type, listener) { (listeners[type] ||= []).push(listener); },
         emit(type) { for (const listener of listeners[type] || []) listener({ target: this }); } };
+}
+
+// Graph canvas stub: paints through the painter's stub context and records the
+// pointer events, the pointer capture and the drag cursor classes the tile
+// toggles on it.
+function crossoverGraphCanvas(width = 600) {
+    const ctx = stubContext();
+    const listeners = {};
+    const classes = new Set();
+    return {
+        clientWidth: width, clientHeight: 136, width: 0, height: 0, classes, captured: [],
+        getContext: (kind) => (kind === '2d' ? ctx : null),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width, height: 136 }),
+        addEventListener(type, listener) { (listeners[type] ||= []).push(listener); },
+        setPointerCapture(pointerId) { this.captured.push(pointerId); },
+        releasePointerCapture(pointerId) { this.captured = this.captured.filter((id) => id !== pointerId); },
+        classList: { toggle(name, on) { if (on === true) classes.add(name); else classes.delete(name); } },
+        fire(type, event) { for (const listener of listeners[type] || []) listener(event); },
+    };
 }
 
 function crossoverFixtureElements(overrides = {}) {
@@ -508,6 +600,142 @@ function initCrossoverUI(state, elements, extra = {}) {
     assert.equal(applied[1].role, 'right_low');
     assert.ok(!('level_db' in applied[1]), 'mirror save carries no trim');
     assert.equal(applied[1].lowpass.frequency_hz, 2000);
+}
+{
+    // Cutoff drag on the response graph: a press on the 3 kHz line of a 2-way
+    // Low way moves the line, writes the frequency field while the pointer is
+    // still down, and commits the dragged value on release. The sub-owned
+    // 80 Hz line is painted but never starts a drag.
+    const realFetch = globalThis.fetch;
+    const applied = [];
+    const canvas = crossoverGraphCanvas();
+    const state = crossoverFixtureState();
+    const mode = state.outputSystem.catalog.modes['stereo-sub'];
+    mode.topology.sub_roles = ['sub1'];
+    mode.bass_management = { frequency_hz: 80, main_highpass_enabled: true };
+    const lowpass = { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 3000 };
+    for (const role of Object.keys(mode.processing)) {
+        mode.processing[role] = role.endsWith('_low')
+            ? { highpass: null, lowpass: { ...lowpass } }
+            : { highpass: { ...lowpass }, lowpass: null };
+    }
+    const response = { crossover_enabled: true, ways: {} };
+    for (const role of Object.keys(mode.processing)) {
+        response.ways[role] = {
+            complete: true,
+            filters: role.endsWith('_low') ? { highpass: null, lowpass: { ...lowpass } }
+                : { highpass: { ...lowpass }, lowpass: null },
+            derived_highpass: role === 'left_low'
+                ? { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 80 } : null,
+            points: [[20, -20], [3000, -6], [20000, -6]],
+        };
+    }
+    state.crossover.response = response;
+    const elements = crossoverFixtureElements({
+        effectsCrossoverCard: { classList: { toggle() {} } },
+        effectsCrossoverGraph: canvas,
+        effectsCrossoverFrequencyLowpass: crossoverInput('3000'),
+    });
+    initCrossoverUI(state, elements, {
+        applyMutation: async (kind, fields) => {
+            applied.push(fields);
+            // The refetched response carries what the backend stored.
+            response.ways[fields.role].filters.lowpass = { ...fields.lowpass };
+            mode.processing[fields.role].lowpass = { ...fields.lowpass };
+            return { ok: true };
+        },
+    });
+    globalThis.fetch = async () => ({ ok: true, json: async () => response });
+    CrossoverUI.renderCrossoverTile();
+    CrossoverUI.wireCrossoverTile();
+    const lineX = (hz) => 56 + (Math.log10(hz) - Math.log10(20))
+        / (Math.log10(20000) - Math.log10(20)) * 520;
+    const press = (type, clientX) => canvas.fire(type,
+        { pointerId: 7, button: 0, clientX, preventDefault() { this.defaultPrevented = true; } });
+    // The derived sub HPF line does not drag, even right on its line.
+    press('pointerdown', lineX(80));
+    assert.deepEqual(applied, [], 'the derived sub HPF line is not a drag handle');
+    press('pointermove', lineX(80));
+    assert.equal(canvas.classes.has('is-handle-hover'), false,
+        'a read-only line shows no resize cursor');
+    // The stored 3 kHz cutoff drags: the field follows the pointer, the line
+    // follows the pointer, and only the release commits.
+    press('pointermove', lineX(3000) + 8);
+    assert.equal(canvas.classes.has('is-handle-hover'), true,
+        'a movable line shows the resize cursor');
+    press('pointerdown', lineX(3000) + 8);
+    assert.equal(canvas.classes.has('is-handle-drag'), true);
+    assert.deepEqual(canvas.captured, [7], 'the drag captures the pointer');
+    press('pointermove', lineX(4000));
+    assert.equal(elements.effectsCrossoverFrequencyLowpass.value, '4000',
+        'the frequency field follows the drag before the release');
+    assert.equal(String(elements.effectsCrossoverFrequencyHighpass.value), '80',
+        'the derived field is untouched');
+    assert.deepEqual(applied, [], 'nothing is saved while the pointer is down');
+    press('pointerup', lineX(4000));
+    assert.equal(applied.length, 1);
+    assert.equal(applied[0].role, 'left_low');
+    assert.equal(applied[0].lowpass.frequency_hz, 4000);
+    assert.equal(applied[0].highpass, null, 'the derived high-pass is still not persisted');
+    assert.equal(canvas.classes.has('is-handle-drag'), false);
+    assert.deepEqual(canvas.captured, [], 'the capture is released');
+    await new Promise(setImmediate);
+    assert.equal(String(elements.effectsCrossoverFrequencyLowpass.value), '4000',
+        'the saved frequency stays in the field');
+    // A press without movement saves nothing.
+    press('pointerdown', lineX(4000));
+    press('pointerup', lineX(4000));
+    assert.equal(applied.length, 1, 'a press without a drag is not an edit');
+    // The released drag is frozen: the pointer is free again, so a stray move
+    // neither rewrites the committed field nor blocks hover feedback.
+    press('pointermove', lineX(6000));
+    assert.equal(String(elements.effectsCrossoverFrequencyLowpass.value), '4000',
+        'a move after the release does not follow the pointer');
+    assert.equal(canvas.classes.has('is-handle-hover'), false,
+        'hover feedback resumes after the release');
+    press('pointermove', lineX(4000));
+    assert.equal(canvas.classes.has('is-handle-hover'), true,
+        'the moved line is a handle again after the release');
+    // An interrupted drag never reaches a save and leaves the stored value.
+    press('pointerdown', lineX(4000));
+    press('pointermove', lineX(5000));
+    press('pointercancel', lineX(5000));
+    assert.equal(applied.length, 1, 'a cancelled drag is not saved');
+    assert.equal(String(elements.effectsCrossoverFrequencyLowpass.value), '4000',
+        'a cancelled drag snaps back to the stored frequency');
+    // Plot space away from any line is not a handle either.
+    press('pointerdown', lineX(4000) + 200);
+    assert.equal(applied.length, 1);
+    globalThis.fetch = realFetch;
+}
+{
+    // A cleared (Off) direction leaves no line to grab in the tile either.
+    const realFetch = globalThis.fetch;
+    const applied = [];
+    const canvas = crossoverGraphCanvas();
+    const state = crossoverFixtureState();
+    const mode = state.outputSystem.catalog.modes['stereo-sub'];
+    mode.processing.left_low = { highpass: null, lowpass: null };
+    state.crossover.response = { crossover_enabled: true, ways: { left_low: { complete: false,
+        filters: { highpass: null, lowpass: null }, derived_highpass: null, points: [[20, 0], [20000, 0]] } } };
+    const elements = crossoverFixtureElements({
+        effectsCrossoverCard: { classList: { toggle() {} } },
+        effectsCrossoverGraph: canvas,
+        effectsCrossoverFamilyLowpass: crossoverInput('off'),
+    });
+    initCrossoverUI(state, elements, {
+        applyMutation: async (kind, fields) => { applied.push(fields); return { ok: true }; },
+    });
+    globalThis.fetch = async () => ({ ok: true, json: async () => state.crossover.response });
+    CrossoverUI.renderCrossoverTile();
+    CrossoverUI.wireCrossoverTile();
+    const press = (type, clientX) => canvas.fire(type,
+        { pointerId: 9, button: 0, clientX, preventDefault() {} });
+    press('pointerdown', 400);
+    press('pointermove', 400);
+    assert.equal(canvas.classes.has('is-handle-hover'), false, 'an Off direction is no handle');
+    assert.deepEqual(applied, []);
+    globalThis.fetch = realFetch;
 }
 console.log('crossover frontend tests: ok');
 })().catch((error) => { console.error(error); process.exit(1); });

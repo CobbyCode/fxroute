@@ -21,9 +21,15 @@
         ensureOutputBoxes: () => {},
         applyMutation: async () => null,
     };
+    // Live cutoff drag on the response graph. The dragged kind stays recorded
+    // until its save settles, so neither the frequency field nor the painted
+    // curve snaps back to the stored value while the drag is still on screen.
+    let _graphDrag = null;
 
     function init(overrides) {
         deps = Object.assign(deps, overrides || {});
+        // A fresh tile never inherits a cutoff drag from a previous one.
+        _graphDrag = null;
     }
 
     async function fetchCrossoverResponse() {
@@ -54,6 +60,60 @@
         input.value = formatTrimValue(value);
         input._fxroutePreciseValue = Number(value);
         input._fxroutePreciseDisplay = input.value;
+    }
+
+    // Live cutoff drag on the response graph, painted through the view module.
+    function crossoverGraphView() {
+        return (root && root.FXRouteCrossoverView) || null;
+    }
+
+    function crossoverGraphPreview() {
+        return _graphDrag ? { kind: _graphDrag.kind, frequency_hz: _graphDrag.frequency_hz } : null;
+    }
+
+    function crossoverFrequencyElement(kind) {
+        return kind === 'highpass'
+            ? deps.getElements().effectsCrossoverFrequencyHighpass
+            : deps.getElements().effectsCrossoverFrequencyLowpass;
+    }
+
+    // The cutoff lines of the active way a graph drag may move: an applicable
+    // stored filter that is not Off, never while a save is running and never
+    // the sub-owned derived high-pass (the Subwoofer tile owns that one).
+    function editableGraphKinds() {
+        const state = deps.getState();
+        const mod = (root && root.FXRouteCrossover) || null;
+        const catalog = state.outputSystem && state.outputSystem.catalog;
+        const active = state.crossover && state.crossover.activeWay;
+        if (!mod || !catalog || !active) return [];
+        if (state.crossover.busy || state.outputSystem.busy) return [];
+        const modeConfig = catalog.modes[catalog.active_mode] || {};
+        const settings = modeConfig.processing?.[active] || {};
+        if (!settings) return [];
+        const bass = modeConfig.bass_management || {};
+        const subRoles = modeConfig.topology?.sub_roles || [];
+        const applicable = mod.applicableFilters(active, { bass, subRoles });
+        const derived = !settings.highpass && mod.derivedHighpassForRole
+            ? mod.derivedHighpassForRole(active, bass, subRoles) : null;
+        const kinds = [];
+        if (applicable.includes('highpass') && !derived && settings.highpass) kinds.push('highpass');
+        if (applicable.includes('lowpass') && settings.lowpass) kinds.push('lowpass');
+        return kinds;
+    }
+
+    // The editable cutoff line under a pointer x, or null: a derived (sub HPF)
+    // line, an Off direction or empty plot space yields no handle.
+    function graphHandleAt(clientX) {
+        const view = crossoverGraphView();
+        const canvas = deps.getElements().effectsCrossoverGraph;
+        if (!view || !canvas || typeof clientX !== 'number') return null;
+        const state = deps.getState();
+        const response = state.crossover && state.crossover.response;
+        if (!response || !state.crossover.activeWay) return null;
+        return view.crossoverGraphHandleAt(response.ways, state.crossover.activeWay, clientX, {
+            canvas,
+            canEdit: (kind) => editableGraphKinds().includes(kind),
+        });
     }
 
     function renderCrossoverTile() {
@@ -104,7 +164,8 @@
         }, linkedCrossover);
         if (deps.getElements().effectsCrossoverGraph) {
             const view = (root && root.FXRouteCrossoverView) || null;
-            if (view) view.drawCrossoverResponse(deps.getElements().effectsCrossoverGraph, response.ways, active);
+            if (view) view.drawCrossoverResponse(deps.getElements().effectsCrossoverGraph, response.ways, active,
+                crossoverGraphPreview());
         }
         const applicable = mod.applicableFilters(active, bassContext);
         const showHighpass = applicable.includes('highpass');
@@ -118,15 +179,27 @@
         if (deps.getElements().effectsCrossoverTrimGroup) {
             deps.getElements().effectsCrossoverTrimGroup.style.display = linkedCrossover ? 'none' : '';
         }
-        if (deps.getElements().effectsCrossoverFrequencyHighpass && ((typeof document !== 'undefined' && document.activeElement) || null) !== deps.getElements().effectsCrossoverFrequencyHighpass) {
-            deps.getElements().effectsCrossoverFrequencyHighpass.value = settings.highpass?.frequency_hz
-                ?? derivedHighpass?.frequency_hz ?? '';
+        // A cutoff line being dragged owns its frequency field: the dragged
+        // value wins over the stored one (and over focus, which a canvas
+        // pointer never holds) until the save settles.
+        const preview = crossoverGraphPreview();
+        const activeElement = (typeof document !== 'undefined' && document.activeElement) || null;
+        const draggedValue = (kind) => (preview && preview.kind === kind
+            ? String(preview.frequency_hz) : null);
+        const draggedHighpass = draggedValue('highpass');
+        const draggedLowpass = draggedValue('lowpass');
+        if (deps.getElements().effectsCrossoverFrequencyHighpass
+            && (draggedHighpass !== null || activeElement !== deps.getElements().effectsCrossoverFrequencyHighpass)) {
+            deps.getElements().effectsCrossoverFrequencyHighpass.value = draggedHighpass
+                ?? (settings.highpass?.frequency_hz ?? derivedHighpass?.frequency_hz ?? '');
             deps.getElements().effectsCrossoverFrequencyHighpass.disabled = !showHighpass || busy || !!derivedHighpass;
             deps.getElements().effectsCrossoverFrequencyHighpass.title = derivedHighpass
                 ? `Set by the Subwoofer tile (${derivedHighpass.frequency_hz} Hz)` : '';
         }
-        if (deps.getElements().effectsCrossoverFrequencyLowpass && ((typeof document !== 'undefined' && document.activeElement) || null) !== deps.getElements().effectsCrossoverFrequencyLowpass) {
-            deps.getElements().effectsCrossoverFrequencyLowpass.value = settings.lowpass?.frequency_hz ?? '';
+        if (deps.getElements().effectsCrossoverFrequencyLowpass
+            && (draggedLowpass !== null || activeElement !== deps.getElements().effectsCrossoverFrequencyLowpass)) {
+            deps.getElements().effectsCrossoverFrequencyLowpass.value = draggedLowpass
+                ?? (settings.lowpass?.frequency_hz ?? '');
             deps.getElements().effectsCrossoverFrequencyLowpass.disabled = !showLowpass || busy;
         }
         const families = ['off', ...Object.keys(catalog.capabilities?.filter_families || {})];
@@ -442,8 +515,104 @@
                     renderCrossoverTile();
                 });
             }
+            wireCrossoverGraphDrag();
             watchCompactLabels();
         }
+
+    // Cutoff drag: a press anywhere on the plot is ignored, only a press
+    // within the handle column of an editable line starts a drag. The dragged
+    // frequency lands in the same field the keyboard edits, so the release
+    // commits through the ordinary way save (L/R link included).
+    function wireCrossoverGraphDrag() {
+        const canvas = deps.getElements().effectsCrossoverGraph;
+        if (!canvas) return;
+        const setDragClass = (name, on) => {
+            if (canvas.classList && typeof canvas.classList.toggle === 'function') {
+                canvas.classList.toggle(name, on === true);
+            }
+        };
+        // Pointer capture keeps the drag alive outside the canvas, but a
+        // browser that refuses it (pointer already gone) must not break the
+        // drag: the handlers work without capture, just not beyond the edges.
+        const capturePointer = (pointerId) => {
+            try { canvas.setPointerCapture?.(pointerId); } catch (e) { /* no capture available */ }
+        };
+        const releasePointer = (pointerId) => {
+            try { canvas.releasePointerCapture?.(pointerId); } catch (e) { /* never captured */ }
+        };
+        const moveDrag = (event) => {
+            if (!_graphDrag || !_graphDrag.dragging || _graphDrag.pointerId !== event.pointerId) return;
+            const view = crossoverGraphView();
+            if (!view) return;
+            const hz = view.crossoverGraphFrequencyAt(canvas, event.clientX);
+            if (hz === null) return;
+            const field = crossoverFrequencyElement(_graphDrag.kind);
+            if (field) field.value = String(hz);
+            _graphDrag.frequency_hz = hz;
+            renderCrossoverTile();
+        };
+        canvas.addEventListener('pointerdown', (event) => {
+            if (_graphDrag || (typeof event.button === 'number' && event.button !== 0)) return;
+            const handle = graphHandleAt(event.clientX);
+            if (!handle) return;
+            // Keep the press on the canvas: no text selection, no native drag.
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+            const field = crossoverFrequencyElement(handle.kind);
+            if (field) field.value = String(handle.frequency_hz);
+            _graphDrag = { kind: handle.kind, frequency_hz: handle.frequency_hz,
+                startFrequency_hz: handle.frequency_hz, pointerId: event.pointerId, dragging: true };
+            setDragClass('is-handle-drag', true);
+            capturePointer(event.pointerId);
+            renderCrossoverTile();
+        });
+        canvas.addEventListener('pointermove', (event) => {
+            if (_graphDrag && _graphDrag.dragging) {
+                moveDrag(event);
+                return;
+            }
+            // Resize cursor only over a line the user may actually move. A
+            // released drag still paints its committed position, but the
+            // pointer is free again: hover feedback resumes at once.
+            setDragClass('is-handle-hover', !!graphHandleAt(event.clientX));
+        });
+        canvas.addEventListener('pointerup', (event) => {
+            if (!_graphDrag || !_graphDrag.dragging || _graphDrag.pointerId !== event.pointerId) return;
+            moveDrag(event);
+            const drag = _graphDrag;
+            // Freeze the preview: from here on the pointer no longer moves the
+            // cutoff, so a stray move cannot rewrite a value the save has
+            // already captured.
+            drag.dragging = false;
+            setDragClass('is-handle-drag', false);
+            releasePointer(drag.pointerId);
+            if (drag.frequency_hz === drag.startFrequency_hz) {
+                // A press without movement is not an edit: leave the stored
+                // filter alone instead of saving the same value again.
+                _graphDrag = null;
+                renderCrossoverTile();
+                return;
+            }
+            // Keep the preview until the save settles, so the field does not
+            // flash the old value while the mutation is in flight.
+            const pending = saveCrossoverWay();
+            const done = () => {
+                if (_graphDrag !== drag) return;
+                _graphDrag = null;
+                renderCrossoverTile();
+            };
+            void pending.then(done, done);
+        });
+        canvas.addEventListener('pointercancel', (event) => {
+            if (!_graphDrag || !_graphDrag.dragging || _graphDrag.pointerId !== event.pointerId) return;
+            // An interrupted drag never reached a save: drop the preview and
+            // let the field snap back to the stored frequency. A cancel after
+            // the release belongs to the committed save and is left alone.
+            _graphDrag = null;
+            setDragClass('is-handle-drag', false);
+            renderCrossoverTile();
+        });
+        canvas.addEventListener('pointerleave', () => setDragClass('is-handle-hover', false));
+    }
 
     return {
         init,

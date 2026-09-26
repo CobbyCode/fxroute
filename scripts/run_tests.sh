@@ -124,6 +124,7 @@ fi
 # skip the whole group with a setup hint instead.  Never auto-install in
 # the suite run (see the header comment for the one-time host setup).
 BROWSER_TESTS=(
+    scripts/check_crossover_graph_drag.py
     scripts/check_css_reorg_snapshot.py
     scripts/check_select_popup_theme.py
     scripts/check_ui_walkthrough.py

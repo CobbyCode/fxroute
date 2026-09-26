@@ -6083,6 +6083,19 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     cursor: ew-resize;
 }
 
+/* The crossover graph only drags on its editable cutoff lines, so it shows
+   the resize cursor just over a handle (the tile sets these while the
+   pointer is on a movable line or dragging it). Declared after the shared
+   preview rule to win its ew-resize on equal specificity. */
+.crossover-graph {
+    cursor: default;
+}
+
+.crossover-graph.is-handle-hover,
+.crossover-graph.is-handle-drag {
+    cursor: ew-resize;
+}
+
 .effects-subwoofer-controls {
     display: grid;
     /* 2.1: Global + Sub as two equal-width cards. 2.2 (Dual-Mono and

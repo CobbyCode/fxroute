@@ -4808,12 +4808,13 @@ function drawSubwooferPreview(subwoofer) {
     return mod.drawSubwooferPreview(subwoofer);
 }
 
-function drawCrossoverResponse(canvas, ways, activeRole) {
+function drawCrossoverResponse(canvas, ways, activeRole, preview) {
     // Canvas painter lives in static/crossover_view.js
     // (window.FXRouteCrossoverView). Thin wrapper keeps existing call sites
-    // (renderCrossoverTile, repaintCrossoverGraph) unchanged.
+    // (renderCrossoverTile, repaintCrossoverGraph) unchanged; `preview` is
+    // the live cutoff position while a graph drag is in progress.
     const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverView) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverView) || null;
-    return mod.drawCrossoverResponse(canvas, ways, activeRole);
+    return mod.drawCrossoverResponse(canvas, ways, activeRole, preview);
 }
 
 // Tile status is error-only by design (no Applying/Saved hints): failures
