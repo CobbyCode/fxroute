@@ -198,6 +198,11 @@ def write_sine_wav(path, seconds=6.0, rms=0.05):
 
 def configure(store):
     deps = FakeDependencies(store)
+    # spl_calibration's runtime is process-global: snapshot what was set
+    # before this module configured its fakes so main_test() can restore it
+    # at the end and later test modules in the same run keep their expected
+    # configuration.
+    configure.original = getattr(configure, "original", spl_calibration._runtime.dependencies)
     spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
         get_measurement_store=deps.get_measurement_store,
         get_measurement_session=deps.get_measurement_session,
@@ -313,4 +318,9 @@ def main_test():
 
 
 if __name__ == "__main__":
-    main_test()
+    try:
+        main_test()
+    finally:
+        # Restore whatever runtime was configured before this module ran.
+        spl_calibration._runtime.dependencies = configure.original
+        spl_calibration._runtime.operation = None

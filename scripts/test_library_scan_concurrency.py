@@ -200,6 +200,13 @@ def _no_network(*args, **kwargs):
 class LibraryScanConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
+        # This module owns its environment: other test modules loaded in the
+        # same run overwrite os.environ["MUSIC_ROOT"] at their import time,
+        # and a Settings() built later would read THEIR root. Re-assert this
+        # module's environment at test start so Settings() and the walk see
+        # the directories created here.
+        os.environ["MUSIC_ROOT"] = str(MUSIC_ROOT)
+        os.environ["XDG_CONFIG_HOME"] = str(CONFIG_DIR)
         album_dir = MUSIC_ROOT / "AlbumA"
         album_dir.mkdir(parents=True, exist_ok=True)
         for i in range(1, 7):
@@ -209,13 +216,25 @@ class LibraryScanConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         ))
 
     def setUp(self):
+        # The library API runtime is process-global. Snapshot it before the
+        # fake below replaces it and restore it after every test, so this
+        # module cannot leak a dead scanner/settings accessor into test
+        # modules loaded later in the same run.
+        self.original_runtime = library_api._runtime
+        self.addCleanup(setattr, library_api, "_runtime", self.original_runtime)
         (MUSIC_ROOT / "AlbumA" / "track07.mp3").unlink(missing_ok=True)
         shutil.rmtree(MUSIC_ROOT / "incoming", ignore_errors=True)
-        self.scanner = LibraryScanner()
+        # config.get_settings() caches the first Settings instance for the
+        # whole process. An earlier test module (e.g. test_track_favorites)
+        # may have frozen it to ITS temp MUSIC_ROOT, so build this module's
+        # own Settings from the re-asserted env vars and use it for both the
+        # scanner and the runtime instead of the cached value.
+        self.settings = config_mod.Settings()
+        self.scanner = LibraryScanner(music_root=self.settings.MUSIC_ROOT)
         _clear_track_cache(self.scanner)
         configure_runtime(LibraryApiRuntime(
             get_scanner=lambda: self.scanner,
-            get_settings=lambda: config_mod.get_settings(),
+            get_settings=lambda: self.settings,
             run_blocking=main._drain_worker,
         ))
         main.runtime.music_library.scanner = self.scanner

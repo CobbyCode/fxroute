@@ -124,6 +124,12 @@ def run_recorder(args, noise_dir):
 
 class SplNoiseRoutingTests(unittest.TestCase):
     def setUp(self):
+        # spl_calibration's runtime is process-global: restore the previous
+        # dependencies so later test modules in the same run keep the
+        # configuration they expect.
+        self.original_dependencies = spl_calibration._runtime.dependencies
+        self.addCleanup(setattr, spl_calibration._runtime,
+                        "dependencies", self.original_dependencies)
         spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
             get_measurement_store=FakeDependencies().get_measurement_store,
             get_measurement_session=FakeDependencies().get_measurement_session,
@@ -254,6 +260,10 @@ class SplNoiseRoutingTests(unittest.TestCase):
 
 class SplNoiseCleanupTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # See SplNoiseRoutingTests.setUp: never leak the fake dependencies.
+        self.original_dependencies = spl_calibration._runtime.dependencies
+        self.addCleanup(setattr, spl_calibration._runtime,
+                        "dependencies", self.original_dependencies)
         spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
             get_measurement_store=FakeDependencies().get_measurement_store,
             get_measurement_session=FakeDependencies().get_measurement_session,

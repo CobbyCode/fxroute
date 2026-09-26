@@ -21,6 +21,10 @@ os.environ["MUSIC_ROOT"] = str(Path(BASE_DIR) / "music")
 os.environ["XDG_CONFIG_HOME"] = str(Path(BASE_DIR) / "config")
 os.environ["LOG_LEVEL"] = "WARNING"
 Path(os.environ["MUSIC_ROOT"]).mkdir(parents=True, exist_ok=True)
+# Module-owned copy of the music root: other test modules loaded in the same run
+# overwrite os.environ["MUSIC_ROOT"] at their import time, so tests here must not
+# read the env back (they would write their fixtures into another module's root).
+MUSIC_ROOT = Path(os.environ["MUSIC_ROOT"])
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -252,7 +256,9 @@ class ScannerTests(unittest.TestCase):
         self.db_path = Path(tmp) / "library-metadata.sqlite"
         self.cover_dir = Path(tmp) / "covers"
         self.store = LibraryMetadataStore(db_path=self.db_path, cover_dir=self.cover_dir)
-        self.scanner = LibraryScanner(metadata_store=self.store)
+        # Pin the scanner to this module's root: the config singleton may
+        # belong to another test module's temp root in same-process runs.
+        self.scanner = LibraryScanner(music_root=MUSIC_ROOT, metadata_store=self.store)
 
     def _seed_track(self, track_id: str, play_count: int = 0, last_played_at: str | None = None, favorite: bool = False):
         self.store.upsert_track_metadata(_payload(track_id))
@@ -295,7 +301,7 @@ class ScannerTests(unittest.TestCase):
         import wave as _wave
 
         rel = "album/fav.wav"
-        filepath = Path(os.environ["MUSIC_ROOT"]) / rel
+        filepath = MUSIC_ROOT / rel
         filepath.parent.mkdir(parents=True, exist_ok=True)
         with _wave.open(str(filepath), "wb") as w:
             w.setnchannels(1)
@@ -339,7 +345,7 @@ class ScannerTests(unittest.TestCase):
         import wave as _wave
 
         rel = "album/fresh.wav"
-        filepath = Path(os.environ["MUSIC_ROOT"]) / rel
+        filepath = MUSIC_ROOT / rel
         filepath.parent.mkdir(parents=True, exist_ok=True)
         with _wave.open(str(filepath), "wb") as w:
             w.setnchannels(1)

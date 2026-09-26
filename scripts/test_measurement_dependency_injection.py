@@ -96,6 +96,14 @@ def _services(**overrides):
 
 
 class MeasurementDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # measurement_session._services is process-global: snapshot it before
+        # each test configures fakes and restore it afterwards, so later test
+        # modules in the same run keep the configuration they expect.
+        self.original_services = measurement_session._services
+        self.addCleanup(setattr, measurement_session,
+                        "_services", self.original_services)
+
     def test_import_does_not_import_main(self):
         self.assertNotIn("main", sys.modules)
 
@@ -113,6 +121,8 @@ class MeasurementDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
             },
             get_playback_intent_generation=lambda: 42,
         ))
+        self.addCleanup(setattr, measurement_session,
+                        "_playback_state_before_measurement", None)
         measurement_session._playback_state_before_measurement = None
 
         measurement_session._capture_playback_state_before_measurement()

@@ -75,6 +75,13 @@ def _configure(*, dsp_runtime=None, store=None, session=None, manager=None):
 
 
 class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # autosub_deps._autosub_deps is process-global: snapshot it before
+        # each test configures fakes and restore it afterwards, so later
+        # test modules in the same run keep the configuration they expect.
+        self.previous_dependencies = autosub_deps._autosub_deps
+        self.addCleanup(setattr, autosub_deps, "_autosub_deps", self.previous_dependencies)
+
     async def asyncTearDown(self):
         autosub_deps._AUTO_SUB_JOBS.clear()
         autosub_deps._AUTO_SUB_WORKER_TASKS.clear()
