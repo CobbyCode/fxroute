@@ -22,7 +22,7 @@ async function request(url, body) {
 }
 (async () => {
     const initial = await request('/api/audio/outputs');
-    const scarlett = initial.outputs.find(o => o.label === 'Focusrite Scarlett 16i16');
+    const scarlett = initial.outputs.find(o => o.label === 'Focusrite Scarlett 16i16 4th Gen Pro');
     const stereo = initial.outputs.find(o => o.channels === 2);
     let output = await request('/api/audio/outputs', { key: scarlett.key });
     assert.equal(output.selected_output.device_profile.active_tier, '18ch');

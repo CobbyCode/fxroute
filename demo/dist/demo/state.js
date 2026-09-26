@@ -1025,6 +1025,8 @@
     let sweepFixtureIndex = 0;
     let lastJobId = 0;
     const jobs = Object.create(null);
+    // The store's own display defaults, stamped on every saved measurement.
+    const DEMO_DISPLAY_DEFAULTS = { normalize: true, smoothing: '1/6-oct', target_db: 0, x_range_hz: [20, 20000] };
 
     // Fixture roles follow the .104 measurement names: plain single sweeps
     // by channel, close-mic repeats as L/R-repeat sources, convolver
@@ -1401,6 +1403,84 @@
         measurements = measurements.filter(m => m.id !== id);
     }
 
+    // Average of two or more saved runs, mirroring the backend's merge: the
+    // trusted and raw-review traces are averaged point by point, the result is
+    // re-tagged as a merged measurement, and the direct-arrival timing is
+    // intentionally dropped because an average has no single arrival.
+    function mergeMeasurements(sources, name) {
+        const list = (sources || []).filter(Boolean);
+        if (list.length < 2) return null;
+        const average = (traces, kind, role, color, suffix) => {
+            const usable = list.map(source => (source[traces] || []).find(trace => trace.role === role) || (source[traces] || [])[0]).filter(Boolean);
+            if (!usable.length) return null;
+            const shared = usable[0].points
+                .filter(point => usable.every(trace => trace.points.some(p => p[0] === point[0])));
+            if (shared.length < 2) return null;
+            const points = shared.map(point => {
+                const values = usable.map(trace => trace.points.find(p => p[0] === point[0])[1]);
+                return [point[0], Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(3))];
+            });
+            return { kind, label: `${name} · ${suffix}`, color, role, points };
+        };
+        const trusted = average('traces', 'trusted', 'trusted', '#6ee7b7', 'trusted average');
+        const review = average('review_traces', 'raw-review', 'raw-review', '#a78bfa', 'raw/full-band review average');
+        const traces = trusted ? [trusted] : average('traces', 'trusted', 'trusted', '#6ee7b7', 'trusted average');
+        if (!traces || !traces.length) return null;
+        const first = list[0];
+        const merged = {
+            id: `merged-demo-${++measurementSeq}`,
+            name,
+            created_at: new Date().toISOString(),
+            input_device: { id: 'merged-inputs', label: 'Merged capture inputs' },
+            input_channels: JSON.parse(JSON.stringify(first.input_channels || {})),
+            channel: list.every(source => source.channel === first.channel) ? first.channel : 'stereo',
+            calibration: { filename: '', applied: false },
+            display: { ...DEMO_DISPLAY_DEFAULTS },
+            traces,
+            measurement_kind: 'merged-measurement',
+            notes: [
+                `Averaged from ${list.length} saved measurements.`,
+                'Direct-arrival timing is intentionally not retained for merged measurements.',
+            ],
+            analysis: {
+                method: 'saved-measurement-average',
+                source_measurement_ids: list.map(source => source.id),
+                source_count: list.length,
+                direct_arrival_timing_available: false,
+            },
+        };
+        if (review) {
+            merged.review_traces = [review];
+            merged.review_summary = summarizePoints(review.points);
+        }
+        merged.summary = summarizePoints(traces[0].points);
+        const target = first.measurement_target;
+        const compatible = target && list.every(source => {
+            const other = source.measurement_target;
+            return other && other.schema === target.schema && other.bank_id === target.bank_id
+                && other.processing_fingerprint === target.processing_fingerprint;
+        });
+        if (compatible) merged.measurement_target = JSON.parse(JSON.stringify(target));
+        return merged;
+    }
+
+    function summarizePoints(points) {
+        let min = Infinity;
+        let max = -Infinity;
+        points.forEach((point) => {
+            if (point[1] < min) min = point[1];
+            if (point[1] > max) max = point[1];
+        });
+        return {
+            trace_count: 1,
+            point_count: points.length,
+            min_db: Number(min.toFixed(3)),
+            max_db: Number(max.toFixed(3)),
+            min_hz: points[0][0],
+            max_hz: points[points.length - 1][0],
+        };
+    }
+
     // ── SPL calibration state ───────────────────────────────────────────
     const spl = {
         noiseActive: false,
@@ -1558,6 +1638,7 @@
         getSavedMeasurements,
         deleteSavedMeasurement,
         makeMeasurement,
+        mergeMeasurements,
         // spl calibration helpers (consumed by routes.js)
         spl,
         splCalibrationPayload,

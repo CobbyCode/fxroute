@@ -12,6 +12,7 @@ const library2Source = fs.readFileSync(path.join(root, 'demo', 'data', 'library2
 const library3Source = fs.readFileSync(path.join(root, 'demo', 'data', 'library3.js'), 'utf8');
 const radioSource = fs.readFileSync(path.join(root, 'demo', 'data', 'radio.js'), 'utf8');
 const measurementsSource = fs.readFileSync(path.join(root, 'demo', 'data', 'measurements.js'), 'utf8');
+const alignmentSource = fs.readFileSync(path.join(root, 'demo', 'data', 'alignment.js'), 'utf8');
 const stateSource = fs.readFileSync(path.join(root, 'demo', 'state.js'), 'utf8');
 const bootSource = fs.readFileSync(path.join(root, 'demo', 'boot.js'), 'utf8');
 const buildSource = fs.readFileSync(path.join(root, 'scripts', 'build_demo.py'), 'utf8');
@@ -22,13 +23,26 @@ const libraryUiSource = fs.readFileSync(path.join(root, "demo", "dist", "static"
 const htmlSource = fs.readFileSync(path.join(root, "demo", "dist", "index.html"), 'utf8');
 const streamingSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "streaming.js"), 'utf8');
 
+// A sessionStorage stand-in: the demo parks its Auto Sub job there so a
+// reloaded page finds its run again, the way the backend's job map does.
+function makeStorage(initial = {}) {
+    const data = new Map(Object.entries(initial));
+    return {
+        getItem: key => (data.has(key) ? data.get(key) : null),
+        setItem: (key, value) => { data.set(key, String(value)); },
+        removeItem: key => { data.delete(key); },
+    };
+}
+
 // A fresh simulated page load: re-runs every demo fixture/module in a new
-// VM context, exactly like a browser reload of the built demo page.
-function makeDemoContext() {
+// VM context, exactly like a browser reload of the built demo page. Passing a
+// storage keeps the session, so a reload can find what the last one left.
+function makeDemoContext(storage = makeStorage()) {
     const ctx = {
         window: {},
         setInterval() { return 0; },
         clearInterval() {},
+        sessionStorage: storage,
         Date,
         Math,
         console,
@@ -43,6 +57,7 @@ function makeDemoContext() {
     vm.runInContext(library3Source, ctx);
     vm.runInContext(radioSource, ctx);
     vm.runInContext(measurementsSource, ctx);
+    vm.runInContext(alignmentSource, ctx);
     vm.runInContext(stateSource, ctx);
     vm.runInContext(routesSource, ctx);
     return ctx;
@@ -342,12 +357,15 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     assert.equal(freshSource.mode, 'app-playback');
 
     // ── Device selection: Focusrite Scarlett 16i16 ───────────────────
-    // The demo offers the Scarlett 16i16 next to the MOTU M4. Selecting it
-    // switches the measurement capture to the 18-channel Scarlett input.
+    // The demo opens on the .104 system: the Scarlett 16i16 4th Gen Pro with
+    // 18 outputs, a 2-way crossover and two subs. Selecting the MOTU M4
+    // switches the measurement capture to the 4-channel MOTU input.
     // Both the 4-channel MOTU M4 capture and the 18-channel Scarlett capture
     // render the split Electrical Ref L / R controls in the unchanged app.js
     // (channel count >= 3); only smaller captures keep the single shared
-    // reference.
+    // reference. The reference defaults stay inside the capture's own
+    // channel count: 3/4 on the MOTU, 7/8 on the Scarlett — the pair the
+    // real alignment run on .104 used.
     const outputsGet = () => demoFetch('/api/audio/outputs').then((r) => r.json());
     const outputsPost = (key) => demoFetch('/api/audio/outputs',
         { method: 'POST', body: JSON.stringify({ key }) }).then((r) => r.json());
@@ -359,9 +377,9 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     const initialOutputs = await outputsGet();
     const deviceLabels = initialOutputs.outputs.map((o) => o.label);
     assert.ok(deviceLabels.includes('MOTU M4'), 'MOTU M4 must stay selectable');
-    assert.ok(deviceLabels.includes('Focusrite Scarlett 16i16'),
-        'the Focusrite Scarlett 16i16 must be selectable');
-    const scarlettOutput = initialOutputs.outputs.find((o) => o.label === 'Focusrite Scarlett 16i16');
+    assert.ok(deviceLabels.includes('Focusrite Scarlett 16i16 4th Gen Pro'),
+        'the Focusrite Scarlett 16i16 4th Gen Pro must be selectable');
+    const scarlettOutput = initialOutputs.outputs.find((o) => o.label === 'Focusrite Scarlett 16i16 4th Gen Pro');
     assert.equal(scarlettOutput.channels, 18);
     assert.equal(scarlettOutput.selectable, true);
 
@@ -380,8 +398,30 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     const splitSelected = split.inputs.inputs.find((i) => i.id === split.inputs.selection.input_id);
     assert.equal(splitSelected.channels, 18, 'the Scarlett must expose its 18-channel capture');
     assert.equal(split.settings.selectedInputId, splitSelected.id);
-    assert.equal(split.settings.selectedReferenceInputChannelLeft, '3');
-    assert.equal(split.settings.selectedReferenceInputChannelRight, '4');
+    assert.equal(split.settings.selectedReferenceInputChannelLeft, '7');
+    assert.equal(split.settings.selectedReferenceInputChannelRight, '8');
+    assert.equal(split.settings.selectedReferenceInputChannel, '8');
+    // The whole settings block round trips through PATCH — that response is
+    // what the setup view reads back, so a deliberate choice has to survive.
+    const patched = await (await demoFetch('/api/measurements/settings',
+        { method: 'POST', body: JSON.stringify({ selectedMicInputChannel: '2',
+            selectedReferenceInputChannelLeft: '6', selectedReferenceInputChannelRight: '7' }) })).json();
+    assert.equal(patched.measurement_settings.selectedMicInputChannel, '2');
+    assert.equal(patched.measurement_settings.selectedReferenceInputChannelLeft, '6');
+    assert.equal(patched.measurement_settings.selectedReferenceInputChannelRight, '7');
+    const patchedState = await captureState();
+    assert.equal(patchedState.settings.selectedMicInputChannel, '2');
+    assert.equal(patchedState.settings.selectedReferenceInputChannelLeft, '6');
+    // snake_case is accepted too, like the real endpoint.
+    await demoFetch('/api/measurements/settings',
+        { method: 'POST', body: JSON.stringify({ mic_input_channel: '1',
+            reference_input_channel_left: '7', reference_input_channel_right: '8' }) });
+    assert.equal((await captureState()).settings.selectedReferenceInputChannelLeft, '7');
+    // The inputs payload carries the full real contract.
+    assert.equal(split.inputs.status, 'ok');
+    assert.ok(Array.isArray(split.inputs.modes) && split.inputs.modes[0].id === 'host-local');
+    assert.equal(split.inputs.selection.unavailable, false);
+    assert.ok(split.inputs.discovery && Number.isInteger(split.inputs.discovery.source_count));
 
     // A deliberate capture choice in the setup wins until the device changes.
     const manualCapture = await demoFetch('/api/measurements/settings',
@@ -394,11 +434,11 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     await outputsPost(scarlettOutput.key);
     const rederived = await captureState();
     assert.equal(rederived.inputs.selection.input_id, splitSelected.id);
-    // Restore the demo's default device; later blocks assume the 4-channel
-    // interface with its 2.2 routing.
-    await outputsPost(initialOutputs.outputs.find((o) => o.label === 'MOTU M4').key);
+    // Restore the demo's default device; later blocks assume the 18-channel
+    // Scarlett with its crossover, stereo-sub routing and 2.2 mode.
+    await outputsPost(scarlettOutput.key);
     const restored = await captureState();
-    assert.equal(restored.inputs.selection.input_id, stereoSelected.id);
+    assert.equal(restored.inputs.selection.input_id, splitSelected.id);
 
     // ── Folders view: one folder per album ────────────────────────────
     // The real Folders view groups on the track path relative to the music
@@ -641,15 +681,64 @@ const radio = state.getPlayback();
     await demoFetch('/api/audio/samplerate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'auto' }) });
     state.stop();
 
-    // The demo starts in 2.2 mode on the 4-channel interface, with crossover
-    // and derived sub delays visible (seeded like a configured system).
+    // The demo starts in 2.2 mode on the 18-channel Scarlett, with the
+    // crossover, the two routed subs and the derived sub delays visible
+    // (seeded like the configured .104 system).
     const outputs = await (await demoFetch('/api/audio/outputs')).json();
     assert.equal(outputs.output_mode.mode, 'subwoofer-2.2');
-    assert.equal(outputs.selected_output.channels, 4);
+    assert.equal(outputs.selected_output.channels, 18);
     assert.equal(outputs.output_mode.subwoofer.crossover_frequency_hz, 80);
     assert.equal(outputs.output_mode.subwoofer.slope, 'LR24');
     assert.ok(outputs.output_mode.derived_sub1_delay_ms > 0);
-    assert.ok(outputs.output_mode.derived_sub2_delay_ms > 0);
+    assert.ok(outputs.output_mode.derived_sub2_delay_ms >= 0);
+
+    // ── Crossover / stereo-sub routing state ────────────────────────────
+    // The seeded system is what makes the Crossover and Subwoofer cards and
+    // the Speaker Auto Alignment section visible at all: crossover on, a
+    // complete 2-way set on both sides, the Global bank selected and no
+    // topology issues (the frontend's speakerAlignVisible gate).
+    const catalog0 = await (await demoFetch('/api/audio/output-state')).json();
+    assert.equal(catalog0.active_mode, 'stereo-sub');
+    const ss0 = catalog0.modes['stereo-sub'];
+    assert.equal(ss0.crossover_enabled, true);
+    assert.equal(ss0.selected_bank, 'global');
+    assert.equal(ss0.topology.way_count, 2);
+    // The demo runs in a VM realm, so compare through JSON rather than by
+    // reference identity.
+    const sameList = (actual, expected, what) =>
+        assert.equal(JSON.stringify(actual), JSON.stringify(expected), what);
+    assert.equal(ss0.topology.issues.length, 0);
+    sameList(ss0.topology.left_ways, ['left_low', 'left_high'], 'left ways');
+    sameList(ss0.topology.right_ways, ['right_low', 'right_high'], 'right ways');
+    sameList(ss0.topology.sub_roles, ['sub1', 'sub2'], 'sub roles');
+    assert.equal(ss0.topology.sub_mode, 'dual-mono');
+    assert.equal(ss0.processing.left_low.lowpass.frequency_hz, 3000);
+    assert.equal(ss0.processing.left_high.highpass.frequency_hz, 3000);
+    assert.equal(ss0.bass_management.frequency_hz, 80);
+    assert.equal(ss0.bass_management.sub_link, true);
+    assert.equal(ss0.bass_management.sub_filters.left.frequency_hz, 80);
+    assert.equal(ss0.bass_management.main_highpass_enabled, true);
+    // Both sub roles must carry a trim entry, or the Sub 1 / Sub 2 cards
+    // render empty.
+    assert.equal(typeof ss0.processing.sub1.level_db, 'number');
+    assert.equal(typeof ss0.processing.sub2.alignment_ms, 'number');
+    // Six roles are routed across 18 outputs, mains on 1/2 and 5/6.
+    sameList(catalog0.device.routing['stereo-sub'].slice(0, 6),
+        ['left_low', 'right_low', 'sub1', 'sub2', 'left_high', 'right_high'], 'stereo-sub routing');
+    // The crossover response the Crossover card graphs: one entry per way.
+    // With subs routed and the main high-pass on, every way also runs the
+    // sub crossover, so both the low and the high way carry the derived one.
+    const xover0 = await (await demoFetch('/api/audio/output-state/crossover-response')).json();
+    sameList(Object.keys(xover0.ways), ['left_low', 'left_high', 'right_low', 'right_high'], 'crossover ways');
+    assert.equal(xover0.ways.left_low.complete, true);
+    assert.equal(xover0.ways.left_low.derived_highpass.frequency_hz, 80);
+    assert.equal(xover0.ways.left_high.derived_highpass.frequency_hz, 80);
+    assert.ok(xover0.ways.right_high.points.length >= 180);
+    // The retired set_bass mutation is rejected like the real backend does.
+    const bassApply = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: catalog0.revision,
+            mutation: { kind: 'set_bass', mode: 'stereo-sub', frequency_hz: 100 } }) });
+    assert.equal(bassApply.status, 400);
 
     // ── Measurement simulation contract ─────────────────────────────────
     // Fixtures are the current .104 stock, assigned by name: plain Raw
@@ -750,6 +839,17 @@ const radio = state.getPlayback();
     assert.ok(dspAfterMeter.presets.some(p => p.name === '+3'));
     assert.ok(dspAfterMeter.presets.some(p => p.name === '+6'));
     assert.equal(dspAfterMeter.active_preset, 'Direct');
+    // Preset stock mirrors the current .104 kernel family, and every
+    // convolver preset resolves to an IR in the same payload.
+    for (const name of ['Conv LR HybAlign BK 20-12000Hz -3dB 044321',
+        'Conv LR HybAlign BK 30-3000Hz -7dB', 'Conv LR HybAlign Harman 30-12001Hz -2.5dB 134143',
+        'Conv LR Min Gentle-bass-shelf-house-curve 30-250Hz -4dB 125139',
+        'Conv LR MinAlign Harman 30-300Hz -7dB', 'Co LR Min Neutral 20-1283Hz -3dB']) {
+        assert.ok(dspAfterMeter.presets.some(p => p.name === name), 'preset stock must include ' + name);
+        assert.ok(dspAfterMeter.irs.some(ir => ir.name === name), 'IR pool must include ' + name);
+    }
+    assert.equal(dspAfterMeter.mode, 'native');
+    assert.equal(dspAfterMeter.preset_count, dspAfterMeter.presets.length);
 
     // ── Album About + Discover Similar contract ─────────────────────────
     // About texts ride the same backend fields (artist_description /
@@ -983,6 +1083,64 @@ const radio = state.getPlayback();
     // Restore the demo's default 2.2 mode.
     await (await demoFetch('/api/audio/output-mode', { method: 'POST', body: JSON.stringify({ mode: 'subwoofer-2.2' }) })).json();
 
+    // ── Auto Sub job discovery: the reattach after a reload ─────────────
+    // The backend keeps its jobs in a process-wide map, so a reloaded page
+    // asks .../current and reattaches the newest live or briefly retained
+    // run. The demo answers the same way and parks the job in sessionStorage,
+    // so a simulated reload finds it again.
+    {
+        const storage = makeStorage();
+        const reload = () => makeDemoContext(storage);
+        const noJob = await (await reload().fetch('/api/measurements/auto-sub-optimize/current')).json();
+        assert.equal(noJob.status, 'ok');
+        assert.equal(noJob.job, null, 'a fresh page finds no run');
+
+        const live = reload();
+        const start = await (await live.fetch('/api/measurements/auto-sub-optimize/start', { method: 'POST' })).json();
+        const jobId = start.job.id;
+        const liveFound = await (await live.fetch('/api/measurements/auto-sub-optimize/current')).json();
+        assert.equal(liveFound.job.id, jobId, 'the live run must be discoverable');
+        assert.equal(liveFound.job.status, 'queued');
+        assert.equal(live.FXROUTE_DEMO_API.autoSubJobPayload(jobId, 3000).progress.stage, 'sub1_coarse');
+        // The stored job keeps the run's own elapsed time, so a reloaded page
+        // continues the run instead of starting it over.
+        const afterReload = reload();
+        const reattached = await (await afterReload.fetch('/api/measurements/auto-sub-optimize/current')).json();
+        assert.equal(reattached.job.id, jobId, 'a reloaded page must find the same run');
+        assert.ok(['queued', 'running', 'completed'].includes(reattached.job.status), 'found ' + reattached.job.status);
+        assert.equal(reattached.job.status, live.FXROUTE_DEMO_API.autoSubJobPayload(jobId).status,
+            'the reloaded page must continue the run, not restart it');
+        // ... and it finishes there, with the run's real result.
+        const finished = afterReload.FXROUTE_DEMO_API.autoSubJobPayload(jobId, 100000);
+        assert.equal(finished.status, 'completed');
+        assert.equal(finished.result.mode, 'subwoofer-2.2');
+        // A finished run stays discoverable while it is retained: the run's own
+        // clock decides, so a page reloaded after it finished finds the result
+        // rather than a run in flight.
+        const later = JSON.parse(storage.getItem('fxroute.demo.autosub.job'));
+        later.startedAt = Date.now() - 30000;
+        storage.setItem('fxroute.demo.autosub.job', JSON.stringify(later));
+        const afterFinish = reload();
+        const retained = await (await afterFinish.fetch('/api/measurements/auto-sub-optimize/current')).json();
+        assert.equal(retained.job.id, jobId);
+        assert.equal(retained.job.status, 'completed');
+        assert.ok(retained.job.result && retained.job.result.applied === true);
+        // ... and a cancelled one is discoverable as cancelled.
+        const cancelStart = await (await live.fetch('/api/measurements/auto-sub-optimize/start', { method: 'POST' })).json();
+        await (await live.fetch(`/api/measurements/auto-sub-optimize/jobs/${cancelStart.job.id}/cancel`, { method: 'POST' })).json();
+        const cancelled = await (await live.fetch('/api/measurements/auto-sub-optimize/current')).json();
+        assert.equal(cancelled.job.id, cancelStart.job.id, 'the newest job wins');
+        assert.equal(cancelled.job.status, 'cancelled');
+        // A run past the backend's 10 minute retention is not rediscovered.
+        const stale = JSON.parse(storage.getItem('fxroute.demo.autosub.job'));
+        stale.finishedAt = Date.now() - 700000;
+        storage.setItem('fxroute.demo.autosub.job', JSON.stringify(stale));
+        const expired = await (await reload().fetch('/api/measurements/auto-sub-optimize/current')).json();
+        assert.equal(expired.job, null, 'a run past its retention must not be found');
+        assert.equal(storage.getItem('fxroute.demo.autosub.job'), null,
+            'an expired run must not come back on the next reload');
+    }
+
     // ── Provider account state (Settings Connect/Disconnect) ────────────
     // The real backend flips `authenticated` per account provider; the demo
     // must mirror it, or the Settings row keeps reading "Disconnect" after a
@@ -1064,6 +1222,480 @@ const radio = state.getPlayback();
     await restoredCtx.fetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });
     const restoredStock = await demoStock(restoredCtx);
     assert.deepEqual(restoredStock, baselineStock, 'fresh reload must restore the full initial demo stock');
+
+    // ── Speaker Auto Alignment ──────────────────────────────────────────
+    // A full run on the seeded crossover system, driven exactly like the
+    // panel drives it: start, poll through the stage messages, land on a
+    // committed result whose Before/After pair comes from the real .104
+    // alignment run. The commit has to move the output state, because that
+    // is what the Crossover card's way trim reads.
+    {
+        const start = await (await demoFetch('/api/speaker-align/start', { method: 'POST',
+            body: JSON.stringify({ side: 'right', input_id: 'alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
+                mic_input_channel: '1', reference_input_channel: '8',
+                reference_input_channel_left: '7', reference_input_channel_right: '8',
+                reference_id: 'pw-source-111:ch8:upstream', microphone_position_id: 'right-fixed-1', dry_run: false }) })).json();
+        assert.equal(start.status, 'ok');
+        assert.equal(start.job.status, 'queued');
+        assert.equal(start.job.message, 'Speaker alignment queued.');
+        assert.equal(start.job.dry_run, false);
+        assert.equal(start.job.params.sample_rate_hz, 48000);
+        assert.equal(start.job.params.channels, 18);
+        assert.equal(start.job.params.reference_input_channel_right, '8');
+        const jobId = start.job.id;
+        const jobAt = (elapsed) => context.FXROUTE_DEMO_API.speakerAlignJobPayload(jobId, elapsed);
+
+        // The backend's own stage messages, in order. The shared planning take
+        // counts as step 1, so a two-way side measures three takes.
+        const queued = jobAt(100);
+        assert.equal(queued.status, 'queued');
+        assert.equal(queued.message, 'Speaker alignment queued.');
+        assert.equal(jobAt(1500).status, 'acquiring');
+        assert.equal(jobAt(1500).message, 'Measuring speaker ways…');
+        assert.equal(jobAt(3000).message, 'Measuring right ways (1/3)…');
+        assert.equal(jobAt(6000).message, 'Measuring right low (2/3)…');
+        assert.equal(jobAt(9000).message, 'Measuring right high (3/3)…');
+        assert.equal(jobAt(11000).status, 'confirming');
+        assert.equal(jobAt(11000).message, 'Confirming alignment acoustically…');
+        assert.equal(jobAt(13000).message, 'Verifying right ways (1/1)…');
+        // A live job is listed, and the polled copy matches the endpoint.
+        const listed = (await (await demoFetch('/api/speaker-align/jobs')).json()).jobs;
+        assert.ok(listed.some(job => job.id === jobId));
+        const polled = (await (await demoFetch(`/api/speaker-align/jobs/${jobId}`)).json()).job;
+        assert.equal(polled.id, jobId);
+        assert.equal(polled.status, 'queued');
+
+        // The result the panel renders, from the real .104 run.
+        const done = jobAt(30000);
+        assert.equal(done.status, 'committed');
+        assert.match(done.message, /^Committed speaker alignment at revision \d+\.$/);
+        const result = done.result;
+        assert.equal(result.confirmed, true);
+        assert.equal(result.side, 'right');
+        assert.equal(result.dry_run, false);
+        sameList(Object.keys(result.proposal), ['start_revision', 'processing_fingerprint', 'arrival_ms',
+            'added_delay_ms', 'reference_role', 'way_levels_db', 'added_gain_db',
+            'planning_isolation_db', 'arrival_source'], 'proposal keys');
+        assert.equal(result.proposal.arrival_source, 'shared-planning-take');
+        assert.equal(result.proposal.reference_role, 'right_high');
+        // added_delay = max(arrival) - arrival, and the committed revision
+        // follows the store the commit bumped.
+        // The delay model has to be one the backend would actually produce:
+        // earliest-way-origin arrivals on the 48 kHz sample grid, the added
+        // delay as latest - arrival, and the gain as median(levels) - level.
+        const arrivals = result.proposal.arrival_ms;
+        const sampleMs = 1000 / 48000;
+        assert.equal(Math.min(...Object.values(arrivals)), 0,
+            'the earliest way of the take must land on 0.0 ms');
+        const latestRole = Object.keys(arrivals).find(role => arrivals[role] === Math.max(...Object.values(arrivals)));
+        assert.equal(result.proposal.reference_role, latestRole,
+            'the reference role must be the latest arrival');
+        assert.equal(result.proposal.added_delay_ms[result.proposal.reference_role], 0,
+            'the reference way must receive no delay');
+        for (const [role, arrival] of Object.entries(arrivals)) {
+            const samples = arrival / sampleMs;
+            assert.ok(Math.abs(samples - Math.round(samples)) < 1e-6,
+                role + ' arrival must be a whole 48 kHz sample, got ' + samples);
+        }
+        const latest = arrivals[result.proposal.reference_role];
+        for (const [role, delay] of Object.entries(result.proposal.added_delay_ms)) {
+            assert.equal(delay, Number((latest - arrivals[role]).toFixed(6)),
+                role + ' added delay must be latest - arrival');
+        }
+        // A two-way crossover over centimetres of path difference: the gross
+        // spread is a few tenths of a millisecond, not whole milliseconds.
+        assert.ok(result.check.before_spread_ms > 0.05 && result.check.before_spread_ms < 1.0,
+            'a two-way spread of ' + result.check.before_spread_ms + ' ms is not credible for one crossover');
+        assert.equal(result.check.before_spread_ms, latest,
+            'the reported spread must be the arrival range of the planning take');
+        assert.ok(Math.abs(result.check.max_residual_ms
+            - (Math.max(...Object.values(result.check.after_arrival_ms))
+               - Math.min(...Object.values(result.check.after_arrival_ms)))) < 1e-6,
+            'the residual must be the arrival range of the verification take');
+        for (const pair of result.check.pairs) {
+            const [a, b] = pair.roles;
+            assert.ok(Math.abs(pair.residual_within_pair_ms
+                - Math.abs(result.check.after_arrival_ms[b] - result.check.after_arrival_ms[a])) < 1e-6,
+                'the pair residual must match the verification take');
+        }
+        // A separation this tight is separable, but not by much.
+        assert.ok(Math.min(...Object.values(result.check.way_isolation_db)) > 10,
+            'the ways must be separable, or the run could not have confirmed');
+        assert.ok(Math.min(...Object.values(result.proposal.planning_isolation_db)) < 20,
+            'a 0.375 ms separation must not claim a comfortable isolation margin');
+        // The gain correction is the median of the way levels, and the two
+        // ways must land on that median.
+        const levels = Object.values(result.proposal.way_levels_db).sort((x, y) => x - y);
+        const median = (levels[0] + levels[levels.length - 1]) / 2;
+        for (const [role, gain] of Object.entries(result.proposal.added_gain_db)) {
+            assert.equal(gain, Number((median - result.proposal.way_levels_db[role]).toFixed(2)),
+                role + ' gain must be the median correction');
+        }
+        // The planning take reports levels relative to the loudest way, the
+        // proposal reports the absolute passband levels.
+        assert.equal(Math.max(...Object.values(result.provenance.planning.way_levels_db)), 0,
+            'planning levels must be relative to the loudest way');
+        // Applying the corrections must land the ways on the median level.
+        for (const [role, gain] of Object.entries(result.proposal.added_gain_db)) {
+            const corrected = result.proposal.way_levels_db[role] + gain;
+            assert.ok(Math.abs(corrected - median) < 0.01,
+                role + ' must land on the median level, got ' + corrected.toFixed(3));
+        }
+        assert.equal(result.check.tolerance_ms, 0.25);
+        assert.equal(result.check.gain_tolerance_db, 2.0);
+        assert.ok(result.check.max_residual_ms <= result.check.tolerance_ms);
+        assert.ok(result.check.max_residual_ms < result.check.before_spread_ms,
+            'the verification must be tighter than the planning spread');
+        assert.ok(Math.abs(result.check.before_gain_spread_db
+            - (Math.max(...Object.values(result.proposal.way_levels_db))
+               - Math.min(...Object.values(result.proposal.way_levels_db)))) < 1e-6,
+            'the reported level spread must match the proposal levels');
+        sameList(result.check.reasons, [], 'confirmed run carries no reasons');
+        assert.equal(typeof result.committed_revision, 'number');
+        assert.equal(result.provenance.microphone_node.indexOf('Scarlett') > 0, true);
+        assert.equal(result.provenance.electrical_reference_channel, '8');
+        assert.equal(result.provenance.electrical_reference_channels_by_role.right_low, '7');
+        assert.equal(result.provenance.electrical_reference_channels_by_role.right_high, '8');
+
+        // The Before/After pair: real saved measurements, named and tagged
+        // like the backend names them.
+        const before = result.measurements.before;
+        const after = result.measurements.after;
+        assert.equal(before.name, 'Speaker Align Right · Before (planning)');
+        assert.equal(after.name, 'Speaker Align Right · After (verification)');
+        assert.equal(before.speaker_align_take.side, 'right');
+        assert.equal(before.speaker_align_take.take, 'before');
+        assert.equal(after.speaker_align_take.take, 'after');
+        assert.equal(before.channel, 'right');
+        assert.equal(before.measurement_kind, 'sweep-response-v3');
+        assert.equal(before.traces.length, 1);
+        assert.equal(before.traces[0].kind, 'sweep-response');
+        assert.equal(before.traces[0].role, 'trusted');
+        assert.equal(before.traces[0].color, '#6ee7b7');
+        assert.equal(before.traces[0].label, 'Speaker Align Right · Before (planning) · trusted');
+        assert.equal(before.review_traces[0].kind, 'sweep-response-review');
+        assert.equal(before.review_traces[0].role, 'raw-review');
+        assert.equal(before.review_traces[0].color, '#a78bfa');
+        assert.equal(before.traces[0].points.length, 192);
+        assert.equal(before.summary.point_count, 192);
+        assert.equal(before.summary.min_hz, 20);
+        assert.equal(before.summary.max_hz, 20000);
+        assert.equal(before.analysis.sample_rate, 48000);
+        assert.equal(before.analysis.quality_checks.status, 'pass');
+        assert.equal(before.analysis.reference_path.timing_status, 'electrical-reference');
+        assert.equal(before.analysis.reference_path.timing_label, 'Electrical reference active');
+        assert.equal(before.analysis.reference_path.electrical_reference_input_channel, 8);
+        assert.equal(before.analysis.reference_path.capture_mode, 'electrical-input');
+        assert.equal(before.analysis.impulse_response.preview.points.length, 500);
+        assert.equal(before.analysis.impulse_response.preview.schema, 'fxroute.ir-preview.v1');
+        // The frozen area context, narrowed to the measured side.
+        assert.equal(before.measurement_target.schema, 'fxroute.measurement-target');
+        assert.equal(before.measurement_target.mode, 'stereo-sub');
+        assert.equal(before.measurement_target.bank_id, 'global');
+        assert.equal(before.measurement_target.reference_tap, 'fxroute_dsp_sink.monitor');
+        sameList(before.measurement_target.measured_roles, ['right_low', 'right_high'], 'measured roles');
+        // The planning take is frozen at the start revision; only the
+        // verification take saw the committed state.
+        assert.equal(before.measurement_target.revision, result.proposal.start_revision);
+        assert.equal(after.measurement_target.revision, result.committed_revision);
+
+        // Shared timing timeline: both takes on one time base anchored on the
+        // reference way, so the alignment's timing change is visible. Zero is
+        // the reference way's arrival, every other way sits at minus its
+        // planned delay in the Before take and at its residual in the After
+        // one - the proposal and verification numbers, exactly.
+        const timing = context.FXROUTE_DEMO_ALIGNMENT.timingModel;
+        assert.equal(timing.schema, 'fxroute.speaker-align-timeline.v1');
+        assert.equal(timing.sampleRateHz, 48000);
+        const referenceRole = result.proposal.reference_role;
+        for (const take of ['before', 'after']) {
+            const timeline = result.measurements[take].analysis.speaker_align_timeline;
+            assert.equal(timeline.schema, timing.schema, take + ' timeline schema');
+            assert.equal(timeline.time_origin, 'reference-way-arrival', take + ' timeline origin');
+            assert.equal(timeline.reference_role, referenceRole, take + ' timeline reference way');
+            assert.equal(timeline.sample_rate, timing.sampleRateHz);
+            sameList(Object.keys(timeline.arrival_ms).sort(),
+                Object.keys(result.proposal.arrival_ms).sort(), take + ' timeline ways');
+            assert.equal(timeline.arrival_ms[referenceRole], 0,
+                take + ': the reference way is the origin, not a delayed one');
+            for (const [role, arrival] of Object.entries(timeline.arrival_ms)) {
+                const expected = take === 'before'
+                    ? -result.proposal.added_delay_ms[role]
+                    : result.check.after_arrival_ms[role] - result.check.after_arrival_ms[referenceRole];
+                assert.ok(Math.abs(arrival - expected) < 1e-6,
+                    take + ' ' + role + ' sits at ' + arrival + ' ms, the run says ' + expected);
+            }
+            // Bounded display slices: the full band and every isolated way
+            // band the arrivals are read from, on the 48 kHz grid, each
+            // normalized to its own peak, inside the take's own window.
+            const slices = [['full band', timeline.full_band]]
+                .concat(Object.keys(timeline.ways).map(role => [role, timeline.ways[role]]));
+            for (const [label, points] of slices) {
+                assert.ok(points.length > 10 && points.length <= timing.maxPoints,
+                    take + ' ' + label + ' slice has ' + points.length + ' points');
+                let peak = 0;
+                points.forEach((point, index) => {
+                    assert.equal(point.length, 2, take + ' ' + label + ' point shape');
+                    assert.ok(Number.isFinite(point[0]) && Number.isFinite(point[1]));
+                    if (index) assert.ok(point[0] > points[index - 1][0],
+                        take + ' ' + label + ' slice must advance in time');
+                    const samples = point[0] / sampleMs;
+                    assert.ok(Math.abs(samples - Math.round(samples)) < 0.01,
+                        take + ' ' + label + ' point at ' + point[0] + ' ms is off the sample grid');
+                    peak = Math.max(peak, Math.abs(point[1]));
+                });
+                assert.ok(Math.abs(peak - 1) < 1e-4,
+                    take + ' ' + label + ' slice must be normalized to its own peak, got ' + peak);
+            }
+            const earliest = Math.min(...Object.values(timeline.arrival_ms));
+            const latest = Math.max(...Object.values(timeline.arrival_ms));
+            const firstMs = timeline.full_band[0][0];
+            const lastMs = timeline.full_band[timeline.full_band.length - 1][0];
+            assert.ok(firstMs >= earliest - timing.leadMs - 1e-6
+                && firstMs <= earliest - timing.leadMs + sampleMs,
+                take + ' window must start the lead ahead of the earliest arrival, got ' + firstMs);
+            assert.ok(lastMs <= latest + timing.tailMs + sampleMs
+                && lastMs >= latest + timing.tailMs - sampleMs,
+                take + ' window must end the tail behind the latest arrival, got ' + lastMs);
+            // Every way's own trace still peaks on its own arrival, so the
+            // lanes read as the way the estimate found.
+            for (const role of Object.keys(timeline.ways)) {
+                const points = timeline.ways[role];
+                let peakAt = points[0];
+                points.forEach(point => { if (Math.abs(point[1]) > Math.abs(peakAt[1])) peakAt = point; });
+                assert.ok(Math.abs(peakAt[0] - timeline.arrival_ms[role]) <= sampleMs,
+                    take + ' ' + role + ' peaks at ' + peakAt[0] + ' ms, not on its arrival');
+            }
+        }
+        // The spread the Before lane shows is the run's, and the residual the
+        // After lane shows is the verification's.
+        const beforeSpread = Math.max(...Object.values(before.analysis.speaker_align_timeline.arrival_ms))
+            - Math.min(...Object.values(before.analysis.speaker_align_timeline.arrival_ms));
+        const afterResidual = Math.max(...Object.values(after.analysis.speaker_align_timeline.arrival_ms))
+            - Math.min(...Object.values(after.analysis.speaker_align_timeline.arrival_ms));
+        assert.ok(Math.abs(beforeSpread - result.check.before_spread_ms) < 1e-6);
+        assert.ok(Math.abs(afterResidual - result.check.max_residual_ms) < 1e-6);
+
+        // The shipped frontend turns the pair into one timing lane per take on
+        // that shared time base, Before above After.
+        const speakerAlign = require(path.join(root, 'demo', 'dist', 'static', 'speaker_align.js'));
+        const lanes = speakerAlign.timelineView([
+            { ...before, current: true, graphColor: '#6ee7b7' },
+            { ...after, current: true, graphColor: '#a78bfa' },
+        ], { widthPx: 900 });
+        assert.ok(lanes, 'the pair must draw as timing lanes');
+        sameList(lanes.lanes.map(lane => lane.label), ['Right · Before', 'Right · After'], 'lane order');
+        assert.equal(lanes.lanes[0].spreadMs, result.check.before_spread_ms);
+        assert.equal(lanes.lanes[1].spreadMs, result.check.max_residual_ms);
+        assert.ok(lanes.minMs < -result.proposal.added_delay_ms.right_low
+            && lanes.maxMs > result.check.after_arrival_ms.right_low);
+        assert.match(speakerAlign.timelineSummary(lanes),
+            /^Timing: 0 ms = High arrival \(not delayed\) · Right · Before spread 0\.375 ms · Right · After residual 0\.021 ms$/);
+        // A take without a timeline keeps the classic IR preview, so a saved
+        // run from before the time base still draws in the normal overlay.
+        const plain = { ...before, analysis: {} };
+        assert.equal(speakerAlign.takeTimeline(plain), null);
+        assert.equal(speakerAlign.irParts([plain]).timeline, null);
+        assert.equal(speakerAlign.irParts([plain]).plainEntries.length, 1);
+        // The Align takes are lanes, not overlay entries.
+        assert.equal(speakerAlign.irParts([before, after]).plainEntries.length, 0);
+
+        // Treble treatment: 20 Hz .. 1 kHz is the .104 run verbatim (spot
+        // checks against the measured values), the blend region 1-2 kHz keeps
+        // the measured crossover dip so the trace still reads as a real 2-way,
+        // and above the blend both takes follow one tamed top end - a tamed
+        // presence rise easing into a natural fall - with a little shallow
+        // structure on it and the run's own before/after level distance held
+        // all the way out.
+        const model = context.FXROUTE_DEMO_ALIGNMENT.trebleModel;
+        assert.equal(model.verbatimHz, 1000);
+        assert.equal(model.blendEndHz, 2000);
+        assert.equal(model.presenceHz, 4500);
+        const ripple = context.FXROUTE_DEMO_ALIGNMENT.topEndRipple;
+        // 2048.808 Hz is the last measured point, so the structure fades in
+        // from there and the blend region stays the measurement.
+        assert.equal(model.rippleFromHz, 2048.808);
+        assert.ok(model.rippleFullHz > model.rippleFromHz);
+        assert.equal(ripple(model.rippleFromHz), 0);
+        assert.equal(ripple(1000), 0);
+        for (let hz = model.rippleFromHz; hz <= 20000; hz *= Math.pow(2, 1 / 6)) {
+            assert.ok(Math.abs(ripple(hz)) <= model.rippleMaxDb + 1e-9,
+                'the top end structure must stay shallow, ' + ripple(hz).toFixed(2)
+                    + ' dB at ' + hz.toFixed(0) + ' Hz');
+        }
+        // Exact frequencies of the stored 1/6-oct points, so the spot checks
+        // address the measured samples themselves.
+        const at = (points, hz) => {
+            const hit = points.find(point => point[0] === hz);
+            assert.ok(hit, `the trace must carry a point at ${hz} Hz`);
+            return hit[1];
+        };
+        const MEASURED = {
+            before: [[20, -12.596], [49.397, -21.578], [251.482, 2.223], [993.951, -1.615]],
+            after: [[20, -18.38], [49.397, -19.999], [251.482, 2.355], [993.951, -1.566]],
+        };
+        for (const take of ['before', 'after']) {
+            const points = result.measurements[take].traces[0].points;
+            for (const [hz, db] of MEASURED[take]) {
+                assert.equal(at(points, hz), db, `${take} must keep the measured value at ${hz} Hz`);
+            }
+            // The measured crossover dip survives in the blend region.
+            const dip = Math.min(...points.filter(p => p[0] >= model.verbatimHz && p[0] <= model.blendEndHz).map(p => p[1]));
+            assert.ok(dip < -1.5 && dip > -8,
+                take + ' must keep a bounded measured crossover dip, got ' + dip);
+            // The tamed shape the run is judged on: the stored curve without
+            // the shallow structure on top of it.
+            const shape = points.map(point => [point[0], Math.round((point[1] - ripple(point[0])) * 1000) / 1000]);
+            // That shape stays the accepted one: no sharp reversal, a tamed
+            // presence, then a monotone natural fall.
+            const smoothed = shape.filter(p => p[0] >= model.blendEndHz);
+            let direction = 0;
+            for (let index = 1; index < smoothed.length; index += 1) {
+                const step = smoothed[index][1] - smoothed[index - 1][1];
+                if (direction && step * direction < 0) {
+                    assert.ok(Math.abs(step) < 0.35,
+                        take + ' must not reverse sharply at ' + smoothed[index][0] + ' Hz (' + step.toFixed(2) + ')');
+                }
+                direction = step > 0 ? 1 : (step < 0 ? -1 : direction);
+            }
+            // The broad 4-6 kHz hump is measured against the 2 kHz level,
+            // which is what the eye reads as a bump: the raw run rose ~7.5 dB.
+            const at2k = at(points, 2048.808);
+            const hump = Math.max(...points.filter(p => p[0] >= 4000 && p[0] <= 6000).map(p => p[1])) - at2k;
+            assert.ok(hump < 5, take + ' 4-6 kHz hump must be tamed, still rises ' + hump.toFixed(2) + ' dB');
+            // ... and the top end falls naturally instead of ending flat or bright.
+            const shapeTail = shape.filter(p => p[0] >= model.bumpEndHz);
+            for (let index = 1; index < shapeTail.length; index += 1) {
+                assert.ok(shapeTail[index][1] < shapeTail[index - 1][1],
+                    take + ' shape must fall monotonically past ' + model.bumpEndHz + ' Hz');
+            }
+            assert.ok(shapeTail[shapeTail.length - 1][1] < -6 && shapeTail[shapeTail.length - 1][1] > -14,
+                take + ' must end on a believable, slightly falling top end');
+            // The structure is there and it is small: the curve is measurably
+            // off its own shape, never by more than the bound, and it keeps the
+            // shape's fall instead of wiggling against it. A tenth of a decibel
+            // per 1/6-octave step is the edge of what the eye reads on a
+            // 6 dB-per-division graph.
+            const structure = points.filter(p => p[0] > model.rippleFromHz)
+                .map(point => Math.abs(ripple(point[0])));
+            assert.ok(Math.max(...structure) >= 0.3,
+                take + ' must carry some top end structure, strongest is '
+                    + Math.max(...structure).toFixed(2) + ' dB');
+            assert.ok(Math.max(...structure) <= model.rippleMaxDb + 0.002,
+                take + ' top end structure must stay shallow, strongest is '
+                    + Math.max(...structure).toFixed(2) + ' dB');
+            const curveTail = points.filter(p => p[0] >= model.bumpEndHz);
+            for (let index = 1; index < curveTail.length; index += 1) {
+                const step = curveTail[index][1] - curveTail[index - 1][1];
+                assert.ok(step < 0.1, take + ' must not climb against its own fall at '
+                    + curveTail[index][0] + ' Hz (' + step.toFixed(3) + ')');
+            }
+            assert.ok(curveTail[curveTail.length - 1][1] < curveTail[0][1] - 6,
+                take + ' must keep falling overall past ' + model.bumpEndHz + ' Hz');
+        }
+        // The run's own character: from the blend onwards the after take keeps
+        // exactly the level distance the run measured through the presence band.
+        const offset = model.beforeAfterOffsetDb;
+        assert.ok(offset > 1.0 && offset < 2.0,
+            'the takes must stay clearly distinguishable, offset is ' + offset);
+        for (const hz of [2048.808, 3049.833, 5060.243, 9025.687, 13435.54, 20000]) {
+            const gap = at(after.traces[0].points, hz) - at(before.traces[0].points, hz);
+            // Stored points carry 3 decimals, so the held distance is exact to
+            // the rounding step.
+            assert.ok(Math.abs(gap - offset) <= 0.002,
+                'before/after distance must hold at ' + hz + ' Hz (' + gap.toFixed(3) + ')');
+        }
+        // Below the blend the takes keep the real, non-uniform difference of
+        // the run, including its low-bass character.
+        const lowGap = at(after.traces[0].points, 20) - at(before.traces[0].points, 20);
+        assert.ok(lowGap < -5, 'the low-bass difference of the run must survive, got ' + lowGap);
+        assert.ok(Math.abs((at(after.traces[0].points, 251.482) - at(before.traces[0].points, 251.482)) - offset) > 1.0,
+            'the mid-bass difference must stay independent of the smoothed top end');
+
+        // The commit is real: the right way trim and the revision move.
+        const afterCommit = await (await demoFetch('/api/audio/output-state')).json();
+        const processing = afterCommit.modes['stereo-sub'].processing;
+        assert.equal(afterCommit.revision, result.committed_revision);
+        for (const [role, gain] of Object.entries(result.proposal.added_gain_db)) {
+            assert.equal(processing[role].level_db, Number(gain.toFixed(2)), role + ' level after commit');
+        }
+        for (const [role, delay] of Object.entries(result.proposal.added_delay_ms)) {
+            assert.equal(processing[role].alignment_ms, delay, role + ' alignment after commit');
+        }
+        assert.equal(processing.left_low.level_db, 0, 'the other side must stay untouched');
+
+        // A trial run confirms without touching the store.
+        const trialStart = await (await demoFetch('/api/speaker-align/start', { method: 'POST',
+            body: JSON.stringify({ side: 'left', input_id: 'demo-mic', dry_run: true }) })).json();
+        const trial = context.FXROUTE_DEMO_API.speakerAlignJobPayload(trialStart.job.id, 30000);
+        assert.equal(trial.status, 'trial-done');
+        assert.equal(trial.message, 'Trial alignment confirmed without committing.');
+        assert.equal(trial.result.committed_revision, null);
+        assert.equal(trial.result.dry_run, true);
+        assert.equal(trial.result.measurements.before.name, 'Speaker Align Left · Before (planning)');
+        const afterTrial = await (await demoFetch('/api/audio/output-state')).json();
+        assert.equal(afterTrial.revision, afterCommit.revision, 'a trial must not bump the revision');
+
+        // Cancelling a live job settles through "cancelling" into "cancelled".
+        const cancelStart = await (await demoFetch('/api/speaker-align/start', { method: 'POST',
+            body: JSON.stringify({ side: 'left', input_id: 'demo-mic' }) })).json();
+        const cancelling = (await (await demoFetch(`/api/speaker-align/jobs/${cancelStart.job.id}/cancel`,
+            { method: 'POST' })).json()).job;
+        assert.equal(cancelling.status, 'cancelling');
+        assert.equal(cancelling.message, 'Cancelling speaker alignment…');
+        const settling = context.FXROUTE_DEMO_API.speakerAlignJobPayload(cancelStart.job.id, 0);
+        assert.equal(settling.status, 'cancelling', 'a cancel stays in flight while it settles');
+        await new Promise(resolve => setTimeout(resolve, 1100));
+        const settled = context.FXROUTE_DEMO_API.speakerAlignJobPayload(cancelStart.job.id, 30000);
+        assert.equal(settled.status, 'cancelled');
+        assert.equal(settled.message, 'Speaker alignment cancelled.');
+        assert.equal(settled.result, null);
+        // A cancelled run never commits.
+        const afterCancel = await (await demoFetch('/api/audio/output-state')).json();
+        assert.equal(afterCancel.revision, afterCommit.revision);
+        assert.equal((await demoFetch('/api/speaker-align/jobs/nope')).status, 404);
+        assert.equal((await demoFetch('/api/speaker-align/jobs/nope/cancel', { method: 'POST' })).status, 404);
+    }
+
+    // ── Saved runs: the alignment takes ship with the demo ──────────────
+    {
+        const list = (await (await demoFetch('/api/measurements')).json()).measurements;
+        const alignRuns = list.filter(m => /^Speaker Align Right · /.test(String(m.name || '')));
+        assert.equal(alignRuns.length, 2, 'the demo ships the alignment Before/After pair');
+        // Newest first, like the real store.
+        const dates = list.map(m => String(m.created_at || ''));
+        for (let index = 1; index < dates.length; index += 1) {
+            assert.ok(dates[index - 1] >= dates[index], 'saved runs must be newest first');
+        }
+        // The title link resolves to the stored document.
+        const run = alignRuns[0];
+        const file = await (await demoFetch(`/api/measurements/${run.id}/file`)).json();
+        assert.equal(file.id, run.id);
+        assert.equal(file.name, run.name);
+        assert.equal((await demoFetch('/api/measurements/nope/file')).status, 404);
+        // A saved Align take keeps the run's time base, so the saved list can
+        // put it back on the shared lanes instead of a 0 ms preview.
+        const savedTake = alignRuns.find(m => m.speaker_align_take?.take === 'after');
+        const savedFile = await (await demoFetch(`/api/measurements/${savedTake.id}/file`)).json();
+        const savedTimeline = savedFile.analysis.speaker_align_timeline;
+        assert.equal(savedTimeline.schema, context.FXROUTE_DEMO_ALIGNMENT.timingModel.schema,
+            'a saved take keeps its time base');
+        assert.equal(savedTimeline.reference_role, 'right_high');
+        assert.equal(savedTimeline.arrival_ms.right_high, 0, 'the reference way stays the origin');
+        assert.ok(Math.abs(savedTimeline.arrival_ms.right_low - 0.020833) < 1e-6,
+            'the saved take keeps its residual on the shared time base');
+        assert.ok(savedTimeline.ways.right_low.length > 10 && savedTimeline.full_band.length > 10);
+        // Deleting returns the real shape.
+        await (await demoFetch('/api/measurements/save', { method: 'POST',
+            body: JSON.stringify({ measurement: run }) })).json();
+        const removed = await demoFetch('/api/measurements/' + run.id, { method: 'DELETE' });
+        assert.equal(removed.status, 200);
+        const removedBody = await removed.json();
+        assert.equal(removedBody.status, 'ok');
+        assert.equal(removedBody.deleted, run.id);
+        assert.equal((await demoFetch('/api/measurements/' + run.id + '/file')).status, 404,
+            'a deleted run must no longer resolve');
+    }
 
     console.log('ok demo behavior contract');
 })();

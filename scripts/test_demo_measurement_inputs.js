@@ -116,14 +116,26 @@ function makeDemoContext() {
     await demoFetch('/api/audio/source-mode',
         { method: 'POST', body: JSON.stringify({ mode: 'app-playback' }) });
 
-    // MOTU M4 measurement capture: split refs on line inputs 3/4 via the
-    // unchanged channel-count logic (no new device, no new channel model).
+    // The selected output's measurement capture: the demo opens on the
+    // 18-channel Scarlett, so the default capture is its multichannel input
+    // and the split refs land on the line inputs 7/8 via the unchanged
+    // channel-count logic (no new device, no new channel model).
     const motuSettings = await (await demoFetch('/api/measurements')).json();
     const motuCapture = motuSettings.measurement_settings;
-    // Default output is the MOTU M4, so the default capture is its 4ch input.
-    assert.equal(motuCapture.selectedInputId, 'alsa_input.usb-MOTU_M4-00.analog-surround-40');
-    assert.equal(motuCapture.selectedReferenceInputChannelLeft, '3');
-    assert.equal(motuCapture.selectedReferenceInputChannelRight, '4');
+    assert.equal(motuCapture.selectedInputId, SCARLETT_SOURCE);
+    assert.equal(motuCapture.selectedReferenceInputChannelLeft, '7');
+    assert.equal(motuCapture.selectedReferenceInputChannelRight, '8');
+    assert.equal(motuCapture.selectedReferenceInputChannel, '8');
+    // Selecting the 4-channel MOTU M4 keeps its own line inputs 3/4.
+    await demoFetch('/api/audio/outputs',
+        { method: 'POST', body: JSON.stringify({ key: 'alsa_output.usb-MOTU_M4-00.analog-surround-40' }) });
+    const motuOnly = (await (await demoFetch('/api/measurements')).json()).measurement_settings;
+    assert.equal(motuOnly.selectedInputId, 'alsa_input.usb-MOTU_M4-00.analog-surround-40');
+    assert.equal(motuOnly.selectedReferenceInputChannelLeft, '3');
+    assert.equal(motuOnly.selectedReferenceInputChannelRight, '4');
+    // Back to the demo's default interface.
+    await demoFetch('/api/audio/outputs',
+        { method: 'POST', body: JSON.stringify({ key: 'alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output' }) });
 
     // The simulation itself is unchanged: sweeps start and carry UMIK-1 facts.
     const started = await (await demoFetch('/api/measurements/start',
