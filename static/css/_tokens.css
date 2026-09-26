@@ -86,9 +86,6 @@
     --slate-400-a24: rgba(148, 163, 184, 0.24);
     --slate-200:     #d1d5db;
     --canvas-deep:   #08111f;
-    --sub1-tint:     rgba(8, 47, 73, 0.2);
-    --sub2-tint:     var(--slate-800-a44);
-    --sub2-line:     rgba(147, 197, 253, 0.24);
     --info-tint:     rgba(96, 165, 250, 0.06);
     --info-line:     rgba(96, 165, 250, 0.22);
     --accent-ink:    #08110d;

@@ -243,38 +243,65 @@ def _run():
             # 2.2 pins the third card: Dual-Mono and Stereo show Global + Sub 1
             # + Sub 2 in three equal-width columns on desktop. Cards hug
             # their own content instead of stretching to one height.
-            three_col = page.evaluate("""
-                (() => {
-                    const card = document.querySelector('.effects-card-subwoofer');
-                    card.classList.add('is-subwoofer-22');
-                    // Without a catalog the Sub 2 group starts hidden; unhide
-                    // it for the comparison so all three cards measure.
-                    const hidden = [...document.querySelectorAll('.effects-subwoofer-sub2-field.hidden')];
-                    hidden.forEach((el) => el.classList.remove('hidden'));
-                    const n = getComputedStyle(document.querySelector('.effects-subwoofer-controls'))
-                        .gridTemplateColumns.trim().split(/\\s+/).length;
-                    const align = getComputedStyle(document.querySelector('.effects-subwoofer-controls'))
-                    .alignItems;
-                const rects = [...document.querySelectorAll(
-                        '.effects-subwoofer-global-group, .effects-subwoofer-sub1-group, .effects-subwoofer-sub2-group')]
-                        .map((el) => el.getBoundingClientRect());
-                    hidden.forEach((el) => el.classList.add('hidden'));
-                    card.classList.remove('is-subwoofer-22');
-                    return { n, align, widths: rects.map((r) => Math.round(r.width)),
-                             heights: rects.map((r) => Math.round(r.height)) };
-                })()
-            """)
-            check(f"2.2 desktop uses 3 columns ({three_col})", three_col["n"] == 3)
-            check(f"2.2 cards share one width ({three_col})",
-                  max(three_col["widths"]) - min(three_col["widths"]) <= 2)
-            # "Cards hug their own content" is the contract, not one fixed
-            # height spread: the grid must align to start and each card must
-            # keep its own height. The sub trims are two rows now (the value
-            # fields keep their digit floor), which lands them close to
-            # Global's height, so a hard spread would only pin a coincidence.
-            check(f"2.2 cards align to start and keep their own heights ({three_col})",
-                  three_col["align"] == "start" and len(set(three_col["heights"])) > 1
-                  and max(three_col["heights"]) - min(three_col["heights"]) >= 1)
+            # The tightest three-across split (1101px) and wide desktop.
+            for width in (1101, 1440):
+                page.set_viewport_size({"width": width, "height": 900})
+                page.wait_for_timeout(80)
+                three_col = page.evaluate("""
+                    (() => {
+                        const card = document.querySelector('.effects-card-subwoofer');
+                        card.classList.add('is-subwoofer-22');
+                        // Without a catalog the Sub 2 group starts hidden; unhide
+                        // it for the comparison so all three cards measure.
+                        const hidden = [...document.querySelectorAll('.effects-subwoofer-sub2-field.hidden')];
+                        hidden.forEach((el) => el.classList.remove('hidden'));
+                        const n = getComputedStyle(document.querySelector('.effects-subwoofer-controls'))
+                            .gridTemplateColumns.trim().split(/\\s+/).length;
+                        const align = getComputedStyle(document.querySelector('.effects-subwoofer-controls'))
+                        .alignItems;
+                    const groups = [...document.querySelectorAll(
+                            '.effects-subwoofer-global-group, .effects-subwoofer-sub1-group, .effects-subwoofer-sub2-group')];
+                        const rects = groups.map((el) => el.getBoundingClientRect());
+                        // Label tops of the first and the last control row per card.
+                        const rows = groups.map((group) => {
+                            const tops = [...group.querySelectorAll('.field-group')]
+                                .filter((fg) => fg.querySelector('.stepper-control, select')?.offsetParent)
+                                .map((fg) => Math.round(fg.querySelector('label').getBoundingClientRect().top));
+                            return [Math.min(...tops), Math.max(...tops)];
+                        });
+                        const titles = groups.map((group) => Math.round(
+                            group.querySelector('.effects-subwoofer-group-label').getBoundingClientRect().left
+                            - group.getBoundingClientRect().left));
+                        const heightsOf = (sel) => [...card.querySelectorAll(sel)]
+                            .filter((el) => el.offsetParent)
+                            .map((el) => Math.round(el.getBoundingClientRect().height));
+                        const controlHeights = heightsOf('.effects-subwoofer-controls .stepper-control, .effects-subwoofer-controls select');
+                        hidden.forEach((el) => el.classList.add('hidden'));
+                        card.classList.remove('is-subwoofer-22');
+                        return { n, align, widths: rects.map((r) => Math.round(r.width)),
+                                 heights: rects.map((r) => Math.round(r.height)), rows, titles,
+                                 controlHeights: [...new Set(controlHeights)] };
+                    })()
+                """)
+                check(f"[{width}px] 2.2 desktop uses 3 columns ({three_col})", three_col["n"] == 3)
+                check(f"[{width}px] 2.2 cards share one width ({three_col})",
+                      max(three_col["widths"]) - min(three_col["widths"]) <= 2)
+                # Global, Sub 1 and Sub 2 share one vertical rhythm: Crossover /
+                # Type sit on the Level / Align row, Slope / Main highpass on the
+                # Polarity row, every control is equally tall, and the three
+                # cards come out equally high while the grid still aligns them
+                # to start (no stretching).
+                check(f"[{width}px] 2.2 cards align to start and share one height ({three_col})",
+                      three_col["align"] == "start"
+                      and max(three_col["heights"]) - min(three_col["heights"]) <= 1)
+                check(f"[{width}px] 2.2 first control rows line up ({three_col['rows']})",
+                      max(r[0] for r in three_col["rows"]) - min(r[0] for r in three_col["rows"]) <= 1)
+                check(f"[{width}px] 2.2 second control rows line up ({three_col['rows']})",
+                      max(r[1] for r in three_col["rows"]) - min(r[1] for r in three_col["rows"]) <= 1)
+                check(f"[{width}px] 2.2 card titles share one inset ({three_col['titles']})",
+                      max(three_col["titles"]) - min(three_col["titles"]) <= 1)
+                check(f"[{width}px] 2.2 controls share one height ({three_col['controlHeights']})",
+                      len(three_col["controlHeights"]) == 1)
 
             # Desktop 2.2: the timing readout takes the second row under the
             # sub cards (columns 2-3) instead of costing another full row.
