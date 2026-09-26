@@ -1268,6 +1268,8 @@ const elements = {
     effectsSubwooferDdMain: document.getElementById('effects-subwoofer-dd-main'),
     effectsSubwooferDdSub1: document.getElementById('effects-subwoofer-dd-sub1'),
     effectsSubwooferDdSub2: document.getElementById('effects-subwoofer-dd-sub2'),
+    effectsSubwooferDdSub1Label: document.getElementById('effects-subwoofer-dd-sub1-label'),
+    effectsSubwooferDdSub2Label: document.getElementById('effects-subwoofer-dd-sub2-label'),
     effectsSubwooferFeedback: document.getElementById('effects-subwoofer-feedback'),
     effectsRewDualPresetName: document.getElementById('effects-rew-dual-preset-name'),
     effectsCombinePreset1: document.getElementById('effects-combine-preset-1'),

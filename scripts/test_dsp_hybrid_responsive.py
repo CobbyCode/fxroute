@@ -174,10 +174,13 @@ AUDIT = """
             }
         }
         for (const fg of host.querySelectorAll('.field-group')) {
-            if (!fg.offsetParent) continue;
-            const fb = fg.getBoundingClientRect();
             const ctrl = fg.querySelector('.stepper-control, select');
-            if (!ctrl) continue;
+            if (!ctrl || !ctrl.offsetParent) continue;
+            // A phone property row has no box of its own (display: contents);
+            // its control then answers to the group it sits in.
+            const frame = getComputedStyle(fg).display === 'contents'
+                ? fg.closest('.effects-subwoofer-control-group') : fg;
+            const fb = frame.getBoundingClientRect();
             const cb = ctrl.getBoundingClientRect();
             const out = Math.max(cb.right - fb.right, fb.left - cb.left);
             if (out > 0.5) {

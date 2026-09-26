@@ -81,6 +81,10 @@
     line-height: 1.7;
     font-size: 0.9rem;
 }
+/* Summary segments ("Sub HPF 80 Hz") stay whole; lines break at the dots. */
+.effects-summary-part {
+    white-space: nowrap;
+}
 
 /* Preset compare A/B row */
 .effects-compare-header {
@@ -431,7 +435,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     flex-wrap: wrap;
     align-items: center;
     gap: 0.4rem 0.9rem;
-    margin-bottom: 0.6rem;
 }
 .crossover-tabrow > .crossover-tabs {
     flex: 1 1 auto;
@@ -439,16 +442,23 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 .crossover-tabrow > .crossover-link-label {
     flex: 0 0 auto;
+    margin-left: auto;
 }
-.crossover-tab {
+/* Speaker-way tabs and the Sub L / Sub R tabs are one tab style. */
+.crossover-tab,
+.sub-side-tab {
     padding: 0.35rem 0.7rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--bg-input);
     color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
     cursor: pointer;
 }
-.crossover-tab.is-active {
+.crossover-tab.is-active,
+.sub-side-tab.is-active {
     border-color: var(--accent);
     color: var(--text-primary);
 }
@@ -459,7 +469,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     flex-wrap: wrap;
     gap: 0.75rem;
     width: min(100%, 1100px);
-    margin: 0 auto 0.6rem;
+    margin: 0 auto;
 }
 .crossover-trio-group {
     flex: 1 1 auto;
@@ -510,11 +520,18 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     order: 20;
 }
 
-.effects-card-subwoofer-header {
+/* Title and mode badge share the first line; the routing summary spans the
+   full header width below, like the crossover card's summary. */
+.effects-card-subwoofer-title {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 1rem;
+    margin-bottom: 0.4rem;
+}
+
+.effects-card-subwoofer-title h3 {
+    margin-bottom: 0;
 }
 
 .effects-subwoofer-mode-badge {
@@ -533,7 +550,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     background: rgba(110, 231, 183, 0.1);
 }
 
-.effects-subwoofer-stack {
+/* Both cards space tab row, graph and control groups alike. */
+.effects-subwoofer-stack,
+.effects-card-crossover .effects-stack {
     gap: 0.75rem;
 }
 
@@ -621,22 +640,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
-}
-
-.sub-side-tab {
-    padding: 0.35rem 0.7rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-input);
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-    font-weight: 700;
-    cursor: pointer;
-}
-
-.sub-side-tab.is-active {
-    border-color: var(--accent);
-    color: var(--text-primary);
 }
 
 /* Two-line crossover area: Frequency/Type on the first row, Slope/Main
@@ -767,9 +770,14 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     }
 }
 
-.effects-subwoofer-derived-delays span {
+.effects-subwoofer-derived-delays strong {
     color: var(--text-primary);
     font-weight: 700;
+}
+
+/* A narrow card wraps between entries, never inside "Sub R: 0.00 ms". */
+.effects-subwoofer-dd-item {
+    white-space: nowrap;
 }
 
 .effects-subwoofer-polarity-field,
@@ -1517,12 +1525,6 @@ input[type="number"]::-webkit-outer-spin-button {
     text-align: center;
     padding: 0.35rem 0;
     font-size: 0.92rem;
-}
-
-/* Two-decimal way trims get a little more headroom for "-80.00". */
-#tab-effects #effects-crossover-trim-group .stepper-control .stepper-input {
-    width: 4.3rem;
-    min-width: 4.3rem;
 }
 
 .stepper-control input[type="number"]::-webkit-inner-spin-button,

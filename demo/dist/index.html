@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.270">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.271">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -672,11 +672,11 @@
 
                         <section class="effects-card effects-card-create effects-card-subwoofer hidden">
                             <div class="effects-card-header effects-card-subwoofer-header">
-                                <div>
+                                <div class="effects-card-subwoofer-title">
                                     <h3>Subwoofer</h3>
-                                    <p id="effects-subwoofer-routing"></p>
+                                    <span id="effects-subwoofer-mode-badge" class="effects-subwoofer-mode-badge">Stereo</span>
                                 </div>
-                                <span id="effects-subwoofer-mode-badge" class="effects-subwoofer-mode-badge">Stereo</span>
+                                <p id="effects-subwoofer-routing"></p>
                             </div>
                             <div class="effects-stack effects-subwoofer-stack">
                                 <div class="effects-subwoofer-tabrow hidden" id="effects-subwoofer-tabrow">
@@ -845,9 +845,9 @@
                                         </div>
                                     </div>
                                     <div id="effects-subwoofer-derived-delays" class="effects-subwoofer-derived-delays hidden">
-                                        Main: <span id="effects-subwoofer-dd-main">0.00</span> ms ·
-                                        Sub 1: <span id="effects-subwoofer-dd-sub1">0.00</span> ms ·
-                                        Sub 2: <span id="effects-subwoofer-dd-sub2">0.00</span> ms
+                                        <span class="effects-subwoofer-dd-item">Main: <strong id="effects-subwoofer-dd-main">0.00</strong> ms</span> ·
+                                        <span class="effects-subwoofer-dd-item"><span id="effects-subwoofer-dd-sub1-label">Sub 1</span>: <strong id="effects-subwoofer-dd-sub1">0.00</strong> ms</span> ·
+                                        <span class="effects-subwoofer-dd-item"><span id="effects-subwoofer-dd-sub2-label">Sub 2</span>: <strong id="effects-subwoofer-dd-sub2">0.00</strong> ms</span>
                                     </div>
                                 </div>
                                 <div id="effects-subwoofer-feedback" class="effects-extras-feedback" aria-live="polite"></div>
@@ -1748,14 +1748,14 @@
     <script src="/static/output_state.js?v=0.9.14"></script>
     <script src="/static/crossover.js?v=0.9.7"></script>
     <script src="/static/crossover_view.js?v=0.9.1"></script>
-    <script src="/static/crossover_ui.js?v=0.9.2"></script>
+    <script src="/static/crossover_ui.js?v=0.9.3"></script>
     <script src="/static/radio.js?v=0.9.19"></script>
     <script src="/static/api.js?v=0.9.1"></script>
     <script src="/static/ui_helpers.js?v=0.9.1"></script>
     <script src="/static/modal.js?v=0.9.1"></script>
     <script src="/static/provider_settings.js?v=0.9.2"></script>
     <script src="/static/settings_system.js?v=0.9.1"></script>
-    <script src="/static/subwoofer_ui.js?v=0.9.3"></script>
+    <script src="/static/subwoofer_ui.js?v=0.9.4"></script>
     <script src="/static/output_system_controller.js?v=0.9.1"></script>
     <script src="/static/output_bank_ui.js?v=0.9.2"></script>
     <script src="/static/output_effects_ui.js?v=0.9.3"></script>
@@ -1774,7 +1774,7 @@
     <script src="/static/playback_core.js?v=0.9.1"></script>
     <script src="/static/playback_ui.js?v=0.9.3"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.241"></script>
+    <script src="/static/app.js?v=0.9.242"></script>
     <script src="/static/streaming.js?v=0.9.72"></script>
 </body>
 </html>

@@ -208,7 +208,7 @@
                 .filter((kind) => !settings[kind] && !(kind === 'highpass' && derivedHighpass))
                 .map((kind) => (kind === 'highpass' ? 'High-pass off' : 'Low-pass off'));
             parts.push(...cleared);
-            deps.getElements().effectsCrossoverSummary.textContent = parts.join(' · ');
+            renderSummary(deps.getElements().effectsCrossoverSummary, parts);
         }
         if (deps.getElements().effectsCrossoverLink) {
             deps.getElements().effectsCrossoverLink.checked = deps.getState().crossover.linkLR === true;
@@ -216,8 +216,63 @@
         }
     }
 
+    // Card summary line: a narrow card wraps between the " · " segments, never
+    // inside one ("Sub HPF 80 Hz"). textContent stays the plain joined line; a
+    // single part (a sentence) wraps normally.
+    function renderSummary(el, parts) {
+        if (!el) return;
+        const text = parts.join(' · ');
+        if (parts.length < 2 || typeof document === 'undefined' || typeof el.replaceChildren !== 'function') {
+            el.textContent = text;
+            return;
+        }
+        if (el.textContent === text && el.querySelector('.effects-summary-part')) return;
+        const nodes = [];
+        parts.forEach((part, index) => {
+            if (index) nodes.push(document.createTextNode(' · '));
+            const segment = document.createElement('span');
+            segment.className = 'effects-summary-part';
+            segment.textContent = part;
+            nodes.push(segment);
+        });
+        el.replaceChildren(...nodes);
+    }
+
+    // Phone widths show the short family names the card summaries already use
+    // (LR24, BW12); desktop keeps the full names. Same breakpoint as the phone
+    // property-list layout in _responsive.css.
+    const COMPACT_LABEL_QUERY = '(max-width: 520px)';
+    const FAMILY_LABELS = { off: 'Off', 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' };
+    const COMPACT_FAMILY_LABELS = { ...FAMILY_LABELS, 'linkwitz-riley': 'LR', butterworth: 'BW' };
+    let compactLabelQuery;
+
+    function compactLabelMedia() {
+        if (compactLabelQuery === undefined) {
+            compactLabelQuery = root && typeof root.matchMedia === 'function'
+                ? root.matchMedia(COMPACT_LABEL_QUERY) : null;
+        }
+        return compactLabelQuery;
+    }
+
     function familyLabel(family) {
-        return { off: 'Off', 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' }[family] || family;
+        const labels = compactLabelMedia()?.matches ? COMPACT_FAMILY_LABELS : FAMILY_LABELS;
+        return labels[family] || family;
+    }
+
+    // Both tiles render their Type options through familyLabel, so crossing
+    // the breakpoint relabels them in place; values and selection stay as-is.
+    function relabelTypeSelects() {
+        if (typeof document === 'undefined') return;
+        for (const option of document.querySelectorAll('select.effects-crossover-type-select option')) {
+            option.textContent = familyLabel(option.value);
+        }
+    }
+
+    function watchCompactLabels() {
+        const query = compactLabelMedia();
+        if (!query) return;
+        if (query.addEventListener) query.addEventListener('change', relabelTypeSelects);
+        else if (query.addListener) query.addListener(relabelTypeSelects);
     }
 
     function collectCrossoverWayMutation() {
@@ -387,6 +442,7 @@
                     renderCrossoverTile();
                 });
             }
+            watchCompactLabels();
         }
 
     return {
@@ -394,6 +450,7 @@
         fetchCrossoverResponse,
         renderCrossoverTile,
         familyLabel,
+        renderSummary,
         collectCrossoverWayMutation,
         saveCrossoverWay,
         maybeApplyCrossoverStarters,

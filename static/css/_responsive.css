@@ -1536,8 +1536,7 @@
         .streaming-btn,
     .track-play { min-width: 44px; min-height: 44px; }
 
-    .effects-card-subwoofer-header,
-        .effects-subwoofer-controls,
+    .effects-subwoofer-controls,
     .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
         grid-template-columns: 1fr;
     }
@@ -1939,60 +1938,49 @@
     }
 }
 
+/* Phone widths: every control group of the crossover and subwoofer cards is
+   one property list: label left, control right, one row per setting and one
+   shared control column. Both cards then read the same, and a setting costs
+   one row instead of a label line plus a centered control of its own width.
+   The label column keeps 4.5rem for the longest single word ("Frequency");
+   the control column holds a digit-safe stepper (9rem) and grows to 10rem
+   where the card allows it, so every control in every group ends up equally
+   wide. Longer labels ("Main highpass") wrap inside their column. */
 @media (max-width: 520px) {
     .effects-subwoofer-global-group {
-        grid-template-columns: 1fr;
-    }
-
-    /* Sub trim cards keep the two-column Level/Align row with centered
-       Polarity below (≤760px rule above): stacking all three full-width
-       would cost a full row per control for nothing. */
-    .effects-subwoofer-channel-group {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-}
-
-/* Narrow cards: the way trim row (Level / Alignment / Polarity) needs ~365px
-   of card content, which only exists from ~520px up. Below that the two
-   steppers share one row and Polarity takes a line of its own; the steppers
-   still split the row equally, so they stay flush and equally wide. */
-@media (max-width: 519px) {
-    #effects-crossover-trim-group > .field-group:has(#effects-crossover-polarity) {
-        flex: 1 1 100%;
-    }
-}
-
-@media (max-width: 420px) {
-    #effects-crossover-trim-group > .field-group:has(.stepper-control) {
-        flex: 1 1 100%;
-    }
-}
-
-/* Phone widths: two value-field steppers cannot share one row. Each needs
-   ~154px (two touch buttons, a value field that keeps the digit floor for
-   "-40.00", its unit and the frame), so the pair needs ~322px of card
-   content; this card only offers that above ~420px of viewport. Below that
-   they stack, and the fields then span the full row so every control stays
-   flush, equally wide and complete instead of pushing its "+" button out
-   of its own frame. */
-@media (max-width: 420px) {
-    .effects-subwoofer-channel-group {
         grid-template-columns: minmax(0, 1fr);
+        justify-items: stretch;
+        gap: 0.5rem;
     }
-    #effects-crossover-trim-group > .field-group {
-        flex: 1 1 100%;
+    .crossover-trio-group,
+    .effects-subwoofer-crossover-block,
+    .effects-subwoofer-channel-group {
+        display: grid;
+        grid-template-columns: minmax(4.5rem, 1fr) minmax(9rem, 10rem);
+        align-items: center;
+        gap: 0.5rem 0.75rem;
     }
-    .effects-subwoofer-channel-group .field-group {
-        justify-self: stretch;
+    /* Label and control join the group grid directly, so all rows share
+       both columns. The JS toggles rows through inline display: none. */
+    .effects-subwoofer-control-group .field-group {
+        display: contents;
     }
-    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
-        grid-column: 1;
+    /* Row names sit one step below the bold group heading. */
+    .effects-subwoofer-control-group .field-group label {
+        justify-content: flex-start;
+        align-items: center;
+        min-height: 0;
+        font-weight: 500;
     }
-
-    /* Same floor for the crossover row: the Frequency stepper needs the
-       full card width before it fits beside the Type select. */
-    .effects-subwoofer-crossover-block {
-        grid-template-columns: minmax(0, 1fr);
+    #tab-effects .effects-subwoofer-control-group select {
+        width: 100%;
+    }
+    /* Between 9rem and 10rem the stepper buttons give up the difference
+       (34px preferred, 26px minimum); the value field keeps its digit floor. */
+    .effects-subwoofer-control-group .stepper-btn {
+        width: auto;
+        flex: 0 1 34px;
+        min-width: 26px;
     }
 }
 

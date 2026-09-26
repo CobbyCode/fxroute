@@ -9,6 +9,9 @@ single column; the 761-1100px tablet rule uses two columns, so:
   >1100px -> 2 cards (2.1) or 3 cards (2.2, Dual-Mono and Stereo) sharing
   one equal-width track each while hugging their own content height.
 
+At <=520px each card is a property list: label left, control right, and every
+control of the card on one shared left edge and width.
+
 Runs the real rendered page (static server + stubbed audio API) in headless
 Chromium. Skips cleanly when playwright or a browser is not available.
 """
@@ -105,61 +108,73 @@ def _run():
                 n = column_count()
                 check(f"[{width}px] subwoofer controls 1 column (got {n})", n == 1)
 
-            # Mobile trim mirror (narrowest phone): Level + Align share one
-            # row, Polarity sits centered below spanning the full width —
-            # no full-row stacking per control, no overflow.
-            page.set_viewport_size({"width": 390, "height": 900})
-            page.wait_for_timeout(80)
-            trim = page.evaluate("""
-                (() => {
-                    const box = (el) => { const b = el.getBoundingClientRect();
-                        return { x: Math.round(b.x), y: Math.round(b.y), top: Math.round(b.top),
-                                 bottom: Math.round(b.bottom),
-                                 right: Math.round(b.right), width: Math.round(b.width) }; };
-                    const group = document.querySelector('.effects-subwoofer-sub1-group');
-                    const lvl = box(document.querySelector('#effects-subwoofer-level').closest('.stepper-control'));
-                    const aln = box(document.querySelector('#effects-subwoofer-delay').closest('.stepper-control'));
-                    const pol = box(document.querySelector('#effects-subwoofer-polarity'));
-                    const g = box(group);
-                    const pcs = getComputedStyle(group.querySelector('.effects-subwoofer-polarity-field')).gridColumn;
-                    // A number input clips silently, so every value field has
-                    // to be at least as wide as its own declared floor, and
-                    // that floor has to hold the widest value the app can
-                    // render ("-40.00" measures ~60px at this font size).
-                    const inputs = [...group.querySelectorAll('.stepper-input')];
-                    const valueOk = inputs.every((i) => {
-                        const cs = getComputedStyle(i);
-                        return i.getBoundingClientRect().width + 0.5 >= parseFloat(cs.minWidth)
-                            && i.getBoundingClientRect().width >= 60;
-                    });
-                    const btnOut = Math.max(0, ...[...group.querySelectorAll('.stepper-control')].map((sc) => {
-                        const sbox = sc.getBoundingClientRect();
-                        return Math.round(Math.max(...[...sc.children].map((c) => {
-                            const cb = c.getBoundingClientRect();
-                            return Math.max(cb.right - sbox.right, sbox.left - cb.left);
-                        })));
-                    }));
-                    return { lvl, aln, pol, g, pcs, valueOk, btnOut };
-                })()
-            """)
-            check(f"[390px] no control overflows the card ({trim})",
-                  trim["lvl"]["x"] >= trim["g"]["x"] - 1
-                  and trim["aln"]["right"] <= trim["g"]["right"] + 1
-                  and trim["pol"]["right"] <= trim["g"]["right"] + 1
-                  and trim["pol"]["x"] >= trim["g"]["x"] - 1)
-            # Two boxes do not overlap when they are separated on either axis.
+            # Phone widths (<=520px): every group is one property list. Each
+            # control sits on its own row right of its label, and all visible
+            # controls of the card share one left edge and one width.
             def separated(a, b):
                 return (a["right"] <= b["x"] + 1 or b["right"] <= a["x"] + 1
                         or a["bottom"] <= b["top"] + 1 or b["bottom"] <= a["top"] + 1)
 
-            check(f"[390px] no two controls overlap ({trim})",
-                  all(separated(trim[a], trim[b])
-                      for a, b in (("lvl", "aln"), ("lvl", "pol"), ("aln", "pol"))))
-            check(f"[390px] every stepper keeps its value field ({trim})", trim["valueOk"])
-            check(f"[390px] no stepper button leaves its own frame ({trim})",
-                  trim["btnOut"] <= 0)
-            # Above the phone range the two steppers do share one row again.
-            page.set_viewport_size({"width": 480, "height": 900})
+            for width in (320, 390, 480):
+                page.set_viewport_size({"width": width, "height": 900})
+                page.wait_for_timeout(80)
+                rows = page.evaluate("""
+                    (() => {
+                        const box = (el) => { const b = el.getBoundingClientRect();
+                            return { x: Math.round(b.x), top: Math.round(b.top),
+                                     bottom: Math.round(b.bottom), right: Math.round(b.right),
+                                     width: Math.round(b.width), mid: Math.round(b.top + b.height / 2) }; };
+                        const card = document.querySelector('.effects-card-subwoofer');
+                        const out = [];
+                        for (const fg of card.querySelectorAll('.effects-subwoofer-control-group .field-group')) {
+                            const ctrl = fg.querySelector('.stepper-control, select');
+                            if (!ctrl || !ctrl.offsetParent) continue;
+                            const group = fg.closest('.effects-subwoofer-control-group');
+                            out.push({ id: (fg.querySelector('input, select') || {}).id,
+                                       label: box(fg.querySelector('label')), ctrl: box(ctrl),
+                                       group: box(group) });
+                        }
+                        const group = document.querySelector('.effects-subwoofer-sub1-group');
+                        // A number input clips silently, so every value field has
+                        // to be at least as wide as its own declared floor, and
+                        // that floor has to hold the widest value the app can
+                        // render ("-40.00" measures ~50px at this font size).
+                        const valueOk = [...card.querySelectorAll('.stepper-input')]
+                            .filter((i) => i.offsetParent).every((i) => {
+                                const w = i.getBoundingClientRect().width;
+                                return w + 0.5 >= parseFloat(getComputedStyle(i).minWidth) && w >= 60;
+                            });
+                        const btnOut = Math.max(0, ...[...card.querySelectorAll('.stepper-control')]
+                            .filter((sc) => sc.offsetParent).map((sc) => {
+                                const sbox = sc.getBoundingClientRect();
+                                return Math.round(Math.max(...[...sc.children].map((c) => {
+                                    const cb = c.getBoundingClientRect();
+                                    return Math.max(cb.right - sbox.right, sbox.left - cb.left);
+                                })));
+                            }));
+                        return { rows: out, valueOk, btnOut };
+                    })()
+                """)
+                ctrls = [row["ctrl"] for row in rows["rows"]]
+                check(f"[{width}px] property rows rendered ({len(ctrls)})", len(ctrls) >= 7)
+                check(f"[{width}px] all controls share one left edge ({ctrls})",
+                      max(c["x"] for c in ctrls) - min(c["x"] for c in ctrls) <= 1)
+                check(f"[{width}px] all controls equally wide ({ctrls})",
+                      max(c["width"] for c in ctrls) - min(c["width"] for c in ctrls) <= 1)
+                check(f"[{width}px] controls stay inside their group ({rows})",
+                      all(r["ctrl"]["x"] >= r["group"]["x"] and r["ctrl"]["right"] <= r["group"]["right"]
+                          for r in rows["rows"]))
+                check(f"[{width}px] each label sits left of its control, same row ({rows})",
+                      all(r["label"]["right"] <= r["ctrl"]["x"] and r["label"]["x"] >= r["group"]["x"]
+                          and abs(r["label"]["mid"] - r["ctrl"]["mid"]) <= 2 for r in rows["rows"]))
+                check(f"[{width}px] no two controls overlap ({ctrls})",
+                      all(separated(a, b) for i, a in enumerate(ctrls) for b in ctrls[i + 1:]))
+                check(f"[{width}px] every stepper keeps its value field", rows["valueOk"])
+                check(f"[{width}px] no stepper button leaves its own frame ({rows['btnOut']})",
+                      rows["btnOut"] <= 0)
+
+            # Above the phone range the two steppers share one row again.
+            page.set_viewport_size({"width": 600, "height": 900})
             page.wait_for_timeout(80)
             wide = page.evaluate("""
                 (() => {
@@ -172,11 +187,11 @@ def _run():
                     };
                 })()
             """)
-            check(f"[480px] Level + Align share one row ({wide})",
+            check(f"[600px] Level + Align share one row ({wide})",
                   abs(wide["lvl"]["top"] - wide["aln"]["top"]) <= 2)
-            check(f"[480px] both steppers equally wide ({wide})",
+            check(f"[600px] both steppers equally wide ({wide})",
                   abs(wide["lvl"]["width"] - wide["aln"]["width"]) <= 1)
-            check(f"[480px] real gap between the steppers ({wide})",
+            check(f"[600px] real gap between the steppers ({wide})",
                   wide["aln"]["x"] - wide["lvl"]["right"] >= 4)
             page.set_viewport_size({"width": 390, "height": 900})
             page.wait_for_timeout(80)

@@ -33,6 +33,13 @@
         return ui && typeof ui.familyLabel === 'function' ? ui.familyLabel(family) : family;
     }
 
+    // Summary line rendering is shared with the crossover tile.
+    function renderCardSummary(el, parts) {
+        const ui = (root && root.FXRouteCrossoverUI) || null;
+        if (ui && typeof ui.renderSummary === 'function') ui.renderSummary(el, parts);
+        else el.textContent = parts.join(' · ');
+    }
+
     function outputSystem() {
         return (root && root.FXRouteOutputState) || null;
     }
@@ -347,11 +354,12 @@
         renderSubwooferCrossover(crossoverLayout);
         if (deps.getElements().effectsSubwooferRouting) {
             const hpf = (subwoofer.main_highpass_enabled ?? true) ? 'on' : 'off';
-            deps.getElements().effectsSubwooferRouting.textContent = splitSides
-                ? `Sub L ${subCrossoverLabel(crossoverLayout.left)} @ ${crossoverLayout.left.frequency_hz} Hz`
-                    + ` · Sub R ${subCrossoverLabel(crossoverLayout.right)} @ ${crossoverLayout.right.frequency_hz} Hz`
-                    + ` · Main HPF ${hpf}`
-                : `Crossover ${crossoverLayout.frequency_hz} Hz · ${subCrossoverLabel(crossoverLayout)} · Main HPF ${hpf}`;
+            const parts = splitSides
+                ? [`Sub L ${subCrossoverLabel(crossoverLayout.left)} @ ${crossoverLayout.left.frequency_hz} Hz`,
+                    `Sub R ${subCrossoverLabel(crossoverLayout.right)} @ ${crossoverLayout.right.frequency_hz} Hz`,
+                    `Main HPF ${hpf}`]
+                : [`Crossover ${crossoverLayout.frequency_hz} Hz`, subCrossoverLabel(crossoverLayout), `Main HPF ${hpf}`];
+            renderCardSummary(deps.getElements().effectsSubwooferRouting, parts);
         }
         if (deps.getElements().effectsSubwooferModeBadge) {
             deps.getElements().effectsSubwooferModeBadge.textContent = outputSystem().subModeLabel(outputMode.sub_mode);
@@ -368,6 +376,9 @@
         if (deps.getElements().effectsSubwooferSub2LevelLabel) deps.getElements().effectsSubwooferSub2LevelLabel.textContent = 'Level';
         if (deps.getElements().effectsSubwooferSub2DelayLabel) deps.getElements().effectsSubwooferSub2DelayLabel.textContent = 'Align';
         if (deps.getElements().effectsSubwooferSub2PolarityLabel) deps.getElements().effectsSubwooferSub2PolarityLabel.textContent = 'Polarity';
+        // The timing readout names the subs like their cards (Sub L / Sub R).
+        if (deps.getElements().effectsSubwooferDdSub1Label) deps.getElements().effectsSubwooferDdSub1Label.textContent = firstLabel;
+        if (deps.getElements().effectsSubwooferDdSub2Label) deps.getElements().effectsSubwooferDdSub2Label.textContent = secondLabel || '';
         deps.getElements().effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
         deps.getElements().effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
         applySubMainHighpass(subwoofer.main_highpass_enabled !== false);
