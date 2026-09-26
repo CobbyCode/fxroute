@@ -7,7 +7,8 @@ Covers the concrete frontend findings that were fixed:
 2. The active main tab is scrolled back into the strip on narrow screens,
    only on a tab switch or a width change, and clear of the scroll fade.
 3. ``--warning`` clears WCAG AA on every surface of the dark theme.
-4. The A/B compare card fills the grid row instead of trailing dead space.
+4. The A/B compare card keeps the shared row height and fills it: in the
+   two-column grid the preset slots stack at full width.
 5. The streaming seek bar keeps a ~4px track but a ~24px hit area, with a
    centred thumb.
 6. Primary controls reach the ~44px touch minimum.
@@ -16,6 +17,7 @@ Covers the concrete frontend findings that were fixed:
 8. One tooltip system: ``data-tooltip`` everywhere, no native ``title=``,
    rendered by the fixed tooltip layer (static/tooltip.js).
 9. Phone chrome budget for the header/tab stack and the playback footer.
+10. Settings -> Audio Output names the device once (the Device select).
 
 The CSS assertions read the per-part sources in ``static/css/`` (the
 canonical build input) plus the built ``static/style.css`` artifact, so a
@@ -228,14 +230,13 @@ class WarningContrastTests(unittest.TestCase):
 
 
 class AbCompareLayoutTests(unittest.TestCase):
-    """4. The A/B card shares the row height with Output extras.
+    """4. The A/B card shares the row height with Output extras and uses it.
 
-    Reverted on purpose. `align-items: start` did remove the ~140px void
-    inside the card, but it only relocated it: the card ended 122px above its
-    neighbour, leaving black page background inside the grid row. The
-    acceptance criterion is the opposite of that -- the row must end flush,
-    so the cards keep the shared height. The void inside the A/B card is the
-    honest remaining cost of that choice and is not papered over here.
+    `align-items: start` was reverted: it only relocated the ~140px void
+    below the card into the grid row. The cards keep the shared height, and
+    in the two-column grid the card spends it on content: the preset slots
+    stack so each select gets the full tile width (long preset names were
+    cut after ~25 characters side by side), and the tile fills the card.
     """
 
     def test_grid_stretches_cards_to_the_row_height(self):
@@ -256,6 +257,28 @@ class AbCompareLayoutTests(unittest.TestCase):
         padding = re.search(r"padding:\s*([\d.]+)rem", row)
         self.assertIsNotNone(padding)
         self.assertEqual(float(padding.group(1)), 1.0)
+
+    def test_two_column_grid_stacks_the_slots_and_fills_the_card(self):
+        two_col = _media_block(RESPONSIVE, "@media (min-width: 768px)")
+        self.assertRegex(two_col, r"\.effects-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, 1fr\)")
+        self.assertRegex(
+            two_col,
+            r"\.effects-card-manage-order \.effects-stack,\s*"
+            r"\.effects-card-manage-order \.effects-compare-row\s*\{\s*flex:\s*1 1 auto;",
+        )
+        self.assertRegex(
+            two_col,
+            r"\.effects-card-manage-order \.effects-compare-row\s*\{\s*justify-content:\s*space-between;",
+        )
+        self.assertRegex(
+            two_col,
+            r"\.effects-card-manage-order \.effects-compare-fields\s*\{\s*grid-template-columns:\s*1fr;",
+        )
+        # The one-column range keeps the side-by-side slots from 480px up.
+        self.assertRegex(
+            _media_block(RESPONSIVE, "@media (min-width: 480px)"),
+            r"\.effects-compare-fields\s*\{\s*grid-template-columns:\s*1fr 1fr;",
+        )
 
     def test_compare_controls_keep_their_natural_height(self):
         slot = re.search(r"\.effects-compare-slot\s*\{([^}]*)\}", EFFECTS).group(1)
@@ -462,6 +485,16 @@ class TooltipTests(unittest.TestCase):
         for view in ("freq", "ir"):
             tag = re.search(rf'<button[^>]*data-measurement-view="{view}"[^>]*>', HTML).group(0)
             self.assertNotIn("aria-label=", tag)
+
+
+class SettingsAudioOutputTests(unittest.TestCase):
+    """10. The Device select names the output; no second "Current:" line."""
+
+    def test_summary_only_reports_a_missing_output_list(self):
+        body = _function_body(APP_JS, "renderSettingsPanel")
+        self.assertNotIn("Current: ${currentOutput", body)
+        self.assertIn("outputsUnavailable ? 'Outputs unavailable.' : ''", body)
+        self.assertIn("settingsOutputSummary.classList.toggle('hidden', !outputsUnavailable)", body)
 
 
 class PhoneChromeBudgetTests(unittest.TestCase):

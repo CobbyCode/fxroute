@@ -2539,11 +2539,11 @@ function renderSettingsPanel() {
     const selectableOutputs = outputs.filter((output) => !!output.selectable);
     const effectiveSelectedKey = selectedOutput?.key || currentOutput?.key || defaultOutput?.target_name || '';
     if (elements.settingsOutputSummary) {
-        if (!overview.available) {
-            elements.settingsOutputSummary.textContent = 'Outputs unavailable.';
-        } else {
-            elements.settingsOutputSummary.textContent = `Current: ${currentOutput?.label || defaultOutput?.target_label || 'Unknown output'}`;
-        }
+        // The Device select below already names the output; the summary line
+        // only reports a missing output list.
+        const outputsUnavailable = !overview.available;
+        elements.settingsOutputSummary.textContent = outputsUnavailable ? 'Outputs unavailable.' : '';
+        elements.settingsOutputSummary.classList.toggle('hidden', !outputsUnavailable);
     }
 
     if (elements.settingsOutputSelect && !isSelectFocused(elements.settingsOutputSelect)) {

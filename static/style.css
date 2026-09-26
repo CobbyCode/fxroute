@@ -9793,6 +9793,25 @@ input[type="number"]::-webkit-outer-spin-button {
         padding-left: 1rem;
         padding-right: 1rem;
     }
+
+    /* The A/B compare card shares its row with Output extras, which sets
+       the row height. Side by side, the two preset selects were ~200px wide
+       (long preset names cut after ~25 characters) and the tile ended
+       ~110px above the card bottom. Stacked, each select gets the full tile
+       width and the tile fills the card; height the neighbour adds (enabled
+       extras) is spread between the tile's sections instead of collecting
+       under it. The one-column grid below 768px keeps the natural height
+       and the side-by-side slots. */
+    .effects-card-manage-order .effects-stack,
+    .effects-card-manage-order .effects-compare-row {
+        flex: 1 1 auto;
+    }
+    .effects-card-manage-order .effects-compare-row {
+        justify-content: space-between;
+    }
+    .effects-card-manage-order .effects-compare-fields {
+        grid-template-columns: 1fr;
+    }
 }
 
 @media (min-width: 480px) {
