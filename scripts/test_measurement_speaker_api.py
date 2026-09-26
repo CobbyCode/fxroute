@@ -204,7 +204,23 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(composed["session_events"][-1], ("unregister", normal))
                 self.assertEqual(composed["runtime"]["fingerprint"], normal)
 
-    async def compose_and_run(self, *, with_session: bool = False, residual_ms: float = 0.0) -> dict:
+    async def test_failed_plan_restore_fails_the_job(self):
+        # The acoustic run itself commits, but the trailing restore/verify
+        # of the normal plan fails: the job must not report success. The
+        # acoustic result is kept for diagnosis.
+        for restore_mode in ("render-fails", "fingerprint-mismatch"):
+            with self.subTest(restore=restore_mode):
+                composed = await self.compose_and_run(
+                    with_session=True, restore_mode=restore_mode)
+                job = composed["job"]
+                self.assertEqual(job["status"], "failed", job)
+                self.assertIn("measurement plan", job["message"])
+                self.assertIsNotNone(job["result"], job)
+                self.assertEqual(composed["session_events"][0], "register")
+                self.assertEqual(composed["session_events"][-1][0], "unregister")
+
+    async def compose_and_run(self, *, with_session: bool = False, residual_ms: float = 0.0,
+                              restore_mode: str = "ok") -> dict:
         import tempfile
         import numpy as np
         from audio.output_service import OutputService, OutputServiceDeps
@@ -357,11 +373,28 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
                     session_events.append("release-adapter")
 
             session = Session()
+
+            def build_adapter(*, output_key, channels):
+                inner = create_speaker_release_adapter(
+                    service=output_service, dsp_manager=manager, hardware_ports=list(ports),
+                    get_native_runtime=lambda: native, output_key=output_key, channels=channels)
+                if restore_mode == "render-fails":
+                    async def failing_adapter(restore_rate_hz):
+                        raise RuntimeError("restore render unavailable")
+                    return failing_adapter
+                if restore_mode == "fingerprint-mismatch":
+                    async def mismatching_adapter(restore_rate_hz):
+                        rendered = await inner(restore_rate_hz)
+                        runtime["fingerprint"] = "stale-fingerprint"
+                        return rendered
+                    return mismatching_adapter
+                if restore_mode != "ok":
+                    raise ValueError(f"unknown restore_mode: {restore_mode}")
+                return inner
+
             session_wiring = dict(
                 get_measurement_session=lambda: session,
-                build_release_adapter=lambda *, output_key, channels: create_speaker_release_adapter(
-                    service=output_service, dsp_manager=manager, hardware_ports=list(ports),
-                    get_native_runtime=lambda: native, output_key=output_key, channels=channels))
+                build_release_adapter=build_adapter)
 
         service = build_speaker_align_service(
             output_service=output_service, measurement_store=None, dsp_manager=manager,

@@ -10,12 +10,13 @@ register a release adapter on the measurement session so a later session
 release rebuilds the committed plan at the restore rate; without release
 wiring the persisted head still keeps the commit for the next transition.
 Every job also ends with the runtime back on the head's normal plan at the
-measurement rate, so the next sweep of the still open window matches it.
+measurement rate, verified active by readback, so the next sweep of the
+still open window matches it; a failed restore or verification fails the
+job instead of reporting success (the AutoSub restore-or-fail-job contract).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -25,6 +26,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget
+from common.run_to_completion import run_to_completion
 from measurement.speaker_acquisition import acquire_speaker_captures, verify_speaker_alignment
 from measurement.speaker_align import SpeakerAlignment
 from measurement.speaker_commit import SpeakerAlignSession
@@ -32,6 +34,7 @@ from measurement.speaker_service import (
     SpeakerAlignBusyError,
     SpeakerAlignService,
     SpeakerAlignStaleError,
+    SpeakerAlignTeardownError,
 )
 from measurement.target import freeze_measurement_target
 
@@ -259,35 +262,53 @@ def build_speaker_align_service(
                 or (measurement_store is not None and measurement_store.has_active_measurement_job())):
             raise SpeakerAlignBusyError("Another measurement is already running")
 
-    async def restore_measurement_plan() -> None:
+    async def restore_measurement_plan() -> dict[str, Any]:
         """Put the runtime back on the head's normal plan at the measurement rate.
 
         A run stages the neutralized alignment plan (Global/area banks
         bypassed) and keeps it after its own commit or restore. The session
         release rebuilds the normal plan only once the measurement window
         closes, so a normal sweep in the still open window would compile the
-        full plan and refuse the runtime as a fingerprint mismatch. Never
-        raises: on failure that sweep still fails closed.
+        full plan and refuse the runtime as a fingerprint mismatch. Raises on
+        failure: the teardown turns a failed restore into a failed job (the
+        AutoSub restore-or-fail-job contract) instead of reporting success
+        with a dirty runtime.
         """
         if build_release_adapter is None:
-            return
-        try:
-            device = describe_device(output_service.load())
-            adapter = build_release_adapter(
-                output_key=device["output_key"], channels=device["channels"])
-            rendered = await adapter(int(get_measurement_rate()))
-            logger.info("Speaker Align restored the measurement plan: %s", rendered)
-        except Exception as exc:
-            logger.warning("Speaker Align could not restore the measurement plan: %s", exc)
+            raise SpeakerAlignTeardownError("Speaker Align plan restore is not wired")
+        device = describe_device(output_service.load())
+        rate = int(get_measurement_rate())
+        adapter = build_release_adapter(
+            output_key=device["output_key"], channels=device["channels"])
+        rendered = await adapter(rate)
+        logger.info("Speaker Align restored the measurement plan: %s", rendered)
+        return rendered
 
-    async def run_to_end(step: Awaitable[Any]) -> None:
-        cleanup = asyncio.create_task(step)
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                continue
-        cleanup.result()
+    async def verify_measurement_plan(rendered: dict[str, Any]) -> None:
+        """Require the restored normal plan to be actually active.
+
+        The adapter rendered the head's normal plan at the measurement rate;
+        the runtime must now show that plan fingerprint at that rate. Raises
+        on any deviation, like the pre-commit readback gate.
+        """
+        native_runtime = get_native_runtime()
+        if native_runtime is None:
+            raise SpeakerAlignTeardownError("Native DSP runtime is unavailable for plan verification")
+        snapshot = native_runtime.snapshot()
+        config = snapshot.get("config") if isinstance(snapshot, dict) else None
+        expected = rendered.get("plan_fingerprint") if isinstance(rendered, dict) else None
+        rate = int(rendered.get("sample_rate_hz") or 0) if isinstance(rendered, dict) else 0
+        if (not isinstance(config, dict) or snapshot.get("active") is not True
+                or not expected or config.get("plan_fingerprint") != expected
+                or config.get("sample_rate") != rate):
+            raise SpeakerAlignTeardownError(
+                "restored plan is not active: "
+                f"fingerprint={config.get('plan_fingerprint') if isinstance(config, dict) else None!r} "
+                f"expected={expected!r}")
+        logger.info("Speaker Align verified the measurement plan: %s", expected)
+
+    async def restore_and_verify_measurement_plan() -> None:
+        await verify_measurement_plan(await restore_measurement_plan())
 
     def job_scope(job_id: str):
         session = get_measurement_session() if get_measurement_session else None
@@ -306,9 +327,25 @@ def build_speaker_align_service(
             finally:
                 if registered:
                     # Still owned by this job: no sweep can start before the
-                    # normal plan is back, and the job reads terminal only after.
-                    await run_to_end(restore_measurement_plan())
-                    await run_to_end(session.unregister_speaker_job(job_id))
+                    # normal plan is back and verified, and the job reads
+                    # terminal only after. Both steps run to completion like
+                    # the AutoSub teardown; a failed restore/verify fails the
+                    # job through SpeakerAlignTeardownError, while a failing
+                    # unregister is logged and never overwrites the outcome.
+                    teardown_error: Exception | None = None
+                    try:
+                        await run_to_completion(restore_and_verify_measurement_plan())
+                    except Exception as exc:
+                        teardown_error = exc
+                    try:
+                        await run_to_completion(session.unregister_speaker_job(job_id))
+                    except Exception:
+                        logger.exception(
+                            "Speaker Align job=%s session unregister failed", job_id)
+                    if teardown_error is not None:
+                        raise SpeakerAlignTeardownError(
+                            str(teardown_error) or type(teardown_error).__name__
+                        ) from teardown_error
 
         return owned()
 

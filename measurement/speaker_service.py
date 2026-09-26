@@ -47,6 +47,16 @@ class SpeakerAlignBusyError(RuntimeError):
     """Another alignment owns the job slot; HTTP maps this to 409."""
 
 
+class SpeakerAlignTeardownError(RuntimeError):
+    """Trailing runtime restore/verify failed after the acoustic outcome was stashed.
+
+    Raised by the job-scope teardown (composition side) so ``_run`` marks the
+    job failed while keeping its stashed result for diagnosis, instead of
+    reporting success with a dirty runtime. Mirrors the AutoSub
+    restore-or-fail-job contract.
+    """
+
+
 def _jsonable(value: Any) -> Any:
     """Convert evidence summaries to strict JSON values, failing loudly."""
     if value is None or isinstance(value, (bool, int, str)):
@@ -437,6 +447,18 @@ class SpeakerAlignService:
                     await self._run_job(job_id)
         except asyncio.CancelledError:
             self._finish(job_id, "cancelled", "Speaker alignment cancelled.")
+        except SpeakerAlignTeardownError as exc:
+            stashed = self._jobs[job_id].pop("outcome", None)
+            if stashed is None:
+                self._finish(job_id, "failed", f"Speaker alignment failed: {exc}",
+                             error=str(exc) or type(exc).__name__)
+            else:
+                _, message, result, error = stashed
+                prefix = f"{message} " if message else ""
+                self._finish(
+                    job_id, "failed",
+                    f"{prefix}Speaker alignment could not restore the measurement plan: {exc}",
+                    result=result, error=error or (str(exc) or type(exc).__name__))
         except Exception as exc:
             self._finish(job_id, "failed", f"Speaker alignment failed: {exc}", error=str(exc))
         finally:
