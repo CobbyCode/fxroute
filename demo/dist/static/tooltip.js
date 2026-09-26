@@ -87,6 +87,10 @@
         let host = null;
         let openedBy = null;
         let frame = 0;
+        // Last rendered bubble size and state; reused to skip needless
+        // layout reads and style writes while the app re-renders.
+        let size = null;
+        let lastKey = null;
         const observer = typeof win.MutationObserver === 'function' ? new win.MutationObserver(schedule) : null;
 
         function hostOf(target) {
@@ -100,6 +104,7 @@
         function hideBubble() {
             bubble.hidden = true;
             bubble.classList.remove('is-visible');
+            size = null;
         }
 
         function render() {
@@ -108,12 +113,21 @@
             const text = tooltipText(host);
             const rect = host.getBoundingClientRect();
             if (!text || (rect.width === 0 && rect.height === 0)) { hideBubble(); return; }
-            if (bubble.textContent !== text) bubble.textContent = text;
+            const textChanged = bubble.textContent !== text;
+            if (textChanged) bubble.textContent = text;
             const wasHidden = bubble.hidden;
             bubble.hidden = false;
-            const size = { width: bubble.offsetWidth, height: bubble.offsetHeight };
+            // The bubble's own size only follows its text (styles are static),
+            // so re-measure then only.
+            if (textChanged || !size) size = { width: bubble.offsetWidth, height: bubble.offsetHeight };
             const viewport = { width: doc.documentElement.clientWidth, height: doc.documentElement.clientHeight };
             const place = placeTooltip(rect, size, viewport, host.getAttribute('data-tooltip-anchor'));
+            const key = [text, rect.left, rect.top, rect.width, rect.height, viewport.width, viewport.height, size.width, size.height, place.side].join('\u0000');
+            // A mutation elsewhere (the app re-renders often) leaves text,
+            // rect and fit unchanged: nothing to write, so skip the style
+            // and fade-in work.
+            if (!wasHidden && key === lastKey) return;
+            lastKey = key;
             bubble.style.left = `${place.left}px`;
             bubble.style.top = `${place.top}px`;
             bubble.setAttribute('data-side', place.side);
@@ -170,7 +184,8 @@
             if (host && host.contains(event.target)) schedule();
         }, true);
         win.addEventListener('scroll', schedule, true);
-        win.addEventListener('resize', schedule);
+        // A resize can re-wrap the bubble text: drop the cached size.
+        win.addEventListener('resize', () => { size = null; schedule(); });
 
         return { bubble, close };
     }
