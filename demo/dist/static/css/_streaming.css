@@ -335,7 +335,15 @@
     -webkit-appearance: none;
     appearance: none;
     height: 4px;
+    /* Touch hit area, same dialect as the footer sliders in _playback.css:
+       transparent padding grows the drag target to ~24px while the negative
+       margin keeps the layout height at the 4px visual track.
+       background-clip keeps the track paint on the content box only. */
+    margin-block: -10px;
+    padding-block: 10px;
+    box-sizing: content-box;
     background: var(--bg-elevated);
+    background-clip: content-box;
     border-radius: 2px;
     outline: none;
     cursor: pointer;
@@ -345,6 +353,10 @@
     -webkit-appearance: none;
     width: 14px;
     height: 14px;
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference so it sits
+       centered on the 4px track. */
+    margin-top: -5px;
     border-radius: 50%;
     background: #ececf0;
     border: 1px solid rgba(13,13,15,0.8);
@@ -364,6 +376,22 @@
     cursor: pointer;
 }
 .streaming-progress:disabled { opacity: 0.4; cursor: default; }
+/* Coarse pointers get a thumb that meets the touch minimum; the track stays
+   4px so the player's slim look is unchanged. */
+@media (hover: none), (pointer: coarse) {
+    .streaming-progress::-webkit-slider-thumb {
+        width: 20px;
+        height: 20px;
+    }
+    .streaming-progress::-moz-range-thumb {
+        width: 20px;
+        height: 20px;
+    }
+    /* Chromium anchors the thumb to the track top when the track is shorter
+       than the thumb; lift it by half the size difference to keep it
+       centered on the 4px track. Firefox centers natively. */
+    .streaming-progress::-webkit-slider-thumb { margin-top: -8px; }
+}
 
 /* Provider content (TIDAL) */
 .streaming-content {

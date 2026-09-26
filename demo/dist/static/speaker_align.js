@@ -307,7 +307,7 @@
         const table = `<div class="speaker-align-table-wrap"><table class="speaker-align-table">`
             + `<caption>${label} speaker · ${escapeHtml(resultStatusLabel(result))}</caption>`
             + `<thead><tr><th scope="col">Way</th><th scope="col">Delay</th><th scope="col">Gain</th>`
-            + `<th scope="col" title="Planning take → verification take">Isolation</th></tr></thead>`
+            + `<th scope="col" data-tooltip="Planning take → verification take">Isolation</th></tr></thead>`
             + `<tbody>${rows}</tbody></table></div>`;
         const timing = `spread ${plain(numberOrNaN(check.before_spread_ms), 3)} → ${plain(numberOrNaN(check.max_residual_ms), 3)} ms`
             + ` (limit ${plain(numberOrNaN(check.tolerance_ms), 3)} ms)`;

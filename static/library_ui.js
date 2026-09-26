@@ -478,7 +478,7 @@ function renderLibraryFolderPath() {
         html += `<span>/</span><button type="button" data-folder="${deps.escapeHtml(path)}">${deps.escapeHtml(part)}</button>`;
     });
     if (current) {
-        html += '<button id="library-folder-back" class="library-folder-back" type="button" aria-label="Back to parent folder" title="Back to parent folder">← Back</button>';
+        html += '<button id="library-folder-back" class="library-folder-back" type="button" aria-label="Back to parent folder" data-tooltip="Back to parent folder">← Back</button>';
     }
     deps.getElements().libraryFolderPath.innerHTML = html;
     deps.getElements().libraryFolderPath.classList.remove('hidden');
@@ -564,27 +564,27 @@ function renderTracks() {
         html += filteredPlaylists.map(playlist => {
             const classes = ['track-item', 'playlist-item'];
             return `<div class="${classes.join(' ')}" data-playlist-id="${deps.escapeHtml(playlist.id)}">
-                <button class="track-play" data-playlist-id="${deps.escapeHtml(playlist.id)}" type="button" title="Play ${deps.escapeHtml(playlist.name)}" aria-label="Play playlist ${deps.escapeHtml(playlist.name)}">▶</button>
+                <button class="track-play" data-playlist-id="${deps.escapeHtml(playlist.id)}" type="button" data-tooltip="Play ${deps.escapeHtml(playlist.name)}" aria-label="Play playlist ${deps.escapeHtml(playlist.name)}">▶</button>
                 <div class="track-info">
                     <div class="track-title">${deps.escapeHtml(playlist.name)}</div>
                     <div class="track-artist track-sub">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
                 </div>
-                <button class="playlist-download-btn" data-playlist-download="${deps.escapeHtml(playlist.id)}" type="button" title="Export playlist as M3U8">⬇</button>
-                <button class="playlist-delete-btn" data-playlist-delete="${deps.escapeHtml(playlist.id)}" type="button" title="Delete playlist" aria-label="Delete playlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
+                <button class="playlist-download-btn" data-playlist-download="${deps.escapeHtml(playlist.id)}" type="button" data-tooltip="Export playlist as M3U8">⬇</button>
+                <button class="playlist-delete-btn" data-playlist-delete="${deps.escapeHtml(playlist.id)}" type="button" data-tooltip="Delete playlist" aria-label="Delete playlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
             </div>`;
         }).join('');
     }
 
     if (folderMode) {
         html += childFolders.map(folder => `<div class="track-item folder-item" data-folder="${deps.escapeHtml(folder.path)}">
-            <button class="track-play" data-folder="${deps.escapeHtml(folder.path)}" type="button" title="Open folder ${deps.escapeHtml(folder.name)}" aria-label="Open folder ${deps.escapeHtml(folder.name)}">▶</button>
+            <button class="track-play" data-folder="${deps.escapeHtml(folder.path)}" type="button" data-tooltip="Open folder ${deps.escapeHtml(folder.name)}" aria-label="Open folder ${deps.escapeHtml(folder.name)}">▶</button>
             <div class="track-info">
                 <div class="track-title">${deps.escapeHtml(folder.name)}</div>
                 <div class="track-artist track-sub">${folder.count} track${folder.count === 1 ? '' : 's'}</div>
             </div>
             <div class="folder-actions" aria-label="Folder actions">
-                <button class="folder-action-btn" data-folder-play="${deps.escapeHtml(folder.path)}" type="button" title="Play folder" aria-label="Play ${deps.escapeHtml(folder.name)}">▶</button>
-                <button class="folder-action-btn folder-action-btn--delete" data-folder-delete="${deps.escapeHtml(folder.path)}" type="button" title="Delete folder" aria-label="Delete ${deps.escapeHtml(folder.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
+                <button class="folder-action-btn" data-folder-play="${deps.escapeHtml(folder.path)}" type="button" data-tooltip="Play folder" aria-label="Play ${deps.escapeHtml(folder.name)}">▶</button>
+                <button class="folder-action-btn folder-action-btn--delete" data-folder-delete="${deps.escapeHtml(folder.path)}" type="button" data-tooltip="Delete folder" aria-label="Delete ${deps.escapeHtml(folder.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
             </div>
         </div>`).join('');
     }
@@ -875,7 +875,7 @@ function renderAlbums() {
     const playlistHtml = playlists.map(playlist => `
         <div class="album-card playlist-card" data-playlist-id="${deps.escapeHtml(playlist.id)}" role="button" tabindex="0">
             <div class="album-art-wrap">${playlistCoverHtml(playlist)}</div>
-            <button type="button" class="album-card-fav is-active" data-playlist-fav="${deps.escapeHtml(playlist.id)}" aria-label="Delete playlist" title="Delete playlist">${deps.favoriteHeartSvg()}</button>
+            <button type="button" class="album-card-fav is-active" data-playlist-fav="${deps.escapeHtml(playlist.id)}" aria-label="Delete playlist" data-tooltip="Delete playlist">${deps.favoriteHeartSvg()}</button>
             <div class="album-name">${deps.escapeHtml(playlist.name)}</div>
             <div class="album-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
         </div>`).join('');
@@ -892,7 +892,7 @@ function renderAlbums() {
                      onload="this.classList.add('loaded')"
                      onerror="this.onerror=null;this.src='${fallbackSvg}'" />
             </div>
-            <button type="button" class="album-card-fav${favClass}" data-fav-id="${deps.escapeHtml(album.id)}" aria-label="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}" title="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}">${deps.favoriteHeartSvg()}</button>
+            <button type="button" class="album-card-fav${favClass}" data-fav-id="${deps.escapeHtml(album.id)}" aria-label="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}" data-tooltip="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}">${deps.favoriteHeartSvg()}</button>
             <div class="album-name">${deps.escapeHtml(album.name)}</div>
             <div class="album-artist">${deps.escapeHtml(album.artist)}</div>
         </div>`;
@@ -1349,7 +1349,7 @@ function libraryFavoriteButtonHtml(trackId, favorite) {
     return '<button class="track-row-favorite' + (favorite ? ' active' : '') + '" data-track-favorite="' + deps.escapeHtml(trackId) + '" type="button"' +
         ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
         ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
-        ' title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + heart + '</button>';
+        ' data-tooltip="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + heart + '</button>';
 }
 
 function detailFavoriteButtonHtml(trackId, favorite) {
@@ -1357,7 +1357,7 @@ function detailFavoriteButtonHtml(trackId, favorite) {
     return '<button class="track-fav' + (favorite ? ' active' : '') + '" data-track-favorite="' + deps.escapeHtml(trackId) + '" type="button"' +
         ' aria-pressed="' + (favorite ? 'true' : 'false') + '"' +
         ' aria-label="' + (favorite ? 'Remove track from favorites' : 'Add track to favorites') + '"' +
-        ' title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + heart + '</button>';
+        ' data-tooltip="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + heart + '</button>';
 }
 
 function librarySelectionButtonHtml(trackId, isSelected) {
@@ -1365,7 +1365,7 @@ function librarySelectionButtonHtml(trackId, isSelected) {
     return '<button class="track-add' + (isSelected ? ' is-active' : '') + '" data-track-add="' + deps.escapeHtml(trackId) + '" type="button"' +
         ' aria-pressed="' + (isSelected ? 'true' : 'false') + '"' +
         ' aria-label="' + (isSelected ? 'Remove track from selection' : 'Add track to selection') + '"' +
-        ' title="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + mark + '</button>';
+        ' data-tooltip="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + mark + '</button>';
 }
 
 // Shared detail track-row body for the library list view, album / playlist
@@ -1375,7 +1375,7 @@ function librarySelectionButtonHtml(trackId, isSelected) {
 // number and the play button in one leading element so narrow phones can
 // share a single slot; rows without an index keep a lone play button.
 function detailTrackRowHtml({ index, title, sub, album, favoriteButton, selectionButton, duration, thumb }) {
-    const playButton = '<button type="button" class="track-play" title="Play">▶</button>';
+    const playButton = '<button type="button" class="track-play" data-tooltip="Play">▶</button>';
     const lead = index != null
         ? '<span class="track-numplay"><span class="track-index">' + index + '</span>' + playButton + '</span>'
         : playButton;

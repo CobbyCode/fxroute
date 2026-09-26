@@ -50,7 +50,11 @@ assert.match(html, /<details class="measurement-saved-group" open>/);
 assert.match(html, /<summary>Close saved \(2\)<\/summary>/);
 assert.match(html, /data-measurement-toggle="mid" checked/);
 assert.match(html, /data-measurement-toggle="legacy" >/);
-assert.match(html, /measurement-area-badge is-stale" title="Mid L · Stereo \+ Sub · measured area only">Mid L<\/span>/);
+// Hints use the app-wide data-tooltip attribute (the native title tooltip is
+// gone: it cannot follow the dark theme and every such control already
+// carried a matching aria-label for its accessible name).
+assert.match(html, /measurement-area-badge is-stale" data-tooltip="Mid L · Stereo \+ Sub · measured area only">Mid L<\/span>/);
+assert.doesNotMatch(html, /title="/, "no native title tooltips may remain");
 assert.equal((html.match(/measurement-area-badge is-stale/g) || []).length, 1);
 assert.match(html, /background:#60a5fa/);
 assert.match(html, /Left &amp; &lt;mid&gt;/);

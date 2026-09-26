@@ -264,15 +264,15 @@
                             '<div class="streaming-queue" hidden></div>' +
                         '</div>' +
                         '<div class="streaming-controls">' +
-                            '<button type="button" class="streaming-btn" data-action="previous" title="Previous">⏮</button>' +
-                            '<button type="button" class="streaming-btn streaming-btn-main" data-action="toggle" title="Play / Pause">▶</button>' +
-                            '<button type="button" class="streaming-btn" data-action="next" title="Next">⏭</button>' +
+                            '<button type="button" class="streaming-btn" data-action="previous" data-tooltip="Previous">⏮</button>' +
+                            '<button type="button" class="streaming-btn streaming-btn-main" data-action="toggle" data-tooltip="Play / Pause">▶</button>' +
+                            '<button type="button" class="streaming-btn" data-action="next" data-tooltip="Next">⏭</button>' +
                         '</div>' +
                         '<div class="streaming-secondary">' +
-                            '<button type="button" class="streaming-btn-sm" data-action="shuffle" title="Shuffle">' +
+                            '<button type="button" class="streaming-btn-sm" data-action="shuffle" data-tooltip="Shuffle">' +
                                 '<span class="streaming-btn-sm-icon">⇄</span><span class="streaming-btn-sm-label">Shuffle</span>' +
                             '</button>' +
-                            '<button type="button" class="streaming-btn-sm" data-action="loop" title="Loop">' +
+                            '<button type="button" class="streaming-btn-sm" data-action="loop" data-tooltip="Loop">' +
                                 '<span class="streaming-btn-sm-icon">' + LOOP_ALL_ICON + '</span><span class="streaming-btn-sm-label">Loop</span>' +
                             '</button>' +
                         '</div>' +
@@ -1126,8 +1126,8 @@
     function viewModeButtonsHtml(storageSurface) {
         const key = Object.keys(TIDAL_LAYOUT_SURFACES).find((k) => TIDAL_LAYOUT_SURFACES[k] === storageSurface);
         const layout = (key && state.tidal.albumLayouts[key]) || 'grid';
-        return '<button type="button" class="view-mode-btn' + (layout === 'grid' ? ' active' : '') + '" data-layout-toggle="grid" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'grid' ? 'true' : 'false') + '" title="Grid view" aria-label="Grid view">▦</button>' +
-            '<button type="button" class="view-mode-btn' + (layout === 'list' ? ' active' : '') + '" data-layout-toggle="list" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'list' ? 'true' : 'false') + '" title="List view" aria-label="List view">☰</button>';
+        return '<button type="button" class="view-mode-btn' + (layout === 'grid' ? ' active' : '') + '" data-layout-toggle="grid" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'grid' ? 'true' : 'false') + '" data-tooltip="Grid view" aria-label="Grid view">▦</button>' +
+            '<button type="button" class="view-mode-btn' + (layout === 'list' ? ' active' : '') + '" data-layout-toggle="list" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'list' ? 'true' : 'false') + '" data-tooltip="List view" aria-label="List view">☰</button>';
     }
 
     function bindViewModeToggle(root) {
@@ -1208,7 +1208,7 @@
                 '<div class="tidal-toolbar">' +
                     '<h2 class="section-title tidal-toolbar-title">Tidal</h2>' +
                     '<div class="tidal-toolbar-actions">' +
-                        '<button type="button" class="btn-secondary btn-icon" id="tidal-refresh-btn" title="Refresh TIDAL" aria-label="Refresh TIDAL">⟳</button>' +
+                        '<button type="button" class="btn-secondary btn-icon" id="tidal-refresh-btn" data-tooltip="Refresh TIDAL" aria-label="Refresh TIDAL">⟳</button>' +
                         '<div class="view-mode-toggle" id="tidal-view-mode-toggle" role="group" aria-label="View mode">' +
                             viewModeButtonsHtml(tidalActiveStorageSurface()) +
                         '</div>' +
@@ -1572,7 +1572,7 @@
         return '<button class="streaming-add' + (isSelected ? ' is-active' : '') + '" data-streaming-add="' + escapeHtml(trackId) + '" type="button"' +
             ' aria-pressed="' + (isSelected ? 'true' : 'false') + '"' +
             ' aria-label="' + (isSelected ? 'Remove track from playlist selection' : 'Add track to playlist selection') + '"' +
-            ' title="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + (isSelected ? '✓' : '+') + '</button>';
+            ' data-tooltip="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + (isSelected ? '✓' : '+') + '</button>';
     }
 
     function toggleTidalPlaylistTrack(event, trackId) {
@@ -1931,7 +1931,7 @@
             'data-fav-type="' + type + '" data-fav-id="' + escapeHtml(id) + '" ' +
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
-            'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
+            'data-tooltip="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
             favoriteHeartSvg() + '</button>';
     }
 
@@ -1965,7 +1965,7 @@
             'data-fav-type="' + type + '" data-fav-id="' + escapeHtml(idStr) + '" ' +
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
-            'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
+            'data-tooltip="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
             favoriteHeartSvg() + '</button>';
     }
 

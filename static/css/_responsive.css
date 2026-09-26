@@ -638,17 +638,15 @@
    Shared component queries — grouped by range
    ========================================================================= */
 @media (hover: none), (pointer: coarse) {
-    .brand-lockup-button[data-tooltip]::after,
-    .power-btn[data-tooltip]::after {
-        display: none;
-    }
-
     #tracks-list .folder-actions {
         opacity: 1;
     }
 
     /* Touch hit-area expansion: visuals stay compact while the tap target
-       reaches ~44px via an invisible overlay. No layout shift on desktop. */
+       reaches ~44px via an invisible overlay. No layout shift on desktop.
+       The overlay uses ::before, not ::after: ::after is the app-wide
+       tooltip bubble (see _layout.css), and several of these controls
+       (favorite hearts, measurement chips) carry a data-tooltip. */
     .control-btn-mode,
     .control-btn-clear,
     .track-favorite-btn,
@@ -663,32 +661,59 @@
     }
     /* Cover favorites are already absolutely positioned. Keep that anchor:
        making them relative pulls them into the card flow on touch screens. */
-    .control-btn-mode::after,
-    .control-btn-clear::after,
-    .track-favorite-btn::after,
-    .album-card-fav::after,
-    .station-card-fav::after,
-    .streaming-fav::after,
-    .track-row-favorite::after,
-    .track-fav::after,
-    .stepper-btn::after,
-    .measurement-chip::after,
-    .measurement-slot-chip::after,
-    .measurement-peq-chip::after {
+    .control-btn-mode::before,
+    .control-btn-clear::before,
+    .track-favorite-btn::before,
+    .album-card-fav::before,
+    .station-card-fav::before,
+    .streaming-fav::before,
+    .track-row-favorite::before,
+    .track-fav::before,
+    .stepper-btn::before,
+    .measurement-chip::before,
+    .measurement-slot-chip::before,
+    .measurement-peq-chip::before {
         content: '';
         position: absolute;
         inset: -8px;
     }
-    .control-btn-mode::after,
-    .control-btn-clear::after {
+    .control-btn-mode::before,
+    .control-btn-clear::before {
         inset: -10px;
+    }
+    /* The tooltip bubble is a hover affordance with no meaning on touch, and
+       the native fallback it replaces was never shown there either. */
+    [data-tooltip]::after {
+        display: none;
+    }
+
+    /* Crossover / subwoofer band chips and the Link L/R toggle are compact
+       by design (29px and 20px), too small to hit reliably. They grow their
+       own box here instead of using an ::after overlay: neighbouring chips
+       sit 0.4rem apart, so expanded overlays would overlap and steal taps
+       from each other. */
+    .crossover-tab,
+    .sub-side-tab {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        padding-inline: 0.85rem;
+    }
+    .crossover-link-label {
+        /* Row-aligned label: min-height alone would not centre the box in
+           the 29px band it shares with the chips. */
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        padding-inline: 0.35rem;
+    }
+    .crossover-tabrow {
+        align-items: center;
     }
 }
 
 @media (max-width: 540px) {
     .power-btn-icon { width: 20px; height: 20px; }
-
-    .power-btn { width: 44px; height: 44px; }
 }
 
 @media (max-width: 980px) {

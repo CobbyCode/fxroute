@@ -22,6 +22,12 @@
 }
 .brand-lockup-button {
     position: relative;
+    /* The mark is 32px, so the button used to be 32px tall and this is the
+       only route into Settings. The 44px min-height grows the tap target
+       without changing the rendered mark or wordmark. */
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
     padding: 0;
     border: 0;
     background: transparent;
@@ -39,15 +45,36 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
-/* Custom CSS tooltips (header buttons): the brand/settings trigger and the
-   power button use the same look. The attribute selector keeps the shared
-   visuals in one place; per-button rules only set the horizontal anchor. */
+/* ============================================================
+   Tooltips
+   ============================================================
+   One tooltip system for the whole app. `data-tooltip` is the single
+   attribute; the native `title` attribute is no longer used for hints,
+   because a native tooltip cannot follow the dark theme and every
+   control that carried one already had a matching `aria-label` for its
+   accessible name. `::after` is reserved for the tooltip bubble, so a
+   host never has to choose between a hint and a touch hit-area overlay
+   (the coarse-pointer overlay in _responsive.css uses `::before`).
+
+   Placement: below the host by default. `data-tooltip-anchor="end"`
+   right-aligns the bubble to the host's right edge, for controls that sit
+   at the right edge of a row or viewport. */
+:where([data-tooltip]) {
+    /* Zero-specificity on purpose: it only establishes a positioning
+       context for hosts that nothing else positions. An already
+       positioned host (the cover favorite hearts) keeps its own
+       position, because its class rule outranks a :where() selector. */
+    position: relative;
+}
+[data-tooltip]::after,
 .brand-lockup-button[data-tooltip]::after,
 .power-btn[data-tooltip]::after {
     content: attr(data-tooltip);
     position: absolute;
     top: calc(100% + 0.45rem);
+    left: 0;
     z-index: var(--z-tooltip);
+    max-width: min(260px, calc(100vw - 2rem));
     padding: 0.32rem 0.52rem;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
@@ -56,23 +83,27 @@
     box-shadow: 0 8px 24px var(--shadow);
     font-size: 0.72rem;
     font-weight: 650;
-    line-height: 1.2;
-    white-space: nowrap;
+    line-height: 1.35;
+    /* Long values (a full preset name, an export path) wrap inside the
+       max-width instead of running off the viewport. */
+    white-space: normal;
+    overflow-wrap: anywhere;
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
     transform: translateY(-2px);
     transition: opacity 0.15s var(--ease), visibility 0.15s var(--ease), transform 0.15s var(--ease);
 }
-.brand-lockup-button[data-tooltip]::after {
-    left: 0;
-}
+[data-tooltip-anchor="end"]::after,
 .power-btn[data-tooltip]::after {
+    left: auto;
     right: 0;
 }
-.brand-lockup-button[data-tooltip]:hover::after,
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::after,
+.brand-lockup-button:hover::after,
 .brand-lockup-button:focus-visible::after,
-.power-btn[data-tooltip]:hover::after,
+.power-btn:hover::after,
 .power-btn:focus-visible::after {
     opacity: 1;
     visibility: visible;
@@ -84,6 +115,17 @@
     opacity: 0;
     visibility: hidden;
     transform: translateY(-2px);
+}
+
+/* Tooltip host for a <select>. A select is a replaced element: Chromium
+   does not render ::before/::after on it, so a tooltip placed on the control
+   itself would be silently invisible. The wrapper carries the attribute
+   instead. It is a plain block-level flex item that stretches to the field
+   width, and the select keeps width:100%, so the layout is unchanged. */
+.select-tooltip-wrap {
+    display: block;
+    width: 100%;
+    min-width: 0;
 }
 
 .brand-lockup .brand-mark {
@@ -131,8 +173,11 @@
 }
 .power-btn {
     position: relative;
-    width: 38px;
-    height: 38px;
+    /* 44px in every range. The header is 72px tall, so the button keeps its
+       proportions there; only the <=540px override used to reach the touch
+       minimum, which left 541px-1180px on a 38px target. */
+    width: 44px;
+    height: 44px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -278,7 +323,10 @@
 .tab-btn {
     flex: 0 0 auto;
     min-width: 112px;
-    min-height: 42px;
+    /* 44px, not 42: the primary navigation is the most-used control in the
+       app and 42 was the only range below the touch minimum (the <=760px
+       range already overrode it to 44px). */
+    min-height: 44px;
     padding: .52rem .9rem;
     background: transparent;
     border: none;

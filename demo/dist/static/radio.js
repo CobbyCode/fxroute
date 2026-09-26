@@ -163,7 +163,9 @@
             elements.stationDeleteSelect.addEventListener('change', () => {
                 populateManagedStationFields();
                 updateStationActionButtons();
+                syncStationSelectTooltip();
             });
+            syncStationSelectTooltip();
         }
         if (elements.stationExistingUrl) {
             elements.stationExistingUrl.addEventListener('input', updateStationActionButtons);
@@ -218,12 +220,32 @@
         });
     }
 
+    // The managed-station select compacts long station names to 32 characters,
+    // and a native `title` on an <option> is not rendered by Chromium at all,
+    // so the full name used to be unreachable. The app tooltip lives on a
+    // wrapper around the select (a select is a replaced element and cannot
+    // render a ::after bubble itself) and follows the current selection.
+    function syncStationSelectTooltip() {
+        const select = elements.stationDeleteSelect;
+        if (!select) return;
+        const wrap = select.closest ? select.closest('.select-tooltip-wrap') : null;
+        if (!wrap) return;
+        const full = select.value ? fullStationTitles.get(select.value) : '';
+        if (full) wrap.setAttribute('data-tooltip', full);
+        else wrap.removeAttribute('data-tooltip');
+    }
+
+    // Untruncated station titles keyed by station id, mirrored from the
+    // compacted options of the managed-station select. Rebuilt whenever the
+    // option list is rebuilt; read by syncStationSelectTooltip().
+    let fullStationTitles = new Map();
+
     function stationFavButtonHtml(active, extraAttrs) {
         const cls = active ? 'station-card-fav is-active' : 'station-card-fav';
         const heart = favoriteHeartSvg();
         const pressed = active ? 'true' : 'false';
         const label = active ? 'Remove from My Stations' : 'Add to My Stations';
-        return `<button type="button" class="${cls}" ${extraAttrs} aria-pressed="${pressed}" aria-label="${label}" title="${label}">${heart}</button>`;
+        return `<button type="button" class="${cls}" ${extraAttrs} aria-pressed="${pressed}" aria-label="${label}" data-tooltip="${label}">${heart}</button>`;
     }
 
     function updateStationFavButton(button, active) {
@@ -233,7 +255,7 @@
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
         const label = active ? 'Remove from My Stations' : 'Add to My Stations';
         button.setAttribute('aria-label', label);
-        button.title = label;
+        button.setAttribute('data-tooltip', label);
     }
 
     function bindStationFavButtons(container) {
@@ -937,12 +959,16 @@
             const fullTitle = String(title || '');
             return fullTitle.length > 32 ? `${fullTitle.slice(0, 29).trimEnd()}…` : fullTitle;
         };
+        // Keep the untruncated names next to the compacted options so the
+        // select's own tooltip can reveal them.
+        fullStationTitles = new Map(state.stations.map(station => [station.id, String(station.title || '')]));
         elements.stationDeleteSelect.innerHTML = ['<option value="">Select a station…</option>']
             .concat(state.stations.map(station => {
                 const fullTitle = String(station.title || '');
-                return `<option value="${escapeHtml(station.id)}" title="${escapeHtml(fullTitle)}" aria-label="${escapeHtml(fullTitle)}">${escapeHtml(compactOptionTitle(fullTitle))}</option>`;
+                return `<option value="${escapeHtml(station.id)}" aria-label="${escapeHtml(fullTitle)}">${escapeHtml(compactOptionTitle(fullTitle))}</option>`;
             }))
             .join('');
+        syncStationSelectTooltip();
         resetManagedStationForm();
     }
     function isSomaFmUrl(value) {

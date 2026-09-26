@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.275">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.276">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -40,7 +40,7 @@
 
     <!-- Live mode notice (only visible in volatile Try FXRoute sessions).
          Bottom pill above the playback footer, like the web-demo banner. -->
-    <div id="live-banner" class="live-banner is-hidden" role="status"><strong>Live Mode</strong><span> — changes and logins are not saved and will be lost after reboot.</span><button type="button" class="live-banner-close" aria-label="Hide live notice" title="Hide live notice">×</button></div>
+    <div id="live-banner" class="live-banner is-hidden" role="status"><strong>Live Mode</strong><span> — changes and logins are not saved and will be lost after reboot.</span><button type="button" class="live-banner-close" aria-label="Hide live notice" data-tooltip="Hide live notice">×</button></div>
 
     <!-- Main content -->
     <main id="app">
@@ -273,7 +273,7 @@
                             </div>
                         </div>
                         <div class="radio-header-right">
-                            <button id="station-export-all" class="btn-ghost btn-icon-only" type="button" title="Export all stations" aria-label="Export all stations">
+                            <button id="station-export-all" class="btn-ghost btn-icon-only" type="button" data-tooltip-anchor="end" data-tooltip="Export all stations" aria-label="Export all stations">
                                 <span class="btn-ghost-icon">⤓</span>
                             </button>
                             <button id="toggle-station-manage" class="btn-ghost btn-manage-trigger">
@@ -360,9 +360,11 @@
                                 </div>
                                 <div class="field-group">
                                     <label for="station-delete-select">Saved stations</label>
-                                    <select id="station-delete-select" class="url-input">
-                                        <option value="">Select a station…</option>
-                                    </select>
+                                    <div class="select-tooltip-wrap" data-tooltip-wrap-for="station-delete-select">
+                                        <select id="station-delete-select" class="url-input">
+                                            <option value="">Select a station…</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <div id="station-existing-fields" class="hidden">
                                     <div class="field-group">
@@ -390,13 +392,13 @@
                     <h2 class="section-title">Library</h2>
                     <div class="library-toolbar">
                         <button id="toggle-import" class="btn-secondary" type="button" aria-expanded="false" aria-controls="library-import-panel">Import</button>
-                        <button id="refresh-library" class="btn-secondary btn-icon" title="Refresh library" aria-label="Refresh library">⟳</button>
+                        <button id="refresh-library" class="btn-secondary btn-icon" data-tooltip-anchor="end" data-tooltip="Refresh library" aria-label="Refresh library">⟳</button>
                         <div id="library-view-mode-toggle" class="view-mode-toggle" role="group" aria-label="Album view mode">
-                            <button type="button" id="library-view-mode-grid" class="view-mode-btn" aria-pressed="true" title="Grid view" aria-label="Grid view">▦</button>
-                            <button type="button" id="library-view-mode-list" class="view-mode-btn" aria-pressed="false" title="List view" aria-label="List view">☰</button>
+                            <button type="button" id="library-view-mode-grid" class="view-mode-btn" aria-pressed="true" data-tooltip-anchor="end" data-tooltip="Grid view" aria-label="Grid view">▦</button>
+                            <button type="button" id="library-view-mode-list" class="view-mode-btn" aria-pressed="false" data-tooltip-anchor="end" data-tooltip="List view" aria-label="List view">☰</button>
                         </div>
-                        <button id="download-selected-tracks" class="btn-secondary btn-icon hidden" title="Download selected" aria-label="Download selected"><span class="btn-spinner" aria-hidden="true"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg></button>
-                        <button id="delete-selected-tracks" class="btn-secondary btn-icon hidden" title="Delete selected" aria-label="Delete selected"><span class="btn-spinner" aria-hidden="true"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
+                        <button id="download-selected-tracks" class="btn-secondary btn-icon hidden" data-tooltip-anchor="end" data-tooltip="Download selected" aria-label="Download selected"><span class="btn-spinner" aria-hidden="true"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg></button>
+                        <button id="delete-selected-tracks" class="btn-secondary btn-icon hidden" data-tooltip-anchor="end" data-tooltip="Delete selected" aria-label="Delete selected"><span class="btn-spinner" aria-hidden="true"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
                     </div>
                 </div>
                 <div id="library-import-panel" class="library-import-panel hidden">
@@ -468,7 +470,7 @@
                         <div class="album-detail-meta detail-hero-meta">
                             <div class="album-detail-title-row detail-hero-title-row">
                                 <h2 id="album-detail-name" class="album-detail-name detail-hero-title"></h2>
-                                <button id="album-favorite-toggle" class="album-favorite-toggle" type="button" aria-label="Favorite album" title="Favorite album"><svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
+                                <button id="album-favorite-toggle" class="album-favorite-toggle" type="button" aria-label="Favorite album" data-tooltip="Favorite album"><svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
                             </div>
                             <p id="album-detail-artist" class="album-detail-artist"></p>
                             <p id="album-detail-count" class="album-detail-count"></p>
@@ -875,16 +877,20 @@
                                     <div class="effects-compare-fields">
                                         <div class="field-group effects-compare-slot" data-compare-slot="A">
                                             <label for="effects-compare-a">Preset A</label>
-                                            <select id="effects-compare-a" class="url-input compare-select"></select>
+                                            <div class="select-tooltip-wrap" data-tooltip-wrap-for="effects-compare-a">
+                                                <select id="effects-compare-a" class="url-input compare-select"></select>
+                                            </div>
                                         </div>
                                         <div class="field-group effects-compare-slot" data-compare-slot="B">
                                             <label for="effects-compare-b">Preset B</label>
-                                            <select id="effects-compare-b" class="url-input compare-select"></select>
+                                            <div class="select-tooltip-wrap" data-tooltip-wrap-for="effects-compare-b">
+                                                <select id="effects-compare-b" class="url-input compare-select"></select>
+                                            </div>
                                         </div>
                                     </div>
                                     <div class="effects-compare-actions">
                                         <button id="effects-compare-toggle" class="btn-primary">Compare A/B</button>
-                                        <button id="effects-delete" class="btn-danger" title="Delete active preset" aria-label="Delete active preset">Delete active</button>
+                                        <button id="effects-delete" class="btn-danger" data-tooltip="Delete active preset" aria-label="Delete active preset">Delete active</button>
                                     </div>
                                     <div id="effects-info" class="effects-info"></div>
                                     <div id="effects-status" class="effects-status"></div>
@@ -1261,8 +1267,8 @@
                                 <div class="measurement-graph-header-actions">
                                     <div id="measurement-summary" class="measurement-summary"></div>
                                     <div class="measurement-view-toggle" role="group" aria-label="Graph view">
-                                        <button type="button" class="measurement-chip is-active" data-measurement-view="freq" title="Frequency view" aria-pressed="true">Freq</button>
-                                        <button type="button" class="measurement-chip" data-measurement-view="ir" title="Impulse response view" aria-pressed="false">IR</button>
+                                        <button type="button" class="measurement-chip is-active" data-measurement-view="freq" data-tooltip="Frequency view" aria-label="Frequency view" aria-pressed="true">Freq</button>
+                                        <button type="button" class="measurement-chip" data-measurement-view="ir" data-tooltip="Impulse response view" aria-label="Impulse response view" aria-pressed="false">IR</button>
                                     </div>
                                     <select id="measurement-assist-mode" class="url-input measurement-assist-select" aria-label="Measurement assist mode">
                                         <option value="peq">PEQ</option>
@@ -1536,7 +1542,7 @@
                         <span class="sc-title" id="sc-title"></span>
                         <span class="sc-album" id="sc-album"></span>
                     </div>
-                    <button id="track-favorite-btn" class="track-favorite-btn hidden" type="button" aria-label="Add track to favorites" aria-pressed="false" title="Add track to favorites"><svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
+                    <button id="track-favorite-btn" class="track-favorite-btn hidden" type="button" aria-label="Add track to favorites" aria-pressed="false" data-tooltip-anchor="end" data-tooltip="Add track to favorites"><svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
                 </div>
                 <div class="playback-meta-row">
                     <div id="samplerate-status" class="samplerate-status hidden">44.1kHz</div>
@@ -1547,17 +1553,17 @@
 
         <div class="playback-center">
             <div class="transport-controls">
-                <button id="footer-shuffle" class="control-btn control-btn-mode hidden" type="button" aria-label="Shuffle" aria-pressed="false" title="Shuffle">⇄</button>
+                <button id="footer-shuffle" class="control-btn control-btn-mode hidden" type="button" aria-label="Shuffle" aria-pressed="false" data-tooltip-anchor="end" data-tooltip="Shuffle">⇄</button>
                 <button id="btn-previous" class="control-btn control-btn-secondary hidden" disabled aria-label="Previous">⏮</button>
                 <button id="btn-play-pause" class="control-btn" disabled aria-label="Play or pause">▶</button>
                 <button id="btn-next" class="control-btn control-btn-secondary hidden" disabled aria-label="Next">⏭</button>
-                <button id="footer-loop" class="control-btn control-btn-mode hidden" type="button" aria-label="Repeat" aria-pressed="false" title="Repeat">↻</button>
-                <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled title="Clear queue" aria-label="Clear queue">✕</button>
+                <button id="footer-loop" class="control-btn control-btn-mode hidden" type="button" aria-label="Repeat" aria-pressed="false" data-tooltip-anchor="end" data-tooltip="Repeat">↻</button>
+                <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled data-tooltip-anchor="end" data-tooltip="Clear queue" aria-label="Clear queue">✕</button>
             </div>
             <div id="source-switcher" class="source-switcher hidden">
-                <button id="source-prev" class="control-btn control-btn-secondary" type="button" aria-label="Previous source" title="Previous source">‹</button>
+                <button id="source-prev" class="control-btn control-btn-secondary" type="button" aria-label="Previous source" data-tooltip-anchor="end" data-tooltip="Previous source">‹</button>
                 <select id="source-select" class="source-select" aria-label="Audio source"></select>
-                <button id="source-next" class="control-btn control-btn-secondary" type="button" aria-label="Next source" title="Next source">›</button>
+                <button id="source-next" class="control-btn control-btn-secondary" type="button" aria-label="Next source" data-tooltip-anchor="end" data-tooltip="Next source">›</button>
             </div>
             <div class="seek-row hidden">
                 <span id="seek-current" class="seek-time">0:00</span>
@@ -1744,13 +1750,13 @@
     <script src="/static/hybrid_measurement.js?v=0.9.15"></script>
     <script src="/static/measurement_ui.js?v=0.9.21"></script>
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
-    <script src="/static/speaker_align.js?v=0.9.17"></script>
+    <script src="/static/speaker_align.js?v=0.9.18"></script>
     <script src="/static/measurement_flows.js?v=0.9.41"></script>
     <script src="/static/output_state.js?v=0.9.14"></script>
     <script src="/static/crossover.js?v=0.9.7"></script>
     <script src="/static/crossover_view.js?v=0.9.2"></script>
     <script src="/static/crossover_ui.js?v=0.9.4"></script>
-    <script src="/static/radio.js?v=0.9.19"></script>
+    <script src="/static/radio.js?v=0.9.20"></script>
     <script src="/static/api.js?v=0.9.1"></script>
     <script src="/static/ui_helpers.js?v=0.9.1"></script>
     <script src="/static/modal.js?v=0.9.1"></script>
@@ -1758,10 +1764,10 @@
     <script src="/static/settings_system.js?v=0.9.1"></script>
     <script src="/static/subwoofer_ui.js?v=0.9.5"></script>
     <script src="/static/output_system_controller.js?v=0.9.1"></script>
-    <script src="/static/output_bank_ui.js?v=0.9.2"></script>
+    <script src="/static/output_bank_ui.js?v=0.9.3"></script>
     <script src="/static/output_effects_ui.js?v=0.9.3"></script>
     <script src="/static/measurement_panel_ui.js?v=0.9.8"></script>
-    <script src="/static/measurement_saved_ui.js?v=0.9.5"></script>
+    <script src="/static/measurement_saved_ui.js?v=0.9.6"></script>
     <script src="/static/measurement_editors_ui.js?v=0.9.2"></script>
     <script src="/static/measurement_setup.js?v=0.9.2"></script>
     <script src="/static/measurement_calibration.js?v=0.9.1"></script>
@@ -1771,11 +1777,11 @@
     <script src="/static/measurement_job.js?v=0.9.4"></script>
     <script src="/static/measurement_saved_actions.js?v=0.9.3"></script>
     <script src="/static/measurement_spl_calibration.js?v=0.9.2"></script>
-    <script src="/static/library_ui.js?v=0.9.3"></script>
+    <script src="/static/library_ui.js?v=0.9.4"></script>
     <script src="/static/playback_core.js?v=0.9.1"></script>
     <script src="/static/playback_ui.js?v=0.9.3"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.250"></script>
-    <script src="/static/streaming.js?v=0.9.72"></script>
+    <script src="/static/app.js?v=0.9.251"></script>
+    <script src="/static/streaming.js?v=0.9.73"></script>
 </body>
 </html>

@@ -202,16 +202,23 @@ class TouchTargetTests(unittest.TestCase):
 
     def test_coarse_hit_area_expansion(self):
         coarse = _media_block(RESPONSIVE, "@media (hover: none), (pointer: coarse)")
+        # The overlay uses ::before: ::after is reserved for the app-wide
+        # tooltip bubble, and several of these controls carry a data-tooltip.
         for selector in (
-            ".control-btn-mode::after",
-            ".control-btn-clear::after",
-            ".track-favorite-btn::after",
-            ".album-card-fav::after",
-            ".stepper-btn::after",
-            ".measurement-chip::after",
+            ".control-btn-mode::before",
+            ".control-btn-clear::before",
+            ".track-favorite-btn::before",
+            ".album-card-fav::before",
+            ".stepper-btn::before",
+            ".measurement-chip::before",
         ):
             self.assertIn(selector, coarse, f"missing {selector} hit expansion")
         self.assertIn("inset: -8px", coarse)
+
+    def test_tooltip_hidden_on_coarse_pointers(self):
+        coarse = _media_block(RESPONSIVE, "@media (hover: none), (pointer: coarse)")
+        self.assertIn("[data-tooltip]::after", coarse)
+        self.assertRegex(coarse, r"\[data-tooltip\]::after\s*\{\s*display: none")
 
     def test_phone_direct_sizes(self):
         phone = _media_block(RESPONSIVE, "@media (max-width: 600px)")

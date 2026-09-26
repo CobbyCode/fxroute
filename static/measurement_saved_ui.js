@@ -65,7 +65,7 @@
             const referenceInputChannel = measurement.input_channels?.electrical_reference ? ` · Ref In ${measurement.input_channels.electrical_reference}` : '';
             const areaBadge = measurementAreaBadge(measurement);
             const areaBadgeHtml = areaBadge
-                ? `<span class="measurement-area-badge${areaBadge.stale ? ' is-stale' : ''}" title="${deps.escapeHtml(areaBadge.title)}">${deps.escapeHtml(areaBadge.label)}</span>`
+                ? `<span class="measurement-area-badge${areaBadge.stale ? ' is-stale' : ''}" data-tooltip="${deps.escapeHtml(areaBadge.title)}">${deps.escapeHtml(areaBadge.label)}</span>`
                 : '';
             return `
                 <div class="measurement-list-item" style="${isVisibleInGraph ? `border-color:${traceColor}; box-shadow: inset 0 0 0 1px ${traceColor}33; background: linear-gradient(180deg, rgba(255,255,255,0.03), ${traceColor}12);` : ''}">
@@ -73,7 +73,7 @@
                         <span class="measurement-toggle">
                             <input type="checkbox" data-measurement-toggle="${deps.escapeHtml(measurement.id)}" ${isSelected ? 'checked' : ''}>
                             <span class="measurement-swatch ${isVisibleInGraph ? '' : 'measurement-swatch-inactive'}" ${isVisibleInGraph ? `style="background:${deps.escapeHtml(traceColor)}"` : ''}></span>
-                            <span class="measurement-list-title"><a href="${deps.escapeHtml(ui.measurementFileUrl(measurement.id))}" title="${deps.escapeHtml(measurement.name)}">${deps.escapeHtml(deps.getCompactDisplayName(measurement.name, 24))}</a></span>
+                            <span class="measurement-list-title"><a href="${deps.escapeHtml(ui.measurementFileUrl(measurement.id))}" data-tooltip="${deps.escapeHtml(measurement.name)}">${deps.escapeHtml(deps.getCompactDisplayName(measurement.name, 24))}</a></span>
                             ${areaBadgeHtml}
                         </span>
                         <span class="measurement-list-meta measurement-list-date">${deps.escapeHtml(ui.formatMeasurementDate(measurement.created_at))}</span>
@@ -83,10 +83,10 @@
                         <span class="measurement-list-points">${deps.escapeHtml(pointsLabel)}</span>
                     </div>
                     <div class="measurement-list-row">
-                        <span class="measurement-list-meta" title="${deps.escapeHtml(timingInfo.detail)}">${deps.escapeHtml(timingInfo.line)}</span>
+                        <span class="measurement-list-meta" data-tooltip="${deps.escapeHtml(timingInfo.detail)}">${deps.escapeHtml(timingInfo.line)}</span>
                     </div>
                     <div class="measurement-list-row">
-                        <span class="measurement-list-meta" title="${deps.escapeHtml(qualityTitle)}">${deps.escapeHtml(qualitySummary)} · ${isVisibleInGraph ? 'visible, dashed compare trace' : 'hidden compare trace'}</span>
+                        <span class="measurement-list-meta" data-tooltip="${deps.escapeHtml(qualityTitle)}">${deps.escapeHtml(qualitySummary)} · ${isVisibleInGraph ? 'visible, dashed compare trace' : 'hidden compare trace'}</span>
                     </div>
                 </div>
             `;

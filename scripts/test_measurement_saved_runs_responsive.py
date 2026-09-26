@@ -242,8 +242,12 @@ def _run():
                 assert badge.inner_text() == "Global"
                 assert page.locator("[data-measurement-toggle='legacy'] ~ .measurement-area-badge").count() == 0
                 title = page.locator("[data-measurement-toggle='long-name'] ~ .measurement-list-title a")
-                assert title.get_attribute("title").startswith("Livingroom-Subwoofer")
-                assert title.inner_text() != title.get_attribute("title"), "the long name must be truncated, not wrapped"
+                # Hints use the app-wide data-tooltip attribute; the native
+                # title tooltip is gone app-wide.
+                full_name = title.get_attribute("data-tooltip")
+                assert full_name is not None, "the truncated run name must stay reachable"
+                assert full_name.startswith("Livingroom-Subwoofer")
+                assert title.inner_text() != full_name, "the long name must be truncated, not wrapped"
                 checks += 4
 
                 # Nothing leaves the card while the run is unselected.

@@ -32,14 +32,24 @@
     --bg-header:     rgba(14, 14, 17, 0.94);
     --text-primary:   #ececf0;
     --text-secondary: #a0a0ac;
-    --text-muted:     #848490;
+    /* Muted text. The old #848490 sat at 4.08:1 on --bg-hover, just under the
+       4.5:1 AA floor, so muted labels on hover/raised surfaces were the
+       app's only failing text pair. #90909c clears 4.5 on all six surfaces
+       (worst case 4.77) and keeps a clear step below --text-secondary
+       (5.82 on the same surface), so the three-level hierarchy survives. */
+    --text-muted:     #90909c;
     --accent:        #6ee7b7;   /* fresh teal */
     --accent-dim:    rgba(110, 231, 183, 0.12);
     --accent-hover:  #4dd8a0;
     --danger:        #f87171;
     --danger-dim:    rgba(248, 113, 113, 0.12);
     --success:       #34d399;
-    --warning:       #b45309;
+    /* Warning amber. The old #b45309 failed WCAG AA on every surface in this
+       theme (3.00 on --bg-hover up to 3.87 on --bg-primary). #d97706 is the
+       darkest amber that clears 4.5:1 on all six surfaces (worst case 4.73
+       on --bg-hover), so it keeps the muted "warm brown" identity instead of
+       turning into a bright alert colour. */
+    --warning:       #d97706;
     --border:        rgba(255, 255, 255, 0.06);
     --border-strong: rgba(255, 255, 255, 0.10);
     --scrollbar:     var(--bg-hover);
@@ -94,6 +104,13 @@
     /* Playback footer height used by the live-banner offset; the phone
        layout overrides it on .live-banner (taller stacked footer). */
     --footer-height: 92px;
+    /* Height of the whole sticky top stack (header row + tab strip).
+       app.js keeps this in sync with the rendered geometry: below 1180px the
+       tab strip is its own row under the header, at >=1180px the tabs are
+       pulled into the header line and both share one 72px row. Anything that
+       anchors to the top of the viewport (the toast column) must clear the
+       whole stack, not just the header. */
+    --header-stack-height: 72px;
     /* Stacking-order tokens: semantic names for the layering the stylesheet
        already implements. Values are the historical literal z-index numbers,
        preserved exactly so the visible order is unchanged; the tokens only

@@ -1776,6 +1776,56 @@ function updateTabsScrollAffordance() {
     if (!nav) return;
     const canScroll = nav.scrollWidth > nav.clientWidth + 2;
     nav.classList.toggle('can-scroll', canScroll);
+    // The stack height and the active-tab scroll both depend on the same
+    // rendered geometry, so they refresh together on every resize.
+    updateHeaderStackHeight();
+    keepActiveTabInView();
+}
+
+// The sticky top stack is two elements whose relationship flips at 1180px:
+// below that the tab strip is its own row under the header, at/above it the
+// tabs are pulled up with `margin: -72px auto 0` and share the header row.
+// A hardcoded offset is wrong in both layouts, so publish the measured
+// height and let the toast column anchor to it.
+//
+// The height is taken from the box offsets, not getBoundingClientRect():
+// neither element is sticky, so their viewport-relative bottom goes negative
+// as soon as the page is scrolled and would drag the toast column off the
+// top of the screen. offsetTop/offsetHeight describe the document flow and
+// are scroll-independent; both share the same offset parent, so they are
+// directly comparable.
+function updateHeaderStackHeight() {
+    const parts = ['.header', '.tabs']
+        .map(sel => document.querySelector(sel))
+        .filter(el => el && el.offsetHeight > 0);
+    if (parts.length === 0) return;
+    const height = Math.round(Math.max(...parts.map(el => el.offsetTop + el.offsetHeight)));
+    if (!height || height <= 0) return;
+    const root = document.documentElement;
+    if (root.style.getPropertyValue('--header-stack-height') === `${height}px`) return;
+    root.style.setProperty('--header-stack-height', `${height}px`);
+}
+
+// Phones cannot fit six provider tabs in the viewport: the strip is a
+// horizontal scroller and the active tab can sit outside it (the DSP tab
+// ended ~80px past the right edge at 390px), leaving the current page
+// unlabelled. Scroll the strip itself, never the page, so nothing else
+// moves: `block: 'nearest'` on scrollIntoView is avoided on purpose because
+// it still walks up the ancestor chain in some engines.
+function keepActiveTabInView() {
+    const nav = document.querySelector('.tabs');
+    const active = nav && nav.querySelector('.tab-btn.active');
+    if (!nav || !active) return;
+    if (nav.scrollWidth <= nav.clientWidth + 2) return;
+    const navBox = nav.getBoundingClientRect();
+    const tabBox = active.getBoundingClientRect();
+    // Inset so the active tab never sits flush against the scroll fade.
+    const pad = 12;
+    let delta = 0;
+    if (tabBox.left < navBox.left + pad) delta = tabBox.left - navBox.left - pad;
+    else if (tabBox.right > navBox.right - pad) delta = tabBox.right - navBox.right + pad;
+    if (!delta) return;
+    nav.scrollLeft += delta;
 }
 
 function wireCrossoverTile() {
@@ -3197,6 +3247,9 @@ function switchTab(tabId) {
         t.setAttribute('aria-selected', active ? 'true' : 'false');
     });
     elements.tabPanels.forEach(p => p.classList.toggle('active', p.id === `tab-${tabId}`));
+    // The active button may be outside the strip's scroll window on narrow
+    // screens; bring it back so the current surface stays identifiable.
+    keepActiveTabInView();
     window.__visibleTab = tabId;
     window.FXRouteStreaming?.onTabVisible(tabId);
     if (tabId === 'effects') {
