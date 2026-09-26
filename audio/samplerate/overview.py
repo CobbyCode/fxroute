@@ -59,8 +59,16 @@ def _derived_output_mode(
     """Translate a v2 output-state head into the legacy mode payload shape.
 
     Returns None when the head is unusable (the overview then degrades to
-    stereo).  Slot mapping is deterministic: zero sub roles read stereo, one
-    reads 2.1, two or more read 2.2 (stereo-bass label for sub_l/sub_r).
+    stereo).  Sub slots come from the shared topology derivation, never from
+    scanning the assignment list: with the crossover enabled the mains are
+    named ``left_low``/``left_high``/``right_*``, so a name filter or a
+    positional ``subs[0]/subs[1]`` pick would report main-band delay and
+    level as the sub slots and label a 2.1 (or a plain stereo) system as
+    2.2.  ``derive_topology`` already resolves the routed sub roles in a
+    stable SUB_ROLES order, so zero sub roles read stereo, one reads 2.1,
+    a sub_l/sub_r pair reads 2.2-stereo and two mono-summed subs read 2.2.
+    More sub roles than any mode can hold claims no mode at all and carries
+    the roles plus the reason, for the caller to surface.
     """
     if not isinstance(head, Mapping):
         return None
@@ -68,6 +76,7 @@ def _derived_output_mode(
         from audio.output_routing import device_key
         from audio.output_state import (bass_crossover_for_side, filter_label,
                                         routing_for_device, shared_bass_crossover)
+        from audio.output_topology import derive_topology
     except ImportError:
         return None
     mode = head.get("active_mode")
@@ -83,18 +92,20 @@ def _derived_output_mode(
         # A device with no routing entry cannot be attributed roles; callers
         # degrade to stereo instead of misreporting a subwoofer mode.
         return None
+    crossover_enabled = bool(spec.get("crossover_enabled"))
     try:
         assignments = routing_for_device(head, mode, output_key or "")
+        topology = derive_topology(mode, assignments, channels=len(assignments),
+                                   crossover_enabled=crossover_enabled)
     except (ValueError, KeyError, TypeError):
         return None
-    subs = sorted({role for role in assignments
-                   if role and role not in ("off", "main_l", "main_r")})
+    subs = topology.sub_roles
     processing = spec.get("processing")
     processing = processing if isinstance(processing, Mapping) else {}
     bass = spec.get("bass_management")
     bass = bass if isinstance(bass, Mapping) else {}
     highpass = bool(bass.get("main_highpass_enabled", True))
-    stereo_pair = bool(set(subs) & {"sub_l", "sub_r"})
+    stereo_pair = topology.sub_mode == "stereo"
 
     def crossover(side: str) -> dict[str, Any]:
         """Effective crossover of one side; only a Stereo pair resolves per side."""
@@ -110,10 +121,10 @@ def _derived_output_mode(
                 "slope": filter_label(definition["family"], definition["slope_db_oct"])}
 
     left, right = crossover("left"), crossover("right")
-    if not subs:
+    if topology.sub_mode == "none":
         return {"mode": OUTPUT_MODE_STEREO,
                 "subwoofer": _normalize_subwoofer_config(None)}
-    if len(subs) == 1:
+    if topology.sub_mode == "mono":
         settings = _derived_sub_settings(processing, subs[0])
         return {
             "mode": OUTPUT_MODE_SUBWOOFER_21,
@@ -124,6 +135,19 @@ def _derived_output_mode(
                 "sub_alignment_ms": settings["alignment_ms"],
                 "sub_polarity": settings["polarity"],
             },
+        }
+    if topology.sub_mode == "unsupported":
+        # More than two distinct sub roles is a state the topology already
+        # flags and the product cannot represent. Report no subwoofer mode at
+        # all: stereo would be a false claim about the routing, and an invented
+        # sub1/sub2 pair would feed wrong values to the measurement context and
+        # the peak-safety projection. The routed roles and the reason travel
+        # with the payload so the caller can surface them.
+        return {
+            "mode": None,
+            "subwoofer": _normalize_subwoofer_config(None),
+            "unsupported_sub_roles": list(subs),
+            "unsupported_reason": "; ".join(topology.issues) or "unsupported sub configuration",
         }
     label = OUTPUT_MODE_SUBWOOFER_22_STEREO if stereo_pair else OUTPUT_MODE_SUBWOOFER_22
     first, second = subs[0], subs[1]
@@ -540,6 +564,16 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
             else "2.2"
         )
         notes.append(f"{label} Subwoofer mode requires a selected multichannel output with at least 4 channels.")
+    if output_mode.get("unsupported_sub_roles"):
+        # Routed sub roles that no subwoofer mode can represent. The payload
+        # claims no mode on purpose, so say so here instead of letting a
+        # sub-free label stand in for a subwoofer configuration.
+        notes.append(
+            "Routed sub roles "
+            + ", ".join(str(role) for role in output_mode["unsupported_sub_roles"])
+            + " cannot be represented as a subwoofer mode: "
+            + str(output_mode.get("unsupported_reason") or "unsupported sub configuration")
+        )
     routing_status = (
         "Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub"
         if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO
