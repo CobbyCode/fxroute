@@ -1751,8 +1751,7 @@
         gap: 0.5rem;
     }
     /* Wrapping keeps "Select all" at the leading edge and the actions
-       trailing; when the phone width cannot hold both, the actions drop to
-       a second line that also starts left instead of leaving the card. */
+       trailing, including when the actions drop to a second line. */
     .measurement-saved-toolbar {
         justify-content: space-between;
     }

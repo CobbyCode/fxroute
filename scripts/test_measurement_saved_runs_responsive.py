@@ -258,6 +258,17 @@ def _run():
                 _assert_inside(page.evaluate(GEOMETRY), width)
                 checks += 3
 
+                merge_box = page.locator("[data-measurement-merge-selected]").bounding_box()
+                merge_right = merge_box["x"] + merge_box["width"]
+                page.locator("[data-measurement-toggle='legacy']").uncheck()
+                page.wait_for_function("() => document.querySelector('[data-measurement-merge-selected]')?.classList.contains('is-inert')")
+                delete_box = page.locator("[data-measurement-delete-selected]").bounding_box()
+                assert abs(delete_box["x"] + delete_box["width"] - merge_right) <= 1, (
+                    f"Delete moves away from the right action position at {width}px")
+                _assert_inside(page.evaluate(GEOMETRY), width)
+                page.locator("[data-measurement-toggle='legacy']").check()
+                checks += 2
+
                 # The toolbar and its controls stay inside the saved list.
                 assert page.evaluate("""() => {
                     const list = document.querySelector('.measurement-saved-list');

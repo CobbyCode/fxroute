@@ -5484,6 +5484,7 @@ select.url-input {
     gap: 0.75rem;
     flex-wrap: wrap;
     min-width: 0;
+    margin-left: auto;
 }
 .label-compact {
     display: none;
@@ -5503,8 +5504,7 @@ select.url-input {
 
 .measurement-saved-merge-action.is-inert,
 .measurement-saved-delete-action.is-inert {
-    visibility: hidden;
-    pointer-events: none;
+    display: none;
 }
 /* ============================================================
    Effects tab styling
@@ -9522,8 +9522,7 @@ input[type="number"]::-webkit-outer-spin-button {
         gap: 0.5rem;
     }
     /* Wrapping keeps "Select all" at the leading edge and the actions
-       trailing; when the phone width cannot hold both, the actions drop to
-       a second line that also starts left instead of leaving the card. */
+       trailing, including when the actions drop to a second line. */
     .measurement-saved-toolbar {
         justify-content: space-between;
     }
