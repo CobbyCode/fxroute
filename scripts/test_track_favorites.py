@@ -24,6 +24,7 @@ Path(os.environ["MUSIC_ROOT"]).mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import library.api as library_api
 from library.api import LibraryApiRuntime, configure_runtime, set_track_favorite as set_track_favorite_route
 from library.metadata import LibraryMetadataStore, TrackNotFoundError
 from library.core import LibraryScanner
@@ -367,10 +368,18 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tracks = [Track(id="local_album/a.flac", title="A")]
         self.scanner = _FakeScanner(tracks)
+        # The library API runtime is process-global. Save it here and restore
+        # it in asyncTearDown so the fake below cannot leak into test modules
+        # loaded in the same run: a leftover get_settings=None makes their
+        # route guards answer 503 instead of the state they patched.
+        self.original_runtime = library_api._runtime
         configure_runtime(LibraryApiRuntime(
             get_scanner=lambda: self.scanner,
             get_settings=lambda: None,
         ))
+
+    async def asyncTearDown(self):
+        library_api._runtime = self.original_runtime
 
     async def test_route_favorites_and_unfavorites(self):
         resp = await set_track_favorite_route("local_album/a.flac", _FakeRequest({"favorite": True}))
