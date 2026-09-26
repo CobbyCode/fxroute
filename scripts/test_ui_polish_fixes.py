@@ -192,19 +192,34 @@ class WarningContrastTests(unittest.TestCase):
 
 
 class AbCompareLayoutTests(unittest.TestCase):
-    """4. The A/B card is not padded out with dead space."""
+    """4. The A/B card shares the row height with Output extras.
 
-    def test_grid_does_not_stretch_cards_to_the_row_height(self):
+    Reverted on purpose. `align-items: start` did remove the ~140px void
+    inside the card, but it only relocated it: the card ended 122px above its
+    neighbour, leaving black page background inside the grid row. The
+    acceptance criterion is the opposite of that -- the row must end flush,
+    so the cards keep the shared height. The void inside the A/B card is the
+    honest remaining cost of that choice and is not papered over here.
+    """
+
+    def test_grid_stretches_cards_to_the_row_height(self):
         grid = re.search(r"\.effects-grid\s*\{([^}]*)\}", EFFECTS).group(1)
-        # stretch was the source of the ~140px void in the A/B card.
-        self.assertRegex(grid, r"align-items:\s*start")
-        self.assertNotIn("align-items: stretch", grid)
+        self.assertRegex(grid, r"align-items:\s*stretch")
+        # Scoped to .effects-grid: the subwoofer and REW-dual grids keep
+        # their own pre-existing `align-items: start`, which is correct there
+        # (cards hug their content) and unrelated to the A/B row.
+        self.assertNotRegex(EFFECTS, r"\.effects-grid[^{]*\{[^}]*align-items:\s*start")
 
-    def test_tile_starts_a_little_higher(self):
+    def test_only_one_effects_grid_rule_exists(self):
+        # A leftover duplicate override silently re-introduces the ragged row.
+        rules = re.findall(r"(?m)^\.effects-grid\s*\{", EFFECTS)
+        self.assertEqual(len(rules), 1, f"expected one .effects-grid rule, found {len(rules)}")
+
+    def test_tile_keeps_its_original_padding(self):
         row = re.search(r"\.effects-compare-row\s*\{([^}]*)\}", EFFECTS).group(1)
         padding = re.search(r"padding:\s*([\d.]+)rem", row)
         self.assertIsNotNone(padding)
-        self.assertLessEqual(float(padding.group(1)), 0.9)
+        self.assertEqual(float(padding.group(1)), 1.0)
 
     def test_compare_controls_keep_their_natural_height(self):
         slot = re.search(r"\.effects-compare-slot\s*\{([^}]*)\}", EFFECTS).group(1)
