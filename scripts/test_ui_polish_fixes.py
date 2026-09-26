@@ -336,6 +336,27 @@ class TooltipTests(unittest.TestCase):
         self.assertEqual(offenders, [], f"native title= left behind: {offenders}")
         self.assertNotIn('title="', HTML)
 
+    def test_runtime_hints_are_documented_as_native_titles(self):
+        """Runtime-set hints still use the native title, on purpose.
+
+        The markup hints are all on data-tooltip now. The hints that JS sets
+        at runtime were deliberately left as `el.title = ...`: the frontend
+        test harnesses extract a single function from a module and run it in
+        an isolated vm context, so a shared helper is a ReferenceError in
+        every one of them, and a per-site inline rewrite would need ~45
+        guarded attribute writes. Documented here so the split is a recorded
+        decision rather than an oversight, and so it is revisited on purpose.
+        """
+        runtime = []
+        for path in sorted((ROOT / "static").glob("*.js")):
+            for num, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if ".title =" in line:
+                    runtime.append(f"{path.name}:{num}")
+        self.assertTrue(runtime, "expected the runtime title hints to still be there")
+        # No shared helper may creep back in without the harnesses following.
+        for path in sorted((ROOT / "static").glob("*.js")):
+            self.assertNotIn("setHint", path.read_text(encoding="utf-8"))
+
     def test_migrated_hints_keep_their_accessible_name(self):
         # A data-tooltip is a visual hint only; the accessible name must come
         # from aria-label or element content, never from the removed title.
