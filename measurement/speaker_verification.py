@@ -145,8 +145,9 @@ def _crossover_sections(processing: object, sample_rate_hz: int) -> list[list[fl
 
 
 def _sections_response(sections: Sequence[Sequence[float]], frequencies: np.ndarray,
-                       sample_rate_hz: int) -> np.ndarray:
-    z = np.exp(-2j * np.pi * frequencies / sample_rate_hz)
+                       sample_rate_hz: int, *, z: np.ndarray | None = None) -> np.ndarray:
+    if z is None:
+        z = np.exp(-2j * np.pi * frequencies / sample_rate_hz)
     response = np.ones_like(frequencies, dtype=complex)
     for b0, b1, b2, _, a1, a2 in sections:
         response *= (b0 + b1 * z + b2 * z * z) / (1.0 + a1 * z + a2 * z * z)
@@ -223,6 +224,44 @@ def _isolation_weight(processing: object, frequencies: np.ndarray | None, *, sam
                 np.abs(_sections_response(sections_other, frequencies, sample_rate_hz)))
         weight = weight * _own_share(np.square(magnitude), foreign_power)
     return weight, response
+
+
+def _isolate_side_bands(ir: np.ndarray, processing: dict, roles: Sequence[str], *,
+                        sample_rate_hz: int, isolation_power: float) -> dict[str, np.ndarray]:
+    """Share one full-resolution FFT and the rendered responses across ways.
+
+    Padding, weighting and per-way arithmetic match independent
+    ``way_band_impulse_response`` calls; no IR samples or tails are trimmed.
+    """
+    if ir.ndim != 1 or ir.size < 64 or not np.all(np.isfinite(ir)) or not np.any(ir):
+        raise ValueError("Speaker verification take IR must be finite, non-silent and full resolution")
+    if type(sample_rate_hz) is not int or sample_rate_hz <= 0:
+        raise ValueError("Speaker verification sample rate must be a positive integer")
+    power = _finite(isolation_power, "isolation power")
+    if not 1.0 <= power <= 6.0:
+        raise ValueError("Speaker verification isolation power must be between 1 and 6")
+    size = 1 << (2 * ir.size - 1).bit_length()
+    spectrum = np.fft.rfft(ir, n=size)
+    frequencies = np.fft.rfftfreq(size, 1.0 / sample_rate_hz)
+    z = np.exp(-2j * np.pi * frequencies / sample_rate_hz)
+    responses = {
+        role: _sections_response(_crossover_sections(processing[role], sample_rate_hz),
+                                 frequencies, sample_rate_hz, z=z)
+        for role in roles
+    }
+    powers = {role: np.square(np.abs(response)) for role, response in responses.items()}
+    bands = {}
+    for role in roles:
+        response = responses[role]
+        weight = np.conj(response) * np.abs(response) ** (power - 1.0)
+        foreign_power = np.zeros_like(powers[role])
+        for other in roles:
+            if other != role:
+                foreign_power = foreign_power + powers[other]
+        weight = weight * _own_share(powers[role], foreign_power)
+        isolated = np.fft.irfft(spectrum * weight, n=size)
+        bands[role] = np.array(isolated[:ir.size], dtype=np.float64)
+    return bands
 
 
 def band_response_db(
@@ -523,13 +562,12 @@ def side_confirmation(
     ir = np.asarray(impulse_response, dtype=np.float64)
     bands: dict[str, dict] = {}
     energy: dict[str, np.ndarray] = {}
-    isolated_bands: dict[str, np.ndarray] = {}
+    isolated_bands = _isolate_side_bands(
+        ir, processing, ordered_roles, sample_rate_hz=sample_rate_hz,
+        isolation_power=isolation_power)
     for role in ordered_roles:
         others = [processing[other] for other in ordered_roles if other != role]
-        isolated = way_band_impulse_response(
-            ir, processing[role], sample_rate_hz=sample_rate_hz,
-            isolation_power=isolation_power, foreign=others)
-        isolated_bands[role] = isolated
+        isolated = isolated_bands[role]
         arrival = band_arrival(isolated, sample_rate_hz=sample_rate_hz)
 
         def correction(frequencies: np.ndarray, role: str = role, others: list = others) -> np.ndarray:

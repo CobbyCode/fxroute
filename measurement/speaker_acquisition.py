@@ -41,6 +41,7 @@ from common.run_to_completion import restore_after
 from measurement.capture_evidence import CaptureEvidence
 from measurement.reference_channels import reference_candidate_channels as configured_reference_channels
 from measurement.speaker_align import require_timing_reference
+from measurement.speaker_profile import speaker_way_sweep_profile
 from measurement.target import REFERENCE_TAP_INGRESS
 
 
@@ -422,7 +423,9 @@ async def acquire_speaker_captures(
             reference_candidate_channels=reference_candidate_channels,
             channel=request["channel"],
             measurement_bank=role,
-            sweep_profile=dict(sweep_profile) if sweep_profile else None,
+            sweep_profile=(dict(sweep_profile) if sweep_profile else speaker_way_sweep_profile(
+                alignment.way_models()[role],
+                sample_rate_hz=request["measurement_target"]["sample_rate_hz"])),
             capture_evidence=owner,
             **(expected_native_context or {}),
         )

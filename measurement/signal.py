@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import wave
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,17 @@ def _write_wav(path: Path, samples: np.ndarray, sample_rate: int) -> None:
         handle.writeframes(int_samples.tobytes())
 
 
+@lru_cache(maxsize=4)
+def _prepared_sweep(sample_rate: int, sweep_seconds: float, start_hz: float,
+                    end_hz: float, peak_scale: float) -> tuple[np.ndarray, np.ndarray]:
+    """Keep one shared profile plus up to three way profiles between takes."""
+    sweep = generate_log_sweep(sample_rate, sweep_seconds, start_hz, end_hz, peak_scale)
+    inverse = build_inverse_sweep(sweep, sample_rate, sweep_seconds, start_hz, end_hz)
+    sweep.setflags(write=False)
+    inverse.setflags(write=False)
+    return sweep, inverse
+
+
 def write_sweep_file(
     path: Path,
     *,
@@ -84,8 +96,8 @@ def write_sweep_file(
     end_hz: float,
     peak_scale: float = 0.8,
 ) -> dict[str, Any]:
-    sweep = generate_log_sweep(sample_rate, sweep_seconds, start_hz, end_hz, peak_scale)
-    inverse_sweep = build_inverse_sweep(sweep, sample_rate, sweep_seconds, start_hz, end_hz)
+    sweep, inverse_sweep = _prepared_sweep(
+        sample_rate, sweep_seconds, start_hz, end_hz, peak_scale)
     lead_in = np.zeros(int(round(sample_rate * lead_in_seconds)), dtype=np.float32)
     tail = np.zeros(int(round(sample_rate * tail_seconds)), dtype=np.float32)
     mono_program = np.concatenate([lead_in, sweep, tail]).astype(np.float32)
@@ -104,8 +116,8 @@ def write_sweep_file(
         for index in range(playback64.shape[1])
     ] if playback64.ndim > 1 else []
     return {
-        "analysis_sweep": sweep,
-        "inverse_sweep": inverse_sweep,
+        "analysis_sweep": sweep.copy(),
+        "inverse_sweep": inverse_sweep.copy(),
         "sample_rate": int(sample_rate),
         "samples": int(mono_program.size),
         "channels": 2,

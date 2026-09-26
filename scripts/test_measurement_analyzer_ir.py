@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import sys
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -10,11 +12,82 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from measurement.analyzer import MeasurementAnalyzer
-from measurement.signal import generate_log_sweep
+from measurement.signal import build_inverse_sweep, generate_log_sweep
 from measurement.store import MeasurementStore
 
 
 class MeasurementAnalyzerIrTests(unittest.TestCase):
+    def setUp(self):
+        home = tempfile.TemporaryDirectory(prefix="analyzer-ir-")
+        self.addCleanup(home.cleanup)
+        environment = patch.dict(os.environ, {
+            "XDG_CONFIG_HOME": str(Path(home.name) / "config"),
+            "XDG_STATE_HOME": str(Path(home.name) / "state"),
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_display_smoothing_preserves_inclusive_bands_without_repeated_grid_scans(self):
+        scans = []
+
+        class CountingGrid(np.ndarray):
+            def __ge__(self, other):
+                scans.append(self.size)
+                return super().__ge__(other)
+
+            def __le__(self, other):
+                scans.append(self.size)
+                return super().__le__(other)
+
+        frequencies = np.linspace(0, 24000, 131073)
+        magnitude = 0.3 + np.random.default_rng(31).random(frequencies.size)
+        calibration = (np.array([20., 1000., 22000.]), np.array([-1., 2., -3.]))
+        corrected = magnitude * 10 ** (-np.interp(
+            np.log(np.clip(frequencies, 1e-9, None)), np.log(calibration[0]), calibration[1]) / 20)
+        with tempfile.TemporaryDirectory() as home:
+            store = MeasurementStore(home=Path(home))
+            result = store._analyzer._build_display_points(
+                frequencies=frequencies.view(CountingGrid), magnitude=magnitude,
+                calibration_curve=calibration, sweep_level_calibration_db=3.5)
+            for center, level in result["review_points"]:
+                band = corrected[(frequencies >= center / 2 ** (1 / 12))
+                                 & (frequencies <= min(center * 2 ** (1 / 12), 22000))]
+                expected_db = 20 * np.log10(np.sqrt(np.mean(band ** 2))) - 3.5
+                self.assertAlmostEqual(level + result["normalized_by"], expected_db, delta=0.002)
+        self.assertLessEqual(sum(scans), 4 * frequencies.size,
+                             "Display smoothing must not scan the whole FFT grid for every point")
+
+    def test_identity_resampling_reuses_mic_deconvolution_but_drift_keeps_separate_magnitude(self):
+        rate = 48000
+        sweep = generate_log_sweep(rate, 0.68, 10., 22000.)
+        inverse = build_inverse_sweep(sweep, rate, 0.68, 10., 22000.)
+        lead = 16320
+        reference = np.concatenate([np.zeros(lead), sweep, np.zeros(12000)])
+        mic = np.zeros_like(reference)
+        mic[96:] = reference[:-96] * 0.5
+        with tempfile.TemporaryDirectory() as home:
+            store = MeasurementStore(home=Path(home))
+            analyzer = store._analyzer
+            path = store.captures_dir / "capture.wav"
+            store._write_wav(path, np.column_stack([mic, reference]), rate)
+            analyzer._sweep_level_calibration_db(
+                reference_sweep=sweep, inverse_sweep=inverse, sample_rate=rate)
+            for stretch, count in ((1., 2), (1.0005, 3)):
+                with self.subTest(stretch=stretch), patch.object(
+                        analyzer, "_fft_convolve", wraps=analyzer._fft_convolve) as convolve:
+                    received = []
+                    result = analyzer._analyze_sweep_capture(
+                        path, expected_sample_rate=rate, channel="left", reference_sweep=sweep,
+                        inverse_sweep=inverse, calibration_curve=None,
+                        reference_channel_index=1, analysis_channel_index=0,
+                        timing_ir_receiver=lambda ir, analysis: received.append(ir),
+                        timing_override={"alignment_samples": lead, "observed_sweep_samples": sweep.size,
+                                         "stretch_ratio": stretch, "start_score": 1., "end_score": 1.})
+                    self.assertEqual(convolve.call_count, count)
+                    self.assertFalse(result["clock"]["magnitude_drift_resampling_applied"])
+                    if stretch == 1.:
+                        self.assertEqual(int(np.argmax(np.abs(received[0]))) - (sweep.size - 1), 96)
+
     def test_direct_arrival_promotes_stronger_candidate_by_energy(self):
         impulse = np.zeros(6000, dtype=np.float64)
         impulse[4300] = 0.06

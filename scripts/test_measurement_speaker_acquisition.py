@@ -216,6 +216,9 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         # One shared planning take first, then one take per way.
         self.assertEqual(self.captures_started, 3)
         self.assertEqual(len(self.store._jobs), 3)
+        for job in self.store._jobs.values():
+            self.assertEqual(job["sweep_profile"], {
+                "sweep_seconds": 0.68, "lead_in_seconds": 0.34, "tail_seconds": 0.18})
         for capture, request in zip(captures, self.requests):
             self.assertEqual(capture["measurement_target"], request["measurement_target"])
             self.assertEqual(capture["reference_id"], REFERENCE_ID)
@@ -262,6 +265,19 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(
             candidate["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"], 5.0, delta=0.3)
         self.assertEqual(proposal["reference_role"], "left_high")
+
+    async def test_default_way_profiles_shorten_only_individual_takes(self):
+        await self.acquire(sweep_profile=None)
+        await self.verify(sweep_profile=None)
+        jobs = list(self.store._jobs.values())
+        self.assertEqual(len(jobs), 4)
+        for index in (0, 3):
+            self.assertIsNone(jobs[index]["sweep_profile"])
+            self.assertEqual(jobs[index]["result"]["playback"]["sweep_seconds"], 11.)
+        for index in (1, 2):
+            self.assertLess(jobs[index]["result"]["playback"]["sweep_seconds"], 11.)
+            self.assertGreater(jobs[index]["sweep_profile"]["sweep_start_hz"], 10.)
+            self.assertEqual(jobs[index]["result"]["capture"]["attempts_used"], 1)
 
     async def test_verification_runs_one_shared_take_for_the_whole_side(self):
         self.use_scarlett_input()

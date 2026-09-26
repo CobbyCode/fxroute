@@ -362,7 +362,12 @@ class MeasurementAnalyzer:
 
         timing_impulse_response = self._fft_convolve(corrected_segment, inverse_sweep.astype(np.float64))
         reference_impulse_response = self._fft_convolve(corrected_reference_segment, inverse_sweep.astype(np.float64))
-        magnitude_impulse_response = self._fft_convolve(analysis_segment, inverse_sweep.astype(np.float64))
+        # Identity resampling leaves exactly the same samples for timing and
+        # magnitude. Keep a separate unresampled IR only for actual stretching.
+        magnitude_impulse_response = (
+            timing_impulse_response if corrected_segment_size == analysis_segment.size
+            else self._fft_convolve(analysis_segment, inverse_sweep.astype(np.float64))
+        )
         windowed_ir, ir_meta = self._window_impulse_response(timing_impulse_response, sample_rate)
         direct_timing_meta = self._estimate_impulse_direct_arrival(
             timing_impulse_response,
@@ -728,15 +733,21 @@ class MeasurementAnalyzer:
 
         raw_points: list[list[float]] = []
         raw_db_values: list[float] = []
+        sorted_grid = bool(np.all(frequencies[1:] >= frequencies[:-1]))
         for center in centers:
             lower = center / smoothing_ratio
             upper = min(center * smoothing_ratio, analysis_limit_hz)
             if lower >= analysis_limit_hz:
                 continue
-            mask = (frequencies >= lower) & (frequencies <= upper)
-            if not np.any(mask):
+            if sorted_grid:
+                first = int(np.searchsorted(frequencies, lower, side="left"))
+                stop = int(np.searchsorted(frequencies, upper, side="right"))
+                band = corrected_magnitude[first:stop]
+            else:
+                band = corrected_magnitude[(frequencies >= lower) & (frequencies <= upper)]
+            if not band.size:
                 continue
-            band_mag = float(np.sqrt(np.mean(np.square(corrected_magnitude[mask], dtype=np.float64))))
+            band_mag = float(np.sqrt(np.mean(np.square(band, dtype=np.float64))))
             db = 20.0 * math.log10(max(band_mag, 1e-12))
             raw_points.append([round(center, 3), round(db, 3)])
             raw_db_values.append(db)

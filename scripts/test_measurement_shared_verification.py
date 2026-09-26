@@ -24,6 +24,7 @@ import math
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -117,6 +118,34 @@ def arrival_index(role, arrival_ms):
 
 class SharedVerificationResidualTests(unittest.TestCase):
     """A staged way delay must show up as the take's low/high offset."""
+
+    def test_shared_take_reuses_one_input_fft_with_identical_isolation_results(self):
+        take = synthetic_take(GEOMETRY_MS, gains_db={"left_low": -6.0})
+        isolated = {
+            role: way_band_impulse_response(
+                take, PROCESSING[role], sample_rate_hz=RATE,
+                foreign=[PROCESSING[other] for other in ROLES if other != role])
+            for role in ROLES
+        }
+        arrivals = {role: band_arrival(band, sample_rate_hz=RATE)
+                    for role, band in isolated.items()}
+        input_ffts = []
+        original = np.fft.rfft
+
+        def transform(values, *args, **kwargs):
+            if np.shares_memory(values, take):
+                input_ffts.append(len(values))
+            return original(values, *args, **kwargs)
+
+        with patch("measurement.speaker_verification.np.fft.rfft", side_effect=transform):
+            document = confirm_take(take)
+        self.assertEqual(input_ffts, [take.size], "Transform a shared take only once")
+        for role in ROLES:
+            for key, value in arrivals[role].items():
+                self.assertEqual(document["bands"][role][key], value)
+        self.assertEqual(document["traces"], take_traces(
+            take, isolated, {role: item["arrival_index"] for role, item in arrivals.items()},
+            sample_rate_hz=RATE))
 
     def test_uncompensated_geometry_reads_as_the_full_offset(self):
         document, residual = residual_ms(synthetic_take(GEOMETRY_MS))
