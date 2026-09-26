@@ -264,9 +264,9 @@
                             '<div class="streaming-queue" hidden></div>' +
                         '</div>' +
                         '<div class="streaming-controls">' +
-                            '<button type="button" class="streaming-btn" data-action="previous" data-tooltip="Previous">⏮</button>' +
-                            '<button type="button" class="streaming-btn streaming-btn-main" data-action="toggle" data-tooltip="Play / Pause">▶</button>' +
-                            '<button type="button" class="streaming-btn" data-action="next" data-tooltip="Next">⏭</button>' +
+                            '<button type="button" class="streaming-btn" data-action="previous" aria-label="Previous" data-tooltip="Previous">⏮</button>' +
+                            '<button type="button" class="streaming-btn streaming-btn-main" data-action="toggle" aria-label="Play / Pause" data-tooltip="Play / Pause">▶</button>' +
+                            '<button type="button" class="streaming-btn" data-action="next" aria-label="Next" data-tooltip="Next">⏭</button>' +
                         '</div>' +
                         '<div class="streaming-secondary">' +
                             '<button type="button" class="streaming-btn-sm" data-action="shuffle" data-tooltip="Shuffle">' +
@@ -349,6 +349,7 @@
         const nonApp = typeof nonAppSourceModeActive === 'function' && nonAppSourceModeActive();
         const visible = available && enabled && !nonApp;
         const show = available && enabled;
+        const tabWasShown = isTabShown(entry.tabBtn);
         if (entry.tabBtn) {
             entry.tabBtn.hidden = !show;
             entry.tabBtn.style.display = show ? '' : 'none';
@@ -364,7 +365,15 @@
         if (!show && window.__visibleTab === providerId && typeof switchTab === 'function') {
             switchTab('radio');
         }
-        if (typeof updateTabsScrollAffordance === 'function') updateTabsScrollAffordance();
+        // The discovery poll re-applies unchanged flags every 10s; only a tab
+        // that appeared or disappeared changes the strip geometry.
+        if (tabWasShown !== isTabShown(entry.tabBtn) && typeof updateTabsScrollAffordance === 'function') {
+            updateTabsScrollAffordance();
+        }
+    }
+
+    function isTabShown(tabBtn) {
+        return !!tabBtn && !tabBtn.hidden && !tabBtn.classList.contains('hidden');
     }
 
     // Settings -> Providers: apply a new enabled flag immediately without
@@ -546,7 +555,8 @@
             const playing = data.status === 'Playing';
             const icon = playing ? '⏸' : '▶';
             els.toggle.textContent = icon;
-            els.toggle.title = playing ? 'Pause' : 'Play';
+            els.toggle.setAttribute('data-tooltip', playing ? 'Pause' : 'Play');
+            els.toggle.setAttribute('aria-label', playing ? 'Pause' : 'Play');
             els.prev.disabled = false;
             els.next.disabled = false;
         }
@@ -558,7 +568,7 @@
         if (els.shuffle) {
             els.shuffle.style.display = showShuffle ? '' : 'none';
             els.shuffle.classList.toggle('active', !!data.shuffle);
-            els.shuffle.title = data.shuffle ? 'Shuffle on' : 'Shuffle off';
+            els.shuffle.setAttribute('data-tooltip', data.shuffle ? 'Shuffle on' : 'Shuffle off');
             els.shuffle.setAttribute('aria-pressed', data.shuffle ? 'true' : 'false');
         }
         if (els.loop) {
@@ -567,7 +577,7 @@
             const loopActive = loopVal !== 'none';
             els.loop.classList.toggle('active', loopActive);
             els.loop.setAttribute('aria-pressed', loopActive ? 'true' : 'false');
-            els.loop.title = loopVal === 'track' ? 'Loop: track' : (loopVal === 'playlist' ? 'Loop: playlist' : 'Loop: off');
+            els.loop.setAttribute('data-tooltip', loopVal === 'track' ? 'Loop: track' : (loopVal === 'playlist' ? 'Loop: playlist' : 'Loop: off'));
             if (els.loopIcon) els.loopIcon.innerHTML = loopVal === 'track' ? LOOP_TRACK_ICON : LOOP_ALL_ICON;
         }
 
@@ -1589,7 +1599,7 @@
             btn.textContent = active ? '✓' : '+';
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove track from playlist selection' : 'Add track to playlist selection');
-            btn.title = active ? 'Remove from selection' : 'Add to selection';
+            btn.setAttribute('data-tooltip', active ? 'Remove from selection' : 'Add to selection');
         });
         document.querySelectorAll('.streaming-result[data-track-id]').forEach((row) => {
             row.classList.toggle('is-selected', state.tidal.selectedTrackIds.has(row.dataset.trackId));
@@ -1952,7 +1962,7 @@
             btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
-            btn.title = active ? 'Remove from favorites' : 'Add to favorites';
+            btn.setAttribute('data-tooltip', active ? 'Remove from favorites' : 'Add to favorites');
         });
     }
 
@@ -1986,7 +1996,7 @@
             btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
-            btn.title = active ? 'Remove from favorites' : 'Add to favorites';
+            btn.setAttribute('data-tooltip', active ? 'Remove from favorites' : 'Add to favorites');
         });
     }
 

@@ -604,7 +604,7 @@
         if (!deps.getElements().powerMenuToggle) return;
         const online = !!deps.getState().wsConnected;
         deps.getElements().powerMenuToggle.classList.toggle('is-online', online);
-        deps.getElements().powerMenuToggle.title = online ? 'FXRoute online' : 'FXRoute offline';
+        deps.getElements().powerMenuToggle.setAttribute('data-tooltip', online ? 'FXRoute online' : 'FXRoute offline');
         deps.getElements().powerMenuToggle.setAttribute('aria-label', online ? 'System power (online)' : 'System power (offline)');
     }
 

@@ -512,7 +512,6 @@
         if (deps.getElements().effectsCompareB.innerHTML !== optionsB) {
             deps.getElements().effectsCompareB.innerHTML = optionsB;
         }
-        syncCompareSelectTooltips();
 
         let activeLabel = 'Listening: —';
         let chainPresetName = '';
@@ -846,7 +845,6 @@
         }
         if (deps.getElements().effectsCompareA) {
             deps.getElements().effectsCompareA.addEventListener('change', async () => {
-                syncCompareSelectTooltips();
                 try {
                     await handleEffectsCompareSelectionChange('A');
                 } catch (e) {
@@ -857,7 +855,6 @@
         }
         if (deps.getElements().effectsCompareB) {
             deps.getElements().effectsCompareB.addEventListener('change', async () => {
-                syncCompareSelectTooltips();
                 try {
                     await handleEffectsCompareSelectionChange('B');
                 } catch (e) {
@@ -866,28 +863,6 @@
                 }
             });
         }
-        syncCompareSelectTooltips();
-    }
-
-    // Preset names run well past the 201px select width ("Conv LR HybAlign BK
-    // 30-3000Hz -7dB"), and a native <option> title is not rendered by
-    // Chromium, so the full name was unreachable. The app tooltip lives on a
-    // wrapper around the select (a select is a replaced element and cannot
-    // render a ::after bubble itself) and always carries the complete
-    // selected name; the control itself keeps its width.
-    function syncCompareSelectTooltips() {
-        const elements = deps.getElements ? deps.getElements() : null;
-        if (!elements) return;
-        [['effectsCompareA', 'Preset A'], ['effectsCompareB', 'Preset B']].forEach(([key, label]) => {
-            const select = elements[key];
-            if (!select || !select.options) return;
-            const wrap = select.closest ? select.closest('.select-tooltip-wrap') : null;
-            if (!wrap) return;
-            const option = select.options[select.selectedIndex];
-            const name = option ? String(option.textContent || '').trim() : '';
-            if (name) wrap.setAttribute('data-tooltip', `${label}: ${name}`);
-            else wrap.removeAttribute('data-tooltip');
-        });
     }
 
     function detectEffectsImportType(file) {

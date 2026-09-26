@@ -353,10 +353,6 @@
     -webkit-appearance: none;
     width: 14px;
     height: 14px;
-    /* Chromium anchors the thumb to the track top when the track is shorter
-       than the thumb; lift it by half the size difference so it sits
-       centered on the 4px track. */
-    margin-top: -5px;
     border-radius: 50%;
     background: #ececf0;
     border: 1px solid rgba(13,13,15,0.8);
@@ -387,10 +383,6 @@
         width: 20px;
         height: 20px;
     }
-    /* Chromium anchors the thumb to the track top when the track is shorter
-       than the thumb; lift it by half the size difference to keep it
-       centered on the 4px track. Firefox centers natively. */
-    .streaming-progress::-webkit-slider-thumb { margin-top: -8px; }
 }
 
 /* Provider content (TIDAL) */

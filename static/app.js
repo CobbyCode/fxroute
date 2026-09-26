@@ -1379,9 +1379,9 @@ document.addEventListener('DOMContentLoaded', () => {
     try { setupWebSocket(); } catch(e) { console.error('setupWebSocket crashed:', e); }
     try { setupTabNavigation(); } catch(e) { console.error('setupTabNavigation crashed:', e); }
     try {
-        updateTabsScrollAffordance();
-        window.addEventListener('resize', updateTabsScrollAffordance);
-    } catch(e) { console.error('updateTabsScrollAffordance crashed:', e); }
+        handleTabsResize();
+        window.addEventListener('resize', handleTabsResize);
+    } catch(e) { console.error('handleTabsResize crashed:', e); }
     try { PlaybackUI.setupPlaybackControls(); } catch(e) { console.error('setupPlaybackControls crashed:', e); }
     try { PlaybackUI.initPlaybackFooterLayout(); } catch(e) { console.error('initPlaybackFooterLayout crashed:', e); }
     try { setupSettingsActions(); } catch(e) { console.error('setupSettingsActions crashed:', e); }
@@ -1776,9 +1776,20 @@ function updateTabsScrollAffordance() {
     if (!nav) return;
     const canScroll = nav.scrollWidth > nav.clientWidth + 2;
     nav.classList.toggle('can-scroll', canScroll);
-    // The stack height and the active-tab scroll both depend on the same
-    // rendered geometry, so they refresh together on every resize.
+}
+
+// Window resize: the scroll affordance and the stack height follow the new
+// geometry. The active tab is only brought back into view when the strip
+// width changed; a height-only resize (a mobile URL bar collapsing) must not
+// undo the user's own swipe along the strip.
+let lastTabsStripWidth = 0;
+function handleTabsResize() {
+    updateTabsScrollAffordance();
     updateHeaderStackHeight();
+    const nav = document.querySelector('.tabs');
+    const stripWidth = nav ? nav.clientWidth : 0;
+    if (stripWidth === lastTabsStripWidth) return;
+    lastTabsStripWidth = stripWidth;
     keepActiveTabInView();
 }
 
@@ -1819,11 +1830,13 @@ function keepActiveTabInView() {
     if (nav.scrollWidth <= nav.clientWidth + 2) return;
     const navBox = nav.getBoundingClientRect();
     const tabBox = active.getBoundingClientRect();
-    // Inset so the active tab never sits flush against the scroll fade.
+    // The right edge carries the scroll fade (.tabs.can-scroll::after), which
+    // overlays the strip, so the active tab has to clear its full width.
     const pad = 12;
+    const fadeWidth = parseFloat(getComputedStyle(nav, '::after').width) || 0;
     let delta = 0;
     if (tabBox.left < navBox.left + pad) delta = tabBox.left - navBox.left - pad;
-    else if (tabBox.right > navBox.right - pad) delta = tabBox.right - navBox.right + pad;
+    else if (tabBox.right > navBox.right - fadeWidth - pad) delta = tabBox.right - navBox.right + fadeWidth + pad;
     if (!delta) return;
     nav.scrollLeft += delta;
 }
@@ -2795,7 +2808,7 @@ function renderSourceModeFooter() {
     for (const button of [elements.sourcePrev, elements.sourceNext]) {
         if (!button) continue;
         button.disabled = arrowsDisabled;
-        button.title = guard || button.getAttribute('aria-label') || '';
+        button.setAttribute('data-tooltip', guard || button.getAttribute('aria-label') || '');
     }
 }
 

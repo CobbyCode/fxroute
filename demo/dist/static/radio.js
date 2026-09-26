@@ -163,9 +163,7 @@
             elements.stationDeleteSelect.addEventListener('change', () => {
                 populateManagedStationFields();
                 updateStationActionButtons();
-                syncStationSelectTooltip();
             });
-            syncStationSelectTooltip();
         }
         if (elements.stationExistingUrl) {
             elements.stationExistingUrl.addEventListener('input', updateStationActionButtons);
@@ -219,26 +217,6 @@
             card.addEventListener('keydown', handleStationCardKeydown);
         });
     }
-
-    // The managed-station select compacts long station names to 32 characters,
-    // and a native `title` on an <option> is not rendered by Chromium at all,
-    // so the full name used to be unreachable. The app tooltip lives on a
-    // wrapper around the select (a select is a replaced element and cannot
-    // render a ::after bubble itself) and follows the current selection.
-    function syncStationSelectTooltip() {
-        const select = elements.stationDeleteSelect;
-        if (!select) return;
-        const wrap = select.closest ? select.closest('.select-tooltip-wrap') : null;
-        if (!wrap) return;
-        const full = select.value ? fullStationTitles.get(select.value) : '';
-        if (full) wrap.setAttribute('data-tooltip', full);
-        else wrap.removeAttribute('data-tooltip');
-    }
-
-    // Untruncated station titles keyed by station id, mirrored from the
-    // compacted options of the managed-station select. Rebuilt whenever the
-    // option list is rebuilt; read by syncStationSelectTooltip().
-    let fullStationTitles = new Map();
 
     function stationFavButtonHtml(active, extraAttrs) {
         const cls = active ? 'station-card-fav is-active' : 'station-card-fav';
@@ -959,16 +937,14 @@
             const fullTitle = String(title || '');
             return fullTitle.length > 32 ? `${fullTitle.slice(0, 29).trimEnd()}…` : fullTitle;
         };
-        // Keep the untruncated names next to the compacted options so the
-        // select's own tooltip can reveal them.
-        fullStationTitles = new Map(state.stations.map(station => [station.id, String(station.title || '')]));
+        // Options show a compacted name; the option's aria-label keeps the
+        // full one, which the select's tooltip wrapper reveals (tooltip.js).
         elements.stationDeleteSelect.innerHTML = ['<option value="">Select a station…</option>']
             .concat(state.stations.map(station => {
                 const fullTitle = String(station.title || '');
                 return `<option value="${escapeHtml(station.id)}" aria-label="${escapeHtml(fullTitle)}">${escapeHtml(compactOptionTitle(fullTitle))}</option>`;
             }))
             .join('');
-        syncStationSelectTooltip();
         resetManagedStationForm();
     }
     function isSomaFmUrl(value) {

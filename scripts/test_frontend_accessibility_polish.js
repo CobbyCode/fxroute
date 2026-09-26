@@ -43,18 +43,20 @@ check('settings trigger accessible name is Settings', /id="open-settings"[\s\S]*
 check('visible brand is excluded from the trigger name', /class="brand-text-block" aria-hidden="true"/.test(html));
 check('settings trigger has the Settings tooltip label', /id="open-settings"[\s\S]*?data-tooltip="Settings"/.test(html));
 check('settings trigger has no old technical-settings label', !/Open technical settings/.test(html));
-check('settings tooltip is rendered by the existing trigger pattern', /\.brand-lockup-button\[data-tooltip\]::after/.test(css));
-check('settings tooltip appears on keyboard focus', /\.brand-lockup-button:focus-visible::after/.test(css));
-check('settings tooltip does not participate in layout flow', /\.brand-lockup-button\[data-tooltip\]::after[\s\S]*?position:\s*absolute/.test(css));
+// Header hints use the app-wide tooltip layer (static/tooltip.js): one fixed
+// bubble on <body>, opened on hover and on keyboard focus.
+const tooltipJs = fs.readFileSync(path.join(root, 'static/tooltip.js'), 'utf8');
+check('tooltip layer is loaded by the page', /<script src="\/static\/tooltip\.js\?v=[^"]+"><\/script>/.test(html));
+check('tooltip layer opens on keyboard focus', tooltipJs.includes("addEventListener('focusin'") && tooltipJs.includes("matches(':focus-visible')"));
+check('tooltip bubble does not participate in layout flow', /\.app-tooltip\s*\{[^}]*position:\s*fixed/.test(css));
 
 // The power button reuses the same custom tooltip style as the brand trigger
 // instead of the native browser title tooltip.
 check('power button uses the custom tooltip attribute', /id="power-menu-toggle"[\s\S]*?data-tooltip="System power"/.test(html));
 check('power button no longer uses the native title tooltip', !/id="power-menu-toggle"[^>]*title="/.test(html));
 check('power button keeps its accessible name', /id="power-menu-toggle"[\s\S]*?aria-label="System power"/.test(html));
-check('power tooltip reuses the shared tooltip styling', /\.power-btn\[data-tooltip\]::after/.test(css));
-check('power tooltip is anchored to the button edge', /\.power-btn\[data-tooltip\]::after[\s\S]*?right:\s*0/.test(css));
-check('power tooltip stays hidden while the menu is open', /\.power-btn\[data-tooltip\]\[aria-expanded="true"\]::after/.test(css));
+check('power tooltip is anchored to the button edge', /id="power-menu-toggle"[^>]*data-tooltip-anchor="end"/.test(html));
+check('power tooltip stays hidden while the menu is open', /aria-expanded'\) === 'true'\) return ''/.test(tooltipJs));
 
 // Measurement graph controls get an explicit two-row mobile layout.
 check('mobile measurement toolbar uses a grid', /@media \(max-width: 599px\)[\s\S]*?\.measurement-graph-header-actions[\s\S]*?display:\s*grid/.test(css));

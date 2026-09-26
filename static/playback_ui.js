@@ -237,7 +237,7 @@ function renderFooterModeButtons() {
             shuffleBtn.classList.toggle('active', showShuffle && !!data.shuffle);
             shuffleBtn.disabled = !showShuffle || transportInFlight;
             shuffleBtn.setAttribute('aria-pressed', showShuffle && data.shuffle ? 'true' : 'false');
-            shuffleBtn.title = data.shuffle ? 'Shuffle on' : 'Shuffle off';
+            shuffleBtn.setAttribute('data-tooltip', data.shuffle ? 'Shuffle on' : 'Shuffle off');
         }
         if (loopBtn) {
             const loopMode = String(data.loop || 'none');
@@ -247,7 +247,7 @@ function renderFooterModeButtons() {
             loopBtn.disabled = !showLoop || transportInFlight;
             loopBtn.setAttribute('aria-pressed', showLoop && loopActive ? 'true' : 'false');
             loopBtn.textContent = loopMode === 'track' ? '↻¹' : '↻';
-            loopBtn.title = loopMode === 'track' ? 'Repeat track' : (loopMode === 'playlist' ? 'Repeat playlist' : 'Repeat off');
+            loopBtn.setAttribute('data-tooltip', loopMode === 'track' ? 'Repeat track' : (loopMode === 'playlist' ? 'Repeat playlist' : 'Repeat off'));
         }
         return;
     }
@@ -263,7 +263,7 @@ function renderFooterModeButtons() {
         shuffleBtn.classList.toggle('active', showShuffle && !!deps.getState().library.shuffle);
         shuffleBtn.disabled = !showShuffle || deps.isLibraryModeRequestInFlight();
         shuffleBtn.setAttribute('aria-pressed', showShuffle && deps.getState().library.shuffle ? 'true' : 'false');
-        shuffleBtn.title = deps.getState().library.shuffle ? 'Shuffle on' : 'Shuffle off';
+        shuffleBtn.setAttribute('data-tooltip', deps.getState().library.shuffle ? 'Shuffle on' : 'Shuffle off');
     }
     if (loopBtn) {
         loopBtn.classList.toggle('hidden', !showLoop);
@@ -271,7 +271,7 @@ function renderFooterModeButtons() {
         loopBtn.disabled = !showLoop || deps.isLibraryModeRequestInFlight();
         loopBtn.setAttribute('aria-pressed', showLoop && deps.getState().library.loop ? 'true' : 'false');
         loopBtn.textContent = '↻';
-        loopBtn.title = deps.getState().library.loop ? 'Repeat on' : 'Repeat off';
+        loopBtn.setAttribute('data-tooltip', deps.getState().library.loop ? 'Repeat on' : 'Repeat off');
     }
 }
 

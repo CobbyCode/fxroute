@@ -643,10 +643,7 @@
     }
 
     /* Touch hit-area expansion: visuals stay compact while the tap target
-       reaches ~44px via an invisible overlay. No layout shift on desktop.
-       The overlay uses ::before, not ::after: ::after is the app-wide
-       tooltip bubble (see _layout.css), and several of these controls
-       (favorite hearts, measurement chips) carry a data-tooltip. */
+       reaches ~44px via an invisible overlay. No layout shift on desktop. */
     .control-btn-mode,
     .control-btn-clear,
     .track-favorite-btn,
@@ -681,12 +678,6 @@
     .control-btn-clear::before {
         inset: -10px;
     }
-    /* The tooltip bubble is a hover affordance with no meaning on touch, and
-       the native fallback it replaces was never shown there either. */
-    [data-tooltip]::after {
-        display: none;
-    }
-
     /* Crossover / subwoofer band chips and the Link L/R toggle are compact
        by design (29px and 20px), too small to hit reliably. They grow their
        own box here instead of using an ::after overlay: neighbouring chips

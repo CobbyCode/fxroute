@@ -81,7 +81,8 @@ assert.equal(loadingModel.disabled, true);
 // Panel renders through injected state/elements only.
 {
     const state = { settings: { maintenance: { updateAvailable: true, pending: false } }, wsConnected: true };
-    const powerToggle = { classList: { toggle() {} }, title: '', setAttribute() {} };
+    const powerAttrs = {};
+    const powerToggle = { classList: { toggle() {} }, title: '', setAttribute(name, value) { powerAttrs[name] = value; } };
     const elements = {
         settingsMaintenanceStatus: { textContent: '' },
         settingsMaintenanceCurrent: { textContent: '' },
@@ -112,7 +113,10 @@ assert.equal(loadingModel.disabled, true);
     assert.equal(elements.settingsMaintenanceStatus.textContent, 'Update available');
     assert.equal(elements.settingsUpdateRunBtn.disabled, false);
     SettingsSystem.updatePowerButtonConnectionState();
-    assert.equal(powerToggle.title, 'FXRoute online');
+    // The button carries a data-tooltip; a native title would show a second,
+    // competing tooltip next to the app bubble.
+    assert.equal(powerAttrs['data-tooltip'], 'FXRoute online');
+    assert.equal(powerToggle.title, '');
 }
 
 console.log('settings system frontend: ok');

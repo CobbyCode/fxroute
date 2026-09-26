@@ -221,6 +221,16 @@ assert.ok(
 function makeClassList() {
     return { toggled: {}, added: [], removed: [], toggle(name, force) { this.toggled[name] = force; }, add(name) { this.added.push(name); }, remove(name) { this.removed.push(name); } };
 }
+
+// Source arrows: aria-label is the fallback hint, data-tooltip the bubble.
+function makeArrow(label) {
+    const attrs = { 'aria-label': label };
+    return {
+        disabled: false,
+        getAttribute(name) { return name in attrs ? attrs[name] : null; },
+        setAttribute(name, value) { attrs[name] = String(value); },
+    };
+}
 const renderSandbox = {
     state: {
         settings: { sourceMode: { ...bluetoothOverview, pending: false } },
@@ -243,8 +253,8 @@ const renderSandbox = {
             set innerHTML(next) { this.writes += 1; this.html = next; },
             get innerHTML() { return this.html; },
         },
-        sourcePrev: { disabled: false, title: '', getAttribute() { return 'Previous source'; } },
-        sourceNext: { disabled: false, title: '', getAttribute() { return 'Next source'; } },
+        sourcePrev: makeArrow('Previous source'),
+        sourceNext: makeArrow('Next source'),
     },
 };
 vm.createContext(renderSandbox);
@@ -286,6 +296,10 @@ assert.ok(renderSandbox.elements.sourceSelect.html.includes('Input 1/2'), 'optio
 assert.equal(renderSandbox.elements.sourceSelect.value, 'bluetooth-input', 'bluetooth preselected in bluetooth mode');
 assert.equal(renderSandbox.elements.playbackBar.classList.toggled['source-mode'], true, 'bar carries source-mode class');
 assert.equal(renderSandbox.elements.transportControls.classList.toggled.hidden, true, 'transport parked in source mode');
+// The arrows carry a markup data-tooltip, so the runtime hint must update it
+// (a native title would show a second, competing tooltip).
+assert.ok(renderSandbox.elements.sourcePrev.getAttribute('data-tooltip'), 'source arrow tooltip is set');
+assert.equal(renderSandbox.elements.sourcePrev.title, undefined, 'source arrow gets no native title');
 
 // Stale streaming ownership must not suppress the switcher: a retained
 // Spotify Paused context (backend pauses Spotify on source switch, which

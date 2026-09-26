@@ -115,14 +115,12 @@ class HeaderStackingTests(unittest.TestCase):
         )
 
     def test_popups_carry_their_own_root_levels(self):
-        # The z-index is declared on the shared grouped rule for both header
-        # tooltips; the per-button rules only anchor them horizontally.
-        tooltip = re.search(
-            r"\.brand-lockup-button\[data-tooltip\]::after,\s*"
-            r"\.power-btn\[data-tooltip\]::after\s*\{([^}]*)\}", CSS
-        )
-        self.assertIsNotNone(tooltip, "missing shared header tooltip rule")
-        self.assertIn("var(--z-tooltip)", tooltip.group(1))
+        # Every tooltip, header ones included, is the one fixed bubble of the
+        # app tooltip layer, which sits on <body> in the root context.
+        tooltip = rule_body(".app-tooltip")
+        self.assertIsNotNone(tooltip, "missing .app-tooltip rule")
+        self.assertIn("var(--z-tooltip)", tooltip)
+        self.assertIn("position: fixed", tooltip)
 
         menu = rule_body(".power-menu")
         self.assertIsNotNone(menu, "missing .power-menu rule")

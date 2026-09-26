@@ -630,31 +630,26 @@ select.url-input {
    Tooltips
    ============================================================
    One tooltip system for the whole app. `data-tooltip` is the single
-   attribute; the native `title` attribute is no longer used for hints,
-   because a native tooltip cannot follow the dark theme and every
-   control that carried one already had a matching `aria-label` for its
-   accessible name. `::after` is reserved for the tooltip bubble, so a
-   host never has to choose between a hint and a touch hit-area overlay
-   (the coarse-pointer overlay in _responsive.css uses `::before`).
+   attribute; the native `title` attribute is not used for hints, because a
+   native tooltip cannot follow the dark theme. The attribute is a visual
+   hint only: every host keeps its accessible name in aria-label or its own
+   content.
 
-   Placement: below the host by default. `data-tooltip-anchor="end"`
-   right-aligns the bubble to the host's right edge, for controls that sit
-   at the right edge of a row or viewport. */
-:where([data-tooltip]) {
-    /* Zero-specificity on purpose: it only establishes a positioning
-       context for hosts that nothing else positions. An already
-       positioned host (the cover favorite hearts) keeps its own
-       position, because its class rule outranks a :where() selector. */
-    position: relative;
-}
-[data-tooltip]::after,
-.brand-lockup-button[data-tooltip]::after,
-.power-btn[data-tooltip]::after {
-    content: attr(data-tooltip);
-    position: absolute;
-    top: calc(100% + 0.45rem);
+   The bubble is one `position: fixed` element on <body>, driven by
+   static/tooltip.js, not a pseudo-element of the host: an ::after bubble is
+   clipped by every overflow/scroll container around its host and adds
+   scrollable overflow to it even while hidden. tooltip.js places it below
+   the host, flips it above when only that side has room (the playback
+   footer), clamps it into the viewport and right-aligns it for
+   `data-tooltip-anchor="end"`. */
+.app-tooltip {
+    position: fixed;
+    top: 0;
     left: 0;
     z-index: var(--z-tooltip);
+    /* max-content keeps short labels on one line; long values (a full
+       preset name, an export path) wrap inside the max-width. */
+    width: max-content;
     max-width: min(260px, calc(100vw - 2rem));
     padding: 0.32rem 0.52rem;
     border: 1px solid var(--border-strong);
@@ -665,44 +660,29 @@ select.url-input {
     font-size: 0.72rem;
     font-weight: 650;
     line-height: 1.35;
-    /* Long values (a full preset name, an export path) wrap inside the
-       max-width instead of running off the viewport. */
     white-space: normal;
     overflow-wrap: anywhere;
-    opacity: 0;
-    visibility: hidden;
     pointer-events: none;
+    opacity: 0;
     transform: translateY(-2px);
-    transition: opacity 0.15s var(--ease), visibility 0.15s var(--ease), transform 0.15s var(--ease);
+    transition: opacity 0.15s var(--ease), transform 0.15s var(--ease);
 }
-[data-tooltip-anchor="end"]::after,
-.power-btn[data-tooltip]::after {
-    left: auto;
-    right: 0;
+.app-tooltip[data-side="above"] {
+    transform: translateY(2px);
 }
-[data-tooltip]:hover::after,
-[data-tooltip]:focus-visible::after,
-.brand-lockup-button:hover::after,
-.brand-lockup-button:focus-visible::after,
-.power-btn:hover::after,
-.power-btn:focus-visible::after {
+.app-tooltip.is-visible {
     opacity: 1;
-    visibility: visible;
     transform: translateY(0);
 }
-/* The open power menu covers the area under the button, so its tooltip must
-   stay hidden while the button is expanded. */
-.power-btn[data-tooltip][aria-expanded="true"]::after {
-    opacity: 0;
-    visibility: hidden;
-    transform: translateY(-2px);
+.app-tooltip[hidden] {
+    display: none;
 }
 
-/* Tooltip host for a <select>. A select is a replaced element: Chromium
-   does not render ::before/::after on it, so a tooltip placed on the control
-   itself would be silently invisible. The wrapper carries the attribute
-   instead. It is a plain block-level flex item that stretches to the field
-   width, and the select keeps width:100%, so the layout is unchanged. */
+/* Tooltip host for a <select>: tooltip.js shows the full name of the
+   selected option (the option label may be compacted) while the pointer or
+   keyboard focus is anywhere inside the wrapper. It is a plain block-level
+   flex item that stretches to the field width, and the select keeps
+   width:100%, so the layout is unchanged. */
 .select-tooltip-wrap {
     display: block;
     width: 100%;
@@ -3922,10 +3902,6 @@ select.url-input {
     -webkit-appearance: none;
     width: 14px;
     height: 14px;
-    /* Chromium anchors the thumb to the track top when the track is shorter
-       than the thumb; lift it by half the size difference so it sits
-       centered on the 4px track. */
-    margin-top: -5px;
     border-radius: 50%;
     background: #ececf0;
     border: 1px solid rgba(13,13,15,0.8);
@@ -3956,10 +3932,6 @@ select.url-input {
         width: 20px;
         height: 20px;
     }
-    /* Chromium anchors the thumb to the track top when the track is shorter
-       than the thumb; lift it by half the size difference to keep it
-       centered on the 4px track. Firefox centers natively. */
-    .streaming-progress::-webkit-slider-thumb { margin-top: -8px; }
 }
 
 /* Provider content (TIDAL) */
@@ -8525,10 +8497,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
 
     /* Touch hit-area expansion: visuals stay compact while the tap target
-       reaches ~44px via an invisible overlay. No layout shift on desktop.
-       The overlay uses ::before, not ::after: ::after is the app-wide
-       tooltip bubble (see _layout.css), and several of these controls
-       (favorite hearts, measurement chips) carry a data-tooltip. */
+       reaches ~44px via an invisible overlay. No layout shift on desktop. */
     .control-btn-mode,
     .control-btn-clear,
     .track-favorite-btn,
@@ -8563,12 +8532,6 @@ input[type="number"]::-webkit-outer-spin-button {
     .control-btn-clear::before {
         inset: -10px;
     }
-    /* The tooltip bubble is a hover affordance with no meaning on touch, and
-       the native fallback it replaces was never shown there either. */
-    [data-tooltip]::after {
-        display: none;
-    }
-
     /* Crossover / subwoofer band chips and the Link L/R toggle are compact
        by design (29px and 20px), too small to hit reliably. They grow their
        own box here instead of using an ::after overlay: neighbouring chips

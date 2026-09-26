@@ -202,7 +202,7 @@ function renderTrackFavoriteButton(track = deps.getState().playback.current_trac
         button.classList.toggle('active', favorite);
         button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
         button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
-        button.title = favorite ? 'Remove track from favorites' : 'Add track to favorites';
+        button.setAttribute('data-tooltip', favorite ? 'Remove track from favorites' : 'Add track to favorites');
         if (!ready) {
             const streaming = window.FXRouteStreaming;
             if (streaming && streaming.ensureTidalFavoritesLoaded) {
@@ -218,7 +218,7 @@ function renderTrackFavoriteButton(track = deps.getState().playback.current_trac
     button.classList.toggle('active', favorite);
     button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
     button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
-    button.title = favorite ? 'Remove track from favorites' : 'Add track to favorites';
+    button.setAttribute('data-tooltip', favorite ? 'Remove track from favorites' : 'Add track to favorites');
 }
 
 function updateTrackFavoriteCaches(trackId, favorite) {
@@ -248,7 +248,7 @@ function syncTrackFavoriteRowButtons(trackId = null) {
         button.classList.toggle('active', favorite);
         button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
         button.setAttribute('aria-label', favorite ? 'Remove track from favorites' : 'Add track to favorites');
-        button.title = favorite ? 'Remove from favorites' : 'Add to favorites';
+        button.setAttribute('data-tooltip', favorite ? 'Remove from favorites' : 'Add to favorites');
         button.disabled = trackFavoriteRequestInFlight;
     });
 }
@@ -569,7 +569,7 @@ function renderTracks() {
                     <div class="track-title">${deps.escapeHtml(playlist.name)}</div>
                     <div class="track-artist track-sub">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
                 </div>
-                <button class="playlist-download-btn" data-playlist-download="${deps.escapeHtml(playlist.id)}" type="button" data-tooltip="Export playlist as M3U8">⬇</button>
+                <button class="playlist-download-btn" data-playlist-download="${deps.escapeHtml(playlist.id)}" type="button" aria-label="Export playlist as M3U8" data-tooltip="Export playlist as M3U8">⬇</button>
                 <button class="playlist-delete-btn" data-playlist-delete="${deps.escapeHtml(playlist.id)}" type="button" data-tooltip="Delete playlist" aria-label="Delete playlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
             </div>`;
         }).join('');
@@ -1375,7 +1375,7 @@ function librarySelectionButtonHtml(trackId, isSelected) {
 // number and the play button in one leading element so narrow phones can
 // share a single slot; rows without an index keep a lone play button.
 function detailTrackRowHtml({ index, title, sub, album, favoriteButton, selectionButton, duration, thumb }) {
-    const playButton = '<button type="button" class="track-play" data-tooltip="Play">▶</button>';
+    const playButton = '<button type="button" class="track-play" aria-label="Play" data-tooltip="Play">▶</button>';
     const lead = index != null
         ? '<span class="track-numplay"><span class="track-index">' + index + '</span>' + playButton + '</span>'
         : playButton;
@@ -1407,7 +1407,7 @@ function updateAlbumFavoriteButton(album) {
     deps.getElements().albumFavoriteToggle.classList.toggle('active', favorite);
     deps.getElements().albumFavoriteToggle.setAttribute('aria-pressed', favorite ? 'true' : 'false');
     deps.getElements().albumFavoriteToggle.setAttribute('aria-label', favorite ? 'Remove album from favorites' : 'Add album to favorites');
-    deps.getElements().albumFavoriteToggle.title = favorite ? 'Remove from favorites' : 'Add to favorites';
+    deps.getElements().albumFavoriteToggle.setAttribute('data-tooltip', favorite ? 'Remove from favorites' : 'Add to favorites');
 }
 
 async function toggleCurrentAlbumFavorite() {
@@ -1461,7 +1461,7 @@ async function toggleAlbumCardFavorite(albumId) {
             btn.classList.toggle('is-active', f);
             btn.innerHTML = deps.favoriteHeartSvg();
             btn.setAttribute('aria-label', f ? 'Remove from favorites' : 'Add to favorites');
-            btn.title = f ? 'Remove from favorites' : 'Add to favorites';
+            btn.setAttribute('data-tooltip', f ? 'Remove from favorites' : 'Add to favorites');
         });
         // The Favorites view must drop an unfavorited album immediately;
         // re-render the grid so the filter stays authoritative.
@@ -1810,7 +1810,7 @@ function syncRenderedTrackSelection() {
             btn.textContent = active ? '✓' : '+';
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove track from selection' : 'Add track to selection');
-            btn.title = active ? 'Remove from selection' : 'Add to selection';
+            btn.setAttribute('data-tooltip', active ? 'Remove from selection' : 'Add to selection');
         });
     });
 }
