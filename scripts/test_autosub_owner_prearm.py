@@ -357,6 +357,42 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
         for child in self.measure_store.starts:
             self.assertIn("expected_plan_fingerprint", child)
 
+    async def test_config_settle_is_booked_to_the_verify_window(self):
+        # The settle wait after staging a fresh candidate belongs to the verify
+        # window. Stamping config_verify with the pre-sleep timestamp charged
+        # the wait to pre-arm and reported verify as 0 ms, hiding ~0.5 s per
+        # freshly staged candidate in the persisted timing ledger.
+        settle_ms = funnel._AUTO_SUB_CONFIG_SETTLE_SECONDS * 1000.0
+        job = self.service_job()
+        await self.sweep(job)
+        first = job["_sweep_timings"][0]["durations"]
+        self.assertGreaterEqual(
+            first["config_set_to_config_verify_ms"], settle_ms * 0.9,
+            "the settle wait must be attributed to the verify window",
+        )
+        self.assertLess(
+            first["config_verify_to_pre_arm_ms"], settle_ms * 0.5,
+            "pre-arm must not absorb the config settle wait",
+        )
+        # The reused fingerprint of a repeat skips the settle, so the verify
+        # window collapses instead of re-reporting the same wait.
+        await self.sweep(job)
+        second = job["_sweep_timings"][1]["durations"]
+        self.assertLess(second["config_set_to_config_verify_ms"], settle_ms * 0.5)
+        for entry in (first, second):
+            self.assertAlmostEqual(
+                entry["total_ms"],
+                sum(entry[key] for key in (
+                    "start_to_config_set_ms", "config_set_to_config_verify_ms",
+                    "config_verify_to_pre_arm_ms", "pre_arm_to_sweep_start_ms",
+                    "sweep_start_to_sweep_poll_done_ms",
+                    "sweep_poll_done_to_release_start_ms",
+                    "release_start_to_release_done_ms",
+                )),
+                delta=1.0,
+                msg="every booked phase must sum to the sweep total",
+            )
+
     async def test_owner_prearm_mismatch_fails_sweep_without_audio(self):
         self.hardware.fail_after_reads = 1
         job = self.service_job()

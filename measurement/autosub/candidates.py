@@ -9,6 +9,8 @@ import logging
 from typing import Any
 
 from audio.samplerate import OUTPUT_MODE_SUBWOOFER_22_MODES
+from measurement.constants import SWEEP_V2_LEAD_IN_SECONDS, SWEEP_V2_TAIL_SECONDS
+from measurement.store import HOST_SWEEP_RECORD_POSTROLL_SECONDS, HOST_SWEEP_RECORD_PREROLL_SECONDS
 
 from .deps import (
     _auto_sub_cancel_requested,
@@ -214,6 +216,38 @@ def _auto_sub_sweep_profile(fc: float) -> dict[str, float]:
         "sweep_end_hz": auto_sub_sweep_high_hz,
         "sweep_seconds": auto_sub_sweep_sec,
         "tail_seconds": auto_sub_tail_sec,
+    }
+
+
+# Main-only reference sweeps feed the Main/Target anchor, which reads them in
+# the normal measurement's broadband level-reference band only
+# (LEVEL_REFERENCE_MIN_HZ..LEVEL_REFERENCE_MAX_HZ = 120 Hz..8 kHz).  The band
+# below brackets that window with margin, and the duration keeps the same
+# ~0.6 sweep cycles per octave as _auto_sub_sweep_profile(fc) so per-octave
+# resolution is unchanged while playback, analysis and the peak prediction all
+# shrink with the band.
+_AUTO_SUB_MAIN_REFERENCE_LOW_HZ = 100.0
+_AUTO_SUB_MAIN_REFERENCE_HIGH_HZ = 10_000.0
+_AUTO_SUB_MAIN_REFERENCE_SECONDS = 4.0
+
+
+def _auto_sub_main_reference_sweep_profile() -> dict[str, float]:
+    """Build the sweep profile for the two Main-only reference captures.
+
+    The anchor analysis interpolates the Target curve over the reference points
+    it shares support with, clipped to the level-reference band, so sweeping
+    10 Hz..22 kHz bought no consumed data.  Narrowing the band keeps the whole
+    120 Hz..8 kHz analysis window (and the trusted band that feeds it) while
+    cutting the played sweep, its analysis and the pre-sweep peak prediction.
+    """
+    return {
+        "sweep_start_hz": _AUTO_SUB_MAIN_REFERENCE_LOW_HZ,
+        "sweep_end_hz": _AUTO_SUB_MAIN_REFERENCE_HIGH_HZ,
+        "sweep_seconds": _AUTO_SUB_MAIN_REFERENCE_SECONDS,
+        "lead_in_seconds": SWEEP_V2_LEAD_IN_SECONDS,
+        "tail_seconds": SWEEP_V2_TAIL_SECONDS,
+        "record_preroll_seconds": HOST_SWEEP_RECORD_PREROLL_SECONDS,
+        "record_postroll_seconds": HOST_SWEEP_RECORD_POSTROLL_SECONDS,
     }
 
 def _auto_sub_snapshot_copy(mode_state: dict[str, Any]) -> dict[str, Any]:

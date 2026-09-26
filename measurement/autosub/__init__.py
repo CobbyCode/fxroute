@@ -50,6 +50,7 @@ from measurement.autosub.candidates import (
     _auto_sub_clamped_delay,
     _auto_sub_fine_delay_candidates,
     _auto_sub_fine_trigger_reasons,
+    _auto_sub_main_reference_sweep_profile,
     _auto_sub_opposite_polarity,
     _auto_sub_polarity_decision,
     _auto_sub_score_value,

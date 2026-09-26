@@ -129,9 +129,12 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([call["channel"] for call in calls], ["left", "right"])
             self.assertTrue(all(call["exact_sub_mute"] for call in calls))
             self.assertTrue(all(call["active_subs"] == expected_slots for call in calls))
-            self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_start_hz"] == 10.0 for call in calls))
-            self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_end_hz"] == 22_000.0 for call in calls))
-            self.assertTrue(all(call["auto_sub_sweep_profile"]["sweep_seconds"] == 11.0 for call in calls))
+            # The reference profile is band-limited to the level-reference band
+            # the anchor actually reads, not the full 10 Hz..22 kHz measurement
+            # sweep; see _auto_sub_main_reference_sweep_profile.
+            self.assertTrue(all(
+                call["auto_sub_sweep_profile"] == autosub_candidates._auto_sub_main_reference_sweep_profile()
+                for call in calls))
             self.assertEqual(job["main_references"]["status"], "completed")
             for side in ("left", "right"):
                 self.assertEqual(set(job["main_references"][side]), {

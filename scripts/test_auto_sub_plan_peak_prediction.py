@@ -40,6 +40,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -302,6 +304,98 @@ class PlanPeakPredictionTests(unittest.TestCase):
                     (("output_1", 0.1), ("output_2", 0.05))}
         comparison = _auto_sub_stage_peak_comparison(predicted, matching, sink_gain=1.0)
         self.assertIn("relevant_mismatch", comparison)
+
+    def test_biquad_matches_the_numpy_scalar_recurrence_bit_for_bit(self) -> None:
+        # The list-of-floats rewrite of the per-sample loop is a pure speedup;
+        # the predictor's verdicts must not move by a single ULP.
+        coefficients = tuple(float(value) for value in lowpass_sos(80.0)[0])
+        values = np.sin(np.arange(4096) * 0.017) * 0.7
+        expected = np.empty_like(values)
+        b0, b1, b2, a1, a2 = coefficients
+        z1 = 0.0
+        z2 = 0.0
+        for index, value in enumerate(values):
+            filtered = b0 * value + z1
+            z1 = b1 * value - a1 * filtered + z2
+            z2 = b2 * value - a2 * filtered
+            expected[index] = filtered
+        actual = autosub_jobs._auto_sub_run_plan_biquad(values, coefficients)
+        self.assertTrue(np.array_equal(actual, expected))
+        self.assertEqual(actual.dtype, expected.dtype)
+
+    def test_undriven_outputs_skip_filtering_and_keep_their_zero_peak(self) -> None:
+        outputs = [
+            flat_output("left_low", [{"input": 0, "gain": 1.0}], sos=lowpass_sos(80.0)),
+            flat_output("left_high", [{"input": 0, "gain": 1.0}], sos=lowpass_sos(80.0)),
+            flat_output("right_low", [{"input": 1, "gain": 1.0}], sos=lowpass_sos(80.0)),
+            flat_output("right_high", [{"input": 1, "gain": 1.0}], sos=lowpass_sos(80.0)),
+            flat_output("sub1", [{"input": 0, "gain": 0.5}, {"input": 1, "gain": 0.5}],
+                        sos=lowpass_sos(80.0)),
+        ]
+        driven_biquads = sum(len(entry["sos"]) for entry in outputs[:2]) \
+            + sum(len(entry["sos"]) for entry in outputs[4:])
+        total_biquads = sum(len(entry["sos"]) for entry in outputs)
+        self.assertLess(driven_biquads, total_biquads)
+
+        calls = []
+        original = autosub_jobs._auto_sub_run_plan_biquad
+
+        def counting(values, coefficients):
+            calls.append(1)
+            return original(values, coefficients)
+
+        with patch.object(autosub_jobs, "_auto_sub_run_plan_biquad", counting):
+            left = _auto_sub_stage_peak_prediction(**layout_args(outputs, channel="left"))
+        self.assertEqual(len(calls), driven_biquads)
+        # The right-hand outputs are filtered from a silent input on a
+        # single-sided sweep, so their peak stays exactly zero either way.
+        self.assertEqual(left["linear"]["output_3"], 0.0)
+        self.assertEqual(left["linear"]["output_4"], 0.0)
+        self.assertEqual(left["dbfs"]["output_3"], -240.0)
+        self.assertEqual(left["dbfs"]["output_4"], -240.0)
+        self.assertEqual(left["model"], "compiled-layout-v1")
+
+        calls.clear()
+        with patch.object(autosub_jobs, "_auto_sub_run_plan_biquad", counting):
+            right = _auto_sub_stage_peak_prediction(**layout_args(outputs, channel="right"))
+        self.assertEqual(len(calls), driven_biquads)
+        self.assertEqual(right["linear"]["output_1"], 0.0)
+        self.assertEqual(right["linear"]["output_2"], 0.0)
+        self.assertGreater(right["linear"]["output_3"], 0.0)
+        self.assertGreater(right["linear"]["output_4"], 0.0)
+
+        calls.clear()
+        with patch.object(autosub_jobs, "_auto_sub_run_plan_biquad", counting):
+            stereo = _auto_sub_stage_peak_prediction(**layout_args(outputs, channel="stereo"))
+        self.assertEqual(len(calls), total_biquads)
+        # A stereo sweep drives both inputs, so every single-input output must
+        # predict exactly what its own single-sided sweep predicted.
+        for key, source in (("output_1", left), ("output_2", left),
+                            ("output_3", right), ("output_4", right)):
+            self.assertEqual(stereo["linear"][key], source["linear"][key])
+            self.assertGreater(stereo["linear"][key], 0.0)
+
+    def test_zero_gain_route_counts_as_silent(self) -> None:
+        # A zero-gain route contributes nothing even when its input is driven,
+        # so it must not pay for a biquad pass either.
+        outputs = [
+            flat_output("left", [{"input": 0, "gain": 0.0}], sos=lowpass_sos(80.0)),
+            flat_output("right", [{"input": 1, "gain": 1.0}], sos=lowpass_sos(80.0)),
+        ]
+        original = autosub_jobs._auto_sub_run_plan_biquad
+        calls = []
+
+        def counting(values, coefficients):
+            calls.append(1)
+            return original(values, coefficients)
+
+        with patch.object(autosub_jobs, "_auto_sub_run_plan_biquad", counting):
+            predicted = _auto_sub_stage_peak_prediction(
+                **layout_args(outputs, channel="stereo"))
+        self.assertEqual(len(calls), len(outputs[1]["sos"]))
+        self.assertEqual(predicted["linear"]["output_1"], 0.0)
+        self.assertEqual(predicted["dbfs"]["output_1"], -240.0)
+        self.assertGreater(predicted["linear"]["output_2"], 0.0)
 
     def test_real_compiled_layout_predicts_one_peak_per_output(self) -> None:
         directory = tempfile.TemporaryDirectory(prefix="plan-peak-service-")

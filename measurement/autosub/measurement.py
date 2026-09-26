@@ -24,7 +24,7 @@ from audio.system_volume import get_output_volume_unclamped
 
 from measurement.analyzer import measurement_level_reference_db
 from measurement.constants import LEVEL_REFERENCE_MAX_HZ, LEVEL_REFERENCE_MIN_HZ
-from measurement.store import auto_sub_chain_anchor_db, default_measurement_sweep_profile
+from measurement.store import auto_sub_chain_anchor_db
 
 from .candidates import (
     _auto_sub_22_candidate_subwoofers,
@@ -34,6 +34,7 @@ from .candidates import (
     _auto_sub_22_verify_alignment,
     _auto_sub_cancelled_candidate,
     _auto_sub_clamped_delay,
+    _auto_sub_main_reference_sweep_profile,
     _auto_sub_snapshot_copy,
 )
 from .candidate_session import AutoSubProposal
@@ -62,6 +63,11 @@ _AUTO_SUB_CONFIG_FP_KEY = "_auto_sub_last_config_fp"
 _AUTO_SUB_CONFIG_OK_KEY = "_auto_sub_last_config_ok"
 _AUTO_SUB_PREARM_FP_KEY = "_auto_sub_last_prearm_fp"
 _AUTO_SUB_PREARM_OK_KEY = "_auto_sub_last_prearm_ok"
+
+# Settle time a freshly staged candidate waits before its config counts as
+# verified. L and R of one combined candidate share a config fingerprint, so
+# only the first sweep of each distinct candidate pays this.
+_AUTO_SUB_CONFIG_SETTLE_SECONDS = 0.5
 
 
 def _auto_sub_candidate_config_fingerprint(
@@ -411,13 +417,15 @@ async def _prepare_auto_sub_capture(
                 original_highpass=original_highpass,
                 original_config_snapshot=original_config_snapshot,
             )
-            now = time.monotonic()
-            _marks["config_set"] = now
+            _marks["config_set"] = time.monotonic()
             if not config_reused:
-                await asyncio.sleep(0.5)
+                # The settle wait belongs to the verify window, so config_verify
+                # is stamped after it. Reusing the pre-sleep timestamp charged
+                # the wait to pre-arm and reported verify as 0 ms.
+                await asyncio.sleep(_AUTO_SUB_CONFIG_SETTLE_SECONDS)
                 if _auto_sub_cancel_requested(job):
                     return (_auto_sub_cancelled_candidate(delay_ms, stage), None)
-            _marks["config_verify"] = now
+            _marks["config_verify"] = time.monotonic()
             config_success = True
             job[_AUTO_SUB_CONFIG_FP_KEY] = config_fingerprint
             job[_AUTO_SUB_CONFIG_OK_KEY] = True
@@ -2006,7 +2014,7 @@ async def _capture_auto_sub_main_references(
         "left": {"status": "pending"},
         "right": {"status": "pending"},
     }
-    main_reference_sweep_profile = default_measurement_sweep_profile()
+    main_reference_sweep_profile = _auto_sub_main_reference_sweep_profile()
     # Only mapped sub slots may be named active: a 2.1 system has one slot,
     # so the reference sweeps must not claim a second sub that does not exist.
     mapped_slots = ((job.get("output_state_context") or {}).get("sub_role_map") or {})

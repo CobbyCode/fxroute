@@ -2,6 +2,7 @@
 """Focused tests for the diagnostic-only AutoSub Main/Target anchor gate."""
 
 import copy
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -9,10 +10,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import main
+import measurement.autosub.candidates as autosub_candidates
 import measurement.autosub.jobs as autosub_jobs
 import measurement.autosub.measurement as autosub_measurement
 import measurement.autosub.scoring as autosub_scoring
 import measurement.analyzer as measurement_analyzer
+from measurement.constants import (  # noqa: E402
+    DISPLAY_POINT_COUNT,
+    LEVEL_REFERENCE_MAX_HZ,
+    LEVEL_REFERENCE_MIN_HZ,
+    SWEEP_END_HZ,
+    TRUSTED_MAX_HZ,
+    TRUSTED_MIN_HZ,
+)
+from measurement.store import MeasurementStore, default_measurement_sweep_profile  # noqa: E402
 
 
 def log_points(low=20.0, high=20000.0, count=192, db=-12.0):
@@ -134,6 +145,114 @@ class MainTargetAnchorTests(unittest.TestCase):
         autosub_jobs._finalize_autosub_job(job, "test-job")
         anchor["sides"]["left"]["aligned_points"][0][1] = 999
         self.assertNotEqual(job["result"]["main_target_anchor"]["sides"]["left"]["aligned_points"][0][1], 999)
+
+
+def analyzer_display_points(profile, sample_rate=48_000, db=-12.0):
+    """The point grid the analyzer derives from one capture, as it builds it.
+
+    Mirrors ``_build_display_points``: a 192-point log grid from the trusted
+    floor to the top of the deconvolved impulse-response spectrum, 1/12-octave
+    smoothed. The grid spans the analyzer's own floors, not the swept band, so
+    a band-limited reference keeps centres below its low end and above its top;
+    those carry no energy and land on the noise floor.
+    """
+    analysis_limit_hz = min(sample_rate / 2.0 - 1.0, SWEEP_END_HZ)
+    display_max_hz = min(analysis_limit_hz, TRUSTED_MAX_HZ)
+    nyquist = max(TRUSTED_MIN_HZ + 1.0, display_max_hz)
+    centers = MeasurementStore._log_spaced_frequencies(
+        None, TRUSTED_MIN_HZ, nyquist, DISPLAY_POINT_COUNT)
+    points = [[center, db] for center in centers if center < analysis_limit_hz]
+    return points
+
+
+class MainReferenceSweepProfileTests(unittest.TestCase):
+    """The reference captures are only read in the level-reference band.
+
+    ``_auto_sub_main_reference_sweep_profile`` replaced the full 10 Hz..22 kHz
+    measurement sweep. These tests pin the reason that is safe: the band-limited
+    sweep still yields a ready anchor over the full 120 Hz..8 kHz window at the
+    same per-octave resolution as the candidate sweeps.
+    """
+
+    def test_profile_brackets_the_level_reference_band(self):
+        profile = autosub_candidates._auto_sub_main_reference_sweep_profile()
+        self.assertLessEqual(profile["sweep_start_hz"], LEVEL_REFERENCE_MIN_HZ)
+        self.assertGreaterEqual(profile["sweep_end_hz"], LEVEL_REFERENCE_MAX_HZ)
+        # The 1/12-octave display smoothing of the top point reaches above the
+        # band, so the sweep must overshoot it rather than end on it.
+        self.assertGreater(profile["sweep_end_hz"], LEVEL_REFERENCE_MAX_HZ * 2 ** (1 / 12))
+
+    def test_sweep_rate_is_no_faster_than_the_candidate_sweeps(self):
+        def cycles_per_octave(profile):
+            ratio = math.log(profile["sweep_end_hz"] / profile["sweep_start_hz"])
+            return profile["sweep_seconds"] * math.log(2.0) / ratio
+
+        reference = autosub_candidates._auto_sub_main_reference_sweep_profile()
+        rates = [cycles_per_octave(autosub_candidates._auto_sub_sweep_profile(fc))
+                 for fc in (40.0, 60.0, 83.0, 120.0, 200.0)]
+        # Per-octave resolution must be no worse than the candidate sweeps the
+        # delay decision already relies on, i.e. the reference may not sweep
+        # through an octave in less time than the quickest candidate profile.
+        self.assertLessEqual(cycles_per_octave(reference), max(rates))
+        self.assertGreaterEqual(cycles_per_octave(reference), min(rates))
+
+    def test_band_limited_reference_still_yields_a_ready_full_band_anchor(self):
+        profile = autosub_candidates._auto_sub_main_reference_sweep_profile()
+        points = analyzer_display_points(profile)
+        # The grid is built from the analyzer's fixed floors, so a band-limited
+        # reference still reports centres outside the swept band; they carry no
+        # energy and must not eat into the consumed window.
+        self.assertLess(points[0][0], profile["sweep_start_hz"])
+        self.assertGreater(points[-1][0], profile["sweep_end_hz"])
+        swept = [point for point in points
+                 if profile["sweep_start_hz"] <= point[0] <= profile["sweep_end_hz"]]
+        self.assertGreaterEqual(len(swept), 8)
+
+        result = autosub_measurement._analyze_auto_sub_main_target_anchor(
+            target_curve={"key": "house", "label": "House", "provenance": "uploaded",
+                          "points": [[20, 4], [80, 2], [320, 0], [20000, -2]]},
+            main_references=references(points=points),
+            crossover_hz=80, main_highpass_enabled=True,
+        )
+        self.assertEqual(result["status"], "ready", msg=result.get("reason"))
+        self.assertEqual(result["reference_band_hz"], [120.0, 8000.0])
+        self.assertEqual(result["usable_band_hz"], [120.0, 8000.0])
+        self.assertGreaterEqual(result["usable_span_octaves"], 1.0)
+        # The aligned support must span the consumed band edge to edge. The
+        # grid is discrete, so each end sits within one grid step of 120 Hz and
+        # 8 kHz; anything narrower would mean the sweep lost band coverage.
+        step_hz = LEVEL_REFERENCE_MAX_HZ * (
+            (TRUSTED_MAX_HZ / TRUSTED_MIN_HZ) ** (1 / (DISPLAY_POINT_COUNT - 1)) - 1)
+        for side in ("left", "right"):
+            self.assertGreaterEqual(result["sides"][side]["point_count"], 8)
+            support = result["sides"][side]["frequency_support_hz"]
+            self.assertLess(support[0] - LEVEL_REFERENCE_MIN_HZ, step_hz)
+            self.assertLess(LEVEL_REFERENCE_MAX_HZ - support[1], step_hz)
+
+    def test_level_reference_normalization_band_is_unchanged(self):
+        # normalized_by_db is the median over the same 120 Hz..8 kHz window, so
+        # the reference level the anchor compares against does not move. Raising
+        # everything above 8 kHz must leave it untouched.
+        profile = autosub_candidates._auto_sub_main_reference_sweep_profile()
+        points = analyzer_display_points(profile)
+        in_band = [point for point in points
+                   if LEVEL_REFERENCE_MIN_HZ <= point[0] <= LEVEL_REFERENCE_MAX_HZ]
+        self.assertGreaterEqual(len(in_band), 8)
+        tilted = [[point[0], point[1] + (6.0 if point[0] > LEVEL_REFERENCE_MAX_HZ else 0.0)]
+                  for point in points]
+        self.assertEqual(
+            measurement_analyzer.measurement_level_reference_db(points),
+            measurement_analyzer.measurement_level_reference_db(tilted),
+        )
+
+    def test_reference_sweep_is_shorter_than_the_full_measurement_sweep(self):
+        profile = autosub_candidates._auto_sub_main_reference_sweep_profile()
+        full = default_measurement_sweep_profile()
+        self.assertLess(profile["sweep_seconds"], full["sweep_seconds"])
+        self.assertLess(
+            float(profile["sweep_end_hz"]) / float(profile["sweep_start_hz"]),
+            float(full["sweep_end_hz"]) / float(full["sweep_start_hz"]),
+        )
 
 
 if __name__ == "__main__":
