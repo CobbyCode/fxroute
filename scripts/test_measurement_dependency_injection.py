@@ -105,6 +105,12 @@ class MeasurementDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
                         "_services", self.original_services)
 
     def test_import_does_not_import_main(self):
+        # Only meaningful when this module is imported first in its process:
+        # other test modules (e.g. test_playlist_io) import main by design.
+        # The load-order guard lives in run_tests.sh, which starts one
+        # process per file.
+        if "test_library_scan_concurrency" in sys.modules or "test_playlist_io" in sys.modules:
+            self.skipTest("main already imported by an earlier test module in this process")
         self.assertNotIn("main", sys.modules)
 
     def test_capture_uses_injected_player_and_intent(self):

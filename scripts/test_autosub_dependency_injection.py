@@ -94,6 +94,12 @@ class AutoSubDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
             pass
 
     def test_autosub_import_does_not_import_main(self):
+        # Only meaningful when this module is imported first in its process:
+        # other test modules (e.g. test_playlist_io) import main by design.
+        # The load-order guard lives in run_tests.sh, which starts one
+        # process per file.
+        if "test_library_scan_concurrency" in sys.modules or "test_playlist_io" in sys.modules:
+            self.skipTest("main already imported by an earlier test module in this process")
         self.assertNotIn("main", sys.modules)
 
     # NOTE (backend-v2 migration): the three _auto_sub_sync_dsp_runtime tests
