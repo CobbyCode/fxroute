@@ -138,15 +138,21 @@ class StoreParityTests(unittest.TestCase):
 
     def store_channels(self, store, *, mic, shared, left, right, side):
         async def setup():
-            result = await store._prepare_measurement_job_setup(
-                input_id="mic", input_key="", mic_input_channel=mic,
-                reference_input_channel=shared, reference_input_channel_left=left,
-                reference_input_channel_right=right,
-                reference_candidate_channels=reference_candidate_channels(shared, left, right),
-                channel=side, calibration_filename=None, calibration_bytes=None,
-                calibration_ref=None, measurement_scope="active-chain",
-                job_prefix="measurement-job-")
-            return result["job"]["input_channels"]
+            try:
+                result = await store._prepare_measurement_job_setup(
+                    input_id="mic", input_key="", mic_input_channel=mic,
+                    reference_input_channel=shared, reference_input_channel_left=left,
+                    reference_input_channel_right=right,
+                    reference_candidate_channels=reference_candidate_channels(shared, left, right),
+                    channel=side, calibration_filename=None, calibration_bytes=None,
+                    calibration_ref=None, measurement_scope="active-chain",
+                    job_prefix="measurement-job-")
+                return result["job"]["input_channels"]
+            finally:
+                # Preparation alone claims the single-job start slot; a real
+                # start hands it to _register_measurement_job. This parity
+                # probe never registers, so release it for the next take.
+                store._release_measurement_start_slot()
         return asyncio.run(setup())
 
     def test_start_check_matches_the_store_resolution(self):

@@ -99,12 +99,30 @@ def main() -> int:
             pick("#settings-output-mode-select", "stereo-sub")
             page.wait_for_timeout(700)
             check("one row per hardware port", page.locator("#settings-routing-grid select").count() == 18)
+            # The demo opens on the configured .104 system with the independent
+            # crossover already on, so explicitly switch it off to observe the
+            # full-band + sub routing, then back on for the crossover roles.
+            pick("#settings-crossover-select", "off")
+            page.wait_for_timeout(700)
             options = page.locator("#settings-routing-out-1 option").all_text_contents()
             check("full-band and sub roles", 'Main L' in options and 'Sub L' in options and 'Sub 2' in options and 'Low L' not in options)
             pick("#settings-crossover-select", "on")
             page.wait_for_timeout(700)
             options = page.locator("#settings-routing-out-1 option").all_text_contents()
             check("crossover replaces Main and keeps subs", 'Main L' not in options and 'Low L' in options and 'Low-Mid R' in options and 'Sub L' in options)
+            # The seeded 2-way system already carries per-way filters; clear the
+            # speaker ways so completing the 3-way routing exercises the
+            # first-valid-config starter path (empty ways only).
+            page.evaluate("""(async () => {
+                const j = await fetch('/api/audio/output-state').then(r => r.json());
+                const mode = j.active_mode;
+                for (const role of ['left_low', 'left_mid', 'left_high',
+                                    'right_low', 'right_mid', 'right_high']) {
+                    await applyOutputSystemMutation('set_processing',
+                        { mode, role, highpass: null, lowpass: null }, false, { quiet: true });
+                }
+            })()""")
+            page.wait_for_timeout(500)
             for index, role in enumerate(['left_low', 'left_mid', 'left_high', 'right_low', 'right_mid', 'right_high', 'sub_l', 'sub_r'], 1):
                 pick(f"#settings-routing-out-{index}", role)
                 page.wait_for_timeout(250)
