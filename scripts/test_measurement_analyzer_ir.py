@@ -117,6 +117,46 @@ class MeasurementAnalyzerIrTests(unittest.TestCase):
         self.assertFalse(result["timing_valid"])
         self.assertEqual(result["timing_status"], "ambiguous")
         self.assertEqual(result["confidence"], 0.0)
+        # A lone spike has no rise: the band-limited rule changes nothing.
+        banded = MeasurementAnalyzer(None, None)._estimate_impulse_direct_arrival(
+            impulse, reference, 48_000, band_limited=True)
+        self.assertEqual(banded, result)
+
+    @staticmethod
+    def _slow_rise(size, peak_at, rise):
+        """A band-limited reference shape: a long rise into its peak."""
+        response = np.zeros(size, dtype=np.float64)
+        response[peak_at - rise:peak_at + 1] = np.linspace(0.0, 1.0, rise + 1) ** 3
+        response[peak_at + 1:peak_at + 1 + rise] = np.linspace(1.0, 0.0, rise) ** 3
+        return response
+
+    def test_band_limited_arrival_inside_the_reference_rise_is_timed_against_its_arrival(self):
+        # A 120 Hz way: the reference rises for ~1300 samples before its peak,
+        # and the microphone's arrival lands inside that rise.
+        reference = self._slow_rise(12000, 8000, 1300)
+        impulse = np.roll(reference, 240)
+        analyzer = MeasurementAnalyzer(None, None)
+        full_band = analyzer._estimate_impulse_direct_arrival(impulse, reference, 48_000)
+        self.assertFalse(full_band["timing_valid"])
+        self.assertEqual(full_band["timing_source"], "direct_arrival_minus_reference_peak")
+
+        banded = analyzer._estimate_impulse_direct_arrival(impulse, reference, 48_000, band_limited=True)
+        self.assertTrue(banded["timing_valid"])
+        self.assertEqual(banded["relative_samples"], 240)
+        self.assertEqual(banded["timing_source"], "direct_arrival_minus_reference_arrival")
+        self.assertEqual(banded["reference_peak_index"], 8000)
+        self.assertLess(banded["reference_arrival_index"], banded["reference_peak_index"])
+        self.assertEqual(banded["direct_arrival_index"], full_band["direct_arrival_index"])
+
+    def test_band_limited_take_the_peak_already_times_keeps_its_values(self):
+        reference = self._slow_rise(12000, 8000, 60)
+        impulse = np.roll(reference, 240)
+        analyzer = MeasurementAnalyzer(None, None)
+        full_band = analyzer._estimate_impulse_direct_arrival(impulse, reference, 48_000)
+        banded = analyzer._estimate_impulse_direct_arrival(impulse, reference, 48_000, band_limited=True)
+        self.assertTrue(full_band["timing_valid"])
+        self.assertEqual(banded, full_band)
+        self.assertEqual(banded["reference_arrival_index"], banded["reference_peak_index"])
 
     def test_negative_arrival_does_not_leave_analyzer_as_timing(self):
         rate = 48_000

@@ -563,9 +563,15 @@ class HostCaptureRunner:
                 "timing_status": "electrical-reference-candidate",
                 "timing_label": "Electrical reference candidate",
                 "electrical_reference_used": False,
-                "electrical_reference_delay_samples": impulse_meta.get("reference_peak_index"),
-                "electrical_reference_delay_seconds": impulse_meta.get("reference_peak_seconds"),
-                "electrical_reference_delay_ms": round(float(impulse_meta.get("reference_peak_seconds") or 0.0) * 1000.0, 6),
+                # The reference instant the acoustic arrival is timed against:
+                # its peak, or its own arrival for a band-limited take whose
+                # acoustic arrival falls inside the reference's rise.
+                "electrical_reference_delay_samples": impulse_meta.get(
+                    "reference_arrival_index", impulse_meta.get("reference_peak_index")),
+                "electrical_reference_delay_seconds": impulse_meta.get(
+                    "reference_arrival_seconds", impulse_meta.get("reference_peak_seconds")),
+                "electrical_reference_delay_ms": round(float(impulse_meta.get(
+                    "reference_arrival_seconds", impulse_meta.get("reference_peak_seconds")) or 0.0) * 1000.0, 6),
                 "acoustic_arrival_delay_samples": impulse_meta.get("direct_arrival_index"),
                 "acoustic_arrival_delay_seconds": impulse_meta.get("direct_seconds"),
                 "acoustic_arrival_delay_ms": round(float(impulse_meta.get("direct_seconds") or 0.0) * 1000.0, 6),

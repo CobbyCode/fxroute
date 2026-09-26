@@ -121,6 +121,10 @@ class SpeakerRuntimeTests(unittest.TestCase):
                         short, short_reference, short_level = synthetic_way_capture(store, model, profile, **common)
                         self.assertTrue(full_reference["usable"], full_reference)
                         self.assertTrue(short_reference["usable"], short_reference)
+                        # These ways are timed against the reference peak, as always.
+                        for take in (full, short):
+                            self.assertEqual(take["impulse_response"]["timing_source"],
+                                             "direct_arrival_minus_reference_peak")
                         self.assertAlmostEqual(short_level["level_db"], full_level["level_db"], delta=0.1)
                         self.assertEqual(short_level["point_count"], full_level["point_count"])
                         self.assertFalse(short["clock"]["magnitude_drift_resampling_applied"])
@@ -141,6 +145,40 @@ class SpeakerRuntimeTests(unittest.TestCase):
             self.assertEqual(short_level, full_level)
             self.assertEqual(short["impulse_response"], full["impulse_response"])
             self.assertEqual(profile["sweep_seconds"], 11.)
+
+    def test_open_edged_way_takes_the_band_profile_and_keeps_its_reference(self):
+        # A 3-way low way without a bass-management high-pass has only its
+        # 120 Hz low-pass, so its flat passband ends at the 50 Hz measurement
+        # floor (50-71 Hz): narrow on paper, open towards the bottom. On .104
+        # it took the full sweep and lost the electrical reference; it takes
+        # the band profile a 2-way low way takes. A high way above 10 kHz is
+        # the same case at the top edge.
+        def spec(kind, frequency_hz):
+            return {"kind": kind, "family": "linkwitz-riley", "slope_db_oct": 24,
+                    "frequency_hz": frequency_hz}
+
+        with tempfile.TemporaryDirectory() as home:
+            store = MeasurementStore(home=Path(home))
+            for model in ({"crossover": [spec("lowpass", 120)]}, {"crossover": [spec("highpass", 10000)]}):
+                with self.subTest(model=model["crossover"][0]):
+                    low, high = way_passband(model, sample_rate_hz=48000)
+                    self.assertLess(math.log2(high / low), 0.5)
+                    profile = profile_for(model, 48000)
+                    self.assertLess(profile["sweep_seconds"], 11.)
+                    self.assertLessEqual(profile["sweep_start_hz"], low / 2)
+                    self.assertGreaterEqual(profile["sweep_end_hz"], min(high * 2, 22000.))
+                    full, full_reference, _ = synthetic_way_capture(
+                        store, model, {}, reflection=0.2, noise=0.00001)
+                    short, short_reference, _ = synthetic_way_capture(
+                        store, model, profile, reflection=0.2, noise=0.00001)
+                    self.assertTrue(short_reference["usable"], short_reference)
+                    self.assertGreaterEqual(short["impulse_response"]["arrival_samples"], 0)
+                    if model["crossover"][0]["kind"] == "lowpass":
+                        # The full sweep spreads the deconvolution over a band
+                        # the way does not play; its arrival drowns in that noise.
+                        self.assertFalse(full_reference["usable"])
+                        self.assertEqual(short["impulse_response"]["timing_source"],
+                                         "direct_arrival_minus_reference_arrival")
 
 
 if __name__ == "__main__":

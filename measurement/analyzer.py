@@ -373,6 +373,7 @@ class MeasurementAnalyzer:
             timing_impulse_response,
             reference_impulse_response,
             sample_rate,
+            band_limited=band_limited_reference,
         )
         response_frequencies, response_magnitude, variable_window_meta = self._build_variable_window_response(
             magnitude_impulse_response,
@@ -609,7 +610,10 @@ class MeasurementAnalyzer:
                 "direct_candidates_chronological": direct_timing_meta["candidates_chronological"],
                 "reference_peak_index": int(direct_timing_meta["reference_peak_index"]),
                 "reference_peak_seconds": round(float(direct_timing_meta["reference_peak_seconds"]), 6),
-                "timing_source": "direct_arrival_minus_reference_peak",
+                "reference_arrival_index": int(direct_timing_meta["reference_arrival_index"]),
+                "reference_arrival_seconds": round(float(direct_timing_meta["reference_arrival_seconds"]), 6),
+                "reference_arrival_rule": direct_timing_meta["reference_arrival_rule"],
+                "timing_source": direct_timing_meta["timing_source"],
                 "window_start_index": int(ir_meta["window_start_index"]),
                 "window_end_index": int(ir_meta["window_end_index"]),
                 "window_seconds": round(float(ir_meta["window_seconds"]), 6),
@@ -1599,11 +1603,90 @@ class MeasurementAnalyzer:
         impulse_response: np.ndarray,
         reference_impulse_response: np.ndarray,
         sample_rate: int,
+        *,
+        band_limited: bool = False,
     ) -> dict[str, Any]:
+        """Acoustic direct arrival of one take, timed against its reference.
+
+        The arrival is measured against the reference impulse peak.  In a
+        band-limited take the reference carries the same band as the
+        microphone, and a narrow band's impulse rises for far longer before
+        its peak (~27 ms for a 120 Hz low-pass way, a few samples for a
+        2.5 kHz one).  When the acoustic arrival of such a take falls inside
+        that rise, it is measured against the reference's own arrival, picked
+        by the same candidate selection, instead of reading as an arrival
+        before the reference.  A take the peak already times keeps exactly
+        its previous values.
+        """
         ir_abs = np.abs(impulse_response.astype(np.float64))
         ref_abs = np.abs(reference_impulse_response.astype(np.float64))
-        peak_index = int(np.argmax(ir_abs)) if ir_abs.size else 0
+        selection = self._select_direct_arrival(ir_abs, sample_rate)
+        direct_arrival_index = int(selection["direct_arrival_index"])
         reference_peak_index = int(np.argmax(ref_abs)) if ref_abs.size else 0
+        reference_arrival_index = reference_peak_index
+        reference_arrival_rule = "reference_peak"
+        if band_limited and ref_abs.size and direct_arrival_index < reference_peak_index:
+            reference_selection = self._select_direct_arrival(ref_abs, sample_rate)
+            if direct_arrival_index >= int(reference_selection["direct_arrival_index"]):
+                reference_arrival_index = int(reference_selection["direct_arrival_index"])
+                reference_arrival_rule = str(reference_selection["selection_rule"])
+        peak_index = int(selection["peak_index"])
+        peak = float(ir_abs[peak_index]) if ir_abs.size else 0.0
+        selected_score = float(selection["selected_score"])
+        relative_samples = int(direct_arrival_index - reference_arrival_index)
+        timing_valid = relative_samples >= 0
+        return {
+            "direct_arrival_index": int(direct_arrival_index),
+            "direct_seconds": float(direct_arrival_index) / float(sample_rate),
+            "direct_relative_to_peak_db": round(
+                20.0 * math.log10(max(float(ir_abs[direct_arrival_index]) / max(peak, 1e-12), 1e-12)),
+                2,
+            ),
+            "direct_threshold_relative": float(IR_DIRECT_RELATIVE_THRESHOLD),
+            "selection_rule": selection["selection_rule"],
+            "selected_score": selected_score,
+            "selected_support_score": selection["selected_support_score"],
+            "confidence": selected_score / max(float(selection["strongest_score"]), 1e-12) if timing_valid else 0.0,
+            "timing_valid": timing_valid,
+            "timing_status": "valid" if timing_valid else "ambiguous",
+            "first_threshold_index": selection["first_threshold_index"],
+            "first_threshold_offset_from_peak_samples": (
+                int(selection["first_threshold_index"] - peak_index)
+                if selection["first_threshold_index"] is not None else None
+            ),
+            "weak_early_relative": float(IR_DIRECT_WEAK_EARLY_RELATIVE),
+            "weak_early_min_gap_samples": int(IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES),
+            "weak_early_next_ratio": float(IR_DIRECT_WEAK_EARLY_NEXT_RATIO),
+            "promotion_window_samples": int(max(IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES, int(round(sample_rate * IR_DIRECT_PROMOTION_WINDOW_SECONDS)))),
+            "promotion_support_ratio": float(IR_DIRECT_PROMOTION_SUPPORT_RATIO),
+            "candidate_count": int(selection["candidate_count"]),
+            "candidates": selection["candidates_by_score"],
+            "candidates_by_score": selection["candidates_by_score"],
+            "candidates_chronological": selection["candidates_chronological"],
+            "reference_peak_index": int(reference_peak_index),
+            "reference_peak_seconds": float(reference_peak_index) / float(sample_rate),
+            "reference_arrival_index": int(reference_arrival_index),
+            "reference_arrival_seconds": float(reference_arrival_index) / float(sample_rate),
+            "reference_arrival_rule": reference_arrival_rule,
+            "timing_source": (
+                "direct_arrival_minus_reference_peak" if reference_arrival_rule == "reference_peak"
+                else "direct_arrival_minus_reference_arrival"
+            ),
+            "relative_samples": relative_samples,
+            "relative_seconds": float(relative_samples) / float(sample_rate),
+            "ir_peak_index": int(peak_index),
+            "ir_peak_relative_to_reference_samples": int(peak_index - reference_peak_index),
+            "promotion_applied": bool(selection["promotion_applied"]),
+        }
+
+    def _select_direct_arrival(self, ir_abs: np.ndarray, sample_rate: int) -> dict[str, Any]:
+        """Pick the direct arrival of one absolute impulse response.
+
+        The first local peak above the relative threshold before the global
+        peak, with weak threshold edges skipped for a clearly stronger impulse
+        region and a promotion to the best score in a short window.
+        """
+        peak_index = int(np.argmax(ir_abs)) if ir_abs.size else 0
         peak = float(ir_abs[peak_index]) if ir_abs.size else 0.0
         threshold = peak * IR_DIRECT_RELATIVE_THRESHOLD
         search_pre_samples = max(1, int(round(sample_rate * IR_DIRECT_SEARCH_PRE_SECONDS)))
@@ -1780,41 +1863,17 @@ class MeasurementAnalyzer:
             candidates,
             key=lambda item: int(item["sample"]),
         )[:IR_DIRECT_CANDIDATE_LIMIT]
-        relative_samples = int(direct_arrival_index - reference_peak_index)
-        timing_valid = relative_samples >= 0
         return {
             "direct_arrival_index": int(direct_arrival_index),
-            "direct_seconds": float(direct_arrival_index) / float(sample_rate),
-            "direct_relative_to_peak_db": round(
-                20.0 * math.log10(max(float(ir_abs[direct_arrival_index]) / max(peak, 1e-12), 1e-12)),
-                2,
-            ),
-            "direct_threshold_relative": float(IR_DIRECT_RELATIVE_THRESHOLD),
+            "peak_index": int(peak_index),
             "selection_rule": selection_rule,
             "selected_score": selected_score,
             "selected_support_score": selected_support,
-            "confidence": selected_score / max(strongest_score, 1e-12) if timing_valid else 0.0,
-            "timing_valid": timing_valid,
-            "timing_status": "valid" if timing_valid else "ambiguous",
+            "strongest_score": strongest_score,
             "first_threshold_index": first_threshold_index,
-            "first_threshold_offset_from_peak_samples": (
-                int(first_threshold_index - peak_index) if first_threshold_index is not None else None
-            ),
-            "weak_early_relative": float(IR_DIRECT_WEAK_EARLY_RELATIVE),
-            "weak_early_min_gap_samples": int(IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES),
-            "weak_early_next_ratio": float(IR_DIRECT_WEAK_EARLY_NEXT_RATIO),
-            "promotion_window_samples": int(max(IR_DIRECT_WEAK_EARLY_MIN_GAP_SAMPLES, int(round(sample_rate * IR_DIRECT_PROMOTION_WINDOW_SECONDS)))),
-            "promotion_support_ratio": float(IR_DIRECT_PROMOTION_SUPPORT_RATIO),
             "candidate_count": len(candidates),
-            "candidates": candidate_summary_by_score,
             "candidates_by_score": candidate_summary_by_score,
             "candidates_chronological": candidate_summary_chronological,
-            "reference_peak_index": int(reference_peak_index),
-            "reference_peak_seconds": float(reference_peak_index) / float(sample_rate),
-            "relative_samples": relative_samples,
-            "relative_seconds": float(relative_samples) / float(sample_rate),
-            "ir_peak_index": int(peak_index),
-            "ir_peak_relative_to_reference_samples": int(peak_index - reference_peak_index),
             "promotion_applied": selection_rule == "promoted_to_best_score_in_window" or selection_rule == "skipped_weak_threshold_edge_for_stronger_impulse_region",
         }
 
