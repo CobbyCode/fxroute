@@ -13,6 +13,54 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+LV2INFO_EXCERPT = (ROOT / "scripts" / "fixtures" / "lv2info_lsp_para_equalizer_excerpt.txt").read_text()
+REQUIRED_LV2_URIS = (
+    "http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr",
+    "http://lsp-plug.in/plugins/lv2/loud_comp_stereo",
+    "http://lsp-plug.in/plugins/lv2/sc_limiter_stereo",
+    "urn:zamaudio:ZaMaximX2",
+    "http://calf.sourceforge.net/plugins/BassEnhancer",
+)
+
+
+def shell_function(script, name):
+    start = script.index(f"{name}() {{")
+    return script[start:script.index("\n}\n", start) + 3]
+
+
+def run_install_functions(call, *, lv2info=None, lv2info_exit=0, awk="gawk"):
+    """Run install.sh's LV2 checks with only awk/grep/cat and stubbed tools.
+
+    lv2info None leaves it absent; lv2ls always lists every required URI.
+    """
+    script = (ROOT / "install.sh").read_text()
+    functions = "\n".join(shell_function(script, name)
+                          for name in ("lsp_peq_apo_dr_status", "verify_lv2_plugins"))
+    with tempfile.TemporaryDirectory() as tmp:
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir()
+        program, *flags = awk.split()
+        (bin_dir / "awk").write_text(
+            f"#!/bin/sh\nexec {shutil.which(program)} {' '.join(flags)} \"$@\"\n")
+        for tool in ("grep", "cat"):
+            (bin_dir / tool).symlink_to(shutil.which(tool))
+        uris = " ".join(f"'{uri}'" for uri in REQUIRED_LV2_URIS)
+        (bin_dir / "lv2ls").write_text(f"#!/bin/sh\nprintf '%s\\n' {uris}\n")
+        if lv2info is not None:
+            listing = Path(tmp) / "lv2info.txt"
+            listing.write_bytes(lv2info.encode())
+            (bin_dir / "lv2info").write_text(
+                f"#!/bin/sh\n{shutil.which('cat')} '{listing}'\nexit {lv2info_exit}\n")
+        for stub in bin_dir.iterdir():
+            if not stub.is_symlink():
+                stub.chmod(0o755)
+        harness = ("set -euo pipefail\n"
+                   'pass() { echo "PASS: $*"; }\nfail() { echo "FAIL: $*"; }\n'
+                   'die() { echo "DIE: $*"; exit 1; }\n' + functions + "\n" + call + "\n")
+        return subprocess.run([shutil.which("bash"), "-c", harness],
+                              env={"PATH": str(bin_dir)}, capture_output=True, text=True)
+
+
 class DspPackagingTests(unittest.TestCase):
     def test_fxroute_service_leaves_realtime_policy_to_pipewire(self):
         service = (ROOT / "fxroute.service").read_text()
@@ -100,30 +148,56 @@ class DspPackagingTests(unittest.TestCase):
         # Global PEQ sends LSP filter mode 6, APO (DR); a plugin without it
         # would clamp the mode to another filter design, so install fails.
         script = (ROOT / "install.sh").read_text()
-        verify = script[script.index("verify_lv2_plugins() {"):]
-        verify = verify[:verify.index("\n}\n")]
-        self.assertIn("lsp_peq_has_apo_dr_mode", verify)
+        verify = shell_function(script, "verify_lv2_plugins")
+        self.assertIn("lsp_peq_apo_dr_status || apo_status=$?", verify)
         self.assertIn('die "FXRoute Global PEQ needs LSP Plugins 1.1.7 or newer', verify)
-        start = script.index("lsp_peq_has_apo_dr_mode() {")
-        function = script[start:script.index("\n}\n", start) + 3]
-        bash = shutil.which("bash")
-        declared = '\t\tScale Points:\n\t\t\t5 = "LRX (MT)"\n\t\t\t6 = "APO (DR)"\n'
-        older = '\t\tScale Points:\n\t\t\t5 = "LRX (MT)"\n'
-        with tempfile.TemporaryDirectory() as tmp:
-            stub = Path(tmp) / "lv2info"
-            for listing, expected in ((declared, 0), (older, 1)):
-                stub.write_text(f"#!/bin/sh\nprintf '%s' '{listing}'\n")
-                stub.chmod(0o755)
-                result = subprocess.run(
-                    [bash, "-c", f"{function}\nlsp_peq_has_apo_dr_mode"],
-                    env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}"},
-                    capture_output=True, text=True)
-                self.assertEqual(result.returncode, expected, listing)
-            result = subprocess.run(
-                [bash, "-c", f"{function}\nlsp_peq_has_apo_dr_mode"],
-                env={**os.environ, "PATH": "/nonexistent"},
-                capture_output=True, text=True)
-            self.assertEqual(result.returncode, 1, "missing lv2info cannot confirm the mode")
+
+    def test_apo_dr_check_reads_real_and_variant_lv2info_formats(self):
+        """Port-scoped, numeric and whitespace/CR tolerant, awk-portable."""
+        real = LV2INFO_EXCERPT
+        apo = '\t\t\t6 = "APO (DR)"\n'
+        self.assertIn(apo, real)
+        cases = {
+            "real lilv 0.28 output": (real, 0),
+            "CRLF line endings": (real.replace("\n", "\r\n"), 0),
+            "spaces and a float value": (real.replace("\t", "    ").replace(
+                '6 = "APO (DR)"', '6.000000 = "APO (DR)"'), 0),
+            "LSP without APO (DR), other ports keep value 6": (real.replace(apo, ""), 1),
+            "APO (DR) only on a non filter-mode port": (
+                real.replace(apo, "").replace('\t\t\t6 = "Notch"\n', '\t\t\t6 = "APO (DR)"\n'), 1),
+            "APO (DR) under another value": (
+                real.replace(apo, '\t\t\t7 = "APO (DR)"\n'), 1),
+        }
+        for awk in ("gawk", "gawk --posix"):
+            for label, (listing, expected) in cases.items():
+                with self.subTest(awk=awk, case=label):
+                    result = run_install_functions(
+                        "status=0; lsp_peq_apo_dr_status || status=$?; echo status=$status",
+                        lv2info=listing, awk=awk)
+                    self.assertIn(f"status={expected}", result.stdout, result.stderr)
+
+    def test_apo_dr_check_diagnoses_a_missing_or_failing_lv2info(self):
+        call = "status=0; lsp_peq_apo_dr_status || status=$?; echo status=$status"
+        self.assertIn("status=2", run_install_functions(call).stdout)
+        self.assertIn("status=3", run_install_functions(call, lv2info=LV2INFO_EXCERPT,
+                                                          lv2info_exit=1).stdout)
+        self.assertIn("status=3", run_install_functions(call, lv2info="").stdout)
+
+    def test_verify_lv2_plugins_names_the_actual_apo_dr_problem(self):
+        ok = run_install_functions("verify_lv2_plugins", lv2info=LV2INFO_EXCERPT)
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertIn("PASS: LSP Parametric Equalizer offers filter mode APO (DR)", ok.stdout)
+        for kwargs, expected in (
+            ({}, "DIE: LSP filter mode verification needs lv2info from lilv-utils"),
+            ({"lv2info": LV2INFO_EXCERPT, "lv2info_exit": 1}, "DIE: lv2info could not describe"),
+            ({"lv2info": LV2INFO_EXCERPT.replace('\t\t\t6 = "APO (DR)"\n', "")},
+             "DIE: FXRoute Global PEQ needs LSP Plugins 1.1.7 or newer"),
+        ):
+            with self.subTest(expected=expected):
+                result = run_install_functions("verify_lv2_plugins", **kwargs)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(expected, result.stdout)
+                self.assertEqual(result.stdout.count("DIE:"), 1, result.stdout)
 
     def test_native_dsp_links_libsamplerate(self):
         script = (ROOT / "native_dsp/build.sh").read_text()
