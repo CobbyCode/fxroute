@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# PEQ/convolver review regressions: nine verified findings.
+# PEQ/convolver review regressions: eleven verified findings.
 #
 # 1. Dual PEQ with differing L/R gain trims is rejected at validation
 #    (engine only supports one shared stereo trim).
@@ -9,12 +9,14 @@
 # 3. REW enabled flag is preserved.
 # 4. Unsupported REW filter types are reported, never silently dropped.
 # 5. REW Filter Settings exports keep their values and disabled bands.
-# 6. A bad REW filter line rejects the whole import; no partial preset
+# 6. REW formatted-text rows keep Q and ignore the Bandwidth(Hz) column.
+# 7. Preamble and note lines starting with a number are not filter lines.
+# 8. A bad REW filter line rejects the whole import; no partial preset
 #    is created.
-# 7. Empty/invalid IRs are rejected Python-side and never reach the engine.
-# 8. Ambiguous IR stems are rejected instead of silently picking one file.
-# 9. Output-filter layout is validated with ValueError (no KeyError,
-#    no silent stage drops).
+# 9. Empty/invalid IRs are rejected Python-side and never reach the engine.
+# 10. Ambiguous IR stems are rejected instead of silently picking one file.
+# 11. Output-filter layout is validated with ValueError (no KeyError,
+#     no silent stage drops).
 
 import sys
 import tempfile
@@ -123,10 +125,42 @@ class PeqConvolverReviewTests(unittest.TestCase):
                           for b in bands], [(46.3, -4.8, 3.387, True),
                                              (1200.0, 2.5, 0.75, False)])
 
+    def test_rew_formatted_text_export_keeps_q_and_ignores_bandwidth(self):
+        # REW V5.31+ "Export filter settings as formatted text": tab-separated
+        # rows with a Bandwidth(Hz) column after Q (values from a real export).
+        imported = self.manager.import_rew_peq_text(
+            "Number\tEnabled\tControl\tType\tFrequency(Hz)\tGain(dB)\tQ\tBandwidth(Hz)\n"
+            "1\tTrue\tAuto\tPK\t30.00\t-10.2\t0.999\t30.03\n"
+            "2\tTrue\tAuto\tPK\t33.80\t4.0\t3.056\t11.06\n")
+        bands = imported["peq"]["params"]["bands"]
+        self.assertEqual([(b["frequencyHz"], b["gainDb"], b["q"], b["enabled"])
+                          for b in bands], [(30.0, -10.2, 0.999, True),
+                                             (33.8, 4.0, 3.056, True)])
+
+    def test_rew_preamble_and_note_lines_with_leading_numbers_are_skipped(self):
+        created = self.manager.create_peq_preset_from_rew_text("REW notes", (
+            "Filter Settings file\n\nRoom EQ V5.40\nDated: Sep 27, 2026, 1:23:45 PM\n\n"
+            "Notes:\n10 dB headroom kept for the sub\n2 subs, 1 listening seat\n"
+            "10 on-axis sweeps averaged\nFilter 3 is left flat on purpose\n\n"
+            "Equaliser: Generic\nSep 27 13:23:40\n"
+            "Filter  1: ON  PK       Fc   46.30 Hz  Gain  -4.80 dB  Q  3.387\n"
+            "Filter  2: ON  PK       Fc     209 Hz  Gain  -3.90 dB  Q  3.943\n"
+            "Filter  3: OFF PK       Fc    1607 Hz  Gain  -6.50 dB  Q  1.864\n"
+            "Filter  4: ON  None\n"))
+        stored = self.manager.preset_store.read(created["name"])
+        bands = stored["chain"][0]["params"]["bands"]
+        self.assertEqual([(b["frequencyHz"], b["gainDb"], b["q"], b["enabled"])
+                          for b in bands], [(46.3, -4.8, 3.387, True),
+                                             (209.0, -3.9, 3.943, True),
+                                             (1607.0, -6.5, 1.864, False)])
+
     def test_rew_bad_filter_lines_never_create_partial_presets(self):
         for invalid in (
             "2 on PK 200 -2 broken", "2 on PK 200 -2 1.0junk",
+            "2 on PK 200 -2 1.0 junk", "2 on PK 200 -2 1.0 30 7",
             "Filter 2: ON PK Fc 200 Hz Gain -2 dB Q broken",
+            "Filter 2: ON PK Fc 200 Hz Gain -2 dB Q 1.0 30",
+            "Filter 2 ON PK Fc 200 Hz Gain -2 dB Q 1.0", "Filter 2: ON",
             "Filter 2: ON LS Fc 100 Hz Gain 3 dB",
             "2 on HS 5000 2", "Filter 2: ON PK Fc 100 Hz Gain -2 dB",
         ):

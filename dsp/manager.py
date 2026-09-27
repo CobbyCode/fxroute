@@ -1169,19 +1169,30 @@ class DSPManager:
         bands = []
         unsupported: List[str] = []
         number = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+        # Only a line with a filter entry's signature can be malformed:
+        # "Filter N:" (Filter Settings export) or a row number followed by an
+        # on/off state (compact and formatted-text rows). Preamble, table
+        # header and note lines are skipped, even when they start with a number.
+        entry = re.compile(
+            r"^\s*(?:Filter\s+\d+\s*:|(?:Filter\s+)?\d+\s+(?:true|false|on|off)(?=\s|$))",
+            re.IGNORECASE)
         header = re.compile(
             r"^\s*(?:Filter\s+\d+\s*:\s*|\d+\s+)"
             r"(true|false|on|off)\s+(?:auto\s+)?(\S+)(.*)$", re.IGNORECASE)
-        compact_values = re.compile(rf"\s*({number})\s+({number})\s+({number})\s*")
+        # Fc, Gain, Q. REW's formatted-text export (V5.31+) adds a
+        # Bandwidth(Hz) column after Q; it is derived from Fc and Q, so it is
+        # accepted and ignored. Any other trailing token stays malformed.
+        compact_values = re.compile(
+            rf"\s*({number})\s+({number})\s+({number})(?:\s+{number})?\s*")
         export_values = re.compile(
             rf"\s*Fc\s+({number})\s+Hz\s+Gain\s+({number})\s+dB\s+Q\s+({number})\s*",
             re.IGNORECASE)
         for line_number, line in enumerate(text.splitlines(), start=1):
+            if not entry.match(line):
+                continue
             match = header.match(line)
             if not match:
-                if re.match(r"^\s*(?:Filter\s+\d+\b|\d+\s+)", line, re.IGNORECASE):
-                    raise ValueError(f"REW PEQ line {line_number} is malformed")
-                continue
+                raise ValueError(f"REW PEQ line {line_number} is malformed")
             enabled_token = match.group(1).lower()
             kind_token = match.group(2).upper()
             enabled = enabled_token in ("true", "on")

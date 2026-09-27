@@ -189,6 +189,25 @@ class FilterImportPathsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(self.service.load(), before)
 
+    def test_rew_notes_are_skipped_and_a_bad_filter_line_is_a_400(self):
+        preamble = "Filter Settings file\nNotes:\n10 dB headroom kept\n2 subs, 1 seat\n"
+        rows = "1\tTrue\tAuto\tPK\t30.00\t-10.2\t0.999\t30.03\n"
+        for name, text, status, bands in (
+            ("Notes", preamble + rows, 200, 1),
+            ("Broken", preamble + rows + "2\tTrue\tAuto\tPK\t33.80\t4.0\t3.056\t11.06\tjunk\n",
+             400, None),
+        ):
+            with self.subTest(name=name):
+                response = self.client.post(
+                    "/api/dsp/presets/import-rew-peq",
+                    data={"preset_name": name, "load_after_create": "false"},
+                    files={"file": ("rew.txt", text.encode(), "text/plain")})
+                self.assertEqual(response.status_code, status, response.text)
+                exists = self.manager.preset_store.path(name).exists()
+                self.assertEqual(exists, bands is not None)
+                if bands is not None:
+                    self.assertEqual(response.json()["preset"]["band_count"], bands)
+
 
 if __name__ == "__main__":
     unittest.main()
