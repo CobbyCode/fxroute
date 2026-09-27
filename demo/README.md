@@ -72,10 +72,12 @@ near 15 dB rather than a comfortable 20. The build refuses to emit a run the
 real backend would have rejected.
 
 Next to the 2-way run, the fixture carries the last real saved 3-way run
-on the test machine (right side, 2026-09-27, low/mid/high at
-0.417/0.0/0.604 ms, verified down to a 0.021 ms residual): frequency
-traces, timing timelines, IR previews and analysis blocks verbatim,
-including the backend's unmeasured (null) verification isolation. Left
+on the test machine (right side, 2026-09-27; verified down to a 0.021 ms
+residual). Its low/mid/high values 0.417/0.0/0.604 ms are relative band
+arrivals from the earliest way (`arrival_ms`), not absolute delays; the
+planned added delays derived from them are 0.188/0.604/0.0 ms. The run's
+frequency traces, timing timelines, IR previews and analysis blocks are kept
+verbatim, including the backend's unmeasured (null) verification isolation. Left
 mirrors the right run's data, the same precedent as the 2-way shared
 curves. The demo serves the 2-way run for a 2-way topology and the 3-way
 run once the routed topology has three ways per side (re-route the outputs

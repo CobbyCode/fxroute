@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# PEQ/convolver review regressions: seven verified findings.
+# PEQ/convolver review regressions: nine verified findings.
 #
 # 1. Dual PEQ with differing L/R gain trims is rejected at validation
 #    (engine only supports one shared stereo trim).
 # 2. Dual preset band_count counts both sides.
 # 3. REW enabled flag is preserved.
 # 4. Unsupported REW filter types are reported, never silently dropped.
-# 5. Empty/invalid IRs are rejected Python-side and never reach the engine.
-# 6. Ambiguous IR stems are rejected instead of silently picking one file.
-# 7. Output-filter layout is validated with ValueError (no KeyError,
+# 5. REW Filter Settings exports keep their values and disabled bands.
+# 6. A bad REW filter line rejects the whole import; no partial preset
+#    is created.
+# 7. Empty/invalid IRs are rejected Python-side and never reach the engine.
+# 8. Ambiguous IR stems are rejected instead of silently picking one file.
+# 9. Output-filter layout is validated with ValueError (no KeyError,
 #    no silent stage drops).
 
 import sys

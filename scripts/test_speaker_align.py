@@ -493,8 +493,8 @@ class RoutingAndProposalTests(unittest.TestCase):
         state, channels = state_for()
         state["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 39.0
         alignment, live = alignment_for(state, channels)
-        # The 3 ms plan would land left_low at 42 ms; every routed way moves
-        # by one common offset instead, so the 42 ms span is preserved.
+        # The 3 ms plan would land left_low at 42 ms; both left ways move by
+        # one common offset instead, so the 42 ms span is preserved.
         result = proposal_for(alignment, live)
         processing = result["candidate_state"]["modes"]["stereo-sub"]["processing"]
         self.assertEqual(processing["left_low"]["alignment_ms"], 40.0)
@@ -503,7 +503,32 @@ class RoutingAndProposalTests(unittest.TestCase):
         self.assertEqual(processing["left_low"]["alignment_ms"]
                          - processing["left_high"]["alignment_ms"], 42.0)
 
-    def test_real_41ms_way_delay_rebases_every_routed_way_to_the_window(self):
+    def test_rebase_leaves_the_other_side_and_the_sub_untouched(self):
+        """Left Align rebases only left ways, Right Align only right ways."""
+        for side, other in (("left", "right"), ("right", "left")):
+            with self.subTest(side=side):
+                state, channels = state_for()
+                processing = state["modes"]["stereo-sub"]["processing"]
+                processing[f"{side}_low"]["alignment_ms"] = 39.0
+                processing[f"{side}_high"]["alignment_ms"] = 1.5
+                # -39.5 ms would leave the window if the -2 ms rebase
+                # reached the other side.
+                processing[f"{other}_low"]["alignment_ms"] = -39.5
+                processing[f"{other}_high"]["alignment_ms"] = 12.25
+                processing["sub1"]["alignment_ms"] = 3.0
+                original = copy.deepcopy(processing)
+                alignment, live = alignment_for(state, channels, side=side)
+                result = proposal_for(alignment, live)
+                candidate = result["candidate_state"]["modes"]["stereo-sub"]["processing"]
+                self.assertEqual(result["added_delay_ms"],
+                                 {f"{side}_low": 3.0, f"{side}_high": 0.0})
+                self.assertEqual(candidate[f"{side}_low"]["alignment_ms"], 40.0)
+                self.assertEqual(candidate[f"{side}_high"]["alignment_ms"], -0.5)
+                for role, settings in candidate.items():
+                    if not role.startswith(f"{side}_"):
+                        self.assertEqual(settings, original[role], role)
+
+    def test_real_41ms_way_delay_rebases_the_aligned_side_to_the_window(self):
         """The real 3-way plan: 41.625 ms plus a stored 0.479166 ms must validate.
 
         right_mid and right_high arrive 1998 samples (41.625 ms) before
@@ -522,39 +547,44 @@ class RoutingAndProposalTests(unittest.TestCase):
         for role, delay in (("right_low", 0.0), ("right_mid", 41.625), ("right_high", 41.625)):
             self.assertAlmostEqual(proposal["added_delay_ms"][role], delay, delta=0.1)
         self.assertEqual(proposal["reference_role"], "right_low")
-        routed = ("left_low", "left_mid", "left_high",
-                  "right_low", "right_mid", "right_high", "sub1")
+        aligned = ("right_low", "right_mid", "right_high")
+        others = ("left_low", "left_mid", "left_high", "sub1")
         candidate = proposal["candidate_state"]["modes"]["stereo-sub"]["processing"]
         # The largest value lands exactly on the +40 ms guard, and every
-        # routed way shares the same minimal offset (-2.104166 ms).
+        # right way shares the same minimal offset (-2.104166 ms).
         self.assertEqual(candidate["right_high"]["alignment_ms"], 40.0)
-        for role in ("left_low", "left_mid", "right_low", "sub1"):
-            self.assertAlmostEqual(candidate[role]["alignment_ms"], -2.104166, delta=0.1)
+        self.assertAlmostEqual(candidate["right_low"]["alignment_ms"], -2.104166, delta=0.1)
         self.assertAlmostEqual(candidate["right_mid"]["alignment_ms"], 39.520834, delta=0.1)
-        self.assertAlmostEqual(candidate["left_high"]["alignment_ms"], 4.802494, delta=0.1)
-        # Roles outside the topology keep their stored alignment untouched.
+        # The left side, the sub and roles outside the topology keep their
+        # stored alignment untouched.
         for role, settings in candidate.items():
-            if role not in routed:
+            if role not in aligned:
                 self.assertEqual(settings["alignment_ms"], start[role]["alignment_ms"], role)
         # The unshifted intent: stored alignment plus the planned acoustic
         # delays, exactly what the candidate held before the rebase.
         intent = {role: start[role]["alignment_ms"] + proposal["added_delay_ms"].get(role, 0.0)
-                  for role in routed}
-        for first in routed:
-            for second in routed:
+                  for role in aligned + others}
+        offset = intent["right_high"] - 40.0
+        for first in aligned:
+            for second in aligned:
                 self.assertAlmostEqual(
                     candidate[first]["alignment_ms"] - candidate[second]["alignment_ms"],
                     intent[first] - intent[second], delta=1e-9,
                     msg=f"relative delay changed: {first} vs {second}")
-        # The compiled physical plan equals the intent the proposal always
-        # meant: the rebase only adds one constant output delay.
+        # The compiled physical plan keeps the right ways' relative delays;
+        # the left side and the sub move by the rebase offset against them.
         plan = compile_processing_plan(
             proposal["candidate_state"], output_key="dev", channels=channels,
             sample_rate_hz=RATE, preset_loader=lambda name: {"chain": []},
             neutralize_banks=True)
         planned = {row["role"]: row["delay_ms"] for row in plan["outputs"]}
-        for role in routed:
-            self.assertAlmostEqual(planned[role], intent[role], delta=1e-9, msg=role)
+        for role in aligned:
+            self.assertAlmostEqual(planned[role] - planned["right_high"],
+                                   intent[role] - intent["right_high"], delta=1e-9, msg=role)
+        for role in others:
+            self.assertAlmostEqual(planned[role] - planned["right_high"],
+                                   intent[role] - intent["right_high"] + offset,
+                                   delta=1e-9, msg=role)
         # The commit gate still admits the rebased candidate.
         accepted = require_speaker_candidate(
             state, proposal["candidate_state"], output_key="dev", channels=channels)
