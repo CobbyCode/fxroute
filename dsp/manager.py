@@ -1185,9 +1185,11 @@ class DSPManager:
         header = re.compile(
             r"^\s*(?:Filter\s+\d+\s*:\s*|\d+\s+)"
             r"(true|false|on|off)\s+(?:auto\s+)?(\S+)(.*)$", re.IGNORECASE)
-        # Fc, Gain, Q. REW's formatted-text export (V5.31+) adds a
+        # Fc, Gain, Q. REW's "Export filter settings as formatted text"
+        # (V5.31+: a header row, then delimiter-separated fields) adds a
         # Bandwidth(Hz) column after Q; it is derived from Fc and Q, so it is
-        # accepted and ignored. Any other trailing token stays malformed.
+        # accepted and ignored. The "Filter N:" text export has no such
+        # column. Any other trailing token stays malformed.
         compact_values = re.compile(
             rf"\s*({number})\s+({number})\s+({number})(?:\s+{number})?\s*")
         export_values = re.compile(

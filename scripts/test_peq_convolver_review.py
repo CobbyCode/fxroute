@@ -9,7 +9,8 @@
 # 3. REW enabled flag is preserved.
 # 4. Unsupported REW filter types are reported, never silently dropped.
 # 5. REW Filter Settings exports keep their values and disabled bands.
-# 6. REW formatted-text rows keep Q and ignore the Bandwidth(Hz) column.
+# 6. REW formatted-text rows import with or without the Bandwidth(Hz)
+#    column; Q is kept, the bandwidth ignored.
 # 7. Preamble and note lines starting with a number are not filter lines.
 # 8. A bad REW filter line rejects the whole import; no partial preset
 #    is created.
@@ -126,16 +127,26 @@ class PeqConvolverReviewTests(unittest.TestCase):
                                              (1200.0, 2.5, 0.75, False)])
 
     def test_rew_formatted_text_export_keeps_q_and_ignores_bandwidth(self):
-        # REW V5.31+ "Export filter settings as formatted text": tab-separated
-        # rows with a Bandwidth(Hz) column after Q (values from a real export).
-        imported = self.manager.import_rew_peq_text(
-            "Number\tEnabled\tControl\tType\tFrequency(Hz)\tGain(dB)\tQ\tBandwidth(Hz)\n"
-            "1\tTrue\tAuto\tPK\t30.00\t-10.2\t0.999\t30.03\n"
-            "2\tTrue\tAuto\tPK\t33.80\t4.0\t3.056\t11.06\n")
-        bands = imported["peq"]["params"]["bands"]
-        self.assertEqual([(b["frequencyHz"], b["gainDb"], b["q"], b["enabled"])
-                          for b in bands], [(30.0, -10.2, 0.999, True),
-                                             (33.8, 4.0, 3.056, True)])
+        # REW V5.31+ "Export filter settings as formatted text": a header row
+        # and delimiter-separated rows, with or without a Bandwidth(Hz) column
+        # after Q (values from a real export). The "Filter N:" text export has
+        # no bandwidth column; a trailing number there stays malformed (see
+        # test_rew_bad_filter_lines_never_create_partial_presets).
+        expected = [(30.0, -10.2, 0.999, True), (33.8, 4.0, 3.056, False)]
+        for label, text in (
+            ("with bandwidth",
+             "Number\tEnabled\tControl\tType\tFrequency(Hz)\tGain(dB)\tQ\tBandwidth(Hz)\n"
+             "1\tTrue\tAuto\tPK\t30.00\t-10.2\t0.999\t30.03\n"
+             "2\tFalse\tAuto\tPK\t33.80\t4.0\t3.056\t11.06\n"),
+            ("without bandwidth",
+             "Number\tEnabled\tControl\tType\tFrequency(Hz)\tGain(dB)\tQ\n"
+             "1\tTrue\tAuto\tPK\t30.00\t-10.2\t0.999\n"
+             "2\tFalse\tAuto\tPK\t33.80\t4.0\t3.056\n"),
+        ):
+            with self.subTest(label):
+                bands = self.manager.import_rew_peq_text(text)["peq"]["params"]["bands"]
+                self.assertEqual([(b["frequencyHz"], b["gainDb"], b["q"], b["enabled"])
+                                  for b in bands], expected)
 
     def test_rew_preamble_and_note_lines_with_leading_numbers_are_skipped(self):
         created = self.manager.create_peq_preset_from_rew_text("REW notes", (
