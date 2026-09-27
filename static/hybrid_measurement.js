@@ -266,6 +266,7 @@
         let squaredError = 0;
         let squaredPhaseError = 0;
         let squaredComplexResidual = 0;
+        let predictedEnergy = 0;
         let compared = 0;
         for (let index = 0; index < count; index += 1) {
             const frequency = Number(left[index][0]);
@@ -286,16 +287,19 @@
                 const predictedPhase = Math.atan2(sum.imag, sum.real);
                 const measuredPhase = Math.atan2(measured.imag, measured.real);
                 const phaseError = Math.abs(Math.atan2(Math.sin(measuredPhase - predictedPhase), Math.cos(measuredPhase - predictedPhase))) * 180 / Math.PI;
-                const residual = Math.hypot(measured.real - sum.real, measured.imag - sum.imag) / Math.max(1e-12, magnitude);
+                const residual = Math.hypot(measured.real - sum.real, measured.imag - sum.imag);
                 squaredError += deltaDb * deltaDb;
                 squaredPhaseError += phaseError * phaseError;
                 squaredComplexResidual += residual * residual;
+                predictedEnergy += magnitude * magnitude;
                 compared += 1;
             }
         }
         const rmsErrorDb = compared ? Math.sqrt(squaredError / compared) : null;
         const phaseRmsErrorDeg = compared ? Math.sqrt(squaredPhaseError / compared) : null;
-        const complexResidualRms = compared ? Math.sqrt(squaredComplexResidual / compared) : null;
+        // Normalize error energy over the band, not per bin: an L/R null has
+        // almost no reference energy and must not amplify capture noise.
+        const complexResidualRms = compared ? Math.sqrt(squaredComplexResidual / Math.max(1e-24, predictedEnergy)) : null;
         const status = rmsErrorDb === null
             ? 'predicted'
             : (rmsErrorDb <= 3 && phaseRmsErrorDeg <= 30 && complexResidualRms <= 0.35
@@ -308,6 +312,7 @@
             magnitudeRmsErrorDb: rmsErrorDb,
             phaseRmsErrorDeg,
             complexResidualRms,
+            complexResidualNormalization: 'predicted-band-energy',
             validationBandHz: [CONFIG.integrationMinHz, CONFIG.integrationMaxHz],
             status,
             limitation: 'L+R validates response consistency; it cannot isolate poor Main/Sub summation already present inside an individual L or R capture.',

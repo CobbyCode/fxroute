@@ -164,6 +164,34 @@ assert.equal(validation.status, 'ok');
 assert(Math.abs(validation.rmsErrorDb) < 1e-9);
 assert.deepEqual(validation.predicted, [[40, 1, 1], [80, 1, 1]]);
 
+// A narrow L/R cancellation must not turn small absolute capture noise into
+// a system-wide integration failure through per-bin division by nearly zero.
+const cancellationLeft = { points: [[40, 1, 0], [80, 1, 0], [160, 1, 0], [320, 1, 0]] };
+const cancellationRight = { points: [[40, -0.999, 0], [80, 1, 0], [160, 1, 0], [320, 1, 0]] };
+const noisyCancellation = Hybrid.validateComplexSum(
+    measurement('left', 0, { complexResponse: cancellationLeft }),
+    measurement('right', 0, { complexResponse: cancellationRight }),
+    measurement('stereo', 0, { complexResponse: { points: [[40, 0.003, 0], [80, 2, 0], [160, 2, 0], [320, 2, 0]] } }),
+);
+assert.equal(noisyCancellation.status, 'warning', 'a narrow noisy null may warn but must not block the run');
+assert(noisyCancellation.complexResidualRms < 0.001, 'complex residual must reflect the small error energy');
+
+// Broadband routing faults must still block, including a missing output and
+// a lost or inverted bass branch, even when the high band agrees exactly.
+const balancedSide = { points: [[40, 1, 0], [80, 1, 0], [160, 1, 0], [320, 1, 0]] };
+for (const [fault, actualPoints] of [
+    ['missing right', [[40, 1, 0], [80, 1, 0], [160, 1, 0], [320, 1, 0]]],
+    ['missing bass', [[40, 0, 0], [80, 0, 0], [160, 2, 0], [320, 2, 0]]],
+    ['inverted bass', [[40, -2, 0], [80, -2, 0], [160, 2, 0], [320, 2, 0]]],
+]) {
+    const result = Hybrid.validateComplexSum(
+        measurement('left', 0, { complexResponse: balancedSide }),
+        measurement('right', 0, { complexResponse: balancedSide }),
+        measurement('stereo', 0, { complexResponse: { points: actualPoints } }),
+    );
+    assert.equal(result.status, 'poor', `${fault} must still fail integration`);
+}
+
 const phaseInverted = Hybrid.validateComplexSum(
     measurement('left', 0, { complexResponse: { points: [[40, 1, 0]] } }),
     measurement('right', 0, { complexResponse: { points: [[40, 0, 0]] } }),
