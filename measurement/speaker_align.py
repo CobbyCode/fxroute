@@ -351,6 +351,10 @@ class SpeakerAlignment:
         response points keep levels unchanged (legacy unit shape); captures
         with points on every way propose start-relative level corrections
         equalizing the side to its median way level. Polarity is never altered.
+        A planned delay past the +40 ms window rebases every routed way by
+        one common minimal offset so the largest value lands on +40 ms:
+        relative way delays are preserved and a span beyond 80 ms still fails
+        validation.
         """
         from measurement.alignment_backend import estimate_way_level, propose_way_gains, way_passband
         _check_cancel(cancel_requested)
@@ -400,6 +404,22 @@ class SpeakerAlignment:
             for role in self._roles:
                 way_levels[role] = 0.0
                 added_gains[role] = 0.0
+        # A planned delay can push a way past the +40 ms window (the real
+        # 3-way case plans 41.625 ms on the right side, on top of the way's
+        # stored alignment). Shift every routed way by the same minimal
+        # offset so the largest value lands exactly on +40 ms: one common
+        # offset over the routed roles preserves every relative way delay,
+        # so the compiled physical plan only gains a constant output delay.
+        # A span wider than 80 ms still cannot fit the window, so the
+        # validation below keeps rejecting it.
+        routed = self._target["roles"]
+        settings = candidate["modes"][mode]["processing"]
+        peak = max(settings[role]["alignment_ms"] for role in routed)
+        if peak > 40.0:
+            for role in routed:
+                # Subtract the peak first so the largest result is exactly
+                # 40.0 and rounding can never push it past the guard.
+                settings[role]["alignment_ms"] = settings[role]["alignment_ms"] - peak + 40.0
         candidate = validate_output_state(candidate)
         _check_cancel(cancel_requested)
         return {"candidate_state": candidate, "arrival_ms": arrivals, "added_delay_ms": delays,

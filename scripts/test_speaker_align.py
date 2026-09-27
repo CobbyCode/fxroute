@@ -488,6 +488,78 @@ class RoutingAndProposalTests(unittest.TestCase):
                 for role, delay in zip(roles, delays):
                     self.assertAlmostEqual(proposal["added_delay_ms"][role], delay, delta=0.1)
 
+    def test_delay_past_the_window_rebases_the_candidate_within_it(self):
+        """A span that still fits +-40 ms is shifted, not rejected or clamped."""
+        state, channels = state_for()
+        state["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 39.0
+        alignment, live = alignment_for(state, channels)
+        # The 3 ms plan would land left_low at 42 ms; every routed way moves
+        # by one common offset instead, so the 42 ms span is preserved.
+        result = proposal_for(alignment, live)
+        processing = result["candidate_state"]["modes"]["stereo-sub"]["processing"]
+        self.assertEqual(processing["left_low"]["alignment_ms"], 40.0)
+        self.assertEqual(processing["left_high"]["alignment_ms"], -2.0)
+        self.assertEqual(result["added_delay_ms"], {"left_low": 3.0, "left_high": 0.0})
+        self.assertEqual(processing["left_low"]["alignment_ms"]
+                         - processing["left_high"]["alignment_ms"], 42.0)
+
+    def test_real_41ms_way_delay_rebases_every_routed_way_to_the_window(self):
+        """The real 3-way plan: 41.625 ms plus a stored 0.479166 ms must validate.
+
+        right_mid and right_high arrive 1998 samples (41.625 ms) before
+        right_low, right_high already stores 0.479166 ms and left_high stores
+        6.90666 ms, exactly like the live run that used to die on
+        ``Output alignment must be finite and between -40 and 40``.
+        """
+        from dsp.processing_plan import compile_processing_plan
+        from measurement.speaker_commit import require_speaker_candidate
+        state, channels = state_for(("low", "mid", "high"), (300, 2500))
+        start = state["modes"]["stereo-sub"]["processing"]
+        start["right_high"]["alignment_ms"] = 0.479166
+        start["left_high"]["alignment_ms"] = 6.90666
+        alignment, live = alignment_for(state, channels, side="right")
+        proposal = proposal_for(alignment, live, (2400, 402, 402), cutoffs=(300, 2500))
+        for role, delay in (("right_low", 0.0), ("right_mid", 41.625), ("right_high", 41.625)):
+            self.assertAlmostEqual(proposal["added_delay_ms"][role], delay, delta=0.1)
+        self.assertEqual(proposal["reference_role"], "right_low")
+        routed = ("left_low", "left_mid", "left_high",
+                  "right_low", "right_mid", "right_high", "sub1")
+        candidate = proposal["candidate_state"]["modes"]["stereo-sub"]["processing"]
+        # The largest value lands exactly on the +40 ms guard, and every
+        # routed way shares the same minimal offset (-2.104166 ms).
+        self.assertEqual(candidate["right_high"]["alignment_ms"], 40.0)
+        for role in ("left_low", "left_mid", "right_low", "sub1"):
+            self.assertAlmostEqual(candidate[role]["alignment_ms"], -2.104166, delta=0.1)
+        self.assertAlmostEqual(candidate["right_mid"]["alignment_ms"], 39.520834, delta=0.1)
+        self.assertAlmostEqual(candidate["left_high"]["alignment_ms"], 4.802494, delta=0.1)
+        # Roles outside the topology keep their stored alignment untouched.
+        for role, settings in candidate.items():
+            if role not in routed:
+                self.assertEqual(settings["alignment_ms"], start[role]["alignment_ms"], role)
+        # The unshifted intent: stored alignment plus the planned acoustic
+        # delays, exactly what the candidate held before the rebase.
+        intent = {role: start[role]["alignment_ms"] + proposal["added_delay_ms"].get(role, 0.0)
+                  for role in routed}
+        for first in routed:
+            for second in routed:
+                self.assertAlmostEqual(
+                    candidate[first]["alignment_ms"] - candidate[second]["alignment_ms"],
+                    intent[first] - intent[second], delta=1e-9,
+                    msg=f"relative delay changed: {first} vs {second}")
+        # The compiled physical plan equals the intent the proposal always
+        # meant: the rebase only adds one constant output delay.
+        plan = compile_processing_plan(
+            proposal["candidate_state"], output_key="dev", channels=channels,
+            sample_rate_hz=RATE, preset_loader=lambda name: {"chain": []},
+            neutralize_banks=True)
+        planned = {row["role"]: row["delay_ms"] for row in plan["outputs"]}
+        for role in routed:
+            self.assertAlmostEqual(planned[role], intent[role], delta=1e-9, msg=role)
+        # The commit gate still admits the rebased candidate.
+        accepted = require_speaker_candidate(
+            state, proposal["candidate_state"], output_key="dev", channels=channels)
+        self.assertEqual(accepted["revision"], state["revision"])
+
     def test_equal_arrivals_produce_an_unchanged_candidate(self):
         state, channels = state_for()
         alignment, live = alignment_for(state, channels)
@@ -796,11 +868,16 @@ class RejectionTests(unittest.TestCase):
                 self.alignment.propose(self.captures, planning=self.planning,
                                        live_target=self.live, cancel_requested=cancelled)
 
-    def test_out_of_range_candidate_is_rejected_instead_of_clamped(self):
+    def test_span_beyond_eighty_milliseconds_is_rejected_instead_of_clamped(self):
+        """A span wider than 80 ms cannot fit +-40 ms; the guard must keep firing."""
         state, channels = state_for()
-        state["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 39.0
+        processing = state["modes"]["stereo-sub"]["processing"]
+        processing["left_low"]["alignment_ms"] = 40.0
+        processing["left_high"]["alignment_ms"] = -40.0
         self.alignment, self.live = alignment_for(state, channels)
         self.captures = captures_for(self.alignment)
+        # The 3 ms plan would span 83 ms: rebasing it puts left_high below
+        # -40 ms, so validation rejects instead of clamping.
         self.assert_rejected("alignment")
 
     def test_unsupported_topology_and_missing_overlap_filters_fail_before_capture(self):
