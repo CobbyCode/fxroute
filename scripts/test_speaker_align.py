@@ -542,26 +542,61 @@ class RoutingAndProposalTests(unittest.TestCase):
                 processing[f"{other}_low"]["alignment_ms"] = -10.0
                 processing[f"{other}_high"]["alignment_ms"] = 12.25
                 processing["sub1"]["alignment_ms"] = 3.0
+                processing["main_l"]["alignment_ms"] = 1.25
                 original = copy.deepcopy(processing)
                 alignment, live = alignment_for(state, channels, side=side)
                 result = proposal_for(alignment, live)
                 self.assertEqual(result["added_delay_ms"],
                                  {f"{side}_low": 3.0, f"{side}_high": 0.0})
                 candidate = result["candidate_state"]["modes"]["stereo-sub"]["processing"]
-                # 39 + 3 = 42 ms: every routed role moves by the same -2 ms.
+                # 39 + 3 = 42 ms: every stored role moves by the same -2 ms,
+                # the Main roles dormant under the crossover included.
                 self.assertEqual(candidate[f"{side}_low"]["alignment_ms"], 40.0)
-                for role in (f"{side}_high", f"{other}_low", f"{other}_high", "sub1"):
+                for role in (f"{side}_high", f"{other}_low", f"{other}_high", "sub1",
+                             "main_l", "main_r"):
                     self.assertEqual(candidate[role]["alignment_ms"],
                                      original[role]["alignment_ms"] - 2.0, role)
-                # Dormant roles outside the routed topology stay untouched.
-                for role in ("main_l", "main_r"):
-                    self.assertEqual(candidate[role], original[role], role)
                 assert_timing_kept(self, state, result, channels)
 
+    def test_rebase_keeps_main_and_sub_timed_after_a_crossover_switch(self):
+        """Crossover off after a rebase: Main and Sub stand exactly as before.
+
+        The Main roles are dormant while the crossover is on, so a rebase of
+        the routed roles alone left them behind: switching the crossover off
+        put them off the sub by the rebase offset.
+        """
+        from audio.output_state import set_crossover
+        for side in ("left", "right"):
+            with self.subTest(side=side):
+                state, channels = state_for()
+                processing = state["modes"]["stereo-sub"]["processing"]
+                processing[f"{side}_low"]["alignment_ms"] = 39.0
+                processing["main_l"]["alignment_ms"] = 1.25
+                processing["main_r"]["alignment_ms"] = -0.5
+                processing["sub1"]["alignment_ms"] = 3.0
+                alignment, live = alignment_for(state, channels, side=side)
+                proposal = proposal_for(alignment, live)
+                candidate = proposal["candidate_state"]["modes"]["stereo-sub"]["processing"]
+                self.assertEqual(candidate[f"{side}_low"]["alignment_ms"], 40.0)
+                before = plan_delays(set_crossover(state, "stereo-sub", False), channels)
+                after = plan_delays(
+                    set_crossover(proposal["candidate_state"], "stereo-sub", False), channels)
+                self.assertEqual(set(before), {"main_l", "main_r", "sub1"})
+                self.assertEqual(set(after), set(before))
+                for first in before:
+                    for second in before:
+                        self.assertAlmostEqual(
+                            after[first] - after[second], before[first] - before[second],
+                            delta=1e-9, msg=f"{first} moved against {second}")
+
     def test_rebase_the_other_roles_cannot_follow_is_rejected(self):
-        """No shift of one side alone: an offset the routed roles cannot hold fails."""
+        """No shift of one side alone: an offset the stored roles cannot hold fails.
+
+        A dormant Main role blocks like a routed one: it renders against the
+        same sub once the crossover is off.
+        """
         for side, other in (("left", "right"), ("right", "left")):
-            for blocker in (f"{other}_low", "sub1"):
+            for blocker in (f"{other}_low", "sub1", "main_l"):
                 with self.subTest(side=side, blocker=blocker):
                     state, channels = state_for()
                     processing = state["modes"]["stereo-sub"]["processing"]
@@ -571,7 +606,8 @@ class RoutingAndProposalTests(unittest.TestCase):
                     original = copy.deepcopy(state)
                     alignment, live = alignment_for(state, channels, side=side)
                     with self.assertRaisesRegex(
-                            ValueError, r"needs 81\.500 ms between routed outputs"):
+                            ValueError, rf"without moving {blocker} \(-39\.500 ms\)"
+                                        r".*span 81\.500 ms"):
                         proposal_for(alignment, live)
                     self.assertEqual(state, original)
 
@@ -603,10 +639,13 @@ class RoutingAndProposalTests(unittest.TestCase):
             self.assertAlmostEqual(candidate[role]["alignment_ms"], -2.104166, delta=0.1)
         self.assertAlmostEqual(candidate["right_mid"]["alignment_ms"], 39.520834, delta=0.1)
         self.assertAlmostEqual(candidate["left_high"]["alignment_ms"], 4.802494, delta=0.1)
-        # Roles outside the topology keep their stored alignment untouched.
+        # Roles outside the topology (the dormant Main roles) carry the same
+        # offset, so a later crossover switch keeps them timed to the sub.
+        offset = candidate["sub1"]["alignment_ms"] - start["sub1"]["alignment_ms"]
         for role, settings in candidate.items():
             if role not in routed:
-                self.assertEqual(settings["alignment_ms"], start[role]["alignment_ms"], role)
+                self.assertAlmostEqual(settings["alignment_ms"] - start[role]["alignment_ms"],
+                                       offset, delta=1e-9, msg=role)
         # The unshifted intent: stored alignment plus the planned acoustic
         # delays, exactly what the candidate held before the rebase.
         intent = {role: start[role]["alignment_ms"] + proposal["added_delay_ms"].get(role, 0.0)
@@ -946,7 +985,7 @@ class RejectionTests(unittest.TestCase):
         self.captures = captures_for(self.alignment)
         # The 3 ms plan would span 83 ms: a common offset would put
         # left_high below -40 ms, so the proposal is rejected, not clamped.
-        self.assert_rejected("needs 83\\.000 ms between routed outputs")
+        self.assert_rejected("span 83\\.000 ms")
 
     def test_unsupported_topology_and_missing_overlap_filters_fail_before_capture(self):
         for mutate in (

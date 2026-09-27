@@ -218,6 +218,25 @@ class RequireCandidateTests(SessionFixture, unittest.TestCase):
             self.base, copy.deepcopy(self.base), output_key="dev", channels=6)
         self.assertEqual(result, self.base)
 
+    def test_dormant_roles_carry_exactly_the_common_rebase_offset(self):
+        """Main roles dormant under the crossover move with a rebase, never apart."""
+        rebased = copy.deepcopy(self.proposal["candidate_state"])
+        for settings in rebased["modes"]["stereo-sub"]["processing"].values():
+            settings["alignment_ms"] -= 2.0
+        require_speaker_candidate(self.base, rebased, output_key="dev", channels=6)
+        for label, candidate, role, key, change in (
+            ("left behind by the rebase", rebased, "main_l", "alignment_ms", 2.0),
+            ("moved apart from the rebase", rebased, "main_r", "alignment_ms", -0.5),
+            ("moved without a rebase", self.proposal["candidate_state"], "main_l",
+             "alignment_ms", -2.0),
+            ("gain changed", rebased, "main_r", "level_db", 1.0),
+        ):
+            with self.subTest(label):
+                tampered = copy.deepcopy(candidate)
+                tampered["modes"]["stereo-sub"]["processing"][role][key] += change
+                with self.assertRaisesRegex(ValueError, f"unrouted roles apart.*{role}"):
+                    require_speaker_candidate(self.base, tampered, output_key="dev", channels=6)
+
 
 class StageRestoreTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
     async def test_stage_then_restore_roundtrip(self):

@@ -77,7 +77,10 @@ def require_speaker_candidate(start_state: dict, candidate_state: dict, *,
 
     Every other field — routing, filters, polarities, subs, bass, banks,
     extras, mode — must equal the frozen start, and changed ways must be
-    actively routed (dormant stored banks authorize nothing). Delay/Gain are
+    actively routed (dormant stored banks authorize nothing). Dormant roles
+    instead carry exactly the common offset of a delay rebase past +40 ms:
+    the routed roles' smallest alignment change, so they keep their timing
+    against the subs after a crossover or routing switch. Delay/Gain are
     the shared physical base tuning measured through the active crossover
     with PEQ/convolver neutralized; PEQ/convolver correction happens
     afterwards. The revision must still be the start revision: no rebase.
@@ -110,10 +113,20 @@ def require_speaker_candidate(start_state: dict, candidate_state: dict, *,
             channels=channels,
             crossover_enabled=candidate["modes"][candidate["active_mode"]]["crossover_enabled"])
         topology.require_activatable()
-        unknown = [role for role in changed if role not in topology.roles]
+        # The common delay-rebase offset is the smallest routed alignment
+        # change (0 without a rebase): the reference way and every unmeasured
+        # routed role carry exactly it. Every dormant role must carry it too,
+        # unchanged ones included, and nothing else.
+        offset_ms = min(candidate_processing[role]["alignment_ms"]
+                        - start_processing[role]["alignment_ms"] for role in topology.roles)
+        unknown = [role for role in candidate_processing if role not in topology.roles and (
+            candidate_processing[role]["level_db"] != start_processing[role]["level_db"]
+            or abs(candidate_processing[role]["alignment_ms"]
+                   - start_processing[role]["alignment_ms"] - offset_ms) > 1e-9)]
         if unknown:
             raise ValueError(
-                "Speaker Align candidate aligns unrouted roles: " + ", ".join(sorted(unknown)))
+                "Speaker Align candidate moves unrouted roles apart from the routed ones: "
+                + ", ".join(sorted(unknown)))
     return candidate
 
 
