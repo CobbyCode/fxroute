@@ -1,6 +1,68 @@
 # Changelog
 
-## 1.0-beta10 (unreleased)
+## 1.0-beta10 (2026-09-27)
+
+Tenth public beta. Distribution: web demo on GitHub Pages,
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 and Ubuntu 26.04
+ISOs via SourceForge. Khadas/VIM1S stays internal and gets no public image.
+
+### Release provenance
+
+- Source stand: `main`. No Armbian or live-converter changes this cycle;
+  installer ships the Caddy SELinux proxy handling and the separated
+  Spotify Desktop/spotifyd lifecycles (see below).
+- The x86_64 Leap 16 ISO, the x86_64 Ubuntu 26.04 ISO and the Pi 4/Pi 5
+  images are built from the release commit; their SHA-256 digests are
+  recorded in this section once the builds exist.
+- The web demo snapshot was rebuilt from this stand (`demo/dist` parity is
+  green).
+- Explicitly not included: the unmerged `feature/adaptive-headroom` work
+  (convolver headroom derived from the realized filter peak). The
+  previously excluded `feature/multichannel-crossover` and
+  `feature/speaker-auto-alignment` work is merged in this cycle.
+
+### Output model / crossover / banks
+
+- Unified output model: Stereo and Stereo+Sub modes with an independent
+  crossover switch replace the separate mode/routing writes. Routing assigns
+  logical roles to hardware outputs, the assignments define the topology,
+  and the topology defines the filter banks, the crossover card, the
+  subwoofer card and what a measurement sweep excites.
+- Per-output processing plans compile Global and per-area bank state into a
+  backend-independent plan with a shared biquad budget (at most one PEQ in
+  IIR mode plus one convolver per way/sub bank, at most 32 biquad stages per
+  output including crossover filters). The native engine renders per-output
+  SOS biquads and convolver banks; the legacy `output-mode`/`output-routing`
+  POST routes and `set_bass` are removed.
+- Crossover design from analog prototypes with a prewarped bilinear
+  transform (Linkwitz-Riley cascades two Butterworth halves, cutoff at
+  -6 dB; Bessel is magnitude-normalized). A cleared crossover direction is a
+  working Off state, Off hides its frequency/slope rows, and the response
+  graph offers draggable cutoff lines.
+- Strict per-bank preset separation: Global, All Banks, each complete stereo
+  pair and each routed mono sub keep their own preset, A/B compare, import
+  and measurement scope. `All Banks` disables Measure and Import; legacy
+  stocks migrate to Global.
+- Sub slots are derived from the topology, not the assignment list; stereo
+  subs stay coupled until unlinked, with per-side L/R crossovers available
+  once unlinked.
+
+### Speaker Auto Alignment
+
+- Speaker Auto Alignment for clean crossover topologies (Crossover On with
+  2, 3 or 4 ways, both filters set at every crossover point, Global bank
+  selected). `Align Left`/`Align Right` run one side at a time with the
+  microphone fixed and require a configured electrical reference; a
+  reference on the microphone's own input channel is refused before the
+  first sweep.
+- One shared take per speaker side drives planning and verification; way
+  captures share a common time base, and the planning/verification runs land
+  on the graph as `Speaker Align <Side> · Before/After` and can be saved
+  like any other run.
+- Planned delays are rebased timing-neutrally into the -40…+40 ms window: a
+  common offset moves every stored output of the current mode so the largest
+  value lands on +40 ms. If an output cannot take the offset, the run is
+  refused before anything is applied and names that output.
 
 ### Playback / DSP
 
@@ -18,6 +80,97 @@
   checks each enumeration control against the values the installed plugin
   declares and refuses the stage with a clear error for an undeclared value,
   so an incompatible LSP cannot run silently with a different filter design.
+- PEQ Q limit raised from 20 to the LSP port bound of 100 (REW exports
+  carry Q above 20); the native DSP rejects out-of-range PEQ gain, delay
+  and crystalizer values fail-closed instead of clamping silently.
+- Playback commits are scoped to the source generation with queue/claim
+  guards; the runtime verification detects a direct source hardware bypass
+  and output selection commits only after a verified graph apply.
+
+### REW / preset imports
+
+- REW import reads both REW text exports: *Export filter settings as text*
+  (`Filter 1: ON PK Fc … Hz Gain … dB Q …`) and *Export filter settings as
+  formatted text* (header row plus one row per filter, with or without the
+  Bandwidth column, which is derived from Fc and Q). Only peaking filters
+  (`PK`/`PEQ`) are imported; filters switched off in REW stay as disabled
+  bands, empty `None` slots, header and note lines are skipped. Any other
+  filter type, or a filter line that cannot be read, rejects the whole
+  import and no partial preset is created. Band limits are 20–20000 Hz,
+  ±24 dB, Q 0.1–100.
+- The import panel follows the stereo/mono bank model (mono banks take one
+  mono filter field); convolver import accepts IEEE float64 and converts
+  cleanly to float32.
+
+### Measurement
+
+- Frozen measurement targets: mode, area bank, revision and processing are
+  frozen at job creation, Repeat and Advanced run as internal way sweeps of
+  the frozen area, and the committed plan is staged for manual sweeps
+  without an area bank. A mono area hides the L/R chips and disables Start
+  LR Repeat with an explanation.
+- Isolated sub sweeps are normalized in their passband; saved runs keep the
+  frozen area visible and Speaker Align takes share one time base in every
+  IR graph.
+- Measurement status lines are unified across Sweep, Auto Sub, Speaker Align
+  and SPL; the saved-run delete action stays at the trailing edge and a
+  saved capture input survives discovery losing `device_serial`.
+- Saved AutoSub subs are named by the run's topology (`Sub`, `Sub 1/2`,
+  `Sub L/R`); pre-sweep CPU cost and reference sweep length are cut and the
+  committed path reports the gain decision and reason.
+
+### Library / streaming / providers / radio / power
+
+- Fail-closed hardening across stores and lifecycles: playlist/station
+  mutations refuse corrupt JSON, incomplete scans stay incomplete, the queue
+  is pruned after rescan, favorites changed mid-scan survive the cache
+  publish, and ZIP playlist names stay exact with rollback when a ZIP
+  playlist persist fails.
+- Provider maintenance is serialized; TIDAL device/PKCE pending state is
+  isolated, the TIDAL cache is cleared on logout, Qobuz connect state
+  resets on lifecycle, and install/service operations fail when the
+  provider is not ready.
+- Radio reconnect tasks drain across stop and manual restart, valid EOF
+  deferred during a reconnect reset replays, stations dedupe by saved
+  stream URL, and power probes are offloaded with a guarded Spotify read
+  and a reaped `dbus-send` child on asyncio cancellation.
+
+### Installer / security
+
+- Caddy proxy on SELinux hosts: tight stock-plus-module policy preferred,
+  unconfined fallback with a warning when the policy cannot be prepared;
+  the Caddy admin endpoint stays disabled and legacy FXRoute-owned Caddy
+  data directories are accepted by the guard.
+- Spotify Desktop and spotifyd lifecycles are separated (providers-only
+  autostart, session-gated autostart default); restore backups and the
+  native build reconciliation fail closed.
+- Host allowlist, trusted-proxy `X-Forwarded-*` handling and WebSocket
+  origin check are enforced centrally; main API transport routes validate
+  JSON objects and downloads stay bounded.
+
+### UI / internal maintenance
+
+- Crossover cutoff lines are draggable in the response graph; crossover,
+  subwoofer and hybrid wizard layouts stay inside their cards with compact
+  phone rhythms, centered phone select values and split-sub crossover group
+  names; subwoofer trim display steps at precise 0.1.
+- Shared CSS tokens, deduped breakpoints and reorganized partials; tooltip
+  re-render work is skipped while the app mutates elsewhere.
+- Frontend module extraction without behavior change (`app.js` split into
+  playback, library, output, provider, settings, measurement editor and
+  helper modules); regression coverage added for imports, banks, Q range,
+  alignment, crossover drag and the UI audit fixes.
+- MANUAL and README brought to the current output, DSP, import and
+  measurement model; the demo follows the current measurement, align and
+  crossover state and gains the real `.104` 3-way run as a second alignment
+  example.
+
+Public release artifact names (to be built from tag `v1.0-beta10`):
+
+- `fxroute-1.0-beta10-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta10-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta10-x86_64-leap16.iso` (SourceForge, + `.sha256`)
+- `fxroute-1.0-beta10-x86_64-ubuntu26.04.iso` (SourceForge, + `.sha256`)
 
 ## 1.0-beta9 (2026-09-19)
 
