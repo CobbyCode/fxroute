@@ -188,6 +188,34 @@ function dualState({ text = '', file = null }) {
     assert.equal(requests.at(-1).url, '/api/dsp/presets/import-rew-peq');
     assert.equal(requests.at(-1).fields.file[0].name, 'Mono Test.txt');
 
+    // The visible REW text is authoritative after editing an uploaded file.
+    dualState({ file: new File(['1 on PK 100 -1 1'], 'mono.txt'),
+        text: '1 on PK 200 -3 2' });
+    await context.createDualFilterPreset();
+    assert.equal(await requests.at(-1).fields.file[0].text(), '1 on PK 200 -3 2');
+
+    mode().selected_bank = 'main';
+    dualState({ file: new File(['1 on PK 100 -1 1'], 'left.txt'),
+        text: '1 on PK 200 -3 2' });
+    context.elements.effectsRewRightFile.files = [new File(['1 on PK 300 -1 1'], 'right.txt')];
+    context.elements.effectsRewRightText.value = '1 on PK 400 -4 3';
+    await context.createDualFilterPreset();
+    assert.equal(requests.at(-1).url, '/api/dsp/presets/import-filter-dual');
+    assert.equal(requests.at(-1).fields.bank_id[0], 'main');
+    assert.equal(requests.at(-1).fields.left_text[0], '1 on PK 200 -3 2');
+    assert.equal(requests.at(-1).fields.right_text[0], '1 on PK 400 -4 3');
+    assert.equal(requests.at(-1).fields.left_file, undefined);
+    assert.equal(requests.at(-1).fields.right_file, undefined);
+
+    // A text file on one side can be paired with pasted text on the other.
+    dualState({ file: new File(['1 on PK 100 -1 1'], 'left.txt'),
+        text: '1 on PK 200 -3 2' });
+    context.elements.effectsRewRightText.value = '1 on PK 400 -4 3';
+    const beforeMixedText = requests.length;
+    await context.createDualFilterPreset();
+    assert.equal(requests.length, beforeMixedText + 1);
+    assert.equal(requests.at(-1).fields.right_text[0], '1 on PK 400 -4 3');
+
     // A stereo bank keeps preset files in its dedicated file area.
     mode().selected_bank = 'main';
     const before = requests.length;

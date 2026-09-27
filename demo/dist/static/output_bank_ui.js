@@ -323,7 +323,7 @@
             deps.showToast('Use the same file type on Left and Right', 'error');
             return;
         }
-        if (!!leftFile !== !!rightFile) {
+        if (!usingDualConvolverFiles && (leftFileKind === 'convolver' || rightFileKind === 'convolver')) {
             if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = '<div style="color: var(--danger);">Provide both Left and Right files.</div>';
             deps.showToast('Provide both Left and Right files', 'error');
             return;
@@ -369,11 +369,15 @@
                     formData.append('file', leftFile);
                 } else {
                     endpoint = usingDualConvolverFiles ? '/api/dsp/presets/create-with-ir' : '/api/dsp/presets/import-rew-peq';
-                    formData.append('file', leftFile || new File([leftText], `${presetName}.txt`, { type: 'text/plain' }));
+                    formData.append('file', usingDualConvolverFiles ? leftFile
+                        : new File([leftText], `${presetName}.txt`, { type: 'text/plain' }));
                 }
             } else {
-                if (leftFile) formData.append('left_file', leftFile);
-                if (rightFile) formData.append('right_file', rightFile);
+                // REW files populate editable text; send the visible values.
+                if (usingDualConvolverFiles) {
+                    formData.append('left_file', leftFile);
+                    formData.append('right_file', rightFile);
+                }
             }
             appendBankBindingFields(formData);
 

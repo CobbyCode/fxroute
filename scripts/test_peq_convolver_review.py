@@ -107,6 +107,32 @@ class PeqConvolverReviewTests(unittest.TestCase):
             self.manager.import_rew_peq_text(
                 "1 on PK 100 3.0 1.0\n2 on HS 5000 2.0 1.0\n")
 
+    def test_rew_filter_settings_export_preserves_values_and_disabled_bands(self):
+        created = self.manager.create_peq_preset_from_rew_text("REW export", (
+            "Filter Settings file\nRoom EQ V5.40\nEqualiser: Generic\n"
+            "Filter 1: ON PK Fc 46.30 Hz Gain -4.80 dB Q 3.387\n"
+            "Filter 2: OFF PK Fc 1200 Hz Gain +2.50 dB Q 0.75\n"
+            "Filter 3: ON None\n"), bank="low")
+        stored = self.manager.preset_store.read(created["name"])
+        self.assertEqual(stored["metadata"]["bank"], "low")
+        bands = stored["chain"][0]["params"]["bands"]
+        self.assertEqual([(b["frequencyHz"], b["gainDb"], b["q"], b["enabled"])
+                          for b in bands], [(46.3, -4.8, 3.387, True),
+                                             (1200.0, 2.5, 0.75, False)])
+
+    def test_rew_bad_filter_lines_never_create_partial_presets(self):
+        for invalid in (
+            "2 on PK 200 -2 broken", "2 on PK 200 -2 1.0junk",
+            "Filter 2: ON PK Fc 200 Hz Gain -2 dB Q broken",
+            "Filter 2: ON LS Fc 100 Hz Gain 3 dB",
+            "2 on HS 5000 2", "Filter 2: ON PK Fc 100 Hz Gain -2 dB",
+        ):
+            with self.subTest(line=invalid):
+                with self.assertRaisesRegex(ValueError, "REW"):
+                    self.manager.create_peq_preset_from_rew_text(
+                        "Partial", "1 on PK 100 3.0 1.0\n" + invalid)
+                self.assertFalse(self.manager.preset_store.path("Partial").exists())
+
     def test_empty_and_invalid_ir_never_reach_engine(self):
         empty = self.home / "empty.wav"
         write_wav(empty, frames=b"")

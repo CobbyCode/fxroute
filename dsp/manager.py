@@ -1168,25 +1168,32 @@ class DSPManager:
             raise ValueError("REW PEQ text is empty")
         bands = []
         unsupported: List[str] = []
-        pattern = re.compile(
-            r"^\s*\d+\s+(true|false|on|off)\s+(?:auto\s+)?([A-Za-z]+)\s+"
-            r"([0-9.]+)\s+([-+0-9.]+)\s+([0-9.]+)", re.IGNORECASE)
+        number = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+        header = re.compile(
+            r"^\s*(?:Filter\s+\d+\s*:\s*|\d+\s+)"
+            r"(true|false|on|off)\s+(?:auto\s+)?(\S+)(.*)$", re.IGNORECASE)
+        compact_values = re.compile(rf"\s*({number})\s+({number})\s+({number})\s*")
+        export_values = re.compile(
+            rf"\s*Fc\s+({number})\s+Hz\s+Gain\s+({number})\s+dB\s+Q\s+({number})\s*",
+            re.IGNORECASE)
         for line_number, line in enumerate(text.splitlines(), start=1):
-            match = pattern.match(line)
+            match = header.match(line)
             if not match:
+                if re.match(r"^\s*(?:Filter\s+\d+\b|\d+\s+)", line, re.IGNORECASE):
+                    raise ValueError(f"REW PEQ line {line_number} is malformed")
                 continue
             enabled_token = match.group(1).lower()
             kind_token = match.group(2).upper()
             enabled = enabled_token in ("true", "on")
+            if kind_token == "NONE" and not match.group(3).strip():
+                continue
             if kind_token not in ("PK", "PEQ"):
                 unsupported.append(f"line {line_number}: filter type {match.group(2)}")
                 continue
-            try:
-                frequency = float(match.group(3))
-                gain = float(match.group(4))
-                q = float(match.group(5))
-            except ValueError:
-                raise ValueError(f"REW PEQ line {line_number} has invalid numbers") from None
+            values = compact_values.fullmatch(match.group(3)) or export_values.fullmatch(match.group(3))
+            if values is None:
+                raise ValueError(f"REW PEQ line {line_number} has invalid frequency, gain or Q")
+            frequency, gain, q = map(float, values.groups())
             bands.append({"filterType": "bell", "frequencyHz": frequency,
                           "gainDb": gain, "q": q,
                           "enabled": enabled})
