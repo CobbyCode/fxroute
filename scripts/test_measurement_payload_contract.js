@@ -208,4 +208,44 @@ assert.strictEqual(referenceEntries.reference_input_channel_left, undefined);
 assert.strictEqual(referenceEntries.reference_input_channel_right, undefined);
 console.log('unknown-topology reference payload gated: ok');
 
+// Exercise the app's actual wiring: isolated builder tests miss a dropped
+// dependency and silently fall back to the shared reference for both sides.
+{
+    const appSource = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+    const wiring = appSource.match(/window\.FXRouteMeasurementFlows\?\.init\(\{[\s\S]*?\n\}\);/)[0];
+    const state = { measurement: {
+        inputs: [{ id: 'interface', channels: 18 }], selectedInputId: 'interface',
+        selectedMicInputChannel: '1', selectedReferenceInputChannel: '7',
+        selectedReferenceInputChannelLeft: '7', selectedReferenceInputChannelRight: '8',
+    } };
+    const ctx = { state, elements: {}, FormData, console,
+        measurementAreaFromCatalog: () => ({ bank_id: 'global' }),
+    };
+    // Unrelated app callbacks are lazy; the real setup and flow modules own
+    // all channel normalization and request serialization in this check.
+    for (const match of wiring.matchAll(/^    (\w+),$/gm)) ctx[match[1]] = () => {};
+    ctx.window = ctx;
+    vm.createContext(ctx);
+    for (const file of ['measurement_setup.js', 'hybrid_measurement.js', 'measurement_flows.js']) {
+        vm.runInContext(fs.readFileSync(path.join(root, 'static', file), 'utf8'), ctx);
+    }
+    ctx.FXRouteMeasurementSetup.init({ getState: () => state });
+    vm.runInContext(wiring, ctx);
+    for (const mode of ['subwoofer-2.2', 'subwoofer-2.2-stereo']) {
+        for (const step of ctx.FXRouteHybridMeasurement.buildSequence(mode).steps) {
+            const form = ctx.FXRouteMeasurementFlows.buildHybridMeasurementForm(step);
+            assert.equal(form.get('reference_input_channel_left'), '7', `${mode}/${step.id}: retain Ref L`);
+            assert.equal(form.get('reference_input_channel_right'), '8', `${mode}/${step.id}: retain Ref R`);
+            assert.equal(form.get('channel'), step.channel);
+            assert.equal(form.get('measurement_bank'), 'global');
+        }
+    }
+    state.measurement.inputs[0].channels = 2;
+    state.measurement.selectedReferenceInputChannel = '2';
+    const sharedForm = ctx.FXRouteMeasurementFlows.buildHybridMeasurementForm({ channel: 'right', role: 'mlp' });
+    assert.equal(sharedForm.get('reference_input_channel'), '2', 'two-channel interfaces retain their shared reference');
+    assert.equal(sharedForm.has('reference_input_channel_right'), false);
+    console.log('app-wired Advanced reference payloads: ok');
+}
+
 console.log('measurement payload contracts: ok');

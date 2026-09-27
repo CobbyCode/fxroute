@@ -78,6 +78,7 @@ window.FXRouteMeasurementFlows?.init({
         return area ? area.bank_id : '';
     },
     getMeasurementReferenceWarning: (...args) => window.FXRouteMeasurementSetup.getMeasurementReferenceWarning(...args),
+    appendMeasurementReferenceFields: (formData) => window.FXRouteMeasurementSetup.appendMeasurementReferenceFields(formData),
     normalizeOutputModeName,
     getMeasurementJobStatus: (job) => MeasurementUI.getMeasurementJobStatus(job),
     normalizeMeasurementEntry: (measurement, index) => MeasurementUI.normalizeMeasurementEntry(measurement, index),

@@ -329,6 +329,8 @@
             subs.left.active = subs.right.active = !!activeChannel;
         } else if (normalized === 'subwoofer-2.2-stereo') {
             subs.left.visible = subs.right.visible = true;
+            subs.left.label = 'SUB L';
+            subs.right.label = 'SUB R';
             subs.left.active = stereoStep || activeChannel === 'left';
             subs.right.active = stereoStep || activeChannel === 'right';
         }
