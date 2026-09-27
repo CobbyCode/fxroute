@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Focused tests for the Qobuz provider (qbzd control plane).
+"""Focused tests for the Qobuz provider (fork qbzd control plane).
 
 No qbzd daemon or network is required: the ``streaming.qobuz.backend`` HTTP
-helpers are patched with canned JSON.
+helpers are patched with canned JSON in the fork daemon shapes
+(``/api/status`` with ``logged_in``/``qconnect``, ``/api/playback`` transport
+facts, ``/api/queue`` with ``QueueTrack`` objects).
 """
 
 import sys
@@ -21,32 +23,71 @@ from streaming.qobuz.provider import QobuzProvider
 
 def _status_payload(**overrides):
     payload = {
-        "auth": {"state": "logged_in", "subscription": "studio", "user_id": 123},
-        "audio": {"backend": "pipewire", "sample_rate": 96000, "bit_depth": 24, "device_open": True},
-        "playback": {"state": "playing", "title": None, "artist": None, "track_id": None,
-                     "duration": None, "position": None, "volume": 0.75, "muted": False},
-        "qconnect": {"device_name": "QBZ (fxroute)", "enabled": True, "session_active": True, "state": "on"},
-        "network": {"online": True},
+        "audio": {"cache_mb": 400},
+        "logged_in": True,
+        "qconnect": True,
+        "state": "playing",
+        "track_id": 42,
     }
     payload.update(overrides)
     return payload
 
 
-def _now_playing_payload(**overrides):
+def _playback_payload(**overrides):
     payload = {
-        "playback": {
-            "is_playing": True, "position": 30, "duration": 200, "track_id": 42,
-            "volume": 0.8, "shuffle": True, "repeat": "all",
-            "sample_rate": 96000, "bit_depth": 24, "muted": False, "queue_len": 3,
-        },
-        "track": {
-            "id": 42, "title": "T", "artist": "A", "album": "L",
-            "duration_secs": 200, "artwork_url": "https://art/q.jpg",
-            "hires": True, "bit_depth": 24, "sample_rate": 96.0, "source": "qobuz",
-        },
+        "state": "Playing",
+        "track_id": 42,
+        "position_secs": 30,
+        "duration_secs": 200,
+        "volume": 0.8,
+        "sample_rate": 96000,
+        "bit_depth": 24,
     }
     payload.update(overrides)
     return payload
+
+
+def _track_payload(**overrides):
+    payload = {
+        "id": 42, "title": "T", "artist": "A", "album": "L",
+        "duration_secs": 200, "artwork_url": "https://art/q.jpg",
+        "hires": True, "bit_depth": 24, "sample_rate": 96.0, "source": "qobuz",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _queue_payload(**overrides):
+    payload = {
+        "current_index": 3,
+        "current_track": _track_payload(
+            id=50, title="Current", artist="A", album="L",
+            artwork_url="https://art/current.jpg", duration_secs=180,
+        ),
+        "history": [],
+        "repeat": "Off",
+        "shuffle": False,
+        "stop_after_track_id": None,
+        "total_tracks": 7,
+        "upcoming": [
+            {"id": 51, "title": "Next One", "artist": "N", "album": "M",
+             "artwork_url": "https://art/next.jpg", "duration_secs": 200},
+            {"id": 52, "title": "After", "artist": "B", "album": "C",
+             "artwork_url": "", "duration_secs": 210},
+        ],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _full_routes(**overrides):
+    routes = {
+        "/api/status": _status_payload(),
+        "/api/playback": _playback_payload(),
+        "/api/queue": _queue_payload(current_track=_track_payload(), repeat="All", shuffle=True),
+    }
+    routes.update(overrides)
+    return routes
 
 
 class QobuzBackendTests(unittest.TestCase):
@@ -104,7 +145,7 @@ class QobuzAvailabilityTests(unittest.IsolatedAsyncioTestCase):
 class QobuzStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_authenticated_playing_state_with_full_metadata(self):
         provider = QobuzProvider()
-        getter = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
+        getter = _fake_get(_full_routes())
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
@@ -131,12 +172,12 @@ class QobuzStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_khz_sample_rate_normalized_and_lowres_still_flac(self):
         provider = QobuzProvider()
-        payload = _now_playing_payload(
-            track={"id": 7, "title": "N", "artist": "X", "album": "Y",
-                   "duration_secs": 200, "artwork_url": "", "hires": False,
-                   "bit_depth": 16, "sample_rate": 44.1, "source": "qobuz"},
-        )
-        getter = _fake_get({"/api/status": _status_payload(), "/api/now-playing": payload})
+        queue = _queue_payload(current_track={
+            "id": 7, "title": "N", "artist": "X", "album": "Y",
+            "duration_secs": 200, "artwork_url": "", "hires": False,
+            "bit_depth": 16, "sample_rate": 44.1, "source": "qobuz",
+        })
+        getter = _fake_get(_full_routes(**{"/api/queue": queue}))
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
@@ -146,13 +187,17 @@ class QobuzStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["bit_depth"], 16)
         self.assertEqual(status["audio_format"], "flac")
 
-    async def test_unauthenticated_state_falls_back_to_status_summary(self):
+    async def test_unauthenticated_state_reports_stopped_without_metadata(self):
         provider = QobuzProvider()
-        payload = _status_payload(
-            auth={"state": "needs_auth", "subscription": None, "user_id": None},
-            qconnect={"device_name": "QBZ (fxroute)", "enabled": False, "session_active": False, "state": "off"},
-        )
-        getter = _fake_get({"/api/status": payload, "/api/now-playing": None})
+        getter = _fake_get({
+            "/api/status": _status_payload(logged_in=False, qconnect=False, state="no_session",
+                                           track_id=0),
+            "/api/playback": _playback_payload(state="Stopped", track_id=0, position_secs=0,
+                                               duration_secs=0, volume=1.0, sample_rate=0,
+                                               bit_depth=0),
+            "/api/queue": _queue_payload(current_track=None, current_index=None, total_tracks=0,
+                                         upcoming=[]),
+        })
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
@@ -160,10 +205,10 @@ class QobuzStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(status["authenticated"])
         self.assertFalse(status["connected"])
-        self.assertEqual(status["status"], "Playing")
+        self.assertEqual(status["status"], "Stopped")
         self.assertEqual(status["trackId"], "")
-        self.assertEqual(status["sample_rate"], 96000)  # from /api/status audio (Hz)
-        self.assertEqual(status["bit_depth"], 24)
+        self.assertIsNone(status["sample_rate"])
+        self.assertIsNone(status["bit_depth"])
 
     async def test_unavailable_qbzd_reports_stopped_without_network(self):
         provider = QobuzProvider()
@@ -182,59 +227,63 @@ class QobuzStandbyFlagTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         connect_state.reset()
 
-    async def _status(self, payload):
+    async def _status(self, routes):
         provider = QobuzProvider()
-        getter = _fake_get({"/api/status": payload, "/api/now-playing": None})
+        getter = _fake_get(routes)
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
             return await provider.status()
 
     async def test_deselected_device_keeps_track_paused_and_flags_standby(self):
-        # Live-verified on .104: after the device is deselected in the app,
-        # qbzd keeps the last track paused with its metadata and session_active
-        # stays true. Journal-tracked selection says inactive: standby.
+        # After the device is deselected in the app, the daemon keeps the
+        # last track paused with its metadata while the session persists.
+        # Journal-tracked selection says inactive: standby.
         connect_state.set_device_active(False)
-        payload = _status_payload(
-            playback={"state": "paused", "title": "Diamonds", "artist": "A", "track_id": 42,
-                      "duration": 194, "position": 105, "volume": 1.0, "muted": False},
-            qconnect={"device_name": "FXRoute", "enabled": True,
-                      "session_active": True, "state": "connected"},
-        )
-        status = await self._status(payload)
+        routes = _full_routes(**{
+            "/api/status": _status_payload(state="paused"),
+            "/api/playback": _playback_payload(state="Paused", position_secs=105,
+                                               duration_secs=194, volume=1.0),
+            "/api/queue": _queue_payload(current_track=_track_payload(
+                id=42, title="Diamonds", artist="A", album="L", duration_secs=194,
+                artwork_url="https://art/d.jpg", hires=True, bit_depth=16,
+                sample_rate=44.1)),
+        })
+        status = await self._status(routes)
         self.assertEqual(status["status"], "Paused")
         self.assertTrue(status["connected"])
         self.assertTrue(status["qbzd_standby"])
 
     async def test_selected_device_paused_shows_card_not_standby(self):
-        # Pause while FXRoute is the selected device is a paused now-playing
-        # card, not standby: standby tracks selection, not play/pause.
+        # Pause while FXRoute is the selected device is a paused card,
+        # not standby: standby tracks selection, not play/pause.
         connect_state.set_device_active(True)
-        payload = _status_payload(
-            playback={"state": "paused", "title": "Diamonds", "artist": "A", "track_id": 42,
-                      "duration": 194, "position": 105, "volume": 1.0, "muted": False},
-            qconnect={"device_name": "FXRoute", "enabled": True,
-                      "session_active": True, "state": "connected"},
-        )
-        status = await self._status(payload)
+        routes = _full_routes(**{
+            "/api/playback": _playback_payload(state="Paused", position_secs=105,
+                                               duration_secs=194, volume=1.0),
+        })
+        status = await self._status(routes)
         self.assertEqual(status["status"], "Paused")
         self.assertFalse(status["qbzd_standby"])
 
     async def test_stopped_with_inactive_device_flags_standby(self):
         connect_state.set_device_active(False)
-        payload = _status_payload(
-            playback={"state": "stopped", "title": None, "artist": None, "track_id": None,
-                      "duration": None, "position": None, "volume": 1.0, "muted": False},
-            qconnect={"device_name": "QBZ (fxroute)", "enabled": True,
-                      "session_active": False, "state": "idle"},
-        )
-        status = await self._status(payload)
+        routes = _full_routes(**{
+            "/api/status": _status_payload(logged_in=True, qconnect=False, state="idle",
+                                           track_id=0),
+            "/api/playback": _playback_payload(state="Stopped", track_id=0, position_secs=0,
+                                               duration_secs=0, volume=1.0, sample_rate=0,
+                                               bit_depth=0),
+            "/api/queue": _queue_payload(current_track=None, current_index=None,
+                                         total_tracks=0, upcoming=[]),
+        })
+        status = await self._status(routes)
         self.assertEqual(status["status"], "Stopped")
         self.assertTrue(status["qbzd_standby"])
 
     async def test_playing_never_flags_standby(self):
         connect_state.set_device_active(True)
-        status = await self._status(_status_payload())
+        status = await self._status(_full_routes())
         self.assertEqual(status["status"], "Playing")
         self.assertFalse(status["qbzd_standby"])
 
@@ -242,11 +291,11 @@ class QobuzStandbyFlagTests(unittest.IsolatedAsyncioTestCase):
         # Fresh start without journal evidence: show the card instead of a
         # possibly wrong "ready".
         self.assertIsNone(connect_state.is_device_active())
-        payload = _status_payload(
-            playback={"state": "paused", "title": "X", "artist": "A", "track_id": 42,
-                      "duration": 100, "position": 5, "volume": 1.0, "muted": False},
-        )
-        status = await self._status(payload)
+        routes = _full_routes(**{
+            "/api/playback": _playback_payload(state="Paused", position_secs=5,
+                                               duration_secs=100, volume=1.0),
+        })
+        status = await self._status(routes)
         self.assertFalse(status["qbzd_standby"])
 
     async def test_unavailable_daemon_has_no_standby_flag(self):
@@ -258,12 +307,12 @@ class QobuzStandbyFlagTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_stream_facts_survive_transient_now_playing_gap(self):
-        # A transient now-playing gap (pause/transition) must not degrade a
+    async def test_stream_facts_survive_transient_queue_gap(self):
+        # A transient queue gap (pause/transition) must not degrade a
         # complete track's quality data: the footer tag would collapse from
-        # 'FLAC · 24bit · 44.1kHz' to the bare rate.
+        # 'FLAC · 24bit · 96kHz' to the bare rate.
         provider = QobuzProvider()
-        first = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
+        first = _fake_get(_full_routes())
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=first):
@@ -273,15 +322,12 @@ class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["bit_depth"], 24)
         self.assertEqual(status["audio_format"], "flac")
 
-        # Same track, but now-playing loses the track and /api/status audio
-        # has no rate/depth either: the known facts must be restored.
+        # Same track, but the queue drops the track object while playback
+        # still reports the negotiated rate/depth: the known facts stay.
         gap = _fake_get({
-            "/api/status": _status_payload(
-                audio={"backend": "pipewire", "device_open": True},
-                playback={"state": "playing", "title": "T", "artist": "A", "track_id": 42,
-                          "duration": 200, "position": 30, "volume": 0.8, "muted": False},
-            ),
-            "/api/now-playing": None,
+            "/api/status": _status_payload(),
+            "/api/playback": _playback_payload(),
+            "/api/queue": _queue_payload(current_track=None),
         })
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
@@ -295,55 +341,39 @@ class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_consecutive_full_and_reduced_readings_stay_complete(self):
         # The canonical footer state must stay fully complete across a sequence
         # of full and reduced readings of the *same* track. A partial reading
-        # (e.g. /api/status audio still reports a rate but the now-playing
-        # track is gone, so audio_format/bit_depth vanish) must never erase a
-        # field the previous complete reading already delivered.
+        # (queue track gone, playback still reporting the rate) must never
+        # erase a field the previous complete reading already delivered.
         provider = QobuzProvider()
 
-        async def read(now_playing, status_payload):
+        async def read(queue):
             getter = _fake_get({
-                "/api/status": status_payload,
-                "/api/now-playing": now_playing,
+                "/api/status": _status_payload(),
+                "/api/playback": _playback_payload(),
+                "/api/queue": queue,
             })
             with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
                  mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
                  mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
                 return await provider.status()
 
-        full_np = _now_playing_payload()
-        full_status = _status_payload()
+        full_queue = _queue_payload(current_track=_track_payload())
+        reduced_queue = _queue_payload(current_track=None)
 
-        # Reduced reading: now-playing gone, but /api/status audio still
-        # reports the negotiated rate while the track id is unchanged. This is
-        # the exact shape that used to degrade the footer to the bare rate.
-        reduced_np = None
-        reduced_status = _status_payload(
-            audio={"backend": "pipewire", "sample_rate": 96000, "bit_depth": None, "device_open": True},
-            playback={"state": "playing", "title": "T", "artist": "A", "track_id": 42,
-                      "duration": 200, "position": 30, "volume": 0.8, "muted": False},
-        )
-
-        sequence = [
-            (full_np, full_status),
-            (reduced_np, reduced_status),
-            (full_np, full_status),
-            (reduced_np, reduced_status),
-            (reduced_np, reduced_status),
-        ]
-        for index, (np_payload, status_payload) in enumerate(sequence):
-            status = await read(np_payload, status_payload)
+        sequence = [full_queue, reduced_queue, full_queue, reduced_queue, reduced_queue]
+        for index, queue in enumerate(sequence):
+            status = await read(queue)
             self.assertEqual(status["trackId"], "42", f"step {index}")
             self.assertEqual(status["sample_rate"], 96000, f"step {index}")
             self.assertEqual(status["bit_depth"], 24, f"step {index}")
             self.assertEqual(status["audio_format"], "flac", f"step {index}")
 
     async def test_unattributed_reading_never_clobbers_remembered_facts(self):
-        # A reading with no track id at all (now-playing gone and /api/status
-        # track_id empty) must not erase the remembered facts of the track that
-        # just played: the next attributable partial reading of the same track
-        # must still restore the full facts instead of degrading to the rate.
+        # A reading with no track id at all (queue track gone and playback
+        # track_id reset) must not erase the remembered facts of the track
+        # that just played: the next attributable partial reading of the same
+        # track must still restore the full facts.
         provider = QobuzProvider()
-        first = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
+        first = _fake_get(_full_routes())
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=first):
@@ -351,14 +381,12 @@ class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["trackId"], "42")
         self.assertEqual(status["audio_format"], "flac")
 
-        # Unattributed gap: no now-playing and /api/status reports no track id.
+        # Unattributed gap: queue track gone and playback reports no track.
         anonymous = _fake_get({
-            "/api/status": _status_payload(
-                audio={"backend": "pipewire", "device_open": True},
-                playback={"state": "playing", "title": None, "artist": None, "track_id": None,
-                          "duration": None, "position": None, "volume": 0.8, "muted": False},
-            ),
-            "/api/now-playing": None,
+            "/api/status": _status_payload(track_id=0),
+            "/api/playback": _playback_payload(track_id=0, position_secs=0, duration_secs=0,
+                                               volume=0.8, sample_rate=0, bit_depth=0),
+            "/api/queue": _queue_payload(current_track=None),
         })
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
@@ -372,12 +400,9 @@ class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
         # Same track again, but only the negotiated rate is available: the
         # remembered facts must survive the anonymous reading in between.
         partial = _fake_get({
-            "/api/status": _status_payload(
-                audio={"backend": "pipewire", "sample_rate": 96000, "bit_depth": None, "device_open": True},
-                playback={"state": "playing", "title": "T", "artist": "A", "track_id": 42,
-                          "duration": 200, "position": 30, "volume": 0.8, "muted": False},
-            ),
-            "/api/now-playing": None,
+            "/api/status": _status_payload(),
+            "/api/playback": _playback_payload(sample_rate=96000, bit_depth=0),
+            "/api/queue": _queue_payload(current_track=None),
         })
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
@@ -390,7 +415,7 @@ class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_facts_never_borrowed_across_tracks(self):
         provider = QobuzProvider()
-        first = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
+        first = _fake_get(_full_routes())
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=first):
@@ -399,12 +424,10 @@ class QobuzStreamFactsStabilityTests(unittest.IsolatedAsyncioTestCase):
         # A gap that reports a *different* track id must not borrow the
         # previous track's facts.
         gap = _fake_get({
-            "/api/status": _status_payload(
-                audio={"backend": "pipewire", "device_open": True},
-                playback={"state": "playing", "title": "B", "artist": "B-A", "track_id": 55,
-                          "duration": 200, "position": 30, "volume": 0.8, "muted": False},
-            ),
-            "/api/now-playing": None,
+            "/api/status": _status_payload(track_id=55),
+            "/api/playback": _playback_payload(track_id=55, position_secs=30, duration_secs=200,
+                                               volume=0.8, sample_rate=0, bit_depth=0),
+            "/api/queue": _queue_payload(current_track=None),
         })
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
@@ -425,7 +448,7 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
             calls.append((path, body or {}))
             return {}
 
-        getter = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
+        getter = _fake_get(_full_routes())
         with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter), \
              mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
@@ -440,11 +463,31 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(("/api/playback/play", {}), calls)
         self.assertIn(("/api/playback/pause", {}), calls)
-        self.assertIn(("/api/playback/toggle", {}), calls)
+        # Playing fixture: toggle pauses (the fork has no toggle endpoint).
+        self.assertIn(("/api/playback/pause", {}), calls)
         self.assertIn(("/api/playback/next", {}), calls)
         self.assertIn(("/api/playback/previous", {}), calls)
-        self.assertIn(("/api/playback/seek", {"position": 90}), calls)
+        self.assertIn(("/api/playback/seek", {"position_ms": 90400}), calls)
         self.assertIn(("/api/playback/volume", {"volume": 0.5}), calls)
+
+    async def test_toggle_plays_when_stopped(self):
+        provider = QobuzProvider()
+        calls = []
+
+        async def fake_post(base_url, path, body=None, timeout=2.0):
+            calls.append((path, body or {}))
+            return {}
+
+        getter = _fake_get(_full_routes(**{
+            "/api/playback": _playback_payload(state="Stopped", track_id=0),
+        }))
+        with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter), \
+             mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)):
+            await provider.toggle()
+
+        self.assertIn(("/api/playback/play", {}), calls)
 
     async def test_repeat_cycles_and_shuffle_toggles(self):
         provider = QobuzProvider()
@@ -454,7 +497,7 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
             calls.append((path, body or {}))
             return {}
 
-        getter = _fake_get({"/api/status": _status_payload(), "/api/now-playing": _now_playing_payload()})
+        getter = _fake_get(_full_routes())
         with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter), \
              mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
@@ -462,43 +505,16 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
             await provider.shuffle()
             await provider.repeat()
 
-        self.assertIn(("/api/playback/shuffle", {"mode": "toggle"}), calls)
-        # Current loop is "playlist" (repeat "all"), so the next cycle is "none" -> "off".
-        self.assertIn(("/api/playback/repeat", {"mode": "off"}), calls)
-
-
-def _queue_payload(**overrides):
-    payload = {
-        "current_index": 3,
-        "current_track": {
-            "id": 50, "title": "Current", "artist": "A", "album": "L",
-            "artwork_url": "https://art/current.jpg", "duration_secs": 180,
-        },
-        "history": [],
-        "history_len": 0,
-        "repeat": "off",
-        "shuffle": False,
-        "stop_after_track_id": None,
-        "total_tracks": 7,
-        "upcoming": [
-            {"id": 51, "title": "Next One", "artist": "N", "album": "M",
-             "artwork_url": "https://art/next.jpg", "duration_secs": 200},
-            {"id": 52, "title": "After", "artist": "B", "album": "C",
-             "artwork_url": "", "duration_secs": 210},
-        ],
-    }
-    payload.update(overrides)
-    return payload
+        # Fixture shuffle is on: shuffle switches it off on the queue.
+        self.assertIn(("/api/queue/shuffle", {"enabled": False}), calls)
+        # Current loop is "playlist" (repeat "All"), so the next cycle is "none" -> "off".
+        self.assertIn(("/api/queue/repeat", {"mode": "off"}), calls)
 
 
 class QobuzQueueAndArtworkTests(unittest.IsolatedAsyncioTestCase):
     async def test_queue_state_passes_through(self):
         provider = QobuzProvider()
-        getter = _fake_get({
-            "/api/status": _status_payload(),
-            "/api/now-playing": _now_playing_payload(),
-            "/api/queue": _queue_payload(),
-        })
+        getter = _fake_get(_full_routes())
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
@@ -512,88 +528,15 @@ class QobuzQueueAndArtworkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["next_track"]["artUrl"], "https://art/next.jpg")
         self.assertEqual(status["next_track"]["id"], "51")
 
-    async def test_artwork_recovered_from_queue_when_now_playing_track_missing(self):
-        # The sporadic missing cover root cause: ``/api/now-playing`` returns no
-        # dict track (transient/auth gap) and the old /api/status summary has no
-        # artwork field. The queue current track carries the artwork and must be
-        # used to pass existing metadata through.
-        provider = QobuzProvider()
-        getter = _fake_get({
-            "/api/status": _status_payload(
-                playback={"state": "playing", "title": "Cur", "artist": "Ar",
-                          "track_id": 50, "duration": 180, "position": 5,
-                          "volume": 0.5, "muted": False},
-            ),
-            "/api/now-playing": None,
-            "/api/queue": _queue_payload(),
-        })
-        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
-             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
-             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
-            status = await provider.status()
-
-        self.assertEqual(status["artUrl"], "https://art/current.jpg")
-        self.assertEqual(status["album"], "L")
-        self.assertEqual(status["queue_len"], 7)
-
-    async def test_artwork_stays_when_now_playing_has_it(self):
+    async def test_artwork_missing_without_queue_track(self):
+        # The queue current track is the only artwork source: without it
+        # (transient/auth gap) the card carries the playback id but no
+        # artwork or album.
         provider = QobuzProvider()
         getter = _fake_get({
             "/api/status": _status_payload(),
-            "/api/now-playing": _now_playing_payload(
-                track={"id": 42, "title": "T", "artist": "A", "album": "L",
-                       "duration_secs": 200, "artwork_url": "https://art/own.jpg",
-                       "hires": True, "bit_depth": 24, "sample_rate": 96.0, "source": "qobuz"},
-            ),
-            "/api/queue": _queue_payload(),
-        })
-        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
-             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
-             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
-            status = await provider.status()
-
-        self.assertEqual(status["artUrl"], "https://art/own.jpg")
-        self.assertEqual(status["queue_len"], 7)
-
-    async def test_queue_fallback_never_borrows_artwork_across_tracks(self):
-        # Regression (track race): now-playing reports track B (55) without
-        # artwork while the queue snapshot's current track is still track A
-        # (50) with artwork. B must never inherit A's artwork or album.
-        provider = QobuzProvider()
-        getter = _fake_get({
-            "/api/status": _status_payload(),
-            "/api/now-playing": _now_playing_payload(
-                track={"id": 55, "title": "B", "artist": "B-Artist", "album": "B-Album",
-                       "duration_secs": 200, "artwork_url": "", "hires": True,
-                       "bit_depth": 16, "sample_rate": 44.1, "source": "qobuz"},
-            ),
-            "/api/queue": _queue_payload(),
-        })
-        with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
-             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
-             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
-            status = await provider.status()
-
-        self.assertEqual(status["trackId"], "55")
-        self.assertEqual(status["artUrl"], "")
-        self.assertEqual(status["album"], "B-Album")
-
-    async def test_queue_fallback_recovers_artwork_for_same_track_id(self):
-        # The recovery is allowed when the queue current track is unambiguously
-        # the same track as now-playing (by id): artwork fills the gap.
-        provider = QobuzProvider()
-        queue = _queue_payload(current_track={
-            "id": 42, "title": "T", "artist": "A", "album": "L",
-            "artwork_url": "https://art/queue.jpg", "duration_secs": 200,
-        })
-        getter = _fake_get({
-            "/api/status": _status_payload(),
-            "/api/now-playing": _now_playing_payload(
-                track={"id": 42, "title": "T", "artist": "A", "album": "L",
-                       "duration_secs": 200, "artwork_url": "", "hires": True,
-                       "bit_depth": 24, "sample_rate": 96.0, "source": "qobuz"},
-            ),
-            "/api/queue": queue,
+            "/api/playback": _playback_payload(),
+            "/api/queue": _queue_payload(current_track=None),
         })
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
@@ -601,36 +544,26 @@ class QobuzQueueAndArtworkTests(unittest.IsolatedAsyncioTestCase):
             status = await provider.status()
 
         self.assertEqual(status["trackId"], "42")
-        self.assertEqual(status["artUrl"], "https://art/queue.jpg")
-        self.assertEqual(status["album"], "L")
+        self.assertEqual(status["artUrl"], "")
+        self.assertEqual(status["album"], "")
+        self.assertEqual(status["queue_len"], 7)
 
-    async def test_queue_fallback_skipped_when_track_id_unknown(self):
-        # No now-playing track and no summary track id: without an
-        # unambiguous id match the queue must not be used as artwork source.
+    async def test_queue_current_track_carries_full_metadata(self):
         provider = QobuzProvider()
-        getter = _fake_get({
-            "/api/status": _status_payload(
-                playback={"state": "playing", "title": "Cur", "artist": "Ar",
-                          "track_id": None, "duration": 180, "position": 5,
-                          "volume": 0.5, "muted": False},
-            ),
-            "/api/now-playing": None,
-            "/api/queue": _queue_payload(),
-        })
+        getter = _fake_get(_full_routes())
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
             status = await provider.status()
 
-        self.assertEqual(status["trackId"], "")
-        self.assertEqual(status["artUrl"], "")
-        self.assertEqual(status["album"], "")
+        self.assertEqual(status["artUrl"], "https://art/q.jpg")
+        self.assertEqual(status["queue_len"], 7)
 
     async def test_queue_absent_leaves_neutral_fields(self):
         provider = QobuzProvider()
         getter = _fake_get({
             "/api/status": _status_payload(),
-            "/api/now-playing": _now_playing_payload(),
+            "/api/playback": _playback_payload(),
             "/api/queue": None,
         })
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \

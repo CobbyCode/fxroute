@@ -1,24 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Qobuz/qbzd login orchestration tests.
+"""Qobuz/qbzd login orchestration tests (daemon HTTP OAuth flow).
 
-The qbzd CLI owns the actual OAuth flow (``qbzd login`` prints the upstream
-URL and accepts the pasted redirect; ``qbzd logout`` clears the credential).
-These tests verify that FXRoute only orchestrates that process correctly:
+The fork daemon owns the OAuth flow over HTTP (``POST
+/api/auth/oauth/start`` returns the sign-in URL, ``GET
+/api/auth/oauth/callback`` consumes the pasted code, ``GET
+/api/auth/oauth/status`` reports the verdict). These tests verify that
+FXRoute only orchestrates that flow correctly:
 
-* URL extraction from the login banner (including percent-encoded redirects)
 * code extraction from pasted redirect URLs
-* begin/finish happy path against a fake qbzd process
+* begin/finish happy path against a fake daemon
 * single-flight guard (second begin returns already-in-progress)
-* logout invocation
+* logout credential cleanup plus daemon restart
 * provider delegation and the HTTP endpoint contract
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
-import pathlib
 import sys
 import unittest
 from pathlib import Path
@@ -29,125 +27,83 @@ sys.path.insert(0, str(ROOT))
 
 import streaming.qobuz.login as login  # noqa: E402
 
-BANNER = (
-    "Open this URL in a browser and sign in to Qobuz:\n"
-    "  https://www.qobuz.com/signin/oauth?ext_app_id=798273057"
-    "&redirect_url=http%3A%2F%2F127.0.0.1%3A43717%2Fdcc26f6c715fafe96c933521d85562723db08f1c4bad8600\n"
-    "\n"
-    "Your browser will land on a page that fails to load — that is expected.\n"
-    "Paste the full redirect URL (or just the code) here: "
+OAUTH_URL = (
+    "https://www.qobuz.com/signin/oauth?ext_app_id=798273057"
+    "&redirect_url=http%3A%2F%2F192.168.178.130%3A8182%2Fapi%2Fauth%2Foauth%2Fcallback"
 )
 
 
 class ParseTests(unittest.TestCase):
-    def test_extracts_upstream_url_from_banner(self):
-        url, _ = login._parse_login_url(BANNER) if hasattr(login, "_parse_login_url") else (None, None)
-        # The function lives inline in _read_until_url; exercise the pattern.
-        match = login._URL_PATTERN.search(BANNER)
-        self.assertIsNotNone(match)
-        self.assertTrue(match.group(0).startswith("https://www.qobuz.com/signin/oauth"))
-
     def test_code_extraction_from_pasted_redirect(self):
         pasted = (
-            "http://127.0.0.1:43717/dcc26f6c715fafe96c933521d85562723db08f1c4bad8600"
+            "http://192.168.178.130:8182/api/auth/oauth/callback"
             "?code=abc-DEF_123~x"
         )
-        match = login._CODE_PATTERN.search(pasted)
+        self.assertEqual(login._extract_code(pasted), "abc-DEF_123~x")
+
+    def test_code_extraction_from_raw_code(self):
+        self.assertEqual(login._extract_code("tok123"), "tok123")
+
+    def test_code_extraction_without_code_returns_input(self):
+        self.assertEqual(login._extract_code("https://example.com/nothing"),
+                         "https://example.com/nothing")
+
+    def test_code_pattern_still_matches(self):
+        match = login._CODE_PATTERN.search("http://x/cb?code=abc-DEF_123~x")
         self.assertIsNotNone(match)
         self.assertEqual(match.group(1), "abc-DEF_123~x")
 
-    def test_code_extraction_without_code_returns_none(self):
-        self.assertIsNone(login._CODE_PATTERN.search("https://example.com/nothing"))
 
+def _daemon(post=None, get=None):
+    """Patch the daemon HTTP helpers with canned responses."""
+    post = post if post is not None else {}
+    get = get if get is not None else {}
 
-class _FakeProc:
-    """Minimal subprocess stand-in for the qbzd login flow."""
+    def fake_post(path, body=None, timeout=0):
+        value = post.get(path) if isinstance(post, dict) else post
+        return value() if callable(value) else value
 
-    def __init__(self, stdout_lines, returncode=0):
-        import asyncio
+    def fake_get(path, timeout=0):
+        value = get.get(path) if isinstance(get, dict) else get
+        return value() if callable(value) else value
 
-        self.stdout = _FakeReader(stdout_lines)
-        self.stdin = _FakeWriter()
-        self.returncode = None
-        self.terminated = False
-        self.killed = False
-
-    async def wait(self):
-        if self.returncode is None:
-            self.returncode = 0
-        return self.returncode
-
-    async def communicate(self):
-        output = b""
-        while True:
-            line = await self.stdout.readline()
-            if not line:
-                break
-            output += line
-        await self.wait()
-        return output, b""
-
-    def terminate(self):
-        self.terminated = True
-        self.returncode = 0
-
-    def kill(self):
-        self.killed = True
-        self.returncode = -9
-
-
-class _FakeReader:
-    """Line reader over a fixed buffer; returns b'' at EOF (never blocks)."""
-
-    def __init__(self, lines):
-        import collections
-
-        self._lines = collections.deque(line.encode() for line in lines)
-
-    def at_eof(self):
-        return False
-
-    async def readline(self):
-        if not self._lines:
-            return b""
-        return self._lines.popleft()
-
-
-class _FakeWriter:
-    def __init__(self):
-        self.data = b""
-        self.closed = False
-
-    def write(self, data):
-        self.data += data
-
-    async def drain(self):
-        return None
-
-    def close(self):
-        self.closed = True
+    return (mock.patch.object(login, "_http_post", side_effect=fake_post),
+            mock.patch.object(login, "_http_get", side_effect=fake_get))
 
 
 class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        # Reset module-level single-flight state between tests.
         login._session = None
 
     async def asyncTearDown(self):
         login._session = None
 
-    async def test_begin_login_parses_banner_url(self):
-        proc = _FakeProc([BANNER])
-        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-                mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc):
+    async def test_begin_login_returns_sign_in_url(self):
+        post, get = _daemon(post={"/api/auth/oauth/start": {"oauth_url": OAUTH_URL,
+                                                             "callback_url": "http://lan:8182/cb"}})
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), post, get:
             result = await login.begin_login()
         self.assertTrue(result["started"])
         self.assertTrue(result["login_url"].startswith("https://www.qobuz.com/signin/oauth"))
 
+    async def test_begin_login_without_url_raises(self):
+        post, get = _daemon(post={"/api/auth/oauth/start": {}})
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), post, get:
+            with self.assertRaisesRegex(RuntimeError, "authorization URL"):
+                await login.begin_login()
+        self.assertIsNone(login._session)
+
+    async def test_begin_login_without_binary_raises(self):
+        with mock.patch.object(login, "qbzd_binary", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "not installed"):
+                await login.begin_login()
+
     async def test_begin_login_single_flight(self):
-        proc = _FakeProc([BANNER])
-        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-                mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc):
+        post, get = _daemon(
+            post={"/api/auth/oauth/start": {"oauth_url": OAUTH_URL}},
+            get={"/api/auth/oauth/status": {"status": "pending"}},
+        )
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), post, get:
             first = await login.begin_login()
             second = await login.begin_login()
         self.assertTrue(first["started"])
@@ -155,165 +111,131 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["reason"], "already-in-progress")
         self.assertEqual(second["login_url"], first["login_url"])
 
-    async def test_begin_login_without_url_raises(self):
-        proc = _FakeProc(["some unrelated output\n"])
-        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-                mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc):
-            with self.assertRaisesRegex(RuntimeError, "authorization URL"):
-                await login.begin_login()
-        self.assertIsNone(login._session)
+    async def test_begin_replaces_dead_session(self):
+        post, get = _daemon(
+            post={"/api/auth/oauth/start": {"oauth_url": OAUTH_URL}},
+            get={"/api/auth/oauth/status": {"status": "idle"}},
+        )
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), post, get:
+            first = await login.begin_login()
+            second = await login.begin_login()
+        self.assertTrue(first["started"])
+        self.assertTrue(second["started"])
 
-    async def test_cancelled_begin_reaps_child_before_next_login(self):
-        proc = _FakeProc([BANNER])
-        reading = asyncio.Event()
+    async def test_finish_login_consumes_code_and_reports_ok(self):
+        seen = {}
 
-        async def blocked_banner(*args):
-            reading.set()
-            await asyncio.Event().wait()
-
-        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-             mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc), \
-             mock.patch.object(login, "_read_until_url", side_effect=blocked_banner):
-            task = asyncio.create_task(login.begin_login())
-            await asyncio.wait_for(reading.wait(), 1)
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 1)
-        self.assertIsNotNone(proc.returncode)
-        self.assertIsNone(login._session)
-
-    async def test_cancelled_begin_during_spawn_reaps_child(self):
-        proc = _FakeProc([BANNER])
-        spawning = asyncio.Event()
-        release = asyncio.Event()
-
-        async def delayed_spawn(*args, **kwargs):
-            spawning.set()
-            await release.wait()
-            return proc
+        def fake_get(path, timeout=0):
+            if path.startswith("/api/auth/oauth/callback"):
+                seen["callback"] = path
+                return "<html>ok</html>"
+            return {"status": "success"}
 
         with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-             mock.patch.object(login.asyncio, "create_subprocess_exec", side_effect=delayed_spawn):
-            task = asyncio.create_task(login.begin_login())
-            await asyncio.wait_for(spawning.wait(), 1)
-            task.cancel()
-            release.set()
-            with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 1)
-        self.assertIsNotNone(proc.returncode)
-        self.assertIsNone(login._session)
-
-    async def test_finish_login_pipes_code_and_reports_ok(self):
-        proc = _FakeProc([BANNER, "Login successful.\n"])
-        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-                mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc):
+             mock.patch.object(login, "_http_post",
+                               return_value={"oauth_url": OAUTH_URL}), \
+             mock.patch.object(login, "_http_get", side_effect=fake_get):
             await login.begin_login()
-            result = await login.finish_login(
-                "http://127.0.0.1:43717/x?code=tok123"
-            )
+            result = await login.finish_login("http://lan:8182/cb?code=tok123")
         self.assertTrue(result["ok"])
-        self.assertEqual(result["returncode"], 0)
-        self.assertIn("tok123", proc.stdin.data.decode())
+        self.assertIn("code=tok123", seen["callback"])
         self.assertIsNone(login._session)
 
-    async def test_cancelled_finish_reaps_child_before_session_is_cleared(self):
-        proc = _FakeProc([BANNER])
-        draining = asyncio.Event()
-
-        async def blocked_drain(*args):
-            draining.set()
-            await asyncio.Event().wait()
+    async def test_finish_login_reports_daemon_error(self):
+        def fake_get(path, timeout=0):
+            if path.startswith("/api/auth/oauth/callback"):
+                return "<html>ok</html>"
+            return {"status": "error", "message": "denied"}
 
         with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-             mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc):
+             mock.patch.object(login, "_http_post",
+                               return_value={"oauth_url": OAUTH_URL}), \
+             mock.patch.object(login, "_http_get", side_effect=fake_get):
             await login.begin_login()
-            with mock.patch.object(login, "_drain_remaining", side_effect=blocked_drain):
-                task = asyncio.create_task(login.finish_login("code"))
-                await asyncio.wait_for(draining.wait(), 1)
-                task.cancel()
-                with self.assertRaises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, 1)
-        self.assertIsNotNone(proc.returncode)
+            result = await login.finish_login("tok123")
+        self.assertFalse(result["ok"])
         self.assertIsNone(login._session)
-
-    async def test_cancelled_real_login_child_is_reaped(self):
-        child = None
-        spawned = asyncio.Event()
-        banner_read = asyncio.Event()
-        real_spawn = asyncio.create_subprocess_exec
-        real_read = login._read_until_url
-
-        async def spawn(*args, **kwargs):
-            nonlocal child
-            child = await real_spawn(
-                sys.executable, "-u", "-c",
-                "import time; print('https://www.qobuz.com/login'); time.sleep(60)",
-                **kwargs,
-            )
-            spawned.set()
-            return child
-
-        async def read_then_wait(proc, timeout):
-            await real_read(proc, timeout)
-            banner_read.set()
-            await asyncio.Event().wait()
-
-        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-             mock.patch.object(login.asyncio, "create_subprocess_exec", side_effect=spawn), \
-             mock.patch.object(login, "_read_until_url", side_effect=read_then_wait):
-            task = asyncio.create_task(login.begin_login())
-            try:
-                await asyncio.wait_for(spawned.wait(), 2)
-                await asyncio.wait_for(banner_read.wait(), 2)
-                task.cancel()
-                with self.assertRaises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, 2)
-                self.assertIsNotNone(child.returncode)
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(child.pid, 0)
-            finally:
-                if child is not None and child.returncode is None:
-                    child.kill()
-                    await child.wait()
 
     async def test_finish_login_without_session_raises(self):
-        with self.assertRaisesRegex(RuntimeError, "No qbzd login"):
-            await login.finish_login("http://x?code=1")
+        post, get = _daemon(get={"/api/auth/oauth/status": {"status": "idle"}})
+        with post, get:
+            with self.assertRaisesRegex(RuntimeError, "No qbzd login"):
+                await login.finish_login("http://x?code=1")
+
+    async def test_finish_login_without_session_reports_success(self):
+        # The browser completed the daemon-side flow directly (callback
+        # reached the daemon without a paste): report the daemon verdict.
+        post, get = _daemon(get={"/api/auth/oauth/status": {"status": "success"}})
+        with post, get:
+            result = await login.finish_login("http://x?code=1")
+        self.assertTrue(result["ok"])
 
     async def test_finish_login_requires_payload(self):
         with self.assertRaises(ValueError):
             await login.finish_login("")
 
-    async def test_logout_runs_binary(self):
-        proc = _FakeProc(["Logged out.\n"])
-        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-                mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc):
-            result = await login.logout()
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["returncode"], 0)
-
-    async def test_cancel_terminates_inflight_login(self):
-        proc = _FakeProc([BANNER])
-        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-                mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc):
+    async def test_cancel_drops_inflight_login(self):
+        post, get = _daemon(post={"/api/auth/oauth/start": {"oauth_url": OAUTH_URL}})
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), post, get:
             await login.begin_login()
             result = await login.cancel()
         self.assertTrue(result["cancelled"])
         self.assertIsNone(login._session)
-        self.assertTrue(proc.terminated)
 
     async def test_cancel_without_session_is_noop(self):
         result = await login.cancel()
         self.assertFalse(result["cancelled"])
 
     async def test_finish_after_cancel_reports_no_flow(self):
-        proc = _FakeProc([BANNER])
-        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
-                mock.patch.object(login.asyncio, "create_subprocess_exec", return_value=proc):
+        post, get = _daemon(
+            post={"/api/auth/oauth/start": {"oauth_url": OAUTH_URL}},
+            get={"/api/auth/oauth/status": {"status": "idle"}},
+        )
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), post, get:
             await login.begin_login()
             await login.cancel()
-        with self.assertRaisesRegex(RuntimeError, "No qbzd login"):
-            await login.finish_login("http://x?code=1")
+        with mock.patch.object(login, "_http_post", return_value=None), \
+             mock.patch.object(login, "_http_get",
+                               return_value={"status": "idle"}):
+            with self.assertRaisesRegex(RuntimeError, "No qbzd login"):
+                await login.finish_login("http://x?code=1")
+
+    async def test_logout_clears_credentials_and_restarts(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            token = root / ".oauth-token"
+            token.write_text("secret")
+            users = root / "users" / "123"
+            users.mkdir(parents=True)
+            marker = root / "last_user_id"
+            marker.write_text("123")
+            restarts = []
+
+            async def fake_restart():
+                restarts.append(True)
+
+            def fake_status(path, timeout=0):
+                return {"logged_in": False}
+
+            with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
+                 mock.patch.object(login, "_credential_paths",
+                                   return_value=[token, marker, root / "users"]), \
+                 mock.patch.object(login, "_restart_daemon", side_effect=fake_restart), \
+                 mock.patch.object(login, "_http_get", side_effect=fake_status):
+                result = await login.logout()
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["logged_in"])
+            self.assertTrue(restarts)
+            self.assertFalse(token.exists())
+            self.assertFalse(marker.exists())
+            self.assertFalse((root / "users").exists())
+
+    async def test_logout_without_binary_raises(self):
+        with mock.patch.object(login, "qbzd_binary", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "not installed"):
+                await login.logout()
 
 
 class ProviderDelegationTests(unittest.IsolatedAsyncioTestCase):

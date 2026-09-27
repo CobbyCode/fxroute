@@ -40,6 +40,9 @@ ARCH_HELPER = extract_function(INSTALL_TEXT, "qbzd_arch_for_host")
 PATH_HELPER = extract_function(INSTALL_TEXT, "qbzd_binary_path")
 TAG_HELPER = extract_function(INSTALL_TEXT, "github_release_tag_name")
 DIGEST_HELPER = extract_function(INSTALL_TEXT, "github_release_asset_digest")
+HAS_ASSET_HELPER = extract_function(INSTALL_TEXT, "github_release_has_asset")
+NEWEST_HELPER = extract_function(INSTALL_TEXT, "github_newest_release_with_asset_json")
+USABLE_ASSET_HELPER = extract_function(INSTALL_TEXT, "qbzd_usable_asset_for_release")
 NORMALIZE_HELPER = extract_function(INSTALL_TEXT, "normalize_release_tag")
 VERIFY_HELPER = extract_function(INSTALL_TEXT, "verify_github_payload")
 VERSION_HELPER = extract_function(INSTALL_TEXT, "provider_binary_version")
@@ -92,9 +95,13 @@ set -Eeuo pipefail
 {VERIFY_HELPER}
 {VERSION_HELPER}
 {NEWER_HELPER}
+{HAS_ASSET_HELPER}
+{NEWEST_HELPER}
+{USABLE_ASSET_HELPER}
 github_stable_release_json() {{
-  printf '%s' '{{"tag_name": "v1.2.3", "assets": []}}'
+  printf '%s' '{{"tag_name": "v1.2.3", "assets": [{{"name": "qbzd-1.2.3-linux-amd64.tar.gz"}}]}}'
 }}
+github_newest_release_with_asset_json() {{ return 1; }}
 {INSTALL_QBZD}
 run_cmd() {{
   if [[ "${{1:-}}" == "curl" ]]; then

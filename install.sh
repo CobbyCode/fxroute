@@ -34,7 +34,12 @@ HOST_ARCH="$(uname -m)"
 # release is picked up without any FXRoute code change.
 SPOTIFYD_UPSTREAM_REPO="Spotifyd/spotifyd"
 # qbzd tracks the official upstream first; the compatible MIT-licensed fork
-# is the fallback when the official source publishes no stable release.
+# is the fallback when the official source publishes no usable stable
+# release. The official upstream shut down in 09/2026 (stable tag v6.6.6
+# with zero assets, sources wiped), so the fallback accepts the newest
+# non-draft fork release carrying the wanted asset — currently a nightly
+# prerelease, the only published qbzd build left. Nightly builds are never
+# selected from the official source.
 QBZD_UPSTREAM_REPO="vicrodh/qbz"
 QBZD_UPSTREAM_FALLBACK_REPO="yet-another-quentin/qbzd"
 SPOTIFYD_ZEROCONF_PORT="4444"
@@ -43,8 +48,6 @@ CIFS_HELPER_LEGACY_SHA256="8c848fc5cff8d1e320c54e99caad66ac53cbf0ba81329e1c65110
 PROVIDER_HELPER_SHA256="990a00b8b05750e4db6fb2a2dbb487d29742a50645edbb61487c6891f5e5a906"
 SYSTEM_UPDATE_HELPER_SHA256="b9e67b2f396e814930d1ebfeba8f6d9d483b601a3fbd27cc7dd8c32b7d3506eb"
 POWER_POLKIT_TEMPLATE_SHA256="67497733c846fda6eddd11f80eb626bdffa0d76530ad7bb5fe5a65ebf1669806"
-QOBUZ_VOLUME_MODE_KEY="qconnect.volume_mode"
-QOBUZ_REQUIRED_VOLUME_MODE="locked"
 TIDAL_REQUIREMENTS_FILE="requirements-tidal.txt"
 SPOTIFY_APT_SOURCE_FILE="/etc/apt/sources.list.d/spotify.list"
 SPOTIFY_APT_KEY_FILE="/usr/share/keyrings/spotify-archive-keyring.gpg"
@@ -990,7 +993,8 @@ qbzd_arch_for_host() {
 # Shared upstream-resolution helpers (one principle for every GitHub-backed
 # provider: spotifyd and qbzd). The stable release is the GitHub "latest"
 # release document, which excludes drafts and prereleases by definition, so
-# only stable upstream versions are ever installed. Checksums and digests
+# only stable upstream versions are ever installed — with one documented
+# qbzd exception below. Checksums and digests
 # are read from the same release document or its sidecar files instead of
 # being pinned in this file.
 
@@ -1032,6 +1036,90 @@ for asset in payload.get("assets") or []:
         print(asset.get("digest") or "")
         break
 ' "$2" 2>/dev/null
+}
+
+github_release_has_asset() {
+  # True when the release document carries an asset with the given name.
+  # Used to detect upstream releases that publish no usable payload (the
+  # official qbzd shutdown release carries a stable tag with zero assets).
+  printf '%s' "$1" | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (ValueError, OSError):
+    raise SystemExit(1)
+for asset in payload.get("assets") or []:
+    if asset.get("name") == sys.argv[1]:
+        raise SystemExit(0)
+raise SystemExit(1)
+' "$2" 2>/dev/null
+}
+
+github_newest_release_with_asset_json() {
+  # Print a compact release document for the newest non-draft release of a
+  # "owner/name" repository that carries the wanted asset. Stable releases
+  # win over prereleases; when only prereleases qualify, the newest one is
+  # used. This is the documented qbzd fallback exception: the compatible
+  # fork is the only qbzd distribution channel left and publishes nightly
+  # prereleases only. Fails when no release carries the asset.
+  local repo="$1" wanted="$2"
+  curl -fsSL --retry 2 --max-time 20 \
+    "https://api.github.com/repos/${repo}/releases?per_page=10" 2>/dev/null | python3 -c '
+import json
+import sys
+
+wanted = sys.argv[1]
+try:
+    releases = json.load(sys.stdin)
+except (ValueError, OSError):
+    raise SystemExit(1)
+if not isinstance(releases, list):
+    raise SystemExit(1)
+
+def has_asset(release):
+    try:
+        return any(asset.get("name") == wanted for asset in release.get("assets") or [])
+    except AttributeError:
+        return False
+
+usable = [r for r in releases if not r.get("draft") and has_asset(r)]
+stable = [r for r in usable if not r.get("prerelease")]
+pool = stable or usable
+if not pool:
+    raise SystemExit(1)
+release = pool[0]
+doc = {}
+doc["tag_name"] = release.get("tag_name") or ""
+doc["prerelease"] = bool(release.get("prerelease"))
+doc["assets"] = [{"name": asset.get("name") or "", "digest": asset.get("digest") or ""} for asset in release.get("assets") or [] if isinstance(asset, dict)]
+print(json.dumps(doc))
+' "$wanted"
+}
+
+qbzd_usable_asset_for_release() {
+  # Print the first usable asset name of a release document for the qbzd
+  # source layout (official: versioned tarball, raw binary fallback; fork:
+  # raw per-arch binary, versioned-tarball fallback), or nothing when the
+  # release publishes no qbzd payload at all.
+  local release_json="$1" source="$2" upstream_version="$3" release_arch="$4" asset_arch="$5"
+  local first="" second="" name=""
+
+  if [[ "$source" == "$QBZD_UPSTREAM_REPO" ]]; then
+    first="qbzd-${upstream_version}-linux-${release_arch}.tar.gz"
+    second="qbzd-linux-${asset_arch}"
+  else
+    first="qbzd-linux-${asset_arch}"
+    second="qbzd-${upstream_version}-linux-${release_arch}.tar.gz"
+  fi
+  for name in "$first" "$second"; do
+    if github_release_has_asset "$release_json" "$name"; then
+      printf '%s\n' "$name"
+      return 0
+    fi
+  done
+  return 1
 }
 
 normalize_release_tag() {
@@ -3810,6 +3898,7 @@ install_qbzd_binary() {
   local candidate=""
   local candidate_json=""
   local candidate_tag=""
+  local nightly_digest=""
   local upstream_tag=""
   local upstream_version=""
   local installed_version=""
@@ -3892,25 +3981,48 @@ install_qbzd_binary() {
     aarch64) asset_arch="arm64" ;;
   esac
 
-  # Resolve the current stable upstream release: the official source first,
+  # Resolve the current usable upstream release: the official source first,
   # the compatible fork when the official source publishes no stable
-  # release. The "latest" API document excludes drafts and prereleases, so
-  # nightly builds are never selected. Install, reinstall and update all
+  # release or its stable release carries no qbzd asset (upstream shutdown:
+  # the official stable tag ships zero assets). The "latest" API document
+  # excludes drafts and prereleases, so nightly builds are never selected
+  # from the official source. The fork is the only qbzd distribution
+  # channel left and publishes nightly prereleases only, so the fallback
+  # accepts the newest non-draft fork release carrying the wanted asset
+  # when no stable release qualifies. Install, reinstall and update all
   # use this same mechanism, and no version is pinned in this file. A newer
   # upstream tag updates an FXRoute-owned binary in place; no uninstall is
   # required. When neither source is reachable the existing installation is
   # left untouched.
+  local candidate_version="" usable_asset=""
   for candidate in "$QBZD_UPSTREAM_REPO" "$QBZD_UPSTREAM_FALLBACK_REPO"; do
     if candidate_json="$(github_stable_release_json "$candidate")"; then
       candidate_tag="$(github_release_tag_name "$candidate_json" || true)"
       if [[ -n "$candidate_tag" ]]; then
-        qbzd_source="$candidate"
-        release_json="$candidate_json"
-        upstream_tag="$candidate_tag"
-        break
+        candidate_version="$(normalize_release_tag "$candidate_tag")"
+        if usable_asset="$(qbzd_usable_asset_for_release "$candidate_json" "$candidate" "$candidate_version" "$release_arch" "$asset_arch" || true)" \
+          && [[ -n "$usable_asset" ]]; then
+          qbzd_source="$candidate"
+          release_json="$candidate_json"
+          upstream_tag="$candidate_tag"
+          break
+        fi
+        warn "qbzd ${candidate} stable ${candidate_tag} publishes no qbzd asset; skipping"
       fi
     fi
   done
+  if [[ -z "$qbzd_source" ]]; then
+    if candidate_json="$(github_newest_release_with_asset_json "$QBZD_UPSTREAM_FALLBACK_REPO" "qbzd-linux-${asset_arch}" || true)" \
+      && [[ -n "$candidate_json" ]]; then
+      candidate_tag="$(github_release_tag_name "$candidate_json" || true)"
+      if [[ -n "$candidate_tag" ]]; then
+        qbzd_source="$QBZD_UPSTREAM_FALLBACK_REPO"
+        release_json="$candidate_json"
+        upstream_tag="$candidate_tag"
+        warn "qbzd falls back to ${qbzd_source} ${upstream_tag} (prerelease: the only published qbzd build)"
+      fi
+    fi
+  fi
   if [[ -z "$qbzd_source" ]]; then
     QOBUZ_PROVIDER_STATUS="unavailable; upstream release metadata unreachable"
     warn "qbzd upstream version could not be determined; leaving the provider unchanged"
@@ -3922,11 +4034,24 @@ install_qbzd_binary() {
     if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 ]]; then
       installed_version="$(provider_binary_version "$QBZD_BINARY_PATH")"
       [[ -n "$installed_version" ]] || installed_version="$QBZD_INSTALLED_VERSION"
-      if [[ -n "$installed_version" ]] && ! provider_version_is_newer "$upstream_version" "$installed_version"; then
-        QBZD_INSTALLED_VERSION="$installed_version"
-        QBZD_UPSTREAM_SOURCE="$qbzd_source"
-        pass "qbzd already up to date (${upstream_tag})"
-        return 0
+      if [[ "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        if [[ -n "$installed_version" ]] && ! provider_version_is_newer "$upstream_version" "$installed_version"; then
+          QBZD_INSTALLED_VERSION="$installed_version"
+          QBZD_UPSTREAM_SOURCE="$qbzd_source"
+          pass "qbzd already up to date (${upstream_tag})"
+          return 0
+        fi
+      elif [[ "$QBZD_UPSTREAM_SOURCE" == "$qbzd_source" && -n "$installed_version" ]]; then
+        # Non-semver upstream tag (fork nightly, rebuilt in place): up to
+        # date when the installed binary matches the upstream digest of
+        # the resolved release.
+        nightly_digest="$(github_release_asset_digest "$release_json" "qbzd-linux-${asset_arch}" || true)"
+        nightly_digest="${nightly_digest#sha256:}"
+        if [[ -n "$nightly_digest" && "$(sha256sum "$QBZD_BINARY_PATH" 2>/dev/null | awk '{print $1}')" == "$nightly_digest" ]]; then
+          QBZD_INSTALLED_VERSION="$installed_version"
+          pass "qbzd already up to date (${upstream_tag} ${installed_version})"
+          return 0
+        fi
       fi
       pass "qbzd ${installed_version:-unknown version} present; updating to ${upstream_tag} (${qbzd_source})"
     else
@@ -4002,7 +4127,8 @@ install_qbzd_binary() {
   FXROUTE_ACTIVE_STAGED_BINARY=""
   QBZD_BINARY_PATH="$destination"
   QBZD_INSTALLED_BY_FXROUTE=1
-  QBZD_INSTALLED_VERSION="$upstream_version"
+  QBZD_INSTALLED_VERSION="$(provider_binary_version "$destination" || true)"
+  [[ -n "$QBZD_INSTALLED_VERSION" ]] || QBZD_INSTALLED_VERSION="$upstream_version"
   QBZD_UPSTREAM_SOURCE="$qbzd_source"
   QBZD_BINARY_UPDATED=1
   QBZD_BINARY_SHA256="$(sha256sum "$QBZD_BINARY_PATH" | awk '{print $1}')"
@@ -4012,114 +4138,66 @@ install_qbzd_binary() {
   pass "qbzd ${upstream_tag} installed (${release_arch})"
 }
 
-read_qbzd_volume_mode() {
-  local binary_path=""
-  binary_path="$(qbzd_binary_path || true)"
-  [[ -n "$binary_path" ]] || return 1
-  run_as_target_user "$binary_path" settings show --quiet --json 2>/dev/null | python3 -c '
-import json
+qbzd_daemon_http_get() {
+  # Print the response body of a qbzd daemon GET on 127.0.0.1:8182, or fail.
+  curl -fsSL --max-time 10 "http://127.0.0.1:8182${1}" 2>/dev/null
+}
+
+qbzd_wait_for_http() {
+  # 0 when the qbzd daemon answers path $1 with HTTP 200 within $2 seconds.
+  local path="$1" timeout_secs="${2:-30}" waited=0
+  while [[ $waited -lt $timeout_secs ]]; do
+    if qbzd_daemon_http_get "$path" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+qbzd_wait_for_active_state() {
+  # 0 when the user unit $1 reaches ActiveState=active within $2 seconds.
+  # A zero systemctl exit only queues the job; only this readback proves
+  # the daemon actually stayed up (a fresh qbzd install must never need a
+  # manual restart to reach active state).
+  local unit="$1" timeout_secs="${2:-30}" waited=0 state=""
+  while [[ $waited -lt $timeout_secs ]]; do
+    state="$(user_systemctl show "$unit" -p ActiveState --value 2>/dev/null || true)"
+    [[ "$state" == "active" ]] && return 0
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+qbzd_ensure_skip_sink_switch() {
+  # Persist skip_sink_switch=1 in the fork settings database. The fork
+  # offers no API/CLI/TOML switch for it; without the guard every playback
+  # start runs `pactl set-default-sink` and hijacks the system default sink.
+  local db="$HOME/.local/share/qbz/audio_settings.db"
+  [[ -f "$db" && ! -L "$db" ]] || return 1
+  run_as_target_user python3 - "$db" <<'PY'
+import sqlite3
 import sys
 
+connection = sqlite3.connect(sys.argv[1])
 try:
-    payload = json.load(sys.stdin)
-    value = payload.get("qconnect.volume_mode", "")
-except (ValueError, OSError):
-    raise SystemExit(1)
-if not value:
-    raise SystemExit(1)
-print(value)
-'
+    columns = [row[1] for row in connection.execute("PRAGMA table_info(audio_settings)").fetchall()]
+    if "skip_sink_switch" not in columns:
+        raise SystemExit(2)
+    cursor = connection.execute("UPDATE audio_settings SET skip_sink_switch=1 WHERE id=1")
+    if cursor.rowcount == 0:
+        raise SystemExit(3)
+    connection.commit()
+finally:
+    connection.close()
+PY
 }
 
-set_qbzd_volume_mode() {
-  local mode="$1"
-  local binary_path=""
-  binary_path="$(qbzd_binary_path || true)"
-  [[ -n "$binary_path" ]] || return 1
-  run_as_target_user "$binary_path" settings set --quiet "$QOBUZ_VOLUME_MODE_KEY" "$mode"
-}
-
-configure_qbzd_volume_mode() {
-  local current_mode=""
-
-  current_mode="$(read_qbzd_volume_mode || true)"
-  [[ -n "$current_mode" ]] || die "Could not read qbzd qconnect.volume_mode; refusing to start Qobuz without the FXRoute locked/unity volume contract"
-  QBZD_VOLUME_MODE_AFTER="$QOBUZ_REQUIRED_VOLUME_MODE"
-  if [[ "$current_mode" == "$QOBUZ_REQUIRED_VOLUME_MODE" ]]; then
-    pass "qbzd QConnect volume mode already locked (FXRoute unity contract)"
-    return 0
-  fi
-
-  if [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 0 || "$current_mode" != "$QBZD_VOLUME_MODE_AFTER" ]]; then
-    QBZD_VOLUME_MODE_BEFORE="$current_mode"
-  fi
-  # Mark the side effect before invoking qbzd so an exit checkpoint can still
-  # offer restoration if the command changes the setting but read-back fails.
-  QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=1
-  if ! set_qbzd_volume_mode "$QOBUZ_REQUIRED_VOLUME_MODE"; then
-    die "Could not set qbzd qconnect.volume_mode=$QOBUZ_REQUIRED_VOLUME_MODE"
-  fi
-  if [[ "$(read_qbzd_volume_mode || true)" != "$QOBUZ_REQUIRED_VOLUME_MODE" ]]; then
-    die "qbzd did not retain qconnect.volume_mode=$QOBUZ_REQUIRED_VOLUME_MODE"
-  fi
-  pass "qbzd QConnect volume mode set to locked (FXRoute master/unity contract)"
-}
-
-read_qbzd_qconnect_startup_mode() {
-  local binary_path=""
-  binary_path="$(qbzd_binary_path || true)"
-  [[ -n "$binary_path" ]] || return 1
-  run_as_target_user "$binary_path" settings show --quiet --json 2>/dev/null | python3 -c '
-import json
-import sys
-
-try:
-    payload = json.load(sys.stdin)
-    value = payload.get("qconnect.startup_mode", "")
-except (ValueError, OSError):
-    raise SystemExit(1)
-if not value:
-    raise SystemExit(1)
-print(value)
-'
-}
-
-configure_qbzd_qconnect() {
-  local current_mode=""
-  local binary_path=""
-
-  current_mode="$(read_qbzd_qconnect_startup_mode || true)"
-  [[ -n "$current_mode" ]] || die "Could not read qbzd qconnect.startup_mode; refusing to leave Qobuz Connect disabled"
-  QBZD_QCONNECT_STARTUP_MODE_AFTER="on"
-  if [[ "$current_mode" == "on" ]]; then
-    pass "qbzd Qobuz Connect auto-connect already enabled"
-    return 0
-  fi
-
-  if [[ $QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 0 ]]; then
-    QBZD_QCONNECT_STARTUP_MODE_BEFORE="$current_mode"
-  fi
-  # Mark the side effect before invoking qbzd so an exit checkpoint can still
-  # offer restoration if the command changes the setting but read-back fails.
-  # The device name is deliberately untouched: it stays whatever the owner or
-  # qbzd setup chose.
-  QBZD_QCONNECT_CHANGED_BY_FXROUTE=1
-  binary_path="$(qbzd_binary_path || true)"
-  [[ -n "$binary_path" ]] || die "qbzd binary disappeared before Qobuz Connect could be enabled"
-  if ! run_as_target_user "$binary_path" qconnect enable --quiet; then
-    die "Could not enable qbzd Qobuz Connect auto-connect"
-  fi
-  if [[ "$(read_qbzd_qconnect_startup_mode || true)" != "on" ]]; then
-    die "qbzd did not retain qconnect.startup_mode=on"
-  fi
-  pass "qbzd Qobuz Connect auto-connect enabled"
-}
-
-read_qbzd_audio_output() {
-  local binary_path=""
-  binary_path="$(qbzd_binary_path || true)"
-  [[ -n "$binary_path" ]] || return 1
-  run_as_target_user "$binary_path" settings show --quiet --json 2>/dev/null | python3 -c '
+qbzd_sink_switch_guard_active() {
+  # True when the running daemon reports the sink-switch guard as enabled.
+  qbzd_daemon_http_get /api/audio/settings 2>/dev/null | python3 -c '
 import json
 import sys
 
@@ -4127,60 +4205,68 @@ try:
     payload = json.load(sys.stdin)
 except (ValueError, OSError):
     raise SystemExit(1)
-for key in ("audio.backend", "audio.device", "audio.skip_sink_switch"):
-    value = payload.get(key, "")
-    if not value:
-        raise SystemExit(1)
-    print(f"{key}={value}")
-'
+raise SystemExit(0 if payload.get("skip_sink_switch") is True else 1)
+' 2>/dev/null
 }
 
-configure_qbzd_audio_output() {
-  local current=""
-  local backend=""
-  local device=""
-  local skip=""
-  local binary_path=""
+configure_qbzd_fork_runtime() {
+  # Verify and pin the running fork daemon: DSP-sink routing, unity engine
+  # volume, and the sink-switch guard. Dies on failure so a half-configured
+  # daemon can never report success.
+  local settings="" backend="" device="" playback="" volume=""
 
-  current="$(read_qbzd_audio_output || true)"
-  [[ -n "$current" ]] || die "Could not read qbzd audio output settings; refusing to leave Qobuz off the DSP sink"
-  backend="$(sed -n 's/^audio\.backend=//p' <<<"$current" | head -n 1)"
-  device="$(sed -n 's/^audio\.device=//p' <<<"$current" | head -n 1)"
-  skip="$(sed -n 's/^audio\.skip_sink_switch=//p' <<<"$current" | head -n 1)"
-  if [[ "$backend" == "pipewire" && "$device" == "fxroute_dsp_sink" && "$skip" == "true" ]]; then
-    pass "qbzd audio output already targets the FXRoute DSP sink"
-    return 0
+  qbzd_wait_for_http /api/status 30     || die "qbzd daemon is not answering on 127.0.0.1:8182 after install"
+  settings="$(qbzd_daemon_http_get /api/audio/settings || true)"
+  [[ -n "$settings" ]] || die "qbzd daemon audio settings are not readable after install"
+  backend="$(printf '%s' "$settings" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("backend_type") or "")' 2>/dev/null || true)"
+  device="$(printf '%s' "$settings" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("output_device") or "")' 2>/dev/null || true)"
+  if [[ "$device" != "fxroute_dsp_sink" ]]; then
+    curl -fsSL --max-time 10 -X PATCH http://127.0.0.1:8182/api/audio/settings \
+      -H 'Content-Type: application/json' \
+      -d '{"backend_type":"PipeWire","output_device":"fxroute_dsp_sink"}' >/dev/null 2>&1 \
+      || die "Could not route qbzd audio output to the FXRoute DSP sink"
+    settings="$(qbzd_daemon_http_get /api/audio/settings || true)"
+    device="$(printf '%s' "$settings" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("output_device") or "")' 2>/dev/null || true)"
+    [[ "$device" == "fxroute_dsp_sink" ]] || die "qbzd did not retain the FXRoute DSP sink audio output"
   fi
-
-  if [[ $QBZD_AUDIO_CHANGED_BY_FXROUTE -eq 0 ]]; then
-    QBZD_AUDIO_BACKEND_BEFORE="$backend"
-    QBZD_AUDIO_DEVICE_BEFORE="$device"
-    QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE="$skip"
-  fi
-  # Mark the side effect before invoking qbzd so an exit checkpoint can still
-  # offer restoration if a command changes a setting but read-back fails.
-  # The device name is deliberately untouched: it stays whatever the owner or
-  # qbzd setup chose.
-  QBZD_AUDIO_CHANGED_BY_FXROUTE=1
-  binary_path="$(qbzd_binary_path || true)"
-  [[ -n "$binary_path" ]] || die "qbzd binary disappeared before its audio output could be routed"
-  if ! run_as_target_user "$binary_path" settings set --quiet audio.backend pipewire; then
-    die "Could not set qbzd audio.backend=pipewire"
-  fi
-  if ! run_as_target_user "$binary_path" settings set --quiet audio.device fxroute_dsp_sink; then
-    die "Could not set qbzd audio.device=fxroute_dsp_sink"
-  fi
-  if ! run_as_target_user "$binary_path" settings set --quiet audio.skip_sink_switch true; then
-    die "Could not set qbzd audio.skip_sink_switch=true"
-  fi
-  current="$(read_qbzd_audio_output || true)"
-  backend="$(sed -n 's/^audio\.backend=//p' <<<"$current" | head -n 1)"
-  device="$(sed -n 's/^audio\.device=//p' <<<"$current" | head -n 1)"
-  skip="$(sed -n 's/^audio\.skip_sink_switch=//p' <<<"$current" | head -n 1)"
-  if [[ "$backend" != "pipewire" || "$device" != "fxroute_dsp_sink" || "$skip" != "true" ]]; then
-    die "qbzd did not retain the FXRoute DSP sink audio output"
+  if [[ -n "$backend" && "$backend" != "null" && "$backend" != "PipeWire" ]]; then
+    die "qbzd audio backend is ${backend}, expected PipeWire on the FXRoute DSP sink"
   fi
   pass "qbzd audio output routed to the FXRoute DSP sink"
+
+  curl -fsSL --max-time 10 -X POST http://127.0.0.1:8182/api/playback/volume \
+    -H 'Content-Type: application/json' -d '{"volume":1.0}' >/dev/null 2>&1 \
+    || die "Could not pin qbzd engine volume to 100%"
+  playback="$(qbzd_daemon_http_get /api/playback || true)"
+  volume="$(printf '%s' "$playback" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("volume"))' 2>/dev/null || true)"
+  [[ "$volume" == "1.0" ]] || die "qbzd did not retain the 100% unity volume pin"
+  pass "qbzd engine volume pinned to 100% (FXRoute master/unity contract)"
+
+  # The fork exposes no API/CLI/TOML switch for skip_sink_switch (it would
+  # let playback hijack the system default sink via pactl); persist it in
+  # the daemon settings database instead. Warn-only: routing and unity
+  # above are the load-bearing guarantees.
+  if qbzd_ensure_skip_sink_switch && qbzd_sink_switch_guard_active; then
+    pass "qbzd sink-switch guard enabled (system default sink untouched)"
+  else
+    warn "qbzd sink-switch guard could not be enabled; playback may set the DSP sink as system default"
+  fi
+
+  # Prove the unit survives a restart and re-verify the guarantees above.
+  # An installer-internal restart is not a manual operator restart: the
+  # service must be active with routing and unity pin intact afterwards.
+  if user_systemctl restart qbzd.service && qbzd_wait_for_active_state qbzd.service 30 && qbzd_wait_for_http /api/status 30; then
+    pass "qbzd service restarted and active"
+  else
+    die "qbzd service did not come back active after restart"
+  fi
+  settings="$(qbzd_daemon_http_get /api/audio/settings || true)"
+  device="$(printf '%s' "$settings" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("output_device") or "")' 2>/dev/null || true)"
+  [[ "$device" == "fxroute_dsp_sink" ]] || die "qbzd lost the DSP sink routing across restart"
+  curl -fsSL --max-time 10 -X POST http://127.0.0.1:8182/api/playback/volume \
+    -H 'Content-Type: application/json' -d '{"volume":1.0}' >/dev/null 2>&1 \
+    || die "Could not re-pin qbzd engine volume to 100% after restart"
+  pass "qbzd DSP sink routing and unity pin verified across restart"
 }
 
 configure_qbzd_service() {
@@ -4214,18 +4300,20 @@ configure_qbzd_service() {
         warn "FXRoute-owned qbzd service is present but could not be enabled in this shell"
         return 0
       fi
-    fi
-    if [[ $QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE -eq 1 || $QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 1 || $QBZD_AUDIO_CHANGED_BY_FXROUTE -eq 1 ]] \
-      && [[ -f "$service_path" && ! -L "$service_path" ]] \
-      && user_systemctl is-active --quiet qbzd.service; then
-      if ! user_systemctl restart qbzd.service; then
-        die "Could not restart the existing qbzd service after updating its Qobuz Connect settings"
+      if ! qbzd_wait_for_active_state qbzd.service 30; then
+        QBZD_SERVICE_SETUP_FAILED=1
+        warn "FXRoute-owned qbzd service did not reach active state after enable"
+        return 0
       fi
+      pass "FXRoute-owned qbzd service enabled and active"
+      return 0
     fi
     pass "existing qbzd user service preserved"
     return 0
   fi
 
+  # The fork daemon runs in the foreground with no subcommand (the official
+  # `qbzd run` no longer exists): the unit starts the bare binary.
   run_as_target_user mkdir -p "$service_dir"
   run_as_target_user tee "$service_path" >/dev/null <<EOF
 [Unit]
@@ -4233,7 +4321,7 @@ Description=qbzd Qobuz Connect receiver for FXRoute
 
 [Service]
 Type=simple
-ExecStart=$binary_path run
+ExecStart=$binary_path
 Environment=PATH=$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Restart=on-failure
 RestartSec=10
@@ -4246,7 +4334,12 @@ EOF
   QBZD_SERVICE_SHA256="$(sha256sum "$service_path" | awk '{print $1}')"
 
   if user_systemctl daemon-reload && user_systemctl enable --now qbzd.service; then
-    pass "qbzd user service enabled"
+    if qbzd_wait_for_active_state qbzd.service 30; then
+      pass "qbzd user service enabled and active"
+    else
+      QBZD_SERVICE_SETUP_FAILED=1
+      warn "qbzd service was enabled but did not reach active state"
+    fi
   else
     QBZD_SERVICE_SETUP_FAILED=1
     warn "qbzd service was installed, but could not be enabled in this shell"
@@ -4298,22 +4391,21 @@ install_qobuz() {
     return 0
   fi
   ensure_qobuz_runtime_dependencies
-  configure_qbzd_volume_mode
-  configure_qbzd_qconnect
-  configure_qbzd_audio_output
   configure_qbzd_service
   if [[ $QBZD_SERVICE_IDENTITY_CHANGED -eq 1 || $QBZD_SERVICE_SETUP_FAILED -eq 1 ]]; then
     QOBUZ_PROVIDER_STATUS="owned service unavailable; preserved"
     return 0
   fi
-  if [[ $QBZD_PRESENT_BEFORE -eq 1 && $QBZD_BINARY_UPDATED -eq 1 ]] \
-    && user_systemctl is-active --quiet qbzd.service >/dev/null 2>&1; then
-    if user_systemctl restart qbzd.service >/dev/null 2>&1; then
+  if [[ $QBZD_PRESENT_BEFORE -eq 1 && $QBZD_BINARY_UPDATED -eq 1 ]] && user_systemctl is-active --quiet qbzd.service >/dev/null 2>&1; then
+    # A rerun over an already-active unit keeps the old daemon process:
+    # restart onto the updated binary before pinning the runtime.
+    if user_systemctl restart qbzd.service >/dev/null 2>&1 && qbzd_wait_for_active_state qbzd.service 30; then
       pass "qbzd restarted on the updated binary"
     else
       warn "qbzd binary updated but the service could not be restarted"
     fi
   fi
+  configure_qbzd_fork_runtime
   ensure_lan_firewall_service_open mdns "Qobuz Connect discovery"
   qbzd_path="$(qbzd_binary_path || true)"
   if [[ $QBZD_INSTALLED_BY_FXROUTE -eq 1 || $QBZD_SERVICE_INSTALLED_BY_FXROUTE -eq 1 ]]; then
@@ -4321,8 +4413,8 @@ install_qobuz() {
   else
     QOBUZ_PROVIDER_STATUS="already present; service preserved"
   fi
-  echo "Qobuz first run: run '${qbzd_path:-$HOME/.local/bin/qbzd} setup' and complete the browser-based OAuth login."
-  echo "Then enable Qobuz Connect in qbzd and select its device from the Qobuz app."
+  echo "Qobuz first run: connect the account in FXRoute Settings -> Providers (the daemon is already running)."
+  echo "Then select its device from the Qobuz app."
 }
 
 ensure_target_user_cache_ownership() {

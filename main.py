@@ -2050,10 +2050,10 @@ qobuz_unity_pin_state: dict | None = None
 async def _qobuz_pin_unity() -> None:
     """Pin qbzd's engine gain to 100% (Unity).
 
-    In ``volume_mode=locked`` the local control plane still accepts volume
-    writes while remote Connect SetVolume is ignored, so this is the single
+    The local control plane accepts volume writes, so this is the single
     write that keeps qbzd from attenuating; every user-facing volume input
-    (phone slider via journal watch, FXRoute web slider) drives the master.
+    (FXRoute web slider) drives the master. The fork backend has no
+    Connect volume sync to fight the pin.
 
     A failed pin is not treated as harmless: it is recorded in
     ``qobuz_unity_pin_state`` (health flag surfaced in the Qobuz UI state,
@@ -2066,8 +2066,8 @@ async def _qobuz_pin_unity() -> None:
     except Exception as exc:
         qobuz_unity_pin_state = {"ok": False, "error": str(exc), "at": time.time()}
         logger.error(
-            "Qobuz unity pin failed: %s (volume_mode must stay 'locked' so the "
-            "phone slider drives the FXRoute master, not qbzd gain)",
+            "Qobuz unity pin failed: %s (engine volume must stay at 100% so the "
+            "FXRoute master, not qbzd gain, drives playback volume)",
             exc,
         )
         return

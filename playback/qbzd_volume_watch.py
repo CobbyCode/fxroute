@@ -2,12 +2,18 @@
 
 """Qobuz (qbzd) journal-driven remote volume-to-master coupling.
 
-qbzd 2.0.2 decouples QConnect volume from its applied gain only when
-``qconnect.volume_mode=locked``: remote ``SetVolume`` commands are ignored for
-the engine ("player stays at 100%") while the connect session volume follows
-the phone slider. There is no volume event on ``/api/events`` and no HTTP
-endpoint carrying the session volume (live-verified on .104), so the phone
-intent is observable only through the daemon journal line::
+The official qbzd 2.0.2 decoupled QConnect volume from its applied gain only
+when ``qconnect.volume_mode=locked``: remote ``SetVolume`` commands were ignored
+for the engine ("player stays at 100%") while the connect session volume
+followed the phone slider. There was no volume event on ``/api/events`` and
+no HTTP endpoint carrying the session volume (live-verified on .104), so the
+phone intent was observable only through the daemon journal line::
+
+The compatible fork backend (installed since the official upstream shutdown)
+has no volume modes and no such journal lines: its engine volume is pinned
+to 100% at install and on every Qobuz claim/start, and this watch is a
+silent no-op for it. The parser below only recognizes official locked-mode
+lines, so on the fork backend nothing is ever submitted.
 
     [QConnect] volume_mode=locked: ignoring remote SetVolume(0.450); player stays at 100%
 
@@ -173,10 +179,9 @@ class QobuzVolumeWatch:
             return
         self._software_warned_at = now
         logger.warning(
-            "qBZD applied a remote SetVolume itself: qconnect.volume_mode must be "
-            "'locked' for the Qobuz phone slider to drive the FXRoute master "
-            "(run: qbzd settings set qconnect.volume_mode locked && systemctl "
-            "--user restart qbzd)"
+            "qBZD applied a remote SetVolume itself: reinstall the Qobuz provider "
+            "so the engine volume is pinned to 100% and the Qobuz phone slider "
+            "drives the FXRoute master, not qbzd gain"
         )
 
     async def _sleep(self, delay: float) -> None:

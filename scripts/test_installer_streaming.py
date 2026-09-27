@@ -158,6 +158,9 @@ spotify_desktop_supported
             for name in (
                 "github_release_tag_name",
                 "github_release_asset_digest",
+                "github_release_has_asset",
+                "github_newest_release_with_asset_json",
+                "qbzd_usable_asset_for_release",
                 "normalize_release_tag",
                 "verify_github_payload",
                 "provider_binary_version",
@@ -655,6 +658,7 @@ QBZD_BINARY_IDENTITY_CHANGED=0
 QBZD_BINARY_UPDATED=0
 QBZD_PRESENT_BEFORE=0
 QOBUZ_PROVIDER_STATUS=''
+github_newest_release_with_asset_json() {{ return 1; }}
 install_qbzd_binary
 "$HOME/.local/bin/qbzd" --version
 printf 'version=%s source=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_UPSTREAM_SOURCE" "$QBZD_BINARY_UPDATED"
@@ -675,7 +679,7 @@ printf 'version=%s source=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_UPS
             root = Path(td)
             fixtures = root / "fixtures"
             fixtures.mkdir()
-            (fixtures / "release.json").write_text('{"tag_name": "v1.0.1", "assets": []}')
+            (fixtures / "release.json").write_text('{"tag_name": "v1.0.1", "assets": [{"name": "qbzd-1.0.1-linux-amd64.tar.gz"}]}')
             target_home = root / "home"
             owned_dir = target_home / ".local" / "bin"
             owned_dir.mkdir(parents=True)
@@ -711,6 +715,7 @@ QBZD_BINARY_IDENTITY_CHANGED=0
 QBZD_BINARY_UPDATED=0
 QBZD_PRESENT_BEFORE=0
 QOBUZ_PROVIDER_STATUS=''
+github_newest_release_with_asset_json() {{ return 1; }}
 install_qbzd_binary
 printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATED"
 """
@@ -769,6 +774,7 @@ QBZD_BINARY_IDENTITY_CHANGED=0
 QBZD_BINARY_UPDATED=0
 QBZD_PRESENT_BEFORE=0
 QOBUZ_PROVIDER_STATUS=''
+github_newest_release_with_asset_json() {{ return 1; }}
 install_qbzd_binary
 "$HOME/.local/bin/qbzd" --version
 printf 'version=%s source=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_UPSTREAM_SOURCE" "$QBZD_BINARY_UPDATED"
@@ -781,6 +787,136 @@ printf 'version=%s source=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_UPS
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("qbzd 1.0.1", result.stdout)
             self.assertIn("version=1.0.1 source=yet-another-quentin/qbzd updated=1", result.stdout)
+
+    def test_qobuz_nightly_up_to_date_skips_redownload_on_matching_digest(self):
+        # Fork nightly tags never change, so freshness is decided by digest:
+        # an installed binary matching the resolved release digest is kept
+        # without download.
+        body = extract_function(self.install, "install_qbzd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            target_home = root / "home"
+            owned_dir = target_home / ".local" / "bin"
+            owned_dir.mkdir(parents=True)
+            current_binary = owned_dir / "qbzd"
+            current_binary.write_text('#!/bin/sh\necho "qbzd 0.1.9"\n')
+            current_binary.chmod(0o755)
+            current_sha = hashlib.sha256(current_binary.read_bytes()).hexdigest()
+            (fixtures / "nightly.json").write_text(
+                '{"tag_name": "nightly", "prerelease": true, "assets": '
+                '[{"name": "qbzd-linux-amd64", "digest": "sha256:%s"}]}' % current_sha
+            )
+            harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "qbzd_arch_for_host")}
+{extract_function(self.install, "qbzd_binary_path")}
+{self._provider_upstream_helpers()}
+{body}
+{self._github_curl_stub()}
+github_stable_release_json() {{ return 1; }}
+github_newest_release_with_asset_json() {{ cat "$FIXTURES/nightly.json"; }}
+run_cmd() {{ printf 'run:%s\\n' "$*" >> "$CALLS"; "$@"; }}
+run_as_target_user() {{ "$@"; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+HOME={target_home}
+FIXTURES={fixtures}
+CALLS={root / "calls"}
+HOST_ARCH=x86_64
+QBZD_UPSTREAM_REPO=vicrodh/qbz
+QBZD_UPSTREAM_FALLBACK_REPO=yet-another-quentin/qbzd
+QBZD_INSTALLED_BY_FXROUTE=1
+QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
+QBZD_BINARY_PATH="$HOME/.local/bin/qbzd"
+QBZD_BINARY_SHA256={current_sha}
+QBZD_INSTALLED_VERSION=0.1.9
+QBZD_UPSTREAM_SOURCE=yet-another-quentin/qbzd
+QBZD_BINARY_IDENTITY_CHANGED=0
+QBZD_BINARY_UPDATED=0
+QBZD_PRESENT_BEFORE=0
+QOBUZ_PROVIDER_STATUS=''
+: > "$CALLS"
+install_qbzd_binary
+printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATED"
+printf 'downloads=%s\\n' "$(grep -c '^run:curl' "$CALLS" || true)"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("already up to date (nightly 0.1.9)", result.stdout)
+            self.assertIn("version=0.1.9 updated=0", result.stdout)
+            self.assertIn("downloads=0", result.stdout)
+
+    def test_qobuz_assetless_official_release_falls_through_to_fork_prerelease(self):
+        # The official shutdown release carries a stable tag with zero assets:
+        # resolution must skip it and use the newest fork release carrying the
+        # wanted asset (a nightly prerelease), not fail.
+        body = extract_function(self.install, "install_qbzd_binary")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            new_binary = fixtures / "qbzd-linux-amd64"
+            new_binary.write_text('#!/bin/sh\necho "qbzd 0.1.9"\n')
+            new_binary.chmod(0o755)
+            new_digest = hashlib.sha256(new_binary.read_bytes()).hexdigest()
+            (fixtures / "official.json").write_text('{"tag_name": "v6.6.6", "assets": []}')
+            (fixtures / "nightly.json").write_text(
+                '{"tag_name": "nightly", "prerelease": true, "assets": '
+                '[{"name": "qbzd-linux-amd64", "digest": "sha256:%s"}]}' % new_digest
+            )
+            target_home = root / "home"
+            harness = f"""
+set -Eeuo pipefail
+{extract_function(self.install, "qbzd_arch_for_host")}
+{extract_function(self.install, "qbzd_binary_path")}
+{self._provider_upstream_helpers()}
+{body}
+{self._github_curl_stub()}
+github_stable_release_json() {{
+  if [[ "$1" == vicrodh/qbz ]]; then cat "$FIXTURES/official.json"; return 0; fi
+  return 1
+}}
+github_newest_release_with_asset_json() {{ cat "$FIXTURES/nightly.json"; }}
+run_cmd() {{ "$@"; }}
+run_as_target_user() {{ "$@"; }}
+pass() {{ printf 'pass:%s\\n' "$*"; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+HOME={target_home}
+FIXTURES={fixtures}
+HOST_ARCH=x86_64
+QBZD_UPSTREAM_REPO=vicrodh/qbz
+QBZD_UPSTREAM_FALLBACK_REPO=yet-another-quentin/qbzd
+QBZD_INSTALLED_BY_FXROUTE=0
+QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
+QBZD_BINARY_PATH=''
+QBZD_BINARY_SHA256=''
+QBZD_INSTALLED_VERSION=''
+QBZD_UPSTREAM_SOURCE=''
+QBZD_BINARY_IDENTITY_CHANGED=0
+QBZD_BINARY_UPDATED=0
+QBZD_PRESENT_BEFORE=0
+QOBUZ_PROVIDER_STATUS=''
+install_qbzd_binary
+"$HOME/.local/bin/qbzd" --version
+printf 'version=%s source=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_UPSTREAM_SOURCE" "$QBZD_BINARY_UPDATED"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("qbzd 0.1.9", result.stdout)
+            self.assertIn("publishes no qbzd asset", result.stderr)
+            self.assertIn("version=0.1.9 source=yet-another-quentin/qbzd updated=1", result.stdout)
 
     def test_qobuz_existing_install_survives_unreachable_upstreams(self):
         body = extract_function(self.install, "install_qbzd_binary")
@@ -822,6 +958,7 @@ QBZD_BINARY_IDENTITY_CHANGED=0
 QBZD_BINARY_UPDATED=0
 QBZD_PRESENT_BEFORE=0
 QOBUZ_PROVIDER_STATUS=''
+github_newest_release_with_asset_json() {{ return 1; }}
 if install_qbzd_binary; then
   printf 'unexpected-success\\n'
 else
@@ -845,7 +982,7 @@ printf 'sha=%s updated=%s status=%s\\n' "$(sha256sum "$HOME/.local/bin/qbzd" | a
             root = Path(td)
             fixtures = root / "fixtures"
             fixtures.mkdir()
-            (fixtures / "release.json").write_text('{"tag_name": "v1.0.1", "assets": []}')
+            (fixtures / "release.json").write_text('{"tag_name": "v1.0.1", "assets": [{"name": "qbzd-1.0.1-linux-amd64.tar.gz"}]}')
             target_home = root / "home"
             owned_dir = target_home / ".local" / "bin"
             owned_dir.mkdir(parents=True)
@@ -881,6 +1018,7 @@ QBZD_BINARY_IDENTITY_CHANGED=0
 QBZD_BINARY_UPDATED=0
 QBZD_PRESENT_BEFORE=0
 QOBUZ_PROVIDER_STATUS=''
+github_newest_release_with_asset_json() {{ return 1; }}
 install_qbzd_binary
 printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATED"
 """
@@ -1074,29 +1212,29 @@ printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("symlink", result.stderr)
 
-    def test_qconnect_enable_runs_after_volume_and_before_service(self):
+    def test_qobuz_service_runs_before_runtime_pin(self):
         body = extract_function(self.install, "install_qobuz")
         self.assertLess(
-            body.index("configure_qbzd_volume_mode"), body.index("configure_qbzd_qconnect")
-        )
-        self.assertLess(
-            body.index("configure_qbzd_qconnect"), body.index("configure_qbzd_service")
+            body.index("configure_qbzd_service"), body.index("configure_qbzd_fork_runtime")
         )
 
-    def test_qconnect_enable_is_idempotent_and_leaves_name_alone(self):
-        configurator = extract_function(self.install, "configure_qbzd_qconnect")
-        self.assertIn("qconnect enable", configurator)
-        self.assertIn("already enabled", configurator)
-        self.assertNotIn("qconnect name", configurator)
-        self.assertLess(
-            configurator.index("QBZD_QCONNECT_CHANGED_BY_FXROUTE=1"),
-            configurator.index("qconnect enable"),
-        )
+    def test_qobuz_needs_no_config_file_only_control_plane(self):
+        # The nightly fork build ignores its TOML config file, so the
+        # installer must not write one: routing is applied over HTTP.
+        self.assertNotIn("write_qbzd_fork_config", self.install)
+        self.assertNotIn("qbzd.toml", self.install)
+        body = extract_function(self.install, "install_qobuz")
+        self.assertIn("configure_qbzd_fork_runtime", body)
+        runtime = extract_function(self.install, "configure_qbzd_fork_runtime")
+        self.assertIn("/api/audio/settings", runtime)
 
-    def test_existing_service_restarts_on_qconnect_change(self):
+
+    def test_existing_service_is_reactivated_with_active_poll(self):
         service = extract_function(self.install, "configure_qbzd_service")
-        self.assertIn("QBZD_QCONNECT_CHANGED_BY_FXROUTE -eq 1", service)
-        self.assertIn("user_systemctl restart qbzd.service", service)
+        self.assertIn("user_systemctl enable --now qbzd.service", service)
+        self.assertIn("qbzd_wait_for_active_state qbzd.service", service)
+        self.assertIn("ExecStart=$binary_path\n", service)
+        self.assertNotIn("ExecStart=$binary_path run", service)
 
     def test_install_state_records_qconnect_ownership(self):
         for field in (
@@ -1106,75 +1244,119 @@ printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
         ):
             self.assertIn(field, self.install)
 
-    def test_qconnect_configure_enables_and_rechecks_with_fake_qbzd(self):
-        reader = extract_function(self.install, "read_qbzd_qconnect_startup_mode")
-        configurator = extract_function(self.install, "configure_qbzd_qconnect")
-        path_reader = extract_function(self.install, "qbzd_binary_path")
+    def test_qbzd_fork_runtime_pins_routing_unity_and_guard(self):
+        runtime = extract_function(self.install, "configure_qbzd_fork_runtime")
+        for token in (
+            "/api/audio/settings",
+            "fxroute_dsp_sink",
+            "/api/playback/volume",
+            "qbzd_ensure_skip_sink_switch",
+            "user_systemctl restart qbzd.service",
+            "verified across restart",
+        ):
+            self.assertIn(token, runtime)
         preamble = (
             "run_as_target_user() { \"$@\"; }\n"
             "log() { :; }\n"
             "pass() { printf '[pass] %s\\n' \"$*\"; }\n"
+            "warn() { printf '[warn] %s\\n' \"$*\" >&2; }\n"
             "die() { printf '[fxroute][error] %s\\n' \"$*\" >&2; exit 1; }\n"
         )
+        helpers = "\n".join(
+            extract_function(self.install, name)
+            for name in (
+                "qbzd_daemon_http_get",
+                "qbzd_wait_for_http",
+                "qbzd_wait_for_active_state",
+                "qbzd_ensure_skip_sink_switch",
+                "qbzd_sink_switch_guard_active",
+                "configure_qbzd_fork_runtime",
+            )
+        )
         with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "daemon.json"
+            calls = Path(td) / "calls"
             home = Path(td) / "home"
-            provider_dir = home / ".local" / "bin"
-            provider_dir.mkdir(parents=True)
-            mode_file = Path(td) / "mode"
-            calls_file = Path(td) / "calls"
-            fake_qbzd = provider_dir / "qbzd"
-            fake_qbzd.write_text(
-                "#!/usr/bin/env bash\n"
-                "if [[ $1 == settings && $2 == show ]]; then\n"
-                "  printf '{\"qconnect.startup_mode\":\"%s\"}\\n' \"$(<\"$MODE_FILE\")\"\n"
-                "elif [[ $1 == qconnect && $2 == enable ]]; then\n"
-                "  printf 'enable\\n' >> \"$CALLS_FILE\"\n"
-                "  printf '%s' 'on' > \"$MODE_FILE\"\n"
-                "else\n"
-                "  exit 1\n"
-                "fi\n"
-            )
-            fake_qbzd.chmod(0o755)
+            (home / ".local" / "share" / "qbz").mkdir(parents=True)
+            import sqlite3
+            db = home / ".local" / "share" / "qbz" / "audio_settings.db"
+            connection = sqlite3.connect(db)
+            connection.execute("CREATE TABLE audio_settings (id INTEGER PRIMARY KEY, skip_sink_switch INTEGER DEFAULT 0)")
+            connection.execute("INSERT INTO audio_settings (id, skip_sink_switch) VALUES (1, 0)")
+            connection.commit()
+            connection.close()
+            state.write_text('{"backend_type": null, "output_device": null, '
+                             '"skip_sink_switch": false, "volume": 0.75}')
+            calls.write_text("")
             harness = (
-                f"{preamble}\n{path_reader}\n{reader}\n{configurator}\n"
-                "QBZD_QCONNECT_STARTUP_MODE_BEFORE=\"\"\n"
-                "QBZD_QCONNECT_STARTUP_MODE_AFTER=\"\"\n"
-                "QBZD_QCONNECT_CHANGED_BY_FXROUTE=0\n"
-                "configure_qbzd_qconnect\n"
-                "printf 'mode=%s before=%s changed=%s calls=%s\\n' "
-                "\"$(<\"$MODE_FILE\")\" \"$QBZD_QCONNECT_STARTUP_MODE_BEFORE\" "
-                "\"$QBZD_QCONNECT_CHANGED_BY_FXROUTE\" \"$(<\"$CALLS_FILE\")\"\n"
+                f"{preamble}\n{helpers}\n"
+                "curl() {\n"
+                "  local method=GET data=\"\" url=\"\"\n"
+                "  while [[ $# -gt 0 ]]; do\n"
+                "    case \"$1\" in\n"
+                "      -X) method=\"$2\"; shift 2;;\n"
+                "      -d) data=\"$2\"; shift 2;;\n"
+                "      -H) shift 2;;\n"
+                "      -o) shift 2;;\n"
+                "      --max-time) shift 2;;\n"
+                "      -*) shift;;\n"
+                "      *) url=\"$1\"; shift;;\n"
+                "    esac\n"
+                "  done\n"
+                "  printf '%s %s %s\\n' \"$method\" \"$url\" \"$data\" >> \"$CALLS\"\n"
+                "  if [[ \"$method\" == PATCH ]]; then\n"
+                "    python3 - \"$STATE\" \"$data\" <<'PY'\n"
+                "import json, sys\n"
+                "doc = json.loads(open(sys.argv[1]).read())\n"
+                "patch = json.loads(sys.argv[2])\n"
+                "doc.update({k: v for k, v in patch.items() if v is not None})\n"
+                "open(sys.argv[1], 'w').write(json.dumps(doc))\n"
+                "PY\n"
+                "  elif [[ \"$url\" == */api/playback/volume ]]; then\n"
+                "    python3 - \"$STATE\" \"$data\" <<'PY'\n"
+                "import json, sys\n"
+                "doc = json.loads(open(sys.argv[1]).read())\n"
+                "doc['volume'] = json.loads(sys.argv[2])['volume']\n"
+                "open(sys.argv[1], 'w').write(json.dumps(doc))\n"
+                "PY\n"
+                "  fi\n"
+                "  case \"$url\" in\n"
+                "    */api/audio/settings) python3 -c 'import json,sys; print(open(sys.argv[1]).read())' \"$STATE\";;\n"
+                "    */api/playback) python3 -c 'import json,sys; d=json.loads(open(sys.argv[1]).read()); print(json.dumps({\"volume\": d.get(\"volume\")}))' \"$STATE\";;\n"
+                "    */api/status) printf '{\"logged_in\": false}\\n';;\n"
+                "  esac\n"
+                "}\n"
+                "user_systemctl() {\n"
+                "  printf 'systemctl %s\\n' \"$*\" >> \"$CALLS\"\n"
+                "  if [[ \"$1\" == show ]]; then printf 'active\\n'; fi\n"
+                "  return 0\n"
+                "}\n"
+                "configure_qbzd_fork_runtime\n"
+                "printf 'device=%s volume=%s\\n' "
+                "\"$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(\"output_device\"))' \"$STATE\")\" "
+                "\"$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(\"volume\"))' \"$STATE\")\"\n"
             )
-            env = {
-                **os.environ,
-                "HOME": str(home),
-                "PATH": "/usr/bin:/bin",
-                "MODE_FILE": str(mode_file),
-                "CALLS_FILE": str(calls_file),
-            }
-            # Disabled renderer is enabled, verified, and recorded.
-            mode_file.write_text("off")
-            calls_file.write_text("")
+            env = {**os.environ, "HOME": str(home), "PATH": "/usr/bin:/bin",
+                   "STATE": str(state), "CALLS": str(calls)}
             result = subprocess.run(
                 ["bash", "-c", harness], capture_output=True, text=True, env=env
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("mode=on before=off changed=1 calls=enable", result.stdout)
-            # Already enabled renderer is left untouched.
-            mode_file.write_text("on")
-            calls_file.write_text("")
-            result = subprocess.run(
-                ["bash", "-c", harness], capture_output=True, text=True, env=env
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("already enabled", result.stdout)
-            self.assertIn("mode=on before= changed=0 calls=", result.stdout)
-            # Unreadable settings abort the run instead of leaving Connect off.
-            fake_qbzd.write_text("#!/usr/bin/env bash\nexit 1\n")
-            result = subprocess.run(
-                ["bash", "-c", harness], capture_output=True, text=True, env=env
-            )
-            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("device=fxroute_dsp_sink volume=1.0", result.stdout)
+            log = calls.read_text()
+            self.assertIn("PATCH http://127.0.0.1:8182/api/audio/settings", log)
+            self.assertIn('"output_device":"fxroute_dsp_sink"', log)
+            self.assertIn('POST http://127.0.0.1:8182/api/playback/volume {"volume":1.0}', log)
+            self.assertIn("systemctl restart qbzd.service", log)
+            self.assertIn("verified across restart", result.stdout)
+            import sqlite3 as _sqlite3
+            guard = _sqlite3.connect(db).execute(
+                "SELECT skip_sink_switch FROM audio_settings WHERE id=1").fetchone()[0]
+            self.assertEqual(guard, 1)
+            # The stubbed daemon cannot report the guard back over HTTP, so
+            # the installer takes the honest warn path here.
+            self.assertIn("sink-switch guard could not be enabled",
+                        result.stdout + result.stderr)
 
     def test_qbzd_alsa_pipewire_bridge_is_backports_aware(self):
         body = extract_function(self.install, "ensure_qobuz_runtime_dependencies")
@@ -1256,35 +1438,27 @@ printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(calls_file.read_text().strip(), expected)
 
-    def test_qbzd_audio_output_runs_after_qconnect_and_before_service(self):
-        body = extract_function(self.install, "install_qobuz")
-        self.assertLess(
-            body.index("configure_qbzd_qconnect"), body.index("configure_qbzd_audio_output")
-        )
-        self.assertLess(
-            body.index("configure_qbzd_audio_output"), body.index("configure_qbzd_service")
-        )
 
-    def test_qbzd_audio_output_is_idempotent_and_leaves_name_alone(self):
-        configurator = extract_function(self.install, "configure_qbzd_audio_output")
+    def test_install_state_records_qbzd_upstream_source(self):
+        self.assertIn('"upstream_source": "${QBZD_UPSTREAM_SOURCE}"', self.install)
+        self.assertIn('"installed_version": "${QBZD_INSTALLED_VERSION}"', self.install)
+
+
+    def test_qbzd_fork_runtime_pins_unity_and_restarts(self):
+        runtime = extract_function(self.install, "configure_qbzd_fork_runtime")
         for token in (
-            "audio.backend",
-            "audio.device",
-            "audio.skip_sink_switch",
-            "settings set --quiet",
-            "already targets",
+            "fxroute_dsp_sink",
+            '"volume":1.0',
+            "qbzd_ensure_skip_sink_switch",
+            "user_systemctl restart qbzd.service",
+            "verified across restart",
         ):
-            self.assertIn(token, configurator)
-        self.assertNotIn("device_name", configurator)
-        self.assertNotIn("qconnect name", configurator)
-        self.assertLess(
-            configurator.index("QBZD_AUDIO_CHANGED_BY_FXROUTE=1"),
-            configurator.index("settings set --quiet"),
-        )
+            self.assertIn(token, runtime)
 
-    def test_existing_service_restarts_on_audio_output_change(self):
+    def test_qbzd_service_is_durable_without_manual_restart(self):
         service = extract_function(self.install, "configure_qbzd_service")
-        self.assertIn("QBZD_AUDIO_CHANGED_BY_FXROUTE -eq 1", service)
+        self.assertIn("Restart=on-failure", service)
+        self.assertIn("qbzd_wait_for_active_state qbzd.service", service)
 
     def test_install_state_records_audio_output_ownership(self):
         for field in (
@@ -1294,97 +1468,6 @@ printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
             "audio_changed_by_fxroute",
         ):
             self.assertIn(field, self.install)
-
-    def test_qbzd_audio_configure_routes_and_rechecks_with_fake_qbzd(self):
-        reader = extract_function(self.install, "read_qbzd_audio_output")
-        configurator = extract_function(self.install, "configure_qbzd_audio_output")
-        path_reader = extract_function(self.install, "qbzd_binary_path")
-        preamble = (
-            "run_as_target_user() { \"$@\"; }\n"
-            "log() { :; }\n"
-            "pass() { printf '[pass] %s\\n' \"$*\"; }\n"
-            "die() { printf '[fxroute][error] %s\\n' \"$*\" >&2; exit 1; }\n"
-        )
-        with tempfile.TemporaryDirectory() as td:
-            home = Path(td) / "home"
-            provider_dir = home / ".local" / "bin"
-            provider_dir.mkdir(parents=True)
-            calls_file = Path(td) / "calls"
-            fake_qbzd = provider_dir / "qbzd"
-            fake_qbzd.write_text(
-                "#!/usr/bin/env bash\n"
-                "if [[ $1 == settings && $2 == show ]]; then\n"
-                "  printf '{\"audio.backend\":\"%s\",\"audio.device\":\"%s\",\"audio.skip_sink_switch\":\"%s\"}\\n' \"$(<\"$STATE_DIR/backend\")\" \"$(<\"$STATE_DIR/device\")\" \"$(<\"$STATE_DIR/skip\")\"\n"
-                "elif [[ $1 == settings && $2 == set ]]; then\n"
-                "  printf 'set:%s=%s\\n' \"$4\" \"$5\" >> \"$CALLS_FILE\"\n"
-                "  case \"$4\" in\n"
-                "    audio.backend) printf '%s' \"$5\" > \"$STATE_DIR/backend\" ;;\n"
-                "    audio.device) printf '%s' \"$5\" > \"$STATE_DIR/device\" ;;\n"
-                "    audio.skip_sink_switch) printf '%s' \"$5\" > \"$STATE_DIR/skip\" ;;\n"
-                "  esac\n"
-                "else\n"
-                "  exit 1\n"
-                "fi\n"
-            )
-            fake_qbzd.chmod(0o755)
-            harness = (
-                f"{preamble}\n{path_reader}\n{reader}\n{configurator}\n"
-                "QBZD_AUDIO_BACKEND_BEFORE=\"\"\n"
-                "QBZD_AUDIO_DEVICE_BEFORE=\"\"\n"
-                "QBZD_AUDIO_SKIP_SINK_SWITCH_BEFORE=\"\"\n"
-                "QBZD_AUDIO_CHANGED_BY_FXROUTE=0\n"
-                "configure_qbzd_audio_output\n"
-                "printf 'backend=%s device=%s skip=%s changed=%s calls=%s\\n' "
-                "\"$(<\"$STATE_DIR/backend\")\" \"$(<\"$STATE_DIR/device\")\" \"$(<\"$STATE_DIR/skip\")\" "
-                "\"$QBZD_AUDIO_CHANGED_BY_FXROUTE\" \"$(<\"$CALLS_FILE\")\"\n"
-            )
-            # Misrouted output is routed, verified, and recorded.
-            state_dir = Path(td) / "state-off"
-            state_dir.mkdir()
-            (state_dir / "backend").write_text("system")
-            (state_dir / "device").write_text("system")
-            (state_dir / "skip").write_text("false")
-            calls_file.write_text("")
-            env = {
-                **os.environ,
-                "HOME": str(home),
-                "PATH": "/usr/bin:/bin",
-                "CALLS_FILE": str(calls_file),
-                "STATE_DIR": str(state_dir),
-            }
-            result = subprocess.run(
-                ["bash", "-c", harness], capture_output=True, text=True, env=env
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            out = result.stdout
-            self.assertIn("backend=pipewire device=fxroute_dsp_sink skip=true changed=1", out)
-            self.assertIn("set:audio.backend=pipewire", out)
-            self.assertIn("set:audio.device=fxroute_dsp_sink", out)
-            self.assertIn("set:audio.skip_sink_switch=true", out)
-            # Already routed output is left untouched.
-            state_dir = Path(td) / "state-on"
-            state_dir.mkdir()
-            (state_dir / "backend").write_text("pipewire")
-            (state_dir / "device").write_text("fxroute_dsp_sink")
-            (state_dir / "skip").write_text("true")
-            calls_file.write_text("")
-            env.update({"STATE_DIR": str(state_dir)})
-            result = subprocess.run(
-                ["bash", "-c", harness], capture_output=True, text=True, env=env
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("already targets", result.stdout)
-            self.assertNotIn("set:audio", result.stdout)
-            # Unreadable settings abort the run instead of leaving DSP off.
-            broken = provider_dir / "qbzd-broken"
-            broken.write_text("#!/usr/bin/env bash\nexit 1\n")
-            broken.chmod(0o755)
-            (provider_dir / "qbzd").unlink()
-            broken.rename(provider_dir / "qbzd")
-            result = subprocess.run(
-                ["bash", "-c", harness], capture_output=True, text=True, env=env
-            )
-            self.assertNotEqual(result.returncode, 0)
 
     def test_tidal_tracks_the_current_stable_upstream(self):
         self.assertNotIn("tidalapi", self.base_requirements)

@@ -33,88 +33,14 @@ class InstallerIntegrationTests(unittest.TestCase):
         cls.install = INSTALL_SH.read_text()
         cls.uninstall = UNINSTALL_SH.read_text()
 
-    def test_qobuz_volume_configuration_sets_locked_without_replacing_existing_settings(self):
-        for name in (
-            "read_qbzd_volume_mode",
-            "set_qbzd_volume_mode",
-            "configure_qbzd_volume_mode",
-        ):
-            self.assertIn(f"{name}()", self.install)
-        self.assertIn("qconnect.volume_mode", self.install)
-        self.assertIn("QOBUZ_VOLUME_MODE_KEY", self.install)
-        self.assertIn("QOBUZ_REQUIRED_VOLUME_MODE", self.install)
-        self.assertIn("volume_mode_changed_by_fxroute", self.install)
+    def test_qobuz_needs_no_config_file_only_control_plane(self):
+        # The nightly fork build ignores its TOML config file, so the
+        # installer must not write one: routing is applied over HTTP.
+        self.assertNotIn('write_qbzd_fork_config', self.install)
+        self.assertNotIn('qbzd.toml', self.install)
+        self.assertNotIn('remove_owned_qbzd_config', self.uninstall)
 
-        reader = extract_function(self.install, "read_qbzd_volume_mode")
-        setter = extract_function(self.install, "set_qbzd_volume_mode")
-        configurator = extract_function(self.install, "configure_qbzd_volume_mode")
-        target_runner = extract_function(self.install, "run_as_target_user")
-        with tempfile.TemporaryDirectory() as td:
-            state = Path(td) / "mode"
-            log = Path(td) / "calls"
-            fake_qbzd = Path(td) / "qbzd"
-            fake_qbzd.write_text(
-                "#!/usr/bin/env bash\n"
-                "if [[ $1 == settings && $2 == show ]]; then\n"
-                "  printf '{\"qconnect.volume_mode\":\"%s\",\"qconnect.device_name\":\"keep\"}\\n' \"$(<\"$MODE_FILE\")\"\n"
-                "elif [[ $1 == settings && $2 == set ]]; then\n"
-                "  if [[ $3 == --quiet ]]; then key=$4; value=$5; else key=$3; value=$4; fi\n"
-                "  printf '%s %s\\n' \"$key\" \"$value\" >> \"$CALL_LOG\"\n"
-                "  printf '%s' \"$value\" > \"$MODE_FILE\"\n"
-                "fi\n"
-            )
-            fake_qbzd.chmod(0o755)
-            state.write_text("software")
-            harness = f"""
-QBZD_BINARY_PATH={fake_qbzd}
-MODE_FILE={state}
-CALL_LOG={log}
-QOBUZ_VOLUME_MODE_KEY=qconnect.volume_mode
-QOBUZ_REQUIRED_VOLUME_MODE=locked
-FXROUTE_TARGET_USER="$(id -un)"
-FXROUTE_TARGET_HOME="$HOME"
-FXROUTE_RUNTIME_DIR="/run/user/$(id -u)"
-export MODE_FILE CALL_LOG
-QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0
-QBZD_VOLUME_MODE_BEFORE=""
-qbzd_binary_path() {{ printf '%s\\n' "$QBZD_BINARY_PATH"; }}
-run_cmd() {{ "$@"; }}
-pass() {{ :; }}
-warn() {{ printf 'WARN:%s\\n' "$*" >&2; }}
-die() {{ printf 'DIE:%s\\n' "$*" >&2; return 1; }}
-{target_runner}
-{reader}
-{setter}
-{configurator}
-configure_qbzd_volume_mode
-printf 'mode=%s changed=%s before=%s\\n' "$(<"$MODE_FILE")" "$QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE" "$QBZD_VOLUME_MODE_BEFORE"
-"""
-            result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("mode=locked changed=1 before=software", result.stdout)
-            self.assertEqual(log.read_text().strip(), "qconnect.volume_mode locked")
 
-            state.write_text("locked")
-            log.unlink()
-            result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("mode=locked changed=0 before=", result.stdout)
-            self.assertFalse(log.exists())
-
-            state.write_text("hardware")
-            if log.exists():
-                log.unlink()
-            rerun_harness = harness.replace(
-                "QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=0",
-                "QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=1",
-            ).replace(
-                'QBZD_VOLUME_MODE_BEFORE=""',
-                'QBZD_VOLUME_MODE_BEFORE=software',
-            )
-            result = subprocess.run(["bash", "-c", rerun_harness], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("mode=locked changed=1 before=hardware", result.stdout)
-            self.assertEqual(log.read_text().strip(), "qconnect.volume_mode locked")
 
     def test_qobuz_volume_ownership_is_persisted_and_uninstaller_handles_it(self):
         for field in (
@@ -125,11 +51,10 @@ printf 'mode=%s changed=%s before=%s\\n' "$(<"$MODE_FILE")" "$QBZD_VOLUME_MODE_C
             self.assertIn(field, self.install)
             self.assertIn(field, self.uninstall)
         self.assertIn("qconnect.volume_mode", self.uninstall)
-        configurator = extract_function(self.install, "configure_qbzd_volume_mode")
-        self.assertLess(
-            configurator.index("QBZD_VOLUME_MODE_CHANGED_BY_FXROUTE=1"),
-            configurator.index("set_qbzd_volume_mode"),
-        )
+        restore = extract_function(self.uninstall, "restore_qbzd_volume_mode_if_owned")
+        self.assertIn("qbzd_supports_settings_cli", restore)
+        self.assertIn("clear_qbzd_volume_ownership_record", restore)
+
 
     def test_qobuz_qconnect_ownership_is_persisted_and_uninstaller_handles_it(self):
         for field in (
@@ -139,16 +64,11 @@ printf 'mode=%s changed=%s before=%s\\n' "$(<"$MODE_FILE")" "$QBZD_VOLUME_MODE_C
         ):
             self.assertIn(field, self.install)
             self.assertIn(field, self.uninstall)
-        configurator = extract_function(self.install, "configure_qbzd_qconnect")
-        self.assertIn("qconnect enable", configurator)
-        self.assertNotIn("qconnect name", configurator)
-        self.assertLess(
-            configurator.index("QBZD_QCONNECT_CHANGED_BY_FXROUTE=1"),
-            configurator.index("qconnect enable"),
-        )
         restore = extract_function(self.uninstall, "restore_qbzd_qconnect_if_owned")
         self.assertIn("qconnect disable", restore)
         self.assertIn("clear_qbzd_qconnect_ownership_record", restore)
+        self.assertIn("qbzd_supports_settings_cli", restore)
+
 
     def test_qobuz_owned_binary_hash_is_not_replaced_after_external_change(self):
         path_reader = extract_function(self.install, "qbzd_binary_path")
@@ -293,6 +213,7 @@ printf 'owned=%s status=%s\\n' "$SPOTIFYD_INSTALLED_BY_FXROUTE" "$SPOTIFYD_PROVI
 {reader}
 {extract_function(self.uninstall, "clear_qbzd_volume_ownership_record")}
 {extract_function(self.uninstall, "verify_owned_binary_identity")}
+{extract_function(self.uninstall, "qbzd_supports_settings_cli")}
 {restore}
 read_install_state_field() {{
   case "$1" in
@@ -352,6 +273,7 @@ printf 'mode=%s preserve=%s\\n' "$(<"$MODE_FILE")" "$PRESERVE_INSTALL_STATE"
 {reader}
 {extract_function(self.uninstall, "clear_qbzd_qconnect_ownership_record")}
 {extract_function(self.uninstall, "verify_owned_binary_identity")}
+{extract_function(self.uninstall, "qbzd_supports_settings_cli")}
 {restore}
 read_install_state_field() {{
   case "$1" in
@@ -392,16 +314,13 @@ printf 'mode=%s preserve=%s\\n' "$(<"$MODE_FILE")" "$PRESERVE_INSTALL_STATE"
         ):
             self.assertIn(field, self.install)
             self.assertIn(field, self.uninstall)
-        configurator = extract_function(self.install, "configure_qbzd_audio_output")
-        self.assertIn("audio.backend", configurator)
-        self.assertIn("audio.device", configurator)
-        self.assertIn("audio.skip_sink_switch", configurator)
-        self.assertNotIn("device_name", configurator)
         restore = extract_function(self.uninstall, "restore_qbzd_audio_output_if_owned")
         self.assertIn("settings set --quiet audio.backend", restore)
         self.assertIn("settings set --quiet audio.device", restore)
         self.assertIn("settings set --quiet audio.skip_sink_switch", restore)
         self.assertIn("clear_qbzd_audio_ownership_record", restore)
+        self.assertIn("qbzd_supports_settings_cli", restore)
+
 
     def test_uninstaller_restores_fxroute_owned_qobuz_audio_output(self):
         reader = extract_function(self.uninstall, "read_qbzd_audio_output_for_uninstall")
@@ -439,6 +358,7 @@ printf 'mode=%s preserve=%s\\n' "$(<"$MODE_FILE")" "$PRESERVE_INSTALL_STATE"
 {reader}
 {extract_function(self.uninstall, "clear_qbzd_audio_ownership_record")}
 {extract_function(self.uninstall, "verify_owned_binary_identity")}
+{extract_function(self.uninstall, "qbzd_supports_settings_cli")}
 {restore}
 read_install_state_field() {{
   case "$1" in
@@ -470,6 +390,59 @@ printf 'audio=%s/%s/%s preserve=%s\\n' "$(<"$STATE_DIR/backend")" "$(<"$STATE_DI
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("audio=system/system/false preserve=0", result.stdout)
             self.assertIn('"audio_changed_by_fxroute": false', install_state.read_text())
+
+    def test_uninstaller_skips_settings_restore_for_fork_binary(self):
+        # Owned settings records from the official era cannot be restored
+        # against the fork backend (no settings CLI): the restore must clear
+        # the record and succeed instead of blocking the uninstall.
+        restore = extract_function(self.uninstall, "restore_qbzd_volume_mode_if_owned")
+        with tempfile.TemporaryDirectory() as td:
+            install_state = Path(td) / "install-state.json"
+            fake_qbzd = Path(td) / "qbzd"
+            install_state.write_text(
+                '{"providers":{"qobuz":{"volume_mode_before":"software",'
+                '"volume_mode_after":"locked",'
+                '"volume_mode_changed_by_fxroute":true}}}\n'
+            )
+            fake_qbzd.write_text("#!/usr/bin/env bash\necho \"error: unrecognized subcommand 'settings'\" >&2\nexit 2\n")
+            fake_qbzd.chmod(0o755)
+            qbzd_sha256 = hashlib.sha256(fake_qbzd.read_bytes()).hexdigest()
+            harness = f"""
+{extract_function(self.uninstall, "run_as_target_user")}
+{extract_function(self.uninstall, "qbzd_supports_settings_cli")}
+{extract_function(self.uninstall, "clear_qbzd_volume_ownership_record")}
+{extract_function(self.uninstall, "verify_owned_binary_identity")}
+{restore}
+read_install_state_field() {{
+  case "$1" in
+    providers.qobuz.volume_mode_changed_by_fxroute) printf 'true\\n' ;;
+    providers.qobuz.volume_mode_before) printf 'software\\n' ;;
+    providers.qobuz.volume_mode_after) printf 'locked\\n' ;;
+    providers.qobuz.binary_path) printf '%s\\n' "$QBZD_BINARY" ;;
+    providers.qobuz.binary_sha256) printf '%s\\n' "{qbzd_sha256}" ;;
+    *) return 1 ;;
+  esac
+}}
+confirm() {{ return 0; }}
+log() {{ :; }}
+warn() {{ printf '%s\\n' "$*" >&2; }}
+PRESERVE_INSTALL_STATE=0
+INSTALL_STATE_FILE={install_state}
+FXROUTE_TARGET_USER="$(id -un)"
+FXROUTE_RUNTIME_DIR="/run/user/$(id -u)"
+restore_qbzd_volume_mode_if_owned
+printf 'preserve=%s\\n' "$PRESERVE_INSTALL_STATE"
+"""
+            result = subprocess.run(
+                ["bash", "-c", harness],
+                env={**os.environ, "QBZD_BINARY": str(fake_qbzd)},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("preserve=0", result.stdout)
+            self.assertIn('"volume_mode_changed_by_fxroute": false', install_state.read_text())
+
 
     def test_spotifyd_config_and_service_use_fixed_zeroconf_port(self):
         self.assertRegex(self.install, r'SPOTIFYD_ZEROCONF_PORT="[1-9][0-9]{3,4}"')

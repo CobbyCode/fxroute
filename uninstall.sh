@@ -1486,6 +1486,15 @@ remove_owned_qbzd() {
   user_systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
+qbzd_supports_settings_cli() {
+  # True when the qbzd binary speaks the official settings CLI. The fork
+  # backend has no settings subcommand, so owned settings records from the
+  # official era can neither be read nor restored against it.
+  local binary_path="$1"
+  [[ -n "$binary_path" && -x "$binary_path" ]] || return 1
+  run_as_target_user "$binary_path" settings show --quiet --json </dev/null >/dev/null 2>&1
+}
+
 read_qbzd_volume_mode_for_uninstall() {
   local binary_path="$1"
   [[ -x "$binary_path" ]] || return 1
@@ -1564,6 +1573,15 @@ restore_qbzd_volume_mode_if_owned() {
   fi
   if ! verify_owned_binary_identity "$binary_path" "$(read_install_state_field "providers.qobuz.binary_sha256" 2>/dev/null || true)" "recorded qbzd"; then
     return 1
+  fi
+  if ! qbzd_supports_settings_cli "$binary_path"; then
+    log "qbzd no longer speaks the settings CLI; clearing the FXRoute volume-mode ownership record"
+    if ! clear_qbzd_volume_ownership_record; then
+      warn "qbzd settings record could not be cleared"
+      PRESERVE_INSTALL_STATE=1
+      return 1
+    fi
+    return 0
   fi
 
   current_mode="$(read_qbzd_volume_mode_for_uninstall "$binary_path" || true)"
@@ -1682,6 +1700,15 @@ restore_qbzd_qconnect_if_owned() {
   fi
   if ! verify_owned_binary_identity "$binary_path" "$(read_install_state_field "providers.qobuz.binary_sha256" 2>/dev/null || true)" "recorded qbzd"; then
     return 1
+  fi
+  if ! qbzd_supports_settings_cli "$binary_path"; then
+    log "qbzd no longer speaks the settings CLI; clearing the FXRoute Qobuz Connect ownership record"
+    if ! clear_qbzd_qconnect_ownership_record; then
+      warn "qbzd settings record could not be cleared"
+      PRESERVE_INSTALL_STATE=1
+      return 1
+    fi
+    return 0
   fi
 
   current_mode="$(read_qbzd_qconnect_startup_mode_for_uninstall "$binary_path" || true)"
@@ -1804,6 +1831,15 @@ restore_qbzd_audio_output_if_owned() {
   fi
   if ! verify_owned_binary_identity "$binary_path" "$(read_install_state_field "providers.qobuz.binary_sha256" 2>/dev/null || true)" "recorded qbzd"; then
     return 1
+  fi
+  if ! qbzd_supports_settings_cli "$binary_path"; then
+    log "qbzd no longer speaks the settings CLI; clearing the FXRoute audio output ownership record"
+    if ! clear_qbzd_audio_ownership_record; then
+      warn "qbzd settings record could not be cleared"
+      PRESERVE_INSTALL_STATE=1
+      return 1
+    fi
+    return 0
   fi
 
   current="$(read_qbzd_audio_output_for_uninstall "$binary_path" || true)"

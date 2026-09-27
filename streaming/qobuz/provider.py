@@ -2,7 +2,7 @@
 
 """Qobuz streaming provider backed by qbzd.
 
-qbzd is QBZ's headless Qobuz daemon: it plays audio, exposes a Qobuz Connect
+qbzd is the compatible forks headless Qobuz daemon: it plays audio, exposes a Qobuz Connect
 endpoint, publishes MPRIS and serves a small HTTP control plane. FXRoute talks
 to the control plane only; qbzd-specific JSON never leaves this module — it is
 normalized into the same flat wire shape Spotify already publishes.
@@ -18,10 +18,10 @@ from streaming.qobuz import backend, connect_state, login
 
 QOBUZ_BACKEND = "qbzd"
 
-# qbzd repeat modes -> FXRoute loop vocabulary (Spotify parity: none/track/playlist).
-_REPEAT_TO_LOOP = {"off": "none", "all": "playlist", "one": "track"}
-# Cycle order for the repeat toggle: off -> one -> all -> off.
-_LOOP_TO_REPEAT = {"none": "off", "track": "one", "playlist": "all"}
+# Fork repeat modes -> FXRoute loop vocabulary (Spotify parity: none/track/playlist).
+_REPEAT_TO_LOOP = {"off": "none", "one": "track", "track": "track", "all": "playlist", "queue": "playlist"}
+# Cycle order for the repeat toggle: off -> track -> queue -> off (fork values).
+_LOOP_TO_REPEAT = {"none": "off", "track": "track", "playlist": "queue"}
 _LOOP_CYCLE = {"none": "track", "track": "playlist", "playlist": "none"}
 
 
@@ -37,8 +37,8 @@ def _int_or_none(value: Any) -> int | None:
 def _sample_rate_hz(value: Any) -> int | None:
     """Normalize a qbzd sample-rate value to Hz.
 
-    ``/api/now-playing`` reports track sample rates in kHz (44.1, 88.2, 192)
-    while ``/api/status`` reports the negotiated stream rate in Hz (44100).
+    ``/api/queue`` track objects report sample rates in kHz (44.1, 88.2, 192)
+    while ``/api/playback`` reports the negotiated stream rate in Hz (44100).
     Values below 1000 are kHz and are scaled up; audio sample rates never
     legitimately fall below 1000 Hz, so the distinction is unambiguous.
     """
@@ -112,10 +112,10 @@ class QobuzProvider(StreamingProvider):
         """Return whether qbzd has a logged-in Qobuz account."""
         if not backend.qbzd_installed():
             return False
-        status = await backend.get_json(self._base_url, "/api/status")
-        if status is None:
+        status_doc = await backend.get_json(self._base_url, "/api/status")
+        if status_doc is None:
             return False
-        return (status.get("auth") or {}).get("state") == "logged_in"
+        return status_doc.get("logged_in") is True
 
     async def status(self) -> dict:
         result: dict[str, Any] = {
@@ -150,39 +150,30 @@ class QobuzProvider(StreamingProvider):
         if not result["available"]:
             return result
 
-        status = await backend.get_json(self._base_url, "/api/status")
-        if status is None:
+        status_doc = await backend.get_json(self._base_url, "/api/status")
+        if status_doc is None:
             return result
 
-        auth = status.get("auth") or {}
-        qconnect = status.get("qconnect") or {}
-        status_playback = status.get("playback") or {}
-        audio = status.get("audio") or {}
-
-        result["authenticated"] = auth.get("state") == "logged_in"
-        result["connected"] = bool(qconnect.get("session_active"))
+        result["authenticated"] = status_doc.get("logged_in") is True
+        session_active = bool(status_doc.get("qconnect"))
+        result["connected"] = session_active
         result["qconnect"] = {
-            "enabled": bool(qconnect.get("enabled")),
-            "device_name": qconnect.get("device_name"),
-            "session_active": bool(qconnect.get("session_active")),
-            "state": qconnect.get("state"),
+            "enabled": True,
+            "device_name": None,
+            "session_active": session_active,
+            "state": status_doc.get("state"),
         }
 
-        # Now-playing is auth-gated and carries the rich track object; when
-        # unauthenticated, fall back to the summary fields from /api/status.
-        now = await backend.get_json(self._base_url, "/api/now-playing")
-        track = (now or {}).get("track")
-        np_playback = (now or {}).get("playback") or {}
-
-        # The full queue state (current/upcoming/history) is exposed by
-        # /api/queue; FXRoute surfaces the count, the current position and the
-        # next track so a Connect queue reads as an expected continuation
-        # instead of a single-track blob. Its current track also carries the
-        # artwork URL that /api/now-playing may transiently lack.
+        # Transport facts come from /api/playback; the rich track object
+        # (QueueTrack shape) from /api/queue current_track. An
+        # unauthenticated daemon reports neither; the card then shows an
+        # honest stopped state with no metadata.
+        playback = await backend.get_json(self._base_url, "/api/playback") or {}
         queue_state = await backend.get_json(self._base_url, "/api/queue") or {}
         queue_current = queue_state.get("current_track") if isinstance(queue_state, dict) else None
+        track = queue_current if isinstance(queue_current, dict) else None
 
-        if isinstance(track, dict):
+        if track is not None:
             result["title"] = track.get("title") or ""
             result["artist"] = track.get("artist") or ""
             result["album"] = track.get("album") or ""
@@ -195,38 +186,30 @@ class QobuzProvider(StreamingProvider):
             # only distinguishes 16/24-bit (reported as ``bit_depth``).
             result["audio_format"] = "flac"
         else:
-            result["title"] = status_playback.get("title") or ""
-            result["artist"] = status_playback.get("artist") or ""
-            result["trackId"] = _id_str(status_playback.get("track_id"))
-            result["duration"] = float(status_playback.get("duration") or 0)
+            raw_track_id = playback.get("track_id")
+            result["trackId"] = "" if raw_track_id in (None, 0) else _id_str(raw_track_id)
+            result["duration"] = float(playback.get("duration_secs") or 0)
 
-        # Existing metadata must not be dropped on a transient now-playing gap,
-        # and must never be borrowed across tracks: the queue snapshot is only
-        # used when its current track is unambiguously the same track (by id)
-        # as the reported now-playing track.
-        queue_current_id = _id_str(queue_current.get("id")) if isinstance(queue_current, dict) else ""
-        if isinstance(queue_current, dict) and queue_current_id and queue_current_id == result["trackId"]:
-            if not result["artUrl"]:
-                result["artUrl"] = queue_current.get("artwork_url") or ""
-            if not result["album"]:
-                result["album"] = queue_current.get("album") or ""
-
-        playback = np_playback if np_playback else status_playback
-        result["status"] = _normalize_state(status_playback.get("state"), playback.get("is_playing"))
-        result["position"] = float(playback.get("position") or 0)
-        result["shuffle"] = bool(playback.get("shuffle"))
-        result["loop"] = _REPEAT_TO_LOOP.get(str(playback.get("repeat") or "off"), "none")
+        result["status"] = _normalize_state(playback.get("state"), None)
+        result["position"] = float(playback.get("position_secs") or 0)
+        result["shuffle"] = bool(queue_state.get("shuffle")) if isinstance(queue_state, dict) else False
+        result["loop"] = _REPEAT_TO_LOOP.get(
+            str((queue_state.get("repeat") if isinstance(queue_state, dict) else "") or "off").lower(),
+            "none",
+        )
 
         volume = playback.get("volume")
         if isinstance(volume, (int, float)):
             result["volume"] = max(0, min(100, round(float(volume) * 100)))
 
-        # The negotiated stream rate/depth from /api/status audio fill any
+        # The negotiated stream rate/depth from /api/playback fill any
         # track-level gap (both are present while a stream is open).
         if result["sample_rate"] is None:
-            result["sample_rate"] = _sample_rate_hz(audio.get("sample_rate"))
+            result["sample_rate"] = _sample_rate_hz(playback.get("sample_rate"))
         if result["bit_depth"] is None:
-            result["bit_depth"] = _int_or_none(audio.get("bit_depth"))
+            result["bit_depth"] = _int_or_none(playback.get("bit_depth"))
+        if result["bit_depth"] is not None and result["bit_depth"] <= 0:
+            result["bit_depth"] = None
 
         # Keep the last known stream facts per track, field by field: a
         # transient now-playing gap (pause/transition) must not degrade a
@@ -293,10 +276,6 @@ class QobuzProvider(StreamingProvider):
         await backend.post_json(self._base_url, "/api/playback/pause")
         return await self.status()
 
-    async def toggle(self) -> dict:
-        await backend.post_json(self._base_url, "/api/playback/toggle")
-        return await self.status()
-
     async def next(self) -> dict:
         await backend.post_json(self._base_url, "/api/playback/next")
         return await self.status()
@@ -305,18 +284,35 @@ class QobuzProvider(StreamingProvider):
         await backend.post_json(self._base_url, "/api/playback/previous")
         return await self.status()
 
+    async def toggle(self) -> dict:
+        # The fork exposes no toggle endpoint: derive it from the live state.
+        current = await self.status()
+        if current.get("status") == "Playing":
+            await backend.post_json(self._base_url, "/api/playback/pause")
+        else:
+            await backend.post_json(self._base_url, "/api/playback/play")
+        return await self.status()
+
     async def shuffle(self) -> dict:
-        await backend.post_json(self._base_url, "/api/playback/shuffle", {"mode": "toggle"})
+        # The fork switches shuffle on the queue, not on playback.
+        current = await self.status()
+        await backend.post_json(
+            self._base_url, "/api/queue/shuffle", {"enabled": not bool(current.get("shuffle"))}
+        )
         return await self.status()
 
     async def repeat(self) -> dict:
+        # The fork switches repeat on the queue with its own mode names.
         current = await self.status()
         next_loop = _LOOP_CYCLE.get(str(current.get("loop") or "none"), "none")
-        await backend.post_json(self._base_url, "/api/playback/repeat", {"mode": _LOOP_TO_REPEAT[next_loop]})
+        await backend.post_json(self._base_url, "/api/queue/repeat", {"mode": _LOOP_TO_REPEAT[next_loop]})
         return await self.status()
 
     async def seek(self, position_sec: float) -> dict:
-        await backend.post_json(self._base_url, "/api/playback/seek", {"position": max(0, int(position_sec))})
+        # The fork seeks in milliseconds.
+        await backend.post_json(
+            self._base_url, "/api/playback/seek", {"position_ms": max(0, int(position_sec * 1000))}
+        )
         return await self.status()
 
     async def set_volume(self, percent: float) -> dict:
@@ -324,7 +320,7 @@ class QobuzProvider(StreamingProvider):
         await backend.post_json(self._base_url, "/api/playback/volume", {"volume": normalized})
         return await self.status()
 
-    # -- account login / re-auth / logout (qbzd CLI orchestration) -----------
+    # -- account login / re-auth / logout (daemon HTTP OAuth) -----------
 
     async def begin_login(self) -> dict:
         """Start the qbzd browser OAuth flow and return its sign-in URL."""
@@ -347,7 +343,7 @@ class QobuzProvider(StreamingProvider):
         return result
 
     async def logout(self) -> dict:
-        """Clear the qbzd credential (credential reset via ``qbzd logout``)."""
+        """Clear the qbzd credential (daemon credential reset)."""
         result = await login.logout()
         result["authenticated"] = await self.is_authenticated()
         return result

@@ -61,7 +61,7 @@ session.
 | --- | --- | --- | --- |
 | Spotify Desktop | Native `spotify-client` on apt; `com.spotify.Client` Flatpak otherwise | x86_64 with X11 or Wayland desktop session | Installs the official client, keyring/Secret-Service support, and optional autostart integration |
 | spotifyd | Current stable upstream release (`Spotifyd/spotifyd`, full/MPRIS build) | x86_64, aarch64, or armv7 with a compatible runtime | Installs `~/.local/bin/spotifyd`, a user service, and a minimal MPRIS/PipeWire-Pulse config with fixed Zeroconf TCP port 4444 |
-| Qobuz/qbzd | Current stable upstream release (`vicrodh/qbz`, fallback: compatible fork `yet-another-quentin/qbzd`) | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, the ALSA→PipeWire bridge (`pipewire-alsa`, from trixie-backports where that stack is active), `qconnect.volume_mode=locked`, Qobuz Connect auto-connect (`qconnect.startup_mode=on`, device name untouched), audio output routing (`audio.backend=pipewire`, `audio.device=fxroute_dsp_sink`, `audio.skip_sink_switch=true`), and a `qbzd run` user service |
+| Qobuz/qbzd | Official upstream `vicrodh/qbz` first; compatible fork `yet-another-quentin/qbzd` when the official release carries no usable asset (currently the only channel: fork nightly, see below) | amd64, aarch64 | Installs `~/.local/bin/qbzd`, Avahi/mDNS support, the ALSA→PipeWire bridge (`pipewire-alsa`, from trixie-backports where that stack is active), DSP-sink audio routing over the daemon control plane (PipeWire backend on `fxroute_dsp_sink`, Qobuz Connect on by default, device name untouched) with the sink-switch guard, a 100% unity engine-volume pin, and a bare-binary `qbzd` user service that is verified active before the install reports success |
 | TIDAL | Current stable `tidalapi` from PyPI in the FXRoute venv | Any supported FXRoute Python host | Adds the optional dependency used by FXRoute's existing PKCE login flow |
 
 Provider versions are never pinned: a fresh install resolves the current
@@ -73,13 +73,27 @@ first. Checksums are verified against the checksum sidecar or digest
 published with the same upstream release. Foreign (not FXRoute-owned)
 binaries are preserved untouched. Qobuz resolves the current stable release
 from the official upstream (`vicrodh/qbz`) first and uses the compatible
-fork (`yet-another-quentin/qbzd`) only when the official source publishes
-no stable release; nightly/prerelease builds are never installed. The used
+fork (`yet-another-quentin/qbzd`) when the official source publishes no
+stable release or its stable release carries no qbzd asset. The official
+upstream shut down in 09/2026 (stable tag v6.6.6 with zero assets, sources
+wiped), so the fallback currently accepts the newest non-draft fork release
+carrying the wanted asset — a nightly prerelease, the only published qbzd
+build left. That prerelease exception applies to the fork fallback only;
+nightly builds are never selected from the official source. The used
 source is recorded alongside the version in the install state
 (`providers.qobuz.upstream_source`), and an update only ever moves to a
 newer upstream tag — never to an older one. When neither source is
 reachable, an existing installation is left untouched and reported
 honestly instead of being replaced.
+
+The fork daemon has no settings CLI and no volume or startup modes, so the
+installer configures it purely through its HTTP control plane (the nightly build ignores its TOML config file)
+instead of `qbzd settings`: audio routing is verified against
+`/api/audio/settings`, the engine volume is pinned to 100% (the FXRoute
+master/unity contract — the fork has no Connect volume sync to fight the
+pin), and the user service is started with the bare binary and polled until
+it reaches active state. The account login (Settings → Providers) runs the
+daemon OAuth flow over HTTP and needs no pasted CLI listener.
 
 The base installer supports apt, dnf, zypper, and pacman. Unsupported
 architectures are reported without downloading or building replacement
@@ -135,25 +149,17 @@ fixed Zeroconf port is transport configuration, not a playback volume setting.
 
 ### Qobuz/qbzd
 
-Complete the browser-based setup once:
-
-```bash
-"$HOME/.local/bin/qbzd" setup
-```
-
-Complete the OAuth login, enable Qobuz Connect in qbzd, and select the FXRoute
-device in the Qobuz app. FXRoute uses qbzd's local control plane at
-`127.0.0.1:8182`. The installer does not write Qobuz credentials, OAuth data,
-or playback credentials. It does set `qconnect.volume_mode=locked` through the
-qbzd settings command so qbzd remains at unity and the existing FXRoute phone
-volume bridge controls the FXRoute master. It also runs the native
-`qbzd qconnect enable` step so the Qobuz Connect renderer auto-connects at
-daemon start; an already enabled renderer is left untouched and the qbzd
-device name is never replaced. Other qbzd settings are not
-replaced. If the installer changed a prior volume mode, uninstall offers to
-restore that recorded mode before removing the owned qbzd binary/service.
-A Qobuz Connect enablement owned by the installer is restored the same way
-(disabled again) when its ownership record is complete.
+Connect the account in FXRoute Settings → Providers (the running daemon
+serves the OAuth flow itself): open the shown sign-in link and complete the
+Qobuz login, then select the FXRoute device in the Qobuz app. FXRoute uses
+qbzd's local control plane at `127.0.0.1:8182`. The installer does not write
+Qobuz credentials, OAuth data, or playback credentials. It pins the daemon
+engine volume to 100% through the control plane so qbzd remains at unity
+and the FXRoute master remains the volume control, Qobuz Connect is enabled by default in the fork daemon and the qbzd
+device name is never replaced. Settings owned by the installer from the
+official era (volume mode, Connect startup mode, audio routing) are restored
+by the uninstaller when their ownership record is complete and the recorded
+binary still speaks the settings CLI.
 
 The nftables mDNS guard is retained only for the Spotify Desktop-only case.
 It is not installed when spotifyd is selected or already present, because
