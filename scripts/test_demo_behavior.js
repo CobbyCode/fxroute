@@ -1697,5 +1697,266 @@ const radio = state.getPlayback();
             'a deleted run must no longer resolve');
     }
 
+    // ── Speaker Auto Alignment, 3-way example ─────────────────────────
+    // The last real saved .104 run is a 3-way low/mid/high alignment; the
+    // demo serves it once the routed topology has three ways per side, with
+    // the same optics and operation as the 2-way run. Re-route the seeded
+    // system to Low/Mid/High, run the alignment against the run's own
+    // numbers, then put the 2-way seed back.
+    {
+        const stateBefore = await (await demoFetch('/api/audio/output-state')).json();
+        let revision = stateBefore.revision;
+        const applyOutput = async (mutation) => {
+            const response = await demoFetch('/api/audio/output-state/apply', { method: 'POST',
+                body: JSON.stringify({ expected_revision: revision, mutation: { mode: 'stereo-sub', ...mutation } }) });
+            assert.equal(response.status, 200);
+            revision = (await response.json()).revision;
+        };
+        await applyOutput({ kind: 'set_routing',
+            assignments: ['left_low', 'right_low', 'sub1', 'sub2',
+                'left_mid', 'right_mid', 'left_high', 'right_high', ...Array(10).fill('off')] });
+        const lr24 = (frequency_hz) => ({ family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz });
+        await applyOutput({ kind: 'set_processing', role: 'left_mid', highpass: lr24(800), lowpass: lr24(3000) });
+        await applyOutput({ kind: 'set_processing', role: 'right_mid', highpass: lr24(800), lowpass: lr24(3000) });
+        const threeWayState = await (await demoFetch('/api/audio/output-state')).json();
+        assert.equal(threeWayState.modes['stereo-sub'].topology.way_count, 3);
+        sameList(threeWayState.modes['stereo-sub'].topology.right_ways,
+            ['right_low', 'right_mid', 'right_high'], 'routed right ways');
+
+        const start3 = await (await demoFetch('/api/speaker-align/start', { method: 'POST',
+            body: JSON.stringify({ side: 'right', input_id: 'pw-source-111',
+                mic_input_channel: '1', reference_input_channel: '7',
+                reference_input_channel_left: '7', reference_input_channel_right: '8',
+                reference_id: 'pw-source-111:ch8:upstream', microphone_position_id: 'right-fixed-3way', dry_run: false }) })).json();
+        assert.equal(start3.status, 'ok');
+        assert.equal(start3.job.status, 'queued');
+        const job3 = start3.job.id;
+        const job3At = (elapsed) => context.FXROUTE_DEMO_API.speakerAlignJobPayload(job3, elapsed);
+        // Three ways per side: the shared planning take plus one per way.
+        assert.equal(job3At(3000).message, 'Measuring right ways (1/4)…');
+        assert.equal(job3At(6000).message, 'Measuring right low (2/4)…');
+        assert.equal(job3At(9000).message, 'Measuring right mid (3/4)…');
+        assert.equal(job3At(11500).message, 'Measuring right high (4/4)…');
+        assert.equal(job3At(16000).status, 'confirming');
+
+        // The result the panel renders: the real .104 3-way run, 0.604 ms
+        // of planning spread verified down to a 0.021 ms residual.
+        const done3 = job3At(30000);
+        assert.equal(done3.status, 'committed');
+        assert.match(done3.message, /^Committed speaker alignment at revision \d+\.$/);
+        const result3 = done3.result;
+        assert.equal(result3.confirmed, true);
+        assert.equal(result3.side, 'right');
+        assert.equal(result3.dry_run, false);
+        sameList(Object.keys(result3.proposal), ['start_revision', 'processing_fingerprint', 'arrival_ms',
+            'added_delay_ms', 'reference_role', 'way_levels_db', 'added_gain_db',
+            'planning_isolation_db', 'arrival_source'], '3-way proposal keys');
+        assert.equal(result3.proposal.arrival_source, 'shared-planning-take');
+        assert.equal(result3.proposal.reference_role, 'right_high');
+        sameList(result3.proposal.arrival_ms, { right_low: 0.416667, right_mid: 0, right_high: 0.604167 }, '3-way arrivals');
+        sameList(result3.proposal.added_delay_ms, { right_low: 0.1875, right_mid: 0.604167, right_high: 0 }, '3-way delays');
+        sameList(result3.proposal.way_levels_db, { right_low: -32.567, right_mid: -34.713, right_high: -33.51 }, '3-way levels');
+        sameList(result3.proposal.added_gain_db, { right_low: -0.94, right_mid: 1.2, right_high: 0 }, '3-way gains');
+        // The backend rounds arrivals to whole 48 kHz samples in ms: exact to
+        // the 6-decimal rounding step, with the reference latest and
+        // undelayed.
+        const sampleMs = 1000 / 48000;
+        const arrivals3 = result3.proposal.arrival_ms;
+        assert.equal(Math.min(...Object.values(arrivals3)), 0);
+        assert.equal(result3.proposal.added_delay_ms[result3.proposal.reference_role], 0);
+        for (const [role, arrival] of Object.entries(arrivals3)) {
+            const samples = arrival / sampleMs;
+            assert.ok(Math.abs(samples - Math.round(samples)) < 2e-4,
+                '3-way ' + role + ' arrival must sit on the sample grid, got ' + samples);
+        }
+        const latest3 = arrivals3[result3.proposal.reference_role];
+        for (const [role, delay] of Object.entries(result3.proposal.added_delay_ms)) {
+            assert.equal(delay, Number((latest3 - arrivals3[role]).toFixed(6)));
+        }
+        // Three ways: the gain correction is the middle level, not the
+        // two-way midpoint.
+        const levels3 = Object.values(result3.proposal.way_levels_db).sort((x, y) => x - y);
+        const median3 = levels3[1];
+        assert.equal(median3, -33.51);
+        for (const [role, gain] of Object.entries(result3.proposal.added_gain_db)) {
+            assert.equal(gain, Number((median3 - result3.proposal.way_levels_db[role]).toFixed(2)));
+        }
+        assert.equal(result3.check.before_spread_ms, 0.604167);
+        assert.equal(result3.check.before_spread_ms, latest3);
+        assert.equal(result3.check.max_residual_ms, 0.020833);
+        sameList(result3.check.after_arrival_ms, { right_low: 0.020833, right_mid: 0, right_high: 0.020833 }, '3-way verification arrivals');
+        assert.equal(result3.check.pairs.length, 2);
+        for (const pair of result3.check.pairs) {
+            const [a, b] = pair.roles;
+            assert.ok(Math.abs(pair.residual_within_pair_ms
+                - Math.abs(result3.check.after_arrival_ms[b] - result3.check.after_arrival_ms[a])) < 1e-6);
+        }
+        assert.equal(result3.check.tolerance_ms, 0.25);
+        assert.equal(result3.check.gain_tolerance_db, 2.0);
+        assert.ok(result3.check.max_residual_ms <= result3.check.tolerance_ms);
+        assert.ok(result3.check.max_residual_ms < result3.check.before_spread_ms);
+        assert.ok(Math.abs(result3.check.before_gain_spread_db - 2.146) < 1e-9);
+        assert.equal(result3.check.gain_spread_db, 0.883);
+        sameList(result3.check.reasons, [], 'confirmed 3-way run carries no reasons');
+        // The backend committed this run with unmeasured verification
+        // isolation: the fixture keeps those nulls, and the planning
+        // isolation of the isolated ways, verbatim.
+        sameList(result3.check.way_isolation_db, { right_low: null, right_mid: null, right_high: null }, '3-way verification isolation');
+        sameList(result3.proposal.planning_isolation_db, { right_low: null, right_mid: 13.042, right_high: 20.547 }, '3-way planning isolation');
+        assert.equal(Math.max(...Object.values(result3.provenance.planning.way_levels_db)), 0);
+        assert.equal(result3.provenance.microphone_node.indexOf('Scarlett') > 0, true);
+        assert.equal(result3.provenance.electrical_reference_channel, 8);
+        sameList(result3.provenance.electrical_reference_channels_by_role,
+            { right_low: 8, right_mid: 7, right_high: 8 }, '3-way reference channels');
+        assert.equal(result3.provenance.planning.start_revision, result3.proposal.start_revision);
+        assert.equal(typeof result3.committed_revision, 'number');
+
+        // The Before/After pair carries the run's real frequency data.
+        const before3 = result3.measurements.before;
+        const after3 = result3.measurements.after;
+        assert.equal(before3.name, 'Speaker Align Right 3-Way · Before (planning)');
+        assert.equal(after3.name, 'Speaker Align Right 3-Way · After (verification)');
+        assert.equal(before3.speaker_align_take.side, 'right');
+        assert.equal(after3.speaker_align_take.take, 'after');
+        assert.equal(before3.channel, 'right');
+        assert.equal(before3.measurement_kind, 'sweep-response-v3');
+        assert.equal(before3.traces[0].role, 'trusted');
+        assert.equal(before3.traces[0].label, 'Speaker Align Right 3-Way · Before (planning) · trusted');
+        assert.equal(before3.review_traces[0].role, 'raw-review');
+        assert.equal(before3.traces[0].points.length, 192);
+        assert.equal(before3.summary.point_count, 192);
+        assert.equal(before3.summary.min_hz, 20);
+        assert.equal(before3.summary.max_hz, 20000);
+        assert.equal(before3.analysis.sample_rate, 48000);
+        assert.equal(before3.analysis.quality_checks.status, 'pass');
+        assert.equal(before3.analysis.reference_path.timing_status, 'electrical-reference');
+        assert.equal(before3.analysis.reference_path.electrical_reference_input_channel, 8);
+        assert.equal(before3.analysis.impulse_response.preview.points.length, 500);
+        assert.equal(before3.analysis.impulse_response.preview.schema, 'fxroute.ir-preview.v1');
+        sameList(before3.measurement_target.measured_roles,
+            ['right_low', 'right_mid', 'right_high'], '3-way measured roles');
+        assert.equal(before3.measurement_target.reference_tap, 'fxroute_dsp_sink.monitor');
+        assert.equal(before3.measurement_target.revision, result3.proposal.start_revision);
+        assert.equal(after3.measurement_target.revision, result3.committed_revision);
+        const at3 = (points, hz) => {
+            const hit = points.find(point => point[0] === hz);
+            assert.ok(hit, `the 3-way trace must carry a point at ${hz} Hz`);
+            return hit[1];
+        };
+        assert.equal(at3(before3.traces[0].points, 20), -17.333);
+        assert.equal(at3(after3.traces[0].points, 20), -18.123);
+        assert.equal(at3(before3.traces[0].points, 20000), -12.005);
+        assert.equal(at3(after3.traces[0].points, 20000), -12.208);
+
+        // The run's real timing timelines: Before at minus the planned
+        // delay, After at the residual, every slice normalized on the grid.
+        const reference3 = result3.proposal.reference_role;
+        for (const take of ['before', 'after']) {
+            const timeline = result3.measurements[take].analysis.speaker_align_timeline;
+            assert.equal(timeline.schema, 'fxroute.speaker-align-timeline.v1');
+            assert.equal(timeline.time_origin, 'reference-way-arrival');
+            assert.equal(timeline.reference_role, reference3);
+            sameList(Object.keys(timeline.arrival_ms).sort(),
+                Object.keys(result3.proposal.arrival_ms).sort(), '3-way ' + take + ' timeline ways');
+            assert.equal(timeline.arrival_ms[reference3], 0);
+            for (const [role, arrival] of Object.entries(timeline.arrival_ms)) {
+                const expected = take === 'before'
+                    ? -result3.proposal.added_delay_ms[role]
+                    : result3.check.after_arrival_ms[role] - result3.check.after_arrival_ms[reference3];
+                assert.ok(Math.abs(arrival - expected) < 1e-6,
+                    '3-way ' + take + ' ' + role + ' sits at ' + arrival + ' ms, the run says ' + expected);
+            }
+            const slices = [['full band', timeline.full_band]]
+                .concat(Object.keys(timeline.ways).map(role => [role, timeline.ways[role]]));
+            for (const [label, points] of slices) {
+                assert.ok(points.length > 10 && points.length <= 600,
+                    '3-way ' + take + ' ' + label + ' slice has ' + points.length + ' points');
+                let peak = 0;
+                points.forEach((point, index) => {
+                    assert.equal(point.length, 2);
+                    assert.ok(Number.isFinite(point[0]) && Number.isFinite(point[1]));
+                    if (index) assert.ok(point[0] > points[index - 1][0]);
+                    const samples = point[0] / sampleMs;
+                    assert.ok(Math.abs(samples - Math.round(samples)) < 0.01);
+                    peak = Math.max(peak, Math.abs(point[1]));
+                });
+                assert.ok(Math.abs(peak - 1) < 1e-4,
+                    '3-way ' + take + ' ' + label + ' slice must be normalized to its own peak, got ' + peak);
+            }
+            // Every isolated way peaks on its own arrival - except the real
+            // Before mid lane, whose band peaks 9 samples past its arrival;
+            // the lane still reads the estimate the run reports.
+            for (const role of Object.keys(timeline.ways)) {
+                const points = timeline.ways[role];
+                let peakAt = points[0];
+                points.forEach(point => { if (Math.abs(point[1]) > Math.abs(peakAt[1])) peakAt = point; });
+                if (take === 'before' && role === 'right_mid') {
+                    assert.ok(Math.abs(peakAt[0] - (-0.4167)) <= sampleMs,
+                        '3-way before mid band peaks at ' + peakAt[0] + ' ms in the real take');
+                } else {
+                    assert.ok(Math.abs(peakAt[0] - timeline.arrival_ms[role]) <= sampleMs,
+                        '3-way ' + take + ' ' + role + ' peaks at ' + peakAt[0] + ' ms, not on its arrival');
+                }
+            }
+        }
+
+        // The shipped frontend draws the pair as timing lanes with the run's
+        // own spread and residual.
+        const speakerAlign3 = require(path.join(root, 'demo', 'dist', 'static', 'speaker_align.js'));
+        const lanes3 = speakerAlign3.timelineView([
+            { ...before3, current: true, graphColor: '#6ee7b7' },
+            { ...after3, current: true, graphColor: '#a78bfa' },
+        ], { widthPx: 900 });
+        assert.ok(lanes3, 'the 3-way pair must draw as timing lanes');
+        sameList(lanes3.lanes.map(lane => lane.label), ['Right · Before', 'Right · After'], '3-way lane order');
+        assert.equal(lanes3.lanes[0].spreadMs, result3.check.before_spread_ms);
+        assert.equal(lanes3.lanes[1].spreadMs, result3.check.max_residual_ms);
+        assert.match(speakerAlign3.timelineSummary(lanes3),
+            /^Timing: 0 ms = High arrival \(not delayed\) · Right · Before spread 0\.604 ms · Right · After residual 0\.021 ms$/);
+        assert.equal(speakerAlign3.irParts([before3, after3]).plainEntries.length, 0);
+
+        // The 3-way pair ships as saved runs next to the 2-way pair.
+        const list3 = (await (await demoFetch('/api/measurements')).json()).measurements;
+        const threeWayRuns = list3.filter(m => /^Speaker Align Right 3-Way · /.test(String(m.name || '')));
+        assert.equal(threeWayRuns.length, 2, 'the demo ships the 3-way Before/After pair');
+        const saved3 = threeWayRuns.find(m => m.speaker_align_take?.take === 'after');
+        const savedFile3 = await (await demoFetch(`/api/measurements/${saved3.id}/file`)).json();
+        assert.equal(savedFile3.analysis.speaker_align_timeline.reference_role, 'right_high');
+        assert.ok(Math.abs(savedFile3.analysis.speaker_align_timeline.arrival_ms.right_mid - (-0.020833)) < 1e-6);
+
+        // The commit moves the three right way trims and nothing else. The
+        // 2-way run above already committed its own trim, so the 3-way
+        // proposal lands on top of it, exactly like a second live run.
+        const committed3 = await (await demoFetch('/api/audio/output-state')).json();
+        assert.equal(committed3.revision, result3.committed_revision);
+        const processing3 = committed3.modes['stereo-sub'].processing;
+        const prevTrim3 = threeWayState.modes['stereo-sub'].processing;
+        for (const [role, gain] of Object.entries(result3.proposal.added_gain_db)) {
+            const expected = Math.round((prevTrim3[role].level_db + gain) * 1e4) / 1e4;
+            assert.equal(processing3[role].level_db, expected, '3-way ' + role + ' level after commit');
+        }
+        for (const [role, delay] of Object.entries(result3.proposal.added_delay_ms)) {
+            const expected = Math.round((prevTrim3[role].alignment_ms + delay) * 1e5) / 1e5;
+            assert.equal(processing3[role].alignment_ms, expected, '3-way ' + role + ' alignment after commit');
+        }
+        assert.equal(processing3.left_low.level_db, 0, 'the other side must stay untouched');
+
+        // The commit bumped the store revision; the restore applies follow it.
+        revision = committed3.revision;
+        // Put the 2-way seed back: routing, mid filters and the moved trims.
+        await applyOutput({ kind: 'set_routing',
+            assignments: ['left_low', 'right_low', 'sub1', 'sub2', 'left_high', 'right_high', ...Array(12).fill('off')] });
+        await applyOutput({ kind: 'set_processing', role: 'left_mid', highpass: null, lowpass: lr24(800),
+            level_db: 0, alignment_ms: 0 });
+        await applyOutput({ kind: 'set_processing', role: 'right_mid', highpass: null, lowpass: lr24(800),
+            level_db: 0, alignment_ms: 0 });
+        await applyOutput({ kind: 'set_processing', role: 'right_low',
+            level_db: prevTrim3.right_low.level_db, alignment_ms: prevTrim3.right_low.alignment_ms });
+        await applyOutput({ kind: 'set_processing', role: 'right_high',
+            level_db: prevTrim3.right_high.level_db, alignment_ms: prevTrim3.right_high.alignment_ms });
+        const restored = await (await demoFetch('/api/audio/output-state')).json();
+        assert.equal(restored.modes['stereo-sub'].topology.way_count, 2);
+    }
+
     console.log('ok demo behavior contract');
 })();

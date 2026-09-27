@@ -1701,8 +1701,9 @@
     S.demoActiveCalibrationId = (S.demoActiveCalibrationId === undefined) ? 'MM1CES_allein_00d.txt' : S.demoActiveCalibrationId;
 
     // ── Speaker Align simulation ────────────────────────────────────────
-    // One staged run per side, on top of the .104 alignment fixture
-    // (demo/data/alignment.js). The job walks the real state machine —
+    // One staged run per side, on top of the .104 alignment fixtures
+    // (demo/data/alignment.js): the 2-way run for a 2-way topology, the
+    // real 3-way run for a 3-way one. The job walks the real state machine —
     // queued → acquiring (shared planning take, then one take per way) →
     // confirming (verification take) → committed — with the backend's own
     // stage messages, so the panel's progress line reads like a live run.
@@ -2929,12 +2930,21 @@
                 scope_note: DEMO_MEASUREMENT_SCOPE_NOTE,
             };
             if (p === '/api/measurements') {
-                // The real store lists newest first. The alignment takes ship
-                // with the demo, so the saved list shows the same Before/After
-                // pair a real run leaves behind, area badge included.
-                if (SPEAKER_ALIGN_FIXTURE && !S.getSavedMeasurements().some(m => /^Speaker Align /.test(String(m.name || '')))) {
-                    const takes = SPEAKER_ALIGN_FIXTURE.takesFor('right');
-                    if (takes) S.addSavedMeasurement(takes.after), S.addSavedMeasurement(takes.before);
+                // The real store lists newest first. Both alignment takes ship
+                // with the demo, so the saved list shows the Before/After
+                // pairs real runs leave behind, area badge included: the 2-way
+                // pair and the 3-way pair side by side.
+                if (SPEAKER_ALIGN_FIXTURE) {
+                    const seeded = S.getSavedMeasurements();
+                    if (!seeded.some(m => /^Speaker Align (Left|Right) · /.test(String(m.name || '')))) {
+                        const takes = SPEAKER_ALIGN_FIXTURE.takesFor('right');
+                        if (takes) S.addSavedMeasurement(takes.after), S.addSavedMeasurement(takes.before);
+                    }
+                    if (SPEAKER_ALIGN_FIXTURE.takesFor3Way
+                        && !seeded.some(m => /^Speaker Align (Left|Right) 3-Way · /.test(String(m.name || '')))) {
+                        const takes = SPEAKER_ALIGN_FIXTURE.takesFor3Way('right');
+                        if (takes) S.addSavedMeasurement(takes.after), S.addSavedMeasurement(takes.before);
+                    }
                 }
                 const list = [];
                 S.getSavedMeasurements().concat(savedMeasurements).forEach(m => { if (!list.find(x => x.id === m.id)) list.push(m); });
@@ -3165,7 +3175,10 @@
         if (p === '/api/speaker-align/start' && post) {
             const side = String(body.side || 'left') === 'right' ? 'right' : 'left';
             const id = 'demo_speaker_run_' + (++speakerAlignSeq);
-            const fixtureParams = SPEAKER_ALIGN_FIXTURE ? SPEAKER_ALIGN_FIXTURE.paramsFor(side) : null;
+            const wayCount = speakerAlignRoles(side).length;
+            const fixtureParams = (wayCount === 3 && SPEAKER_ALIGN_FIXTURE && SPEAKER_ALIGN_FIXTURE.paramsFor3Way)
+                ? SPEAKER_ALIGN_FIXTURE.paramsFor3Way(side)
+                : (SPEAKER_ALIGN_FIXTURE ? SPEAKER_ALIGN_FIXTURE.paramsFor(side) : null);
             const params = {
                 input_id: String(body.input_id || (fixtureParams && fixtureParams.input_id) || 'demo-mic'),
                 mic_input_channel: String(body.mic_input_channel ?? (fixtureParams && fixtureParams.mic_input_channel) ?? '1'),
@@ -3179,7 +3192,12 @@
                 channels: Number((fixtureParams && fixtureParams.channels) || 4),
                 sample_rate_hz: Number((fixtureParams && fixtureParams.sample_rate_hz) || 48000),
             };
-            const fixtureResult = (SPEAKER_ALIGN_FIXTURE ? SPEAKER_ALIGN_FIXTURE.runFor(side) : null) || speakerAlignFallbackResult(side);
+            // A 3-way topology runs the real 3-way fixture, anything else
+            // the 2-way one; both are real .104 runs.
+            const fixtureResult = ((wayCount === 3 && SPEAKER_ALIGN_FIXTURE && SPEAKER_ALIGN_FIXTURE.runFor3Way)
+                ? SPEAKER_ALIGN_FIXTURE.runFor3Way(side)
+                : (SPEAKER_ALIGN_FIXTURE ? SPEAKER_ALIGN_FIXTURE.runFor(side) : null))
+                || speakerAlignFallbackResult(side);
             if (!fixtureResult.measurements) fixtureResult.measurements = SPEAKER_ALIGN_FIXTURE ? SPEAKER_ALIGN_FIXTURE.takesFor(side) : null;
             // The frozen area context of a take carries the revision the run
             // started from; the commit re-stamps both takes with the new one.
