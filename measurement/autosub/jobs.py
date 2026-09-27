@@ -20,6 +20,7 @@ from audio.system_volume import volume_percent_to_linear_gain
 from fastapi import APIRouter, HTTPException
 
 from dsp.manager import ensure_kernel_supported_ir, parse_wav_frames
+from dsp.native_config import PEQ_Q_MAX, PEQ_Q_MIN
 from dsp.runtime import BassManagementConfig
 
 from .candidates import _restore_original_config_or_fail_job
@@ -446,7 +447,7 @@ def _auto_sub_validated_layout_output(
             raise ValueError(f"{prefix} filters[{position}] frequency is out of range")
         if not frequency < sample_rate / 2:
             raise ValueError(f"{prefix} filters[{position}] frequency must be below Nyquist")
-        if not math.isfinite(quality) or not 0.1 <= quality <= 20.0:
+        if not math.isfinite(quality) or not PEQ_Q_MIN <= quality <= PEQ_Q_MAX:
             raise ValueError(f"{prefix} filters[{position}] q is out of range")
         if not math.isfinite(band_gain) or not -24.0 <= band_gain <= 24.0:
             raise ValueError(f"{prefix} filters[{position}] gain is out of range")

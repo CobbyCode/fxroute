@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from dsp.native_config import PEQ_Q_MAX, PEQ_Q_MIN
 from dsp.persistence import DSPPresetStore, DSPStateStore, clean_bank, clean_name, kernel_name, preset_bank
 
 logger = logging.getLogger(__name__)
@@ -714,8 +715,8 @@ class DSPManager:
                 raise ValueError(f"{prefix}.frequency_hz must be between 20 and 20000")
             if not frequency < sample_rate_hz / 2:
                 raise ValueError(f"{prefix}.frequency_hz must be below Nyquist")
-            if not math.isfinite(q) or not 0.1 <= q <= 20:
-                raise ValueError(f"{prefix}.q must be between 0.1 and 20")
+            if not math.isfinite(q) or not PEQ_Q_MIN <= q <= PEQ_Q_MAX:
+                raise ValueError(f"{prefix}.q must be between {PEQ_Q_MIN:g} and {PEQ_Q_MAX:g}")
             if not math.isfinite(gain_db) or not -24 <= gain_db <= 24:
                 raise ValueError(f"{prefix}.gain_db must be between -24 and 24")
             stages_float = float(stages_raw)
@@ -1135,7 +1136,7 @@ class DSPManager:
                 delay = float(raw.get("delayMs", 0.0))
                 if not 20 <= frequency <= 20000:
                     raise ValueError(f"{field}[{index}].frequencyHz must be between 20 and 20000")
-                if not -24 <= gain <= 24 or not 0.1 <= q <= 20:
+                if not -24 <= gain <= 24 or not PEQ_Q_MIN <= q <= PEQ_Q_MAX:
                     raise ValueError(f"{field}[{index}] gain or Q is outside the supported range")
                 if kind == "delay" and not 0 <= delay <= 500:
                     raise ValueError(f"{field}[{index}].delayMs must be between 0 and 500")

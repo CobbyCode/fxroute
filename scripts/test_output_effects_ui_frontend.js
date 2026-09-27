@@ -183,4 +183,13 @@ const bodyKept = Effects.buildEffectsExtrasSaveBody(
 assert.equal(bodyKept.loudnessEnabled, true);
 assert.equal('loudnessEnabled' in Effects.buildEffectsExtrasSaveBody({ loudnessEnabled: true }, null), true);
 
+// PEQ Q shares the backend bound (LSP Q port, 0.1..100): an imported REW
+// band with Q above 20 stays editable, anything beyond the bound does not.
+const bellWithQ = (q) => [{ filterType: 'bell', frequencyHz: 688, gainDb: 7, q }];
+assert.equal(Effects.validatePeqBands('Left', bellWithQ(45.76)), null);
+assert.equal(Effects.validatePeqBands('Left', bellWithQ(100)), null);
+assert.equal(Effects.validatePeqBands('Left', bellWithQ(0.707)), null);
+assert.match(Effects.validatePeqBands('Left', bellWithQ(100.5)), /Q must be between 0\.1 and 100/);
+assert.match(Effects.validatePeqBands('Left', bellWithQ(0.09)), /Q must be between 0\.1 and 100/);
+
 console.log('output effects frontend: ok');

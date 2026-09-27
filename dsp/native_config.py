@@ -21,6 +21,13 @@ from dsp.crossover import design_crossover
 # cycle; both must stay 32).
 OUTPUT_BIQUAD_BUDGET = 32
 
+# PEQ band Q range. The Global bank renders its PEQ through LSP
+# para_equalizer_x32_lr, whose Q ports are strictly bounded to 0..100; the
+# native area-bank biquads stay stable up to that bound for every PEQ type,
+# so 100 is the product-wide maximum (REW exports carry Q above 20).
+PEQ_Q_MIN = 0.1
+PEQ_Q_MAX = 100.0
+
 _BAND_TYPES = {
     "bell": "bell", "pk": "bell", "notch": "notch",
     "low_shelf": "lowshelf", "high_shelf": "highshelf",
@@ -72,7 +79,7 @@ def _validate_band(band: object, index: int) -> dict:
     delay = _finite(band.get("delayMs", 0.0), f"PEQ band[{index}].delayMs")
     if not 20 <= frequency <= 20000:
         raise ValueError(f"PEQ band[{index}].frequencyHz must be between 20 and 20000")
-    if not -24 <= gain <= 24 or not 0.1 <= quality <= 20:
+    if not -24 <= gain <= 24 or not PEQ_Q_MIN <= quality <= PEQ_Q_MAX:
         raise ValueError(f"PEQ band[{index}] gain or Q is outside the supported range")
     if not 0 <= delay <= 500:
         raise ValueError(f"PEQ band[{index}].delayMs must be between 0 and 500")

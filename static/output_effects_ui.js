@@ -37,6 +37,9 @@
     }
 
     const EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS = 800;
+    // Mirrors dsp.native_config.PEQ_Q_MIN/PEQ_Q_MAX (LSP para_equalizer Q port bound).
+    const PEQ_Q_MIN = 0.1;
+    const PEQ_Q_MAX = 100;
 const EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS = 2000;
 
 function updateEffectsPeqDisclosureLabel() {
@@ -489,7 +492,7 @@ function renderPeqBandColumn(container, side, bands) {
                 </div>
                 <div class="field-group">
                     <label for="${fieldIdPrefix}-q">Q</label>
-                    <input id="${fieldIdPrefix}-q" name="${fieldIdPrefix}-q" type="number" class="url-input" min="0.1" max="20" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="q" value="${band.q}">
+                    <input id="${fieldIdPrefix}-q" name="${fieldIdPrefix}-q" type="number" class="url-input" min="${PEQ_Q_MIN}" max="${PEQ_Q_MAX}" step="0.1" data-peq-side="${side}" data-peq-index="${index}" data-peq-field="q" value="${band.q}">
                 </div>`}`}
             </div>
         </div>
@@ -590,8 +593,8 @@ function validatePeqBands(side, bands) {
         if (!Number.isFinite(band.gainDb) || band.gainDb < -24 || band.gainDb > 24) {
             return `${side} band ${index + 1}: gain must be between -24 and 24 dB`;
         }
-        if (!isGain && (!Number.isFinite(band.q) || band.q < 0.1 || band.q > 20)) {
-            return `${side} band ${index + 1}: Q must be between 0.1 and 20`;
+        if (!isGain && (!Number.isFinite(band.q) || band.q < PEQ_Q_MIN || band.q > PEQ_Q_MAX)) {
+            return `${side} band ${index + 1}: Q must be between ${PEQ_Q_MIN} and ${PEQ_Q_MAX}`;
         }
     }
     return null;
