@@ -351,13 +351,14 @@ class SpeakerAlignment:
         response points keep levels unchanged (legacy unit shape); captures
         with points on every way propose start-relative level corrections
         equalizing the side to its median way level. Polarity is never altered.
-        A way pushed past +40 ms rebases the ways of this side only, by one
-        common offset, so the largest lands exactly on +40 ms; the other side
-        and the subs keep their stored alignment. Added delays are never
-        negative, so only the upper bound triggers a rebase. Validation of the
-        closed -40..+40 ms range then rejects the proposal when a way lands
-        below -40 ms, i.e. when this side's resulting alignments (stored plus
-        added) span more than 80 ms; exactly 80 ms still fits.
+        A way pushed past +40 ms rebases every routed role (both sides and
+        the subs) by one common offset so the largest lands exactly on
+        +40 ms: the plan renders only pairwise alignment differences, so no
+        routed role moves against another. Added delays are never negative,
+        so only the upper bound triggers a rebase. When the routed roles'
+        resulting alignments (stored plus added) span more than 80 ms, no
+        common offset fits the closed -40..+40 ms range and the proposal is
+        rejected; exactly 80 ms still fits.
         """
         from measurement.alignment_backend import estimate_way_level, propose_way_gains, way_passband
         _check_cancel(cancel_requested)
@@ -409,17 +410,27 @@ class SpeakerAlignment:
                 added_gains[role] = 0.0
         # A planned delay can push a way past the +40 ms window (the real
         # 3-way case plans 41.625 ms on the right side, on top of the way's
-        # stored alignment). Shift only this side's ways by the same minimal
-        # offset so the largest value lands exactly on +40 ms: the side keeps
-        # every relative way delay, the other side and the subs keep their
-        # stored alignment and so move by that offset against this side.
-        # Delays only grow, so the -40 ms bound is never rebased toward; a
-        # way the shift pushes below it (a side span over 80 ms) is rejected
-        # by the validation below.
+        # stored alignment). The compiled plan renders only the pairwise
+        # alignment differences of the routed roles, so one common offset
+        # over all of them, Left, Right and subs, is the only rebase that
+        # keeps every role's timing against every other. The minimal offset
+        # puts the largest value exactly on +40 ms. Delays only grow, so the
+        # -40 ms bound is never rebased toward; when the routed roles span
+        # more than 80 ms no common offset fits, and the proposal is rejected
+        # instead of moving this side against the other roles.
+        routed = self._target["roles"]
         settings = candidate["modes"][mode]["processing"]
-        peak = max(settings[role]["alignment_ms"] for role in self._roles)
+        peak = max(settings[role]["alignment_ms"] for role in routed)
         if peak > 40.0:
-            for role in self._roles:
+            lowest = min(settings[role]["alignment_ms"] for role in routed)
+            # Same arithmetic as the shift below, so this check and the
+            # stored result can never disagree at the -40 ms bound.
+            if lowest - peak + 40.0 < -40.0:
+                raise ValueError(
+                    f"Speaker Align needs {peak - lowest:.3f} ms between routed outputs, "
+                    "more than the -40..+40 ms output alignment range holds "
+                    "without shifting the other speakers")
+            for role in routed:
                 # Subtract the peak first so the largest result is exactly
                 # 40.0 and rounding can never push it past the guard.
                 settings[role]["alignment_ms"] = settings[role]["alignment_ms"] - peak + 40.0
