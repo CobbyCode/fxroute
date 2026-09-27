@@ -914,6 +914,11 @@ class DSPManager:
         }
         filter_types = {"bell": 1, "high_pass": 2, "high_shelf": 3,
                         "low_pass": 4, "low_shelf": 5, "notch": 6}
+        # LSP filter mode 6 is "APO (DR)": the RBJ cookbook biquads REW,
+        # Equalizer APO and the native area-bank PEQ use, so a band's
+        # Fc/Gain/Q render the same in the Global bank as in an area bank.
+        # LSP's default "RLC (BT)" draws a bell about 1.6x wider at equal Q.
+        filter_mode_apo_dr = 6
         eq_modes = {"IIR": 0, "FIR": 1, "FFT": 2, "SPM": 3}
         for plugin in config["chain"]:
             if not plugin.get("enabled", True):
@@ -974,7 +979,7 @@ class DSPManager:
                         kind = str(band.get("filterType", "bell"))
                         control(f"ft{side}_{index}", filter_types.get(kind, 0)
                                 if band.get("enabled", True) else 0)
-                        control(f"fm{side}_{index}", 0)
+                        control(f"fm{side}_{index}", filter_mode_apo_dr)
                         control(f"s{side}_{index}", 0)
                         control(f"f{side}_{index}", band.get("frequencyHz", 1000.0))
                         control(f"g{side}_{index}", 10.0 ** (float(band.get("gainDb", 0.0)) / 20.0))

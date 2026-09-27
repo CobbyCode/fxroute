@@ -155,6 +155,64 @@ def test_full_bank_chain_matches_python_prediction(tmp_path):
     assert measured < -60.0, f"left_low stopband: {measured:.1f} dB"
 
 
+def test_global_lsp_peq_renders_the_area_bank_rbj_response(tmp_path):
+    """One PEQ preset sounds the same in the Global bank and an area bank.
+
+    The Global bank renders PEQ through LSP para_equalizer (filter mode
+    APO (DR)), area banks through the native RBJ biquads, so a REW Q means
+    the same in both. LSP's default RLC (BT) drew a Q 45.76 bell as Q 28.
+    """
+    build_once()
+    manager = DSPManager(home=tmp_path / "home")
+    manager.create_peq_preset("RBJ", {"params": {"bands": [
+        {"filterType": kind, "frequencyHz": frequency, "gainDb": gain, "q": q}
+        for kind, frequency, gain, q in (
+            ("bell", 120, -10.0, 2.0), ("bell", 688, 7.0, 45.76), ("notch", 3000, 0.0, 4.0),
+            ("high_pass", 40, 0.0, 2.0), ("low_shelf", 250, 4.0, 0.707),
+            ("high_shelf", 6000, -5.0, 0.707), ("low_pass", 15000, 0.0, 0.707))]}})
+    frames = 1 << 15
+
+    def impulse_response(bank):
+        state = switch_mode(set_mode_routing(
+            default_output_state(), "stereo", "A", ["main_l", "main_r"]), "stereo")
+        if bank is not None:
+            state["modes"]["stereo"]["banks"][bank]["preset"] = "RBJ"
+        plan = compile_processing_plan(state, output_key="A", channels=2, sample_rate_hz=48000,
+                                       preset_loader=manager.preset_store.read)
+        text = manager.compile_engine_text(
+            layout_from_plan(plan, resolve_ir=lambda name: {}),
+            preset_name=plan["global"]["preset"], sample_rate_hz=48000,
+            extras_override=plan["global"]["extras"])
+        name = bank or "reference"
+        cfg, source, target = (tmp_path / f"rbj-{name}{suffix}"
+                               for suffix in (".conf", ".f32", ".out.f32"))
+        cfg.write_text(text)
+        # A small impulse keeps every global stage (limiter) linear.
+        values = array.array("f", [0.0] * (2 * frames))
+        values[0] = values[1] = 0.1
+        with source.open("wb") as handle:
+            values.tofile(handle)
+        completed = subprocess.run([str(DSP), str(cfg), str(source), str(target)],
+                                   capture_output=True, text=True)
+        assert completed.returncode == 0, completed.stderr
+        output = array.array("f")
+        with target.open("rb") as handle:
+            output.fromfile(handle, target.stat().st_size // 4)
+        return output[0::2]
+
+    reference, via_global, via_area = (
+        impulse_response(bank) for bank in (None, "global", "main_l"))
+    # Half-gain edges of the Q 45.76 bell sit at 688 +- 7.5 Hz; the notch null
+    # itself is skipped (its depth is numerically meaningless).
+    for frequency in (30, 40, 60, 90, 120, 160, 250, 400, 680.5, 688, 695.5,
+                      1000, 2700, 3300, 6000, 9000, 12000, 15000, 18000):
+        level = ir_magnitude_db(reference, frequency)
+        global_db = ir_magnitude_db(via_global, frequency) - level
+        area_db = ir_magnitude_db(via_area, frequency) - level
+        assert abs(global_db - area_db) <= 0.1, (
+            f"{frequency} Hz: Global {global_db:+.2f} dB != area {area_db:+.2f} dB")
+
+
 from native_test_runner import run_pytest_style_module
 
 if __name__ == "__main__":

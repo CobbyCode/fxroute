@@ -132,7 +132,8 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         self.assertNotIn("control clink ", text)
         for expected in ("control g_in 0.794328235", "control g_out 1.41253754",
                           "control mode 3", "control ftl_0 1",
-                          "control fml_0 0", "control sl_0 0", "control fl_0 100",
+                          "control fml_0 6", "control fmr_0 6", "control sl_0 0",
+                          "control fl_0 100",
                           "control gl_0 0.501187234", "control ql_0 2",
                           "control ftr_0 3", "control fr_0 5000",
                           "control gr_0 1.58489319", "control qr_0 0.7",
