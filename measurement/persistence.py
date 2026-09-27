@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from audio.output_topology import SUB_ROLES
 from measurement.target import measurement_target_from_context, targets_compatible
 from measurement.constants import (
     DISPLAY_DEFAULTS,
@@ -599,9 +600,54 @@ class MeasurementPersistence:
             result["audio_output_context"] = payload["audio_output_context"]
         if isinstance(payload.get("measurement_target"), dict):
             result["measurement_target"] = payload["measurement_target"]
+        self._normalize_subwoofer_display(result)
         if source_path is not None:
             result["storage_path"] = str(source_path)
         return result
+
+    def _normalize_subwoofer_display(self, measurement: dict[str, Any]) -> None:
+        """Rebase isolated sub sweeps while retaining their calibrated levels."""
+        target = measurement.get("measurement_target") or {}
+        roles = target.get("measured_roles") or []
+        if (measurement.get("measurement_kind") != "sweep-response-v3"
+                or target.get("bank_id") == "global"
+                or not isinstance(roles, list) or len(roles) != 1 or roles[0] not in SUB_ROLES
+                or len(measurement["traces"]) != 1
+                or measurement["display"].get("normalize") is False):
+            return
+        analysis = measurement.get("analysis") or {}
+        normalized_by = analysis.get("normalized_by_db")
+        if type(normalized_by) not in (int, float) or not math.isfinite(normalized_by):
+            return
+        band = target.get("level_reference_band_hz")
+        if band is None:
+            # Older saves carry the crossover in their captured output context.
+            context = measurement.get("audio_output_context") or {}
+            band = [20.0, context.get("crossover_frequency_hz")]
+        if (not isinstance(band, (list, tuple)) or len(band) != 2
+                or any(type(value) not in (int, float) or not math.isfinite(value) for value in band)
+                or not 20.0 <= band[0] < band[1] <= 20000.0):
+            return
+        if analysis.get("level_reference_band_hz") == list(band):
+            return
+        levels = [level for frequency, level in measurement["traces"][0]["points"]
+                  if band[0] <= frequency <= band[1]]
+        if len(levels) < 3:
+            return
+        offset = round(float(np.median(levels)), 3)
+        # Trusted and review traces share one reference; raw = displayed + offset.
+        for key in ("traces", "review_traces"):
+            for trace in measurement.get(key, []):
+                trace["points"] = [[frequency, round(level - offset, 3)]
+                                   for frequency, level in trace["points"]]
+        measurement["analysis"] = {
+            **analysis,
+            "normalized_by_db": round(normalized_by + offset, 3),
+            "level_reference_band_hz": list(band),
+        }
+        measurement["summary"] = self._build_summary(measurement["traces"])
+        if measurement.get("review_traces"):
+            measurement["review_summary"] = self._build_summary(measurement["review_traces"])
 
     def _normalize_traces(self, traces: list[Any]) -> list[dict[str, Any]]:
         normalized = []

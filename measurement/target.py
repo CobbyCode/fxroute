@@ -26,6 +26,7 @@ from audio.output_state import routing_for_device, validate_output_state
 from audio.output_topology import MAX_CHANNELS, SUB_ROLES, derive_topology
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 from dsp.native_config import role_side
+from dsp.processing_plan import rendered_crossover_filters
 
 __all__ = [
     "GLOBAL_BANK_ID",
@@ -105,7 +106,7 @@ def freeze_measurement_target(
     if bank_id != GLOBAL_BANK_ID and not set(measured) <= set(topology.roles):
         raise ValueError(f"Bank {bank_id} is not an active role on the selected outputs")
     banks = validated["modes"][mode]["banks"]
-    return {
+    target = {
         "schema": SCHEMA,
         "version": VERSION,
         "mode": mode,
@@ -120,6 +121,15 @@ def freeze_measurement_target(
         "measured_roles": list(topology.roles) if bank_id == GLOBAL_BANK_ID else list(measured),
         "reference_tap": REFERENCE_TAP_INGRESS,
     }
+    if bank_id != GLOBAL_BANK_ID and len(measured) == 1 and measured[0] in SUB_ROLES:
+        # An isolated sub has no broadband plateau at 120 Hz..8 kHz.
+        # Freeze its rendered band, including per-side bass and way filters.
+        filters = rendered_crossover_filters(validated, output_key=output_key, channels=channels)[measured[0]]
+        low = max([20.0] + [float(spec["frequency_hz"]) for spec in filters if spec["kind"] == "highpass"])
+        high = min([20000.0, sample_rate_hz / 2.0] + [float(spec["frequency_hz"]) for spec in filters if spec["kind"] == "lowpass"])
+        if low < high:
+            target["level_reference_band_hz"] = [low, high]
+    return target
 
 
 def _measured_roles(target: dict) -> list[str]:
