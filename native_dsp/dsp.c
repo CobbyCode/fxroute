@@ -473,11 +473,21 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
         for (channel = 0; channel < d->inputs / 2U; channel++) {
             stage->lv2[channel] = fx_lv2_host_new(stage->argument, d->rate, PROCESS_BLOCK, error, error_size);
             if (!stage->lv2[channel]) return -1;
-            for (unsigned control = 0; control < stage->control_count; control++)
-                if (!fx_lv2_host_set_control(stage->lv2[channel], stage->controls[control].symbol,
-                                             stage->controls[control].value)) {
+            for (unsigned control = 0; control < stage->control_count; control++) {
+                const char *symbol = stage->controls[control].symbol;
+                float value = stage->controls[control].value;
+                if (!fx_lv2_host_control_value_declared(stage->lv2[channel], symbol, value)) {
+                    /* A plugin clamps an undeclared enumeration value to another
+                     * setting (e.g. a filter mode an older LSP lacks): refuse. */
+                    if (error && error_size)
+                        snprintf(error, error_size, "LV2 plugin %s does not declare value %g for control %s "
+                                 "(installed plugin too old or incompatible)", stage->argument, (double)value, symbol);
+                    return -1;
+                }
+                if (!fx_lv2_host_set_control(stage->lv2[channel], symbol, value)) {
                     fail(error, error_size, "unknown LV2 control symbol"); return -1;
                 }
+            }
             fx_lv2_host_activate(stage->lv2[channel]);
         }
         /* Derive the FFT overlap timing for the matched-latency loudness

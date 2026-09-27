@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0-beta10 (unreleased)
+
+### Playback / DSP
+
+- Global PEQ now uses REW/RBJ filter semantics: the Global bank renders
+  every PEQ band with the LSP Parametric Equalizer filter mode `APO (DR)`
+  (the RBJ design REW, Equalizer APO and the area-bank biquads use)
+  instead of `RLC (BT)`. Fc/Gain/Q now mean the same in the Global bank as
+  in an area bank and in a REW import. **Existing Global PEQ presets can
+  sound different:** under `RLC (BT)` a bell rendered about 1.6x wider
+  (Q 4 acted like Q 2.75), and notch, pass and shelf bands differed by up
+  to about 3 dB in the measured cases. Re-check Global PEQ presets that
+  were tuned by ear.
+- Global PEQ requires LSP Plugins 1.1.7 or newer (filter mode `APO (DR)`).
+  The installer verifies the mode, and the native engine refuses an LV2
+  control value the installed plugin does not declare instead of letting
+  the plugin clamp it to a different filter design.
+
 ## 1.0-beta9 (2026-09-19)
 
 Ninth public beta. Distribution: web demo on GitHub Pages,

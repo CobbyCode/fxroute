@@ -5811,6 +5811,16 @@ lv2_plugin_available() {
   grep -Fxq "$uri" <<<"$discovered"
 }
 
+lsp_peq_has_apo_dr_mode() {
+  # Global PEQ renders every band with LSP filter mode 6, "APO (DR)" (the
+  # RBJ/REW filter design, LSP Plugins >= 1.1.7). An older plugin would clamp
+  # mode 6 to a different design, so the mode must be declared explicitly.
+  local info=""
+  command -v lv2info >/dev/null 2>&1 || return 1
+  info="$(lv2info http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr 2>/dev/null || true)"
+  grep -Eq '^[[:space:]]+6 = "APO \(DR\)"$' <<<"$info"
+}
+
 verify_lv2_plugins() {
   local required_uris=(
     http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr
@@ -5842,6 +5852,13 @@ verify_lv2_plugins() {
       fail "LV2 plugin available: $uri"
     done
     die "FXRoute DSP effects need these LV2 plugins: ${missing[*]}; install lsp-plugins-lv2 zam-plugins calf-plugins (Debian/Ubuntu/Armbian), lsp-plugins-lv2 lv2-zam-plugins lv2-calf-plugins (Fedora), lv2-lsp-plugins lv2-zam-plugins (openSUSE), or lsp-plugins zam-plugins calf (Arch/Manjaro)"
+  fi
+
+  if lsp_peq_has_apo_dr_mode; then
+    pass "LSP Parametric Equalizer offers filter mode APO (DR)"
+  else
+    fail "LSP Parametric Equalizer offers filter mode APO (DR)"
+    die "FXRoute Global PEQ needs LSP Plugins 1.1.7 or newer (para_equalizer filter mode APO (DR), checked with lv2info); update lsp-plugins-lv2 (Debian/Ubuntu/Armbian, Fedora), lv2-lsp-plugins (openSUSE) or lsp-plugins (Arch/Manjaro)"
   fi
 }
 

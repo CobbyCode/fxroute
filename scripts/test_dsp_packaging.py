@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Packaging contract for the FXRoute-owned native DSP path."""
 
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -91,6 +95,35 @@ class DspPackagingTests(unittest.TestCase):
         ):
             self.assertIn(uri, script)
             self.assertIn('grep -Fxq "$uri" <<<"$discovered"', script)
+
+    def test_installer_requires_the_lsp_apo_dr_filter_mode(self):
+        # Global PEQ sends LSP filter mode 6, APO (DR); a plugin without it
+        # would clamp the mode to another filter design, so install fails.
+        script = (ROOT / "install.sh").read_text()
+        verify = script[script.index("verify_lv2_plugins() {"):]
+        verify = verify[:verify.index("\n}\n")]
+        self.assertIn("lsp_peq_has_apo_dr_mode", verify)
+        self.assertIn('die "FXRoute Global PEQ needs LSP Plugins 1.1.7 or newer', verify)
+        start = script.index("lsp_peq_has_apo_dr_mode() {")
+        function = script[start:script.index("\n}\n", start) + 3]
+        bash = shutil.which("bash")
+        declared = '\t\tScale Points:\n\t\t\t5 = "LRX (MT)"\n\t\t\t6 = "APO (DR)"\n'
+        older = '\t\tScale Points:\n\t\t\t5 = "LRX (MT)"\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = Path(tmp) / "lv2info"
+            for listing, expected in ((declared, 0), (older, 1)):
+                stub.write_text(f"#!/bin/sh\nprintf '%s' '{listing}'\n")
+                stub.chmod(0o755)
+                result = subprocess.run(
+                    [bash, "-c", f"{function}\nlsp_peq_has_apo_dr_mode"],
+                    env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}"},
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, listing)
+            result = subprocess.run(
+                [bash, "-c", f"{function}\nlsp_peq_has_apo_dr_mode"],
+                env={**os.environ, "PATH": "/nonexistent"},
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, "missing lv2info cannot confirm the mode")
 
     def test_native_dsp_links_libsamplerate(self):
         script = (ROOT / "native_dsp/build.sh").read_text()

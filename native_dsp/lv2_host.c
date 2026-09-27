@@ -9,6 +9,7 @@
 #include <lv2/resize-port/resize-port.h>
 #include <lv2/urid/urid.h>
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,9 @@ struct fx_lv2_host {
     char **symbols;
     fx_lv2_port_type *types;
     float *controls;
+    /* Values each enumeration control input declares (none: unrestricted). */
+    float **enum_values;
+    unsigned *enum_counts;
     void **atom_buffers;
     bool *atom_inputs;
     float **audio_buffers;
@@ -157,7 +161,8 @@ static bool inspect_ports(fx_lv2_host *h, const LilvPlugin *plugin,
     LilvNode *input = lilv_new_uri(h->world, LV2_CORE__InputPort);
     LilvNode *output = lilv_new_uri(h->world, LV2_CORE__OutputPort);
     LilvNode *designation = lilv_new_uri(h->world, LV2_CORE__designation);
-    bool ok = audio && control && atom && input && output && designation;
+    LilvNode *enumeration = lilv_new_uri(h->world, LV2_CORE__enumeration);
+    bool ok = audio && control && atom && input && output && designation && enumeration;
     if (!ok) errorf(error, size, "failed to allocate LV2 metadata nodes");
     for (uint32_t i = 0; ok && i < h->port_count; ++i) {
         const LilvPort *port = lilv_plugin_get_port_by_index(plugin, i);
@@ -212,6 +217,20 @@ static bool inspect_ports(fx_lv2_host *h, const LilvPlugin *plugin,
                 else if (lilv_node_is_bool(def)) h->controls[i] = lilv_node_as_bool(def) ? 1.0f : 0.0f;
             }
             lilv_node_free(def);
+            if (in && lilv_port_has_property(plugin, port, enumeration)) {
+                LilvScalePoints *points = lilv_port_get_scale_points(plugin, port);
+                unsigned count = points ? lilv_scale_points_size(points) : 0;
+                if (count && !(h->enum_values[i] = calloc(count, sizeof(float)))) {
+                    errorf(error, size, "out of memory reading LV2 scale points"); ok = false;
+                } else if (count) {
+                    LILV_FOREACH(scale_points, j, points) {
+                        const LilvNode *value = lilv_scale_point_get_value(lilv_scale_points_get(points, j));
+                        if (lilv_node_is_float(value)) h->enum_values[i][h->enum_counts[i]++] = lilv_node_as_float(value);
+                        else if (lilv_node_is_int(value)) h->enum_values[i][h->enum_counts[i]++] = (float)lilv_node_as_int(value);
+                    }
+                }
+                lilv_scale_points_free(points);
+            }
             if (out) {
                 LilvNodes *values = lilv_port_get_value(plugin, port, designation);
                 LILV_FOREACH(nodes, j, values)
@@ -236,7 +255,7 @@ static bool inspect_ports(fx_lv2_host *h, const LilvPlugin *plugin,
         errorf(error, size, "LV2 plugin has no recognized primary stereo audio ports"); ok = false;
     }
     lilv_node_free(audio); lilv_node_free(control); lilv_node_free(atom); lilv_node_free(input);
-    lilv_node_free(output); lilv_node_free(designation);
+    lilv_node_free(output); lilv_node_free(designation); lilv_node_free(enumeration);
     return ok;
 }
 
@@ -269,11 +288,14 @@ fx_lv2_host *fx_lv2_host_new(const char *plugin_uri, double rate, uint32_t max_b
     h->symbols = calloc(h->port_count, sizeof(*h->symbols));
     h->types = calloc(h->port_count, sizeof(*h->types));
     h->controls = calloc(h->port_count, sizeof(*h->controls));
+    h->enum_values = calloc(h->port_count, sizeof(*h->enum_values));
+    h->enum_counts = calloc(h->port_count, sizeof(*h->enum_counts));
     h->atom_buffers = calloc(h->port_count, sizeof(*h->atom_buffers));
     h->atom_inputs = calloc(h->port_count, sizeof(*h->atom_inputs));
     h->audio_buffers = calloc(h->port_count, sizeof(*h->audio_buffers));
     h->zero_buffer = calloc(h->max_block, sizeof(*h->zero_buffer));
-    if (!h->symbols || !h->types || !h->controls || !h->atom_buffers || !h->atom_inputs ||
+    if (!h->symbols || !h->types || !h->controls || !h->enum_values || !h->enum_counts ||
+        !h->atom_buffers || !h->atom_inputs ||
         !h->audio_buffers || !h->zero_buffer) { errorf(error, size, "out of memory allocating LV2 ports"); goto fail; }
     if (!inspect_ports(h, plugin, error, size)) goto fail;
     lilv_node_free(uri);
@@ -289,12 +311,25 @@ void fx_lv2_host_free(fx_lv2_host *h) {
     if (h->symbols) for (unsigned i = 0; i < h->port_count; ++i) free(h->symbols[i]);
     if (h->atom_buffers) for (unsigned i = 0; i < h->port_count; ++i) free(h->atom_buffers[i]);
     if (h->audio_buffers) for (unsigned i = 0; i < h->port_count; ++i) free(h->audio_buffers[i]);
+    if (h->enum_values) for (unsigned i = 0; i < h->port_count; ++i) free(h->enum_values[i]);
     free(h->symbols); free(h->types); free(h->controls); free(h->atom_buffers); free(h->atom_inputs);
+    free(h->enum_values); free(h->enum_counts);
     free(h->audio_buffers); free(h->zero_buffer); lilv_world_free(h->world); free(h);
 }
 unsigned fx_lv2_host_port_count(const fx_lv2_host *h) { return h ? h->port_count : 0; }
 const char *fx_lv2_host_port_symbol(const fx_lv2_host *h, unsigned i) { return h && i < h->port_count ? h->symbols[i] : NULL; }
 fx_lv2_port_type fx_lv2_host_port_type_at(const fx_lv2_host *h, unsigned i) { return h && i < h->port_count ? h->types[i] : FX_LV2_PORT_UNKNOWN; }
+bool fx_lv2_host_control_value_declared(const fx_lv2_host *h, const char *symbol, float value) {
+    if (!h || !symbol) return false;
+    for (unsigned i = 0; i < h->port_count; ++i) {
+        if (h->types[i] != FX_LV2_PORT_CONTROL_INPUT || strcmp(h->symbols[i], symbol)) continue;
+        if (!h->enum_counts[i]) return true;
+        for (unsigned j = 0; j < h->enum_counts[i]; ++j)
+            if (fabsf(h->enum_values[i][j] - value) < 1e-4f) return true;
+        return false;
+    }
+    return true;
+}
 bool fx_lv2_host_set_control(fx_lv2_host *h, const char *symbol, float value) {
     if (!h || !symbol) return false;
     for (unsigned i = 0; i < h->port_count; ++i) if (h->types[i] == FX_LV2_PORT_CONTROL_INPUT && !strcmp(h->symbols[i], symbol)) { h->controls[i] = value; return true; }

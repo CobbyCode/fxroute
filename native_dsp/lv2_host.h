@@ -21,6 +21,9 @@ void fx_lv2_host_free(fx_lv2_host *host);
 unsigned fx_lv2_host_port_count(const fx_lv2_host *host);
 const char *fx_lv2_host_port_symbol(const fx_lv2_host *host, unsigned index);
 fx_lv2_port_type fx_lv2_host_port_type_at(const fx_lv2_host *host, unsigned index);
+/* False when an enumeration control input does not declare value (the
+ * installed plugin would clamp it to a different setting). */
+bool fx_lv2_host_control_value_declared(const fx_lv2_host *host, const char *symbol, float value);
 bool fx_lv2_host_set_control(fx_lv2_host *host, const char *symbol, float value);
 void fx_lv2_host_activate(fx_lv2_host *host);
 void fx_lv2_host_deactivate(fx_lv2_host *host);

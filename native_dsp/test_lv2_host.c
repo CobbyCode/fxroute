@@ -34,6 +34,16 @@ static int test_plugin(const char *uri, bool allow_missing) {
         fx_lv2_host_free(host);
         return 1;
     }
+    /* Global PEQ needs LSP filter mode 6, APO (DR); an undeclared mode must
+     * be reported, a non-enumeration control stays unrestricted. */
+    if (!strcmp(uri, "http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr") &&
+        (!fx_lv2_host_control_value_declared(host, "fml_0", 6.0f) ||
+         fx_lv2_host_control_value_declared(host, "fml_0", 7.0f) ||
+         !fx_lv2_host_control_value_declared(host, "fl_0", 1234.5f))) {
+        fprintf(stderr, "LV2 enumeration contract failed: para_equalizer must declare APO (DR)\n");
+        fx_lv2_host_free(host);
+        return 1;
+    }
     in_l[0] = 0.25f;
     in_r[0] = -0.25f;
     fx_lv2_host_activate(host);

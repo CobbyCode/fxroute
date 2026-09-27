@@ -86,6 +86,37 @@ class NativeEffectsTests(unittest.TestCase):
         left, right = output[48000::2], output[48001::2]
         self.assertGreater(rms(left), rms(right) * 4)
 
+    def test_lsp_peq_refuses_a_filter_mode_the_installed_plugin_lacks(self):
+        # Global PEQ renders with filter mode 6, APO (DR); a plugin that does
+        # not declare a mode would clamp it to another one, so the engine
+        # must refuse the stage instead of rendering a different filter.
+        base = {"mode": 0, "ftl_0": 1, "fl_0": 1000, "gl_0": 2.0, "ql_0": 2,
+                "ftr_0": 1, "fr_0": 1000, "gr_0": 2.0, "qr_0": 2}
+        uri = "http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr"
+        output = self.process(self.lv2("peq", uri, {**base, "fml_0": 6, "fmr_0": 6}),
+                              stereo_sine(1000))
+        self.assertGreater(rms(output[48000::2]), 0.1)
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.process_checked(self.lv2("peq", uri, {**base, "fml_0": 7, "fmr_0": 6}),
+                                 stereo_sine(1000))
+        self.assertIn("does not declare value 7 for control fml_0", raised.exception.stderr)
+
+    def process_checked(self, stages, samples):
+        case = self.root / str(self.case_number)
+        self.case_number += 1
+        case.mkdir()
+        config, source, target = case / "dsp.conf", case / "input.f32", case / "output.f32"
+        config.write_text(
+            "rate 48000\ninputs 2\noutputs 2\n"
+            "matrix 0 0 1\nmatrix 1 1 1\n"
+            f"{stages}\n"
+            "output 0 0 0 normal\noutput 1 0 0 normal\nbypass 0\n"
+        )
+        with source.open("wb") as handle:
+            array.array("f", samples).tofile(handle)
+        subprocess.run([str(DSP), str(config), str(source), str(target), "127"],
+                       check=True, capture_output=True, text=True)
+
     def test_lsp_loudness_uses_real_frequency_dependent_contour(self):
         stage = self.lv2("loudness", "http://lsp-plug.in/plugins/lv2/loud_comp_stereo",
                          {"std": 4, "fft": 4,
