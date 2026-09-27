@@ -796,6 +796,10 @@ function getMeasurementAutoSubSummary(measurement = {}) {
         else if (p) tail = ` · ${p}`;
         return `${g}${tail}`;
     };
+    // Sub labels follow the run's sub topology. meta.mode records it; entries
+    // saved before that fall back to the output mode stamped at save time.
+    const runMode = String(meta.mode || measurement?.audio_output_context?.output_mode || '').trim();
+    const [sub1Label, sub2Label] = runMode === 'subwoofer-2.2-stereo' ? ['Sub L', 'Sub R'] : ['Sub 1', 'Sub 2'];
     const hasDelayKey = (obj, key) => obj && typeof obj === 'object' && measurementFiniteOrNull(obj[key]) !== null;
     const hasPolKey = (obj, key) => obj && typeof obj === 'object' && String(obj[key] || '').trim() !== '';
     if (gains && typeof gains === 'object') {
@@ -812,14 +816,14 @@ function getMeasurementAutoSubSummary(measurement = {}) {
                 const dv = hasDelayKey(delays, 'sub1') ? delays.sub1 : null;
                 const pv = hasPolKey(pols, 'sub1') ? pols.sub1 : null;
                 const text = compactSubText(sub1Gain, dv, pv);
-                if (text) parts.push(`Sub 1 ${text}`);
+                if (text) parts.push(`${sub1Label} ${text}`);
             }
             const sub2Gain = gains.sub2;
             if (sub2Gain !== undefined && sub2Gain !== null && String(sub2Gain) !== '') {
                 const dv = hasDelayKey(delays, 'sub2') ? delays.sub2 : null;
                 const pv = hasPolKey(pols, 'sub2') ? pols.sub2 : null;
                 const text = compactSubText(sub2Gain, dv, pv);
-                if (text) parts.push(`Sub 2 ${text}`);
+                if (text) parts.push(`${sub2Label} ${text}`);
             }
         }
     }
@@ -832,8 +836,8 @@ function getMeasurementAutoSubSummary(measurement = {}) {
                 parts.push(p ? `${label} ${d} · ${p}` : `${label} ${d}`);
             };
             if (hasDelayKey(delays, 'sub')) fmt('sub', 'Sub');
-            if (hasDelayKey(delays, 'sub1')) fmt('sub1', 'Sub 1');
-            if (hasDelayKey(delays, 'sub2')) fmt('sub2', 'Sub 2');
+            if (hasDelayKey(delays, 'sub1')) fmt('sub1', sub1Label);
+            if (hasDelayKey(delays, 'sub2')) fmt('sub2', sub2Label);
         }
     }
     if (!parts.length) return null;

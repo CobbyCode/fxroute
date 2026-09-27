@@ -252,11 +252,14 @@ def _auto_sub_result_meta(
     calibrated Main points let the frontend recompute that same robust anchor
     for whichever Target Curve is currently selected in the graph.
     *final_delays_ms* and *final_polarities* record the compact sub delay and
-    N/I state shown alongside the gain.
+    N/I state shown alongside the gain. *mode* is recorded so the saved line
+    can name the subs by the run's topology (Sub, Sub 1/2 or Sub L/R); 2.2
+    Stereo keeps the sub1/sub2 keys for its left/right subs.
     """
     target_curve = job.get("target_curve") if isinstance(job.get("target_curve"), dict) else None
     meta: dict[str, Any] = {
         "target": json.loads(json.dumps(target_curve)) if target_curve else None,
+        "mode": mode,
     }
     if target_vertical_offset_db is not None:
         meta["target_vertical_offset_db"] = round(float(target_vertical_offset_db), 4)

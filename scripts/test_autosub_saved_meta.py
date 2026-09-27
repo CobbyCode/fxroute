@@ -73,6 +73,15 @@ class AutoSubResultMetaTests(unittest.TestCase):
         )
         self.assertEqual(meta["final_gains_db"], {"sub1": 0.5, "sub2": -4.0})
 
+    def test_meta_records_the_run_mode_for_sub_labels(self) -> None:
+        # The saved line names the subs by it: Sub, Sub 1/2 or Sub L/R.
+        for mode, levels in (("subwoofer-2.1", {"sub": 0.5}),
+                             ("subwoofer-2.2", {"sub1": 0.5, "sub2": -4.0}),
+                             ("subwoofer-2.2-stereo", {"sub1": 0.5, "sub2": -4.0})):
+            with self.subTest(mode=mode):
+                meta = _auto_sub_result_meta({"target_curve": TARGET}, mode, levels)
+                self.assertEqual(meta["mode"], mode)
+
     def test_empty_gains_omit_final_gains_db(self) -> None:
         meta = _auto_sub_result_meta({"target_curve": TARGET}, "subwoofer-2.2", {})
         self.assertNotIn("final_gains_db", meta)

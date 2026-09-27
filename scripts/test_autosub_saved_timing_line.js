@@ -160,4 +160,46 @@ function makeAutoSubMeta() {
     assert.ok(!info.line.includes('Sub 1'), '2.1 gain must use the compact single-sub label');
 }
 
+// ---------------------------------------------------------------------------
+// 12. Sub labels follow the run's sub topology: 2.1 Sub, 2.2 Mono Sub 1/2,
+//     2.2 Stereo Sub L/R, so Mono and Stereo runs are told apart
+// ---------------------------------------------------------------------------
+{
+    const subs = {
+        final_gains_db: { sub1: 1.14, sub2: -0.62 },
+        final_delays_ms: { sub1: -0.2, sub2: 0.8 },
+        final_polarities: { sub1: 'normal', sub2: 'invert' },
+    };
+    const lineFor = (overrides) => MeasurementUI.getMeasurementTimingInfo(
+        makeMeasurement(overrides)).line;
+    assert.equal(
+        lineFor({ autosub_meta: { target: TARGET_HARMAN, mode: 'subwoofer-2.2-stereo', ...subs } }),
+        'Target: Harman-style · Sub L +1.1 dB · \u22120.2 ms · N · Sub R \u22120.6 dB · +0.8 ms · I');
+    assert.equal(
+        lineFor({ autosub_meta: { target: TARGET_HARMAN, mode: 'subwoofer-2.2', ...subs } }),
+        'Target: Harman-style · Sub 1 +1.1 dB · \u22120.2 ms · N · Sub 2 \u22120.6 dB · +0.8 ms · I');
+    assert.equal(
+        lineFor({ autosub_meta: { target: TARGET_HARMAN, mode: 'subwoofer-2.1',
+                                  final_gains_db: { sub: 6.0 }, final_delays_ms: { sub: -0.58 } } }),
+        'Target: Harman-style · Sub +6.0 dB · \u22120.6 ms');
+    // Delay-only metadata uses the same labels.
+    assert.equal(
+        lineFor({ autosub_meta: { mode: 'subwoofer-2.2-stereo', final_delays_ms: { sub1: -0.2, sub2: 0.8 } } }),
+        'Sub L \u22120.2 ms · Sub R +0.8 ms');
+    // Entries saved before meta.mode fall back to the output mode stamped at
+    // save time; the run's own mode wins when both are present.
+    assert.equal(
+        lineFor({ autosub_meta: { target: TARGET_HARMAN, final_gains_db: subs.final_gains_db },
+                  audio_output_context: { output_mode: 'subwoofer-2.2-stereo' } }),
+        'Target: Harman-style · Sub L +1.1 dB · Sub R \u22120.6 dB');
+    assert.equal(
+        lineFor({ autosub_meta: { target: TARGET_HARMAN, final_gains_db: subs.final_gains_db },
+                  audio_output_context: { output_mode: 'subwoofer-2.2' } }),
+        'Target: Harman-style · Sub 1 +1.1 dB · Sub 2 \u22120.6 dB');
+    assert.equal(
+        lineFor({ autosub_meta: { target: TARGET_HARMAN, mode: 'subwoofer-2.2', final_gains_db: subs.final_gains_db },
+                  audio_output_context: { output_mode: 'subwoofer-2.2-stereo' } }),
+        'Target: Harman-style · Sub 1 +1.1 dB · Sub 2 \u22120.6 dB');
+}
+
 console.log('ok autosub saved-measurement timing line (target + final sub gains, all modes)');
