@@ -50,9 +50,10 @@
 //
 // Besides the 2-way run above, the fixture carries the last real saved
 // 3-way run on .104 (right side, 2026-09-27 13:56:50Z planning take and
-// 13:57:41Z verification take): low/mid/high ways at 0.417/0.0/0.604 ms,
-// verified down to a 0.021 ms residual and committed at the run's own
-// revision 1034. Its frequency traces, timing timelines, IR previews and
+// 13:57:41Z verification take): low/mid/high arrive at 0.417/0.0/0.604 ms
+// (arrival_ms, relative to the earliest way, not planned delays), so the
+// planned added delays are 0.188/0.604/0.0 ms; verified down to a 0.021 ms
+// residual and committed at the run's own revision 1034. Its frequency traces, timing timelines, IR previews and
 // analysis blocks are stored verbatim - no tamed top end, no synthesized
 // way bands - including the backend's unmeasured (null) verification
 // isolation, which the fixture keeps instead of inventing margins. Left
