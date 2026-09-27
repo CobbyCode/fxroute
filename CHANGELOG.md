@@ -13,10 +13,11 @@
   (Q 4 acted like Q 2.75), and notch, pass and shelf bands differed by up
   to about 3 dB in the measured cases. Re-check Global PEQ presets that
   were tuned by ear.
-- Global PEQ requires LSP Plugins 1.1.7 or newer (filter mode `APO (DR)`).
-  The installer verifies the mode, and the native engine refuses an LV2
-  control value the installed plugin does not declare instead of letting
-  the plugin clamp it to a different filter design.
+- Global PEQ needs the LSP filter mode `APO (DR)` (LSP Plugins 1.1.7 or
+  newer, shipped by every supported distribution). The native LV2 host now
+  checks each enumeration control against the values the installed plugin
+  declares and refuses the stage with a clear error for an undeclared value,
+  so an incompatible LSP cannot run silently with a different filter design.
 
 ## 1.0-beta9 (2026-09-19)
 

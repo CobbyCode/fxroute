@@ -5811,41 +5811,6 @@ lv2_plugin_available() {
   grep -Fxq "$uri" <<<"$discovered"
 }
 
-lsp_peq_apo_dr_status() {
-  # Global PEQ renders every band with LSP filter mode 6, "APO (DR)" (the
-  # RBJ/REW filter design, LSP Plugins >= 1.1.7). An older plugin would clamp
-  # mode 6 to a different design, so a filter-mode port (fml_N/fmr_N) must
-  # declare exactly that value and label.
-  # Returns 0 when declared, 1 when not, 2 without lv2info, 3 when lv2info
-  # cannot describe the plugin.
-  #
-  # lv2info prints one block per port, scale points in any order and before
-  # the port's Symbol line, and value 6 also exists on other enumeration
-  # ports (Filter type 6 = "Notch"). So the lines are grouped per port block;
-  # values compare numerically (6, 6.0, 6.000000); CR and indentation vary.
-  local info=""
-  command -v lv2info >/dev/null 2>&1 || return 2
-  info="$(lv2info http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr 2>/dev/null)" || return 3
-  [[ -n "$info" ]] || return 3
-  awk '
-    function flush() {
-      if (symbol ~ /^fm[lr]_[0-9]+$/ && apo) found = 1
-      symbol = ""; apo = 0
-    }
-    { sub(/\r$/, "") }
-    /^[[:space:]]*Port[[:space:]]+[0-9]+:[[:space:]]*$/ { flush(); next }
-    /^[[:space:]]*Symbol:/ { symbol = $2; next }
-    /=[[:space:]]*".*"[[:space:]]*$/ {
-      eq = index($0, "=")
-      value = substr($0, 1, eq - 1); label = substr($0, eq + 1)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", label)
-      if (value ~ /^[+]?[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?$/ && value + 0 == 6 && label == "\"APO (DR)\"") apo = 1
-    }
-    END { flush(); exit(found ? 0 : 1) }
-  ' <<<"$info"
-}
-
 verify_lv2_plugins() {
   local required_uris=(
     http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr
@@ -5878,26 +5843,6 @@ verify_lv2_plugins() {
     done
     die "FXRoute DSP effects need these LV2 plugins: ${missing[*]}; install lsp-plugins-lv2 zam-plugins calf-plugins (Debian/Ubuntu/Armbian), lsp-plugins-lv2 lv2-zam-plugins lv2-calf-plugins (Fedora), lv2-lsp-plugins lv2-zam-plugins (openSUSE), or lsp-plugins zam-plugins calf (Arch/Manjaro)"
   fi
-
-  local apo_status=0
-  lsp_peq_apo_dr_status || apo_status=$?
-  case "$apo_status" in
-    0)
-      pass "LSP Parametric Equalizer offers filter mode APO (DR)"
-      ;;
-    2)
-      fail "LV2 plugin inspection tool (lv2info) available"
-      die "LSP filter mode verification needs lv2info from lilv-utils (Debian/Ubuntu), lilv (Fedora/openSUSE), or lilv-tools (Arch/Manjaro)"
-      ;;
-    3)
-      fail "lv2info describes http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr"
-      die "lv2info could not describe the LSP Parametric Equalizer (http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr); reinstall lsp-plugins-lv2 (Debian/Ubuntu/Armbian, Fedora), lv2-lsp-plugins (openSUSE) or lsp-plugins (Arch/Manjaro)"
-      ;;
-    *)
-      fail "LSP Parametric Equalizer offers filter mode APO (DR)"
-      die "FXRoute Global PEQ needs LSP Plugins 1.1.7 or newer (para_equalizer filter mode APO (DR)); update lsp-plugins-lv2 (Debian/Ubuntu/Armbian, Fedora), lv2-lsp-plugins (openSUSE) or lsp-plugins (Arch/Manjaro)"
-      ;;
-  esac
 }
 
 validate_tools() {
