@@ -3,15 +3,15 @@
 ## 1.0-beta10 (2026-09-27)
 
 Tenth public beta. Distribution: web demo on GitHub Pages,
-Raspberry Pi 4/5 images via GitHub Release, x86_64 Leap 16 and Ubuntu 26.04
-ISOs via SourceForge. Khadas/VIM1S stays internal and gets no public image.
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Ubuntu 26.04 ISO
+via SourceForge. Khadas/VIM1S stays internal and gets no public image.
 
 ### Release provenance
 
 - Source stand: `main`. No Armbian or live-converter changes this cycle;
   installer ships the Caddy SELinux proxy handling and the separated
   Spotify Desktop/spotifyd lifecycles (see below).
-- The x86_64 Leap 16 ISO, the x86_64 Ubuntu 26.04 ISO and the Pi 4/Pi 5
+- The x86_64 Ubuntu 26.04 ISO and the Pi 4/Pi 5
   images are built from the release commit; their SHA-256 digests are
   recorded in this section once the builds exist.
 - The web demo snapshot was rebuilt from this stand (`demo/dist` parity is
@@ -169,7 +169,6 @@ Public release artifact names (to be built from tag `v1.0-beta10`):
 
 - `fxroute-1.0-beta10-rpi4-trixie-current.img.xz` (+ `.sha256`)
 - `fxroute-1.0-beta10-rpi5-trixie-current.img.xz` (+ `.sha256`)
-- `fxroute-1.0-beta10-x86_64-leap16.iso` (SourceForge, + `.sha256`)
 - `fxroute-1.0-beta10-x86_64-ubuntu26.04.iso` (SourceForge, + `.sha256`)
 
 ## 1.0-beta9 (2026-09-19)

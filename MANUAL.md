@@ -27,7 +27,7 @@ Three supported ways to get FXRoute onto the audio machine:
 
 - **Classic install.** `git clone https://github.com/CobbyCode/fxroute.git && cd fxroute && ./install.sh`. The installer prepares system packages, builds the native DSP engine, creates the Python virtualenv, and enables the `fxroute.service` user service. Run it as the audio user; from a root shell pass `--user <name>` when the host has several users. Supported package managers are apt, dnf, zypper, and pacman.
 - **ARM64 Armbian image (Raspberry Pi 4 / Pi 5).** Write the image, boot, and finish the web onboarding; first boot installs FXRoute and enables the `.local` name and HTTPS. See [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md).
-- **x86_64 installation ISO.** Either the openSUSE Leap 16 ISO (`FXRoute Headless`, `FXRoute Desktop`, `Try FXRoute`) or the Ubuntu 26.04 ISO (`Install FXRoute Headless`, `Install FXRoute Desktop`, `Try FXRoute Live`). Write the ISO, boot, pick a profile, and complete the installer. See [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md) for the Leap path.
+- **x86_64 installation ISO.** The Ubuntu 26.04 ISO (`Install FXRoute Headless`, `Install FXRoute Desktop`, `Try FXRoute Live`). Write the ISO, boot, pick a profile, and complete the installer.
 
 Streaming providers are optional and are managed later in **Technical settings → Providers**; the installer flags select the same backends, e.g. `./install.sh --providers spotifyd,qobuz,tidal`. Provider installs and updates always resolve the current stable upstream release — no provider version is pinned.
 

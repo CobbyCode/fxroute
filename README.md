@@ -90,7 +90,7 @@ Supported package managers are apt, dnf, zypper, and pacman. Streaming providers
 
 - [MANUAL.md](MANUAL.md) — the user manual: output modes and routing, crossover, subwoofers, the measurement assistant, and the settings
 - [docs/INSTALLER.md](docs/INSTALLER.md) — installer, providers, and uninstall details
-- [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md) and [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md) — building the ARM64 board images and the Ubuntu 26.04 installation ISO yourself
+- [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md) — building the ARM64 board images yourself
 - [CHANGELOG.md](CHANGELOG.md) — release history
 
 ## License
