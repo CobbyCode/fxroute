@@ -6,7 +6,7 @@ Radio, the music library, the streaming providers, the native DSP engine, and th
 
 ## Download
 
-Start from [FXRoute releases](https://github.com/CobbyCode/fxroute/releases). The release notes list every published artifact and where to fetch it: the Raspberry Pi 4 / Pi 5 SD-card image (GitHub Release) and the x86_64 openSUSE Leap 16 and Ubuntu 26.04 installation ISOs (SourceForge). Write the image or ISO to disk, boot it, and finish the web onboarding.
+Start from [FXRoute releases](https://github.com/CobbyCode/fxroute/releases). The release notes list every published artifact and where to fetch it: the Raspberry Pi 4 / Pi 5 SD-card image (GitHub Release) and the x86_64 Ubuntu 26.04 installation ISO (SourceForge). Write the image or ISO to disk, boot it, and finish the web onboarding.
 
 No new hardware? Try the [web demo](#web-demo) first. Already running Linux on the audio machine? Use the [installer](#install) instead.
 
@@ -90,7 +90,7 @@ Supported package managers are apt, dnf, zypper, and pacman. Streaming providers
 
 - [MANUAL.md](MANUAL.md) — the user manual: output modes and routing, crossover, subwoofers, the measurement assistant, and the settings
 - [docs/INSTALLER.md](docs/INSTALLER.md) — installer, providers, and uninstall details
-- [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md) and [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md) — building the ARM64 board images and the openSUSE Leap 16 installation ISO yourself
+- [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md) and [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md) — building the ARM64 board images and the Ubuntu 26.04 installation ISO yourself
 - [CHANGELOG.md](CHANGELOG.md) — release history
 
 ## License
