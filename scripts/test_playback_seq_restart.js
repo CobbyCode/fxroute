@@ -45,11 +45,38 @@ assert.equal(state.playback._seq, null);
 PlaybackCore.mergePlaybackState({ _seq: 1, position: 5 });
 assert.equal(state.playback.position, 5);
 
-// The WebSocket init is the snapshot path.
+// Both reconnect snapshots bypass the old baseline: the WebSocket init and
+// the /api/status resync after the socket reopened.
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 assert.ok(
     appSource.includes('PlaybackCore.mergePlaybackState(data.player.state, { snapshot: true });'),
     'WebSocket init must merge the player state as a snapshot',
 );
 
-console.log('PASS test_playback_seq_restart.js');
+(async () => {
+    const reconnectState = { playback: { _seq: 50000, position: 10 }, library: {}, samplerate: {}, settings: {} };
+    PlaybackCore.init({
+        getState: () => reconnectState,
+        getElements: () => ({}),
+        fetchFn: async (url) => ({
+            ok: true,
+            json: async () => (url === '/api/status' ? { _seq: 3, position: 1, playing: true } : null),
+        }),
+        claimWsSyncGeneration: () => 1,
+        isWsSyncGenerationCurrent: () => true,
+        fetchSpotifyStatus: async () => null,
+        fetchQobuzStatus: async () => null,
+        seedNativeTrackCueKey: () => {},
+        updateLiveBanner: () => {},
+        updatePlaybackUI: () => {},
+        stopSpotifyPoll: () => {},
+        bumpSpotifyPollGeneration: () => {},
+    });
+    await PlaybackCore.resyncPlaybackAfterReconnect();
+    assert.equal(reconnectState.playback._seq, 3, 'reconnect resync resets the baseline');
+    assert.equal(reconnectState.playback.position, 1);
+    console.log('PASS test_playback_seq_restart.js');
+})().catch((error) => {
+    console.error(error);
+    process.exit(1);
+});

@@ -1248,7 +1248,9 @@ async function resyncPlaybackAfterReconnect() {
         if (!deps.isWsSyncGenerationCurrent(generation)) return;
 
         if (playback) {
-            mergePlaybackState(playback);
+            // Full state of the process the socket reconnected to: a snapshot,
+            // like the WebSocket init (whichever of the two lands first).
+            mergePlaybackState(playback, { snapshot: true });
             // Reconnect: adopt the running track silently, never cue it.
             deps.seedNativeTrackCueKey(playback.current_track);
             deps.updateLiveBanner(playback);
