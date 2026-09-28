@@ -516,8 +516,10 @@
             a1 = -2 * cos;
             a2 = 1 - alpha;
         } else if (type === 'low_shelf' || type === 'high_shelf') {
-            const shelfAlpha = sin / 2 * Math.sqrt(Math.max(0, (A + (1 / A)) * ((1 / q) - 1) + 2));
-            const beta = 2 * Math.sqrt(A) * shelfAlpha;
+            // The stored value is Q, as for every other type: the engine
+            // (native biquads and LSP "APO (DR)") designs shelves with
+            // alpha = sin(w0) / (2Q), not with the RBJ shelf slope S.
+            const beta = 2 * Math.sqrt(A) * alpha;
             if (type === 'low_shelf') {
                 b0 = A * ((A + 1) - ((A - 1) * cos) + beta);
                 b1 = 2 * A * ((A - 1) - ((A + 1) * cos));

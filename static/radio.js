@@ -223,7 +223,7 @@
         const heart = favoriteHeartSvg();
         const pressed = active ? 'true' : 'false';
         const label = active ? 'Remove from My Stations' : 'Add to My Stations';
-        return `<button type="button" class="${cls}" ${extraAttrs} aria-pressed="${pressed}" aria-label="${label}" title="${label}">${heart}</button>`;
+        return `<button type="button" class="${cls}" ${extraAttrs} aria-pressed="${pressed}" aria-label="${label}" data-tooltip="${label}">${heart}</button>`;
     }
 
     function updateStationFavButton(button, active) {
@@ -233,7 +233,7 @@
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
         const label = active ? 'Remove from My Stations' : 'Add to My Stations';
         button.setAttribute('aria-label', label);
-        button.title = label;
+        button.setAttribute('data-tooltip', label);
     }
 
     function bindStationFavButtons(container) {
@@ -937,10 +937,12 @@
             const fullTitle = String(title || '');
             return fullTitle.length > 32 ? `${fullTitle.slice(0, 29).trimEnd()}…` : fullTitle;
         };
+        // Options show a compacted name; the option's aria-label keeps the
+        // full one, which the select's tooltip wrapper reveals (tooltip.js).
         elements.stationDeleteSelect.innerHTML = ['<option value="">Select a station…</option>']
             .concat(state.stations.map(station => {
                 const fullTitle = String(station.title || '');
-                return `<option value="${escapeHtml(station.id)}" title="${escapeHtml(fullTitle)}" aria-label="${escapeHtml(fullTitle)}">${escapeHtml(compactOptionTitle(fullTitle))}</option>`;
+                return `<option value="${escapeHtml(station.id)}" aria-label="${escapeHtml(fullTitle)}">${escapeHtml(compactOptionTitle(fullTitle))}</option>`;
             }))
             .join('');
         resetManagedStationForm();

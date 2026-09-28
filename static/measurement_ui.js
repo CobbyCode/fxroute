@@ -80,10 +80,17 @@ function normalizeMeasurementEntry(measurement = {}, index = 0) {
         input_channels: safeMeasurement.input_channels || {},
         calibration: safeMeasurement.calibration || {},
         autosub_meta: safeMeasurement.autosub_meta || null,
+        // Speaker Align Before/After take ({ side, take }); names the pair on save.
+        speaker_align_take: safeMeasurement.speaker_align_take && typeof safeMeasurement.speaker_align_take === 'object'
+            ? { ...safeMeasurement.speaker_align_take } : null,
         summary: safeMeasurement.summary || {},
         review_summary: safeMeasurement.review_summary || {},
         analysis: safeMeasurement.analysis || {},
         audio_output_context: safeMeasurement.audio_output_context || {},
+        // Frozen area context (Task 7): the area, revision and processing the
+        // sweep ran through.  Absent on legacy results, which then stay
+        // unlabelled in the UI instead of being assumed Global.
+        measurement_target: safeMeasurement.measurement_target || null,
         storage_path: safeMeasurement.storage_path || '',
         traces,
         review_traces: reviewTraces,
@@ -156,13 +163,29 @@ function getDefaultMeasurementConvolverState() {
         dipGuard: 'off',
         safetyMarginDb: 1,
         autoGainEnabled: true,
-        quality: 'linear_8192',
+        quality: 'minimum_8192',
         phaseMode: 'minimum',
         irLength: '8192',
         dragMode: null,
         creatingPreset: false,
         draft: { left: null, right: null, presetName: '', nameTouched: false, notice: '' },
     };
+}
+
+function hasResettableMeasurementSettings(assistMode, peq, conv, defaults = getDefaultMeasurementConvolverState()) {
+    if (assistMode !== 'peq' && assistMode !== 'convolver') return false;
+    if (conv.targetCurve !== defaults.targetCurve) return true;
+    if (assistMode === 'peq') return peq.filters.length > 0;
+    return Number(conv.rangeStartHz) !== defaults.rangeStartHz
+        || Number(conv.rangeEndHz) !== defaults.rangeEndHz
+        || Number(conv.maxBoostDb) !== defaults.maxBoostDb
+        || Number(conv.maxCutDb) !== defaults.maxCutDb
+        || conv.dipGuard !== defaults.dipGuard
+        || Number(conv.safetyMarginDb) !== defaults.safetyMarginDb
+        || conv.autoGainEnabled !== defaults.autoGainEnabled
+        || conv.phaseMode !== defaults.phaseMode
+        || String(conv.irLength) !== defaults.irLength
+        || conv.quality !== defaults.quality;
 }
 
 function getMeasurementConvolverDraftPhaseMode(draft = null) {
@@ -773,6 +796,10 @@ function getMeasurementAutoSubSummary(measurement = {}) {
         else if (p) tail = ` · ${p}`;
         return `${g}${tail}`;
     };
+    // Sub labels follow the run's sub topology. meta.mode records it; entries
+    // saved before that fall back to the output mode stamped at save time.
+    const runMode = String(meta.mode || measurement?.audio_output_context?.output_mode || '').trim();
+    const [sub1Label, sub2Label] = runMode === 'subwoofer-2.2-stereo' ? ['Sub L', 'Sub R'] : ['Sub 1', 'Sub 2'];
     const hasDelayKey = (obj, key) => obj && typeof obj === 'object' && measurementFiniteOrNull(obj[key]) !== null;
     const hasPolKey = (obj, key) => obj && typeof obj === 'object' && String(obj[key] || '').trim() !== '';
     if (gains && typeof gains === 'object') {
@@ -789,14 +816,14 @@ function getMeasurementAutoSubSummary(measurement = {}) {
                 const dv = hasDelayKey(delays, 'sub1') ? delays.sub1 : null;
                 const pv = hasPolKey(pols, 'sub1') ? pols.sub1 : null;
                 const text = compactSubText(sub1Gain, dv, pv);
-                if (text) parts.push(`Sub 1 ${text}`);
+                if (text) parts.push(`${sub1Label} ${text}`);
             }
             const sub2Gain = gains.sub2;
             if (sub2Gain !== undefined && sub2Gain !== null && String(sub2Gain) !== '') {
                 const dv = hasDelayKey(delays, 'sub2') ? delays.sub2 : null;
                 const pv = hasPolKey(pols, 'sub2') ? pols.sub2 : null;
                 const text = compactSubText(sub2Gain, dv, pv);
-                if (text) parts.push(`Sub 2 ${text}`);
+                if (text) parts.push(`${sub2Label} ${text}`);
             }
         }
     }
@@ -809,8 +836,8 @@ function getMeasurementAutoSubSummary(measurement = {}) {
                 parts.push(p ? `${label} ${d} · ${p}` : `${label} ${d}`);
             };
             if (hasDelayKey(delays, 'sub')) fmt('sub', 'Sub');
-            if (hasDelayKey(delays, 'sub1')) fmt('sub1', 'Sub 1');
-            if (hasDelayKey(delays, 'sub2')) fmt('sub2', 'Sub 2');
+            if (hasDelayKey(delays, 'sub1')) fmt('sub1', sub1Label);
+            if (hasDelayKey(delays, 'sub2')) fmt('sub2', sub2Label);
         }
     }
     if (!parts.length) return null;
@@ -984,6 +1011,7 @@ function hybridSpeakerName(channel) {
         getDefaultMeasurementPeqFilter,
         getDefaultMeasurementPeqState,
         getDefaultMeasurementConvolverState,
+        hasResettableMeasurementSettings,
         getMeasurementConvolverDraftPhaseMode,
         getMeasurementPeqNameSuffix,
         getMeasurementConvolverMultiSourceWarning,

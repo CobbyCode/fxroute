@@ -41,13 +41,23 @@
         presetEntry('+3'),
         presetEntry('+6'),
         presetEntry('Combo', { source_presets: ['+3', 'PEQ', 'Conv LR HybAlign BK 30-3000Hz -7dB'] }),
+        presetEntry('Co LR Min Neutral 20-1283Hz -3dB', { convolver: true }),
+        presetEntry('Conv LR HybAlign BK 20-12000Hz -3dB 044321', { convolver: true }),
         presetEntry('Conv LR HybAlign BK 30-10000Hz -7dB', { convolver: true }),
         presetEntry('Conv LR HybAlign BK 30-12000Hz -7dB', { convolver: true }),
         presetEntry('Conv LR HybAlign BK 30-3000Hz -7dB', { convolver: true }),
+        presetEntry('Conv LR HybAlign Custom-House-Curve-1 30-12001Hz -3dB 134157', { convolver: true }),
+        presetEntry('Conv LR HybAlign Harman 30-12001Hz -2.5dB 134143', { convolver: true }),
+        presetEntry('Conv LR HybAlign Neutral 30-12000Hz -2dB 115915', { convolver: true }),
+        presetEntry('Conv LR HybAlign Neutral 30-12000Hz -2dB 124911', { convolver: true }),
+        presetEntry('Conv LR HybAlign Neutral 30-12001Hz -2dB 134132', { convolver: true }),
+        presetEntry('Conv LR Min Gentle-bass-shelf-house-curve 30-250Hz -4dB 125139', { convolver: true }),
         presetEntry('Conv LR MinAlign Harman 30-300Hz -7dB', { convolver: true }),
+        presetEntry('Conv R Lin Neutral 20-250Hz -4dB 140654', { convolver: true }),
         presetEntry('PEQ', { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } }),
+        presetEntry('PEQ LR Measurement 2f 0tewt', { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } }),
     ];
-    let dspActivePreset = 'Conv LR MinAlign Harman 30-300Hz -7dB';
+    let dspActivePreset = 'Conv LR HybAlign BK 20-12000Hz -3dB 044321';
     let dspExtras = {
         limiter: { enabled: true, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
         headroom: { enabled: false, params: { gainDb: -3 } },
@@ -57,7 +67,10 @@
         loudness: { enabled: false, params: { strength: 2, fftSize: 16384, volumeDb: 0 } },
         tone_effect: { enabled: false, mode: 'crystalizer' },
     };
-    let dspCompare = { presetA: 'Neutral', presetB: 'Conv LR MinAlign Harman 30-300Hz -7dB', activeSide: 'B' };
+    // The A/B compare block mirrors the seeded Global bank slots, so the card
+    // and the legacy compare payload never name different presets. The chain
+    // itself starts on the .104 active preset.
+    let dspCompare = { presetA: 'Neutral', presetB: 'Conv LR HybAlign BK 30-3000Hz -7dB', activeSide: 'B' };
 
     // Audible offset for the meter sim: only the +3/+6 dB filter
     // presets lift the visible level (their real chains hold a broadband
@@ -98,26 +111,34 @@
     syncDspToState();
 
     function dspPayload() {
+        // The IR pool mirrors the .104 kernel stock, so a preset that carries a
+        // convolver always finds its impulse response.
+        const irs = dspPresets.filter(pr => pr.convolver).map(pr => ({
+            name: pr.name, basename: pr.name, path: '/demo/irs/' + pr.name + '.irs', size: 262644,
+        }));
+        irs.push({
+            name: 'Conv R Lin Neutral 20-250Hz -4dB 140654.wav', basename: 'Conv R Lin Neutral 20-250Hz -4dB 140654',
+            path: '/demo/irs/Conv R Lin Neutral 20-250Hz -4dB 140654.wav', size: 1048576,
+        });
         return {
             available: true,
             presets: dspPresets,
             preset_count: dspPresets.length,
             active_preset: dspActivePreset,
-            irs: [
-                { name: 'Conv LR HybAlign BK 30-10000Hz -7dB', basename: 'Conv LR HybAlign BK 30-10000Hz -7dB', path: '/demo/irs/Conv LR HybAlign BK 30-10000Hz -7dB.irs', size: 262428 },
-                { name: 'Conv LR HybAlign BK 30-12000Hz -7dB', basename: 'Conv LR HybAlign BK 30-12000Hz -7dB', path: '/demo/irs/Conv LR HybAlign BK 30-12000Hz -7dB.irs', size: 262644 },
-                { name: 'Conv LR HybAlign BK 30-3000Hz -7dB', basename: 'Conv LR HybAlign BK 30-3000Hz -7dB', path: '/demo/irs/Conv LR HybAlign BK 30-3000Hz -7dB.irs', size: 262644 },
-                { name: 'Conv LR MinAlign Harman 30-300Hz -7dB', basename: 'Conv LR MinAlign Harman 30-300Hz -7dB', path: '/demo/irs/Conv LR MinAlign Harman 30-300Hz -7dB.irs', size: 262644 },
-            ],
+            irs,
             global_extras: dspExtras,
             global_extras_excluded_presets: [],
             compare: dspCompare,
-            mode: 'runtime',
+            mode: 'native',
             paths: {},
         };
     }
 
     // ── Audio output model ──────────────────────────────────────────────
+    // Crossover of the seeded demo system: mains split into two ways at
+    // 3 kHz, subs fed by an 80 Hz bass-management split.
+    const DEMO_CROSSOVER_HZ = 3000;
+    const DEMO_BASS_HZ = 80;
     const SCARLETT_TIERS = [
         { id: '18ch', channels: 18, rates: [44100, 48000], probe_rate: 48000 },
         { id: '14ch', channels: 14, rates: [88200, 96000], probe_rate: 96000 },
@@ -150,11 +171,12 @@
         { key: 'alsa_output.pci-0000_00_1f.3.analog-stereo', name: 'Built-in Audio', label: 'Built-in Audio', description: 'Analog Stereo', channels: 2, active_rate: 48000, selectable: true, default: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-DEMO_DAC-00.analog-stereo', name: 'Demo USB DAC', label: 'Demo USB DAC', description: 'Hi-Res USB Audio', channels: 2, active_rate: 96000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] },
         { key: 'alsa_output.usb-MOTU_M4-00.analog-surround-40', name: 'MOTU M4', label: 'MOTU M4', description: '4-Channel USB Audio Interface', channels: 4, active_rate: 48000, selectable: true, supported_rates: [44100, 48000, 88200, 96000, 176400, 192000] },
-        { key: SCARLETT_KEY, name: 'Focusrite Scarlett 16i16', label: 'Focusrite Scarlett 16i16', description: '18-Channel USB Audio Interface', channels: 18, active_rate: 44100, selectable: true, supported_rates: [44100, 48000] },
+        { key: SCARLETT_KEY, name: 'Focusrite Scarlett 16i16 4th Gen Pro', label: 'Focusrite Scarlett 16i16 4th Gen Pro', description: '18-Channel USB Audio Interface', channels: 18, active_rate: 48000, selectable: true, supported_rates: [44100, 48000] },
     ];
-    // The demo starts on the 4-channel interface so the default 2.2 mode has
-    // the channels it needs (Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2).
-    let selectedOutputKeyCache = OUTPUTS[2].key;
+    // The demo starts on the 18-channel Scarlett, the .104 system: a 2-way
+    // crossover plus two subs fits its 6 routed outputs, and its multichannel
+    // capture input is the one that offers the split Electrical Ref L/R pair.
+    let selectedOutputKeyCache = SCARLETT_KEY;
     function selectedOutput() {
         return OUTPUTS.find(o => o.key === selectedOutputKeyCache) || OUTPUTS[0];
     }
@@ -233,26 +255,73 @@
         persistent_id: 'device-serial:Focusrite_Scarlett_16i16_4th_Gen|node-name:alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-input',
     };
     const CAPTURE_INPUTS = [UMIK1_CAPTURE_INPUT, STEREO_CAPTURE_INPUT, MULTICHANNEL_CAPTURE_INPUT];
+    // The real store's scope note: the sweep is a host-local measurement
+    // through the active output and the selected microphone, independent of
+    // the active DSP preset. The demo serves the same wording.
+    const DEMO_MEASUREMENT_SCOPE_NOTE = 'FXRoute measures with a host-local sweep through the active PipeWire output and selected microphone input. The result is a practical response trace for comparison and PEQ drafting, independent of the active DSP preset.';
     function captureInputForOutputKey(key) {
         return key === SCARLETT_OUTPUT_KEY ? MULTICHANNEL_CAPTURE_INPUT : STEREO_CAPTURE_INPUT;
     }
     let measurementCaptureInput = captureInputForOutputKey(selectedOutputKeyCache);
     // Electrical reference channels the demo persists for the selected capture.
-    // Captures with three or more channels (MOTU M4, Scarlett 16i16) expose
-    // the split Ref L / R pair on their line inputs 3/4; smaller captures
-    // keep the single shared reference.
+    // Captures with three or more channels expose the split Ref L / R view on
+    // their line inputs; smaller captures keep the single shared reference.
+    // The defaults stay inside the capture's own channel count: the Scarlett
+    // lands on the left/right line inputs 7/8, which is what the real
+    // alignment run used, and the 4-channel MOTU M4 on 3/4.
     function measurementReferenceSettings() {
-        if (measurementCaptureInput.channels >= 3) {
+        const channels = Number(measurementCaptureInput.channels) || 0;
+        if (channels >= 8) {
             return {
-                selectedReferenceInputChannel: '3',
+                selectedReferenceInputChannel: '8',
+                selectedReferenceInputChannelLeft: '7',
+                selectedReferenceInputChannelRight: '8',
+            };
+        }
+        if (channels >= 4) {
+            return {
+                selectedReferenceInputChannel: '4',
                 selectedReferenceInputChannelLeft: '3',
                 selectedReferenceInputChannelRight: '4',
             };
         }
+        if (channels >= 3) {
+            return {
+                selectedReferenceInputChannel: '3',
+                selectedReferenceInputChannelLeft: '3',
+                selectedReferenceInputChannelRight: '3',
+            };
+        }
         return {
-            selectedReferenceInputChannel: '2',
+            selectedReferenceInputChannel: channels >= 2 ? '2' : '',
             selectedReferenceInputChannelLeft: '',
             selectedReferenceInputChannelRight: '',
+        };
+    }
+    // Live measurement settings. The real store persists these, and the
+    // frontend reads them back from the PATCH response, so a deliberate
+    // capture choice has to survive the round trip in the demo too.
+    let measurementSettings = {
+        selectedInputId: measurementCaptureInput.id,
+        selectedInputKey: measurementCaptureInput.persistent_id,
+        selectedInputConfigured: true,
+        selectedMicInputChannel: '1',
+        ...measurementReferenceSettings(),
+        measurementSampleRate: 48000,
+    };
+    function setMeasurementCaptureInput(input, force) {
+        if (!input || (!force && input.id === measurementSettings.selectedInputId)) return;
+        measurementCaptureInput = input;
+        measurementSettings = {
+            ...measurementSettings,
+            selectedInputId: input.id,
+            selectedInputKey: input.persistent_id,
+            selectedInputConfigured: true,
+            // A different capture means a different channel layout: reset the
+            // mic to input 1 and the reference to that device's defaults.
+            selectedMicInputChannel: '1',
+            ...measurementReferenceSettings(),
+            measurementSampleRate: Number(input.measurement_sample_rate) || 48000,
         };
     }
     let outputMode = {
@@ -260,18 +329,21 @@
         available: true,
         required_channels: 4,
         effective_output_channels: 4,
+        crossover_frequency_hz: DEMO_BASS_HZ,
+        slope: 'LR24',
+        main_highpass_enabled: true,
         routing: { main_pair: [1, 2], sub_pair: [3, 4], status: 'Out 1/2 Main · Out 3 Sub 1 · Out 4 Sub 2' },
-        subwoofer: { crossover_frequency_hz: 80, slope: 'LR24', main_highpass_enabled: true, sub_level_db: 0.0, sub_alignment_ms: 2.8, sub_polarity: 'normal' },
+        subwoofer: { crossover_frequency_hz: DEMO_BASS_HZ, slope: 'LR24', main_highpass_enabled: true, sub_level_db: -1.5, sub_alignment_ms: 2.8, sub_polarity: 'normal' },
         subwoofers: {
-            sub1: { level_db: 0.0, alignment_ms: 2.8, polarity: 'normal' },
-            sub2: { level_db: 0.0, alignment_ms: 2.45, polarity: 'normal' },
+            sub1: { level_db: -1.5, alignment_ms: 2.8, polarity: 'normal', crossover_frequency_hz: DEMO_BASS_HZ, slope: 'LR24' },
+            sub2: { level_db: 0.5, alignment_ms: 0.0, polarity: 'normal', crossover_frequency_hz: DEMO_BASS_HZ, slope: 'LR24' },
         },
         // Derived 2.2 delays: the DSP computes Main / Sub 1 / Sub 2 from the
         // measured alignment, shown in the subwoofer card. Seeded with the
         // current demo alignment so the card reads like a configured system.
         derived_main_delay_ms: 0.0,
         derived_sub1_delay_ms: 2.8,
-        derived_sub2_delay_ms: 2.45,
+        derived_sub2_delay_ms: 0.0,
     };
 
     function normalizeSub(input = {}) {
@@ -293,6 +365,274 @@
     }
     function normalizeOutputModeName(mode) {
         return ['stereo', 'subwoofer-2.1', 'subwoofer-2.2', 'subwoofer-2.2-stereo'].includes(mode) ? mode : 'stereo';
+    }
+
+    // ── Output System (v2 demo state) ─────────────────────────────
+    // Multichannel modes, role routing and area banks for the Output
+    // System settings section, the A/B bank selector and the Crossover
+    // tile. Mutations apply to this demo state with revision guards,
+    // mirroring the backend contracts (409/400); measurement locking is
+    // not simulated here.
+    const speakerWays = ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low',
+        'right_low_mid', 'right_mid', 'right_high'];
+    const subRoles = ['sub_l', 'sub_r', 'sub1', 'sub2'];
+    function outputStateRoles(mode) {
+        return [...(outputStateStore.modes[mode].crossover_enabled ? speakerWays : ['main_l', 'main_r']),
+            ...(mode === 'stereo-sub' ? subRoles : [])];
+    }
+    const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
+    const bankPairs = { main: ['main_l', 'main_r'], low: ['left_low', 'right_low'],
+        low_mid: ['left_low_mid', 'right_low_mid'], mid: ['left_mid', 'right_mid'],
+        high: ['left_high', 'right_high'], sub: ['sub_l', 'sub_r'] };
+    function demoBankDefinitions(roles) {
+        const pending = new Set(roles);
+        const definitions = { global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' } };
+        for (const [id, pair] of Object.entries(bankPairs)) {
+            if (!pair.every(role => pending.has(role))) continue;
+            definitions[id] = { id, label: `${id.split('_').map(word => word[0].toUpperCase() + word.slice(1)).join('-')} L/R`,
+                roles: pair, channel_mode: 'stereo' };
+            pair.forEach(role => pending.delete(role));
+        }
+        for (const role of pending) definitions[role] = { id: role,
+            label: role.replace(/^sub(\d+)$/, 'Sub $1').replace(/^center$/, 'Center'), roles: [role], channel_mode: 'mono' };
+        return definitions;
+    }
+    function demoBankSummary(bindings) {
+        const common = values => new Set(values).size === 1 ? values[0] : null;
+        return { preset: common(bindings.map(bank => bank.preset)), preset_a: common(bindings.map(bank => bank.preset_a)),
+            preset_b: common(bindings.map(bank => bank.preset_b)),
+            active_side: common(bindings.map(bank => bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null)),
+            can_a: bindings.length > 0, can_b: bindings.length > 0 && bindings.every(bank => !!bank.preset_b) };
+    }
+    function updateDemoBanks(config, roles, mutation) {
+        const slot = mutation.active_side || demoBankSummary(roles.map(role => config.banks[role])).active_side || 'A';
+        if (!['A', 'B'].includes(slot)) throw new Error('Compare side must be A or B');
+        const updated = {};
+        for (const role of roles) {
+            const bank = { ...config.banks[role] };
+            for (const key of ['preset_a', 'preset_b']) if (key in mutation) bank[key] = mutation[key];
+            if (mutation.preset) { bank[`preset_${slot.toLowerCase()}`] = mutation.preset; bank.preset = mutation.preset; }
+            else if (mutation.active_side) {
+                if (!bank[`preset_${slot.toLowerCase()}`]) throw new Error(`Compare side ${slot} has no assigned preset`);
+                bank.preset = bank[`preset_${slot.toLowerCase()}`];
+            }
+            if (bank.preset_a === bank.preset_b) throw new Error('Compare slots must use distinct presets');
+            updated[role] = bank;
+        }
+        Object.assign(config.banks, updated);
+    }
+    const defaultProcessing = () => ({ highpass: null, lowpass: null, level_db: 0.0, alignment_ms: 0.0, polarity: 'normal' });
+    const lr24 = (frequency_hz) => ({ family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz });
+    const defaultBassManagement = () => ({ frequency_hz: 80, main_highpass_enabled: true,
+        family: 'linkwitz-riley', slope_db_oct: 24, sub_link: true, sub_filters: {} });
+    // Mirror of the backend rule: Mono, Dual-Mono and a coupled Stereo pair run
+    // the shared sub crossover; only an unlinked Stereo pair resolves per side.
+    const bassCrossoverForSide = (bass, side, stereo) => {
+        const source = bass || {};
+        const shared = { family: source.family || 'linkwitz-riley',
+            slope_db_oct: source.slope_db_oct || 24, frequency_hz: source.frequency_hz };
+        if (!stereo || source.sub_link !== false) return shared;
+        const override = (source.sub_filters || {})[side];
+        if (!override) return shared;
+        return { family: override.family, slope_db_oct: override.slope_db_oct, frequency_hz: override.frequency_hz };
+    };
+    const subSideForRole = (role) => {
+        const name = String(role || '');
+        return (name.startsWith('left_') || name === 'main_l' || name === 'sub_l') ? 'left' : 'right';
+    };
+    // Seeded with the configured .104 system, not an empty chain: a 2-way
+    // LR24 crossover at 3 kHz across an 18-channel Scarlett in Stereo + Sub
+    // mode with two subs behind an 80 Hz bass-management split.
+    // Compare slots are stored per role and projected to banks in the
+    // catalog, like the backend: Neutral on A, Direct on B, with the low,
+    // high and both sub ways actually holding B.
+    const demoWayBank = (onB) => ({ preset: onB ? 'Direct' : 'Neutral', preset_a: 'Neutral', preset_b: onB ? 'Direct' : null, active_side: onB ? 'B' : 'A' });
+    const stereoSubBanks = () => ({
+        global: { preset: 'Neutral', preset_a: 'Neutral', preset_b: 'Conv LR HybAlign BK 30-3000Hz -7dB', active_side: 'A' },
+        main_l: neutralBank(), main_r: neutralBank(),
+        left_low: demoWayBank(true), right_low: demoWayBank(true),
+        left_low_mid: neutralBank(), right_low_mid: neutralBank(),
+        left_mid: neutralBank(), right_mid: neutralBank(),
+        left_high: demoWayBank(true), right_high: demoWayBank(true),
+        sub_l: neutralBank(), sub_r: neutralBank(),
+        sub1: demoWayBank(true), sub2: demoWayBank(true),
+    });
+    const wayProcessing = (lowpass_hz, level_db, alignment_ms) => ({
+        ...defaultProcessing(),
+        lowpass: lowpass_hz ? lr24(lowpass_hz) : null,
+        level_db,
+        alignment_ms,
+    });
+    const wayBankProcessing = (highpass_hz, level_db, alignment_ms) => ({
+        ...defaultProcessing(),
+        highpass: highpass_hz ? lr24(highpass_hz) : null,
+        level_db,
+        alignment_ms,
+    });
+    // Both ways start flat: the demo opens on a measured, configured system
+    // whose speaker alignment has not run yet, so an alignment run really
+    // moves the Crossover card's way trim and the revision (see
+    // applySpeakerAlignProposal).
+    const stereoSubProcessing = () => ({
+        main_l: defaultProcessing(), main_r: defaultProcessing(),
+        left_low: wayProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        left_low_mid: wayProcessing(800, 0.0, 0.0),
+        left_mid: wayProcessing(800, 0.0, 0.0),
+        left_high: wayBankProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        right_low: wayProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        right_low_mid: wayProcessing(800, 0.0, 0.0),
+        right_mid: wayProcessing(800, 0.0, 0.0),
+        right_high: wayBankProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        sub_l: defaultProcessing(), sub_r: defaultProcessing(),
+        sub1: { ...defaultProcessing(), level_db: -1.5, alignment_ms: 2.8 },
+        sub2: { ...defaultProcessing(), level_db: 0.5, alignment_ms: 0.0 },
+    });
+    const demoBassManagement = () => ({
+        ...defaultBassManagement(),
+        frequency_hz: DEMO_BASS_HZ,
+        sub_filters: { left: lr24(DEMO_BASS_HZ), right: lr24(DEMO_BASS_HZ) },
+    });
+    const outputStateStore = {
+        // Revision of the seeded .104 system. Every accepted mutation and the
+        // Speaker Auto Alignment commit bump it, like the real output state.
+        revision: 896,
+        active_mode: 'stereo-sub',
+        modes: {
+            stereo: {
+                crossover_enabled: false,
+                selected_bank: 'global',
+                banks: { global: neutralBank(), main_l: neutralBank(), main_r: neutralBank() },
+                processing: { main_l: defaultProcessing(), main_r: defaultProcessing() },
+                bass_management: defaultBassManagement(),
+                extras: {},
+                routing: {},
+            },
+            'stereo-sub': {
+                crossover_enabled: true,
+                selected_bank: 'global',
+                banks: stereoSubBanks(),
+                processing: stereoSubProcessing(),
+                bass_management: demoBassManagement(),
+                extras: {},
+                routing: {},
+            },
+        },
+    };
+    // Out 1/2 mains, 3/4 subs, 5/6 tweeters, 7..18 silent — the .104 routing.
+    const DEMO_ROUTING_TAIL = 'off';
+    outputStateStore.modes.stereo.routing[SCARLETT_KEY] =
+        ['main_l', 'main_r', ...Array(16).fill(DEMO_ROUTING_TAIL)];
+    outputStateStore.modes['stereo-sub'].routing[SCARLETT_KEY] =
+        ['left_low', 'right_low', 'sub1', 'sub2', 'left_high', 'right_high', ...Array(12).fill(DEMO_ROUTING_TAIL)];
+    function outputStateTopology(mode, assignments) {
+        const enabled = outputStateStore.modes[mode].crossover_enabled;
+        const roles = outputStateRoles(mode).filter(role => assignments.includes(role));
+        const subs = roles.filter(r => ['sub_l', 'sub_r', 'sub1', 'sub2'].includes(r));
+        const subMode = !subs.length ? 'none' : subs.length === 1 ? 'mono'
+            : subs.length === 2 && subs.includes('sub_l') && subs.includes('sub_r') ? 'stereo'
+            : subs.length === 2 ? 'dual-mono' : 'unsupported';
+        const issues = [];
+        let wayCount = null;
+        if (!enabled) {
+            if (!roles.includes('main_l') || !roles.includes('main_r')) issues.push('Stereo routing requires Main L and Main R');
+            if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
+        } else {
+            const ways = ['low', 'low_mid', 'mid', 'high'];
+            const left = roles.filter(r => r.startsWith('left_')).map(r => r.slice(5));
+            const right = roles.filter(r => r.startsWith('right_')).map(r => r.slice(6));
+            const complete = [['low', 'high'], ['low', 'mid', 'high'], ways];
+            const leftOk = complete.some(set => JSON.stringify(set) === JSON.stringify(left));
+            const rightOk = complete.some(set => JSON.stringify(set) === JSON.stringify(right));
+            if (!leftOk || !rightOk || JSON.stringify(left) !== JSON.stringify(right)) {
+                issues.push('Crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways');
+            } else {
+                wayCount = left.length;
+            }
+            if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
+        }
+        return { mode, crossover_enabled: enabled, roles, sub_roles: subs, sub_mode: subMode,
+            left_ways: roles.filter(role => role.startsWith('left_')),
+            right_ways: roles.filter(role => role.startsWith('right_')), way_count: wayCount, issues };
+    }
+    function outputStateCatalog() {
+        const out = outputEntry(selectedOutput());
+        const key = out.key;
+        const channels = Number(out.channels || 0);
+        const modes = {};
+        for (const mode of ['stereo', 'stereo-sub']) {
+            const config = outputStateStore.modes[mode];
+            const routing = (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+            const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length));
+            const banks = {};
+            for (const [id, definition] of Object.entries(demoBankDefinitions(topology.roles))) {
+                banks[id] = { ...definition, ...demoBankSummary(definition.roles.map(role => config.banks[role])) };
+            }
+            const pureStereo = topology.roles.length === 2 && topology.roles.includes('main_l') && topology.roles.includes('main_r');
+            modes[mode] = {
+                crossover_enabled: config.crossover_enabled,
+                selected_bank: pureStereo ? 'global' : (config.selected_bank === 'all' || banks[config.selected_bank] ? config.selected_bank : 'global'),
+                banks,
+                all_banks: demoBankSummary(topology.roles.map(role => config.banks[role])),
+                processing: JSON.parse(JSON.stringify(config.processing)),
+                bass_management: { ...config.bass_management },
+                extras: JSON.parse(JSON.stringify(config.extras)),
+                topology,
+            };
+        }
+        const deviceRouting = {};
+        for (const mode of ['stereo', 'stereo-sub']) {
+            deviceRouting[mode] = (outputStateStore.modes[mode].routing[key]
+                || (outputStateStore.modes[mode].crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+        }
+        return {
+            status: 'ok', revision: outputStateStore.revision, active_mode: outputStateStore.active_mode,
+            device: { key, channels, routing: deviceRouting },
+            modes,
+            capabilities: {
+                modes: ['stereo', 'stereo-sub'],
+                roles: { stereo: outputStateRoles('stereo'), 'stereo-sub': outputStateRoles('stereo-sub') },
+                filter_families: { 'linkwitz-riley': [12, 24, 36, 48, 60, 72], butterworth: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72], bessel: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72] },
+                max_slope_db_oct: 72,
+                max_biquads_per_output: 32,
+            },
+        };
+    }
+    // Assigns a just-created preset to its bank when the request carries
+    // a bank target (multipart fields arrive as strings, JSON as
+    // numbers). Mirrors the backend binding contract.
+    function assignDemoBankTarget(body, createdName) {
+        const mode = String(body.bank_mode || '');
+        const bankId = String(body.bank_id || '');
+        if (!mode && !bankId) return null;
+        if (!mode || !bankId) return { error: 'bank_mode and bank_id are required together', status: 400 };
+        const revision = Number(body.expected_revision);
+        if (!Number.isInteger(revision) || revision < 0) {
+            return { error: 'expected_revision must be a non-negative integer', status: 400 };
+        }
+        const config = outputStateStore.modes[mode];
+        const bank = config && outputStateCatalog().modes[mode].banks[bankId];
+        if (!bank) return { error: `Unknown bank ${bankId}`, status: 400 };
+        if (revision !== outputStateStore.revision) {
+            return { conflict: true, created: createdName };
+        }
+        updateDemoBanks(config, bank.roles, { preset: createdName });
+        outputStateStore.revision += 1;
+        return { assigned: true, mode, bank_id: bankId, revision: outputStateStore.revision };
+    }
+    function demoButterworthDb(frequency, cutoff, slopeDbOct, kind) {
+        const order = Math.max(1, Math.round(slopeDbOct / 6));
+        const ratio = kind === 'lowpass' ? frequency / cutoff : cutoff / frequency;
+        if (ratio <= 0) return 0;
+        return -10 * Math.log10(1 + Math.pow(ratio, 2 * order));
+    }
+    function demoCrossoverDb(frequency, definition, kind) {
+        if (!definition) return 0;
+        const { family, slope_db_oct: slope, frequency_hz: cutoff } = definition;
+        if (family === 'linkwitz-riley') {
+            const half = demoButterworthDb(frequency, cutoff, slope / 2, kind);
+            return 2 * half;
+        }
+        return demoButterworthDb(frequency, cutoff, slope, kind);
     }
 
     function scarlettOutputEntry() {
@@ -1010,6 +1350,51 @@
     const autoSubJobs = {};
     let autoSubSeq = 0;
 
+    // Job discovery after a reload. The backend keeps its jobs in a
+    // process-wide map, so GET .../current answers with the newest live or
+    // briefly retained job and a finished one is dropped after
+    // AUTO_SUB_RETENTION_MS. The demo has no persistence layer, so the newest
+    // job is parked in sessionStorage instead: a reloaded page finds its run
+    // again and the measurement panel reattaches to it, exactly like the
+    // product. Everything else about the job stays in memory.
+    const AUTO_SUB_RETENTION_MS = 600000;
+    const AUTO_SUB_STORAGE_KEY = 'fxroute.demo.autosub.job';
+
+    function readStoredAutoSubJob() {
+        try {
+            if (typeof sessionStorage === 'undefined') return null;
+            const stored = sessionStorage.getItem(AUTO_SUB_STORAGE_KEY);
+            const job = stored ? JSON.parse(stored) : null;
+            if (!job || !job.id || !job.startedAt || !job.mode) return null;
+            return job;
+        } catch (e) { return null; }
+    }
+
+    function storeAutoSubJob(job) {
+        try {
+            if (typeof sessionStorage === 'undefined') return;
+            if (job) sessionStorage.setItem(AUTO_SUB_STORAGE_KEY, JSON.stringify(job));
+            else sessionStorage.removeItem(AUTO_SUB_STORAGE_KEY);
+        } catch (e) { /* storage is optional */ }
+    }
+
+    // A job past its retention is gone, in memory and in the session record
+    // that would otherwise restore it on the next reload.
+    function dropAutoSubJob(id) {
+        delete autoSubJobs[id];
+        const stored = readStoredAutoSubJob();
+        if (!stored || stored.id === id) storeAutoSubJob(null);
+    }
+
+    // A restored job keeps running on its own elapsed time, so a reload
+    // mid-run reattaches a run that is already further along.
+    (function restoreAutoSubJob() {
+        const job = readStoredAutoSubJob();
+        if (!job) return;
+        autoSubJobs[job.id] = job;
+        autoSubSeq = Math.max(autoSubSeq, Number(String(job.id).split('_').pop()) || 0);
+    })();
+
     // Real .104 auto-sub runs, keyed by output mode + target key. Each run
     // holds its Before/After fixture pairs exactly as saved on .104: one
     // single-trace file per channel (left/right), so the demo replays the
@@ -1195,6 +1580,11 @@
         const job = autoSubJobs[id];
         if (!job) return null;
         if (job.status === 'cancelled') {
+            // A cancelled run settles at once and is retained from there.
+            if (!job.finishedAt) {
+                job.finishedAt = Date.now();
+                storeAutoSubJob(job);
+            }
             return { id, status: 'cancelled', message: 'Auto Sub Optimize cancelled.' };
         }
         const mode = job.mode;
@@ -1277,7 +1667,192 @@
                 progress: { current: 3, total: 4, stage: 'fine', sweep_current: 1 + Math.floor(t * 3), sweep_total: 3 },
             };
         }
+        // Terminal stage: the run finished at the stage script's end, which
+        // is when the backend schedules the job's retention cleanup.
+        if (!job.finishedAt) {
+            job.finishedAt = job.startedAt + (is22 ? 8800 : 8000);
+            storeAutoSubJob(job);
+        }
         return autoSubResult(job);
+    }
+
+    // The newest job a reloaded page may reattach to: a live one, or a
+    // finished one still inside its retention window. Mirrors
+    // get_current_auto_sub_optimize_job() plus the backend's 10 minute
+    // retention, so an old run is not rediscovered forever.
+    function currentAutoSubJobPayload() {
+        const now = Date.now();
+        const ids = Object.keys(autoSubJobs);
+        for (const id of ids) {
+            const job = autoSubJobs[id];
+            if (job.finishedAt && now - job.finishedAt >= AUTO_SUB_RETENTION_MS) dropAutoSubJob(id);
+        }
+        for (let index = ids.length - 1; index >= 0; index -= 1) {
+            if (autoSubJobs[ids[index]]) return autoSubJobPayload(ids[index]);
+        }
+        return null;
+    }
+
+    // Demo measurement file stock: the .104 mic calibration is the active file
+    // and no house curve is loaded yet. Uploads/deletes only mutate these
+    // lists in memory.
+    S.demoCalibrationOptions = S.demoCalibrationOptions || [{ id: 'MM1CES_allein_00d.txt', filename: 'MM1CES_allein_00d.txt' }];
+    S.demoHouseCurveOptions = S.demoHouseCurveOptions || [];
+    S.demoActiveCalibrationId = (S.demoActiveCalibrationId === undefined) ? 'MM1CES_allein_00d.txt' : S.demoActiveCalibrationId;
+
+    // ── Speaker Align simulation ────────────────────────────────────────
+    // One staged run per side, on top of the .104 alignment fixtures
+    // (demo/data/alignment.js): the 2-way run for a 2-way topology, the
+    // real 3-way run for a 3-way one. The job walks the real state machine —
+    // queued → acquiring (shared planning take, then one take per way) →
+    // confirming (verification take) → committed — with the backend's own
+    // stage messages, so the panel's progress line reads like a live run.
+    // On commit the proposal is really applied to the output state, so the
+    // Crossover card's way trim and the revision follow the run.
+    const speakerAlignJobs = {};
+    let speakerAlignSeq = 0;
+    const SPEAKER_ALIGN_FIXTURE = window.FXROUTE_DEMO_ALIGNMENT || null;
+
+    // Way roles of the side, in configured low→high order. Speaker Align is
+    // available from the Global bank of a crossover with 2..4 ways per side,
+    // so the roles come from the routed topology, not from every entry the
+    // processing table happens to carry.
+    function speakerAlignRoles(side) {
+        const config = outputStateStore.modes[outputStateStore.active_mode] || {};
+        const routed = (config.routing && config.routing[selectedOutputKeyCache]) || [];
+        const roles = outputStateRoles(outputStateStore.active_mode)
+            .filter(role => role.startsWith(`${side}_`) && routed.includes(role));
+        if (roles.length >= 2 && roles.length <= 4) return roles;
+        return [`${side}_low`, `${side}_high`];
+    }
+    // Stage script: the shared planning take counts as step 1, so a two-way
+    // side measures three takes. Mirrors the backend's progress indices and
+    // its role spelling (`right_low` -> "right low").
+    function speakerAlignScript(side) {
+        const roles = speakerAlignRoles(side);
+        const total = roles.length + 1;
+        const steps = [
+            { after: 900, status: 'queued', message: 'Speaker alignment queued.' },
+            { after: 2400, status: 'acquiring', message: 'Measuring speaker ways…' },
+            { after: 5200, status: 'acquiring', message: `Measuring ${side} ways (1/${total})…` },
+        ];
+        roles.forEach((role, index) => {
+            steps.push({
+                after: 8200 + index * 2200,
+                status: 'acquiring',
+                message: `Measuring ${role.replace(/_/g, ' ')} (${index + 2}/${total})…`,
+            });
+        });
+        const confirmAt = 8200 + roles.length * 2200;
+        steps.push({ after: confirmAt, status: 'confirming', message: 'Confirming alignment acoustically…' });
+        steps.push({ after: confirmAt + 2600, status: 'confirming', message: `Verifying ${side} ways (1/1)…` });
+        return { steps, doneAt: confirmAt + 4800 };
+    }
+    // Apply a committed proposal to the demo output state, like the backend's
+    // commit: delay and level of every way of the side, then a new revision
+    // that the job reports and the takes are re-stamped with.
+    function applySpeakerAlignProposal(side, result) {
+        if (!result) return null;
+        const config = outputStateStore.modes[outputStateStore.active_mode];
+        if (!config) return null;
+        for (const role of speakerAlignRoles(side)) {
+            const processing = config.processing[role];
+            if (!processing) continue;
+            const delay = Number(result.proposal.added_delay_ms?.[role]);
+            const gain = Number(result.proposal.added_gain_db?.[role]);
+            if (Number.isFinite(delay)) processing.alignment_ms = Math.round((processing.alignment_ms + delay) * 1e5) / 1e5;
+            if (Number.isFinite(gain)) processing.level_db = Math.round((processing.level_db + gain) * 1e4) / 1e4;
+        }
+        outputStateStore.revision += 1;
+        result.committed_revision = outputStateStore.revision;
+        // The planning take was captured at the start revision; only the
+        // verification take saw the committed state.
+        const verification = (result.measurements || {}).after;
+        if (verification && verification.measurement_target) {
+            verification.measurement_target.revision = result.committed_revision;
+        }
+        return outputStateStore.revision;
+    }
+
+    function speakerAlignPayload(id, elapsedMs) {
+        const job = speakerAlignJobs[id];
+        if (!job) return null;
+        const elapsed = (elapsedMs != null) ? elapsedMs : (Date.now() - job.startedAt);
+        const base = speakerAlignBase(job);
+        // A requested cancel settles on real time, independently of the stage
+        // script the test drives with a synthetic elapsed value.
+        if (job.status === 'cancelling' && Date.now() - (job.cancelledAt || 0) >= 900) job.status = 'cancelled';
+        if (job.status === 'cancelling' || job.status === 'cancelled') {
+            return { ...base, status: job.status,
+                message: job.status === 'cancelling' ? 'Cancelling speaker alignment…' : 'Speaker alignment cancelled.',
+                result: null, error: null };
+        }
+        const stage = job.script.steps.find(step => elapsed < step.after);
+        if (stage) return { ...base, status: stage.status, message: stage.message, result: null, error: null };
+        if (!job.result) {
+            job.result = JSON.parse(JSON.stringify(job.fixtureResult));
+            if (job.dryRun) {
+                job.result.dry_run = true;
+                job.result.committed_revision = null;
+            } else {
+                applySpeakerAlignProposal(job.side, job.result);
+            }
+        }
+        return { ...base,
+            status: job.dryRun ? 'trial-done' : 'committed',
+            message: job.dryRun
+                ? (job.result.check.confirmed
+                    ? 'Trial alignment confirmed without committing.'
+                    : 'Trial alignment did not confirm; nothing changed.')
+                : `Committed speaker alignment at revision ${job.result.committed_revision}.`,
+            result: job.result, error: null };
+    }
+    function speakerAlignBase(job) {
+        return { id: job.id, side: job.side, dry_run: !!job.dryRun, params: job.params };
+    }
+    // A run for a side the fixture does not cover: still a complete result,
+    // built from the seeded output state, so the panel never shows a hole.
+    function speakerAlignFallbackResult(side) {
+        const roles = speakerAlignRoles(side);
+        const arrival = {};
+        roles.forEach((role, index) => { arrival[role] = Number((1.4 + index * 2.6).toFixed(2)); });
+        const latest = Math.max(...Object.values(arrival));
+        const levels = {};
+        roles.forEach((role, index) => { levels[role] = Number((-10.2 - index * 1.1).toFixed(2)); });
+        const median = roles.map(role => levels[role]).sort((a, b) => a - b)[Math.floor(roles.length / 2) - (roles.length % 2 ? 0 : 1)] || 0;
+        const addedGain = {};
+        roles.forEach((role) => { addedGain[role] = Math.round((median - levels[role]) * 100) / 100; });
+        const addedDelay = {};
+        roles.forEach((role) => { addedDelay[role] = Math.round((latest - arrival[role]) * 1000) / 1000; });
+        const residual = 0.05;
+        const revision = outputStateStore.revision + 1;
+        return {
+            confirmed: true,
+            side,
+            sample_rate_hz: 48000,
+            check: { confirmed: true, reasons: [], warnings: [],
+                max_residual_ms: residual,
+                before_spread_ms: Math.round((latest - Math.min(...Object.values(arrival))) * 1000) / 1000,
+                after_arrival_ms: Object.fromEntries(roles.map(role => [role, latest])),
+                tolerance_ms: 0.25,
+                pairs: roles.length > 1 ? [{ roles: [roles[0], roles[1]], residual_within_pair_ms: residual }] : [],
+                gain_spread_db: 0.18,
+                before_gain_spread_db: Math.round(Math.abs(levels[roles[0]] - levels[roles[roles.length - 1]]) * 100) / 100,
+                gain_tolerance_db: 2.0,
+                way_isolation_db: Object.fromEntries(roles.map(role => [role, 19.0])),
+                isolation_margin_db: 19.0,
+                after_way_levels_db: Object.fromEntries(roles.map(role => [role, median])) },
+            proposal: { start_revision: outputStateStore.revision,
+                processing_fingerprint: 'demo-fingerprint', arrival_ms: arrival,
+                reference_role: roles[roles.length - 1], added_delay_ms: addedDelay,
+                way_levels_db: levels, added_gain_db: addedGain,
+                planning_isolation_db: Object.fromEntries(roles.map(role => [role, 18.0])),
+                arrival_source: 'shared-planning-take' },
+            measurements: null,
+            provenance: {},
+            committed_revision: revision,
+            dry_run: false,
+        };
     }
 
     // ── fetch interceptor ───────────────────────────────────────────────
@@ -1831,7 +2406,7 @@
                     // The capture interface follows the selected device, so
                     // picking the Scarlett 16i16 also switches the measurement
                     // setup to its 18-channel capture (split Ref L / R).
-                    measurementCaptureInput = captureInputForOutputKey(key);
+                    setMeasurementCaptureInput(captureInputForOutputKey(key), true);
                     // Derive the routing from the actually available channel
                     // count: a subwoofer mode on a device with fewer than 4
                     // channels falls back to Stereo (crossover/sub routing
@@ -1898,6 +2473,167 @@
             outputMode.effective_output_channels = Number(outNow.channels || 0);
             return j(outputMode);
         }
+
+        if (p === '/api/audio/output-state' && !post) {
+            return j(outputStateCatalog());
+        }
+        if (p === '/api/audio/output-state/apply' && post) {
+            const revision = body.expected_revision;
+            if (!Number.isInteger(revision) || revision < 0) return err('expected_revision must be a non-negative integer', 400);
+            if (revision !== outputStateStore.revision) {
+                return err({ code: 'revision-conflict', message: 'Output state changed', revision: outputStateStore.revision }, 409);
+            }
+            const mutation = body.mutation || {};
+            const mode = String(mutation.mode || '');
+            const config = outputStateStore.modes[mode];
+            if (!config) return err(`Unknown output mode: ${mutation.mode}`, 400);
+            const fail = (message) => err(message, 400);
+            if (mutation.kind === 'switch_mode') {
+                outputStateStore.active_mode = mode;
+            } else if (mutation.kind === 'set_crossover') {
+                if (typeof mutation.enabled !== 'boolean') return fail('Crossover enabled must be a boolean');
+                config.crossover_enabled = mutation.enabled;
+                const mapping = mutation.enabled ? { main_l: 'left_low', main_r: 'right_low' }
+                    : { left_low: 'main_l', right_low: 'main_r' };
+                const allowed = outputStateRoles(mode);
+                for (const [key, assignments] of Object.entries(config.routing)) {
+                    config.routing[key] = assignments.map(role => mapping[role] || (allowed.includes(role) ? role : 'off'));
+                    for (const role of config.routing[key]) {
+                        if (role !== 'off' && !config.banks[role]) {
+                            config.banks[role] = neutralBank();
+                            config.processing[role] = defaultProcessing();
+                        }
+                    }
+                }
+                if (config.selected_bank !== 'global' && config.selected_bank !== 'all'
+                    && !allowed.includes(config.selected_bank)
+                    && !Object.values(demoBankDefinitions(allowed)).some(definition => definition.id === config.selected_bank)) config.selected_bank = 'global';
+            } else if (mutation.kind === 'set_routing') {
+                const assignments = mutation.assignments;
+                if (!Array.isArray(assignments)) return fail('Routing assignments must be an array');
+                const allowed = new Set([...outputStateRoles(mode), 'off']);
+                if (assignments.some(role => !allowed.has(role))) return fail('Routing contains an invalid role');
+                const key = outputEntry(selectedOutput()).key;
+                config.routing[key] = [...assignments, ...(config.routing[key] || []).slice(assignments.length)];
+                for (const role of assignments) {
+                    if (role !== 'off' && !config.banks[role]) {
+                        config.banks[role] = neutralBank();
+                        config.processing[role] = defaultProcessing();
+                    }
+                }
+                const routedRoles = assignments.filter(role => role !== 'off');
+                const routedBanks = demoBankDefinitions(routedRoles);
+                let selected = config.selected_bank;
+                for (const definition of Object.values(routedBanks)) {
+                    if (definition.id === selected || definition.roles.includes(selected)) { selected = definition.id; break; }
+                }
+                const pureStereo = routedRoles.length === 2 && routedRoles.includes('main_l') && routedRoles.includes('main_r');
+                if (pureStereo || (selected !== 'all' && !routedBanks[selected])) selected = 'global';
+                config.selected_bank = selected;
+            } else if (mutation.kind === 'select_bank') {
+                const active = outputStateCatalog().modes[mode].banks;
+                const roles = outputStateCatalog().modes[mode].topology.roles;
+                if (roles.length === 2 && roles.includes('main_l') && roles.includes('main_r') && mutation.bank_id !== 'global') return fail('Pure stereo uses the Global bank; no bank selection is shown');
+                if (mutation.bank_id !== 'all' && !active[mutation.bank_id]) return fail(`Unknown bank ${mutation.bank_id}`);
+                config.selected_bank = mutation.bank_id;
+            } else if (mutation.kind === 'set_bank_preset') {
+                const bank = outputStateCatalog().modes[mode].banks[mutation.bank_id];
+                if (!bank) return fail(`Unknown bank ${mutation.bank_id}`);
+                try { updateDemoBanks(config, bank.roles, mutation); } catch (error) { return fail(error.message); }
+            } else if (mutation.kind === 'switch_all_banks') {
+                const roles = outputStateCatalog().modes[mode].topology.roles;
+                try { updateDemoBanks(config, roles, mutation); } catch (error) { return fail(error.message); }
+            } else if (mutation.kind === 'set_processing') {
+                const settings = config.processing[mutation.role];
+                if (!settings) return fail(`Unknown role ${mutation.role}`);
+                for (const key of ['highpass', 'lowpass']) {
+                    if (key in mutation) settings[key] = mutation[key];
+                }
+                for (const key of ['level_db', 'alignment_ms', 'polarity']) {
+                    if (mutation[key] !== undefined && mutation[key] !== null) settings[key] = mutation[key];
+                }
+            } else if (mutation.kind === 'set_subwoofers') {
+                const roles = outputStateCatalog().modes[mode].topology.sub_roles;
+                if (!mutation.processing || JSON.stringify(Object.keys(mutation.processing).sort()) !== JSON.stringify(roles.slice().sort())) {
+                    return fail('Sub settings must describe exactly the routed sub roles');
+                }
+                config.bass_management = { ...config.bass_management,
+                    frequency_hz: mutation.frequency_hz ?? config.bass_management.frequency_hz,
+                    main_highpass_enabled: mutation.main_highpass_enabled ?? config.bass_management.main_highpass_enabled };
+                for (const key of ['family', 'slope_db_oct', 'sub_link']) {
+                    if (mutation[key] !== undefined && mutation[key] !== null) config.bass_management[key] = mutation[key];
+                }
+                if (mutation.sub_filters !== undefined && mutation.sub_filters !== null) {
+                    if (typeof mutation.sub_filters !== 'object') return fail('Sub crossover overrides must be an object keyed by side');
+                    for (const [side, definition] of Object.entries(mutation.sub_filters)) {
+                        if (side !== 'left' && side !== 'right') return fail('Sub crossover overrides must be keyed by left and right');
+                        if (definition === null) delete config.bass_management.sub_filters[side];
+                        else config.bass_management.sub_filters[side] = { ...definition };
+                    }
+                }
+                for (const role of roles) Object.assign(config.processing[role], mutation.processing[role]);
+            } else if (mutation.kind === 'set_extras') {
+                if (typeof mutation.extras !== 'object' || mutation.extras === null) {
+                    return fail('extras must be an object');
+                }
+                config.extras = mutation.extras;
+            } else {
+                return fail(`Unknown mutation kind: ${mutation.kind}`);
+            }
+            outputStateStore.revision += 1;
+            const catalog = outputStateCatalog();
+            const topology = catalog.modes[catalog.active_mode].topology;
+            return j({ status: 'ok', revision: catalog.revision, active_mode: catalog.active_mode,
+                fingerprint: `demo-${catalog.revision}`, fingerprint_changed: true,
+                live_applied: topology.issues.length === 0, live_reason: topology.issues.length ? 'not-activatable' : null,
+                topology });
+        }
+        if (p === '/api/audio/output-state/crossover-response' && !post) {
+            const catalog = outputStateCatalog();
+            const ways = {};
+            const config = catalog.modes[catalog.active_mode];
+            // Sub crossover high-pass from the subwoofer tile: with routed
+            // subs and Main highpass on, every speaker way runs through the
+            // sub crossover, type and slope included (mirrors the backend
+            // plan). A true Stereo pair resolves per side while unlinked.
+            const bass = config.bass_management || {};
+            const hasSubs = (config.topology.sub_roles || []).length > 0;
+            const stereoPair = config.topology.sub_mode === 'stereo';
+            const derivedHighpassFor = (role) => {
+                if (!hasSubs || bass.main_highpass_enabled !== true) return null;
+                const shape = bassCrossoverForSide(bass, subSideForRole(role), stereoPair);
+                const frequency = Number(shape.frequency_hz);
+                if (!Number.isFinite(frequency) || frequency < 40 || frequency > 200) return null;
+                return { family: shape.family, slope_db_oct: shape.slope_db_oct, frequency_hz: Math.round(frequency) };
+            };
+            for (const [role, settings] of Object.entries(catalog.modes[catalog.active_mode].processing)) {
+                if (!config.crossover_enabled || !config.topology.roles.includes(role)) continue;
+                if (!role.startsWith('left_') && !role.startsWith('right_')) continue;
+                const points = [];
+                const derivedHighpass = derivedHighpassFor(role);
+                const way = role.split('_').slice(1).join('_');
+                const required = way === 'low' ? ['lowpass'] : way === 'high' ? ['highpass'] : ['highpass', 'lowpass'];
+                // Off is a valid direction: the curve shows the band the way
+                // actually runs, complete only marks a fully set way.
+                const complete = required.every(kind => settings[kind]);
+                for (let index = 0; index < 180; index += 1) {
+                    const frequency = 20 * Math.pow(1000, index / 179);
+                    let level = 0;
+                    if (settings.highpass) level += demoCrossoverDb(frequency, settings.highpass, 'highpass');
+                    if (settings.lowpass) level += demoCrossoverDb(frequency, settings.lowpass, 'lowpass');
+                    if (derivedHighpass) level += demoCrossoverDb(frequency, derivedHighpass, 'highpass');
+                    points.push([Math.round(frequency * 1000) / 1000, Math.round(level * 1000) / 1000]);
+                }
+                ways[role] = { filters: { highpass: settings.highpass, lowpass: settings.lowpass },
+                    derived_highpass: derivedHighpass ? { ...derivedHighpass } : null,
+                    complete, points };
+            }
+            return j({ status: 'ok', revision: catalog.revision, mode: catalog.active_mode,
+                crossover_enabled: config.crossover_enabled,
+                bass_management: { ...config.bass_management },
+                sub_roles: [...(config.topology.sub_roles || [])],
+                sample_rate_hz: 48000, ways });
+        }
         if (p === '/api/audio/samplerate') {
             if (post) {
                 const mode = String(body.mode || 'auto');
@@ -1915,6 +2651,10 @@
                     policy: { mode: mode === 'fixed' ? 'fixed' : 'auto', rate: (mode === 'fixed' && rate) ? rate : null },
                     active_rate: (mode === 'fixed' && rate) ? rate : samplerate.active_rate,
                 };
+                // Back in auto the graph follows the source again, so the
+                // interface tier has to follow the graph rate down as well —
+                // otherwise a fixed high rate would pin the channel count.
+                if (mode !== 'fixed') followSourceGraphRate();
                 return j(samplerate);
             }
             return j(samplerate);
@@ -2015,7 +2755,15 @@
                 });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const created = { success: true, preset: { name } };
+            const binding = assignDemoBankTarget(body, name);
+            if (binding && binding.error) return err(binding.error, binding.status);
+            if (binding && binding.conflict) {
+                created.bank = { assigned: false, created: name };
+                return j(created, 409);
+            }
+            if (binding) created.bank = binding;
+            return j(created);
         }
         if (p === '/api/dsp/presets/create-with-ir' && post) {
             const name = String(body.preset_name || body.name || 'Convolver Preset').trim() || 'Convolver Preset';
@@ -2023,7 +2771,15 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], convolver: true });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const created = { success: true, preset: { name } };
+            const binding = assignDemoBankTarget(body, name);
+            if (binding && binding.error) return err(binding.error, binding.status);
+            if (binding && binding.conflict) {
+                created.bank = { assigned: false, created: name };
+                return j(created, 409);
+            }
+            if (binding) created.bank = binding;
+            return j(created);
         }
         if (p === '/api/dsp/presets/combine' && post) {
             const name = String(body.presetName || 'Combined Preset').trim();
@@ -2038,6 +2794,15 @@
         }
         if (p === '/api/dsp/presets/delete' && post) {
             const name = String(body.preset_name || body.name || '');
+            const pinned = new Set();
+            for (const config of Object.values(outputStateStore.modes)) {
+                for (const bank of Object.values(config.banks)) {
+                    for (const key of ['preset', 'preset_a', 'preset_b']) {
+                        if (bank[key]) pinned.add(bank[key]);
+                    }
+                }
+            }
+            if (pinned.has(name)) return err(`Preset "${name}" is used by an output bank and cannot be deleted`, 400);
             const idx = dspPresets.findIndex(pr => pr.name === name);
             if (idx >= 0 && name !== 'Direct' && name !== 'Neutral') dspPresets.splice(idx, 1);
             if (dspActivePreset === name) dspActivePreset = 'Direct';
@@ -2108,7 +2873,10 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [] });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const binding = assignDemoBankTarget(body, name);
+            if (binding?.error) return err(binding.error, binding.status);
+            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
+            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
         }
         if (p === '/api/dsp/presets/import-bundle' && post) {
             const name = String(body.preset_name || body.name || 'Imported Bundle').trim() || 'Imported Bundle';
@@ -2116,7 +2884,10 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [] });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const binding = assignDemoBankTarget(body, name);
+            if (binding?.error) return err(binding.error, binding.status);
+            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
+            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
         }
         if (p === '/api/dsp/presets/import-filter-dual' && post) {
             const name = String(body.preset_name || body.name || 'Dual Filter Preset').trim() || 'Dual Filter Preset';
@@ -2124,7 +2895,10 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], convolver: true });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const binding = assignDemoBankTarget(body, name);
+            if (binding?.error) return err(binding.error, binding.status);
+            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
+            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
         }
         if (p === '/api/dsp/presets/import-rew-peq' && post) {
             const name = String(body.preset_name || body.name || 'REW PEQ Preset').trim() || 'REW PEQ Preset';
@@ -2132,41 +2906,69 @@
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } });
             }
             syncDspToState();
-            return j({ success: true, preset: { name } });
+            const created = { success: true, preset: { name } };
+            const binding = assignDemoBankTarget(body, name);
+            if (binding && binding.error) return err(binding.error, binding.status);
+            if (binding && binding.conflict) {
+                created.bank = { assigned: false, created: name };
+                return j(created, 409);
+            }
+            if (binding) created.bank = binding;
+            return j(created);
         }
 
         // ── Measurements ────────────────────────────────────────────────
         // Seeded with the .104 fixtures; demo sweeps reuse them by name.
-        if (p === '/api/measurements') {
-            const list = [];
-            S.getSavedMeasurements().forEach(m => { if (!list.find(x => x.id === m.id)) list.push(m); });
-            savedMeasurements.forEach(m => { if (!list.find(x => x.id === m.id)) list.push(m); });
-            return j({
-                measurements: list,
-                storage: { used_bytes: 2000000, available_bytes: 100000000 },
-                calibrations: [{ id: 'MM1CES_allein_00d.txt', filename: 'MM1CES_allein_00d.txt' }],
-                house_curves: [],
-                active_calibration_file_id: 'MM1CES_allein_00d.txt',
-                measurement_settings: {
-                    selectedInputId: measurementCaptureInput.id,
-                    selectedInputKey: measurementCaptureInput.persistent_id,
-                    selectedMicInputChannel: '1',
-                    ...measurementReferenceSettings(),
-                    measurementSampleRate: '48000',
-                },
-                scope_note: 'Ready for the first measurement.',
-            });
+        if (p === '/api/measurements' || (p === '/api/measurements/settings' && !post)) {
+            const payload = {
+                status: 'ok',
+                storage: { directory: '/home/paul/.config/fxroute/measurements', jobs_directory: '/home/paul/.config/fxroute/measurements/jobs' },
+                calibrations: S.demoCalibrationOptions ? S.demoCalibrationOptions.map(c => ({ ...c })) : [],
+                house_curves: S.demoHouseCurveOptions ? S.demoHouseCurveOptions.map(c => ({ ...c })) : [],
+                active_calibration_file_id: S.demoActiveCalibrationId || '',
+                measurement_settings: { ...measurementSettings },
+                scope_note: DEMO_MEASUREMENT_SCOPE_NOTE,
+            };
+            if (p === '/api/measurements') {
+                // The real store lists newest first. Both alignment takes ship
+                // with the demo, so the saved list shows the Before/After
+                // pairs real runs leave behind, area badge included: the 2-way
+                // pair and the 3-way pair side by side.
+                if (SPEAKER_ALIGN_FIXTURE) {
+                    const seeded = S.getSavedMeasurements();
+                    if (!seeded.some(m => /^Speaker Align (Left|Right) · /.test(String(m.name || '')))) {
+                        const takes = SPEAKER_ALIGN_FIXTURE.takesFor('right');
+                        if (takes) S.addSavedMeasurement(takes.after), S.addSavedMeasurement(takes.before);
+                    }
+                    if (SPEAKER_ALIGN_FIXTURE.takesFor3Way
+                        && !seeded.some(m => /^Speaker Align (Left|Right) 3-Way · /.test(String(m.name || '')))) {
+                        const takes = SPEAKER_ALIGN_FIXTURE.takesFor3Way('right');
+                        if (takes) S.addSavedMeasurement(takes.after), S.addSavedMeasurement(takes.before);
+                    }
+                }
+                const list = [];
+                S.getSavedMeasurements().concat(savedMeasurements).forEach(m => { if (!list.find(x => x.id === m.id)) list.push(m); });
+                list.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+                payload.measurements = list;
+            }
+            return j(payload);
         }
         if (p === '/api/measurements/inputs') {
             return j({
-                inputs: CAPTURE_INPUTS.map(input => ({ ...input })),
-                capture_available: true,
+                status: 'ok',
+                scope_note: DEMO_MEASUREMENT_SCOPE_NOTE,
+                modes: [{ id: 'host-local', label: 'Host-local capture', primary: true,
+                    available: true, note: 'FXRoute plays and records on the host via PipeWire.' }],
+                inputs: CAPTURE_INPUTS.map(input => ({ ...input, available: true, kind: 'pipewire-source' })),
                 selection: {
-                    input_id: measurementCaptureInput.id,
-                    persistent_id: measurementCaptureInput.persistent_id,
-                    configured: true,
+                    input_id: measurementSettings.selectedInputId,
+                    persistent_id: measurementSettings.selectedInputKey,
+                    configured: !!measurementSettings.selectedInputConfigured,
+                    unavailable: false,
+                    legacy_input_id: '',
                 },
-                scope_note: 'Ready for the first measurement.',
+                capture_available: true,
+                discovery: { method: 'wpctl status -n + pactl list short sources', source_count: CAPTURE_INPUTS.length },
             });
         }
         if (p === '/api/measurements/start' && post) {
@@ -2187,46 +2989,85 @@
         const measCancel = p.match(/^\/api\/measurements\/jobs\/([^/]+)\/cancel$/);
         if (measCancel && post) { S.cancelJob(measCancel[1]); return j({ job: { id: measCancel[1], status: 'cancelled', message: 'Measurement cancelled.' } }); }
         if (p === '/api/measurements/save' && post) {
-            const saved = [];
+            // The real endpoint accepts a single measurement object or a bulk
+            // { measurements: [...] } and answers in kind: a single save
+            // returns { measurement }, a bulk save { measurements }.
             if (Array.isArray(body.measurements)) {
-                body.measurements.forEach(m => saved.push(S.addSavedMeasurement(m)));
-            } else if (body.measurement) {
-                saved.push(S.addSavedMeasurement(body.measurement));
-            } else {
-                saved.push(S.addSavedMeasurement(body));
+                return j({ status: 'ok', measurements: body.measurements.map(m => S.addSavedMeasurement(m)) });
             }
-            return j({ measurements: saved });
+            const single = S.addSavedMeasurement(body.measurement || body);
+            return j({ status: 'ok', measurement: single });
+        }
+        const measFile = p.match(/^\/api\/measurements\/([^/]+)\/file$/);
+        if (measFile && !post) {
+            // The saved-run title links here, so a stored run has to resolve
+            // to its own JSON document like the real FileResponse does. Only
+            // stored runs resolve: a deleted one is gone for good.
+            const id = measFile[1];
+            const stored = S.getSavedMeasurements().find(m => m.id === id)
+                || savedMeasurements.find(m => m.id === id);
+            if (!stored) return err('Measurement not found', 404);
+            return j(stored);
         }
         const measDelete = p.match(/^\/api\/measurements\/([^/]+)$/);
         if (measDelete && method === 'DELETE') {
-            savedMeasurements.filter(m => m.id === measDelete[1]).forEach(m => {
+            const id = measDelete[1];
+            savedMeasurements.filter(m => m.id === id).forEach(m => {
                 const idx = savedMeasurements.indexOf(m);
                 if (idx >= 0) savedMeasurements.splice(idx, 1);
             });
-            S.deleteSavedMeasurement(measDelete[1]);
-            return j({ ok: true });
+            S.deleteSavedMeasurement(id);
+            return j({ status: 'ok', deleted: id });
         }
         if (p === '/api/measurements/merge' && post) {
-            const name = String(body.name || 'Merged');
-            const m = S.makeMeasurement({ name, id: 'demo_meas_merged_' + Date.now(), seed: 1 + Math.random() * 50 });
-            return j({ measurement: S.addSavedMeasurement(m) });
+            // A real merge averages the selected traces and re-tags the result
+            // as a merged measurement, so the saved row and the graph describe
+            // the average rather than a clone of one source.
+            const requested = body.measurementIds || body.measurement_ids;
+            if (!Array.isArray(requested)) return err('measurementIds must be an array');
+            if (requested.length < 2) return err('Select at least two saved measurements to merge');
+            const sources = requested.map(id => S.getSavedMeasurements().find(m => m.id === id) || savedMeasurements.find(m => m.id === id));
+            if (sources.some(source => !source)) return err('Measurement not found', 404);
+            const name = String(body.name || `Merged ${sources.length} measurements`);
+            const merged = S.mergeMeasurements(sources, name);
+            return j({ status: 'ok', measurement: S.addSavedMeasurement(merged) });
         }
         if (p === '/api/measurements/settings' && post) {
             // A deliberate capture choice in the measurement setup wins over the
-            // device-derived default until the output device changes again.
-            const requestedId = String(body.selectedInputId || body.selected_input_id || '');
+            // device-derived default until the output device changes again. The
+            // real endpoint echoes the full settings block and the frontend
+            // reads it back, so every channel choice has to round trip.
+            const pick = (...keys) => {
+                for (const key of keys) {
+                    if (body[key] !== undefined) return body[key];
+                }
+                return undefined;
+            };
+            const requestedId = String(pick('selectedInputId', 'input_id') ?? '');
             const requested = CAPTURE_INPUTS.find(input => input.id === requestedId);
-            if (requested) measurementCaptureInput = requested;
-            return j({ ok: true });
+            if (requested) setMeasurementCaptureInput(requested);
+            const channelKeys = {
+                selectedMicInputChannel: ['selectedMicInputChannel', 'mic_input_channel'],
+                selectedReferenceInputChannel: ['selectedReferenceInputChannel', 'reference_input_channel'],
+                selectedReferenceInputChannelLeft: ['selectedReferenceInputChannelLeft', 'reference_input_channel_left'],
+                selectedReferenceInputChannelRight: ['selectedReferenceInputChannelRight', 'reference_input_channel_right'],
+            };
+            for (const [target, keys] of Object.entries(channelKeys)) {
+                const value = pick(...keys);
+                if (value === undefined) continue;
+                measurementSettings[target] = value === null ? '' : String(value);
+            }
+            const inputKey = pick('selectedInputKey', 'input_key');
+            if (inputKey !== undefined) measurementSettings.selectedInputKey = String(inputKey || '');
+            const rate = pick('measurementSampleRate', 'measurement_sample_rate');
+            if (rate !== undefined) measurementSettings.measurementSampleRate = Number(rate) || 48000;
+            return j({ status: 'ok', measurement_settings: { ...measurementSettings } });
         }
         // Calibration + house-curve files: the demo ships the .104 mic
         // calibration as the selected file; uploads/deletes only mutate the
         // in-memory option list and echo the applier shape
         // ({ calibrations, active_calibration_file_id } /
         // { house_curves }) the real frontend consumes.
-        S.demoCalibrationOptions = S.demoCalibrationOptions || [{ id: 'MM1CES_allein_00d.txt', filename: 'MM1CES_allein_00d.txt' }];
-        S.demoHouseCurveOptions = S.demoHouseCurveOptions || [];
-        S.demoActiveCalibrationId = (S.demoActiveCalibrationId === undefined) ? 'MM1CES_allein_00d.txt' : S.demoActiveCalibrationId;
         function demoCalibrationState() {
             return { calibrations: S.demoCalibrationOptions.slice(), active_calibration_file_id: S.demoActiveCalibrationId || '' };
         }
@@ -2307,7 +3148,13 @@
                 } catch (e) { /* keep the default */ }
             }
             autoSubJobs[id] = { id, mode: normalizeOutputModeName(outputMode.mode), targetKey, startedAt: Date.now(), status: 'running' };
+            storeAutoSubJob(autoSubJobs[id]);
             return j({ job: { id, status: 'queued', message: 'Auto Sub Optimize: queued' } });
+        }
+        // Discovery, like the backend: the newest live or briefly retained
+        // job, so a reloaded page reattaches its run.
+        if (p === '/api/measurements/auto-sub-optimize/current') {
+            return j({ status: 'ok', job: currentAutoSubJobPayload() });
         }
         const autoSubJob = p.match(/^\/api\/measurements\/auto-sub-optimize\/jobs\/([^/]+)$/);
         if (autoSubJob) {
@@ -2318,8 +3165,73 @@
         const autoSubCancel = p.match(/^\/api\/measurements\/auto-sub-optimize\/jobs\/([^/]+)\/cancel$/);
         if (autoSubCancel && post) {
             const id = autoSubCancel[1];
-            if (autoSubJobs[id]) autoSubJobs[id].status = 'cancelled';
+            if (autoSubJobs[id]) {
+                autoSubJobs[id].status = 'cancelled';
+                autoSubJobs[id].finishedAt = Date.now();
+                storeAutoSubJob(autoSubJobs[id]);
+            }
             return j({ job: { id, status: 'cancelled', message: 'Auto Sub Optimize cancelled.' } });
+        }
+        if (p === '/api/speaker-align/start' && post) {
+            const side = String(body.side || 'left') === 'right' ? 'right' : 'left';
+            const id = 'demo_speaker_run_' + (++speakerAlignSeq);
+            const wayCount = speakerAlignRoles(side).length;
+            const fixtureParams = (wayCount === 3 && SPEAKER_ALIGN_FIXTURE && SPEAKER_ALIGN_FIXTURE.paramsFor3Way)
+                ? SPEAKER_ALIGN_FIXTURE.paramsFor3Way(side)
+                : (SPEAKER_ALIGN_FIXTURE ? SPEAKER_ALIGN_FIXTURE.paramsFor(side) : null);
+            const params = {
+                input_id: String(body.input_id || (fixtureParams && fixtureParams.input_id) || 'demo-mic'),
+                mic_input_channel: String(body.mic_input_channel ?? (fixtureParams && fixtureParams.mic_input_channel) ?? '1'),
+                reference_input_channel: String(body.reference_input_channel ?? ''),
+                reference_input_channel_left: body.reference_input_channel_left ?? null,
+                reference_input_channel_right: body.reference_input_channel_right ?? null,
+                reference_id: String(body.reference_id || (fixtureParams && fixtureParams.reference_id) || ''),
+                microphone_position_id: String(body.microphone_position_id || (fixtureParams && fixtureParams.microphone_position_id) || `${side}-fixed-${Date.now()}`),
+                sweep_profile: body.sweep_profile ?? null,
+                output_key: (fixtureParams && fixtureParams.output_key) || 'demo',
+                channels: Number((fixtureParams && fixtureParams.channels) || 4),
+                sample_rate_hz: Number((fixtureParams && fixtureParams.sample_rate_hz) || 48000),
+            };
+            // A 3-way topology runs the real 3-way fixture, anything else
+            // the 2-way one; both are real .104 runs.
+            const fixtureResult = ((wayCount === 3 && SPEAKER_ALIGN_FIXTURE && SPEAKER_ALIGN_FIXTURE.runFor3Way)
+                ? SPEAKER_ALIGN_FIXTURE.runFor3Way(side)
+                : (SPEAKER_ALIGN_FIXTURE ? SPEAKER_ALIGN_FIXTURE.runFor(side) : null))
+                || speakerAlignFallbackResult(side);
+            if (!fixtureResult.measurements) fixtureResult.measurements = SPEAKER_ALIGN_FIXTURE ? SPEAKER_ALIGN_FIXTURE.takesFor(side) : null;
+            // The frozen area context of a take carries the revision the run
+            // started from; the commit re-stamps both takes with the new one.
+            const startRevision = outputStateStore.revision;
+            fixtureResult.proposal.start_revision = startRevision;
+            if (fixtureResult.provenance && fixtureResult.provenance.planning) {
+                fixtureResult.provenance.planning.start_revision = startRevision;
+            }
+            for (const take of Object.values(fixtureResult.measurements || {})) {
+                if (take && take.measurement_target) take.measurement_target.revision = startRevision;
+            }
+            speakerAlignJobs[id] = { id, side, dryRun: body.dry_run === true, params, startedAt: Date.now(),
+                status: 'running', script: speakerAlignScript(side), fixtureResult };
+            return j({ status: 'ok', job: { ...speakerAlignBase(speakerAlignJobs[id]), status: 'queued',
+                message: 'Speaker alignment queued.', result: null, error: null } });
+        }
+        if (p === '/api/speaker-align/jobs' && !post) {
+            return j({ status: 'ok', jobs: Object.keys(speakerAlignJobs).map((id) => speakerAlignPayload(id)).filter(Boolean) });
+        }
+        const speakerJob = p.match(/^\/api\/speaker-align\/jobs\/([^/]+)$/);
+        if (speakerJob && !post) {
+            const payload = speakerAlignPayload(speakerJob[1]);
+            if (!payload) return err('Job not found', 404);
+            return j({ status: 'ok', job: payload });
+        }
+        const speakerCancel = p.match(/^\/api\/speaker-align\/jobs\/([^/]+)\/cancel$/);
+        if (speakerCancel && post) {
+            const id = speakerCancel[1];
+            if (!speakerAlignJobs[id]) return err('Job not found', 404);
+            const job = speakerAlignJobs[id];
+            // A live job goes to "cancelling" first and settles into
+            // "cancelled" a moment later, like the backend's cancel path.
+            if (job && job.status === 'running') { job.status = 'cancelling'; job.cancelledAt = Date.now(); }
+            return j({ status: 'ok', job: speakerAlignPayload(id) });
         }
         if (p === '/api/measurements/lr-repeat/start' && post) {
             const id = S.startLrRepeatMeasurement({ base_name: body.base_name });
@@ -2354,5 +3266,10 @@
         playbackPayload: S.getPlayback,
         easyeffectsStatus: dspPayload,
         autoSubJobPayload,
+        // Job discovery, for the contract test: what a reloaded page finds.
+        currentAutoSubJobPayload,
+        // Speaker align jobs are time-staged, so the test drives them at a
+        // fixed elapsed time instead of waiting out the stage script.
+        speakerAlignJobPayload: (id, elapsedMs) => speakerAlignPayload(id, elapsedMs),
     };
 })();

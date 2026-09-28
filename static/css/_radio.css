@@ -390,20 +390,9 @@
         touch-action: manipulation;
     }
 }
-.station-card.active::after {
-    content: '♫';
-    position: absolute;
-    top: 0.7rem;
-    right: 0.8rem;
-    font-size: 0.96rem;
-    color: var(--accent);
-    animation: pulse 1.5s ease-in-out infinite;
-    display: none;
-}
-@keyframes pulse {
-    0%, 100% { opacity: 0.6; }
-    50% { opacity: 1; }
-}
+/* Active station indicator: the mint border/background highlight on
+   .station-card.active (end of file). The former corner-note pseudo-rule
+   was permanently display:none and would collide with .station-card-fav. */
 .station-name {
     font-weight: 600;
     font-size: .95rem;
@@ -449,38 +438,7 @@
     color: var(--text-secondary);
     cursor: default;
 }
-/* Station favorite heart — same language as the Library .album-card-fav and
-   the TIDAL .streaming-fav on tiles: absolute top-right on the cover,
-   semi-transparent round button, muted when unsaved, green when in
-   My Stations. */
-.station-card-fav {
-    position: absolute;
-    top: 0.95rem;
-    right: 0.95rem;
-    z-index: var(--z-raised);
-    width: 32px;
-    height: 32px;
-    min-height: 32px;
-    border-radius: 50%;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    background: rgba(8, 18, 26, 0.72);
-    backdrop-filter: blur(4px);
-    color: var(--text-muted);
-    font-size: 0.95rem;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    cursor: pointer;
-    transition: color .12s var(--ease), border-color .12s var(--ease), transform .12s var(--ease);
-    -webkit-tap-highlight-color: transparent;
-}
-.station-card-fav:hover,
-.station-card-fav.is-active { color: var(--accent); border-color: var(--accent); }
-.station-card-fav:active { transform: scale(.92); }
-.station-card-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.station-card-fav:disabled { opacity: .45; cursor: wait; }
+
 .station-browser-status {
     min-height: 1.25rem;
     color: var(--text-secondary);

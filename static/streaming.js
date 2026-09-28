@@ -264,15 +264,15 @@
                             '<div class="streaming-queue" hidden></div>' +
                         '</div>' +
                         '<div class="streaming-controls">' +
-                            '<button type="button" class="streaming-btn" data-action="previous" title="Previous">⏮</button>' +
-                            '<button type="button" class="streaming-btn streaming-btn-main" data-action="toggle" title="Play / Pause">▶</button>' +
-                            '<button type="button" class="streaming-btn" data-action="next" title="Next">⏭</button>' +
+                            '<button type="button" class="streaming-btn" data-action="previous" aria-label="Previous" data-tooltip="Previous">⏮</button>' +
+                            '<button type="button" class="streaming-btn streaming-btn-main" data-action="toggle" aria-label="Play / Pause" data-tooltip="Play / Pause">▶</button>' +
+                            '<button type="button" class="streaming-btn" data-action="next" aria-label="Next" data-tooltip="Next">⏭</button>' +
                         '</div>' +
                         '<div class="streaming-secondary">' +
-                            '<button type="button" class="streaming-btn-sm" data-action="shuffle" title="Shuffle">' +
+                            '<button type="button" class="streaming-btn-sm" data-action="shuffle" data-tooltip="Shuffle">' +
                                 '<span class="streaming-btn-sm-icon">⇄</span><span class="streaming-btn-sm-label">Shuffle</span>' +
                             '</button>' +
-                            '<button type="button" class="streaming-btn-sm" data-action="loop" title="Loop">' +
+                            '<button type="button" class="streaming-btn-sm" data-action="loop" data-tooltip="Loop">' +
                                 '<span class="streaming-btn-sm-icon">' + LOOP_ALL_ICON + '</span><span class="streaming-btn-sm-label">Loop</span>' +
                             '</button>' +
                         '</div>' +
@@ -349,6 +349,7 @@
         const nonApp = typeof nonAppSourceModeActive === 'function' && nonAppSourceModeActive();
         const visible = available && enabled && !nonApp;
         const show = available && enabled;
+        const tabWasShown = isTabShown(entry.tabBtn);
         if (entry.tabBtn) {
             entry.tabBtn.hidden = !show;
             entry.tabBtn.style.display = show ? '' : 'none';
@@ -364,7 +365,15 @@
         if (!show && window.__visibleTab === providerId && typeof switchTab === 'function') {
             switchTab('radio');
         }
-        if (typeof updateTabsScrollAffordance === 'function') updateTabsScrollAffordance();
+        // The discovery poll re-applies unchanged flags every 10s; only a tab
+        // that appeared or disappeared changes the strip geometry.
+        if (tabWasShown !== isTabShown(entry.tabBtn) && typeof updateTabsScrollAffordance === 'function') {
+            updateTabsScrollAffordance();
+        }
+    }
+
+    function isTabShown(tabBtn) {
+        return !!tabBtn && !tabBtn.hidden && !tabBtn.classList.contains('hidden');
     }
 
     // Settings -> Providers: apply a new enabled flag immediately without
@@ -546,7 +555,8 @@
             const playing = data.status === 'Playing';
             const icon = playing ? '⏸' : '▶';
             els.toggle.textContent = icon;
-            els.toggle.title = playing ? 'Pause' : 'Play';
+            els.toggle.setAttribute('data-tooltip', playing ? 'Pause' : 'Play');
+            els.toggle.setAttribute('aria-label', playing ? 'Pause' : 'Play');
             els.prev.disabled = false;
             els.next.disabled = false;
         }
@@ -558,7 +568,7 @@
         if (els.shuffle) {
             els.shuffle.style.display = showShuffle ? '' : 'none';
             els.shuffle.classList.toggle('active', !!data.shuffle);
-            els.shuffle.title = data.shuffle ? 'Shuffle on' : 'Shuffle off';
+            els.shuffle.setAttribute('data-tooltip', data.shuffle ? 'Shuffle on' : 'Shuffle off');
             els.shuffle.setAttribute('aria-pressed', data.shuffle ? 'true' : 'false');
         }
         if (els.loop) {
@@ -567,7 +577,7 @@
             const loopActive = loopVal !== 'none';
             els.loop.classList.toggle('active', loopActive);
             els.loop.setAttribute('aria-pressed', loopActive ? 'true' : 'false');
-            els.loop.title = loopVal === 'track' ? 'Loop: track' : (loopVal === 'playlist' ? 'Loop: playlist' : 'Loop: off');
+            els.loop.setAttribute('data-tooltip', loopVal === 'track' ? 'Loop: track' : (loopVal === 'playlist' ? 'Loop: playlist' : 'Loop: off'));
             if (els.loopIcon) els.loopIcon.innerHTML = loopVal === 'track' ? LOOP_TRACK_ICON : LOOP_ALL_ICON;
         }
 
@@ -641,6 +651,12 @@
         }
         if (providerId === 'spotify' && data && data.connected === true) {
             return { title: 'Nothing is playing.', message: '' };
+        }
+        // Signed-in qbzd with its Connect renderer up and nothing loaded is
+        // the ready state (after install/sign-in); the fork backend exposes
+        // no device selection, so qbzd_standby never reaches this path.
+        if (providerId === 'qobuz' && data && data.connected === true) {
+            return { title: 'Ready for Qobuz Connect.', message: 'Start a track from the Qobuz app.' };
         }
         // Runtime-down state class (C): keep the provider-identifying
         // "not running" wording and add the same start guidance qbzd offers.
@@ -1126,8 +1142,8 @@
     function viewModeButtonsHtml(storageSurface) {
         const key = Object.keys(TIDAL_LAYOUT_SURFACES).find((k) => TIDAL_LAYOUT_SURFACES[k] === storageSurface);
         const layout = (key && state.tidal.albumLayouts[key]) || 'grid';
-        return '<button type="button" class="view-mode-btn' + (layout === 'grid' ? ' active' : '') + '" data-layout-toggle="grid" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'grid' ? 'true' : 'false') + '" title="Grid view" aria-label="Grid view">▦</button>' +
-            '<button type="button" class="view-mode-btn' + (layout === 'list' ? ' active' : '') + '" data-layout-toggle="list" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'list' ? 'true' : 'false') + '" title="List view" aria-label="List view">☰</button>';
+        return '<button type="button" class="view-mode-btn' + (layout === 'grid' ? ' active' : '') + '" data-layout-toggle="grid" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'grid' ? 'true' : 'false') + '" data-tooltip="Grid view" aria-label="Grid view">▦</button>' +
+            '<button type="button" class="view-mode-btn' + (layout === 'list' ? ' active' : '') + '" data-layout-toggle="list" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'list' ? 'true' : 'false') + '" data-tooltip="List view" aria-label="List view">☰</button>';
     }
 
     function bindViewModeToggle(root) {
@@ -1208,7 +1224,7 @@
                 '<div class="tidal-toolbar">' +
                     '<h2 class="section-title tidal-toolbar-title">Tidal</h2>' +
                     '<div class="tidal-toolbar-actions">' +
-                        '<button type="button" class="btn-secondary btn-icon" id="tidal-refresh-btn" title="Refresh TIDAL" aria-label="Refresh TIDAL">⟳</button>' +
+                        '<button type="button" class="btn-secondary btn-icon" id="tidal-refresh-btn" data-tooltip="Refresh TIDAL" aria-label="Refresh TIDAL">⟳</button>' +
                         '<div class="view-mode-toggle" id="tidal-view-mode-toggle" role="group" aria-label="View mode">' +
                             viewModeButtonsHtml(tidalActiveStorageSurface()) +
                         '</div>' +
@@ -1572,7 +1588,7 @@
         return '<button class="streaming-add' + (isSelected ? ' is-active' : '') + '" data-streaming-add="' + escapeHtml(trackId) + '" type="button"' +
             ' aria-pressed="' + (isSelected ? 'true' : 'false') + '"' +
             ' aria-label="' + (isSelected ? 'Remove track from playlist selection' : 'Add track to playlist selection') + '"' +
-            ' title="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + (isSelected ? '✓' : '+') + '</button>';
+            ' data-tooltip="' + (isSelected ? 'Remove from selection' : 'Add to selection') + '">' + (isSelected ? '✓' : '+') + '</button>';
     }
 
     function toggleTidalPlaylistTrack(event, trackId) {
@@ -1589,7 +1605,7 @@
             btn.textContent = active ? '✓' : '+';
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove track from playlist selection' : 'Add track to playlist selection');
-            btn.title = active ? 'Remove from selection' : 'Add to selection';
+            btn.setAttribute('data-tooltip', active ? 'Remove from selection' : 'Add to selection');
         });
         document.querySelectorAll('.streaming-result[data-track-id]').forEach((row) => {
             row.classList.toggle('is-selected', state.tidal.selectedTrackIds.has(row.dataset.trackId));
@@ -1802,9 +1818,11 @@
 
     // A different TIDAL account must never see another account's cached
     // library: reset the in-memory cache/heart state when the account changes.
+    // A logout (empty user id) clears the previous account's in-memory state
+    // the same way so no stale hearts/lists survive for the next login.
     function ensureTidalAccountState() {
         const userId = tidalUserId();
-        if (!userId || state.tidal.cacheUser === userId) return;
+        if (state.tidal.cacheUser === userId) return;
         state.tidal.cache = null;
         state.tidal.snapshotPromise = null;
         state.tidal.lastItems = {};
@@ -1929,7 +1947,7 @@
             'data-fav-type="' + type + '" data-fav-id="' + escapeHtml(id) + '" ' +
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
-            'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
+            'data-tooltip="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
             favoriteHeartSvg() + '</button>';
     }
 
@@ -1950,7 +1968,7 @@
             btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
-            btn.title = active ? 'Remove from favorites' : 'Add to favorites';
+            btn.setAttribute('data-tooltip', active ? 'Remove from favorites' : 'Add to favorites');
         });
     }
 
@@ -1963,7 +1981,7 @@
             'data-fav-type="' + type + '" data-fav-id="' + escapeHtml(idStr) + '" ' +
             'aria-pressed="' + (active ? 'true' : 'false') + '" ' +
             'aria-label="' + (active ? 'Remove from favorites' : 'Add to favorites') + '" ' +
-            'title="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
+            'data-tooltip="' + (active ? 'Remove from favorites' : 'Add to favorites') + '">' +
             favoriteHeartSvg() + '</button>';
     }
 
@@ -1984,7 +2002,7 @@
             btn.innerHTML = favoriteHeartSvg();
             btn.setAttribute('aria-pressed', active ? 'true' : 'false');
             btn.setAttribute('aria-label', active ? 'Remove from favorites' : 'Add to favorites');
-            btn.title = active ? 'Remove from favorites' : 'Add to favorites';
+            btn.setAttribute('data-tooltip', active ? 'Remove from favorites' : 'Add to favorites');
         });
     }
 
@@ -2813,9 +2831,15 @@
             // native path so footer ownership (and the VU/peak gating derived
             // from it) follows the TIDAL start instead of a stale cached
             // commit. The WebSocket playback frame stays a redundant backup.
+            // The commit helper lives in static/playback_core.js (single
+            // owner); streaming.js only calls it at runtime, after app.js has
+            // loaded, so the namespace lookup stays lazy here.
             try {
-                if (data && data.playback && typeof applyNativePlayResponse === 'function') {
-                    applyNativePlayResponse(data);
+                const commitPlayback = (typeof window !== 'undefined' && window.FXRoutePlaybackCore?.applyNativePlayResponse)
+                    || (typeof globalThis !== 'undefined' && globalThis.FXRoutePlaybackCore?.applyNativePlayResponse)
+                    || null;
+                if (data && data.playback && typeof commitPlayback === 'function') {
+                    commitPlayback(data);
                 }
             } catch (_commitError) {
                 // The footer commit must never break playback.

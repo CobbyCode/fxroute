@@ -172,6 +172,7 @@
 .settings-routing-cell select {
     width: 100%;
 }
+
 @keyframes switching-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
@@ -222,6 +223,14 @@
     gap: 0.4rem;
     flex-shrink: 0;
     flex-wrap: wrap;
+    /* Wrapped onto its own row below the provider info, the action
+       group keeps hugging the right edge of the provider area. */
+    margin-left: auto;
+}
+/* Uniform action widths: Uninstall matches Disconnect, so the
+   two-button groups (Spotify, connected Qobuz/TIDAL) align evenly. */
+.settings-provider-actions .btn-secondary {
+    min-width: 7.5rem;
 }
 .settings-provider-operation {
     margin-top: 0.45rem;
@@ -271,7 +280,7 @@
     justify-content: space-between;
     gap: 1rem;
     padding: 0.42rem 0;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    border-bottom: 1px solid var(--slate-400-a16);
 }
 .settings-maintenance-status dt {
     color: var(--text-secondary);
@@ -336,10 +345,10 @@
     overflow: auto;
     margin: 0;
     padding: 10px 12px;
-    border: 1px solid rgba(148, 163, 184, 0.24);
+    border: 1px solid var(--slate-400-a24);
     border-radius: 6px;
-    background: rgba(15, 23, 42, 0.56);
-    color: #d1d5db;
+    background: var(--slate-900-a56);
+    color: var(--slate-200);
     font-size: 0.78rem;
     line-height: 1.45;
     white-space: pre-wrap;
@@ -376,7 +385,12 @@
    ============================================================ */
 .toast-container {
     position: fixed;
-    top: 1rem;
+    /* Clear the whole sticky top stack, not just the header row. The tab
+       strip is its own row below 1180px, so a fixed 1rem inset used to drop
+       toasts straight over the primary navigation (56px of overlap on
+       desktop, 110px on phones). app.js keeps --header-stack-height equal to
+       the rendered stack height at every breakpoint. */
+    top: calc(var(--header-stack-height) + 0.75rem);
     right: 1rem;
     z-index: var(--z-toast);
     display: flex;

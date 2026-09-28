@@ -27,15 +27,29 @@
     --bg-elevated:   #1e1e22;
     --bg-hover:      #26262b;
     --bg-input:      #1c1c20;
+    /* Sticky header / tab-strip surface: also the fade target of the
+       scroll-edge gradient on .tabs.can-scroll. */
+    --bg-header:     rgba(14, 14, 17, 0.94);
     --text-primary:   #ececf0;
     --text-secondary: #a0a0ac;
-    --text-muted:     #848490;
+    /* Muted text. The old #848490 sat at 4.08:1 on --bg-hover, just under the
+       4.5:1 AA floor, so muted labels on hover/raised surfaces were the
+       app's only failing text pair. #90909c clears 4.5 on all six surfaces
+       (worst case 4.77) and keeps a clear step below --text-secondary
+       (5.82 on the same surface), so the three-level hierarchy survives. */
+    --text-muted:     #90909c;
     --accent:        #6ee7b7;   /* fresh teal */
     --accent-dim:    rgba(110, 231, 183, 0.12);
     --accent-hover:  #4dd8a0;
     --danger:        #f87171;
     --danger-dim:    rgba(248, 113, 113, 0.12);
     --success:       #34d399;
+    /* Warning amber. The old #b45309 failed WCAG AA on every surface in this
+       theme (3.00 on --bg-hover up to 3.87 on --bg-primary). #d97706 is the
+       darkest amber that clears 4.5:1 on all six surfaces (worst case 4.73
+       on --bg-hover), so it keeps the muted "warm brown" identity instead of
+       turning into a bright alert colour. */
+    --warning:       #d97706;
     --border:        rgba(255, 255, 255, 0.06);
     --border-strong: rgba(255, 255, 255, 0.10);
     --scrollbar:     var(--bg-hover);
@@ -56,6 +70,9 @@
     --arrow-width: 0.68rem;
     --arrow-offset: 0.55rem;
     --arrow-reserve: 1.55rem;
+    /* The chevron glyph itself: one data-URI for every carrier (global
+       selects, effects selects, source pill, details summary). */
+    --arrow-uri: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
        surfaces keep one tile rhythm across breakpoints. Radio reads a
@@ -63,8 +80,37 @@
     --tile-min: 208px;
     --tile-min-radio: 164px;
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
+    /* Slate/Blue palette: every remaining raw slate/blue literal lives
+       here once. The semantic Sub1/Sub2/info accents alias into it so the
+       effects and measurement cards keep their role names at use sites. */
+    --slate-900-a22: rgba(15, 23, 42, 0.22);
+    --slate-900-a28: rgba(15, 23, 42, 0.28);
+    --slate-900-a38: rgba(15, 23, 42, 0.38);
+    --slate-900-a56: rgba(15, 23, 42, 0.56);
+    --slate-800-a44: rgba(30, 41, 59, 0.44);
+    --slate-400-a10: rgba(148, 163, 184, 0.10);
+    --slate-400-a14: rgba(148, 163, 184, 0.14);
+    --slate-400-a16: rgba(148, 163, 184, 0.16);
+    --slate-400-a18: rgba(148, 163, 184, 0.18);
+    --slate-400-a22: rgba(148, 163, 184, 0.22);
+    --slate-400-a24: rgba(148, 163, 184, 0.24);
+    --slate-200:     #d1d5db;
+    --canvas-deep:   #08111f;
+    --info-tint:     rgba(96, 165, 250, 0.06);
+    --info-line:     rgba(96, 165, 250, 0.22);
+    --accent-ink:    #08110d;
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
+    /* Playback footer height used by the live-banner offset; the phone
+       layout overrides it on .live-banner (taller stacked footer). */
+    --footer-height: 92px;
+    /* Height of the whole sticky top stack (header row + tab strip).
+       app.js keeps this in sync with the rendered geometry: below 1180px the
+       tab strip is its own row under the header, at >=1180px the tabs are
+       pulled into the header line and both share one 72px row. Anything that
+       anchors to the top of the viewport (the toast column) must clear the
+       whole stack, not just the header. */
+    --header-stack-height: 72px;
     /* Stacking-order tokens: semantic names for the layering the stylesheet
        already implements. Values are the historical literal z-index numbers,
        preserved exactly so the visible order is unchanged; the tokens only
@@ -74,6 +120,7 @@
     --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
     --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
     --z-tabs:            4;      /* tab bar (header) */
+    --z-live-banner:    60;      /* live-mode notice pill above the footer */
     --z-playback-bar:    100;    /* fixed playback footer */
     --z-banner:          1002;   /* offline/disconnect banner */
     --z-toast:           1005;   /* transient toasts */
@@ -130,7 +177,8 @@ html {
 .skip-link {
     position: absolute;
     top: -40px;
-    left: 0.75rem;    z-index: var(--z-skip-link);
+    left: 0.75rem;
+    z-index: var(--z-skip-link);
     padding: 0.6rem 0.9rem;
     border-radius: var(--radius-sm);
     background: var(--bg-elevated);
@@ -200,9 +248,9 @@ body {
 .live-banner {
     position: fixed;
     left: 50%;
-    bottom: calc(var(--footer-height, 92px) + 12px);
+    bottom: calc(var(--footer-height) + 12px);
     transform: translateX(-50%);
-    z-index: 60;
+    z-index: var(--z-live-banner);
     display: flex;
     align-items: center;
     gap: 6px;
@@ -210,7 +258,7 @@ body {
     border-radius: 999px;
     background: rgba(13, 13, 15, 0.88);
     border: 1px solid rgba(251, 191, 36, 0.45);
-    color: var(--text-secondary, #cbd5e1);
+    color: var(--text-secondary);
     font-size: 0.8rem;
     line-height: 1.2;
     backdrop-filter: blur(8px);
@@ -247,7 +295,8 @@ body {
         justify-content: center;
         text-align: center;
         flex-wrap: wrap;
-        bottom: calc(var(--footer-height, 150px) + 10px);
+        --footer-height: 150px;
+        bottom: calc(var(--footer-height) + 10px);
         gap: 4px 10px;
         padding: 7px 12px;
         border-radius: 14px;
@@ -294,6 +343,86 @@ body {
 .fav-heart{display:block;width:1em;height:1em;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linejoin:round;pointer-events:none}
 .active>.fav-heart,
 .is-active>.fav-heart{fill:currentColor}
+/* Search-clear chip shared by the Library, Radio and TIDAL search fields. */
+.library-search-clear,
+.station-search-clear,
+.streaming-search-clear {
+    position: absolute;
+    right: 0.32rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.55rem;
+    height: 1.55rem;
+    border: 0;
+    border-radius: 999px;
+    background: var(--border);
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.42;
+    -webkit-tap-highlight-color: transparent;
+}
+.library-search-clear:not(:disabled),
+.station-search-clear:not(:disabled),
+.streaming-search-clear:not(:disabled) {
+    opacity: 1;
+}
+.library-search-clear:not(:disabled):hover,
+.station-search-clear:not(:disabled):hover,
+.streaming-search-clear:not(:disabled):hover {
+    background: var(--border-strong);
+    color: var(--text-primary);
+}
+.library-search-clear:disabled,
+.station-search-clear:disabled,
+.streaming-search-clear:disabled {
+    cursor: default;
+}
+.library-search-clear:focus-visible,
+.station-search-clear:focus-visible,
+.streaming-search-clear:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+/* Cover-heart variant shared by Library album tiles and radio station
+   cards; only the inset differs per surface. */
+.album-card-fav,
+.station-card-fav {
+    position: absolute;
+    z-index: var(--z-raised);
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(8, 18, 26, 0.72);
+    backdrop-filter: blur(4px);
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: color .12s var(--ease), border-color .12s var(--ease), transform .12s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.album-card-fav { top: 1.05rem; right: 1.05rem; }
+.station-card-fav { top: 0.95rem; right: 0.95rem; }
+.album-card-fav:hover,
+.album-card-fav.is-active,
+.station-card-fav:hover,
+.station-card-fav.is-active { color: var(--accent); border-color: var(--accent); }
+.album-card-fav:active,
+.station-card-fav:active { transform: scale(.92); }
+.album-card-fav:focus-visible,
+.station-card-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.station-card-fav:disabled { opacity: .45; cursor: wait; }
 .track-add,
 .streaming-add{flex:0 0 auto;width:34px;height:34px;min-height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-muted);font:inherit;font-size:1.05rem;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;transition:color .12s var(--ease),border-color .12s var(--ease),background .12s var(--ease),transform .12s var(--ease);-webkit-tap-highlight-color:transparent}
 .track-add:hover,
@@ -306,12 +435,14 @@ body {
 .streaming-add.is-active{color:var(--accent);border-color:var(--accent);background:var(--accent-dim)}
 .track-row,
 .streaming-result,
-.album-detail-tracks .track-item{display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;border-radius:var(--radius-md);background:var(--bg-surface);border:1px solid var(--border);cursor:pointer;min-width:0;transition:background 0.12s,border-color 0.12s}
+.album-detail-tracks .track-item,
+#tracks-list .track-item{display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;border-radius:var(--radius-md);background:var(--bg-surface);border:1px solid var(--border);cursor:pointer;min-width:0;transition:background 0.12s,border-color 0.12s}
 .track-row:hover,
 .streaming-result:hover,
-.album-detail-tracks .track-item:hover{background:var(--bg-hover);border-color:var(--border-strong)}
+.album-detail-tracks .track-item:hover,
+#tracks-list .track-item:hover{background:var(--bg-hover);border-color:var(--border-strong)}
 /* Selected TIDAL rows mirror the library .track-item.selected highlight. */
-.streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,255,.08)}
+.streaming-result.is-selected{border-color:var(--accent);background:rgba(110,231,183,.08)}
 /* Playing TIDAL row mirrors the library .track-item.active highlight. */
 .streaming-result.active{background:var(--accent-dim);border-color:rgba(110,231,183,.45)}
 .streaming-result.active .track-title{color:#f0fff8}
@@ -429,7 +560,7 @@ select.url-input {
     appearance: none;
     -webkit-appearance: none;
     padding-right: var(--arrow-reserve);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: var(--arrow-uri);
     background-repeat: no-repeat;
     background-position: right var(--arrow-offset) center;
     background-size: var(--arrow-width) auto;
@@ -449,7 +580,7 @@ select.url-input {
     white-space: nowrap;
 }
 .header {
-    background: rgba(14, 14, 17, 0.94);
+    background: var(--bg-header);
     min-height: 72px;
     padding: .85rem clamp(1rem, 2.1vw, 2rem);
     display: flex;
@@ -472,6 +603,12 @@ select.url-input {
 }
 .brand-lockup-button {
     position: relative;
+    /* The mark is 32px, so the button used to be 32px tall and this is the
+       only route into Settings. The 44px min-height grows the tap target
+       without changing the rendered mark or wordmark. */
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
     padding: 0;
     border: 0;
     background: transparent;
@@ -489,15 +626,31 @@ select.url-input {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
-/* Custom CSS tooltips (header buttons): the brand/settings trigger and the
-   power button use the same look. The attribute selector keeps the shared
-   visuals in one place; per-button rules only set the horizontal anchor. */
-.brand-lockup-button[data-tooltip]::after,
-.power-btn[data-tooltip]::after {
-    content: attr(data-tooltip);
-    position: absolute;
-    top: calc(100% + 0.45rem);
+/* ============================================================
+   Tooltips
+   ============================================================
+   One tooltip system for the whole app. `data-tooltip` is the single
+   attribute; the native `title` attribute is not used for hints, because a
+   native tooltip cannot follow the dark theme. The attribute is a visual
+   hint only: every host keeps its accessible name in aria-label or its own
+   content.
+
+   The bubble is one `position: fixed` element on <body>, driven by
+   static/tooltip.js, not a pseudo-element of the host: an ::after bubble is
+   clipped by every overflow/scroll container around its host and adds
+   scrollable overflow to it even while hidden. tooltip.js places it below
+   the host, flips it above when only that side has room (the playback
+   footer), clamps it into the viewport and right-aligns it for
+   `data-tooltip-anchor="end"`. */
+.app-tooltip {
+    position: fixed;
+    top: 0;
+    left: 0;
     z-index: var(--z-tooltip);
+    /* max-content keeps short labels on one line; long values (a full
+       preset name, an export path) wrap inside the max-width. */
+    width: max-content;
+    max-width: min(260px, calc(100vw - 2rem));
     padding: 0.32rem 0.52rem;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
@@ -506,34 +659,34 @@ select.url-input {
     box-shadow: 0 8px 24px var(--shadow);
     font-size: 0.72rem;
     font-weight: 650;
-    line-height: 1.2;
-    white-space: nowrap;
-    opacity: 0;
-    visibility: hidden;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
     pointer-events: none;
+    opacity: 0;
     transform: translateY(-2px);
-    transition: opacity 0.15s var(--ease), visibility 0.15s var(--ease), transform 0.15s var(--ease);
+    transition: opacity 0.15s var(--ease), transform 0.15s var(--ease);
 }
-.brand-lockup-button[data-tooltip]::after {
-    left: 0;
+.app-tooltip[data-side="above"] {
+    transform: translateY(2px);
 }
-.power-btn[data-tooltip]::after {
-    right: 0;
-}
-.brand-lockup-button[data-tooltip]:hover::after,
-.brand-lockup-button:focus-visible::after,
-.power-btn[data-tooltip]:hover::after,
-.power-btn:focus-visible::after {
+.app-tooltip.is-visible {
     opacity: 1;
-    visibility: visible;
     transform: translateY(0);
 }
-/* The open power menu covers the area under the button, so its tooltip must
-   stay hidden while the button is expanded. */
-.power-btn[data-tooltip][aria-expanded="true"]::after {
-    opacity: 0;
-    visibility: hidden;
-    transform: translateY(-2px);
+.app-tooltip[hidden] {
+    display: none;
+}
+
+/* Tooltip host for a <select>: tooltip.js shows the full name of the
+   selected option (the option label may be compacted) while the pointer or
+   keyboard focus is anywhere inside the wrapper. It is a plain block-level
+   flex item that stretches to the field width, and the select keeps
+   width:100%, so the layout is unchanged. */
+.select-tooltip-wrap {
+    display: block;
+    width: 100%;
+    min-width: 0;
 }
 
 .brand-lockup .brand-mark {
@@ -581,8 +734,11 @@ select.url-input {
 }
 .power-btn {
     position: relative;
-    width: 38px;
-    height: 38px;
+    /* 44px in every range. The header is 72px tall, so the button keeps its
+       proportions there; only the <=540px override used to reach the touch
+       minimum, which left 541px-1180px on a 38px target. */
+    width: 44px;
+    height: 44px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -694,7 +850,7 @@ select.url-input {
     display: flex;
     position: relative;
     z-index: var(--z-tabs);
-    background: rgba(14, 14, 17, 0.94);
+    background: var(--bg-header);
     padding: .42rem clamp(.7rem, 1.4vw, 1.2rem);
     gap: .25rem;
     border-top: 0;
@@ -712,7 +868,7 @@ select.url-input {
     align-self: stretch;
     width: 44px;
     pointer-events: none;
-    background: linear-gradient(90deg, transparent, var(--bg-surface));
+    background: linear-gradient(90deg, transparent, var(--bg-header));
 }
 .tabs::-webkit-scrollbar { display: none; }
 /* ARIA tablist wrapper inside the nav landmark; inherits the responsive
@@ -728,7 +884,10 @@ select.url-input {
 .tab-btn {
     flex: 0 0 auto;
     min-width: 112px;
-    min-height: 42px;
+    /* 44px, not 42: the primary navigation is the most-used control in the
+       app and 42 was the only range below the touch minimum (the <=760px
+       range already overrode it to 44px). */
+    min-height: 44px;
     padding: .52rem .9rem;
     background: transparent;
     border: none;
@@ -1028,6 +1187,7 @@ select.url-input {
 .settings-routing-cell select {
     width: 100%;
 }
+
 @keyframes switching-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
@@ -1078,6 +1238,14 @@ select.url-input {
     gap: 0.4rem;
     flex-shrink: 0;
     flex-wrap: wrap;
+    /* Wrapped onto its own row below the provider info, the action
+       group keeps hugging the right edge of the provider area. */
+    margin-left: auto;
+}
+/* Uniform action widths: Uninstall matches Disconnect, so the
+   two-button groups (Spotify, connected Qobuz/TIDAL) align evenly. */
+.settings-provider-actions .btn-secondary {
+    min-width: 7.5rem;
 }
 .settings-provider-operation {
     margin-top: 0.45rem;
@@ -1127,7 +1295,7 @@ select.url-input {
     justify-content: space-between;
     gap: 1rem;
     padding: 0.42rem 0;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    border-bottom: 1px solid var(--slate-400-a16);
 }
 .settings-maintenance-status dt {
     color: var(--text-secondary);
@@ -1192,10 +1360,10 @@ select.url-input {
     overflow: auto;
     margin: 0;
     padding: 10px 12px;
-    border: 1px solid rgba(148, 163, 184, 0.24);
+    border: 1px solid var(--slate-400-a24);
     border-radius: 6px;
-    background: rgba(15, 23, 42, 0.56);
-    color: #d1d5db;
+    background: var(--slate-900-a56);
+    color: var(--slate-200);
     font-size: 0.78rem;
     line-height: 1.45;
     white-space: pre-wrap;
@@ -1232,7 +1400,12 @@ select.url-input {
    ============================================================ */
 .toast-container {
     position: fixed;
-    top: 1rem;
+    /* Clear the whole sticky top stack, not just the header row. The tab
+       strip is its own row below 1180px, so a fixed 1rem inset used to drop
+       toasts straight over the primary navigation (56px of overlap on
+       desktop, 110px on phones). app.js keeps --header-stack-height equal to
+       the rendered stack height at every breakpoint. */
+    top: calc(var(--header-stack-height) + 0.75rem);
     right: 1rem;
     z-index: var(--z-toast);
     display: flex;
@@ -1400,36 +1573,6 @@ select.url-input {
     letter-spacing: 0.04em;
     text-transform: uppercase;
 }
-/* Favorite heart on normal album cards — same language as the TIDAL
-   .streaming-fav on album tiles: absolute top-right on the cover, semi-
-   transparent background, round button. */
-.album-card-fav {
-    position: absolute;
-    top: 1.05rem;
-    right: 1.05rem;
-    z-index: var(--z-raised);
-    width: 32px;
-    height: 32px;
-    min-height: 32px;
-    border-radius: 50%;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    background: rgba(8, 18, 26, 0.72);
-    backdrop-filter: blur(4px);
-    color: var(--text-muted);
-    font-size: 0.95rem;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    cursor: pointer;
-    transition: color .12s var(--ease), border-color .12s var(--ease), transform .12s var(--ease);
-    -webkit-tap-highlight-color: transparent;
-}
-.album-card-fav:hover,
-.album-card-fav.is-active { color: var(--accent); border-color: var(--accent); }
-.album-card-fav:active { transform: scale(.92); }
-.album-card-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* List view: the heart leaves the cover corner and joins the row end. */
 .albums-grid.is-list .album-card-fav {
     position: static;
@@ -1598,14 +1741,10 @@ select.url-input {
     grid-area: meta;
     min-width: 0;
 }
-.album-detail-back {
-    grid-area: back;
-    align-self: start;
-    justify-self: end;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.35rem;
+/* Back pill shared with .library-folder-back: same chrome, hover and
+   focus language; the remainder keeps only the hero-specific layout. */
+.album-detail-back,
+.library-folder-back {
     min-height: 34px;
     padding: 0.26rem 0.56rem;
     border-radius: 7px;
@@ -1614,12 +1753,22 @@ select.url-input {
     color: var(--text-secondary);
     font-size: 0.84rem;
     font-weight: 650;
-    font-family: inherit;
     cursor: pointer;
+}
+.album-detail-back {
+    grid-area: back;
+    align-self: start;
+    justify-self: end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    font-family: inherit;
     transition: color 0.15s var(--ease), border-color 0.15s var(--ease), background 0.15s var(--ease), transform 0.1s var(--ease);
     -webkit-tap-highlight-color: transparent;
 }
-.album-detail-back:hover {
+.album-detail-back:hover,
+.library-folder-back:hover {
     color: var(--text-primary);
     border-color: rgba(255,255,255,0.16);
     background: rgba(255,255,255,0.04);
@@ -1627,7 +1776,8 @@ select.url-input {
 .album-detail-back:active {
     transform: translateY(1px);
 }
-.album-detail-back:focus-visible {
+.album-detail-back:focus-visible,
+.library-folder-back:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
@@ -2014,7 +2164,7 @@ select.url-input {
     padding: 0.42rem 0.56rem;
     border: 1px solid var(--border);
     border-radius: 7px;
-    background: rgba(15, 23, 42, 0.22);
+    background: var(--slate-900-a22);
 }
 .album-discover-title {
     min-width: 0;
@@ -2139,40 +2289,7 @@ select.url-input {
     appearance: none;
     -webkit-appearance: none;
 }
-.library-search-clear {
-    position: absolute;
-    right: 0.32rem;
-    top: 50%;
-    transform: translateY(-50%);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.55rem;
-    height: 1.55rem;
-    border: 0;
-    border-radius: 999px;
-    background: var(--border);
-    color: var(--text-secondary);
-    font-size: 1rem;
-    line-height: 1;
-    cursor: pointer;
-    opacity: 0.42;
-    -webkit-tap-highlight-color: transparent;
-}
-.library-search-clear:not(:disabled) {
-    opacity: 1;
-}
-.library-search-clear:not(:disabled):hover {
-    background: var(--border-strong);
-    color: var(--text-primary);
-}
-.library-search-clear:disabled {
-    cursor: default;
-}
-.library-search-clear:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
+
 .library-selection-toolbar {
     display: flex;
     align-items: center;
@@ -2366,26 +2483,8 @@ select.url-input {
 .library-folder-back {
     margin-left: auto;
     flex: 0 0 auto;
-    min-height: 34px;
-    padding: 0.26rem 0.56rem;
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 7px;
-    background: transparent;
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 0.84rem;
-    font-weight: 650;
-    cursor: pointer;
+    font-family: inherit;
     white-space: nowrap;
-}
-.library-folder-back:hover {
-    color: var(--text-primary);
-    border-color: rgba(255,255,255,0.16);
-    background: rgba(255,255,255,0.04);
-}
-.library-folder-back:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
 }
 .folder-actions {
     display: flex;
@@ -2438,7 +2537,7 @@ select.url-input {
 }
 .track-item:last-child { border-bottom:none; }
 .track-item:hover { background: var(--bg-hover); }
-.track-item.selected { background: rgba(110, 231, 255, 0.08); }
+.track-item.selected { background: rgba(110, 231, 183, 0.08); }
 .track-item.active {
     background: var(--accent-dim);
     box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.32);
@@ -2480,22 +2579,12 @@ select.url-input {
     flex-direction: column;
     gap: 0.3rem;
 }
+/* Row chrome and hover come from the shared .track-row family in
+   _base.css (scoped here via #tracks-list); only the list-specific
+   deltas stay on the ID. */
 #tracks-list .track-item {
-    display: flex;
-    align-items: center;
-    gap: 0.7rem;
-    padding: 0.45rem 0.6rem;
-    border-radius: var(--radius-md);
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    cursor: pointer;
     min-height: 0;
-    min-width: 0;
     transition: background 0.12s var(--ease), border-color 0.12s var(--ease);
-}
-#tracks-list .track-item:hover {
-    background: var(--bg-hover);
-    border-color: var(--border-strong);
 }
 #tracks-list .track-item.selected {
     background: var(--accent-dim);
@@ -3379,20 +3468,9 @@ select.url-input {
         touch-action: manipulation;
     }
 }
-.station-card.active::after {
-    content: '♫';
-    position: absolute;
-    top: 0.7rem;
-    right: 0.8rem;
-    font-size: 0.96rem;
-    color: var(--accent);
-    animation: pulse 1.5s ease-in-out infinite;
-    display: none;
-}
-@keyframes pulse {
-    0%, 100% { opacity: 0.6; }
-    50% { opacity: 1; }
-}
+/* Active station indicator: the mint border/background highlight on
+   .station-card.active (end of file). The former corner-note pseudo-rule
+   was permanently display:none and would collide with .station-card-fav. */
 .station-name {
     font-weight: 600;
     font-size: .95rem;
@@ -3438,38 +3516,7 @@ select.url-input {
     color: var(--text-secondary);
     cursor: default;
 }
-/* Station favorite heart — same language as the Library .album-card-fav and
-   the TIDAL .streaming-fav on tiles: absolute top-right on the cover,
-   semi-transparent round button, muted when unsaved, green when in
-   My Stations. */
-.station-card-fav {
-    position: absolute;
-    top: 0.95rem;
-    right: 0.95rem;
-    z-index: var(--z-raised);
-    width: 32px;
-    height: 32px;
-    min-height: 32px;
-    border-radius: 50%;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    background: rgba(8, 18, 26, 0.72);
-    backdrop-filter: blur(4px);
-    color: var(--text-muted);
-    font-size: 0.95rem;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    cursor: pointer;
-    transition: color .12s var(--ease), border-color .12s var(--ease), transform .12s var(--ease);
-    -webkit-tap-highlight-color: transparent;
-}
-.station-card-fav:hover,
-.station-card-fav.is-active { color: var(--accent); border-color: var(--accent); }
-.station-card-fav:active { transform: scale(.92); }
-.station-card-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.station-card-fav:disabled { opacity: .45; cursor: wait; }
+
 .station-browser-status {
     min-height: 1.25rem;
     color: var(--text-secondary);
@@ -3500,10 +3547,6 @@ select.url-input {
     background: linear-gradient(180deg, rgba(110,231,183,.07), rgba(255,255,255,.014));
     box-shadow: inset 0 0 0 1px rgba(110,231,183,.08);
 }
-/* =========================================================================
-   Responsive — consolidated (Task 4)
-   Playback: 3 canonical ranges (desktop/tablet/phone) + shared grouped by range
-   ========================================================================= */
 /* =========================================================================
    Streaming provider tabs (Spotify / Qobuz / TIDAL)
    ========================================================================= */
@@ -3841,7 +3884,15 @@ select.url-input {
     -webkit-appearance: none;
     appearance: none;
     height: 4px;
+    /* Touch hit area, same dialect as the footer sliders in _playback.css:
+       transparent padding grows the drag target to ~24px while the negative
+       margin keeps the layout height at the 4px visual track.
+       background-clip keeps the track paint on the content box only. */
+    margin-block: -10px;
+    padding-block: 10px;
+    box-sizing: content-box;
     background: var(--bg-elevated);
+    background-clip: content-box;
     border-radius: 2px;
     outline: none;
     cursor: pointer;
@@ -3870,6 +3921,18 @@ select.url-input {
     cursor: pointer;
 }
 .streaming-progress:disabled { opacity: 0.4; cursor: default; }
+/* Coarse pointers get a thumb that meets the touch minimum; the track stays
+   4px so the player's slim look is unchanged. */
+@media (hover: none), (pointer: coarse) {
+    .streaming-progress::-webkit-slider-thumb {
+        width: 20px;
+        height: 20px;
+    }
+    .streaming-progress::-moz-range-thumb {
+        width: 20px;
+        height: 20px;
+    }
+}
 
 /* Provider content (TIDAL) */
 .streaming-content {
@@ -4001,40 +4064,7 @@ select.url-input {
     appearance: none;
     -webkit-appearance: none;
 }
-.streaming-search-clear {
-    position: absolute;
-    right: 0.32rem;
-    top: 50%;
-    transform: translateY(-50%);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.55rem;
-    height: 1.55rem;
-    border: 0;
-    border-radius: 999px;
-    background: var(--border);
-    color: var(--text-secondary);
-    font-size: 1rem;
-    line-height: 1;
-    cursor: pointer;
-    opacity: 0.42;
-    -webkit-tap-highlight-color: transparent;
-}
-.streaming-search-clear:not(:disabled) {
-    opacity: 1;
-}
-.streaming-search-clear:not(:disabled):hover {
-    background: var(--border-strong);
-    color: var(--text-primary);
-}
-.streaming-search-clear:disabled {
-    cursor: default;
-}
-.streaming-search-clear:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
+
 
 .streaming-results { min-height: 2rem; }
 #tidal-fav-results,
@@ -4388,6 +4418,7 @@ select.url-input {
 .measurement-list-title a {
     display: inline-block;
     max-width: 100%;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: bottom;
@@ -4457,16 +4488,20 @@ select.url-input {
 }
 
 /* Workflow areas: quiet micro-labels group the action list into
-   measurement / subwoofer / calibration without adding cards. */
+   measurement / subwoofer / calibration without adding cards. One shared
+   0.75rem rhythm from heading to button row in every section. */
 .measurement-workflow-section {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.75rem;
 }
 
 .measurement-workflow-heading {
     display: flex;
-    align-items: center;
+    /* Tops flush: label and Setup share one top edge on desktop and
+       mobile; the row below (section gap) sets the uniform heading →
+       button distance in every section. */
+    align-items: flex-start;
     justify-content: space-between;
     gap: 0.75rem;
 }
@@ -4583,8 +4618,111 @@ select.url-input {
     border-color: var(--accent-hover);
 }
 
-.measurement-workflow-menu-panel .measurement-channel-chip-row {
+/* Single-sweep side choice for stereo areas: three compact chips in one
+   row, same language as the other measurement chips. The side only narrows
+   within the selected area, so it can never contradict the bank selector.
+   Mono areas hide the whole row and sweep both inputs at once. */
+.measurement-sweep-side-row {
+    display: flex;
+    gap: 0.4rem;
+    min-width: 0;
+}
+
+.measurement-sweep-side-row .measurement-chip {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0.3rem 0.4rem;
+    font-size: 0.78rem;
+}
+
+/* Read-only measurement area: the A/B selector owns the scope, so the sweep
+   menu shows the selected area; the side chips only narrow a stereo area to
+   one side for the single sweep. */
+.measurement-workflow-menu-panel .measurement-area-row {
     padding: 0.1rem 0.1rem 0.15rem;
+}
+
+.measurement-area-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.measurement-area-label {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.measurement-area-indicator {
+    font-weight: 600;
+}
+
+/* Saved-list badge: the frozen area a result was captured in. */
+.measurement-area-badge {
+    margin-left: 0.45rem;
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    line-height: 1.4;
+    white-space: nowrap;
+    /* Stays whole; the title truncates around it. */
+    flex: 0 0 auto;
+    max-width: 100%;
+}
+
+.measurement-area-badge.is-stale {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.speaker-align-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.speaker-align-table {
+    min-width: 280px;
+    width: 100%;
+    margin-top: 12px;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.speaker-align-table caption {
+    text-align: left;
+    padding: 6px 0;
+    font-weight: 600;
+}
+
+.speaker-align-table th,
+.speaker-align-table td {
+    padding: 6px 6px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+}
+
+/* A value and its unit stay on one line; only the way label may wrap. */
+.speaker-align-table td {
+    white-space: nowrap;
+}
+
+.speaker-align-table th:first-child {
+    text-align: left;
+}
+
+.speaker-align-verification {
+    margin: 6px 0 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
 }
 
 .measurement-workflow-row {
@@ -4595,6 +4733,38 @@ select.url-input {
     min-width: 0;
 }
 
+.measurement-workflow-speaker-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+.measurement-workflow-speaker-buttons .btn-secondary {
+    width: 190px;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 44px;
+}
+
+/* Same horizontal pattern as the other measurement actions: the compact
+   button pair sits left, the one-line note to its right. */
+.measurement-workflow-speaker-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+/* Idle speaker-align results collapse: without this the section's flex gap
+   reserves a phantom row below the buttons even while empty, breaking the
+   shared heading → buttons → divider rhythm. */
+#measurement-speaker-align-results:empty {
+    display: none;
+}
+
+#measurement-sweep-start,
 #measurement-repeat-start,
 #measurement-hybrid-open {
     min-height: 42px;
@@ -4608,17 +4778,48 @@ select.url-input {
 }
 
 /* Bottom status line: kept visually apart from the action blocks so
-   running/cancelled messages read as panel status, not as part of one row. */
+   running/cancelled messages read as panel status, not as part of one row.
+   The top margin sums the section list gap and the section divider margin
+   (0.5rem + 0.35rem), so Calibration above it keeps exactly the same
+   button → divider distance as the other three sections. */
 #measurement-setup-status {
-    margin-top: 0.6rem;
+    margin-top: calc(0.5rem + 0.35rem);
     padding-top: 0.6rem;
     border-top: 1px solid var(--border);
+    /* An outcome may carry a second detail line (Auto Sub scan details). */
+    white-space: pre-line;
 }
 
 #measurement-setup-status:empty {
     margin-top: 0;
     padding-top: 0;
     border-top: none;
+}
+
+.measurement-calibration-select-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.5rem;
+    align-items: stretch;
+}
+
+.measurement-calibration-select-row .btn-secondary,
+.measurement-calibration-select-row .btn-danger {
+    min-width: 92px;
+    padding-left: 0.9rem;
+    padding-right: 0.9rem;
+}
+
+/* Scoped to the Setup card so the upload beats the generic .upload-area
+   primitive (equal specificity) regardless of source order — same pattern
+   as .library-import-option .upload-area. */
+.measurement-card-setup .measurement-calibration-upload-area {
+    min-height: 64px;
+    padding: 0.9rem 1rem;
+}
+
+.measurement-calibration-upload-area .upload-area-icon {
+    font-size: 1.1rem;
 }
 
 .spl-calibration-dialog {
@@ -4638,6 +4839,12 @@ select.url-input {
 
 .spl-calibration-dialog #spl-calibration-status {
     margin-top: 0.35rem;
+}
+
+/* Mode and running action sit right of the noise button, like the action
+   notes in the measurement panel. */
+.spl-calibration-dialog .spl-calibration-noise-row {
+    justify-content: flex-start;
 }
 
 .hybrid-measurement-overlay {
@@ -4816,7 +5023,10 @@ select.url-input {
 @keyframes hybrid-status-spin { to { transform: rotate(360deg); } }
 .hybrid-status[data-level="ok"] { color: var(--success); }
 .hybrid-status[data-level="error"] { color: var(--danger); }
-.hybrid-action-row { display: grid; grid-template-columns: minmax(90px, 0.35fr) minmax(180px, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
+/* The tracks must be allowed to shrink: the wizard's right column is narrower
+   than 90 + 180px well before the phone stack, and the fixed minimums pushed
+   "Start measurement" out of the dialog. */
+.hybrid-action-row { display: grid; grid-template-columns: minmax(0, 0.35fr) minmax(0, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
 .hybrid-action-row button { min-height: 54px; }
 .hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
 .hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
@@ -4825,7 +5035,6 @@ select.url-input {
 .hybrid-advanced-details summary { cursor: pointer; color: var(--text-secondary); }
 .hybrid-advanced-details p { margin: 0.5rem 0 0; line-height: 1.45; }
 
-.measurement-channel-chip-row,
 .measurement-smoothing-chips,
 .measurement-view-toggle {
     display: flex;
@@ -4962,7 +5171,7 @@ select.url-input {
 }
 
 .measurement-peq-chip.is-active {
-    color: #08110d;
+    color: var(--accent-ink);
     border-color: transparent;
     box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset;
 }
@@ -5110,8 +5319,8 @@ select.url-input {
     gap: 0.75rem;
     padding: 0.9rem;
     border-radius: var(--radius-md);
-    border: 1px solid rgba(96, 165, 250, 0.22);
-    background: rgba(96, 165, 250, 0.06);
+    border: 1px solid var(--info-line);
+    background: var(--info-tint);
 }
 
 .measurement-convolver-grid .field-group {
@@ -5170,12 +5379,19 @@ select.url-input {
 
 .measurement-list {
     display: grid;
+    /* minmax(0, …): an auto track is floored at its min-content width, so a
+       single long run name or device string would push the column past the
+       dialog instead of wrapping inside the card. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.75rem;
+    min-width: 0;
 }
 
 .measurement-list-item {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.35rem;
+    min-width: 0;
     padding: 0.85rem 0.95rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -5187,12 +5403,25 @@ select.url-input {
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
+    min-width: 0;
 }
 
 .measurement-toggle {
     display: flex;
     align-items: center;
+    /* Wraps so the area badge drops to its own line on a phone instead of
+       being pushed out of the card. */
+    flex-wrap: wrap;
     gap: 0.7rem;
+    min-width: 0;
+    /* The row is a column on phones, where a flex item is sized by its own
+       content; without this the nowrap run name would claim its full width
+       and push the badge past the card edge. */
+    max-width: 100%;
+    /* The toggle absorbs the row's shrink, so `space-between` alone would
+       leave the date glued to it; the auto margin keeps the date on the
+       trailing edge whatever width the name and badge need. */
+    margin-right: auto;
     cursor: pointer;
 }
 
@@ -5205,18 +5434,47 @@ select.url-input {
 }
 
 .measurement-swatch-inactive {
-    background: rgba(148, 163, 184, 0.18);
-    box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.22);
+    background: var(--slate-400-a18);
+    box-shadow: 0 0 0 1px var(--slate-400-a22);
 }
 
 .measurement-list-title {
     font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    /* Basis instead of auto: the run name is a nowrap, ellipsized single
+       line, so an auto basis would reserve its full width and shove the
+       badge out of the card. The title absorbs the slack and truncates. */
+    flex: 1 1 6rem;
+    min-width: 0;
 }
 
 .measurement-list-meta,
 .measurement-list-points {
     color: var(--text-secondary);
     font-size: 0.84rem;
+    min-width: 0;
+    /* anywhere (not break-word): ALSA ids and run names carry no spaces, and
+       only `anywhere` also lowers the min-content width, so the row may wrap
+       the string instead of widening the card. */
+    overflow-wrap: anywhere;
+}
+
+/* The free-form row meta (device, timing, QC) is the side that absorbs the
+   row's slack; the fixed-format values beside it stay whole. Scoped to the
+   row so it does not stretch the Select all label in the toolbar. */
+.measurement-list-row > .measurement-list-meta:not(.measurement-list-date) {
+    flex: 1 1 auto;
+}
+
+/* Short fixed-format values: the capture date and the point count read as one
+   label, so they stay whole and unbroken. They must not be the shrinking side
+   of the row either, or the nowrap text would spill out of its own box. */
+.measurement-list-date,
+.measurement-list-points {
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
 
 .measurement-saved-group {
@@ -5224,6 +5482,7 @@ select.url-input {
     border-radius: var(--radius-md);
     background: rgba(255,255,255,0.02);
     padding: 0.2rem 0.2rem 0.4rem;
+    min-width: 0;
 }
 
 .measurement-saved-group > summary {
@@ -5236,6 +5495,8 @@ select.url-input {
     padding-right: var(--arrow-reserve);
     font-weight: 600;
     position: relative;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .measurement-saved-group > summary::-webkit-details-marker {
@@ -5255,7 +5516,7 @@ select.url-input {
     width: var(--arrow-width);
     height: 0.45rem;
     margin-top: -0.225rem;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: var(--arrow-uri);
     background-repeat: no-repeat;
     background-size: contain;
     transition: transform 0.15s var(--ease);
@@ -5267,8 +5528,10 @@ select.url-input {
 
 .measurement-saved-list {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.75rem;
     padding: 0 0.3rem 0.3rem;
+    min-width: 0;
 }
 
 .measurement-saved-toolbar {
@@ -5277,18 +5540,20 @@ select.url-input {
     justify-content: space-between;
     gap: 0.75rem;
     flex-wrap: wrap;
+    min-width: 0;
     margin-bottom: 0.1rem;
 }
 
+/* The selection-dependent bulk actions. Open/close lives on the accordion
+   summary alone, so this group holds only the two actions and sits at the
+   toolbar's trailing edge. */
 .measurement-saved-toolbar-selection {
     display: flex;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: flex-end;
     gap: 0.75rem;
     flex-wrap: wrap;
-    flex: 1 1 auto;
-}
-.measurement-saved-close-action {
+    min-width: 0;
     margin-left: auto;
 }
 .label-compact {
@@ -5299,6 +5564,7 @@ select.url-input {
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    min-width: 0;
 }
 
 .measurement-saved-merge-action,
@@ -5308,8 +5574,7 @@ select.url-input {
 
 .measurement-saved-merge-action.is-inert,
 .measurement-saved-delete-action.is-inert {
-    visibility: hidden;
-    pointer-events: none;
+    display: none;
 }
 /* ============================================================
    Effects tab styling
@@ -5394,8 +5659,48 @@ select.url-input {
     line-height: 1.7;
     font-size: 0.9rem;
 }
+/* Summary segments ("Sub HPF 80 Hz") stay whole; lines break at the dots. */
+.effects-summary-part {
+    white-space: nowrap;
+}
 
 /* Preset compare A/B row */
+.effects-compare-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.65rem 1rem;
+}
+
+/* Bank selector row: sits in the A/B card header, flush with no gap below. */
+.effects-bank-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 100%;
+    margin-bottom: 0;
+}
+
+.effects-bank-row label {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.effects-bank-row .url-input {
+    width: auto;
+    min-width: 8.5rem;
+    max-width: 12rem;
+    min-height: 36px;
+    padding-block: 0.35rem;
+    font-size: 0.85rem;
+    background-color: var(--bg-surface);
+}
+
+.effects-rew-dual-grid.is-mono {
+    grid-template-columns: 1fr;
+}
+
 .effects-compare-row {
     display: flex;
     flex-direction: column;
@@ -5689,16 +5994,122 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     max-width: 42ch;
 }
 
+/* Crossover / Speaker tile: way tabs, response graph, control grid. */
+.effects-card-crossover {
+    /* Full-width band directly above the subwoofer band (order 20). */
+    grid-column: 1 / -1;
+    order: 19;
+}
+.crossover-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+}
+/* Way tabs and the L/R link share one row above the graph; the link stays
+   right-aligned and wraps below the tabs on narrow screens. */
+.crossover-tabrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.9rem;
+}
+.crossover-tabrow > .crossover-tabs {
+    flex: 1 1 auto;
+    margin-bottom: 0;
+}
+.crossover-tabrow > .crossover-link-label {
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+/* Speaker-way tabs and the Sub L / Sub R tabs are one tab style. */
+.crossover-tab,
+.sub-side-tab {
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.crossover-tab.is-active,
+.sub-side-tab.is-active {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+/* Control groups reuse the subwoofer group visuals; tracks hug their
+   content and leftover width becomes even spacing, like the sub tile. */
+.crossover-control-groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    width: min(100%, 1100px);
+    margin: 0 auto;
+}
+.crossover-trio-group {
+    flex: 1 1 auto;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-evenly;
+    align-items: end;
+    gap: 0.7rem 0.8rem;
+}
+#tab-effects .crossover-trio-group {
+    /* Beats the shared group min-width: 0 so a group wraps as a whole
+       instead of squeezing its controls onto two lines. */
+    min-width: min-content;
+}
+.crossover-trio-group > .effects-subwoofer-group-label {
+    flex: 1 1 100%;
+}
+#tab-effects select.effects-crossover-type-select {
+    /* 9.5rem is the widest option ("Linkwitz-Riley") plus the native arrow;
+       the old 9rem cap cut the closed label by ~5px on narrow cards. */
+    width: min(100%, 9.5rem);
+    min-width: 0;
+    max-width: 100%;
+    /* Left-aligned like every other app select, closed and open. */
+    text-align: left;
+}
+/* The way trim row (Level / Alignment / Polarity): the two steppers keep
+   their own width (the shared unit block makes them identical) and are never
+   squeezed below it, so the row wraps to a second line on a narrow card
+   instead of clipping a digit behind the decimal comma. */
+#effects-crossover-trim-group > .field-group:has(.stepper-control) {
+    min-width: min-content;
+}
+
+.crossover-link-label {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+.crossover-link-label input {
+    accent-color: var(--accent);
+}
 .effects-card-subwoofer {
     grid-column: 1 / -1;
     order: 20;
 }
 
-.effects-card-subwoofer-header {
+/* Title and mode badge share the first line; the routing summary spans the
+   full header width below, like the crossover card's summary. */
+.effects-card-subwoofer-title {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 1rem;
+    margin-bottom: 0.4rem;
+}
+
+.effects-card-subwoofer-title h3 {
+    margin-bottom: 0;
 }
 
 .effects-subwoofer-mode-badge {
@@ -5717,7 +6128,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     background: rgba(110, 231, 183, 0.1);
 }
 
-.effects-subwoofer-stack {
+/* Both cards space tab row, graph and control groups alike. */
+.effects-subwoofer-stack,
+.effects-card-crossover .effects-stack {
     gap: 0.75rem;
 }
 
@@ -5726,7 +6139,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     margin: 0 auto;
     border: 1px solid rgba(110, 231, 183, 0.18);
     border-radius: var(--radius-md);
-    background: #08111f;
+    background: var(--canvas-deep);
     overflow: hidden;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
@@ -5735,70 +6148,140 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     display: block;
     width: 100%;
     height: 136px;
-    background: #08111f;
+    background: var(--canvas-deep);
     touch-action: pan-y;
+    cursor: ew-resize;
+}
+
+/* The crossover graph only drags on its editable cutoff lines, so it shows
+   the resize cursor just over a handle (the tile sets these while the
+   pointer is on a movable line or dragging it). Declared after the shared
+   preview rule to win its ew-resize on equal specificity. */
+.crossover-graph {
+    cursor: default;
+}
+
+.crossover-graph.is-handle-hover,
+.crossover-graph.is-handle-drag {
     cursor: ew-resize;
 }
 
 .effects-subwoofer-controls {
     display: grid;
-    grid-template-columns: minmax(148px, 1.08fr) minmax(112px, 0.78fr) repeat(6, minmax(92px, 1fr));
-    align-items: stretch;
+    /* 2.1: Global + Sub as two equal-width cards. 2.2 (Dual-Mono and
+       Stereo) adds the third card via the is-subwoofer-22 rule. Cards hug
+       their own content (start): no forced equal height, no whitespace. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
     gap: 0.75rem;
     width: min(100%, 1100px);
     margin: 0 auto;
+}
+
+.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .effects-subwoofer-control-group {
     min-width: 0;
     overflow: hidden;
     padding: 0.7rem;
-    border: 1px solid rgba(148, 163, 184, 0.18);
+    border: 1px solid var(--slate-400-a18);
     border-radius: var(--radius-sm);
-    background: rgba(15, 23, 42, 0.38);
+    background: var(--slate-900-a38);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
 .effects-subwoofer-global-group {
-    grid-column: 1 / span 2;
+    grid-column: auto;
     display: grid;
     /* Same principle as the channel groups: tracks hug their content and
        the leftover width becomes even spacing, so controls can neither
-       overlap nor clip at any card width. */
-    grid-template-columns: repeat(2, auto);
-    justify-content: space-evenly;
+       overlap nor clip at any card width. One stacked column: the label and
+       the single crossover block (shared, or the selected side while a
+       Stereo pair is unlinked). */
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: stretch;
     align-items: end;
+    /* One vertical rhythm for all three cards (heading, first row, second
+       row), so Crossover/Type line up with Level/Align and Slope/Main
+       highpass with Polarity, and the cards come out equally tall. */
     gap: 0.7rem;
 }
 
-.effects-subwoofer-channel-group {
-    grid-column: 3 / -1;
+/* Tab row above the graph, mirroring the speaker-way tabs: Link L/R plus,
+   while a Stereo pair is unlinked, the Sub L / Sub R selector. */
+.effects-subwoofer-tabrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.9rem;
+    width: min(100%, 1100px);
+    margin: 0 auto;
+}
+
+/* Same split as the crossover tab row: tabs left, link right. */
+.effects-subwoofer-tabrow > .effects-subwoofer-side-tabs {
+    flex: 1 1 auto;
+}
+.effects-subwoofer-tabrow > .crossover-link-label {
+    flex: 0 0 auto;
+}
+
+/* Sub L / Sub R selector for an unlinked Stereo pair. Same tab language as
+   the speaker-way tabs. */
+.effects-subwoofer-side-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+/* Two-line crossover area: Frequency/Type on the first row, Slope/Main
+   highpass on the second. Shared and per-side blocks share the layout so
+   the card keeps its height when the tabs switch sides. */
+.effects-subwoofer-crossover-block {
+    grid-column: 1 / -1;
     display: grid;
-    /* One principle for every field: tracks hug their content (steppers and
-       selects keep their compact fixed sizes) and the leftover width becomes
-       even spacing between the columns. Nothing can overlap or clip, no
-       per-control track sizing, and Sub 1 / Sub 2 share the class and stay
-       symmetric. Headings and controls share one center axis (field-group
-       centering below). */
-    grid-template-columns: repeat(3, auto);
+    grid-template-columns: repeat(2, auto);
     justify-content: space-evenly;
     align-items: end;
-    gap: 0.8rem;
-    background: rgba(8, 47, 73, 0.2);
-    border-color: rgba(110, 231, 183, 0.26);
+    gap: 0.7rem 0.75rem;
+    width: 100%;
 }
 
-.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group {
-    grid-column: 3 / span 3;
+.effects-subwoofer-channel-group {
+    grid-column: auto;
+    display: grid;
+    /* Level and Alignment share the two flexible tracks, so the two steppers
+       come out exactly as wide as each other and stay flush in their column;
+       Polarity spans both tracks below, centered on its own single-letter
+       values. A three-across row cannot work: two value fields that keep
+       their digit floor plus the polarity select are wider than this card on
+       every desktop size, which is what used to clip the alignment value.
+       Sub 1 / Sub 2 share the class and stay symmetric; headings and
+       controls share one center axis (field-group centering below). */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: space-evenly;
+    align-items: end;
+    gap: 0.7rem 0.75rem;
 }
 
-.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
-    grid-column: 6 / span 3;
-}
-
-.effects-subwoofer-sub2-group {
-    background: rgba(30, 41, 59, 0.44);
-    border-color: rgba(147, 197, 253, 0.24);
+/* Wide desktop is the tightest fit (three ~310-360px cards side by side):
+   Global uses the same two equal tracks and side padding as Sub 1 / Sub 2,
+   so Crossover sits exactly where Level sits, Type where Align sits. The
+   cards share the neutral group surface: the old Sub 1 mint / Sub 2 blue
+   edges carried no meaning, and blue is the Main HPF curve in the graph. */
+@media (min-width: 1101px) {
+    .effects-subwoofer-controls > .effects-subwoofer-control-group {
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
+    }
+    .effects-subwoofer-crossover-block {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    #tab-effects .effects-subwoofer-channel-group select.effects-subwoofer-polarity-select {
+        width: min(100%, 3.5rem);
+    }
 }
 
 .effects-subwoofer-group-label {
@@ -5829,14 +6312,36 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     line-height: 1.14;
 }
 
+/* The stepper fills its field-group exactly like the sibling selects do
+   (flex: 1 1 0%), so a control never overhangs its own column and the two
+   sub trims line up edge to edge. The value field absorbs the extra width. */
+.effects-subwoofer-control-group .delay-input-wrap {
+    width: 100%;
+}
+
+.effects-subwoofer-control-group .stepper-control {
+    width: 100%;
+}
+
+/* At the tightest three-across split (~1101-1130px) a track is a few px
+   narrower than a stepper with 26px buttons; the buttons give up the
+   difference (22px minimum) instead of pushing "+" out of the frame. The
+   value field keeps its digit floor. */
+.effects-subwoofer-controls .stepper-btn {
+    flex-shrink: 1;
+    min-width: 22px;
+}
+
 .effects-subwoofer-derived-delays {
-    grid-column: 3 / -1;
+    /* Below the cards across the full width; on wide desktop tucked under
+       the sub cards instead (see the min-width rule below). */
+    grid-column: 1 / -1;
     align-self: stretch;
     min-width: 0;
     padding: 0.48rem 0.65rem;
-    border: 1px solid rgba(148, 163, 184, 0.14);
+    border: 1px solid var(--slate-400-a14);
     border-radius: var(--radius-sm);
-    background: rgba(15, 23, 42, 0.28);
+    background: var(--slate-900-a28);
     text-align: center;
     color: var(--text-secondary);
     font-size: 0.74rem;
@@ -5844,9 +6349,37 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     line-height: 1.25;
 }
 
-.effects-subwoofer-derived-delays span {
+/* Wide desktop, 2.2 only (the timing readout stays hidden in 2.1): the
+   sub cards are shorter than Global's 2x2 block, so the timing tucks into
+   that free space — under Sub 1 + Sub 2 with its bottom edge on Global's
+   bottom — instead of costing another full row. */
+@media (min-width: 1101px) {
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-global-group {
+        grid-row: 1 / span 2;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group {
+        grid-column: 2;
+        grid-row: 1;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
+        grid-column: 3;
+        grid-row: 1;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-derived-delays {
+        grid-column: 2 / -1;
+        grid-row: 2;
+        align-self: end;
+    }
+}
+
+.effects-subwoofer-derived-delays strong {
     color: var(--text-primary);
     font-weight: 700;
+}
+
+/* A narrow card wraps between entries, never inside "Sub R: 0.00 ms". */
+.effects-subwoofer-dd-item {
+    white-space: nowrap;
 }
 
 .effects-subwoofer-polarity-field,
@@ -5855,25 +6388,30 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     align-self: end;
 }
 
+.effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
+    grid-column: 1 / -1;
+    justify-self: center;
+}
+
 /* Subwoofer selects share the common #tab-effects control metrics; the
    Main highpass cap (5.2rem) fits the widest option ("On"/"Off") with room
    beside the native arrow on Android, where the narrower cap clipped "On".
    The polarity selects keep the tighter 4.2rem cap beside the single-letter
-   "N"/"I" values. Centered text keeps the boxes calm between heading and
-   native arrow. The select type selectors are load-bearing: #tab-effects
+   "N"/"I" values. Left-aligned text like every other app select, closed
+   and open. The select type selectors are load-bearing: #tab-effects
    .url-input (equal specificity, later in the file) would otherwise keep
    width:100% alive and stretch the selects back across their grid tracks. */
 #tab-effects select.effects-subwoofer-compact-select {
     width: min(100%, 5.2rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
 }
 #tab-effects select.effects-subwoofer-polarity-select {
     width: min(100%, 4.2rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
 }
 
 .effects-filter-import-area.is-busy {
@@ -5991,12 +6529,22 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-peq-add-row {
-    display: grid;
-    grid-template-columns: minmax(0, 220px) auto;
+    /* Flex, not a fixed two-column grid: the mode select and the Add button
+       need a combined width that the PEQ card only offers on wide layouts
+       (it is one of several cards side by side), so the row now wraps when
+       the card is too narrow instead of letting the select overrun its
+       column. The mode field still takes all the space on one row. */
+    display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: end;
     gap: 1rem;
     margin-bottom: 0.35rem;
+}
+
+.effects-peq-mode-field {
+    flex: 1 1 12rem;
+    min-width: 0;
 }
 
 .effects-peq-mode-field {
@@ -6258,7 +6806,7 @@ input[type="number"]::-webkit-outer-spin-button {
     appearance: none;
     -webkit-appearance: none;
     padding-right: var(--arrow-reserve);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: var(--arrow-uri);
     background-repeat: no-repeat;
     background-position: right var(--arrow-offset) center;
     background-size: var(--arrow-width) auto;
@@ -6554,21 +7102,28 @@ input[type="number"]::-webkit-outer-spin-button {
     font-weight: 600;
     line-height: 1;
     user-select: none;
+    /* One width for every unit ("dB", "ms", "Hz"): steppers next to each
+       other then share one intrinsic width, so a row of them lines up
+       flush without stretching the controls or hand-tuned per-row sizes. */
+    min-width: 1.5rem;
+    text-align: center;
 }
 
 #tab-effects .stepper-control .stepper-input {
-    width: 3.1rem;
-    min-width: 0;
+    /* 4rem is the floor for every value field here. The app renders two
+       decimals, so the widest reachable values are "-40.00" (sub alignment),
+       "-24.00" (sub level), "-80.00" (way trim) and "20000" (crossover);
+       all of them measure ~60px at this font size. A number input clips its
+       text silently and without an ellipsis, so the field may grow with the
+       control but must never shrink below that: no digit may be lost behind
+       the decimal comma. The unit stays snug against the value area. */
+    width: 4rem;
+    min-width: 4rem;
+    flex: 1 1 auto;
     min-height: 0;
     height: auto;
     border: 0;
     background: transparent;
-    /* Centering and readability come only from internal presentation: the
-       compact outer size is load-bearing for the 3-column sub rows (Level /
-       Alignment / Polarity share tight tracks) and must stay near the
-       original footprint. 3.1rem fits the widest alignment value ("-39.9")
-       unclipped next to its unit; the unit stays snug against the value
-       area. */
     text-align: center;
     padding: 0.35rem 0;
     font-size: 0.92rem;
@@ -6586,13 +7141,12 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 /* Stacked mobile fields have full cell width: restore comfortable touch
-   targets for the stepper buttons. */
+   targets for the stepper buttons. The value field keeps the shared floor
+   from the rules above, so the wider touch buttons never eat into the
+   digits and the five-digit frequency override stays in force. */
 @media (max-width: 520px) {
     .stepper-btn {
         width: 34px;
-    }
-    #tab-effects .stepper-control .stepper-input {
-        width: 3.4rem;
     }
 }
 /* ============================================================
@@ -6748,32 +7302,10 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .btn-primary,
 .btn-secondary,
+.btn-danger,
 .btn-ghost {
     border-radius: 11px;
 }
-.measurement-calibration-select-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    gap: 0.5rem;
-    align-items: stretch;
-}
-
-.measurement-calibration-select-row .btn-secondary,
-.measurement-calibration-select-row .btn-danger {
-    min-width: 92px;
-    padding-left: 0.9rem;
-    padding-right: 0.9rem;
-}
-
-.measurement-calibration-upload-area {
-    min-height: 64px;
-    padding: 0.9rem 1rem;
-}
-
-.measurement-calibration-upload-area .upload-area-icon {
-    font-size: 1.1rem;
-}
-
 /* ============================================================
    Playback Bar (fixed bottom)
    ============================================================ */
@@ -6938,7 +7470,7 @@ input[type="number"]::-webkit-outer-spin-button {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.samplerate-status { background: rgba(148,163,184,.10); color: var(--text-secondary); padding: .08rem .36rem; }
+.samplerate-status { background: var(--slate-400-a10); color: var(--text-secondary); padding: .08rem .36rem; }
 /* The queue pill is text-only: no leading icon, so longer track numbers
    cost less width and the gap to the seek time stays untouched. */
 .queue-status { background: rgba(110,231,183,.08); color: var(--accent); }
@@ -7035,11 +7567,16 @@ input[type="number"]::-webkit-outer-spin-button {
        below only switch the shared desktop size to the shared phone size;
        both sliders always move together. */
     height: 4px;
-    background: linear-gradient(to right,
+    /* Shared fill for every repaint of this track: the responsive media
+       blocks re-apply it to the track pseudo through this token.
+       --range-progress is set per slider element, so the gradient has to
+       compute here on the slider itself. */
+    --slider-track: linear-gradient(to right,
         var(--accent) 0%,
         var(--accent) var(--range-progress),
         rgba(255,255,255,.10) var(--range-progress),
         rgba(255,255,255,.10) 100%);
+    background: var(--slider-track);
     background-clip: content-box;
     box-shadow: none;
 }
@@ -7195,7 +7732,7 @@ input[type="number"]::-webkit-outer-spin-button {
     appearance: none;
     -webkit-appearance: none;
     padding-right: var(--arrow-reserve);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: var(--arrow-uri);
     background-repeat: no-repeat;
     background-position: right var(--arrow-offset) center;
     background-size: var(--arrow-width) auto;
@@ -7315,30 +7852,6 @@ input[type="number"]::-webkit-outer-spin-button {
 /* Hidden meter segments (JS-driven via .meter-segment-hidden): must win
    over the base .meter-segments i { display: block } row rule. */
 .meter-segments .meter-segment-hidden { display: none; }
-
-/* Tablet / compact desktop: give the transport real vertical breathing room,
-   keep the album/queue chip inside the track-copy column, and preserve a
-   compact right-side meter/volume stack. */
-
-/* Phone: keep the six-segment stereo meter, but give transport/seek/volume
-   more air. Seek and volume use identical outer gutters so both slider tracks
-   share the same center line and width. */
-
-/* ============================================================
-   Playback footer refinement v7 — desktop/tablet vertical compacting
-   ============================================================ */
-/* Preserve the four-zone layout and control sizing; only reclaim vertical
-   breathing room above and below the existing content. Desktop rules live
-   in the consolidated ≥1181px block above; this block covers tablets. */
-
-/* ============================================================
-   Playback footer refinement v8 — quieter desktop/tablet sliders
-   ============================================================ */
-/* Keep the input box unchanged for pointer/touch behavior. Only the native
-   track paint and thumb are made slightly lighter than the volume control. */
-
-/* Phone: soften only the visible range paint; the input box remains the
-   existing size so pointer and touch targeting do not change. */
 /* Shared detail track-row body (library album detail + Tidal album/playlist
    detail): track number, round play button, stacked title/sub, favorite,
    duration. One visual language for both providers; the row container chrome
@@ -7388,25 +7901,6 @@ input[type="number"]::-webkit-outer-spin-button {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-
-/* Desktop-only brand scale-down (~12%): the whole logo lockup shrinks
-   uniformly so the first nav tab keeps more clearance from the brand
-   without touching the nav buttons or rebalancing the header. */
-
-/* Mobile touch targets: keep the header power button tappable on narrow
-   screens (base 38px, refreshed at all widths below). */
-
-/* Small phones: slightly smaller brand lockup than the 760px tablet size.
-   Placed after the 760px override so these win on narrow screens. */
-
-/* Mobile: tighten the Spotify/Qobuz player; Tidal browse stays compact and the
-   search row may wrap so the button never overflows the viewport. Detail
-   headers (library + Tidal) keep the compact side-by-side hero at every
-   width: back button on its own right-aligned line, cover anchored left, meta
-   block right beside it and left-aligned. No stacking, no centered hero. */
-
-
-/* Respect reduced-motion preference: collapse animations and transitions. */
 
 /* =========================================================================
    Playback footer — canonical 3 ranges
@@ -7525,21 +8019,13 @@ input[type="number"]::-webkit-outer-spin-button {
     .volume-slider::-webkit-slider-runnable-track {
         height: 4px;
         border-radius: 999px;
-        background: linear-gradient(to right,
-            var(--accent) 0%,
-            var(--accent) var(--range-progress),
-            rgba(255,255,255,.10) var(--range-progress),
-            rgba(255,255,255,.10) 100%);
+        background: var(--slider-track);
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
         height: 4px;
         border-radius: 999px;
-        background: linear-gradient(to right,
-            var(--accent) 0%,
-            var(--accent) var(--range-progress),
-            rgba(255,255,255,.10) var(--range-progress),
-            rgba(255,255,255,.10) 100%);
+        background: var(--slider-track);
     }
     .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
     .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
@@ -7721,21 +8207,13 @@ input[type="number"]::-webkit-outer-spin-button {
     .volume-slider::-webkit-slider-runnable-track {
         height: 4px;
         border-radius: 999px;
-        background: linear-gradient(to right,
-            var(--accent) 0%,
-            var(--accent) var(--range-progress),
-            rgba(255,255,255,.10) var(--range-progress),
-            rgba(255,255,255,.10) 100%);
+        background: var(--slider-track);
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
         height: 4px;
         border-radius: 999px;
-        background: linear-gradient(to right,
-            var(--accent) 0%,
-            var(--accent) var(--range-progress),
-            rgba(255,255,255,.10) var(--range-progress),
-            rgba(255,255,255,.10) 100%);
+        background: var(--slider-track);
     }
     .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
     .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
@@ -7950,21 +8428,13 @@ input[type="number"]::-webkit-outer-spin-button {
     .volume-slider::-webkit-slider-runnable-track {
         height: 4px;
         border-radius: 999px;
-        background: linear-gradient(to right,
-            var(--accent) 0%,
-            var(--accent) var(--range-progress),
-            rgba(255,255,255,.10) var(--range-progress),
-            rgba(255,255,255,.10) 100%);
+        background: var(--slider-track);
     }
     .seek-slider::-moz-range-track,
     .volume-slider::-moz-range-track {
         height: 4px;
         border-radius: 999px;
-        background: linear-gradient(to right,
-            var(--accent) 0%,
-            var(--accent) var(--range-progress),
-            rgba(255,255,255,.10) var(--range-progress),
-            rgba(255,255,255,.10) 100%);
+        background: var(--slider-track);
     }
     .seek-slider::-webkit-slider-thumb { width: 12px; height: 12px; }
     .seek-slider::-moz-range-thumb { width: 12px; height: 12px; }
@@ -8022,16 +8492,9 @@ input[type="number"]::-webkit-outer-spin-button {
    Shared component queries — grouped by range
    ========================================================================= */
 @media (hover: none), (pointer: coarse) {
-    /* from _layout.css */
-    .brand-lockup-button[data-tooltip]::after,
-        .power-btn[data-tooltip]::after {
-            display: none;
-        }
-
-    /* from _radio.css */
     #tracks-list .folder-actions {
-            opacity: 1;
-        }
+        opacity: 1;
+    }
 
     /* Touch hit-area expansion: visuals stay compact while the tap target
        reaches ~44px via an invisible overlay. No layout shift on desktop. */
@@ -8049,48 +8512,63 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     /* Cover favorites are already absolutely positioned. Keep that anchor:
        making them relative pulls them into the card flow on touch screens. */
-    .control-btn-mode::after,
-    .control-btn-clear::after,
-    .track-favorite-btn::after,
-    .album-card-fav::after,
-    .station-card-fav::after,
-    .streaming-fav::after,
-    .track-row-favorite::after,
-    .track-fav::after,
-    .stepper-btn::after,
-    .measurement-chip::after,
-    .measurement-slot-chip::after,
-    .measurement-peq-chip::after {
+    .control-btn-mode::before,
+    .control-btn-clear::before,
+    .track-favorite-btn::before,
+    .album-card-fav::before,
+    .station-card-fav::before,
+    .streaming-fav::before,
+    .track-row-favorite::before,
+    .track-fav::before,
+    .stepper-btn::before,
+    .measurement-chip::before,
+    .measurement-slot-chip::before,
+    .measurement-peq-chip::before {
         content: '';
         position: absolute;
         inset: -8px;
     }
-    .control-btn-mode::after,
-    .control-btn-clear::after {
+    .control-btn-mode::before,
+    .control-btn-clear::before {
         inset: -10px;
     }
-
+    /* Crossover / subwoofer band chips and the Link L/R toggle are compact
+       by design (29px and 20px), too small to hit reliably. They grow their
+       own box here instead of using an ::after overlay: neighbouring chips
+       sit 0.4rem apart, so expanded overlays would overlap and steal taps
+       from each other. */
+    .crossover-tab,
+    .sub-side-tab {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        padding-inline: 0.85rem;
+    }
+    .crossover-link-label {
+        /* Row-aligned label: min-height alone would not centre the box in
+           the 29px band it shares with the chips. */
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        padding-inline: 0.35rem;
+    }
+    .crossover-tabrow {
+        align-items: center;
+    }
 }
 
 @media (max-width: 540px) {
-    /* from _layout.css */
     .power-btn-icon { width: 20px; height: 20px; }
-
-    /* from _playback.css */
-    .power-btn { width: 44px; height: 44px; }
-
 }
 
 @media (max-width: 980px) {
-    /* from _streaming.css */
     .measurement-layout {
-            grid-template-columns: 1fr;
-        }
+        grid-template-columns: 1fr;
+    }
 
-        .measurement-dialog {
-            min-height: auto;
-        }
-
+    .measurement-dialog {
+        min-height: auto;
+    }
 }
 
 @media (min-width: 641px) and (max-width: 980px) {
@@ -8185,344 +8663,353 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 @media (min-width: 600px) and (max-width: 980px) and (orientation: portrait) {
-    /* from _streaming.css */
     .measurement-graph {
-            height: min(430px, 42vh);
-            min-height: 0;
-        }
-
+        height: min(430px, 42vh);
+        min-height: 0;
+    }
 }
 
 @media (max-width: 599px) {
-    /* from _streaming.css */
     .measurement-overlay {
-            padding: 0.5rem;
-            overflow-x: hidden;
-            align-items: center;
-        }
+        padding: 0.5rem;
+        overflow-x: hidden;
+        align-items: center;
+    }
 
-        .measurement-dialog {
-            width: 100%;
-            min-height: auto;
-            max-height: calc(100dvh - 1rem);
-            padding: 0.85rem;
-            border-radius: var(--radius-lg);
-            overflow-x: hidden;
-        }
+    .measurement-dialog {
+        width: 100%;
+        min-height: auto;
+        max-height: calc(100dvh - 1rem);
+        padding: 0.85rem;
+        border-radius: var(--radius-lg);
+        overflow-x: hidden;
+    }
 
         .measurement-dialog input,
         .measurement-dialog select,
-        .measurement-dialog textarea {
-            font-size: 16px;
-        }
+    .measurement-dialog textarea {
+        font-size: 16px;
+    }
 
         .measurement-card-header-split,
         .measurement-list-row,
-        .measurement-actions-top {
-            flex-direction: column;
-            align-items: flex-start;
-        }
+    .measurement-actions-top {
+        flex-direction: column;
+        align-items: flex-start;
+    }
 
-        .measurement-graph-header-actions {
-            width: 100%;
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-            gap: 0.55rem;
-            margin-left: 0;
-            align-items: stretch;
-        }
+    .measurement-graph-header-actions {
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 0.55rem;
+        margin-left: 0;
+        align-items: stretch;
+    }
 
-        .measurement-graph-header-actions .measurement-view-toggle {
-            grid-column: 1;
-            grid-row: 1;
-            min-width: 0;
-            justify-content: flex-start;
-        }
+    .measurement-graph-header-actions .measurement-view-toggle {
+        grid-column: 1;
+        grid-row: 1;
+        min-width: 0;
+        justify-content: flex-start;
+    }
 
-        .measurement-graph-header-actions .measurement-clear-btn {
-            grid-column: 2;
-            grid-row: 1;
-            width: 100%;
-        }
+    .measurement-graph-header-actions .measurement-clear-btn {
+        grid-column: 2;
+        grid-row: 1;
+        width: 100%;
+    }
 
         .measurement-graph-header-actions #measurement-assist-mode,
-        .measurement-graph-header-actions #measurement-target-curve {
-            grid-row: 2;
-            width: 100%;
-            min-width: 0;
-        }
+    .measurement-graph-header-actions #measurement-target-curve {
+        grid-row: 2;
+        width: 100%;
+        min-width: 0;
+    }
 
-        .measurement-graph-header-actions #measurement-assist-mode {
-            grid-column: 1;
-        }
+    .measurement-graph-header-actions #measurement-assist-mode {
+        grid-column: 1;
+    }
 
-        .measurement-graph-header-actions #measurement-target-curve {
-            grid-column: 2;
-        }
+    .measurement-graph-header-actions #measurement-target-curve {
+        grid-column: 2;
+    }
 
-        .measurement-summary {
-            text-align: left;
-            max-width: none;
-        }
+    .measurement-summary {
+        text-align: left;
+        max-width: none;
+    }
 
         .measurement-saved-merge-action.is-inert,
-        .measurement-saved-delete-action.is-inert {
-            display: none;
-        }
+    .measurement-saved-delete-action.is-inert {
+        display: none;
+    }
 
         .measurement-saved-group > summary,
         .measurement-saved-toolbar button,
-        .measurement-select-all-toggle {
-            font-size: 16px;
-            touch-action: manipulation;
-        }
+    .measurement-select-all-toggle {
+        font-size: 16px;
+        touch-action: manipulation;
+    }
 
-        .measurement-graph {
-            min-height: 260px;
-        }
+    .measurement-graph {
+        min-height: 260px;
+    }
 
-        .measurement-convolver-grid { grid-template-columns: 1fr; }
-        .measurement-peq-panel-header {
-            flex-direction: column;
-            align-items: stretch;
-        }
+    .measurement-convolver-grid { grid-template-columns: 1fr; }
+    .measurement-peq-panel-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
 
-        #measurement-custom-house-curve-panel {
-            grid-template-columns: 1fr;
-        }
+    #measurement-custom-house-curve-panel {
+        grid-template-columns: 1fr;
+    }
 
         #measurement-custom-house-curve-panel > .field-group,
-        #measurement-custom-house-curve-panel > .measurement-peq-take-row {
-            grid-column: 1 / -1;
-        }
+    #measurement-custom-house-curve-panel > .measurement-peq-take-row {
+        grid-column: 1 / -1;
+    }
 
-        #measurement-custom-house-curve-panel > .measurement-peq-take-row {
-            flex-direction: column;
-            align-items: stretch;
-            min-width: 0;
-        }
+    #measurement-custom-house-curve-panel > .measurement-peq-take-row {
+        flex-direction: column;
+        align-items: stretch;
+        min-width: 0;
+    }
 
-        #measurement-custom-house-curve-panel > .measurement-peq-take-row .btn-primary {
-            width: 100%;
-        }
+    #measurement-custom-house-curve-panel > .measurement-peq-take-row .btn-primary {
+        width: 100%;
+    }
 
-        .measurement-peq-editor-grid {
-            grid-template-columns: 1fr 1fr;
-        }
+    .measurement-peq-editor-grid {
+        grid-template-columns: 1fr 1fr;
+    }
 
-        .measurement-peq-editor-grid .measurement-peq-direct-input-field {
-            grid-column: 1 / -1;
-        }
+    .measurement-peq-editor-grid .measurement-peq-direct-input-field {
+        grid-column: 1 / -1;
+    }
 
-        .measurement-peq-stepper {
-            grid-template-columns: 44px minmax(0, 1fr) 44px;
-        }
+    .measurement-peq-stepper {
+        grid-template-columns: 44px minmax(0, 1fr) 44px;
+    }
 
-        .measurement-peq-editor-grid .url-input {
-            font-size: 16px;
-        }
+    .measurement-peq-editor-grid .url-input {
+        font-size: 16px;
+    }
 
         .measurement-peq-editor-actions,
         .measurement-peq-take-row,
-        .measurement-save-row {
-            justify-content: stretch;
-        }
+    .measurement-save-row {
+        justify-content: stretch;
+    }
 
         .measurement-save-row,
-        .measurement-workflow-list {
-            align-items: stretch;
-        }
+    .measurement-workflow-list {
+        align-items: stretch;
+    }
 
-        .measurement-workflow-list {
-            flex: 0 0 auto;
-            width: 100%;
-            gap: 0.9rem;
-        }
+    .measurement-workflow-list {
+        flex: 0 0 auto;
+        width: 100%;
+        gap: 0.9rem;
+    }
 
-        .measurement-workflow-group {
-            display: flex;
-            align-items: stretch;
-            flex-direction: column;
-            gap: 0.55rem;
-        }
+    .measurement-workflow-group {
+        display: flex;
+        align-items: stretch;
+        flex-direction: column;
+        gap: 0.55rem;
+    }
 
-        .measurement-workflow-menu {
-            width: 100%;
-        }
+    .measurement-workflow-menu {
+        width: 100%;
+    }
 
-        .measurement-workflow-menu-panel {
-            position: static;
-            width: 100%;
-            max-width: none;
-            box-sizing: border-box;
-        }
+    .measurement-workflow-menu-panel {
+        position: static;
+        width: 100%;
+        max-width: none;
+        box-sizing: border-box;
+    }
 
-        .measurement-workflow-row {
-            display: flex;
-            align-items: stretch;
-            flex-direction: column;
-            gap: 0.55rem;
-        }
+    .measurement-workflow-row {
+        display: flex;
+        align-items: stretch;
+        flex-direction: column;
+        gap: 0.55rem;
+    }
 
-        .measurement-repeat-help {
-            flex: 0 0 auto;
-        }
+    /* Speaker alignment keeps its two-column button pair on mobile,
+       like the desktop layout; only this group is exempt from stacking. */
+    .measurement-workflow-speaker-row {
+        display: flex;
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .measurement-workflow-speaker-buttons {
+        flex-direction: row;
+    }
+
+    .measurement-workflow-speaker-buttons .btn-secondary {
+        flex: 1 1 0;
+        width: auto;
+        min-width: 0;
+    }
+
+    #measurement-speaker-align-cancel {
+        flex: 1 1 100%;
+    }
+
+    .measurement-repeat-help {
+        flex: 0 0 auto;
+    }
 
         #measurement-sweep-toggle,
         #measurement-repeat-start,
         #measurement-hybrid-open,
     #measurement-auto-sub-start,
-        #measurement-spl-calibration-open {
-            width: 100%;
-            min-width: 0;
-        }
+    #measurement-spl-calibration-open {
+        width: 100%;
+        min-width: 0;
+    }
 
-        .spl-calibration-dialog {
-            width: 100%;
-            max-height: calc(100dvh - 1rem);
-            padding: 0.85rem;
-            border-radius: var(--radius-lg);
-        }
+    .spl-calibration-dialog {
+        width: 100%;
+        max-height: calc(100dvh - 1rem);
+        padding: 0.85rem;
+        border-radius: var(--radius-lg);
+    }
 
-        .hybrid-measurement-dialog {
-            width: 100%;
-            max-height: calc(100dvh - 1rem);
-            padding: 0.85rem;
-            border-radius: var(--radius-lg);
-        }
+    .hybrid-measurement-dialog {
+        width: 100%;
+        max-height: calc(100dvh - 1rem);
+        padding: 0.85rem;
+        border-radius: var(--radius-lg);
+    }
 
-        .hybrid-wizard-grid { grid-template-columns: 1fr; }
-        .hybrid-room-view { min-height: 300px; }
-        .hybrid-step-card { min-height: 390px; }
-        .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
+    /* minmax(0, …), not 1fr: an auto-floored track took its min-content
+       width here and dragged the room view and the action row out of the
+       panel on a 320px screen. */
+    .hybrid-wizard-grid { grid-template-columns: minmax(0, 1fr); }
+    .hybrid-room-view { min-height: 300px; }
+    .hybrid-step-card { min-height: 390px; }
+    .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 
         .measurement-channel-chip-row,
-        .measurement-smoothing-chips {
-            width: 100%;
-            justify-content: flex-start;
-        }
+    .measurement-smoothing-chips {
+        width: 100%;
+        justify-content: flex-start;
+    }
 
-        .measurement-channel-chip-row {
-            justify-content: center;
-        }
+    .measurement-channel-chip-row {
+        justify-content: center;
+    }
 
         .measurement-card-setup,
         .measurement-card-setup .measurement-stack,
-        .measurement-card-setup .field-group {
-            min-width: 0;
-        }
+    .measurement-card-setup .field-group {
+        min-width: 0;
+    }
 
         .measurement-input-channel-grid,
-        .measurement-input-channel-grid.is-split {
-            grid-template-columns: 1fr;
-        }
+    .measurement-input-channel-grid.is-split {
+        grid-template-columns: 1fr;
+    }
 
         .measurement-card-setup .url-input,
-        #measurement-input-refresh {
-            width: 100%;
-            min-width: 0;
-        }
+    #measurement-input-refresh {
+        width: 100%;
+        min-width: 0;
+    }
 
-        .measurement-calibration-select-row {
-            grid-template-columns: 1fr;
-        }
+    .measurement-calibration-select-row {
+        grid-template-columns: 1fr;
+    }
 
         .measurement-calibration-select-row .btn-secondary,
-        .measurement-calibration-select-row .btn-danger {
-            width: 100%;
-            min-width: 0;
-        }
+    .measurement-calibration-select-row .btn-danger {
+        width: 100%;
+        min-width: 0;
+    }
 
         .measurement-peq-editor-actions .btn-danger,
         .measurement-peq-take-row .btn-secondary,
         .measurement-save-row .btn-secondary,
-        #measurement-repeat-start {
-            width: 100%;
-        }
+    #measurement-repeat-start {
+        width: 100%;
+    }
 
-        .measurement-peq-step-btn {
-            width: 44px;
-        }
-
+    .measurement-peq-step-btn {
+        width: 44px;
+    }
 }
 
 @media (min-width: 1200px) and (max-width: 2559px) {
-    /* from _playback.css */
     .radio-search-input-wrap {
-            margin-inline: 6.5rem;
-        }
-
+        margin-inline: 6.5rem;
+    }
 }
 
 @media (min-width: 900px) and (max-width: 1199px) {
-    /* from _playback.css */
     .radio-search-input-wrap {
-            margin-inline: 5.125rem;
-        }
-
+        margin-inline: 5.125rem;
+    }
 }
 
 @media (min-width: 2560px) {
-    /* from _playback.css */
     .radio-search-input-wrap {
-            margin-inline: 4.125rem;
-        }
-        .manage-dialog {
-            width: min(620px, 100%);
-        }
-
+        margin-inline: 4.125rem;
+    }
+    .manage-dialog {
+        width: min(620px, 100%);
+    }
 }
 
 @media (min-width: 701px) and (max-width: 1199px) {
     .radio-panel-header {
-            grid-template-columns: minmax(0, 1fr) minmax(420px, calc(100% - 13.8rem)) minmax(0, 1fr);
-        }
-
+        grid-template-columns: minmax(0, 1fr) minmax(420px, calc(100% - 13.8rem)) minmax(0, 1fr);
+    }
 }
 
 @media (max-width: 900px) {
-    /* from _playback.css */
     .manage-dialog {
-            width: min(620px, 100%);
-        }
-        .effects-grid {
-            grid-template-columns: 1fr;
-            gap: 1rem;
-        }
-        .effects-card { padding: 1.25rem; }
-        .effects-actions-right { justify-content: flex-end; }
-
+        width: min(620px, 100%);
+    }
+    .effects-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+    .effects-card { padding: 1.25rem; }
+    .effects-actions-right { justify-content: flex-end; }
 }
 
 @media (max-width: 1180px) {
-    /* from _playback.css */
     .library-actions-row {
-            align-items: center;
-            margin-bottom: 0.5rem;
-        }
-        .playlist-save-row {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 0.5rem;
-            margin-bottom: 0.7rem;
-        }
-        .playlist-save-controls {
-            width: 100%;
-            flex: 0 1 auto;
-        }
-        /* TIDAL save row: with the full-width controls container the five
-           controls wrap left-aligned instead of overflowing. */
-        .tidal-playlist-save-row .playlist-save-controls {
-            flex-wrap: wrap;
-        }
-
+        align-items: center;
+        margin-bottom: 0.5rem;
+    }
+    .playlist-save-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+        margin-bottom: 0.7rem;
+    }
+    .playlist-save-controls {
+        width: 100%;
+        flex: 0 1 auto;
+    }
+    /* TIDAL save row: with the full-width controls container the five
+       controls wrap left-aligned instead of overflowing. */
+    .tidal-playlist-save-row .playlist-save-controls {
+        flex-wrap: wrap;
+    }
 }
 
 @media (max-width: 1180px) and (min-width: 601px) {
-    /* from _playback.css */
     .library-actions-row {
-            margin-bottom: var(--action-gap);
-        }
+        margin-bottom: var(--action-gap);
+    }
     /* Album detail keeps a single continuous action line on tablet: the row
        stays horizontal and the fields shrink before anything wraps. Only the
        phone layout below switches to a stacked grid. */
@@ -8541,243 +9028,240 @@ input[type="number"]::-webkit-outer-spin-button {
     .tidal-playlist-save-row--album #tidal-playlist-target {
         min-width: 140px;
     }
-
 }
 
 @media (max-width: 600px) {
-    /* from _playback.css */
     .library-toolbar,
-        .effects-header-actions {
-            gap: var(--action-gap-mobile);
-        }
-        .library-toolbar {
-            flex-wrap: nowrap;
-            overflow-x: auto;
-            scrollbar-width: none;
+    .effects-header-actions {
+        gap: var(--action-gap-mobile);
+    }
+    .library-toolbar {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
             -webkit-overflow-scrolling: touch;
-        }
-        .library-toolbar::-webkit-scrollbar {
-            display: none;
-        }
+    }
+    .library-toolbar::-webkit-scrollbar {
+        display: none;
+    }
 
-        .track-artist {
-            display: block;
-            min-width: 0;
-            max-width: 100%;
-            font-size: 0.72rem;
-            line-height: 1.2;
-        }
-        .library-toolbar #toggle-import {
-            width: auto;
-            min-width: 104px;
-            max-width: none;
-            height: auto;
-            min-height: 44px;
-            max-height: none;
-            padding: 0.55rem 0.8rem;
-            font-size: 0.84rem;
-            line-height: 1;
-            align-self: center;
-            white-space: nowrap;
-            overflow: visible;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-        #tab-library {
-            padding-top: 0;
-        }
-        #tab-effects {
-            padding-top: 0;
-        }
-        .header {
-            flex-direction: row;
-            gap: 0.65rem;
-        }
-        .brand-lockup {
-            gap: 0.5rem;
-            flex: 1;
-            min-width: 0;
-        }
-        .brand-text-block {
-            gap: 0.06rem;
-            padding-top: 0;
-        }
-        .manage-overlay {
-            padding: 0.75rem;
-            align-items: flex-end;
-        }
-        .manage-dialog {
-            width: 100%;
-            max-height: 85vh;
-            overflow: auto;
-            border-radius: 18px 18px 0 0;
-        }
-        .manage-dialog-header {
-            flex-direction: column;
-            align-items: stretch;
-        }
-        .radio-manage-submit-row {
-            justify-content: stretch;
-        }
+    .track-artist {
+        display: block;
+        min-width: 0;
+        max-width: 100%;
+        font-size: 0.72rem;
+        line-height: 1.2;
+    }
+    .library-toolbar #toggle-import {
+        width: auto;
+        min-width: 104px;
+        max-width: none;
+        height: auto;
+        min-height: 44px;
+        max-height: none;
+        padding: 0.55rem 0.8rem;
+        font-size: 0.84rem;
+        line-height: 1;
+        align-self: center;
+        white-space: nowrap;
+        overflow: visible;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    #tab-library {
+        padding-top: 0;
+    }
+    #tab-effects {
+        padding-top: 0;
+    }
+    .header {
+        flex-direction: row;
+        gap: 0.65rem;
+    }
+    .brand-lockup {
+        gap: 0.5rem;
+        flex: 1;
+        min-width: 0;
+    }
+    .brand-text-block {
+        gap: 0.06rem;
+        padding-top: 0;
+    }
+    .manage-overlay {
+        padding: 0.75rem;
+        align-items: flex-end;
+    }
+    .manage-dialog {
+        width: 100%;
+        max-height: 85vh;
+        overflow: auto;
+        border-radius: 18px 18px 0 0;
+    }
+    .manage-dialog-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .radio-manage-submit-row {
+        justify-content: stretch;
+    }
         .radio-manage-submit-row .btn-primary,
-        .manage-dialog-header .btn-secondary {
-            width: 100%;
-        }
-        .settings-maintenance-actions {
-            grid-template-columns: 1fr;
-            width: 100%;
-            margin-left: 0;
-        }
-        .btn-ghost {
-            font-size: 0.78rem;
-            padding: 0.3rem 0.55rem;
-            min-height: 32px;
-        }
-        .btn-ghost-icon {
-            font-size: 0.85rem;
-        }
-        /* Library tighter */
-        .library-actions-row {
-            align-items: stretch;
-            justify-content: flex-start;
-            flex-wrap: wrap;
-            margin-bottom: 0.5rem;
-        }
-        .library-search-wrap {
-            flex-basis: 100%;
-            width: 100%;
-            display: grid;
-            grid-template-columns: minmax(0, 1fr);
-            gap: var(--action-gap-mobile, 8px);
-            align-items: stretch;
-        }
-        .library-search-field {
-            flex: 1 1 auto;
-            width: 100%;
-            min-width: 0;
-        }
-        .library-selection-toolbar {
-            width: 100%;
-            min-width: 0;
-            display: flex;
-            gap: var(--action-gap-mobile, 8px);
-            flex-wrap: wrap;
-        }
-        .library-selection-toolbar .btn-secondary {
-            flex: 1 1 0;
-            width: auto;
-            min-width: 0;
-            height: 44px;
-            min-height: 44px;
-        }
-        .track-item { padding: 0.7rem 0.75rem; }
-        /* Phones: no separate play button in track rows; the row stays the tap trigger. */
+    .manage-dialog-header .btn-secondary {
+        width: 100%;
+    }
+    .settings-maintenance-actions {
+        grid-template-columns: 1fr;
+        width: 100%;
+        margin-left: 0;
+    }
+    .btn-ghost {
+        font-size: 0.78rem;
+        padding: 0.3rem 0.55rem;
+        min-height: 32px;
+    }
+    .btn-ghost-icon {
+        font-size: 0.85rem;
+    }
+    /* Library tighter */
+    .library-actions-row {
+        align-items: stretch;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+        margin-bottom: 0.5rem;
+    }
+    .library-search-wrap {
+        flex-basis: 100%;
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--action-gap-mobile, 8px);
+        align-items: stretch;
+    }
+    .library-search-field {
+        flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
+    }
+    .library-selection-toolbar {
+        width: 100%;
+        min-width: 0;
+        display: flex;
+        gap: var(--action-gap-mobile, 8px);
+        flex-wrap: wrap;
+    }
+    .library-selection-toolbar .btn-secondary {
+        flex: 1 1 0;
+        width: auto;
+        min-width: 0;
+        height: 44px;
+        min-height: 44px;
+    }
+    .track-item { padding: 0.7rem 0.75rem; }
+    /* Phones: no separate play button in track rows; the row stays the tap trigger. */
         .track-item .track-play,
-        .streaming-result .track-play { display: none; }
-        /* Download */
-        .playlist-save-row {
-            flex-wrap: nowrap;
-            align-items: stretch;
-            margin-bottom: 0.7rem;
-        }
-        .playlist-save-controls {
-            width: 100%;
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-            gap: var(--action-gap-mobile, 8px);
-            align-items: stretch;
-            flex: 1 1 auto;
-            min-width: 0;
-        }
-        .playlist-save-row .url-input {
-            grid-column: 1 / -1;
-            flex: initial;
-            width: 100%;
-            min-width: 0;
-            font-size: 16px;
-            padding: 0.28rem 0.5rem;
-        }
+    .streaming-result .track-play { display: none; }
+    /* Download */
+    .playlist-save-row {
+        flex-wrap: nowrap;
+        align-items: stretch;
+        margin-bottom: 0.7rem;
+    }
+    .playlist-save-controls {
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: var(--action-gap-mobile, 8px);
+        align-items: stretch;
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+    .playlist-save-row .url-input {
+        grid-column: 1 / -1;
+        flex: initial;
+        width: 100%;
+        min-width: 0;
+        font-size: 16px;
+        padding: 0.28rem 0.5rem;
+    }
         #save-playlist,
-        #cancel-playlist-selection {
-            width: 100%;
-            min-width: 0;
-            height: 44px;
-            min-height: 44px;
-        }
-        .download-form { flex-direction: column; }
+    #cancel-playlist-selection {
+        width: 100%;
+        min-width: 0;
+        height: 44px;
+        min-height: 44px;
+    }
+    .download-form { flex-direction: column; }
         .download-form .btn-primary,
-        .download-form .btn-danger { width: 100%; }
-        /* Effects */
+    .download-form .btn-danger { width: 100%; }
+    /* Effects */
         #tab-effects,
         #tab-effects .effects-shell,
         #tab-effects .effects-grid,
-        #tab-effects .effects-card {
-            width: 100%;
-            max-width: 100%;
-            min-width: 0;
-        }
+    #tab-effects .effects-card {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+    }
         #tab-effects,
-        #tab-effects .effects-shell {
-            overflow-x: clip;
-        }
-        .effects-shell { padding: 0; }
-        .effects-header {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 0.75rem;
-            margin-bottom: 0.75rem;
-        }
-        .effects-header-actions { justify-content: flex-start; }
-        .effects-peq-band-fields {
-            grid-template-columns: 1fr;
-        }
+    #tab-effects .effects-shell {
+        overflow-x: clip;
+    }
+    .effects-shell { padding: 0; }
+    .effects-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.75rem;
+        margin-bottom: 0.75rem;
+    }
+    .effects-header-actions { justify-content: flex-start; }
+    .effects-peq-band-fields {
+        grid-template-columns: 1fr;
+    }
         .effects-peq-band-header,
-        .effects-peq-pane-header {
-            flex-direction: column;
-            align-items: stretch;
-        }
+    .effects-peq-pane-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
         .effects-actions-row .btn-primary,
         .effects-actions-row .btn-danger,
-        .effects-actions-row .btn-secondary { width: 100%; min-width: unset; }
-        .effects-actions-right { flex-direction: column; align-items: stretch; }
-        .toast-container {
-            /* Limit the width instead of letting the toasts span nearly the
-               whole viewport: 20px each side, capped so the column does not
-               grow on wider phones, and centered exactly. */
-            left: 50%;
-            right: auto;
-            width: calc(100% - 40px);
-            max-width: 360px;
-            transform: translateX(-50%);
-        }
+    .effects-actions-row .btn-secondary { width: 100%; min-width: unset; }
+    .effects-actions-right { flex-direction: column; align-items: stretch; }
+    .toast-container {
+        /* Limit the width instead of letting the toasts span nearly the
+           whole viewport: 20px each side, capped so the column does not
+           grow on wider phones, and centered exactly. */
+        left: 50%;
+        right: auto;
+        width: calc(100% - 40px);
+        max-width: 360px;
+        transform: translateX(-50%);
+    }
 
-    /* from _playback.css */
     .cover-detail-card {
-            bottom: var(--playback-footer-space, calc(102px + 8px + 14px));
-            width: min(400px, calc(100% - 1.2rem));
-            max-height: calc(100vh - var(--playback-footer-space, calc(102px + 8px + 14px)) - 1rem);
-            max-height: calc(100dvh - var(--playback-footer-space, calc(102px + 8px + 14px)) - 1rem);
-            grid-template-columns: 1fr;
-            grid-template-areas:
-                "cover"
-                "info"
-                "history"
-                "queue";
-        }
-        .cover-detail-cover-col {
-            align-items: center;
-        }
-        .cover-detail-cover {
-            width: auto;
-            max-width: 100%;
-            max-height: 34vh;
-            margin-inline: auto;
-        }
-        .cover-detail-extra {
-            align-items: center;
-            text-align: center;
-        }
+        bottom: var(--playback-footer-space, calc(102px + 8px + 14px));
+        width: min(400px, calc(100% - 1.2rem));
+        max-height: calc(100vh - var(--playback-footer-space, calc(102px + 8px + 14px)) - 1rem);
+        max-height: calc(100dvh - var(--playback-footer-space, calc(102px + 8px + 14px)) - 1rem);
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "cover"
+            "info"
+            "history"
+            "queue";
+    }
+    .cover-detail-cover-col {
+        align-items: center;
+    }
+    .cover-detail-cover {
+        width: auto;
+        max-width: 100%;
+        max-height: 34vh;
+        margin-inline: auto;
+    }
+    .cover-detail-extra {
+        align-items: center;
+        text-align: center;
+    }
 
     /* Touch targets that can grow without moving surrounding layout. */
     .catalog-station-action { min-height: 44px; }
@@ -8794,16 +9278,14 @@ input[type="number"]::-webkit-outer-spin-button {
     .playlist-save-row .url-input {
         font-size: 16px;
     }
-
 }
 
 @media (max-width: 760px) {
-    /* from _playback.css */
     #tab-effects .url-input,
         #tab-effects select,
-        #tab-effects textarea {
-            font-size: 16px;
-        }
+    #tab-effects textarea {
+        font-size: 16px;
+    }
     /* iOS auto-zoom guard for the remaining form controls (library, radio,
        streaming, settings, measurement). Desktop keeps the compact sizes. */
     .station-search-input,
@@ -8816,213 +9298,218 @@ input[type="number"]::-webkit-outer-spin-button {
         .manage-dialog textarea,
         .measurement-dialog input,
         .measurement-dialog select,
-        .measurement-dialog textarea {
-            font-size: 16px;
-        }
+    .measurement-dialog textarea {
+        font-size: 16px;
+    }
 
-        #tab-effects .effects-actions-rew-dual {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            align-items: start;
-            gap: 0.9rem;
-        }
+    #tab-effects .effects-actions-rew-dual {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        align-items: start;
+        gap: 0.9rem;
+    }
 
-        #tab-effects .effects-actions-peq-dual {
-            grid-template-columns: minmax(0, 1fr);
-            align-items: start;
-            gap: 0.8rem;
-        }
+    #tab-effects .effects-actions-peq-dual {
+        grid-template-columns: minmax(0, 1fr);
+        align-items: start;
+        gap: 0.8rem;
+    }
 
-        #tab-effects .effects-actions-combine {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            align-items: center;
-            gap: 0.7rem;
-        }
+    #tab-effects .effects-actions-combine {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 0.7rem;
+    }
 
-        #tab-effects .effects-actions-peq-dual .effects-rew-dual-name-input {
-            max-width: none;
-        }
+    #tab-effects .effects-actions-peq-dual .effects-rew-dual-name-input {
+        max-width: none;
+    }
 
         #tab-effects .effects-actions-rew-dual .effects-rew-dual-name-input,
         #tab-effects .effects-actions-peq-dual .effects-rew-dual-name-input,
-        #tab-effects .effects-actions-combine .effects-combine-name-input {
-            width: 100%;
-            max-width: none;
-            min-width: 0;
-            min-height: 36px;
-            height: 36px;
-            padding: 0.4rem 0.7rem;
-            font-size: 16px;
-            line-height: 1.2;
-        }
+    #tab-effects .effects-actions-combine .effects-combine-name-input {
+        width: 100%;
+        max-width: none;
+        min-width: 0;
+        min-height: 36px;
+        height: 36px;
+        padding: 0.4rem 0.7rem;
+        font-size: 16px;
+        line-height: 1.2;
+    }
 
         #tab-effects .effects-actions-rew-dual .btn-primary,
         #tab-effects .effects-actions-rew-dual .btn-secondary,
         #tab-effects .effects-actions-peq-dual .btn-primary,
-        #tab-effects .effects-actions-combine .btn-primary {
-            width: auto;
-            min-width: 88px;
-            min-height: 36px;
-            height: 36px;
-            padding: 0.4rem 0.85rem;
-        }
+    #tab-effects .effects-actions-combine .btn-primary {
+        width: auto;
+        min-width: 88px;
+        min-height: 36px;
+        height: 36px;
+        padding: 0.4rem 0.85rem;
+    }
 
-    /* from _playback.css */
     .header { min-height: 64px; padding: .72rem .8rem; }
-        .tabs { justify-content: space-between; }
-        .tab-btn { flex: 1 0 auto; min-width: 86px; min-height: 44px; padding: .48rem .62rem; }
-        .tab-content { padding: 1rem .75rem calc(1.5rem + var(--playback-footer-space)); }
-        .radio-panel { padding: .9rem; border-radius: 18px; }
-        .radio-panel-header { gap: .65rem; }
-        .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
-        .station-card { padding: .58rem; border-radius: 15px; }
-        .station-name { font-size: .88rem; }
+    .tabs { justify-content: space-between; }
+    .tab-btn { flex: 1 0 auto; min-width: 86px; min-height: 44px; padding: .48rem .62rem; }
+    .tab-content { padding: 1rem .75rem calc(1.5rem + var(--playback-footer-space)); }
+    .radio-panel { padding: .9rem; border-radius: 18px; }
+    .radio-panel-header { gap: .65rem; }
+    .stations-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .station-card { padding: .58rem; border-radius: 15px; }
+    .station-name { font-size: .88rem; }
 
-    /* from _responsive.css */
     .streaming-provider-player {
-            min-height: 0;
-            justify-content: flex-start;
-        }
-        .streaming-now-playing {
-            padding: 1.15rem 1rem 1.3rem;
-            gap: 0.75rem;
-        }
-        .streaming-cover { width: 180px; height: 180px; }
-        .tidal-toolbar { gap: 0.35rem; }
-        .tidal-subbar { gap: 0.35rem; }
-        .tidal-subbar .streaming-search { width: 100%; }
-        .streaming-search-row { flex-wrap: nowrap; }
-        .streaming-search-row .streaming-search-field { flex: 1 1 0; width: 100%; }
-        .streaming-search-row .streaming-search-field .streaming-search-input { width: 100%; }
+        min-height: 0;
+        justify-content: flex-start;
+    }
+    .streaming-now-playing {
+        padding: 1.15rem 1rem 1.3rem;
+        gap: 0.75rem;
+    }
+    .streaming-cover { width: 180px; height: 180px; }
+    .tidal-toolbar { gap: 0.35rem; }
+    .tidal-subbar { gap: 0.35rem; }
+    .tidal-subbar .streaming-search { width: 100%; }
+    .streaming-search-row { flex-wrap: nowrap; }
+    .streaming-search-row .streaming-search-field { flex: 1 1 0; width: 100%; }
+    .streaming-search-row .streaming-search-field .streaming-search-input { width: 100%; }
         .album-detail-header,
-        .streaming-detail-header {
-            grid-template-columns: auto minmax(0, 1fr);
-            grid-template-areas:
-                "back back"
-                "cover meta";
-            align-items: start;
-            gap: 0.9rem;
-        }
-        .album-detail-back { justify-self: end; }
-        /* Mobile: the favorite star flows inline right after the title text so it
-           stays visually coupled to multi-line titles instead of floating at the
-           right edge of the hero. Plain inline flow: titles wrap normally, the
-           star takes only its own width, no fixed positioning. */
+    .streaming-detail-header {
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-areas:
+            "back back"
+            "cover meta";
+        align-items: start;
+        gap: 0.9rem;
+    }
+    .album-detail-back { justify-self: end; }
+    /* Mobile: the favorite star flows inline right after the title text so it
+       stays visually coupled to multi-line titles instead of floating at the
+       right edge of the hero. Plain inline flow: titles wrap normally, the
+       star takes only its own width, no fixed positioning. */
         .album-detail-title-row,
-        .tidal-detail-title-row {
-            display: block;
-        }
+    .tidal-detail-title-row {
+        display: block;
+    }
         .album-detail-name,
-        .tidal-detail-title-row .streaming-detail-title {
-            display: inline;
-        }
+    .tidal-detail-title-row .streaming-detail-title {
+        display: inline;
+    }
         .album-detail-title-row .album-favorite-toggle,
-        .tidal-detail-title-row .album-favorite-toggle {
-            display: inline-flex;
-            vertical-align: middle;
-            margin-left: 0.45rem;
-        }
-        .track-album { display: none; }
+    .tidal-detail-title-row .album-favorite-toggle {
+        display: inline-flex;
+        vertical-align: middle;
+        margin-left: 0.45rem;
+    }
+    .track-album { display: none; }
         .streaming-btn,
-        .track-play { min-width: 44px; min-height: 44px; }
+    .track-play { min-width: 44px; min-height: 44px; }
 
-    /* from _effects.css */
-    .effects-card-subwoofer-header,
-        .effects-subwoofer-controls {
-            grid-template-columns: 1fr;
-        }
+    .effects-subwoofer-controls,
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
+        grid-template-columns: 1fr;
+    }
 
-        .effects-subwoofer-controls {
-            display: grid;
-        }
+    .effects-subwoofer-controls {
+        display: grid;
+    }
 
         .effects-subwoofer-global-group,
-        .effects-subwoofer-channel-group {
-            grid-column: 1;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
+    .effects-subwoofer-channel-group {
+        grid-column: 1;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 
-        /* 2.2 mode pins Sub 1/Sub 2 to base-grid columns with (0,3,0)
-           specificity; re-reset them (and the derived-delays row) so the
-           single-column stack carries no implicit extra tracks. */
-        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
-        .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group,
-        .effects-subwoofer-derived-delays {
-            grid-column: 1;
-        }
+    /* Sub trim cards mirror the speaker Trim block: Level + Align share
+       one row, Polarity sits centered below instead of dangling alone
+       in an empty second column. */
+    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
+        grid-column: 1 / -1;
+        justify-self: center;
+    }
 
-    /* from _effects.css */
+    /* Mobile: both crossover blocks wrap into two columns, so the single
+       visible side block never overflows the single-column stack. */
+    .effects-subwoofer-crossover-block {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .effects-subwoofer-derived-delays {
+        grid-column: 1;
+    }
+
     .effects-rew-dual-grid,
-        .effects-combine-grid {
-            grid-template-columns: 1fr;
-        }
+    .effects-combine-grid {
+        grid-template-columns: 1fr;
+    }
 
         .effects-actions-rew-dual,
-        .effects-actions-peq-dual {
-            grid-template-columns: 1fr;
-        }
+    .effects-actions-peq-dual {
+        grid-template-columns: 1fr;
+    }
 
-        .effects-actions-combine {
-            flex-direction: row;
-            align-items: center;
-            justify-content: flex-start;
-            flex-wrap: wrap;
-        }
+    .effects-actions-combine {
+        flex-direction: row;
+        align-items: center;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
 
         .effects-actions-rew-dual .effects-rew-dual-name-input,
-        .effects-actions-peq-dual .effects-rew-dual-name-input {
-            width: 100%;
-            max-width: none;
-        }
+    .effects-actions-peq-dual .effects-rew-dual-name-input {
+        width: 100%;
+        max-width: none;
+    }
 
         .effects-actions-rew-dual .btn-primary,
         .effects-actions-rew-dual .btn-secondary,
         .effects-actions-peq-dual .btn-primary,
-        .effects-actions-peq-dual .btn-secondary {
-            width: auto;
-            min-width: 96px;
-            flex: 0 0 auto;
-        }
+    .effects-actions-peq-dual .btn-secondary {
+        width: auto;
+        min-width: 96px;
+        flex: 0 0 auto;
+    }
 
-        .effects-peq-add-row {
-            grid-template-columns: 1fr auto;
-        }
+    /* The row wraps on its own once the card is too narrow; on a phone the
+       Add button drops to its own line and starts at the leading edge. */
+    .effects-peq-add-row .btn-inline {
+        margin-right: auto;
+    }
 
-        .effects-peq-mode-field {
-            max-width: none;
-        }
+    .effects-peq-mode-field {
+        max-width: none;
+    }
 
-    /* from _effects.css */
     .effects-loudness-row {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr);
-            align-items: center;
-        }
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        align-items: center;
+    }
 
-        .effects-loudness-controls {
-            display: inline-flex;
-            width: max-content;
-            max-width: 100%;
-            gap: 0.65rem;
-        }
+    .effects-loudness-controls {
+        display: inline-flex;
+        width: max-content;
+        max-width: 100%;
+        gap: 0.65rem;
+    }
 
-        .effects-loudness-controls .effects-inline-control {
-            flex-wrap: nowrap;
-        }
+    .effects-loudness-controls .effects-inline-control {
+        flex-wrap: nowrap;
+    }
 
         .effects-bass-row,
-        .effects-bass-controls {
-            display: flex;
-            align-items: center;
-            gap: 0.65rem;
-            flex-wrap: wrap;
-        }
+    .effects-bass-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        flex-wrap: wrap;
+    }
 
-        .effects-extras-inner {
-            width: 100%;
-            padding: 0.95rem 0.9rem;
-        }
-
+    .effects-extras-inner {
+        width: 100%;
+        padding: 0.95rem 0.9rem;
+    }
 }
 
 @media (min-width: 761px) and (max-width: 1100px) {
@@ -9043,10 +9530,11 @@ input[type="number"]::-webkit-outer-spin-button {
     /* Tablet subwoofer layout: Global across the full width, Sub 1 and
        Sub 2 sharing the row below (merged with the TIDAL tablet block
        above; identical media condition). Scoped to ≥761px so the
-       one-column mobile layout at ≤760px wins the cascade. Base-grid
-       placements (grid-column on the groups and the 2.2 column pins) all
-       collapse to plain auto flow so DOM order lays out the rows. */
-    .effects-subwoofer-controls {
+       one-column mobile layout at ≤760px wins the cascade. The 2.2
+       three-column desktop rule carries (0,3,0) specificity, so the tablet
+       two-column layout needs the equally specific override to win. */
+    .effects-subwoofer-controls,
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
@@ -9059,11 +9547,6 @@ input[type="number"]::-webkit-outer-spin-button {
         grid-column: 1 / -1;
     }
 
-    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group,
-    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
-        grid-column: auto;
-    }
-
     .effects-subwoofer-derived-delays {
         grid-column: 1 / -1;
     }
@@ -9071,14 +9554,21 @@ input[type="number"]::-webkit-outer-spin-button {
 
 /* Narrow tablet: before the three channel columns could ever run into each
    other, Polarity wraps centered below Level and Alignment. */
+/* The three sub cards only go two-across once each card can hold the trim
+   row: below ~800px a card is ~290px of content, less than the two
+   digit-safe steppers need (~298px). Splitting there also made an 8px
+   viewport change halve the card, so the cards stay stacked until the split
+   actually fits. */
+@media (min-width: 761px) and (max-width: 800px) {
+    .effects-subwoofer-controls,
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 @media (min-width: 761px) and (max-width: 860px) {
     .effects-subwoofer-channel-group {
-        grid-template-columns: repeat(2, auto);
-    }
-
-    .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
-        grid-column: 1 / -1;
-        justify-self: center;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 
@@ -9087,120 +9577,106 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 @media (max-width: 767px) {
-    /* from _playback.css */
     .measurement-overlay {
-            padding: 0.5rem;
-            align-items: center;
-            overflow-x: hidden;
-        }
+        padding: 0.5rem;
+        align-items: center;
+        overflow-x: hidden;
+    }
 
-        .measurement-dialog {
-            width: 100%;
-            min-height: auto;
-            max-height: calc(100dvh - 1rem);
-            padding: 0.85rem;
-            border-radius: var(--radius-lg);
-            overflow-x: hidden;
-        }
+    .measurement-dialog {
+        width: 100%;
+        min-height: auto;
+        max-height: calc(100dvh - 1rem);
+        padding: 0.85rem;
+        border-radius: var(--radius-lg);
+        overflow-x: hidden;
+    }
 
         .measurement-saved-group > summary,
         .measurement-saved-toolbar button,
-        .measurement-select-all-toggle {
-            font-size: 16px;
-            touch-action: manipulation;
-        }
+    .measurement-select-all-toggle {
+        font-size: 16px;
+        touch-action: manipulation;
+    }
 
-        .measurement-saved-group {
-            padding: 0.1rem 0.1rem 0.25rem;
-        }
+    .measurement-saved-group {
+        padding: 0.1rem 0.1rem 0.25rem;
+    }
 
-        .measurement-saved-group > summary {
-            padding: 0.45rem 0.55rem;
-            /* Not the shorthand's 0.55rem: keep the arrow reserve the
-               desktop rule sets, otherwise the phone layout reopens
-               the collision this guard prevents. */
-            padding-right: var(--arrow-reserve);
-        }
+    .measurement-saved-group > summary {
+        padding: 0.45rem 0.55rem;
+        /* Not the shorthand's 0.55rem: keep the arrow reserve the
+           desktop rule sets, otherwise the phone layout reopens
+           the collision this guard prevents. */
+        padding-right: var(--arrow-reserve);
+    }
 
-        .measurement-saved-list {
-            gap: 0.5rem;
-            padding: 0 0.15rem 0.15rem;
-        }
+    .measurement-saved-list {
+        gap: 0.5rem;
+        padding: 0 0.15rem 0.15rem;
+    }
 
         .measurement-saved-toolbar,
-        .measurement-saved-toolbar-selection {
-            gap: 0.5rem;
-        }
-        .measurement-saved-toolbar {
-            justify-content: space-between;
-        }
-        .measurement-saved-toolbar-selection {
-            flex: 1 1 auto;
-        }
+    .measurement-saved-toolbar-selection {
+        gap: 0.5rem;
+    }
+    /* Wrapping keeps "Select all" at the leading edge and the actions
+       trailing, including when the actions drop to a second line. */
+    .measurement-saved-toolbar {
+        justify-content: space-between;
+    }
         .measurement-saved-delete-action,
-        .measurement-saved-merge-action {
-            width: 38px;
-            min-width: 38px;
-            padding-inline: 0;
-            font-size: 1rem;
-        }
+    .measurement-saved-merge-action {
+        width: 38px;
+        min-width: 38px;
+        padding-inline: 0;
+        font-size: 1rem;
+    }
         .measurement-saved-delete-action .label-full,
-        .measurement-saved-merge-action .label-full,
-        .measurement-saved-close-action .label-full {
-            display: none;
-        }
+    .measurement-saved-merge-action .label-full {
+        display: none;
+    }
         .measurement-saved-delete-action .label-compact,
-        .measurement-saved-merge-action .label-compact,
-        .measurement-saved-close-action .label-compact {
-            display: inline;
-        }
-        .measurement-saved-close-action {
-            width: 38px;
-            min-width: 38px;
-            padding-inline: 0;
-            font-size: 1rem;
-        }
+    .measurement-saved-merge-action .label-compact {
+        display: inline;
+    }
 
-        .measurement-list-item {
-            gap: 0.24rem;
-            padding: 0.62rem 0.68rem;
-        }
+    .measurement-list-item {
+        gap: 0.24rem;
+        padding: 0.62rem 0.68rem;
+    }
 
-        .measurement-list-row {
-            gap: 0.45rem;
-        }
+    .measurement-list-row {
+        gap: 0.45rem;
+    }
 
-        .measurement-toggle {
-            gap: 0.48rem;
-        }
+    .measurement-toggle {
+        gap: 0.48rem;
+    }
 
-        .measurement-saved-toolbar button {
-            min-height: 36px;
-            padding: 0.42rem 0.72rem;
-        }
-
+    .measurement-saved-toolbar button {
+        min-height: 36px;
+        padding: 0.42rem 0.72rem;
+    }
 }
 
 @media (min-width: 601px) {
-    /* from _playback.css */
     .cover-detail-card:has(#cover-detail-queue:not(.hidden)) {
-            grid-template-areas:
-                "cover queue"
-                "info queue";
-            /* Keep the left column compact: the queue spans both rows and can be
-               taller than the left content; with auto 1fr only the info row
-               absorbs the extra height, so no gap appears between the cover
-               tag block and the meta block. */
-            grid-template-rows: auto 1fr;
-        }
-
+        grid-template-areas:
+            "cover queue"
+            "info queue";
+        /* Keep the left column compact: the queue spans both rows and can be
+           taller than the left content; with auto 1fr only the info row
+           absorbs the extra height, so no gap appears between the cover
+           tag block and the meta block. */
+        grid-template-rows: auto 1fr;
+    }
 }
 
 @media (min-width: 761px) {
     .brand-lockup { gap: 0.5rem; }
-        .brand-text-block { gap: 0.1rem; }
-        .brand-title { font-size: 1.07rem; }
-
+    .brand-text-block { gap: 0.1rem; }
+    .brand-title { font-size: 1.07rem; }
 }
 
 @media (min-width: 761px) and (max-width: 1179px) {
@@ -9213,19 +9689,17 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 @media (min-width: 1180px) {
-    /* from _playback.css */
     .tabs {
-            width: max-content;
-            margin: -72px auto 0;
-            height: 72px;
-            align-items: center;
-            background: transparent;
-            border-bottom: 0;
-            padding: 0;
-            pointer-events: none;
-        }
-        .tab-btn { pointer-events: auto; min-width: 124px; }
-
+        width: max-content;
+        margin: -72px auto 0;
+        height: 72px;
+        align-items: center;
+        background: transparent;
+        border-bottom: 0;
+        padding: 0;
+        pointer-events: none;
+    }
+    .tab-btn { pointer-events: auto; min-width: 124px; }
 }
 
 /* At the single-row transition, leave breathing room for the full brand and
@@ -9235,133 +9709,178 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 @media (max-width: 420px) {
-    /* from _playback.css */
     .header-status { gap: .32rem; }
-        .tabs { gap: .12rem; padding-inline: .38rem; }
-        .tab-btn { min-width: 74px; font-size: .78rem; gap: .22rem; }
-        .tab-glyph { width: .8rem; font-size: .8rem; }
-        .stations-grid { gap: .58rem; }
+    .tabs { gap: .12rem; padding-inline: .38rem; }
+    .tab-btn { min-width: 74px; font-size: .78rem; gap: .22rem; }
+    .tab-glyph { width: .8rem; font-size: .8rem; }
+    .stations-grid { gap: .58rem; }
 
     /* Very narrow phones: drop the row cover so its width serves title/artist. */
     .track-thumb { display: none; }
-
 }
 
 @media (max-width: 640px) {
-    /* from _responsive.css */
     .album-detail-cover,
-        .tidal-detail-header .streaming-detail-cover {
-            width: 120px;
-            height: 120px;
-        }
+    .tidal-detail-header .streaming-detail-cover {
+        width: 120px;
+        height: 120px;
+    }
 
-    /* from _library.css */
     .albums-grid,
         .tidal-tiles,
-        .streaming-similar-grid {
-            grid-template-columns: repeat(auto-fit, minmax(160px, 160px));
-        }
-        .track-duration {
-            flex-basis: 3.8rem;
-            font-size: 0.8rem;
-        }
+    .streaming-similar-grid {
+        grid-template-columns: repeat(auto-fit, minmax(160px, 160px));
+    }
+    .track-duration {
+        flex-basis: 3.8rem;
+        font-size: 0.8rem;
+    }
 
-    /* from _radio.css */
     .track-row-favorite,
         .track-fav,
-        .streaming-fav {
-            width: 40px;
-            height: 40px;
-            min-height: 40px;
-            flex-basis: 40px;
-            font-size: 1rem;
-        }
-
+    .streaming-fav {
+        width: 40px;
+        height: 40px;
+        min-height: 40px;
+        flex-basis: 40px;
+        font-size: 1rem;
+    }
 }
 
 @media (max-width: 700px) {
-    /* from _overlays.css */
     .radio-panel-header {
-            grid-template-columns: 1fr auto;
-        }
-        .radio-search-field {
-            display: block;
-            grid-column: 1 / -1;
-            grid-row: 2;
-            max-width: none;
-        }
+        grid-template-columns: 1fr auto;
+    }
+    .radio-search-field {
+        display: block;
+        grid-column: 1 / -1;
+        grid-row: 2;
+        max-width: none;
+    }
 
-    /* from _effects.css */
     .effects-compare-actions {
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-
+        justify-content: center;
+        flex-wrap: wrap;
+    }
 }
 
 @media (max-width: 720px) {
-    /* from _radio.css */
     .library-import-grid {
-            grid-template-columns: 1fr;
-        }
-
+        grid-template-columns: 1fr;
+    }
 }
 
 @media (min-width: 768px) {
-    /* from _effects.css */
     .effects-shell {
-            padding: 0 1.5rem 1.5rem;
-        }
+        padding: 0 1.5rem 1.5rem;
+    }
 
-        .effects-header {
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
+    .effects-header {
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
 
-        .effects-grid {
-            grid-template-columns: repeat(2, 1fr);
-            gap: 1.5rem;
-        }
+    .effects-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.5rem;
+    }
 
-        .effects-card {
-            padding: 1.5rem;
-        }
+    .effects-card {
+        padding: 1.5rem;
+    }
 
-        .effects-card-extras {
-            padding-left: 1rem;
-            padding-right: 1rem;
-        }
+    .effects-card-extras {
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
 
+    /* The A/B compare card shares its row with Output extras, which sets
+       the row height. Side by side, the two preset selects were ~200px wide
+       (long preset names cut after ~25 characters) and the tile ended
+       ~110px above the card bottom. Stacked, each select gets the full tile
+       width and the tile fills the card; height the neighbour adds (enabled
+       extras) is spread between the tile's sections instead of collecting
+       under it. The one-column grid below 768px keeps the natural height
+       and the side-by-side slots. */
+    .effects-card-manage-order .effects-stack,
+    .effects-card-manage-order .effects-compare-row {
+        flex: 1 1 auto;
+    }
+    .effects-card-manage-order .effects-compare-row {
+        justify-content: space-between;
+    }
+    .effects-card-manage-order .effects-compare-fields {
+        grid-template-columns: 1fr;
+    }
 }
 
 @media (min-width: 480px) {
-    /* from _effects.css */
     .effects-compare-fields {
-            grid-template-columns: 1fr 1fr;
-        }
-
+        grid-template-columns: 1fr 1fr;
+    }
 }
 
 @media (max-width: 1100px) {
-    /* from _effects.css */
     .effects-peq-dual-grid {
-            grid-template-columns: 1fr;
-        }
-
+        grid-template-columns: 1fr;
+    }
 }
 
+/* Phone widths: every control group of the crossover and subwoofer cards is
+   one property list: label left, control right, one row per setting and one
+   shared control column. Both cards then read the same, and a setting costs
+   one row instead of a label line plus a centered control of its own width.
+   The label column keeps 4.5rem for the longest single word ("Frequency");
+   the control column holds a digit-safe stepper (9rem) and grows to 10rem
+   where the card allows it, so every control in every group ends up equally
+   wide. Longer labels ("Main highpass") wrap inside their column. */
 @media (max-width: 520px) {
-    /* from _effects.css */
-    .effects-subwoofer-global-group,
-        .effects-subwoofer-channel-group {
-            grid-template-columns: 1fr;
-        }
-
+    .effects-subwoofer-global-group {
+        grid-template-columns: minmax(0, 1fr);
+        justify-items: stretch;
+        gap: 0.5rem;
+    }
+    .crossover-trio-group,
+    .effects-subwoofer-crossover-block,
+    .effects-subwoofer-channel-group {
+        display: grid;
+        grid-template-columns: minmax(4.5rem, 1fr) minmax(9rem, 10rem);
+        align-items: center;
+        gap: 0.5rem 0.75rem;
+    }
+    /* Label and control join the group grid directly, so all rows share
+       both columns. The JS toggles rows through inline display: none. */
+    .effects-subwoofer-control-group .field-group {
+        display: contents;
+    }
+    /* Row names sit one step below the bold group heading. */
+    .effects-subwoofer-control-group .field-group label {
+        justify-content: flex-start;
+        align-items: center;
+        min-height: 0;
+        font-weight: 500;
+    }
+    /* Short select values (LR, 24, On, N) sit centered in the control: the
+       left padding mirrors the chevron reserve, so the text box is
+       symmetric. Stepper values keep their own layout. */
+    #tab-effects .effects-subwoofer-control-group select {
+        width: 100%;
+        padding-left: var(--arrow-reserve);
+        text-align: center;
+        text-align-last: center;
+    }
+    /* Between 9rem and 10rem the stepper buttons give up the difference
+       (34px preferred, 26px minimum); the value field keeps its digit floor. */
+    .effects-subwoofer-control-group .stepper-btn {
+        width: auto;
+        flex: 0 1 34px;
+        min-width: 26px;
+    }
 }
 
 /* Detail heroes keep the shared single-row composition on tablets; only the
    cover column narrows to preserve the available reading width. */
-@media (min-width: 601px) and (max-width: 1099px) {
+@media (min-width: 601px) and (max-width: 1100px) {
     .album-detail--hero .detail-hero-header,
     .streaming-detail--hero .detail-hero-header {
         grid-template-columns: minmax(170px, 24vw) minmax(0, 1fr) auto;
@@ -9485,7 +10004,7 @@ input[type="number"]::-webkit-outer-spin-button {
     top: 1.5rem;
     right: 1.5rem;
 }
-@media (min-width: 601px) and (max-width: 1099px) {
+@media (min-width: 601px) and (max-width: 1100px) {
     .detail-hero-header.detail-hero-header--album {
         grid-template-columns: 170px minmax(0, 1fr);
         gap: 1.25rem;
@@ -9525,9 +10044,9 @@ input[type="number"]::-webkit-outer-spin-button {
    cascade. These are the only non-utility !important in the stylesheet. */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
-            animation-duration: 0.01ms !important;
-            animation-iteration-count: 1 !important;
-            transition-duration: 0.01ms !important;
-            scroll-behavior: auto !important;
-        }
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
 }

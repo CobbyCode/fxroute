@@ -12,6 +12,8 @@
 
     const ui = window.FXRouteMeasurementUI || {};
     const HybridMeasurement = window.FXRouteHybridMeasurement || {};
+    const SpeakerAlign = (typeof window !== 'undefined' && window.FXRouteSpeakerAlign)
+        || (typeof globalThis !== 'undefined' && globalThis.FXRouteSpeakerAlign) || {};
 
     let deps = {
         getState: () => ({ measurement: {}, settings: {} }),
@@ -26,6 +28,7 @@
         hasActiveMeasurementJob: () => false,
         measurementModeReady: () => false,
         normalizeMeasurementInputChannelSelections: () => {},
+        getSelectedMeasurementInputChannelCount: () => 1,
         getAutoSubTargetCurveSnapshot: () => null,
         flushSubwooferSettingsBeforeMeasurement: async () => {},
         postRuntimeDebugSnapshot: async () => {},
@@ -37,14 +40,20 @@
             formData.append('reference_input_channel', deps.getMeasurementReferenceWarning() ? '' : (deps.getState().measurement.selectedReferenceInputChannel || ''));
         },
         normalizeOutputModeName: (m) => m || 'stereo',
+        // Selected measurement area (bank id): every wizard step is an internal
+        // way sweep of the same frozen area.
+        measurementAreaBank: () => '',
         getMeasurementJobStatus: () => 'unknown',
         normalizeMeasurementEntry: (m) => m,
         getMeasurementJobResultMeasurement: () => null,
         setMeasurementAssistMode: () => {},
+        setMeasurementGraphView: (view) => { deps.getState().measurement.measurementView = view; },
         escapeHtml: (v) => String(v == null ? '' : v),
         sleep: async () => {},
     };
     let api = {};
+    let autoSubRecoveryPending = false;
+    let lastAutoSubHandledJobId = '';
 
     function init(overrides) {
         const cfg = Object.assign({}, overrides || {});
@@ -66,11 +75,60 @@ function syncSubwooferControlsDuringAutoSub() {
 }
 
 
+// Status contract shared by Sweep, Auto Sub and Speaker Align: the feature
+// line next to the action shows live progress (or its idle note), the panel
+// status line (statusText) only the outcome, warning or error. Toasts carry a
+// short headline, never the full status line.
+const NO_CAPTURE_INPUT_TEXT = 'No usable capture input. Select one in Setup.';
+
+function setFeatureLine(element, text) {
+    if (!element) return;
+    // The static note in the page shell is the idle text; keep it once.
+    if (element.dataset && element.dataset.idleText === undefined) element.dataset.idleText = element.textContent;
+    element.textContent = text || element.dataset?.idleText || '';
+}
+
+function progressFor(kind) {
+    const measurementState = deps.getState().measurement || {};
+    return measurementState.progressKind === kind ? String(measurementState.progressText || '') : '';
+}
+
+function renderAutoSubStatusLine() {
+    setFeatureLine(deps.getElements().measurementAutoSubStatus, progressFor('auto_sub'));
+}
+
+function renderSpeakerAlignStatusLine() {
+    setFeatureLine(deps.getElements().measurementSpeakerAlignStatus, progressFor('speaker_align'));
+}
+
+function renderStatusLine(kind) {
+    if (kind === 'auto_sub') renderAutoSubStatusLine();
+    if (kind === 'speaker_align') renderSpeakerAlignStatusLine();
+}
+
+function setProgress(kind, text) {
+    const measurementState = deps.getState().measurement;
+    measurementState.progressKind = kind;
+    measurementState.progressText = String(text || '');
+    renderStatusLine(kind);
+}
+
+function clearProgress(kind) {
+    const measurementState = deps.getState().measurement;
+    if (measurementState.progressKind === kind) {
+        measurementState.progressKind = '';
+        measurementState.progressText = '';
+    }
+    renderStatusLine(kind);
+}
+
 function syncAutoSubButton() {
+    renderAutoSubStatusLine();
     if (!deps.getElements().measurementAutoSubStartBtn || !deps.getElements().measurementAutoSubGroup) return;
     const measurementState = deps.getState().measurement || {};
-    const outputMode = deps.getState().settings?.audioOutputs?.output_mode;
-    const isSubwooferMode = deps.isSubwooferModeName(outputMode?.mode || '');
+    const catalog = deps.getState().outputSystem?.catalog;
+    const topology = catalog?.modes?.[catalog.active_mode]?.topology;
+    const isSubwooferMode = ['mono', 'dual-mono', 'stereo'].includes(topology?.sub_mode);
     if (!isSubwooferMode) {
         deps.getElements().measurementAutoSubGroup.classList.add('hidden');
         return;
@@ -89,19 +147,74 @@ function syncAutoSubButton() {
 }
 
 
+const AUTO_SUB_STAGE_LABELS = {
+    balance_check: 'Level check',
+    main_reference: 'Main reference',
+    coarse: 'Coarse scan',
+    fine: 'Fine scan',
+    sub1_coarse: 'Optimizing Sub 1',
+    sub2_coarse: 'Optimizing Sub 2',
+    left_sub: 'Optimizing Sub 1',
+    right_sub: 'Optimizing Sub 2',
+    left_fine: 'Sub 1 fine scan',
+    right_fine: 'Sub 2 fine scan',
+    left_tiebreak: 'Sub 1 tie-break',
+    right_tiebreak: 'Sub 2 tie-break',
+    combined_matrix: 'Combined matrix',
+    polarity_check: 'Polarity check',
+    left_polarity_check: 'Sub 1 polarity check',
+    right_polarity_check: 'Sub 2 polarity check',
+    polarity_fine: 'Polarity fine-tune',
+    polarity_refine: 'Polarity fine-tune',
+    left_polarity_fine: 'Sub 1 polarity fine-tune',
+    right_polarity_fine: 'Sub 2 polarity fine-tune',
+    gain_after: 'Level match',
+    gain_correction_after: 'Level match',
+    deep_bass_check: 'Deep-bass check',
+    confirmation_recheck: 'Final check',
+    final_commit_confirmation: 'Final check',
+};
+
+function autoSubProgressText(job) {
+    const status = job.status || '';
+    if (status === 'cancelling') return 'Cancelling…';
+    const progress = job.progress || {};
+    const stageKey = String(progress.stage || job.stage || '');
+    const stageLabel = AUTO_SUB_STAGE_LABELS[stageKey] || stageKey.replace(/_/g, ' ');
+    const candidateCur = progress.candidate_current;
+    const candidateTot = progress.candidate_total;
+    const sweepCur = progress.sweep_current ?? progress.current;
+    const sweepTot = progress.sweep_total ?? progress.total;
+    const hasSweeps = Number.isFinite(sweepCur) && Number.isFinite(sweepTot);
+    let counts = '';
+    if (Number.isFinite(candidateCur) && Number.isFinite(candidateTot)) {
+        counts = `${candidateCur}/${candidateTot} candidates${hasSweeps ? ` (${sweepCur}/${sweepTot} sweeps)` : ''}`;
+    } else if (hasSweeps) {
+        counts = `${sweepCur}/${sweepTot} sweeps`;
+    }
+    if (!counts) return stageLabel ? `${stageLabel}…` : 'Preparing…';
+    const targetLabel = String(job.target_curve?.label || '');
+    return `${stageLabel || 'Measuring'}: ${counts}${targetLabel ? ` · Target: ${targetLabel}` : ''}`;
+}
+
+// Backend failure messages repeat the action name; the status line adds it once.
+function autoSubFailureText(message) {
+    const reason = String(message || '').replace(/^Auto Sub Optimize[^:]*failed:\s*/i, '').trim();
+    return reason ? `Auto Sub failed: ${reason}` : 'Auto Sub failed.';
+}
+
+
 async function startAutoSubOptimize() {
     const measurementState = deps.getState().measurement || {};
     if (measurementState.autoSubInFlight || measurementState.startInFlight || measurementState.activeJobId) return;
 
+    if (!measurementState.selectedInputId || !deps.measurementModeReady()) {
+        measurementState.statusText = NO_CAPTURE_INPUT_TEXT;
+        deps.renderMeasurementPanel();
+        deps.showToast('No capture input', 'error');
+        return;
+    }
     const inputId = measurementState.selectedInputId;
-    if (!inputId) {
-        deps.showToast('No capture input selected', 'error');
-        return;
-    }
-    if (!deps.measurementModeReady()) {
-        deps.showToast('No usable host capture source is available', 'error');
-        return;
-    }
 
     await deps.flushSubwooferSettingsBeforeMeasurement();
 
@@ -112,14 +225,17 @@ async function startAutoSubOptimize() {
     measurementState.autoSubJobId = '';
     measurementState.autoSubResult = null;
     measurementState.autoSubMeasurements = [];
+    measurementState.statusText = '';
     syncSubwooferControlsDuringAutoSub();
+    setProgress('auto_sub', 'Starting…');
     deps.renderMeasurementPanel();
 
     try {
         const formData = new FormData();
         formData.append('input_id', inputId);
         formData.append('input_key', measurementState.selectedInputKey || '');
-        formData.append('channel', measurementState.selectedChannel || 'left');
+        // No explicit channel: Auto-Sub sweeps the whole system, so the
+        // endpoint default of a left-side sweep applies.
         deps.normalizeMeasurementInputChannelSelections();
         formData.append('mic_input_channel', measurementState.selectedMicInputChannel || '1');
         deps.appendMeasurementReferenceFields(formData);
@@ -131,30 +247,29 @@ async function startAutoSubOptimize() {
             formData.append('calibration_file', calibrationFile);
         }
 
-        measurementState.statusText = 'Auto Sub Optimize: starting…';
-        deps.renderMeasurementPanel();
         await deps.postRuntimeDebugSnapshot('ui-before-auto-sub-start', {});
 
         const resp = await api.startAutoSubOptimize(formData);
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to start Auto Sub Optimize'));
+        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'could not start'));
         const job = data.job || {};
         measurementState.autoSubJobId = String(job.id || '');
-        measurementState.statusText = job.message || 'Auto Sub Optimize: queued';
+        if (!measurementState.autoSubCancelRequested) setProgress('auto_sub', autoSubProgressText(job));
         deps.renderMeasurementPanel();
         if (measurementState.autoSubCancelRequested) await cancelAutoSubOptimize();
-        if (!measurementState.autoSubJobId) throw new Error('Auto Sub Optimize did not return a job id');
+        if (!measurementState.autoSubJobId) throw new Error('no job id returned');
         await pollAutoSubJob(measurementState.autoSubJobId);
     } catch (error) {
         console.error('startAutoSubOptimize failed', error);
-        measurementState.statusText = error.message || 'Auto Sub Optimize failed';
-        deps.showToast(measurementState.statusText, 'error');
+        measurementState.statusText = autoSubFailureText(error.message);
+        deps.showToast('Auto Sub failed', 'error');
     } finally {
         measurementState.autoSubInFlight = false;
         measurementState.startInFlight = false;
         measurementState.activeMeasurementKind = '';
         measurementState.autoSubJobId = '';
         measurementState.autoSubCancelRequested = false;
+        clearProgress('auto_sub');
         // Refresh audio outputs to pick up new sub_alignment_ms
         deps.fetchAudioOutputOverview().catch(() => {});
         deps.renderMeasurementPanel();
@@ -162,27 +277,82 @@ async function startAutoSubOptimize() {
 }
 
 
+async function recoverAutoSubJob() {
+    const measurementState = deps.getState().measurement || {};
+    if (autoSubRecoveryPending || measurementState.autoSubInFlight || measurementState.startInFlight
+            || measurementState.activeJobId || measurementState.speakerAlignInFlight
+            || measurementState.hybridWizard?.running) return;
+    const generation = Number(measurementState.jobGeneration || 0);
+    autoSubRecoveryPending = true;
+    try {
+        const resp = await api.getCurrentAutoSubJob();
+        if (!resp.ok) throw new Error('Auto Sub job discovery failed');
+        const data = await resp.json();
+        const job = data.job;
+        if (!job?.id || String(job.id) === lastAutoSubHandledJobId) return;
+        const live = deps.getState().measurement || {};
+        if (Number(live.jobGeneration || 0) !== generation || live.autoSubInFlight
+                || live.startInFlight || live.activeJobId || live.speakerAlignInFlight
+                || live.hybridWizard?.running) return;
+
+        live.autoSubInFlight = true;
+        live.activeMeasurementKind = 'auto_sub';
+        live.autoSubJobId = String(job.id);
+        live.autoSubCancelRequested = job.status === 'cancelling';
+        live.autoSubResult = null;
+        live.autoSubMeasurements = [];
+        live.statusText = '';
+        setProgress('auto_sub', autoSubProgressText(job));
+        deps.renderMeasurementPanel();
+        try {
+            if (['completed', 'failed', 'cancelled'].includes(job.status)) {
+                await handleAutoSubResult(job);
+                lastAutoSubHandledJobId = String(job.id);
+            } else {
+                await pollAutoSubJob(live.autoSubJobId);
+            }
+        } finally {
+            if (isCurrentAutoSubPoll(job.id, generation)) {
+                live.autoSubInFlight = false;
+                live.activeMeasurementKind = '';
+                live.autoSubJobId = '';
+                live.autoSubCancelRequested = false;
+                clearProgress('auto_sub');
+                deps.fetchAudioOutputOverview().catch(() => {});
+                deps.renderMeasurementPanel();
+            }
+        }
+    } catch (error) {
+        console.warn('recoverAutoSubJob failed', error);
+    } finally {
+        autoSubRecoveryPending = false;
+    }
+}
+
+
 async function cancelAutoSubOptimize() {
-    const jobId = String(deps.getState().measurement.autoSubJobId || '');
+    const measurementState = deps.getState().measurement;
+    const jobId = String(measurementState.autoSubJobId || '');
     if (!jobId) {
-        if (deps.getState().measurement.autoSubInFlight) {
-            deps.getState().measurement.autoSubCancelRequested = true;
-            deps.getState().measurement.statusText = 'Cancelling Auto Sub Optimize…';
+        if (measurementState.autoSubInFlight) {
+            measurementState.autoSubCancelRequested = true;
+            setProgress('auto_sub', 'Cancelling…');
             deps.renderMeasurementPanel();
         }
         return;
     }
-    deps.getState().measurement.statusText = 'Cancelling Auto Sub Optimize…';
+    const previousProgress = progressFor('auto_sub');
+    setProgress('auto_sub', 'Cancelling…');
     deps.renderMeasurementPanel();
     try {
         const resp = await api.cancelAutoSubJob(jobId);
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to cancel Auto Sub Optimize'));
-        deps.getState().measurement.statusText = String(data.job?.message || 'Cancelling Auto Sub Optimize…');
+        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'request rejected'));
     } catch (error) {
         console.error('cancelAutoSubOptimize failed', error);
-        deps.getState().measurement.statusText = error.message || 'Failed to cancel Auto Sub Optimize';
-        deps.showToast(deps.getState().measurement.statusText, 'error');
+        if (measurementState.autoSubInFlight) setProgress('auto_sub', previousProgress);
+        measurementState.statusText = `Could not cancel Auto Sub: ${error.message || 'request failed'}`;
+        deps.showToast('Cancel failed', 'error');
     } finally {
         deps.renderMeasurementPanel();
     }
@@ -208,7 +378,6 @@ function isCurrentHybridPoll(jobId, generation) {
 async function pollAutoSubJob(jobId) {
     const measurementState = deps.getState().measurement || {};
     const pollGeneration = Number(measurementState.jobGeneration || 0);
-    const statusEl = deps.getElements().measurementAutoSubStatus;
     const startedAt = Date.now();
     const longRunningAfterMs = 10 * 60 * 1000;
     const maxRunningMs = 30 * 60 * 1000;
@@ -218,8 +387,8 @@ async function pollAutoSubJob(jobId) {
         if (!isCurrentAutoSubPoll(jobId, pollGeneration)) return;
         await deps.sleep(500);
         if (Date.now() - startedAt >= maxRunningMs) {
-            measurementState.statusText = 'Auto Sub Optimize timed out while waiting for the job';
-            deps.showToast(measurementState.statusText, 'error');
+            measurementState.statusText = 'Auto Sub timed out waiting for the result.';
+            deps.showToast('Auto Sub timed out', 'error');
             return;
         }
         try {
@@ -228,56 +397,22 @@ async function pollAutoSubJob(jobId) {
             if (!isCurrentAutoSubPoll(jobId, pollGeneration)) return;
             if (!resp.ok) {
                 if (resp.status === 404 || resp.status === 410) {
-                    measurementState.statusText = 'Auto Sub Optimize job is no longer available';
-                    deps.showToast(measurementState.statusText, 'error');
+                    measurementState.statusText = 'Auto Sub interrupted: the run is no longer available.';
+                    deps.showToast('Auto Sub interrupted', 'error');
                     return;
                 }
-                throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Failed to poll Auto Sub job'));
+                throw new Error(deps.formatTransitionErrorDetail(data.detail, 'connection lost'));
             }
             consecutiveErrors = 0;
             const job = data.job || {};
             const status = job.status || 'unknown';
-            const fineScan = job.fine_scan || {};
-            const targetLabel = String(job.target_curve?.label || '');
 
-            measurementState.statusText = job.message || 'Auto Sub Optimize: running';
-            if (job.progress) {
-                const cur = job.progress.current;
-                const tot = job.progress.total;
-                if (Number.isFinite(cur) && Number.isFinite(tot)) {
-                    measurementState.statusText += ` (${cur}/${tot})`;
-                }
-            }
-            if (Date.now() - startedAt >= longRunningAfterMs
-                    && (status === 'queued' || status === 'preparing' || status === 'running' || status === 'cancelling')) {
-                measurementState.statusText = `AutoSub still running… ${measurementState.statusText}`;
-            }
-
-            // Update inline status element
-            if (statusEl) {
-                if (job.progress) {
-                    const progress = job.progress || {};
-                    const stageLabels = {
-                        fine: 'Fine-Scan',
-                        coarse: 'Coarse',
-                        sub1_coarse: 'Optimizing Sub 1',
-                        sub2_coarse: 'Optimizing Sub 2',
-                        left_sub: 'Optimizing Sub 1',
-                        right_sub: 'Optimizing Sub 2',
-                        combined_matrix: 'Combined Matrix',
-                    };
-                    const stageLabel = stageLabels[progress.stage] || String(progress.stage || 'Coarse');
-                    const candidateCur = progress.candidate_current;
-                    const candidateTot = progress.candidate_total;
-                    const sweepCur = progress.sweep_current ?? progress.current;
-                    const sweepTot = progress.sweep_total ?? progress.total;
-                    if (Number.isFinite(candidateCur) && Number.isFinite(candidateTot)) {
-                        const sweepText = (Number.isFinite(sweepCur) && Number.isFinite(sweepTot)) ? ` (${sweepCur}/${sweepTot} sweeps)` : '';
-                        statusEl.textContent = `${stageLabel}: ${candidateCur}/${candidateTot} candidates${sweepText}${targetLabel ? ` · Target: ${targetLabel}` : ''}`;
-                    } else if (Number.isFinite(sweepCur) && Number.isFinite(sweepTot)) {
-                        statusEl.textContent = `${sweepCur}/${sweepTot} sweeps${targetLabel ? ` · Target: ${targetLabel}` : ''}`;
-                    }
-                }
+            // A requested cancel keeps "Cancelling…" until the job ends.
+            if (progressFor('auto_sub') !== 'Cancelling…') {
+                const progressText = autoSubProgressText(job);
+                const stillRunning = Date.now() - startedAt >= longRunningAfterMs
+                    && (status === 'queued' || status === 'preparing' || status === 'running');
+                setProgress('auto_sub', stillRunning ? `Still running · ${progressText}` : progressText);
             }
 
             // Live: push baseline measurement data to graph as soon as available
@@ -287,14 +422,8 @@ async function pollAutoSubJob(jobId) {
             }
 
             if (status === 'completed' || status === 'failed' || status === 'cancelled') {
-                if (statusEl) {
-                    if (status === 'cancelled') {
-                        statusEl.textContent = job.message || 'Auto Sub Optimize cancelled.';
-                    } else if (status === 'failed') {
-                        statusEl.textContent = '';
-                    }
-                }
                 await handleAutoSubResult(job);
+                lastAutoSubHandledJobId = String(jobId);
                 return;
             }
         } catch (error) {
@@ -302,8 +431,8 @@ async function pollAutoSubJob(jobId) {
             consecutiveErrors += 1;
             console.warn('pollAutoSubJob error', error);
             if (consecutiveErrors >= maxConsecutiveErrors) {
-                measurementState.statusText = error?.message || 'Auto Sub Optimize polling failed';
-                deps.showToast(measurementState.statusText, 'error');
+                measurementState.statusText = `Auto Sub interrupted: ${error?.message || 'connection lost'}`;
+                deps.showToast('Auto Sub interrupted', 'error');
                 return;
             }
         }
@@ -314,28 +443,30 @@ async function pollAutoSubJob(jobId) {
 
 async function handleAutoSubResult(job) {
     const measurementState = deps.getState().measurement || {};
-    const statusEl = deps.getElements().measurementAutoSubStatus;
     const result = job.result;
     if (job.status === 'cancelled') {
-        measurementState.statusText = job.message || 'Auto Sub Optimize cancelled.';
+        measurementState.statusText = /window was closed/i.test(String(job.message || ''))
+            ? 'Auto Sub cancelled: the measurement window was closed.'
+            : 'Auto Sub cancelled.';
         measurementState.autoSubResult = null;
         measurementState.autoSubMeasurements = [];
         syncSubwooferControlsDuringAutoSub();
-        deps.showToast('Auto Sub Optimize cancelled', 'success');
+        deps.showToast('Auto Sub cancelled', 'success');
         return;
     }
     if (job.status === 'failed') {
-        measurementState.statusText = job.message || 'Auto Sub Optimize failed';
+        measurementState.statusText = autoSubFailureText(job.message);
         measurementState.autoSubResult = null;
         measurementState.autoSubMeasurements = [];
         syncSubwooferControlsDuringAutoSub();
-        deps.showToast(measurementState.statusText, 'error');
+        deps.showToast('Auto Sub failed', 'error');
         return;
     }
     if (!result) {
-        measurementState.statusText = 'Auto Sub Optimize completed with no result';
+        measurementState.statusText = 'Auto Sub finished without a result.';
         measurementState.autoSubMeasurements = [];
         syncSubwooferControlsDuringAutoSub();
+        deps.showToast('Auto Sub: no result', 'warning');
         return;
     }
 
@@ -360,6 +491,8 @@ async function handleAutoSubResult(job) {
     measurementState.currentMeasurementSaved = false;
     measurementState.currentMeasurementName = 'AutoSub';
     const winner = result.winner || {};
+    // The outcome line comes first; scan details follow on a second line.
+    const withDetail = (outcome, detailParts) => (detailParts.length ? `${outcome}\n${detailParts.join(' · ')}` : outcome);
     if (deps.isSubwoofer22Mode(result.mode) || Number.isFinite(result.applied_sub1_alignment_ms) || Number.isFinite(result.applied_sub2_alignment_ms)) {
         const isStereoBassResult = result.mode === 'subwoofer-2.2-stereo';
         const sub1Label = 'Sub 1';
@@ -396,32 +529,33 @@ async function handleAutoSubResult(job) {
         const scorePart = isStereoBassResult
             ? `Overall ${scorePct !== null ? `${scorePct.toFixed(1)} %` : 'unavailable'}${lrScoreText}`
             : `Combined ${scorePct !== null ? `${scorePct.toFixed(1)} %` : 'unavailable'}${lrScoreText}`;
-        measurementState.statusText = `AutoSub ${modeLabel} applied: ${sub1Label} ${sub1Text} · ${sub2Label} ${sub2Text} · ${scorePart}`;
 
-        if (statusEl) {
-            const detailParts = [];
-            const sub1Coarse = result.sub1_coarse_winner || result.left_winner || {};
-            const sub2Coarse = result.sub2_coarse_winner || result.right_winner || {};
-            if (Number.isFinite(sub1Coarse.delay_ms)) {
-                const sub1Score = Number.isFinite(sub1Coarse.score_pct) ? ` (${sub1Coarse.score_pct.toFixed(1)} %)` : '';
-                detailParts.push(`${sub1Label}: ${sub1Coarse.delay_ms.toFixed(2)} ms${sub1Score}`);
-            }
-            if (Number.isFinite(sub2Coarse.delay_ms)) {
-                const sub2Score = Number.isFinite(sub2Coarse.score_pct) ? ` (${sub2Coarse.score_pct.toFixed(1)} %)` : '';
-                detailParts.push(`${sub2Label}: ${sub2Coarse.delay_ms.toFixed(2)} ms${sub2Score}`);
-            }
-            if (
-                Number.isFinite(result.derived_main_delay_ms)
-                && Number.isFinite(result.derived_sub1_delay_ms)
-                && Number.isFinite(result.derived_sub2_delay_ms)
-            ) {
-                detailParts.push(`Derived: Main ${result.derived_main_delay_ms.toFixed(2)} ms / ${sub1Label} ${result.derived_sub1_delay_ms.toFixed(2)} ms / ${sub2Label} ${result.derived_sub2_delay_ms.toFixed(2)} ms`);
-            }
-            statusEl.textContent = detailParts.join(' · ');
+        const detailParts = [];
+        const sub1Coarse = result.sub1_coarse_winner || result.left_winner || {};
+        const sub2Coarse = result.sub2_coarse_winner || result.right_winner || {};
+        if (Number.isFinite(sub1Coarse.delay_ms)) {
+            const sub1Score = Number.isFinite(sub1Coarse.score_pct) ? ` (${sub1Coarse.score_pct.toFixed(1)} %)` : '';
+            detailParts.push(`${sub1Label} scan ${sub1Coarse.delay_ms.toFixed(2)} ms${sub1Score}`);
         }
+        if (Number.isFinite(sub2Coarse.delay_ms)) {
+            const sub2Score = Number.isFinite(sub2Coarse.score_pct) ? ` (${sub2Coarse.score_pct.toFixed(1)} %)` : '';
+            detailParts.push(`${sub2Label} scan ${sub2Coarse.delay_ms.toFixed(2)} ms${sub2Score}`);
+        }
+        if (
+            Number.isFinite(result.derived_main_delay_ms)
+            && Number.isFinite(result.derived_sub1_delay_ms)
+            && Number.isFinite(result.derived_sub2_delay_ms)
+        ) {
+            detailParts.push(`Output delays: Main ${result.derived_main_delay_ms.toFixed(2)} ms / ${sub1Label} ${result.derived_sub1_delay_ms.toFixed(2)} ms / ${sub2Label} ${result.derived_sub2_delay_ms.toFixed(2)} ms`);
+        }
+        measurementState.statusText = withDetail(
+            `Auto Sub ${modeLabel} applied: ${sub1Label} ${sub1Text} · ${sub2Label} ${sub2Text} · ${scorePart}`,
+            detailParts,
+        );
 
         syncSubwooferControlsDuringAutoSub();
-        deps.showToast(`Applied ${modeLabel}: ${sub1Label} ${appliedSub1 !== null ? appliedSub1.toFixed(2) : '?'} ms · ${sub2Label} ${appliedSub2 !== null ? appliedSub2.toFixed(2) : '?'} ms · ${scorePart}`, 'success');
+        deps.showToast(`Auto Sub ${modeLabel} applied`, 'success');
+        deps.renderMeasurementPanel();
         return;
     }
     const original = Number.isFinite(result.original_alignment_ms) ? result.original_alignment_ms : null;
@@ -459,84 +593,407 @@ async function handleAutoSubResult(job) {
         }[applyDecision] || '')
         : '';
 
-    const mainParts = [];
+    const scoreText = (entry, fallbackPct) => {
+        const pct = Number.isFinite(entry.score_pct) ? entry.score_pct.toFixed(1) : fallbackPct;
+        const lr = Number.isFinite(entry.score_L_pct) && Number.isFinite(entry.score_R_pct)
+            ? ` · L ${entry.score_L_pct.toFixed(1)} % / R ${entry.score_R_pct.toFixed(1)} %` : '';
+        return `Score ${pct} %${lr}`;
+    };
+    let outcome;
     if (gateIncumbentKept) {
-        mainParts.push(`AutoSub applied: ${appliedText} ms (was ${originalText} ms)`);
-    } else if (wasApplied) {
-        mainParts.push(`AutoSub applied: ${appliedText} ms (was ${originalText} ms)`);
-    } else if (incumbentKept) {
-        mainParts.push(`AutoSub kept current alignment: ${originalText} ms`);
+        // The confirmation gate kept the start alignment (level balance still
+        // applied); the score belongs to the rejected suggestion, not to it.
+        const gateWinner = fineW && Number.isFinite(fineW.score_pct) ? fineW : winner;
+        outcome = `Auto Sub applied ${appliedText} ms (was ${originalText} ms). `
+            + `Suggested ${suggestedText} ms (${scoreText(gateWinner, scorePctText)}) was rejected by the local-dip check.`;
     } else {
-        mainParts.push(`AutoSub suggested: ${suggestedText} ms (was ${originalText} ms, not applied${notAppliedReason ? ` · ${notAppliedReason}` : ''})`);
-    }
-    const displayWinner = gateIncumbentKept && fineW && Number.isFinite(fineW.score_pct) ? fineW : winner;
-    const displayScorePct = Number.isFinite(displayWinner.score_pct) ? displayWinner.score_pct : scorePct;
-    const displayScorePctText = Number.isFinite(displayScorePct) ? displayScorePct.toFixed(1) : '?';
-    const displayHasLR = Number.isFinite(displayWinner.score_L_pct) && Number.isFinite(displayWinner.score_R_pct);
-    if (gateIncumbentKept) {
-        mainParts.push(`Score ${displayScorePctText} %${displayHasLR ? ` · L ${displayWinner.score_L_pct.toFixed(1)} % / R ${displayWinner.score_R_pct.toFixed(1)} %` : ''}`);
-        mainParts.push(`suggested ${suggestedText} ms (${Number.isFinite(displayWinner.score_pct) ? displayWinner.score_pct.toFixed(1) : '?'} %) kept after local-dip check`);
-    } else if (hasWinnerLRScores) {
-        mainParts.push(`Score ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`);
-    } else {
-        mainParts.push(`Score ${scorePctText} %`);
-    }
-    if (gateIncumbentKept) {
-        measurementState.statusText = mainParts.join(' · ');
-    } else if (isWeak) {
-        measurementState.statusText = `AutoSub result weak. Check with a normal 2.1 measurement. (${mainParts[0]}, Score ${scorePctText} %)`;
-    } else {
-        measurementState.statusText = mainParts.join(' · ');
+        let action;
+        if (wasApplied) {
+            action = `applied ${appliedText} ms (was ${originalText} ms)`;
+        } else if (incumbentKept) {
+            action = `kept the current alignment: ${originalText} ms`;
+        } else {
+            // A weak verdict already explains an uncertain-confidence skip.
+            const reason = isWeak && applyDecision === 'not_applied_uncertain_confidence' ? '' : notAppliedReason;
+            action = `suggested ${suggestedText} ms (was ${originalText} ms), not applied${reason ? `: ${reason}` : ''}`;
+        }
+        const scorePart = hasWinnerLRScores ? scoreText(winner, scorePctText) : `Score ${scorePctText} %`;
+        outcome = isWeak
+            ? `Auto Sub result weak: ${action} · ${scorePart}. Check with a normal sweep.`
+            : `Auto Sub ${action} · ${scorePart}`;
     }
 
-    if (statusEl) {
-        const detailParts = [];
-        if (fineScan.triggered && fineScan.status === 'completed') {
-            const cDelay = Number.isFinite(coarseW.delay_ms) ? coarseW.delay_ms.toFixed(2) : '?';
-            const cScore = Number.isFinite(coarseW.score_pct) ? coarseW.score_pct.toFixed(1) : '?';
-            detailParts.push(`Coarse: ${cDelay} ms (${cScore} %)`);
-            if (fineW) {
-                const fDelay = Number.isFinite(fineW.delay_ms) ? fineW.delay_ms.toFixed(2) : '?';
-                const fScore = Number.isFinite(fineW.score_pct) ? fineW.score_pct.toFixed(1) : '?';
-                detailParts.push(`Fine checked: ${fDelay} ms (${fScore} %)`);
-            }
-        } else if (result.runner_up) {
-            const rDelay = Number.isFinite(result.runner_up.delay_ms) ? result.runner_up.delay_ms.toFixed(2) : '?';
-            const rScore = Number.isFinite(result.runner_up.score_pct) ? result.runner_up.score_pct.toFixed(1) : '?';
-            detailParts.push(`Runner-up: ${rDelay} ms (${rScore} %)`);
+    const detailParts = [];
+    if (['clear', 'close', 'uncertain'].includes(conf)) detailParts.push(`Confidence ${conf}`);
+    if (fineScan.triggered && fineScan.status === 'completed') {
+        const cDelay = Number.isFinite(coarseW.delay_ms) ? coarseW.delay_ms.toFixed(2) : '?';
+        const cScore = Number.isFinite(coarseW.score_pct) ? coarseW.score_pct.toFixed(1) : '?';
+        detailParts.push(`Coarse ${cDelay} ms (${cScore} %)`);
+        if (fineW) {
+            const fDelay = Number.isFinite(fineW.delay_ms) ? fineW.delay_ms.toFixed(2) : '?';
+            const fScore = Number.isFinite(fineW.score_pct) ? fineW.score_pct.toFixed(1) : '?';
+            detailParts.push(`Fine ${fDelay} ms (${fScore} %)`);
         }
-        if (detailParts.length > 0) {
-            statusEl.textContent = detailParts.join(' · ');
-        } else {
-            statusEl.textContent = '';
-        }
+    } else if (result.runner_up) {
+        const rDelay = Number.isFinite(result.runner_up.delay_ms) ? result.runner_up.delay_ms.toFixed(2) : '?';
+        const rScore = Number.isFinite(result.runner_up.score_pct) ? result.runner_up.score_pct.toFixed(1) : '?';
+        detailParts.push(`Runner-up ${rDelay} ms (${rScore} %)`);
     }
+    measurementState.statusText = withDetail(outcome, detailParts);
 
     let toastText;
-    if (gateIncumbentKept) {
-        const gScore = Number.isFinite(displayWinner.score_pct) ? displayWinner.score_pct.toFixed(1) : '?';
-        const gLR = Number.isFinite(displayWinner.score_L_pct) && Number.isFinite(displayWinner.score_R_pct)
-            ? ` · L ${displayWinner.score_L_pct.toFixed(1)} % / R ${displayWinner.score_R_pct.toFixed(1)} %` : '';
-        toastText = `Applied: ${appliedText} ms (was ${originalText} ms) · Score ${gScore} %${gLR} · suggested ${suggestedText} ms kept after local-dip check`;
-    } else {
-        const outcomeToastPart = wasApplied
-            ? `Applied: ${appliedText} ms (was ${originalText} ms)`
-            : incumbentKept
-                ? `Kept current alignment: ${originalText} ms`
-                : `Suggested: ${suggestedText} ms (was ${originalText} ms, not applied${notAppliedReason ? ` · ${notAppliedReason}` : ''})`;
-        if (hasWinnerLRScores) {
-            toastText = `${outcomeToastPart} · Combined ${scorePctText} % · L ${winner.score_L_pct.toFixed(1)} % / R ${winner.score_R_pct.toFixed(1)} %`;
-        } else {
-            toastText = `${outcomeToastPart} · Score ${scorePctText} %`;
-        }
-    }
-    if (conf !== 'unknown') {
-        toastText += ` · confidence ${conf}`;
-    }
+    if (isWeak) toastText = 'Auto Sub result weak';
+    else if (wasApplied) toastText = 'Auto Sub applied';
+    else if (incumbentKept) toastText = 'Auto Sub kept the current alignment';
+    else toastText = 'Auto Sub result not applied';
     syncSubwooferControlsDuringAutoSub();
     const toastType = isWeak ? 'error' : (wasApplied ? 'success' : 'warning');
     deps.showToast(toastText, toastType);
     deps.renderMeasurementPanel();
+}
+
+
+function speakerAlignCatalog() {
+    return deps.getState().outputSystem?.catalog || null;
+}
+
+function speakerAlignVisible() {
+    if (typeof SpeakerAlign.speakerAlignVisible === 'function') {
+        try {
+            return !!SpeakerAlign.speakerAlignVisible(speakerAlignCatalog());
+        } catch (e) {
+            return false;
+        }
+    }
+    return false;
+}
+
+function speakerSideLabel(side) {
+    return String(side) === 'right' ? 'Right' : 'Left';
+}
+
+function formatSpeakerStatus(job) {
+    if (typeof SpeakerAlign.formatSpeakerAlignStatus === 'function') {
+        return SpeakerAlign.formatSpeakerAlignStatus(job);
+    }
+    const record = job || {};
+    return String(record.message || `Speaker Align ${speakerSideLabel(record.side)}: ${record.status || 'unknown'}.`);
+}
+
+function speakerAlignProgressText(job) {
+    const status = String(job.status || '');
+    if (status === 'cancelling') return 'Cancelling…';
+    if (status === 'queued') return 'Starting…';
+    return String(job.message || 'Running…');
+}
+
+function syncSpeakerAlignButton() {
+    renderSpeakerAlignStatusLine();
+    const elements = deps.getElements();
+    if (!elements.measurementSpeakerAlignLeftBtn || !elements.measurementSpeakerAlignGroup) return;
+    const measurementState = deps.getState().measurement || {};
+    if (!speakerAlignVisible()) {
+        elements.measurementSpeakerAlignGroup.classList.add('hidden');
+        return;
+    }
+    elements.measurementSpeakerAlignGroup.classList.remove('hidden');
+    const activeKind = deps.getActiveMeasurementKind();
+    const speakerActive = activeKind === 'speaker_align' || !!measurementState.speakerAlignInFlight;
+    const speakerReadyToCancel = speakerActive && !!measurementState.speakerAlignJobId;
+    const disabled = speakerActive || measurementState.startInFlight || deps.hasActiveMeasurementJob() || !deps.measurementModeReady();
+    elements.measurementSpeakerAlignLeftBtn.disabled = disabled;
+    elements.measurementSpeakerAlignRightBtn.disabled = disabled;
+    elements.measurementSpeakerAlignCancelBtn.classList.toggle('hidden', !speakerActive);
+    elements.measurementSpeakerAlignCancelBtn.disabled = !speakerReadyToCancel;
+}
+
+function readSpeakerAlignPayload(side) {
+    const measurementState = deps.getState().measurement || {};
+    deps.normalizeMeasurementInputChannelSelections();
+    const referenceChannel = deps.getMeasurementReferenceWarning() ? ''
+        : (measurementState.selectedReferenceInputChannel || '');
+    // Per-side loopback references, mirroring manual sweeps: a right sweep
+    // must record the right loopback (e.g. input 8), never the shared/left
+    // one, or the reference comes back silent and the run cannot qualify.
+    const splitReferences = typeof deps.getSelectedMeasurementInputChannelCount === 'function'
+        && deps.getSelectedMeasurementInputChannelCount() >= 3;
+    const referenceChannelLeft = splitReferences
+        ? (measurementState.selectedReferenceInputChannelLeft || '') : '';
+    const referenceChannelRight = splitReferences
+        ? (measurementState.selectedReferenceInputChannelRight || '') : '';
+    // The identity names the channel actually recorded for this side.
+    const sideReferenceChannel = (splitReferences && (referenceChannelLeft || referenceChannelRight))
+        ? (String(side) === 'right' ? referenceChannelRight : referenceChannelLeft)
+        : referenceChannel;
+    if (typeof SpeakerAlign.buildSpeakerAlignPayload !== 'function') {
+        throw new Error('Speaker Align support is unavailable');
+    }
+    return SpeakerAlign.buildSpeakerAlignPayload({
+        side,
+        inputId: measurementState.selectedInputId,
+        micChannel: measurementState.selectedMicInputChannel || '1',
+        referenceChannel,
+        referenceChannelLeft,
+        referenceChannelRight,
+        referenceId: SpeakerAlign.defaultReferenceId(measurementState.selectedInputId, sideReferenceChannel),
+        microphonePositionId: `${side}-fixed-${Date.now()}`,
+        dryRun: false,
+    });
+}
+
+async function startSpeakerAlign(side) {
+    if (!speakerAlignVisible()) return;
+    const measurementState = deps.getState().measurement || {};
+    if (measurementState.speakerAlignInFlight || measurementState.startInFlight
+        || measurementState.activeJobId || measurementState.autoSubInFlight) return;
+    const name = `Speaker Align ${speakerSideLabel(side)}`;
+    if (!measurementState.selectedInputId || !deps.measurementModeReady()) {
+        measurementState.statusText = NO_CAPTURE_INPUT_TEXT;
+        deps.renderMeasurementPanel();
+        deps.showToast('No capture input', 'error');
+        return;
+    }
+    let payload;
+    try {
+        payload = readSpeakerAlignPayload(side);
+    } catch (error) {
+        measurementState.statusText = `${name} could not start: ${error?.message || 'invalid setup'}`;
+        deps.showToast(`${name} failed`, 'error');
+        deps.renderMeasurementPanel();
+        return;
+    }
+    measurementState.speakerAlignInFlight = true;
+    measurementState.startInFlight = true;
+    measurementState.speakerAlignCancelRequested = false;
+    measurementState.activeMeasurementKind = 'speaker_align';
+    measurementState.speakerAlignJobId = '';
+    measurementState.speakerAlignResult = null;
+    measurementState.statusText = '';
+    setProgress('speaker_align', 'Starting…');
+    syncSpeakerAlignButton();
+    deps.renderMeasurementPanel();
+    try {
+        await deps.postRuntimeDebugSnapshot('ui-before-speaker-align-start', {});
+        const resp = await api.startSpeakerAlign(payload);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'could not start'));
+        const job = data.job || {};
+        measurementState.speakerAlignJobId = String(job.id || '');
+        if (!measurementState.speakerAlignCancelRequested) setProgress('speaker_align', speakerAlignProgressText(job));
+        deps.renderMeasurementPanel();
+        if (measurementState.speakerAlignCancelRequested) await cancelSpeakerAlign();
+        if (!measurementState.speakerAlignJobId) throw new Error('no job id returned');
+        await pollSpeakerAlignJob(measurementState.speakerAlignJobId, side);
+    } catch (error) {
+        console.error('startSpeakerAlign failed', error);
+        measurementState.statusText = `${name} failed: ${error.message || 'unknown error'}`;
+        deps.showToast(`${name} failed`, 'error');
+    } finally {
+        measurementState.speakerAlignInFlight = false;
+        measurementState.startInFlight = false;
+        measurementState.activeMeasurementKind = '';
+        measurementState.speakerAlignJobId = '';
+        measurementState.speakerAlignCancelRequested = false;
+        clearProgress('speaker_align');
+        deps.fetchAudioOutputOverview().catch(() => {});
+        deps.renderMeasurementPanel();
+    }
+}
+
+async function cancelSpeakerAlign() {
+    const measurementState = deps.getState().measurement;
+    const jobId = String(measurementState.speakerAlignJobId || '');
+    if (!jobId) {
+        if (measurementState.speakerAlignInFlight) {
+            measurementState.speakerAlignCancelRequested = true;
+            setProgress('speaker_align', 'Cancelling…');
+            deps.renderMeasurementPanel();
+        }
+        return;
+    }
+    const previousProgress = progressFor('speaker_align');
+    setProgress('speaker_align', 'Cancelling…');
+    deps.renderMeasurementPanel();
+    try {
+        const resp = await api.cancelSpeakerAlignJob(jobId);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'request rejected'));
+    } catch (error) {
+        console.error('cancelSpeakerAlign failed', error);
+        if (measurementState.speakerAlignInFlight) setProgress('speaker_align', previousProgress);
+        measurementState.statusText = `Could not cancel Speaker Align: ${error.message || 'request failed'}`;
+        deps.showToast('Cancel failed', 'error');
+    } finally {
+        deps.renderMeasurementPanel();
+    }
+}
+
+// Giving up on polling must not leave the backend job running: it would keep
+// the measurement owner and the output mutes. Cancel it before local cleanup.
+async function abandonSpeakerAlignJob(jobId, side, reason) {
+    let cancelled = false;
+    try {
+        const resp = await api.cancelSpeakerAlignJob(jobId);
+        cancelled = !!resp?.ok;
+    } catch (error) {
+        console.warn('Speaker Align cancel after polling gave up failed', error);
+    }
+    const measurementState = deps.getState().measurement || {};
+    const name = `Speaker Align ${speakerSideLabel(side)}`;
+    discardSpeakerAlignResults();
+    measurementState.statusText = cancelled
+        ? `${name} interrupted: ${reason}. The run was cancelled.`
+        : `${name} interrupted: ${reason}. Cancelling the run failed.`;
+    deps.showToast(`${name} interrupted`, 'error');
+}
+
+function isCurrentSpeakerAlignPoll(jobId, generation) {
+    const live = deps.getState().measurement || {};
+    return Number(live.jobGeneration || 0) === Number(generation || 0)
+        && (live.activeMeasurementKind === 'speaker_align' || !!live.speakerAlignInFlight)
+        && String(live.speakerAlignJobId || '') === String(jobId);
+}
+
+async function pollSpeakerAlignJob(jobId, side = '') {
+    const measurementState = deps.getState().measurement || {};
+    const pollGeneration = Number(measurementState.jobGeneration || 0);
+    const startedAt = Date.now();
+    const longRunningAfterMs = 10 * 60 * 1000;
+    const maxRunningMs = 30 * 60 * 1000;
+    let consecutiveErrors = 0;
+    const maxConsecutiveErrors = 40;
+    let jobSide = side;
+    while (true) {
+        if (!isCurrentSpeakerAlignPoll(jobId, pollGeneration)) return;
+        await deps.sleep(500);
+        if (Date.now() - startedAt >= maxRunningMs) {
+            await abandonSpeakerAlignJob(jobId, jobSide, 'timed out waiting for the result');
+            return;
+        }
+        try {
+            const resp = await api.pollSpeakerAlignJob(jobId);
+            const data = await resp.json().catch(() => ({}));
+            if (!isCurrentSpeakerAlignPoll(jobId, pollGeneration)) return;
+            if (!resp.ok) {
+                if (resp.status === 404 || resp.status === 410) {
+                    measurementState.statusText = `Speaker Align ${speakerSideLabel(jobSide)} interrupted: the run is no longer available.`;
+                    deps.showToast('Speaker Align interrupted', 'error');
+                    return;
+                }
+                throw new Error(deps.formatTransitionErrorDetail(data.detail, 'connection lost'));
+            }
+            consecutiveErrors = 0;
+            const job = data.job || {};
+            const status = job.status || 'unknown';
+            jobSide = job.side || jobSide;
+            // A requested cancel keeps "Cancelling…" until the job ends.
+            if (progressFor('speaker_align') !== 'Cancelling…') {
+                const progressText = speakerAlignProgressText(job);
+                const stillRunning = Date.now() - startedAt >= longRunningAfterMs
+                    && (status === 'queued' || status === 'acquiring' || status === 'confirming');
+                setProgress('speaker_align', stillRunning ? `Still running · ${progressText}` : progressText);
+            }
+            if (status === 'committed' || status === 'trial-done' || status === 'unconfirmed'
+                || status === 'failed' || status === 'cancelled') {
+                await handleSpeakerAlignResult(job);
+                return;
+            }
+        } catch (error) {
+            if (!isCurrentSpeakerAlignPoll(jobId, pollGeneration)) return;
+            consecutiveErrors += 1;
+            console.warn('pollSpeakerAlignJob error', error);
+            if (consecutiveErrors >= maxConsecutiveErrors) {
+                await abandonSpeakerAlignJob(jobId, jobSide, error?.message || 'connection lost');
+                return;
+            }
+        }
+        deps.renderMeasurementPanel();
+    }
+}
+
+// A failed or cancelled run leaves no result behind: an earlier Verified
+// table must not stay on screen as if it belonged to this run.
+function discardSpeakerAlignResults() {
+    const measurementState = deps.getState().measurement || {};
+    measurementState.speakerAlignResult = null;
+    measurementState.speakerAlignResults = null;
+    const resultsEl = deps.getElements().measurementSpeakerAlignResults;
+    if (resultsEl) resultsEl.innerHTML = '';
+}
+
+// Before (planning take) and After (verification take) are normal sweeps:
+// they become the pending pair of the normal measurement flow, drawn in the
+// IR view first and stored through "Save current" like any other pair.
+function adoptSpeakerAlignMeasurements(job) {
+    const takes = typeof SpeakerAlign.takeMeasurements === 'function'
+        ? SpeakerAlign.takeMeasurements(job.result) : [];
+    if (!takes.length) return;
+    const measurementState = deps.getState().measurement || {};
+    const pending = takes.map((measurement, index) => deps.normalizeMeasurementEntry(measurement, index));
+    measurementState.autoSubMeasurements = [];
+    measurementState.pendingRepeatMeasurements = pending;
+    measurementState.currentMeasurement = pending[0];
+    measurementState.currentMeasurementName = `Speaker Align ${speakerSideLabel(job.side)}`;
+    measurementState.currentMeasurementSaved = false;
+    measurementState.reviewVisibilityById = measurementState.reviewVisibilityById || {};
+    pending.forEach((measurement) => {
+        measurementState.reviewVisibilityById[measurement.id] = !!measurement.review_traces?.length;
+    });
+    deps.setMeasurementGraphView('ir');
+}
+
+// The outcome goes to the panel status line; the numbers stay in the result
+// table next to the buttons.
+async function handleSpeakerAlignResult(job) {
+    const measurementState = deps.getState().measurement || {};
+    const name = `Speaker Align ${speakerSideLabel(job.side)}`;
+    const text = formatSpeakerStatus(job);
+    if (job.status === 'cancelled' || job.status === 'cancelling') {
+        measurementState.statusText = text;
+        discardSpeakerAlignResults();
+        deps.showToast(`${name} cancelled`, 'success');
+        return;
+    }
+    if (job.status === 'failed') {
+        measurementState.statusText = text;
+        discardSpeakerAlignResults();
+        deps.showToast(`${name} failed`, 'error');
+        return;
+    }
+    if (!job.result) {
+        measurementState.statusText = `${name} finished without a result.`;
+        deps.showToast(`${name}: no result`, 'warning');
+        return;
+    }
+    measurementState.speakerAlignResult = job.result;
+    measurementState.speakerAlignResults = { ...measurementState.speakerAlignResults, [job.side]: job.result };
+    const resultsEl = deps.getElements().measurementSpeakerAlignResults;
+    if (resultsEl) {
+        resultsEl.innerHTML = ['left', 'right'].map(side =>
+            SpeakerAlign.renderSpeakerAlignResult(measurementState.speakerAlignResults[side], side)).join('');
+    }
+    measurementState.statusText = text;
+    adoptSpeakerAlignMeasurements(job);
+    if (job.status === 'committed') {
+        deps.showToast(`${name} applied`, 'success');
+    } else if (job.status === 'trial-done') {
+        const confirmed = job.result?.confirmed === true;
+        deps.showToast(confirmed ? `${name} trial verified` : `${name} trial not verified`, confirmed ? 'success' : 'warning');
+    } else {
+        deps.showToast(`${name} not verified`, 'warning');
+    }
+    deps.renderMeasurementPanel();
+}
+
+
+function clearSpeakerAlignResult() {
+    const measurementState = deps.getState().measurement || {};
+    if (measurementState.speakerAlignInFlight || measurementState.speakerAlignJobId
+        || measurementState.activeMeasurementKind === 'speaker_align') return;
+    measurementState.speakerAlignResult = null;
+    measurementState.speakerAlignResults = null;
+    const elements = deps.getElements();
+    if (elements.measurementSpeakerAlignResults) elements.measurementSpeakerAlignResults.innerHTML = '';
 }
 
 
@@ -552,7 +1009,9 @@ function getHybridWizardState() {
 
 
 function getCurrentOutputModeName() {
-    return deps.normalizeOutputModeName(deps.getState().settings?.audioOutputs?.output_mode?.mode || 'stereo');
+    const catalog = deps.getState().outputSystem?.catalog;
+    const topology = catalog?.modes?.[catalog.active_mode]?.topology;
+    return { mono: 'subwoofer-2.1', 'dual-mono': 'subwoofer-2.2', stereo: 'subwoofer-2.2-stereo' }[topology?.sub_mode] || 'stereo';
 }
 
 
@@ -698,6 +1157,8 @@ function buildHybridMeasurementForm(step) {
     formData.append('input_key', deps.getState().measurement.selectedInputKey || '');
     formData.append('channel', step.channel);
     formData.append('measurement_role', step.role);
+    const areaBank = deps.measurementAreaBank();
+    if (areaBank) formData.append('measurement_bank', areaBank);
     formData.append('mic_input_channel', deps.getState().measurement.selectedMicInputChannel || '1');
     deps.appendMeasurementReferenceFields(formData);
     const calibrationFile = deps.getElements().measurementCalibrationFile?.files?.[0];
@@ -711,7 +1172,7 @@ async function runHybridWizardStep(step) {
     const wizard = getHybridWizardState();
     wizard.quality = null;
     wizard.phase = 'measuring';
-    wizard.status = `Measuring ${hybridSpeakerName(step.channel)}…`;
+    wizard.status = `Measuring ${ui.hybridSpeakerName(step.channel)}…`;
     renderHybridMeasurementWizard();
     const response = await api.startMeasurement(buildHybridMeasurementForm(step));
     const data = await response.json().catch(() => ({}));
@@ -758,7 +1219,7 @@ async function runHybridWizardStep(step) {
         wizard.phase = processing ? 'processing' : (wizard.cancelRequested ? 'cancelling' : 'measuring');
         wizard.status = wizard.cancelRequested
             ? 'Cancelling measurement…'
-            : (processing ? `Processing ${step.channel === 'stereo' ? 'measurement' : step.channel}…` : `Measuring ${hybridSpeakerName(step.channel)}…`);
+            : (processing ? `Processing ${step.channel === 'stereo' ? 'measurement' : step.channel}…` : `Measuring ${ui.hybridSpeakerName(step.channel)}…`);
         renderHybridMeasurementWizard();
         if (ui.MEASUREMENT_JOB_SUCCESS_STATES.has(status)) {
             if (wizard.cancelRequested) return false;
@@ -951,9 +1412,16 @@ function setupHybridMeasurementWizard() {
         syncSubwooferControlsDuringAutoSub,
         syncAutoSubButton,
         startAutoSubOptimize,
+        recoverAutoSubJob,
         cancelAutoSubOptimize,
         pollAutoSubJob,
         handleAutoSubResult,
+        syncSpeakerAlignButton,
+        startSpeakerAlign,
+        cancelSpeakerAlign,
+        pollSpeakerAlignJob,
+        handleSpeakerAlignResult,
+        clearSpeakerAlignResult,
         getHybridWizardState,
         getCurrentOutputModeName,
         openHybridMeasurementWizard,

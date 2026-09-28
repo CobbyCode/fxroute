@@ -88,6 +88,7 @@
 .measurement-list-title a {
     display: inline-block;
     max-width: 100%;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: bottom;
@@ -157,16 +158,20 @@
 }
 
 /* Workflow areas: quiet micro-labels group the action list into
-   measurement / subwoofer / calibration without adding cards. */
+   measurement / subwoofer / calibration without adding cards. One shared
+   0.75rem rhythm from heading to button row in every section. */
 .measurement-workflow-section {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.75rem;
 }
 
 .measurement-workflow-heading {
     display: flex;
-    align-items: center;
+    /* Tops flush: label and Setup share one top edge on desktop and
+       mobile; the row below (section gap) sets the uniform heading →
+       button distance in every section. */
+    align-items: flex-start;
     justify-content: space-between;
     gap: 0.75rem;
 }
@@ -283,8 +288,111 @@
     border-color: var(--accent-hover);
 }
 
-.measurement-workflow-menu-panel .measurement-channel-chip-row {
+/* Single-sweep side choice for stereo areas: three compact chips in one
+   row, same language as the other measurement chips. The side only narrows
+   within the selected area, so it can never contradict the bank selector.
+   Mono areas hide the whole row and sweep both inputs at once. */
+.measurement-sweep-side-row {
+    display: flex;
+    gap: 0.4rem;
+    min-width: 0;
+}
+
+.measurement-sweep-side-row .measurement-chip {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0.3rem 0.4rem;
+    font-size: 0.78rem;
+}
+
+/* Read-only measurement area: the A/B selector owns the scope, so the sweep
+   menu shows the selected area; the side chips only narrow a stereo area to
+   one side for the single sweep. */
+.measurement-workflow-menu-panel .measurement-area-row {
     padding: 0.1rem 0.1rem 0.15rem;
+}
+
+.measurement-area-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.measurement-area-label {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.measurement-area-indicator {
+    font-weight: 600;
+}
+
+/* Saved-list badge: the frozen area a result was captured in. */
+.measurement-area-badge {
+    margin-left: 0.45rem;
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    line-height: 1.4;
+    white-space: nowrap;
+    /* Stays whole; the title truncates around it. */
+    flex: 0 0 auto;
+    max-width: 100%;
+}
+
+.measurement-area-badge.is-stale {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.speaker-align-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.speaker-align-table {
+    min-width: 280px;
+    width: 100%;
+    margin-top: 12px;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.speaker-align-table caption {
+    text-align: left;
+    padding: 6px 0;
+    font-weight: 600;
+}
+
+.speaker-align-table th,
+.speaker-align-table td {
+    padding: 6px 6px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+}
+
+/* A value and its unit stay on one line; only the way label may wrap. */
+.speaker-align-table td {
+    white-space: nowrap;
+}
+
+.speaker-align-table th:first-child {
+    text-align: left;
+}
+
+.speaker-align-verification {
+    margin: 6px 0 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
 }
 
 .measurement-workflow-row {
@@ -295,6 +403,38 @@
     min-width: 0;
 }
 
+.measurement-workflow-speaker-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+.measurement-workflow-speaker-buttons .btn-secondary {
+    width: 190px;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 44px;
+}
+
+/* Same horizontal pattern as the other measurement actions: the compact
+   button pair sits left, the one-line note to its right. */
+.measurement-workflow-speaker-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+/* Idle speaker-align results collapse: without this the section's flex gap
+   reserves a phantom row below the buttons even while empty, breaking the
+   shared heading → buttons → divider rhythm. */
+#measurement-speaker-align-results:empty {
+    display: none;
+}
+
+#measurement-sweep-start,
 #measurement-repeat-start,
 #measurement-hybrid-open {
     min-height: 42px;
@@ -308,17 +448,48 @@
 }
 
 /* Bottom status line: kept visually apart from the action blocks so
-   running/cancelled messages read as panel status, not as part of one row. */
+   running/cancelled messages read as panel status, not as part of one row.
+   The top margin sums the section list gap and the section divider margin
+   (0.5rem + 0.35rem), so Calibration above it keeps exactly the same
+   button → divider distance as the other three sections. */
 #measurement-setup-status {
-    margin-top: 0.6rem;
+    margin-top: calc(0.5rem + 0.35rem);
     padding-top: 0.6rem;
     border-top: 1px solid var(--border);
+    /* An outcome may carry a second detail line (Auto Sub scan details). */
+    white-space: pre-line;
 }
 
 #measurement-setup-status:empty {
     margin-top: 0;
     padding-top: 0;
     border-top: none;
+}
+
+.measurement-calibration-select-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.5rem;
+    align-items: stretch;
+}
+
+.measurement-calibration-select-row .btn-secondary,
+.measurement-calibration-select-row .btn-danger {
+    min-width: 92px;
+    padding-left: 0.9rem;
+    padding-right: 0.9rem;
+}
+
+/* Scoped to the Setup card so the upload beats the generic .upload-area
+   primitive (equal specificity) regardless of source order — same pattern
+   as .library-import-option .upload-area. */
+.measurement-card-setup .measurement-calibration-upload-area {
+    min-height: 64px;
+    padding: 0.9rem 1rem;
+}
+
+.measurement-calibration-upload-area .upload-area-icon {
+    font-size: 1.1rem;
 }
 
 .spl-calibration-dialog {
@@ -338,6 +509,12 @@
 
 .spl-calibration-dialog #spl-calibration-status {
     margin-top: 0.35rem;
+}
+
+/* Mode and running action sit right of the noise button, like the action
+   notes in the measurement panel. */
+.spl-calibration-dialog .spl-calibration-noise-row {
+    justify-content: flex-start;
 }
 
 .hybrid-measurement-overlay {
@@ -516,7 +693,10 @@
 @keyframes hybrid-status-spin { to { transform: rotate(360deg); } }
 .hybrid-status[data-level="ok"] { color: var(--success); }
 .hybrid-status[data-level="error"] { color: var(--danger); }
-.hybrid-action-row { display: grid; grid-template-columns: minmax(90px, 0.35fr) minmax(180px, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
+/* The tracks must be allowed to shrink: the wizard's right column is narrower
+   than 90 + 180px well before the phone stack, and the fixed minimums pushed
+   "Start measurement" out of the dialog. */
+.hybrid-action-row { display: grid; grid-template-columns: minmax(0, 0.35fr) minmax(0, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
 .hybrid-action-row button { min-height: 54px; }
 .hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
 .hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
@@ -525,7 +705,6 @@
 .hybrid-advanced-details summary { cursor: pointer; color: var(--text-secondary); }
 .hybrid-advanced-details p { margin: 0.5rem 0 0; line-height: 1.45; }
 
-.measurement-channel-chip-row,
 .measurement-smoothing-chips,
 .measurement-view-toggle {
     display: flex;
@@ -662,7 +841,7 @@
 }
 
 .measurement-peq-chip.is-active {
-    color: #08110d;
+    color: var(--accent-ink);
     border-color: transparent;
     box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset;
 }
@@ -810,8 +989,8 @@
     gap: 0.75rem;
     padding: 0.9rem;
     border-radius: var(--radius-md);
-    border: 1px solid rgba(96, 165, 250, 0.22);
-    background: rgba(96, 165, 250, 0.06);
+    border: 1px solid var(--info-line);
+    background: var(--info-tint);
 }
 
 .measurement-convolver-grid .field-group {
@@ -870,12 +1049,19 @@
 
 .measurement-list {
     display: grid;
+    /* minmax(0, …): an auto track is floored at its min-content width, so a
+       single long run name or device string would push the column past the
+       dialog instead of wrapping inside the card. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.75rem;
+    min-width: 0;
 }
 
 .measurement-list-item {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.35rem;
+    min-width: 0;
     padding: 0.85rem 0.95rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -887,12 +1073,25 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
+    min-width: 0;
 }
 
 .measurement-toggle {
     display: flex;
     align-items: center;
+    /* Wraps so the area badge drops to its own line on a phone instead of
+       being pushed out of the card. */
+    flex-wrap: wrap;
     gap: 0.7rem;
+    min-width: 0;
+    /* The row is a column on phones, where a flex item is sized by its own
+       content; without this the nowrap run name would claim its full width
+       and push the badge past the card edge. */
+    max-width: 100%;
+    /* The toggle absorbs the row's shrink, so `space-between` alone would
+       leave the date glued to it; the auto margin keeps the date on the
+       trailing edge whatever width the name and badge need. */
+    margin-right: auto;
     cursor: pointer;
 }
 
@@ -905,18 +1104,47 @@
 }
 
 .measurement-swatch-inactive {
-    background: rgba(148, 163, 184, 0.18);
-    box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.22);
+    background: var(--slate-400-a18);
+    box-shadow: 0 0 0 1px var(--slate-400-a22);
 }
 
 .measurement-list-title {
     font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    /* Basis instead of auto: the run name is a nowrap, ellipsized single
+       line, so an auto basis would reserve its full width and shove the
+       badge out of the card. The title absorbs the slack and truncates. */
+    flex: 1 1 6rem;
+    min-width: 0;
 }
 
 .measurement-list-meta,
 .measurement-list-points {
     color: var(--text-secondary);
     font-size: 0.84rem;
+    min-width: 0;
+    /* anywhere (not break-word): ALSA ids and run names carry no spaces, and
+       only `anywhere` also lowers the min-content width, so the row may wrap
+       the string instead of widening the card. */
+    overflow-wrap: anywhere;
+}
+
+/* The free-form row meta (device, timing, QC) is the side that absorbs the
+   row's slack; the fixed-format values beside it stay whole. Scoped to the
+   row so it does not stretch the Select all label in the toolbar. */
+.measurement-list-row > .measurement-list-meta:not(.measurement-list-date) {
+    flex: 1 1 auto;
+}
+
+/* Short fixed-format values: the capture date and the point count read as one
+   label, so they stay whole and unbroken. They must not be the shrinking side
+   of the row either, or the nowrap text would spill out of its own box. */
+.measurement-list-date,
+.measurement-list-points {
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
 
 .measurement-saved-group {
@@ -924,6 +1152,7 @@
     border-radius: var(--radius-md);
     background: rgba(255,255,255,0.02);
     padding: 0.2rem 0.2rem 0.4rem;
+    min-width: 0;
 }
 
 .measurement-saved-group > summary {
@@ -936,6 +1165,8 @@
     padding-right: var(--arrow-reserve);
     font-weight: 600;
     position: relative;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .measurement-saved-group > summary::-webkit-details-marker {
@@ -955,7 +1186,7 @@
     width: var(--arrow-width);
     height: 0.45rem;
     margin-top: -0.225rem;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: var(--arrow-uri);
     background-repeat: no-repeat;
     background-size: contain;
     transition: transform 0.15s var(--ease);
@@ -967,8 +1198,10 @@
 
 .measurement-saved-list {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.75rem;
     padding: 0 0.3rem 0.3rem;
+    min-width: 0;
 }
 
 .measurement-saved-toolbar {
@@ -977,18 +1210,20 @@
     justify-content: space-between;
     gap: 0.75rem;
     flex-wrap: wrap;
+    min-width: 0;
     margin-bottom: 0.1rem;
 }
 
+/* The selection-dependent bulk actions. Open/close lives on the accordion
+   summary alone, so this group holds only the two actions and sits at the
+   toolbar's trailing edge. */
 .measurement-saved-toolbar-selection {
     display: flex;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: flex-end;
     gap: 0.75rem;
     flex-wrap: wrap;
-    flex: 1 1 auto;
-}
-.measurement-saved-close-action {
+    min-width: 0;
     margin-left: auto;
 }
 .label-compact {
@@ -999,6 +1234,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    min-width: 0;
 }
 
 .measurement-saved-merge-action,
@@ -1008,6 +1244,5 @@
 
 .measurement-saved-merge-action.is-inert,
 .measurement-saved-delete-action.is-inert {
-    visibility: hidden;
-    pointer-events: none;
+    display: none;
 }

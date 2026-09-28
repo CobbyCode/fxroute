@@ -81,8 +81,48 @@
     line-height: 1.7;
     font-size: 0.9rem;
 }
+/* Summary segments ("Sub HPF 80 Hz") stay whole; lines break at the dots. */
+.effects-summary-part {
+    white-space: nowrap;
+}
 
 /* Preset compare A/B row */
+.effects-compare-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.65rem 1rem;
+}
+
+/* Bank selector row: sits in the A/B card header, flush with no gap below. */
+.effects-bank-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 100%;
+    margin-bottom: 0;
+}
+
+.effects-bank-row label {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.effects-bank-row .url-input {
+    width: auto;
+    min-width: 8.5rem;
+    max-width: 12rem;
+    min-height: 36px;
+    padding-block: 0.35rem;
+    font-size: 0.85rem;
+    background-color: var(--bg-surface);
+}
+
+.effects-rew-dual-grid.is-mono {
+    grid-template-columns: 1fr;
+}
+
 .effects-compare-row {
     display: flex;
     flex-direction: column;
@@ -376,16 +416,122 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     max-width: 42ch;
 }
 
+/* Crossover / Speaker tile: way tabs, response graph, control grid. */
+.effects-card-crossover {
+    /* Full-width band directly above the subwoofer band (order 20). */
+    grid-column: 1 / -1;
+    order: 19;
+}
+.crossover-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+}
+/* Way tabs and the L/R link share one row above the graph; the link stays
+   right-aligned and wraps below the tabs on narrow screens. */
+.crossover-tabrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.9rem;
+}
+.crossover-tabrow > .crossover-tabs {
+    flex: 1 1 auto;
+    margin-bottom: 0;
+}
+.crossover-tabrow > .crossover-link-label {
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+/* Speaker-way tabs and the Sub L / Sub R tabs are one tab style. */
+.crossover-tab,
+.sub-side-tab {
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.crossover-tab.is-active,
+.sub-side-tab.is-active {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+/* Control groups reuse the subwoofer group visuals; tracks hug their
+   content and leftover width becomes even spacing, like the sub tile. */
+.crossover-control-groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    width: min(100%, 1100px);
+    margin: 0 auto;
+}
+.crossover-trio-group {
+    flex: 1 1 auto;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-evenly;
+    align-items: end;
+    gap: 0.7rem 0.8rem;
+}
+#tab-effects .crossover-trio-group {
+    /* Beats the shared group min-width: 0 so a group wraps as a whole
+       instead of squeezing its controls onto two lines. */
+    min-width: min-content;
+}
+.crossover-trio-group > .effects-subwoofer-group-label {
+    flex: 1 1 100%;
+}
+#tab-effects select.effects-crossover-type-select {
+    /* 9.5rem is the widest option ("Linkwitz-Riley") plus the native arrow;
+       the old 9rem cap cut the closed label by ~5px on narrow cards. */
+    width: min(100%, 9.5rem);
+    min-width: 0;
+    max-width: 100%;
+    /* Left-aligned like every other app select, closed and open. */
+    text-align: left;
+}
+/* The way trim row (Level / Alignment / Polarity): the two steppers keep
+   their own width (the shared unit block makes them identical) and are never
+   squeezed below it, so the row wraps to a second line on a narrow card
+   instead of clipping a digit behind the decimal comma. */
+#effects-crossover-trim-group > .field-group:has(.stepper-control) {
+    min-width: min-content;
+}
+
+.crossover-link-label {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+.crossover-link-label input {
+    accent-color: var(--accent);
+}
 .effects-card-subwoofer {
     grid-column: 1 / -1;
     order: 20;
 }
 
-.effects-card-subwoofer-header {
+/* Title and mode badge share the first line; the routing summary spans the
+   full header width below, like the crossover card's summary. */
+.effects-card-subwoofer-title {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 1rem;
+    margin-bottom: 0.4rem;
+}
+
+.effects-card-subwoofer-title h3 {
+    margin-bottom: 0;
 }
 
 .effects-subwoofer-mode-badge {
@@ -404,7 +550,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     background: rgba(110, 231, 183, 0.1);
 }
 
-.effects-subwoofer-stack {
+/* Both cards space tab row, graph and control groups alike. */
+.effects-subwoofer-stack,
+.effects-card-crossover .effects-stack {
     gap: 0.75rem;
 }
 
@@ -413,7 +561,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     margin: 0 auto;
     border: 1px solid rgba(110, 231, 183, 0.18);
     border-radius: var(--radius-md);
-    background: #08111f;
+    background: var(--canvas-deep);
     overflow: hidden;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
@@ -422,70 +570,140 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     display: block;
     width: 100%;
     height: 136px;
-    background: #08111f;
+    background: var(--canvas-deep);
     touch-action: pan-y;
+    cursor: ew-resize;
+}
+
+/* The crossover graph only drags on its editable cutoff lines, so it shows
+   the resize cursor just over a handle (the tile sets these while the
+   pointer is on a movable line or dragging it). Declared after the shared
+   preview rule to win its ew-resize on equal specificity. */
+.crossover-graph {
+    cursor: default;
+}
+
+.crossover-graph.is-handle-hover,
+.crossover-graph.is-handle-drag {
     cursor: ew-resize;
 }
 
 .effects-subwoofer-controls {
     display: grid;
-    grid-template-columns: minmax(148px, 1.08fr) minmax(112px, 0.78fr) repeat(6, minmax(92px, 1fr));
-    align-items: stretch;
+    /* 2.1: Global + Sub as two equal-width cards. 2.2 (Dual-Mono and
+       Stereo) adds the third card via the is-subwoofer-22 rule. Cards hug
+       their own content (start): no forced equal height, no whitespace. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
     gap: 0.75rem;
     width: min(100%, 1100px);
     margin: 0 auto;
+}
+
+.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .effects-subwoofer-control-group {
     min-width: 0;
     overflow: hidden;
     padding: 0.7rem;
-    border: 1px solid rgba(148, 163, 184, 0.18);
+    border: 1px solid var(--slate-400-a18);
     border-radius: var(--radius-sm);
-    background: rgba(15, 23, 42, 0.38);
+    background: var(--slate-900-a38);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
 .effects-subwoofer-global-group {
-    grid-column: 1 / span 2;
+    grid-column: auto;
     display: grid;
     /* Same principle as the channel groups: tracks hug their content and
        the leftover width becomes even spacing, so controls can neither
-       overlap nor clip at any card width. */
-    grid-template-columns: repeat(2, auto);
-    justify-content: space-evenly;
+       overlap nor clip at any card width. One stacked column: the label and
+       the single crossover block (shared, or the selected side while a
+       Stereo pair is unlinked). */
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: stretch;
     align-items: end;
+    /* One vertical rhythm for all three cards (heading, first row, second
+       row), so Crossover/Type line up with Level/Align and Slope/Main
+       highpass with Polarity, and the cards come out equally tall. */
     gap: 0.7rem;
 }
 
-.effects-subwoofer-channel-group {
-    grid-column: 3 / -1;
+/* Tab row above the graph, mirroring the speaker-way tabs: Link L/R plus,
+   while a Stereo pair is unlinked, the Sub L / Sub R selector. */
+.effects-subwoofer-tabrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.9rem;
+    width: min(100%, 1100px);
+    margin: 0 auto;
+}
+
+/* Same split as the crossover tab row: tabs left, link right. */
+.effects-subwoofer-tabrow > .effects-subwoofer-side-tabs {
+    flex: 1 1 auto;
+}
+.effects-subwoofer-tabrow > .crossover-link-label {
+    flex: 0 0 auto;
+}
+
+/* Sub L / Sub R selector for an unlinked Stereo pair. Same tab language as
+   the speaker-way tabs. */
+.effects-subwoofer-side-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+/* Two-line crossover area: Frequency/Type on the first row, Slope/Main
+   highpass on the second. Shared and per-side blocks share the layout so
+   the card keeps its height when the tabs switch sides. */
+.effects-subwoofer-crossover-block {
+    grid-column: 1 / -1;
     display: grid;
-    /* One principle for every field: tracks hug their content (steppers and
-       selects keep their compact fixed sizes) and the leftover width becomes
-       even spacing between the columns. Nothing can overlap or clip, no
-       per-control track sizing, and Sub 1 / Sub 2 share the class and stay
-       symmetric. Headings and controls share one center axis (field-group
-       centering below). */
-    grid-template-columns: repeat(3, auto);
+    grid-template-columns: repeat(2, auto);
     justify-content: space-evenly;
     align-items: end;
-    gap: 0.8rem;
-    background: rgba(8, 47, 73, 0.2);
-    border-color: rgba(110, 231, 183, 0.26);
+    gap: 0.7rem 0.75rem;
+    width: 100%;
 }
 
-.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group {
-    grid-column: 3 / span 3;
+.effects-subwoofer-channel-group {
+    grid-column: auto;
+    display: grid;
+    /* Level and Alignment share the two flexible tracks, so the two steppers
+       come out exactly as wide as each other and stay flush in their column;
+       Polarity spans both tracks below, centered on its own single-letter
+       values. A three-across row cannot work: two value fields that keep
+       their digit floor plus the polarity select are wider than this card on
+       every desktop size, which is what used to clip the alignment value.
+       Sub 1 / Sub 2 share the class and stay symmetric; headings and
+       controls share one center axis (field-group centering below). */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: space-evenly;
+    align-items: end;
+    gap: 0.7rem 0.75rem;
 }
 
-.effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
-    grid-column: 6 / span 3;
-}
-
-.effects-subwoofer-sub2-group {
-    background: rgba(30, 41, 59, 0.44);
-    border-color: rgba(147, 197, 253, 0.24);
+/* Wide desktop is the tightest fit (three ~310-360px cards side by side):
+   Global uses the same two equal tracks and side padding as Sub 1 / Sub 2,
+   so Crossover sits exactly where Level sits, Type where Align sits. The
+   cards share the neutral group surface: the old Sub 1 mint / Sub 2 blue
+   edges carried no meaning, and blue is the Main HPF curve in the graph. */
+@media (min-width: 1101px) {
+    .effects-subwoofer-controls > .effects-subwoofer-control-group {
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
+    }
+    .effects-subwoofer-crossover-block {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    #tab-effects .effects-subwoofer-channel-group select.effects-subwoofer-polarity-select {
+        width: min(100%, 3.5rem);
+    }
 }
 
 .effects-subwoofer-group-label {
@@ -516,14 +734,36 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     line-height: 1.14;
 }
 
+/* The stepper fills its field-group exactly like the sibling selects do
+   (flex: 1 1 0%), so a control never overhangs its own column and the two
+   sub trims line up edge to edge. The value field absorbs the extra width. */
+.effects-subwoofer-control-group .delay-input-wrap {
+    width: 100%;
+}
+
+.effects-subwoofer-control-group .stepper-control {
+    width: 100%;
+}
+
+/* At the tightest three-across split (~1101-1130px) a track is a few px
+   narrower than a stepper with 26px buttons; the buttons give up the
+   difference (22px minimum) instead of pushing "+" out of the frame. The
+   value field keeps its digit floor. */
+.effects-subwoofer-controls .stepper-btn {
+    flex-shrink: 1;
+    min-width: 22px;
+}
+
 .effects-subwoofer-derived-delays {
-    grid-column: 3 / -1;
+    /* Below the cards across the full width; on wide desktop tucked under
+       the sub cards instead (see the min-width rule below). */
+    grid-column: 1 / -1;
     align-self: stretch;
     min-width: 0;
     padding: 0.48rem 0.65rem;
-    border: 1px solid rgba(148, 163, 184, 0.14);
+    border: 1px solid var(--slate-400-a14);
     border-radius: var(--radius-sm);
-    background: rgba(15, 23, 42, 0.28);
+    background: var(--slate-900-a28);
     text-align: center;
     color: var(--text-secondary);
     font-size: 0.74rem;
@@ -531,9 +771,37 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     line-height: 1.25;
 }
 
-.effects-subwoofer-derived-delays span {
+/* Wide desktop, 2.2 only (the timing readout stays hidden in 2.1): the
+   sub cards are shorter than Global's 2x2 block, so the timing tucks into
+   that free space — under Sub 1 + Sub 2 with its bottom edge on Global's
+   bottom — instead of costing another full row. */
+@media (min-width: 1101px) {
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-global-group {
+        grid-row: 1 / span 2;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub1-group {
+        grid-column: 2;
+        grid-row: 1;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-sub2-group {
+        grid-column: 3;
+        grid-row: 1;
+    }
+    .effects-card-subwoofer.is-subwoofer-22 .effects-subwoofer-derived-delays {
+        grid-column: 2 / -1;
+        grid-row: 2;
+        align-self: end;
+    }
+}
+
+.effects-subwoofer-derived-delays strong {
     color: var(--text-primary);
     font-weight: 700;
+}
+
+/* A narrow card wraps between entries, never inside "Sub R: 0.00 ms". */
+.effects-subwoofer-dd-item {
+    white-space: nowrap;
 }
 
 .effects-subwoofer-polarity-field,
@@ -542,25 +810,30 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     align-self: end;
 }
 
+.effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
+    grid-column: 1 / -1;
+    justify-self: center;
+}
+
 /* Subwoofer selects share the common #tab-effects control metrics; the
    Main highpass cap (5.2rem) fits the widest option ("On"/"Off") with room
    beside the native arrow on Android, where the narrower cap clipped "On".
    The polarity selects keep the tighter 4.2rem cap beside the single-letter
-   "N"/"I" values. Centered text keeps the boxes calm between heading and
-   native arrow. The select type selectors are load-bearing: #tab-effects
+   "N"/"I" values. Left-aligned text like every other app select, closed
+   and open. The select type selectors are load-bearing: #tab-effects
    .url-input (equal specificity, later in the file) would otherwise keep
    width:100% alive and stretch the selects back across their grid tracks. */
 #tab-effects select.effects-subwoofer-compact-select {
     width: min(100%, 5.2rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
 }
 #tab-effects select.effects-subwoofer-polarity-select {
     width: min(100%, 4.2rem);
     min-width: 0;
     max-width: 100%;
-    text-align: center;
+    text-align: left;
 }
 
 .effects-filter-import-area.is-busy {
@@ -678,12 +951,22 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-peq-add-row {
-    display: grid;
-    grid-template-columns: minmax(0, 220px) auto;
+    /* Flex, not a fixed two-column grid: the mode select and the Add button
+       need a combined width that the PEQ card only offers on wide layouts
+       (it is one of several cards side by side), so the row now wraps when
+       the card is too narrow instead of letting the select overrun its
+       column. The mode field still takes all the space on one row. */
+    display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: end;
     gap: 1rem;
     margin-bottom: 0.35rem;
+}
+
+.effects-peq-mode-field {
+    flex: 1 1 12rem;
+    min-width: 0;
 }
 
 .effects-peq-mode-field {
@@ -945,7 +1228,7 @@ input[type="number"]::-webkit-outer-spin-button {
     appearance: none;
     -webkit-appearance: none;
     padding-right: var(--arrow-reserve);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: var(--arrow-uri);
     background-repeat: no-repeat;
     background-position: right var(--arrow-offset) center;
     background-size: var(--arrow-width) auto;
@@ -1241,21 +1524,28 @@ input[type="number"]::-webkit-outer-spin-button {
     font-weight: 600;
     line-height: 1;
     user-select: none;
+    /* One width for every unit ("dB", "ms", "Hz"): steppers next to each
+       other then share one intrinsic width, so a row of them lines up
+       flush without stretching the controls or hand-tuned per-row sizes. */
+    min-width: 1.5rem;
+    text-align: center;
 }
 
 #tab-effects .stepper-control .stepper-input {
-    width: 3.1rem;
-    min-width: 0;
+    /* 4rem is the floor for every value field here. The app renders two
+       decimals, so the widest reachable values are "-40.00" (sub alignment),
+       "-24.00" (sub level), "-80.00" (way trim) and "20000" (crossover);
+       all of them measure ~60px at this font size. A number input clips its
+       text silently and without an ellipsis, so the field may grow with the
+       control but must never shrink below that: no digit may be lost behind
+       the decimal comma. The unit stays snug against the value area. */
+    width: 4rem;
+    min-width: 4rem;
+    flex: 1 1 auto;
     min-height: 0;
     height: auto;
     border: 0;
     background: transparent;
-    /* Centering and readability come only from internal presentation: the
-       compact outer size is load-bearing for the 3-column sub rows (Level /
-       Alignment / Polarity share tight tracks) and must stay near the
-       original footprint. 3.1rem fits the widest alignment value ("-39.9")
-       unclipped next to its unit; the unit stays snug against the value
-       area. */
     text-align: center;
     padding: 0.35rem 0;
     font-size: 0.92rem;
@@ -1273,13 +1563,12 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 /* Stacked mobile fields have full cell width: restore comfortable touch
-   targets for the stepper buttons. */
+   targets for the stepper buttons. The value field keeps the shared floor
+   from the rules above, so the wider touch buttons never eat into the
+   digits and the five-digit frequency override stays in force. */
 @media (max-width: 520px) {
     .stepper-btn {
         width: 34px;
-    }
-    #tab-effects .stepper-control .stepper-input {
-        width: 3.4rem;
     }
 }
 /* ============================================================
@@ -1435,6 +1724,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .btn-primary,
 .btn-secondary,
+.btn-danger,
 .btn-ghost {
     border-radius: 11px;
 }

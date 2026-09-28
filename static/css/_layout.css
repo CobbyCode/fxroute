@@ -1,5 +1,5 @@
 .header {
-    background: rgba(14, 14, 17, 0.94);
+    background: var(--bg-header);
     min-height: 72px;
     padding: .85rem clamp(1rem, 2.1vw, 2rem);
     display: flex;
@@ -22,6 +22,12 @@
 }
 .brand-lockup-button {
     position: relative;
+    /* The mark is 32px, so the button used to be 32px tall and this is the
+       only route into Settings. The 44px min-height grows the tap target
+       without changing the rendered mark or wordmark. */
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
     padding: 0;
     border: 0;
     background: transparent;
@@ -39,15 +45,31 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
-/* Custom CSS tooltips (header buttons): the brand/settings trigger and the
-   power button use the same look. The attribute selector keeps the shared
-   visuals in one place; per-button rules only set the horizontal anchor. */
-.brand-lockup-button[data-tooltip]::after,
-.power-btn[data-tooltip]::after {
-    content: attr(data-tooltip);
-    position: absolute;
-    top: calc(100% + 0.45rem);
+/* ============================================================
+   Tooltips
+   ============================================================
+   One tooltip system for the whole app. `data-tooltip` is the single
+   attribute; the native `title` attribute is not used for hints, because a
+   native tooltip cannot follow the dark theme. The attribute is a visual
+   hint only: every host keeps its accessible name in aria-label or its own
+   content.
+
+   The bubble is one `position: fixed` element on <body>, driven by
+   static/tooltip.js, not a pseudo-element of the host: an ::after bubble is
+   clipped by every overflow/scroll container around its host and adds
+   scrollable overflow to it even while hidden. tooltip.js places it below
+   the host, flips it above when only that side has room (the playback
+   footer), clamps it into the viewport and right-aligns it for
+   `data-tooltip-anchor="end"`. */
+.app-tooltip {
+    position: fixed;
+    top: 0;
+    left: 0;
     z-index: var(--z-tooltip);
+    /* max-content keeps short labels on one line; long values (a full
+       preset name, an export path) wrap inside the max-width. */
+    width: max-content;
+    max-width: min(260px, calc(100vw - 2rem));
     padding: 0.32rem 0.52rem;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
@@ -56,34 +78,34 @@
     box-shadow: 0 8px 24px var(--shadow);
     font-size: 0.72rem;
     font-weight: 650;
-    line-height: 1.2;
-    white-space: nowrap;
-    opacity: 0;
-    visibility: hidden;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
     pointer-events: none;
+    opacity: 0;
     transform: translateY(-2px);
-    transition: opacity 0.15s var(--ease), visibility 0.15s var(--ease), transform 0.15s var(--ease);
+    transition: opacity 0.15s var(--ease), transform 0.15s var(--ease);
 }
-.brand-lockup-button[data-tooltip]::after {
-    left: 0;
+.app-tooltip[data-side="above"] {
+    transform: translateY(2px);
 }
-.power-btn[data-tooltip]::after {
-    right: 0;
-}
-.brand-lockup-button[data-tooltip]:hover::after,
-.brand-lockup-button:focus-visible::after,
-.power-btn[data-tooltip]:hover::after,
-.power-btn:focus-visible::after {
+.app-tooltip.is-visible {
     opacity: 1;
-    visibility: visible;
     transform: translateY(0);
 }
-/* The open power menu covers the area under the button, so its tooltip must
-   stay hidden while the button is expanded. */
-.power-btn[data-tooltip][aria-expanded="true"]::after {
-    opacity: 0;
-    visibility: hidden;
-    transform: translateY(-2px);
+.app-tooltip[hidden] {
+    display: none;
+}
+
+/* Tooltip host for a <select>: tooltip.js shows the full name of the
+   selected option (the option label may be compacted) while the pointer or
+   keyboard focus is anywhere inside the wrapper. It is a plain block-level
+   flex item that stretches to the field width, and the select keeps
+   width:100%, so the layout is unchanged. */
+.select-tooltip-wrap {
+    display: block;
+    width: 100%;
+    min-width: 0;
 }
 
 .brand-lockup .brand-mark {
@@ -131,8 +153,11 @@
 }
 .power-btn {
     position: relative;
-    width: 38px;
-    height: 38px;
+    /* 44px in every range. The header is 72px tall, so the button keeps its
+       proportions there; only the <=540px override used to reach the touch
+       minimum, which left 541px-1180px on a 38px target. */
+    width: 44px;
+    height: 44px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -244,7 +269,7 @@
     display: flex;
     position: relative;
     z-index: var(--z-tabs);
-    background: rgba(14, 14, 17, 0.94);
+    background: var(--bg-header);
     padding: .42rem clamp(.7rem, 1.4vw, 1.2rem);
     gap: .25rem;
     border-top: 0;
@@ -262,7 +287,7 @@
     align-self: stretch;
     width: 44px;
     pointer-events: none;
-    background: linear-gradient(90deg, transparent, var(--bg-surface));
+    background: linear-gradient(90deg, transparent, var(--bg-header));
 }
 .tabs::-webkit-scrollbar { display: none; }
 /* ARIA tablist wrapper inside the nav landmark; inherits the responsive
@@ -278,7 +303,10 @@
 .tab-btn {
     flex: 0 0 auto;
     min-width: 112px;
-    min-height: 42px;
+    /* 44px, not 42: the primary navigation is the most-used control in the
+       app and 42 was the only range below the touch minimum (the <=760px
+       range already overrode it to 44px). */
+    min-height: 44px;
     padding: .52rem .9rem;
     background: transparent;
     border: none;

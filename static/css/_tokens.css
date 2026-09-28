@@ -27,15 +27,29 @@
     --bg-elevated:   #1e1e22;
     --bg-hover:      #26262b;
     --bg-input:      #1c1c20;
+    /* Sticky header / tab-strip surface: also the fade target of the
+       scroll-edge gradient on .tabs.can-scroll. */
+    --bg-header:     rgba(14, 14, 17, 0.94);
     --text-primary:   #ececf0;
     --text-secondary: #a0a0ac;
-    --text-muted:     #848490;
+    /* Muted text. The old #848490 sat at 4.08:1 on --bg-hover, just under the
+       4.5:1 AA floor, so muted labels on hover/raised surfaces were the
+       app's only failing text pair. #90909c clears 4.5 on all six surfaces
+       (worst case 4.77) and keeps a clear step below --text-secondary
+       (5.82 on the same surface), so the three-level hierarchy survives. */
+    --text-muted:     #90909c;
     --accent:        #6ee7b7;   /* fresh teal */
     --accent-dim:    rgba(110, 231, 183, 0.12);
     --accent-hover:  #4dd8a0;
     --danger:        #f87171;
     --danger-dim:    rgba(248, 113, 113, 0.12);
     --success:       #34d399;
+    /* Warning amber. The old #b45309 failed WCAG AA on every surface in this
+       theme (3.00 on --bg-hover up to 3.87 on --bg-primary). #d97706 is the
+       darkest amber that clears 4.5:1 on all six surfaces (worst case 4.73
+       on --bg-hover), so it keeps the muted "warm brown" identity instead of
+       turning into a bright alert colour. */
+    --warning:       #d97706;
     --border:        rgba(255, 255, 255, 0.06);
     --border-strong: rgba(255, 255, 255, 0.10);
     --scrollbar:     var(--bg-hover);
@@ -56,6 +70,9 @@
     --arrow-width: 0.68rem;
     --arrow-offset: 0.55rem;
     --arrow-reserve: 1.55rem;
+    /* The chevron glyph itself: one data-URI for every carrier (global
+       selects, effects selects, source pill, details summary). */
+    --arrow-uri: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1.2 1.6 6 6.4 10.8 1.6' fill='none' stroke='%23a0a0ac' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     /* Shared tile grid basis: Library albums, TIDAL tiles and radio station
        cards derive their column sizing from these two values so all three
        surfaces keep one tile rhythm across breakpoints. Radio reads a
@@ -63,8 +80,37 @@
     --tile-min: 208px;
     --tile-min-radio: 164px;
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
+    /* Slate/Blue palette: every remaining raw slate/blue literal lives
+       here once. The semantic Sub1/Sub2/info accents alias into it so the
+       effects and measurement cards keep their role names at use sites. */
+    --slate-900-a22: rgba(15, 23, 42, 0.22);
+    --slate-900-a28: rgba(15, 23, 42, 0.28);
+    --slate-900-a38: rgba(15, 23, 42, 0.38);
+    --slate-900-a56: rgba(15, 23, 42, 0.56);
+    --slate-800-a44: rgba(30, 41, 59, 0.44);
+    --slate-400-a10: rgba(148, 163, 184, 0.10);
+    --slate-400-a14: rgba(148, 163, 184, 0.14);
+    --slate-400-a16: rgba(148, 163, 184, 0.16);
+    --slate-400-a18: rgba(148, 163, 184, 0.18);
+    --slate-400-a22: rgba(148, 163, 184, 0.22);
+    --slate-400-a24: rgba(148, 163, 184, 0.24);
+    --slate-200:     #d1d5db;
+    --canvas-deep:   #08111f;
+    --info-tint:     rgba(96, 165, 250, 0.06);
+    --info-line:     rgba(96, 165, 250, 0.22);
+    --accent-ink:    #08110d;
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --playback-footer-space: 142px;
+    /* Playback footer height used by the live-banner offset; the phone
+       layout overrides it on .live-banner (taller stacked footer). */
+    --footer-height: 92px;
+    /* Height of the whole sticky top stack (header row + tab strip).
+       app.js keeps this in sync with the rendered geometry: below 1180px the
+       tab strip is its own row under the header, at >=1180px the tabs are
+       pulled into the header line and both share one 72px row. Anything that
+       anchors to the top of the viewport (the toast column) must clear the
+       whole stack, not just the header. */
+    --header-stack-height: 72px;
     /* Stacking-order tokens: semantic names for the layering the stylesheet
        already implements. Values are the historical literal z-index numbers,
        preserved exactly so the visible order is unchanged; the tokens only
@@ -74,6 +120,7 @@
     --z-base:            1;      /* badges, hero gradient overlays, seat in the room view */
     --z-raised:          2;      /* interactive controls on tiles/covers, room mic, cover */
     --z-tabs:            4;      /* tab bar (header) */
+    --z-live-banner:    60;      /* live-mode notice pill above the footer */
     --z-playback-bar:    100;    /* fixed playback footer */
     --z-banner:          1002;   /* offline/disconnect banner */
     --z-toast:           1005;   /* transient toasts */
