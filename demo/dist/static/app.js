@@ -1581,7 +1581,7 @@ function handleWebSocketMessage(msg) {
         case 'init':
             // Initial state
             if (data.player) {
-                PlaybackCore.mergePlaybackState(data.player.state);
+                PlaybackCore.mergePlaybackState(data.player.state, { snapshot: true });
                 // Page load: whatever already plays is the session track, not a
                 // track change, so attaching never cues.
                 PlaybackUI.seedNativeTrackCueKey(data.player.state.current_track);

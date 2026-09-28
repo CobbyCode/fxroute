@@ -349,15 +349,21 @@ function queueVolumeSend(volume, immediate = false) {
     }, VOLUME_SEND_DEBOUNCE_MS);
 }
 
-function mergePlaybackState(data) {
+function mergePlaybackState(data, { snapshot = false } = {}) {
     if (!data) return;
     const incomingSeq = typeof data._seq === 'number' ? data._seq : null;
     const currentSeq = typeof deps.getState().playback?._seq === 'number' ? deps.getState().playback._seq : null;
-    if (incomingSeq !== null && currentSeq !== null && incomingSeq < currentSeq) {
+    // The player sequence restarts at 0 with every FXRoute process.  A
+    // snapshot (the WebSocket init of a (re)connected socket) is the full
+    // state of the serving process: it replaces the ordering baseline instead
+    // of being judged stale against a previous process, which would otherwise
+    // drop every later playback update until the new counter caught up.
+    if (!snapshot && incomingSeq !== null && currentSeq !== null && incomingSeq < currentSeq) {
         footerDebug('ignore-stale-playback-state', { incomingSeq, currentSeq });
         return;
     }
     const nextPlayback = { ...data };
+    if (snapshot) nextPlayback._seq = incomingSeq;
     const previousRadioMetadata = deps.getState().playback?.radio_metadata;
     if (nextPlayback.paused && nextPlayback.radio_metadata && previousRadioMetadata
         && nextPlayback.radio_metadata.track_id === previousRadioMetadata.track_id) {
@@ -370,7 +376,7 @@ function mergePlaybackState(data) {
     if (remoteVolume !== null) {
         delete nextPlayback.volume;
     }
-    deps.getState().playback = { ...state.playback, ...nextPlayback };
+    deps.getState().playback = { ...deps.getState().playback, ...nextPlayback };
     rememberLastRadioTrack(deps.getState().playback.current_track);
     if (remoteVolume !== null) {
         applyRemoteVolume(remoteVolume);
