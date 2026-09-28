@@ -174,12 +174,6 @@ function getBackendFooterOwner(playback = deps.getState().playback) {
 
 function getEffectivePlaybackControlSource() {
     const backendOwner = getBackendFooterOwner();
-    // Transport follows the same stale-commit override as the footer itself:
-    // with live qbzd playback and no live spotify playback, the controls
-    // must drive qobuz even when the cached commit still names spotify.
-    if (backendOwner === 'spotify' && qobuzPlayingOwnsFooter() && !spotifyPlayingOwnsFooter()) {
-        return 'qobuz';
-    }
     if (backendOwner) return backendOwner;
     if (spotifyPlayingOwnsFooter()) return 'spotify';
     if (localPlaybackHasFooterContext(deps.getState().playback) || localEndedPlaybackHasFooterContext(deps.getState().playback)) return 'local';
@@ -350,7 +344,7 @@ function queueVolumeSend(volume, immediate = false) {
 }
 
 function mergePlaybackState(data, { snapshot = false } = {}) {
-    if (!data) return;
+    if (!data) return false;
     const incomingSeq = typeof data._seq === 'number' ? data._seq : null;
     const currentSeq = typeof deps.getState().playback?._seq === 'number' ? deps.getState().playback._seq : null;
     // The player sequence restarts at 0 with every FXRoute process.  A
@@ -360,7 +354,7 @@ function mergePlaybackState(data, { snapshot = false } = {}) {
     // drop every later playback update until the new counter caught up.
     if (!snapshot && incomingSeq !== null && currentSeq !== null && incomingSeq < currentSeq) {
         footerDebug('ignore-stale-playback-state', { incomingSeq, currentSeq });
-        return;
+        return false;
     }
     const nextPlayback = { ...data };
     if (snapshot) nextPlayback._seq = incomingSeq;
@@ -381,6 +375,7 @@ function mergePlaybackState(data, { snapshot = false } = {}) {
     if (remoteVolume !== null) {
         applyRemoteVolume(remoteVolume);
     }
+    return true;
 }
 
 function rememberLastRadioTrack(track) {
@@ -600,42 +595,32 @@ function triggerSamplerateBurstPolling() {
 
 async function fetchMetadata() {
     if (isPageHidden()) return;
-    if (!deps.getState().playback.playing && !deps.getState().playback.paused && !isStreamingFooterSource(window.__footerSource)) return;
+    // Every accepted merge replaces this object. A read started before a
+    // commit/reconnect must not overwrite it, even at equal MPV sequences
+    // (external provider switches do not advance MPV's counter).
+    const requestPlayback = deps.getState().playback;
     try {
         const resp = await deps.fetchFn('/api/status');
         if (!resp.ok) return;
         const data = await resp.json();
-        let needsUiRefresh = false;
+        if (requestPlayback !== deps.getState().playback || !mergePlaybackState(data)) return;
         if (data.metadata && Object.keys(data.metadata).length > 0) {
             const meta = data.metadata;
             const title = (meta['icy-title'] || meta['title'] || '').trim();
             if (title && deps.getState().playback.current_track && deps.getState().playback.current_track.source === 'radio') {
                 deps.getState().playback.live_title = title;
-                needsUiRefresh = true;
             }
-        }
-        if (data.output_peak_warning) {
-            deps.getState().playback.output_peak_warning = data.output_peak_warning;
-            needsUiRefresh = true;
         }
         // Update volume from state if changed
         if (data.volume !== undefined) {
-            applyRemoteVolume(data.volume);
             if (!volumeGestureActive && !volumeRequestInFlight && pendingVolume === null) {
                 renderVolumeControlsFromActualVolume(deps.getState().playback.volume);
             }
         }
-        if (data.current_track) {
-            // The owner rides along so the peak poll heals a stale footer
-            // owner (e.g. a missed playback broadcast after a TIDAL start);
-            // VU/peak gating resolves the footer from this field.
-            mergePlaybackState({ current_track: data.current_track, playing: data.playing, paused: data.paused, playback_owner: data.playback_owner, live_title: data.live_title, radio_metadata: data.radio_metadata, stream_info: data.stream_info });
-            syncFooterOwnershipFromPlayback(data);
-            needsUiRefresh = true;
-        }
-        if (needsUiRefresh) {
-            deps.updatePlaybackUI();
-        }
+        // A null MPV track is authoritative too: external owners and Stop
+        // clear native metadata instead of retaining the previous provider.
+        syncFooterOwnershipFromPlayback();
+        deps.updatePlaybackUI();
     } catch (e) {}
 }
 
@@ -649,13 +634,14 @@ async function fetchInitialData() {
 }
 
 async function fetchPlaybackStatus() {
+    const requestPlayback = deps.getState().playback;
     try {
         const resp = await deps.fetchFn('/api/status');
         if (!resp.ok) throw new Error('Failed to fetch playback status');
         const data = await resp.json();
-        mergePlaybackState(data);
         deps.updateLiveBanner(data);
-        syncFooterOwnershipFromPlayback(data);
+        if (requestPlayback !== deps.getState().playback || !mergePlaybackState(data)) return;
+        syncFooterOwnershipFromPlayback();
         syncLibraryStateFromPlaybackContext(true);
         deps.updatePlaybackUI();
     } catch (e) {
@@ -1031,15 +1017,6 @@ function reconcileFooterSource() {
         return;
     }
     if (backendOwner === 'spotify') {
-        // A cached spotify commit is stale when live qbzd playback runs while
-        // spotify itself is not playing (missed owner broadcast while an
-        // external renderer owned playback): the actually playing renderer
-        // owns the shared footer. A live-playing spotify keeps commit
-        // priority, mirroring the backend read-only order (spotify>qobuz).
-        if (qobuzPlayingOwnsFooter() && !spotifyPlayingOwnsFooter()) {
-            setFooterSource('qobuz', 'qobuz-playing-overrides-stale-spotify-commit');
-            return;
-        }
         setFooterSource('spotify', 'backend-footer-owner-spotify');
         return;
     }
@@ -1108,12 +1085,6 @@ function syncFooterOwnershipFromPlayback(playback = deps.getState().playback) {
         return;
     }
     if (backendOwner === 'spotify') {
-        // Same stale-commit override as reconcileFooterSource: live qbzd
-        // playback while spotify is not playing wins over the cached commit.
-        if (qobuzPlayingOwnsFooter() && !spotifyPlayingOwnsFooter()) {
-            setFooterSource('qobuz', 'sync-playback-qobuz-overrides-stale-spotify-commit');
-            return;
-        }
         setFooterSource('spotify', 'sync-playback-backend-owner-spotify');
         return;
     }
@@ -1168,18 +1139,13 @@ function startPlaybackPositionPoll() {
                 stopPlaybackPositionPoll();
                 return;
             }
+            const requestPlayback = deps.getState().playback;
             const resp = await deps.fetchFn('/api/status');
             if (!resp.ok) return;
             const data = await resp.json();
-            const backendOwner = getBackendFooterOwner(data);
-            if (isStreamingFooterSource(window.__footerSource) || isStreamingFooterSource(backendOwner)) {
-                if (isStreamingFooterSource(backendOwner)) {
-                    setFooterSource(backendOwner, 'local-poll-backend-owner-streaming');
-                }
-                stopPlaybackPositionPoll();
-                return;
-            }
-            mergePlaybackState(data);
+            if (requestPlayback !== deps.getState().playback || !mergePlaybackState(data)) return;
+            syncFooterOwnershipFromPlayback();
+            deps.updatePlaybackUI();
             if (isStreamingFooterSource(window.__footerSource)) {
                 stopPlaybackPositionPoll();
                 return;
@@ -1237,6 +1203,9 @@ async function doSeek(seconds) {
 
 async function resyncPlaybackAfterReconnect() {
     const generation = deps.claimWsSyncGeneration();
+    const requestPlayback = deps.getState().playback;
+    const requestSpotify = window.__spotifyLastData;
+    const requestQobuz = window.__qobuzLastData;
     try {
         const [playback, spotify, qobuz] = await Promise.all([
             deps.fetchFn('/api/status')
@@ -1247,20 +1216,22 @@ async function resyncPlaybackAfterReconnect() {
         ]);
         if (!deps.isWsSyncGenerationCurrent(generation)) return;
 
-        if (playback) {
+        if (playback) deps.updateLiveBanner(playback);
+        if (playback && requestPlayback === deps.getState().playback) {
             // Full state of the process the socket reconnected to: a snapshot,
             // like the WebSocket init (whichever of the two lands first).
             mergePlaybackState(playback, { snapshot: true });
             // Reconnect: adopt the running track silently, never cue it.
             deps.seedNativeTrackCueKey(playback.current_track);
-            deps.updateLiveBanner(playback);
             syncFooterOwnershipFromPlayback(playback);
             syncLibraryStateFromPlaybackContext(true);
         }
-        if (spotify) {
+        // Provider metadata has its own update stream. A concurrent playback
+        // merge must not prevent an empty provider cache from being seeded.
+        if (spotify && requestSpotify === window.__spotifyLastData) {
             deps.handleIncomingSpotifyState(spotify, { renderTab: true, renderFooter: true });
         }
-        if (qobuz) {
+        if (qobuz && requestQobuz === window.__qobuzLastData) {
             deps.handleIncomingQobuzState(qobuz, { renderFooter: true });
         }
         reconcileFooterSource();

@@ -1,13 +1,8 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
-// Shared footer ownership: the footer must follow the actually active
-// playback owner, never a stale cached commit.
-//
-// Regression for the .104 observation: with qbzd Playing (Qobuz tile
-// correct), the global footer showed a stale paused Spotify track. The
-// ownership resolution had no live-qobuz branch at all, so a stale cached
-// backend owner (or none) pinned the footer to Spotify while live qobuz
-// playback could never reclaim it.
+// Shared footer ownership: committed playback ownership wins over provider
+// telemetry. Live provider state is a fallback only without a committed owner.
+// Status polling repairs missed commits (test_footer_status_races.js).
 //
 // This executes the VERBATIM decision functions extracted from
 // static/app.js (no reimplementation) with live-captured .104 input shapes.
@@ -161,11 +156,12 @@ const QOBUZ_IDLE = { available: false, status: 'Stopped' };
 const LOCAL_TRACK = { source: 'local', id: 'track-1', title: 'Local Song', url: '/music/a.flac' };
 
 const cases = [
-    // Reported bug shapes (via both entry points + transport routing).
-    { name: 'reconcile: stale spotify cache + qobuz playing -> qobuz', entry: 'reconcile', ownerCache: 'spotify', spotify: SPOTIFY_PAUSED_STALE, qobuz: QOBUZ_PLAYING, want: 'qobuz' },
+    // Provider telemetry cannot undo a newer commit, even before the new
+    // owner's Playing telemetry arrives (both footer entry points + controls).
+    { name: 'reconcile: committed spotify + stale qobuz playing -> spotify', entry: 'reconcile', ownerCache: 'spotify', spotify: SPOTIFY_PAUSED_STALE, qobuz: QOBUZ_PLAYING, want: 'spotify' },
     { name: 'reconcile: null cache + qobuz playing -> qobuz', entry: 'reconcile', ownerCache: null, spotify: SPOTIFY_PAUSED_STALE, qobuz: QOBUZ_PLAYING, want: 'qobuz' },
-    { name: 'sync: stale spotify cache + qobuz playing -> qobuz', entry: 'sync', ownerCache: 'spotify', spotify: SPOTIFY_PAUSED_STALE, qobuz: QOBUZ_PLAYING, want: 'qobuz' },
-    { name: 'control: stale spotify cache + qobuz playing routes qobuz', entry: 'control', ownerCache: 'spotify', spotify: SPOTIFY_PAUSED_STALE, qobuz: QOBUZ_PLAYING, want: 'qobuz' },
+    { name: 'sync: committed spotify + stale qobuz playing -> spotify', entry: 'sync', ownerCache: 'spotify', spotify: SPOTIFY_PAUSED_STALE, qobuz: QOBUZ_PLAYING, want: 'spotify' },
+    { name: 'control: committed spotify + stale qobuz playing routes spotify', entry: 'control', ownerCache: 'spotify', spotify: SPOTIFY_PAUSED_STALE, qobuz: QOBUZ_PLAYING, want: 'spotify' },
     // Healthy states keep working (no behavior change).
     { name: 'reconcile: committed qobuz + qobuz playing -> qobuz', entry: 'reconcile', ownerCache: 'qobuz', spotify: SPOTIFY_PAUSED_STALE, qobuz: QOBUZ_PLAYING, want: 'qobuz' },
     { name: 'reconcile: committed spotify + spotify playing -> spotify', entry: 'reconcile', ownerCache: 'spotify', spotify: SPOTIFY_PLAYING, qobuz: QOBUZ_IDLE, want: 'spotify' },

@@ -89,11 +89,8 @@ assert.ok(
     'playLocal must run the library sync after the shared commit',
 );
 assert.ok(playLocalSrc.includes('maybeShowNativeTrackCue('), 'playLocal must keep its queue-started cue');
-// ... and the peak poll must heal a stale owner when a broadcast was missed.
-assert.ok(
-    /mergePlaybackState\(\{\s*current_track:\s*data\.current_track,[^}]*playback_owner:\s*data\.playback_owner/.test(coreJs),
-    'fetchMetadata must merge playback_owner so the peak poll heals a stale footer owner',
-);
+// Missed-broadcast recovery through the peak poll is exercised by
+// test_footer_status_races.js, including null tracks and delayed responses.
 
 const FNAMES = [
     'isStreamingFooterSource',
