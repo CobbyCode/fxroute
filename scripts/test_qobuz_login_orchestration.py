@@ -82,11 +82,12 @@ class BeginLoginSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_begin_login_fails_fast_when_daemon_reports_no_url(self):
         # No oauth_url in the daemon answer: begin_login raises instead of
-        # leaving a half-started session behind.
+        # leaving a half-started session behind. A reachable daemon without
+        # the OAuth route is a legacy build, so the error names the update.
         with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), \
              mock.patch.object(login, "_http_post", return_value={}), \
              mock.patch.object(login, "_http_get", return_value={"status": "idle"}):
-            with self.assertRaisesRegex(RuntimeError, "did not report an authorization URL"):
+            with self.assertRaisesRegex(RuntimeError, "update the Qobuz provider"):
                 await login.begin_login()
         self.assertIsNone(login._session)
 

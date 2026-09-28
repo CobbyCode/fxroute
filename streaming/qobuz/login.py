@@ -130,6 +130,11 @@ async def begin_login() -> dict[str, Any]:
         # the LAN.
         data = await asyncio.to_thread(_http_post, "/api/auth/oauth/start", None, OAUTH_START_TIMEOUT)
         if not data or not data.get("oauth_url"):
+            probe = await asyncio.to_thread(_http_get, "/api/status", OAUTH_CALLBACK_TIMEOUT)
+            if isinstance(probe, dict):
+                raise RuntimeError(
+                    "qbzd does not offer browser login; update the Qobuz provider to the current build"
+                )
             raise RuntimeError("qbzd login did not report an authorization URL")
         url = str(data["oauth_url"])
         callback_url = data.get("callback_url")

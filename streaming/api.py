@@ -625,7 +625,7 @@ async def api_qobuz_auth_login_finish(request: Request):
 
 @router.post("/api/streaming/qobuz/auth/login/cancel")
 async def api_qobuz_auth_login_cancel(request: Request):
-    """Abort an in-flight qbzd browser login (terminates the CLI listener)."""
+    """Abort an in-flight qbzd browser login (the daemon flow expires on its own)."""
     if not _deps().request_origin_is_trusted(request):
         raise HTTPException(status_code=403, detail="cross-site request rejected")
     provider = _qobuz_provider_or_404()

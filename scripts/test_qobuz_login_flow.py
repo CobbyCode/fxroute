@@ -87,9 +87,18 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["login_url"].startswith("https://www.qobuz.com/signin/oauth"))
 
     async def test_begin_login_without_url_raises(self):
-        post, get = _daemon(post={"/api/auth/oauth/start": {}})
+        post, get = _daemon(post={"/api/auth/oauth/start": {}},
+                            get={"/api/status": None})
         with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), post, get:
             with self.assertRaisesRegex(RuntimeError, "authorization URL"):
+                await login.begin_login()
+        self.assertIsNone(login._session)
+
+    async def test_begin_login_without_url_on_legacy_daemon_names_update(self):
+        post, get = _daemon(post={"/api/auth/oauth/start": {}},
+                            get={"/api/status": {"state": "logged_in"}})
+        with mock.patch.object(login, "qbzd_binary", return_value="/usr/bin/qbzd"), post, get:
+            with self.assertRaisesRegex(RuntimeError, "update the Qobuz provider"):
                 await login.begin_login()
         self.assertIsNone(login._session)
 
