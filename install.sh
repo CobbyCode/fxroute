@@ -4213,7 +4213,7 @@ configure_qbzd_fork_runtime() {
   # Verify and pin the running fork daemon: DSP-sink routing, unity engine
   # volume, and the sink-switch guard. Dies on failure so a half-configured
   # daemon can never report success.
-  local settings="" backend="" device="" playback="" volume=""
+  local settings="" backend="" device="" playback="" volume="" guard_written=0
 
   qbzd_wait_for_http /api/status 30     || die "qbzd daemon is not answering on 127.0.0.1:8182 after install"
   settings="$(qbzd_daemon_http_get /api/audio/settings || true)"
@@ -4244,13 +4244,10 @@ configure_qbzd_fork_runtime() {
 
   # The fork exposes no API/CLI/TOML switch for skip_sink_switch (it would
   # let playback hijack the system default sink via pactl); persist it in
-  # the daemon settings database instead. Warn-only: routing and unity
-  # above are the load-bearing guarantees.
-  if qbzd_ensure_skip_sink_switch && qbzd_sink_switch_guard_active; then
-    pass "qbzd sink-switch guard enabled (system default sink untouched)"
-  else
-    warn "qbzd sink-switch guard could not be enabled; playback may set the DSP sink as system default"
-  fi
+  # the daemon settings database instead. It is read back after the restart
+  # below, so a daemon writing its settings back on shutdown cannot drop it
+  # unnoticed. Warn-only: routing and unity are the load-bearing guarantees.
+  qbzd_ensure_skip_sink_switch && guard_written=1
 
   # Prove the unit survives a restart and re-verify the guarantees above.
   # An installer-internal restart is not a manual operator restart: the
@@ -4267,6 +4264,11 @@ configure_qbzd_fork_runtime() {
     -H 'Content-Type: application/json' -d '{"volume":1.0}' >/dev/null 2>&1 \
     || die "Could not re-pin qbzd engine volume to 100% after restart"
   pass "qbzd DSP sink routing and unity pin verified across restart"
+  if [[ $guard_written -eq 1 ]] && qbzd_sink_switch_guard_active; then
+    pass "qbzd sink-switch guard enabled across restart (system default sink untouched)"
+  else
+    warn "qbzd sink-switch guard could not be enabled; playback may set the DSP sink as system default"
+  fi
 }
 
 render_qbzd_service() {

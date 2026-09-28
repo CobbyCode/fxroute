@@ -1445,6 +1445,15 @@ printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
         self.assertIn('"installed_version": "${QBZD_INSTALLED_VERSION}"', self.install)
 
 
+    def test_qbzd_sink_switch_guard_is_read_back_after_the_restart(self):
+        # The guard is written into the daemon's settings database; only a
+        # readback after the verification restart proves it survived.
+        runtime = extract_function(self.install, "configure_qbzd_fork_runtime")
+        self.assertLess(runtime.index("qbzd_ensure_skip_sink_switch"),
+                        runtime.index("user_systemctl restart qbzd.service"))
+        self.assertGreater(runtime.index("qbzd_sink_switch_guard_active"),
+                           runtime.index("user_systemctl restart qbzd.service"))
+
     def test_qbzd_fork_runtime_pins_unity_and_restarts(self):
         runtime = extract_function(self.install, "configure_qbzd_fork_runtime")
         for token in (
