@@ -195,7 +195,7 @@ class DspSyncNeverDefersOnUnplayablePinTests(_CapabilityCase):
         # resamples to the card).  The helper must come back at 48 kHz.
         orchestrator, deps = _make_orchestrator({"force_rate": 96000, "active_rate": 96000})
         overview = {
-            "selected_output": {"active_rate": 96000},
+            "selected_output": {"active_rate": 96000, "supported_rates": NOTEBOOK_RATES},
             "active_rate": 96000,
             "output_mode": {"mode": "stereo"},
         }
@@ -203,6 +203,24 @@ class DspSyncNeverDefersOnUnplayablePinTests(_CapabilityCase):
         asyncio.run(orchestrator.sync_runtime(dict(overview), reason="startup"))
         self.assertEqual(len(deps.runtime.sync_calls), 1)
         self.assertEqual(deps.runtime.sync_calls[0]["output_mode"]["effective_output_rate"], 48000)
+
+    def test_requested_rate_is_fitted_against_the_callers_output(self):
+        # The remembered capability belongs to the notebook card, while the
+        # caller's overview describes a 96 kHz-capable DAC that the sink
+        # already runs at 96 kHz: the token must stay 96 kHz, so the sync
+        # proceeds instead of being suppressed as stale.
+        samplerate.remember_selected_output_rates(NOTEBOOK_RATES)
+        orchestrator, deps = _make_orchestrator({"force_rate": 0, "active_rate": 96000})
+        dac_overview = {
+            "selected_output": {"active_rate": 96000, "supported_rates": [44100, 48000, 96000]},
+            "active_rate": 96000,
+            "output_mode": {"mode": "stereo"},
+        }
+        deps.overview = dict(dac_overview)
+        with mock.patch.object(samplerate, "authoritative_sample_rate", return_value=96000):
+            asyncio.run(orchestrator.sync_runtime(dict(dac_overview), reason="output-selection"))
+        self.assertEqual(len(deps.runtime.sync_calls), 1)
+        self.assertEqual(deps.runtime.sync_calls[0]["output_mode"]["effective_output_rate"], 96000)
 
     def test_idle_repair_ignores_an_unplayable_pin(self):
         orchestrator, deps = _make_orchestrator({"force_rate": 96000, "active_rate": 48000})

@@ -1144,6 +1144,17 @@ def honoured_force_rate(status: Mapping[str, Any] | None) -> int | None:
     return force_rate if playable_rate(force_rate) == force_rate else None
 
 
+def overview_supported_rates(overview: dict | None) -> list[int]:
+    """Return the playable rates of the output an overview describes (empty: unknown)."""
+    if not isinstance(overview, dict):
+        return []
+    selected_output = overview.get("selected_output") or overview.get("current_output") or {}
+    return [
+        rate for rate in (selected_output.get("supported_rates") or [])
+        if isinstance(rate, int) and rate > 0
+    ]
+
+
 def authoritative_sample_rate(status: dict | None) -> int | None:
     """Read the live rate which owns the helper start decision.
 

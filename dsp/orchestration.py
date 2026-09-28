@@ -183,8 +183,14 @@ class DspOrchestrator:
         if dsp_runtime is None:
             return overview
 
+        # Fit the stale-check token against the capability of the output the
+        # caller's overview describes, never a capability remembered from
+        # another output's overview read.
         requested_rate = (
-            samplerate.playable_rate(samplerate.overview_sample_rate(overview))
+            samplerate.playable_rate(
+                samplerate.overview_sample_rate(overview),
+                samplerate.overview_supported_rates(overview),
+            )
             if overview_was_supplied else None
         )
 
