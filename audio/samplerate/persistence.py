@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from common.atomic_write import atomic_write_text
 
+from .capability import playable_rate
 from .constants import (
     SAMPLE_RATE_CANDIDATES,
     SOURCE_MODE_APP_PLAYBACK,
@@ -91,6 +92,16 @@ def effective_playback_rate(source_rate: int | None, policy: Mapping[str, Any] |
     if isinstance(fixed_rate, int) and fixed_rate > 0:
         return fixed_rate
     return source_rate if isinstance(source_rate, int) and source_rate > 0 else None
+
+
+def playback_target_rate(source_rate: int | None, policy: Mapping[str, Any] | None = None) -> int | None:
+    """Return the graph rate for a source: the policy rate fitted to the output.
+
+    A rate the selected output supports stays native; an unsupported one
+    falls back to the highest supported rate below it (see
+    :func:`audio.samplerate.capability.playable_rate`).
+    """
+    return playable_rate(effective_playback_rate(source_rate, policy))
 
 
 def _normalize_single_sub_config(payload: dict[str, Any] | None = None) -> dict[str, Any]:

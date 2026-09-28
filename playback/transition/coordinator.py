@@ -14,6 +14,7 @@ from uuid import uuid4
 from .cleanup import _TransitionCleanupMixin
 from .gate import _OutputGateMixin
 from audio.device_profiles import device_rates, required_tier_switch
+from audio.samplerate.capability import playable_rate
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 import playback.source_policy as source_policy
 
@@ -31,6 +32,15 @@ from .readbacks import stable_graph_readbacks
 from .stages import _TransitionStages
 
 logger = logging.getLogger(__name__)
+
+# Operations that carry the current committed rate by contract and are not
+# rate-targeted.
+RATE_NEUTRAL_OPERATIONS = frozenset({
+    "measurement-entry",
+    "measurement-restore",
+    "output-mode-switch",
+    "graph-reconcile",
+})
 
 
 class _SourceChangedAbort(Exception):
@@ -174,31 +184,8 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
         return bool(request.should_play or request.operation == "measurement-entry")
 
     @staticmethod
-    def _validate_transition_target_rate(request: TransitionRequest) -> None:
-        """Reject a target rate the selected output or FXRoute cannot carry.
-
-        Runs before any transition state is mutated so the rejection can
-        propagate to the API caller as a clean HTTP 400.  Fails open when the
-        capability list is unavailable so a discovery hiccup never blocks
-        playback.  Rate-neutral operations (measurement, output-mode switch,
-        graph repair) carry the current committed rate by contract and are
-        not rate-targeted, so they are exempt.
-        """
-        if request.operation in {
-            "measurement-entry",
-            "measurement-restore",
-            "output-mode-switch",
-            "graph-reconcile",
-        }:
-            return
-        target_rate = request.target_rate
-        if not isinstance(target_rate, int) or target_rate <= 0:
-            return
-        if target_rate > FXROUTE_MAX_PROCESSING_RATE:
-            raise UnsupportedTransitionRateError(
-                f"FXRoute supports sample rates up to {FXROUTE_MAX_PROCESSING_RATE} Hz; "
-                f"cannot switch to {target_rate} Hz"
-            )
+    def _output_supported_rates(request: TransitionRequest) -> list[int]:
+        """Return the rates the selected output carries (empty: unknown)."""
         overview = request.audio_overview or {}
         selected = overview.get("selected_output") or overview.get("current_output") or {}
         profile = selected.get("device_profile") or {}
@@ -221,6 +208,57 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                 supported = list(channel_tier.get("rates") or (channel_tier.get("tier") or {}).get("rates") or [])
                 if not supported:
                     raise UnsupportedTransitionRateError("Channel-tier transition has no destination rates")
+        return [rate for rate in supported if rate <= FXROUTE_MAX_PROCESSING_RATE]
+
+    @classmethod
+    def _fit_transition_target_rate(cls, request: TransitionRequest) -> TransitionRequest:
+        """Fit the target rate to the selected output.
+
+        A supported rate stays native; an unsupported one falls back to the
+        highest supported rate below it, and PipeWire resamples the source.
+        Rate-neutral operations and an unknown capability are left alone.
+        """
+        if request.operation in RATE_NEUTRAL_OPERATIONS:
+            return request
+        target_rate = request.target_rate
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            return request
+        supported = cls._output_supported_rates(request)
+        fitted = playable_rate(target_rate, supported)
+        if not supported or fitted == target_rate:
+            return request
+        logger.info(
+            "Target sample rate %s Hz is not supported by the selected output; "
+            "resampling to %s Hz: operation=%s source=%s",
+            target_rate, fitted, request.operation, request.source,
+        )
+        return replace(request, target_rate=fitted, rate_change=True)
+
+    @classmethod
+    def _validate_transition_target_rate(cls, request: TransitionRequest) -> None:
+        """Reject a target rate the selected output or FXRoute cannot carry.
+
+        Runs after :meth:`_fit_transition_target_rate`, so it only rejects
+        what no fallback can serve: a rate above the FXRoute processing cap
+        while the output capability is unknown.  Runs before any transition
+        state is mutated so the rejection can propagate to the API caller as
+        a clean HTTP 400.  Fails open when the capability list is unavailable
+        so a discovery hiccup never blocks playback.  Rate-neutral operations
+        (measurement, output-mode switch, graph repair) carry the current
+        committed rate by contract and are not rate-targeted, so they are
+        exempt.
+        """
+        if request.operation in RATE_NEUTRAL_OPERATIONS:
+            return
+        target_rate = request.target_rate
+        if not isinstance(target_rate, int) or target_rate <= 0:
+            return
+        if target_rate > FXROUTE_MAX_PROCESSING_RATE:
+            raise UnsupportedTransitionRateError(
+                f"FXRoute supports sample rates up to {FXROUTE_MAX_PROCESSING_RATE} Hz; "
+                f"cannot switch to {target_rate} Hz"
+            )
+        supported = cls._output_supported_rates(request)
         if not supported:
             # Capability unknown (no selected output or enumeration failed):
             # do not block on a list we cannot trust.
@@ -757,6 +795,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                         active_request,
                         audio_overview=dict(snapshot["audio_overview"]),
                     )
+                active_request = self._fit_transition_target_rate(active_request)
                 self._validate_transition_target_rate(active_request)
                 if (
                     active_request.operation == "sample-rate-policy"
@@ -829,6 +868,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                                     or resolved_rate != active_request.target_rate
                                 ),
                             )
+                            active_request = self._fit_transition_target_rate(active_request)
                     snapshot_active_rate = snapshot.get("active_rate") if isinstance(snapshot, Mapping) else None
                     snapshot_force_rate = snapshot.get("force_rate") if isinstance(snapshot, Mapping) else None
                     if (

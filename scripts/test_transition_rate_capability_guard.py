@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Fail-fast sample-rate capability guard tests.
+"""Sample-rate capability fallback and guard tests.
 
-Covers the FXRoute DSP processing cap (384 kHz) and the pre-transition
-rejection of target rates the selected output cannot carry:
+Covers the FXRoute DSP processing cap (384 kHz) and the target-rate fit to
+the selected output:
 
+- a supported target rate plays natively (unchanged request)
+- an unsupported target rate falls back to the highest supported rate below
+  it (96 -> 48 kHz on a 48 kHz-only card, 384 -> 192 kHz on a 192 kHz
+  device) and runs through the normal transition path at that rate
 - effective supported rates end at 384 kHz even when the device reports more
-- a transition to an unsupported target rate is rejected before any
-  PipeWire/DSP state is mutated (no gate close, no quiet, no rate switch)
-- supported rates keep flowing through the normal transition path
+- only a rate above 384 kHz with an unknown capability is still rejected
+  before any PipeWire/DSP state is mutated
 - rate-neutral operations (measurement, output-mode switch, graph repair)
   are exempt
 """
@@ -151,44 +154,51 @@ def _request(target_rate: int, *, operation: str = "play") -> TransitionRequest:
     )
 
 
-class RateCapabilityGuardUnitTests(unittest.TestCase):
-    """Direct checks of the coordinator's pre-transition validation."""
+def _with_rates(request: TransitionRequest, supported: list[int]) -> TransitionRequest:
+    return type(request)(**{
+        **request.__dict__,
+        "audio_overview": {"selected_output": {"supported_rates": supported}},
+    })
 
-    def _validate(self, request: TransitionRequest) -> None:
-        PlaybackTransitionCoordinator._validate_transition_target_rate(request)
+
+class RateCapabilityGuardUnitTests(unittest.TestCase):
+    """Direct checks of the coordinator's target-rate fit and guard."""
+
+    def _fit(self, request: TransitionRequest) -> TransitionRequest:
+        fitted = PlaybackTransitionCoordinator._fit_transition_target_rate(request)
+        PlaybackTransitionCoordinator._validate_transition_target_rate(fitted)
+        return fitted
 
     def test_fxroute_cap_rejects_rates_above_384_khz_without_overview(self):
         # SMSL-like: hardware supports 768 kHz but FXRoute processes only
-        # up to 384 kHz.  The rejection needs no device overview at all.
+        # up to 384 kHz.  Without a capability list there is nothing to
+        # fall back to, so the rejection stays.
         with self.assertRaises(UnsupportedTransitionRateError) as ctx:
-            self._validate(_request(768000))
+            self._fit(_request(768000))
         self.assertIn("384000", str(ctx.exception))
         with self.assertRaises(UnsupportedTransitionRateError):
-            self._validate(_request(705600))
+            self._fit(_request(705600))
 
-    def test_device_cap_rejects_384_khz_when_device_max_is_192_khz(self):
-        # UMC-like: target 384000, device effective maximum 192000.
-        request = _request(384000)
-        request = type(request)(**{
-            **request.__dict__,
-            "audio_overview": {"selected_output": {"supported_rates": [44100, 48000, 96000, 192000]}},
-        })
-        with self.assertRaises(UnsupportedTransitionRateError) as ctx:
-            self._validate(request)
-        self.assertIn("192000", str(ctx.exception))
+    def test_unsupported_rate_falls_back_to_highest_supported_below(self):
+        for target, supported, expected in (
+            (96000, [44100, 48000], 48000),                       # 48 kHz-only card
+            (384000, [44100, 48000, 96000, 192000], 192000),      # 192 kHz device
+            (176400, [44100, 48000, 96000], 96000),
+            (88200, [44100, 48000], 48000),
+            (22050, [44100, 48000], 44100),                       # nothing lower
+        ):
+            fitted = self._fit(_with_rates(_request(target), supported))
+            self.assertEqual(fitted.target_rate, expected, (target, supported))
+            self.assertTrue(fitted.rate_change)
 
-    def test_device_above_384_khz_is_rejected_against_effective_list(self):
-        # The overview already reports the FXRoute-capped list, so a native
-        # 768 kHz device is rejected through the same device check.
-        request = _request(768000)
-        request = type(request)(**{
-            **request.__dict__,
-            "audio_overview": {
-                "selected_output": {"supported_rates": [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000]}
-            },
-        })
-        with self.assertRaises(UnsupportedTransitionRateError):
-            self._validate(request)
+    def test_device_above_384_khz_falls_back_within_the_effective_list(self):
+        # The overview reports the FXRoute-capped list, so a 768 kHz source
+        # on a native 768 kHz device plays at 384 kHz.
+        request = _with_rates(
+            _request(768000),
+            [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000],
+        )
+        self.assertEqual(self._fit(request).target_rate, 384000)
 
     def test_supported_rates_pass_unchanged(self):
         for target, supported in (
@@ -200,74 +210,64 @@ class RateCapabilityGuardUnitTests(unittest.TestCase):
             (96000, [44100, 48000, 96000]),
             (176400, [44100, 48000, 96000, 176400]),
         ):
-            request = _request(target)
-            request = type(request)(**{
-                **request.__dict__,
-                "audio_overview": {"selected_output": {"supported_rates": supported}},
-            })
-            self._validate(request)  # must not raise
+            request = _with_rates(_request(target), supported)
+            self.assertIs(self._fit(request), request)
 
     def test_missing_or_empty_capability_list_fails_open(self):
-        # No overview, no selected output, or an empty list must never block.
-        self._validate(_request(192000))
+        # No overview, no selected output, or an empty list never changes
+        # or blocks the target.
         request = _request(192000)
+        self.assertIs(self._fit(request), request)
         request = type(request)(**{
             **request.__dict__,
             "audio_overview": {"current_output": {"supported_rates": []}},
         })
-        self._validate(request)
-        request = _request(192000)
-        request = type(request)(**{
-            **request.__dict__,
-            "audio_overview": {},
-        })
-        self._validate(request)
+        self.assertIs(self._fit(request), request)
+        request = type(request)(**{**request.__dict__, "audio_overview": {}})
+        self.assertIs(self._fit(request), request)
 
     def test_non_positive_and_missing_target_rates_pass(self):
         for target in (None, 0, -1):
             base = _request(44100)
             request = TransitionRequest(**{**base.__dict__, "target_rate": target})
-            self._validate(request)
+            self.assertIs(self._fit(request), request)
 
     def test_rate_neutral_operations_are_exempt(self):
         # Measurement, output-mode switch and graph repair carry the current
         # committed rate by contract and are not rate-targeted.
         for operation in ("measurement-entry", "measurement-restore", "output-mode-switch", "graph-reconcile"):
-            request = _request(768000, operation=operation)
-            request = type(request)(**{
-                **request.__dict__,
-                "audio_overview": {"selected_output": {"supported_rates": [44100]}},
-            })
-            self._validate(request)  # must not raise
+            request = _with_rates(_request(768000, operation=operation), [44100])
+            self.assertIs(self._fit(request), request)
 
 
 class RateCapabilityGuardTransitionTests(unittest.IsolatedAsyncioTestCase):
-    """The coordinator rejects before mutating any transition state."""
+    """Unsupported rates run at the fallback rate; only the cap rejects."""
 
-    async def _run(self, target_rate: int, supported_rates: list[int] | None):
-        runtime = _FakeRuntime(supported_rates=supported_rates)
+    async def test_384_khz_target_on_192_khz_device_runs_at_192_khz(self):
+        runtime = _FakeRuntime(supported_rates=[44100, 48000, 96000, 192000])
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
-        try:
-            await coordinator.execute(_request(target_rate))
-        except UnsupportedTransitionRateError:
-            pass
-        else:
-            self.fail("execute must reject the unsupported target rate")
-        return runtime
+        result = await coordinator.execute(_request(384000))
+        self.assertTrue(result.committed)
+        self.assertEqual(runtime.rate, 192000)
+        self.assertIn("rate", runtime.events)
+        self.assertIn("effects-helper-links", runtime.events)
+        self.assertNotIn("pause-after-failure", runtime.events)
 
-    async def test_384_khz_target_on_192_khz_device_is_rejected_before_stages(self):
-        runtime = await self._run(384000, [44100, 48000, 96000, 192000])
-        # Only the snapshot is read; no gate close, no quiet, no rate switch,
-        # no effects/helper stage may run.
-        self.assertEqual(runtime.events, ["snapshot"])
-
-    async def test_768_khz_target_on_768_khz_device_is_rejected_before_stages(self):
-        # Effective list already capped by the overview layer.
-        runtime = await self._run(768000, [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000])
-        self.assertEqual(runtime.events, ["snapshot"])
+    async def test_96_khz_target_on_48_khz_card_runs_at_48_khz(self):
+        runtime = _FakeRuntime(supported_rates=[44100, 48000])
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        result = await coordinator.execute(_request(96000))
+        self.assertTrue(result.committed)
+        self.assertEqual(runtime.rate, 48000)
+        self.assertNotIn("pause-after-failure", runtime.events)
 
     async def test_768_khz_target_without_overview_is_rejected_by_fxroute_cap(self):
-        runtime = await self._run(768000, None)
+        runtime = _FakeRuntime(supported_rates=None)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        with self.assertRaises(UnsupportedTransitionRateError):
+            await coordinator.execute(_request(768000))
+        # Only the snapshot is read; no gate close, no quiet, no rate switch,
+        # no effects/helper stage may run.
         self.assertEqual(runtime.events, ["snapshot"])
 
     async def test_supported_rate_flows_through_normal_transition_path(self):
@@ -276,6 +276,7 @@ class RateCapabilityGuardTransitionTests(unittest.IsolatedAsyncioTestCase):
             coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
             result = await coordinator.execute(_request(target))
             self.assertTrue(result.committed)
+            self.assertEqual(runtime.rate, target)
             self.assertIn("rate", runtime.events)
             self.assertIn("effects-helper-links", runtime.events)
             self.assertNotIn("pause-after-failure", runtime.events)

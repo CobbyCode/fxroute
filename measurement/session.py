@@ -789,7 +789,7 @@ def _capture_playback_state_before_measurement(
             "artist": track_info.get("artist") or state_track.get("artist"),
             "sample_rate_hz": state_track.get("sample_rate_hz"),
         })
-        effective_rate = samplerate.effective_playback_rate(SPOTIFY_PREARM_SAMPLE_RATE_HZ)
+        effective_rate = samplerate.playback_target_rate(SPOTIFY_PREARM_SAMPLE_RATE_HZ)
         _playback_state_before_measurement = {
             "source": "spotify",
             "track_info": track_info,
@@ -825,9 +825,9 @@ def _capture_playback_state_before_measurement(
             return
         source_rate = qobuz_state.get("sample_rate")
         effective_rate = (
-            samplerate.effective_playback_rate(int(source_rate))
+            samplerate.playback_target_rate(int(source_rate))
             if isinstance(source_rate, int) and source_rate > 0
-            else samplerate.effective_playback_rate(44100)
+            else samplerate.playback_target_rate(44100)
         )
         was_playing = bool(context.get("should_play"))
         _playback_state_before_measurement = {
@@ -884,7 +884,7 @@ def _capture_playback_state_before_measurement(
             source, current_track_info.get("url", ""),
         )
         return
-    expected_rate = samplerate.effective_playback_rate(expected_rate)
+    expected_rate = samplerate.playback_target_rate(expected_rate)
 
     saved_state = {
         "source": source,

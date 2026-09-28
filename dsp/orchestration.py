@@ -183,7 +183,10 @@ class DspOrchestrator:
         if dsp_runtime is None:
             return overview
 
-        requested_rate = samplerate.overview_sample_rate(overview) if overview_was_supplied else None
+        requested_rate = (
+            samplerate.playable_rate(samplerate.overview_sample_rate(overview))
+            if overview_was_supplied else None
+        )
 
         async def _sync_locked() -> dict:
             try:
@@ -637,8 +640,11 @@ class DspOrchestrator:
             status = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
         except Exception:
             return
-        pinned_rate = status.get("force_rate")
-        if not isinstance(pinned_rate, int) or pinned_rate <= 0:
+        # A pin the selected output cannot run (a Connect daemon pinning its
+        # track rate) is never honoured by any graph; there is nothing to
+        # repair toward.
+        pinned_rate = samplerate.honoured_force_rate(status)
+        if pinned_rate is None:
             return
         if samplerate.playback_rate_aligned(status, pinned_rate):
             return

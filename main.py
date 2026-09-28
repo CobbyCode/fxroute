@@ -2204,8 +2204,8 @@ async def broadcast_qobuz_state(data=None):
 def _qobuz_target_rate(qobuz_state: Mapping[str, Any]) -> int:
     source_rate = qobuz_state.get("sample_rate")
     if isinstance(source_rate, int) and source_rate > 0:
-        return samplerate.effective_playback_rate(source_rate)
-    return samplerate.effective_playback_rate(44100)
+        return samplerate.playback_target_rate(source_rate)
+    return samplerate.playback_target_rate(44100)
 
 
 async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:

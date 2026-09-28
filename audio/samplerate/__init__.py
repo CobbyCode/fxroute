@@ -94,6 +94,12 @@ from audio.samplerate.persistence import (
     load_sample_rate_policy,
     normalize_sample_rate_policy,
     persist_sample_rate_policy,
+    playback_target_rate,
+)
+from audio.samplerate.capability import (
+    playable_rate,
+    remember_selected_output_rates,
+    selected_output_rates,
 )
 
 from audio.samplerate.bluetooth import (
@@ -116,6 +122,7 @@ from audio.samplerate.overview import (
     get_audio_output_overview,
     get_audio_source_overview,
     get_samplerate_status,
+    honoured_force_rate,
     measurement_helper_snapshot_summary,
     overview_sample_rate,
     prepare_audio_output_selection,
@@ -202,17 +209,22 @@ __all__ = [
     "is_bluetooth_audio_streaming",
     "get_current_pipewire_force_rate",
     "get_samplerate_status",
+    "honoured_force_rate",
     "load_sample_rate_policy",
     "measurement_helper_snapshot_summary",
     "normalize_sample_rate_policy",
     "overview_sample_rate",
     "persist_sample_rate_policy",
+    "playable_rate",
     "playback_rate_aligned",
+    "playback_target_rate",
     "pulse_suspend_sink_for_samplerate",
     "rate_renegotiation_trigger_path",
     "recover_saved_output_sink",
     "reconcile_transition_sink_rate",
     "recycle_card_profile",
+    "remember_selected_output_rates",
+    "selected_output_rates",
     "set_audio_output_selection",
     "set_audio_source_selection",
     "set_bluetooth_receiver_enabled",

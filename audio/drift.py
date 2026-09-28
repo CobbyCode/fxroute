@@ -113,7 +113,7 @@ class SamplerateDriftObserver:
             self.reset()
             return
 
-        target_rate = samplerate.effective_playback_rate(actual_rate)
+        target_rate = samplerate.playback_target_rate(actual_rate)
         if not isinstance(target_rate, int) or target_rate <= 0:
             self.reset()
             return
@@ -125,7 +125,7 @@ class SamplerateDriftObserver:
         healthy = (
             source_metadata_aligned
             and active_rate == target_rate
-            and (force_rate is None or force_rate == 0 or force_rate == target_rate)
+            and samplerate.honoured_force_rate(samplerate_status) in {None, target_rate}
         )
         if healthy:
             self.reset()

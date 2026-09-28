@@ -199,7 +199,7 @@ class PlaybackOrchestrator:
         return int(value) if isinstance(value, int) and value > 0 else None
 
     def coordinator_target_rate(self, source: str, track: Mapping[str, Any] | None = None) -> int | None:
-        return samplerate.effective_playback_rate(self.coordinator_source_rate(source, track))
+        return samplerate.playback_target_rate(self.coordinator_source_rate(source, track))
 
     def sample_rate_policy_is_auto(self) -> bool:
         return samplerate.load_sample_rate_policy().get("mode") == "auto"
@@ -438,7 +438,7 @@ class PlaybackOrchestrator:
         # Tier switches are injected centrally by the coordinator
         # (rate-to-tier is unambiguous per device profile), so every
         # rate-targeted operation funnels through one reprobe path.
-        target_rate = samplerate.effective_playback_rate(source_rate, policy)
+        target_rate = samplerate.playback_target_rate(source_rate, policy)
         if not isinstance(target_rate, int) or target_rate <= 0:
             status = await asyncio.to_thread(self._deps.get_samplerate_status)
             target_rate = status.get("active_rate") or status.get("force_rate")

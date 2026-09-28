@@ -194,7 +194,7 @@ class _RuntimeVerificationMixin:
                 "target rate changed during DSP stabilization: "
                 f"expected={request.target_rate} actual={rate.get('active_rate')}"
             )
-        if rate.get("force_rate") not in {None, 0, request.target_rate}:
+        if samplerate.honoured_force_rate(rate) not in {None, request.target_rate}:
             raise RuntimeError(
                 f"force-rate changed during DSP stabilization: {rate.get('force_rate')}"
             )
@@ -403,7 +403,7 @@ class _RuntimeVerificationMixin:
                 raise RuntimeError(
                     f"hardware rate mismatch at commit: expected={request.target_rate} actual={rate.get('active_rate')}"
                 )
-            if rate.get("force_rate") not in {None, 0, request.target_rate}:
+            if samplerate.honoured_force_rate(rate) not in {None, request.target_rate}:
                 raise RuntimeError(f"force-rate mismatch at commit: {rate.get('force_rate')}")
         graph_complete = await self._deps.playback_graph_links_complete(
             audio_overview=overview,
@@ -578,7 +578,7 @@ class _RuntimeVerificationMixin:
                 "output-mode transition hardware rate mismatch: "
                 f"expected={target_rate} actual={rate.get('active_rate')}"
             )
-        if rate.get("force_rate") not in {None, 0, target_rate}:
+        if samplerate.honoured_force_rate(rate) not in {None, target_rate}:
             raise RuntimeError(
                 "output-mode transition force-rate mismatch: "
                 f"expected={target_rate} actual={rate.get('force_rate')}"

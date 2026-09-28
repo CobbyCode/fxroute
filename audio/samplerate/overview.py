@@ -178,6 +178,7 @@ def _derived_output_mode_from_head(selection_state: Mapping[str, Any] | None) ->
         return None
 
 from .bluetooth import get_bluetooth_audio_overview
+from .capability import playable_rate, remember_selected_output_rates
 from .constants import (
     NON_SELECTABLE_INPUT_KEYS,
     NON_SELECTABLE_OUTPUT_KEYS,
@@ -524,6 +525,7 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
         if fallback_key is not None:
             selected_output = _build_selected_output_payload(fallback_key, None, explicit_outputs)
     effective_output = next((item for item in explicit_outputs if item.get("key") == (selected_output or {}).get("key")), None) or current_output
+    remember_selected_output_rates((selected_output or {}).get("supported_rates"))
     # The v2 output state is the only source of truth; without a usable
     # head the overview degrades to stereo exactly like a missing file.
     # Derive from the validated effective device: a stale saved selection
@@ -1127,15 +1129,45 @@ def overview_sample_rate(overview: dict | None) -> int | None:
             return value
     return None
 
+def honoured_force_rate(status: Mapping[str, Any] | None) -> int | None:
+    """Return the force-rate pin the selected output can run, else None.
+
+    A Connect daemon such as qbzd pins its own track rate; a pin the output
+    cannot run is never honoured by the graph, which keeps running at the
+    live sink rate.
+    """
+    if not isinstance(status, Mapping):
+        return None
+    force_rate = status.get("force_rate")
+    if not isinstance(force_rate, int) or force_rate <= 0:
+        return None
+    return force_rate if playable_rate(force_rate) == force_rate else None
+
+
 def authoritative_sample_rate(status: dict | None) -> int | None:
-    """Read the live rate which owns the helper start decision."""
+    """Read the live rate which owns the helper start decision.
+
+    The result is always a rate the selected output can run.  An unplayable
+    force-rate pin (see :func:`honoured_force_rate`) is not authoritative:
+    waiting for the sink to reach it would defer every DSP sync forever, so
+    the live sink rate decides when the output runs it natively.  Without a
+    helper clocking the graph, PipeWire can run the sink node at the
+    unplayable pinned rate (its ALSA adapter resamples), so that rate falls
+    back like any other unsupported rate.
+    """
     if not isinstance(status, dict):
         return None
-    for key in ("force_rate", "active_rate"):
-        value = status.get(key)
-        if isinstance(value, int) and value > 0:
-            return value
-    return None
+    force_rate = honoured_force_rate(status)
+    if force_rate is not None:
+        return force_rate
+    active_rate = status.get("active_rate")
+    active_rate = active_rate if isinstance(active_rate, int) and active_rate > 0 else None
+    if active_rate is not None and playable_rate(active_rate) == active_rate:
+        return active_rate
+    pinned = status.get("force_rate")
+    pinned = pinned if isinstance(pinned, int) and pinned > 0 else None
+    candidate = active_rate or pinned
+    return playable_rate(candidate) if candidate is not None else None
 
 def audio_output_overview_with_effective_rate(overview: dict, effective_rate: int) -> dict:
     output_mode = dict(overview.get("output_mode") or {})

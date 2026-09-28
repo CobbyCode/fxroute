@@ -205,7 +205,7 @@ class _RuntimeSourceMixin:
                 request.target_url,
                 live_rate,
             )
-            return samplerate.effective_playback_rate(live_rate, request.sample_rate_policy or None)
+            return samplerate.playback_target_rate(live_rate, request.sample_rate_policy or None)
 
         if request.source != "radio" or not request.reload_source:
             return request.target_rate
@@ -243,7 +243,7 @@ class _RuntimeSourceMixin:
                 request.target_url,
             )
         self._staged_target_url = request.target_url
-        return samplerate.effective_playback_rate(live_rate, request.sample_rate_policy or None)
+        return samplerate.playback_target_rate(live_rate, request.sample_rate_policy or None)
 
     async def establish_target_rate(self, request: TransitionRequest) -> None:
         if request.graph_only:

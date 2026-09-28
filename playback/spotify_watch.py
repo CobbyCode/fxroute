@@ -113,7 +113,7 @@ class SpotifyPlayerctlWatch:
                 )
                 if spotify_state.get("status") == "Playing" and isinstance(spotify_rate, int) and isinstance(sink_rate, int):
                     canonical_rate = SPOTIFY_PREARM_SAMPLE_RATE_HZ
-                    target_rate = samplerate.effective_playback_rate(canonical_rate)
+                    target_rate = samplerate.playback_target_rate(canonical_rate)
                     if spotify_rate != canonical_rate or sink_rate != target_rate:
                         current_mismatch = (spotify_identity, spotify_rate, sink_rate)
                         if current_mismatch == mismatch_signature:
