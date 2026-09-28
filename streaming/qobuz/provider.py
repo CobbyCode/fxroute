@@ -68,10 +68,6 @@ def normalize_state(state: Any, is_playing: Any) -> str:
     return "Stopped"
 
 
-# Historical private name; the public shared API is normalize_state.
-_normalize_state = normalize_state
-
-
 class QobuzProvider(StreamingProvider):
     """Qobuz playback via the qbzd daemon control plane."""
 

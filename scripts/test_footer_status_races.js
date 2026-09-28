@@ -77,12 +77,26 @@ for (const owner of ['spotify', 'qobuz']) {
     });
 }
 
-test('idle metadata poll stays a no-op while the previous source is stopped', async () => {
+test('idle metadata poll heals a missed provider commit', async () => {
     const h = harness(playback(null));
-    let fetches = 0;
-    h.core.init({ fetchFn: async () => { fetches += 1; return { ok: true, json: async () => playback('qobuz') }; } });
+    let renders = 0;
+    h.core.init({ updatePlaybackUI: () => { renders += 1; h.core.reconcileFooterSource(); } });
+    h.respond(playback('qobuz'));
     await h.core.fetchMetadata();
-    assert.equal(fetches, 0, 'stopped native playback with a local footer performs no status poll');
+    h.assertOwner('qobuz');
+    assert.ok(renders > 0, 'healing commit re-renders the footer');
+});
+
+test('stable idle metadata poll renders nothing', async () => {
+    const h = harness(playback(null));
+    let fetches = 0, renders = 0;
+    h.core.init({
+        fetchFn: async () => { fetches += 1; return { ok: true, json: async () => playback(null) }; },
+        updatePlaybackUI: () => { renders += 1; },
+    });
+    await h.core.fetchMetadata();
+    assert.equal(fetches, 1, 'idle state is still re-read');
+    assert.equal(renders, 0, 'stable idle performs no footer render');
     h.assertOwner(null);
 });
 

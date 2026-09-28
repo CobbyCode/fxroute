@@ -593,16 +593,34 @@ function triggerSamplerateBurstPolling() {
     });
 }
 
+// Signature of the playback/owner/metadata state the footer renders from.
+// Volume travels its own silent path (renderVolumeControlsFromActualVolume)
+// and never counts as a footer refresh.
+function playbackRefreshSignature(playback) {
+    const track = playback?.current_track;
+    const radio = playback?.radio_metadata;
+    const peak = playback?.output_peak_warning;
+    return JSON.stringify([
+        playback?.playback_owner || null,
+        !!playback?.playing, !!playback?.paused, !!playback?.ended,
+        track ? [track.id || null, track.source || null, track.url || null, track.title || null, track.artist || null] : null,
+        playback?.live_title || null,
+        radio ? [radio.track_id || null, radio.title || null, radio.artist || null, radio.album || null, radio.cover_url || null, !!radio.stale] : null,
+        peak ? [!!peak.available, !!peak.vu_fresh, typeof peak.vu_db === 'number' ? peak.vu_db : null] : null,
+    ]);
+}
+
 async function fetchMetadata() {
     if (isPageHidden()) return;
-    // Idle gate: stopped native playback with a local footer owns no live
-    // content, so the metadata/peak timers stay a no-op instead of polling
-    // /api/status and re-rendering the footer forever.
-    if (!deps.getState().playback.playing && !deps.getState().playback.paused && !isStreamingFooterSource(window.__footerSource)) return;
+    // No idle gate: a missed provider-ownership commit must heal through
+    // this read even when native playback is stopped on a local footer.
+    // Rendering is gated on relevant change below instead, so a stable
+    // idle state polls quietly without re-rendering the footer.
     // Every accepted merge replaces this object. A read started before a
     // commit/reconnect must not overwrite it, even at equal MPV sequences
     // (external provider switches do not advance MPV's counter).
     const requestPlayback = deps.getState().playback;
+    const before = playbackRefreshSignature(requestPlayback);
     try {
         const resp = await deps.fetchFn('/api/status');
         if (!resp.ok) return;
@@ -623,6 +641,10 @@ async function fetchMetadata() {
         }
         // A null MPV track is authoritative too: external owners and Stop
         // clear native metadata instead of retaining the previous provider.
+        // The merge above already healed the state; render only when the
+        // footer-relevant state actually moved, so a stable idle performs
+        // no repeated footer renders.
+        if (playbackRefreshSignature(deps.getState().playback) === before) return;
         syncFooterOwnershipFromPlayback();
         deps.updatePlaybackUI();
     } catch (e) {}
@@ -1222,8 +1244,10 @@ async function resyncPlaybackAfterReconnect() {
 
         if (playback) deps.updateLiveBanner(playback);
         if (playback && requestPlayback === deps.getState().playback) {
-            // Full state of the process the socket reconnected to: a snapshot,
-            // like the WebSocket init (whichever of the two lands first).
+            // Snapshot of the process the socket reconnected to. Unlike the
+            // WebSocket init (unconditional attach), this resync lands beside
+            // a possibly newer commit, so the merge is identity-guarded and
+            // the provider caches seed through their own guarded stream.
             mergePlaybackState(playback, { snapshot: true });
             // Seed the session cue key so attaching to the already running
             // player stays silent; later real track changes still cue.

@@ -42,6 +42,10 @@ RATE_NEUTRAL_OPERATIONS = frozenset({
     "graph-reconcile",
 })
 
+# Upper bound for channel-tier reprobe passes inside one transition: one pass
+# per tier plus the settling pass that confirms rate and tier agree.
+_MAX_TIER_REPROBE_PASSES = 4
+
 
 class _SourceChangedAbort(Exception):
     """A source-mode/input switch committed while the transition was queued.
@@ -893,23 +897,29 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     # stage below always pins a natively supported rate.  The
                     # tier rides on the request before the stage runs, so a
                     # reprobe failure still reaches the tier rollback below.
+                    # The freshly read capability can move the fitted rate onto
+                    # yet another tier, so the fit and the rate-to-tier mapping
+                    # are re-derived until they agree (bounded: one pass per
+                    # tier plus the settling pass).
                     if (
                         active_request.operation not in {"measurement-entry", "measurement-restore"}
                         and isinstance(active_request.target_rate, int)
                         and active_request.target_rate > 0
                     ):
-                        tier_overview = active_request.audio_overview or {}
-                        tier_selected = (
-                            tier_overview.get("selected_output")
-                            or tier_overview.get("current_output")
-                            or {}
-                        )
-                        tier_switch = required_tier_switch(tier_selected, active_request.target_rate)
-                        existing_tier = (getattr(active_request, "channel_tier", None) or {}).get("tier") or {}
-                        if (
-                            tier_switch is not None
-                            and existing_tier.get("id") != tier_switch["tier"].get("id")
-                        ):
+                        for _ in range(_MAX_TIER_REPROBE_PASSES):
+                            tier_overview = active_request.audio_overview or {}
+                            tier_selected = (
+                                tier_overview.get("selected_output")
+                                or tier_overview.get("current_output")
+                                or {}
+                            )
+                            tier_switch = required_tier_switch(tier_selected, active_request.target_rate)
+                            existing_tier = (getattr(active_request, "channel_tier", None) or {}).get("tier") or {}
+                            if (
+                                tier_switch is None
+                                or existing_tier.get("id") == tier_switch["tier"].get("id")
+                            ):
+                                break
                             active_request = replace(active_request, channel_tier=tier_switch)
                             tier_overview = await self._stage(
                                 stages, "channel-tier-reprobe",

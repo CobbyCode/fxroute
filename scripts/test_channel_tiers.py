@@ -494,6 +494,70 @@ class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.committed)
         self.assertNotIn("tier", runtime.events)
 
+    async def test_refit_after_reprobe_follows_the_fitted_tier(self):
+        from test_playback_transition_coordinator import FakeRuntime
+        from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
+
+        seen = {}
+
+        class DriftRuntime(FakeRuntime):
+            async def apply_channel_tier(self, request, snapshot):
+                self.events.append("tier")
+                tier_id = (request.channel_tier or {})["tier"]["id"]
+                # The hardware re-read disagrees with the pre-reprobe
+                # profile: the probed band is gone, so the fit must move the
+                # rate and the rate-to-tier mapping must follow it.
+                tiers = [
+                    {"id": "18ch", "channels": 18, "rates": [44100, 48000]},
+                    {"id": "14ch", "channels": 14, "rates": [88200, 96000]},
+                ]
+                if tier_id != "10ch":
+                    tiers.append({"id": "10ch", "channels": 10, "rates": [176400, 192000]})
+                return {"selected_output": {
+                    "key": "alsa_output.scarlett",
+                    "supported_rates": [44100, 48000, 88200, 96000],
+                    "device_profile": {
+                        "id": "scarlett-16i16-4th-gen",
+                        "active_tier": tier_id,
+                        "tiers": tiers,
+                    },
+                }}
+
+            async def establish_target_rate(self, request):
+                seen["channel_tier"] = dict((request.channel_tier or {}).get("tier") or {})
+                seen["target_rate"] = request.target_rate
+                seen["selected"] = dict(request.audio_overview.get("selected_output") or {})
+                await super().establish_target_rate(request)
+
+            async def commit_sample_rate_policy(self, request):
+                return {"sample_rate_policy": dict(request.sample_rate_policy)}
+
+        runtime = DriftRuntime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        result = await coordinator.execute(TransitionRequest(
+            operation="sample-rate-policy", source="local", target_rate=192000,
+            target_url="/music/target.flac", should_play=True, rate_change=True,
+            audio_overview={"selected_output": {
+                "key": "alsa_output.scarlett",
+                "supported_rates": [44100, 48000, 88200, 96000, 176400, 192000],
+                "device_profile": {
+                    "id": "scarlett-16i16-4th-gen",
+                    "active_tier": "18ch",
+                    "tiers": [
+                        {"id": "18ch", "channels": 18, "rates": [44100, 48000]},
+                        {"id": "14ch", "channels": 14, "rates": [88200, 96000]},
+                        {"id": "10ch", "channels": 10, "rates": [176400, 192000]},
+                    ],
+                },
+            }},
+            sample_rate_policy={"mode": "fixed", "rate": 192000},
+        ))
+        self.assertTrue(result.committed)
+        self.assertEqual(runtime.events.count("tier"), 2)
+        self.assertEqual(seen["target_rate"], 96000)
+        self.assertEqual(seen["channel_tier"].get("id"), "14ch")
+        self.assertIsNone(profiles.required_tier_switch(seen["selected"], seen["target_rate"]))
+
     async def test_verified_idle_rollback_releases_failed_transition_mute(self):
         from test_playback_transition_coordinator import FakeRuntime
         from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
