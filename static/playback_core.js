@@ -595,6 +595,10 @@ function triggerSamplerateBurstPolling() {
 
 async function fetchMetadata() {
     if (isPageHidden()) return;
+    // Idle gate: stopped native playback with a local footer owns no live
+    // content, so the metadata/peak timers stay a no-op instead of polling
+    // /api/status and re-rendering the footer forever.
+    if (!deps.getState().playback.playing && !deps.getState().playback.paused && !isStreamingFooterSource(window.__footerSource)) return;
     // Every accepted merge replaces this object. A read started before a
     // commit/reconnect must not overwrite it, even at equal MPV sequences
     // (external provider switches do not advance MPV's counter).
@@ -1221,7 +1225,8 @@ async function resyncPlaybackAfterReconnect() {
             // Full state of the process the socket reconnected to: a snapshot,
             // like the WebSocket init (whichever of the two lands first).
             mergePlaybackState(playback, { snapshot: true });
-            // Reconnect: adopt the running track silently, never cue it.
+            // Seed the session cue key so attaching to the already running
+            // player stays silent; later real track changes still cue.
             deps.seedNativeTrackCueKey(playback.current_track);
             syncFooterOwnershipFromPlayback(playback);
             syncLibraryStateFromPlaybackContext(true);

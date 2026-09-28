@@ -59,13 +59,17 @@ def _id_str(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def _normalize_state(state: Any, is_playing: Any) -> str:
+def normalize_state(state: Any, is_playing: Any) -> str:
     s = str(state or "").strip().lower()
     if s in {"playing", "loading"} or is_playing is True:
         return "Playing"
     if s == "paused":
         return "Paused"
     return "Stopped"
+
+
+# Historical private name; the public shared API is normalize_state.
+_normalize_state = normalize_state
 
 
 class QobuzProvider(StreamingProvider):
@@ -190,7 +194,7 @@ class QobuzProvider(StreamingProvider):
             result["trackId"] = "" if raw_track_id in (None, 0) else _id_str(raw_track_id)
             result["duration"] = float(playback.get("duration_secs") or 0)
 
-        result["status"] = _normalize_state(playback.get("state"), None)
+        result["status"] = normalize_state(playback.get("state"), None)
         result["position"] = float(playback.get("position_secs") or 0)
         result["shuffle"] = bool(queue_state.get("shuffle")) if isinstance(queue_state, dict) else False
         result["loop"] = _REPEAT_TO_LOOP.get(

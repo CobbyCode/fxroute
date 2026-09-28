@@ -656,7 +656,7 @@
         // the ready state (after install/sign-in); the fork backend exposes
         // no device selection, so qbzd_standby never reaches this path.
         if (providerId === 'qobuz' && data && data.connected === true) {
-            return { title: 'Ready for Qobuz Connect.', message: '' };
+            return { title: 'Ready for Qobuz Connect.', message: 'Start a track from the Qobuz app.' };
         }
         // Runtime-down state class (C): keep the provider-identifying
         // "not running" wording and add the same start guidance qbzd offers.

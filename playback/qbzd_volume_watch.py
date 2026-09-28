@@ -59,7 +59,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping
 
 from playback.remote_volume import RemoteVolumePickupTranslator, drain_pending_loop
-from streaming.qobuz.provider import _normalize_state as normalize_qbzd_state
+from streaming.qobuz import normalize_state as normalize_qbzd_state
 
 logger = logging.getLogger(__name__)
 

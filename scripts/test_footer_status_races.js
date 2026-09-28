@@ -77,10 +77,19 @@ for (const owner of ['spotify', 'qobuz']) {
     });
 }
 
-test('owner polling recovers while the previous source is stopped', async () => {
+test('idle metadata poll stays a no-op while the previous source is stopped', async () => {
+    const h = harness(playback(null));
+    let fetches = 0;
+    h.core.init({ fetchFn: async () => { fetches += 1; return { ok: true, json: async () => playback('qobuz') }; } });
+    await h.core.fetchMetadata();
+    assert.equal(fetches, 0, 'stopped native playback with a local footer performs no status poll');
+    h.assertOwner(null);
+});
+
+test('status read recovers while the previous source is stopped', async () => {
     const h = harness(playback(null));
     h.respond(playback('qobuz'));
-    await h.core.fetchMetadata();
+    await h.core.fetchPlaybackStatus();
     h.assertOwner('qobuz');
 });
 

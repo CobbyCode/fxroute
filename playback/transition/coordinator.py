@@ -921,6 +921,10 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                                 audio_overview=tier_overview,
                                 output_mode_target=tier_overview,
                             )
+                            # The reprobe re-reads the output capability for the
+                            # new tier: fit the target rate against it so the
+                            # rate stage pins a rate the new overview carries.
+                            active_request = self._fit_transition_target_rate(active_request)
                     # Re-validate against the resolved rate.  The output gate
                     # is already closed and the old source quieted at this
                     # point, so a rejection must run the failure-restore

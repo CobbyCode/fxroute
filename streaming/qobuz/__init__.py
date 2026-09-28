@@ -2,6 +2,6 @@
 
 """Qobuz provider backed by the qbzd daemon."""
 
-from streaming.qobuz.provider import QOBUZ_BACKEND, QobuzProvider
+from streaming.qobuz.provider import QOBUZ_BACKEND, QobuzProvider, normalize_state
 
-__all__ = ["QOBUZ_BACKEND", "QobuzProvider"]
+__all__ = ["QOBUZ_BACKEND", "QobuzProvider", "normalize_state"]
