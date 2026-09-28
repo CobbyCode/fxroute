@@ -213,6 +213,8 @@ spotify_desktop_supported
             target_home = root / "home"
             harness = f"""
 set -Eeuo pipefail
+# Harness isolation: never resolve host-installed provider binaries.
+export PATH="/usr/bin:/bin"
 {arch_helper}
 {path_helper}
 {self._provider_upstream_helpers()}
@@ -281,6 +283,8 @@ printf 'hash=%s\\n' "$SPOTIFYD_BINARY_SHA256"
             target_home = root / "home"
             harness = f"""
 set -Eeuo pipefail
+# Harness isolation: never resolve host-installed provider binaries.
+export PATH="/usr/bin:/bin"
 {extract_function(self.install, "spotifyd_arch_for_host")}
 {extract_function(self.install, "spotifyd_binary_path")}
 {self._provider_upstream_helpers()}
@@ -745,6 +749,8 @@ printf 'version=%s updated=%s\\n' "$QBZD_INSTALLED_VERSION" "$QBZD_BINARY_UPDATE
             target_home = root / "home"
             harness = f"""
 set -Eeuo pipefail
+# Harness isolation: never resolve host-installed provider binaries.
+export PATH="/usr/bin:/bin"
 {extract_function(self.install, "qbzd_arch_for_host")}
 {extract_function(self.install, "qbzd_binary_path")}
 {self._provider_upstream_helpers()}
@@ -874,6 +880,8 @@ printf 'downloads=%s\\n' "$(grep -c '^run:curl' "$CALLS" || true)"
             target_home = root / "home"
             harness = f"""
 set -Eeuo pipefail
+# Harness isolation: never resolve host-installed provider binaries.
+export PATH="/usr/bin:/bin"
 {extract_function(self.install, "qbzd_arch_for_host")}
 {extract_function(self.install, "qbzd_binary_path")}
 {self._provider_upstream_helpers()}

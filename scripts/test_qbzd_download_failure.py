@@ -124,7 +124,9 @@ SHA256SUM_STUB={ "true" if fixture_mode == "missing-binary" else "false" }
 if [[ "$SHA256SUM_STUB" == "true" ]]; then
   sha256sum() {{ return 0; }}
 fi
-export PATH="{bin_dir}:$PATH"
+# Harness isolation: a host-installed qbzd on PATH would take the
+# already-installed exit before any download stage runs.
+export PATH="{bin_dir}:/usr/bin:/bin"
 HOME={target_home}
 HOST_ARCH=x86_64
 QBZD_UPSTREAM_REPO="vicrodh/qbz"
