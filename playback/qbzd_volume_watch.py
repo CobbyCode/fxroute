@@ -59,6 +59,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping
 
 from playback.remote_volume import RemoteVolumePickupTranslator, drain_pending_loop
+from streaming.qobuz.provider import _normalize_state as normalize_qbzd_state
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,8 @@ OWNER_STATE_POLL_INTERVAL_SECONDS = 0.1
 ENGINE_PLAYING_POLL_SECONDS = 0.05
 ENGINE_IDLE_POLL_SECONDS = 1.0
 ENGINE_READ_TIMEOUT_SECONDS = 1.0
+# A value the unity pin did not clear is re-pinned at most this often.
+ENGINE_PIN_RETRY_SECONDS = 1.0
 
 # qbzd 2.0.2 locked-mode line. The captured group is the remote volume in 0..1.
 _IGNORED_VOLUME_RE = re.compile(
@@ -219,6 +222,7 @@ class QobuzVolumeWatch:
         self._owner_monitor_task: asyncio.Task | None = None
         self._engine_guard_task: asyncio.Task | None = None
         self._last_engine_percent: int | None = None
+        self._last_pin_at: float | None = None
         self._backoff_seconds = 0.0
         # None means "never warned"; 0.0 would suppress the first warning while
         # the monotonic uptime is still below the rate-limit window.
@@ -264,20 +268,24 @@ class QobuzVolumeWatch:
         if not isinstance(doc, Mapping):
             self._last_engine_percent = None
             return ENGINE_IDLE_POLL_SECONDS
-        delay = (
-            ENGINE_PLAYING_POLL_SECONDS
-            if doc.get("state") == "Playing"
-            else ENGINE_IDLE_POLL_SECONDS
-        )
+        is_playing = normalize_qbzd_state(doc.get("state"), doc.get("is_playing")) == "Playing"
+        delay = ENGINE_PLAYING_POLL_SECONDS if is_playing else ENGINE_IDLE_POLL_SECONDS
         percent = parse_engine_volume(doc.get("volume"))
         if percent is None or percent == 100:
             self._last_engine_percent = percent
             return delay
-        if self._deps.pin_unity is not None:
-            await self._deps.pin_unity()
-        # A value still read after a failed pin is the same intent: the pin
-        # is retried, the pickup sees it once.
+        # A value still read after a failed pin is the same intent: the
+        # pickup sees it once and the pin is retried at a bounded rate.
         is_new_intent = percent != self._last_engine_percent
+        now = time.monotonic()
+        pin_due = (
+            is_new_intent
+            or self._last_pin_at is None
+            or now - self._last_pin_at >= ENGINE_PIN_RETRY_SECONDS
+        )
+        if self._deps.pin_unity is not None and pin_due:
+            self._last_pin_at = now
+            await self._deps.pin_unity()
         self._last_engine_percent = percent
         if is_new_intent and self._translator.submit(percent):
             self._schedule_drain()
@@ -507,4 +515,5 @@ class QobuzVolumeWatch:
         self._owner_monitor_task = None
         self._engine_guard_task = None
         self._last_engine_percent = None
+        self._last_pin_at = None
         self.watch_task = None

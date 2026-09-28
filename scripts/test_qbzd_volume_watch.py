@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from playback.qbzd_volume_watch import (
     ENGINE_IDLE_POLL_SECONDS,
+    ENGINE_PIN_RETRY_SECONDS,
     ENGINE_PLAYING_POLL_SECONDS,
     QobuzRemoteVolumeTranslator,
     QobuzVolumeWatch,
@@ -246,10 +247,44 @@ class EngineUnityGuardTests(unittest.IsolatedAsyncioTestCase):
             {"state": "Playing", "volume": 0.5},
         ], master=50)
         await self._passes(watch, 2)
-        # The pin is retried, but the pickup sees the value once: a second
-        # submit of 50 at master 50 would count as a crossing and write.
-        self.assertEqual(len(pins), 2)
+        # The pickup sees the value once: a second submit of 50 at master 50
+        # would count as a crossing and write.
         self.assertEqual(applied, [])
+        self.assertEqual(len(pins), 1)
+
+    async def test_stuck_value_repins_at_a_bounded_rate(self):
+        applied = []
+        watch, pins = self._guard(applied, [{"state": "Playing", "volume": 0.5}] * 25)
+        clock = {"now": 100.0}
+        with mock.patch("playback.qbzd_volume_watch.time.monotonic", side_effect=lambda: clock["now"]):
+            for _ in range(20):  # one second of 50 ms passes
+                await watch.poll_engine_once()
+                clock["now"] += ENGINE_PLAYING_POLL_SECONDS
+            self.assertEqual(len(pins), 1)
+            clock["now"] = 100.0 + ENGINE_PIN_RETRY_SECONDS  # retry window elapsed
+            await watch.poll_engine_once()
+        self.assertEqual(len(pins), 2)
+
+    async def test_new_remote_value_is_pinned_at_once(self):
+        applied = []
+        watch, pins = self._guard(applied, [
+            {"state": "Playing", "volume": 0.5},
+            {"state": "Playing", "volume": 0.45},
+        ])
+        with mock.patch("playback.qbzd_volume_watch.time.monotonic", return_value=5.0):
+            await self._passes(watch, 2)
+        self.assertEqual(len(pins), 2)
+
+    async def test_playing_state_is_read_through_the_provider_normalizer(self):
+        applied = []
+        watch, _pins = self._guard(applied, [
+            {"state": "playing", "volume": 1.0},
+            {"state": "Loading", "volume": 1.0},
+            {"state": "Paused", "is_playing": True, "volume": 1.0},
+            {"state": "paused", "volume": 1.0},
+        ])
+        delays = await self._passes(watch, 4)
+        self.assertEqual(delays, [ENGINE_PLAYING_POLL_SECONDS] * 3 + [ENGINE_IDLE_POLL_SECONDS])
 
     async def test_unreachable_daemon_polls_idle_without_pin(self):
         applied = []
