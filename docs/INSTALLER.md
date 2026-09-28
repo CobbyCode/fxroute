@@ -90,10 +90,16 @@ The fork daemon has no settings CLI and no volume or startup modes, so the
 installer configures it purely through its HTTP control plane (the nightly build ignores its TOML config file)
 instead of `qbzd settings`: audio routing is verified against
 `/api/audio/settings`, the engine volume is pinned to 100% (the FXRoute
-master/unity contract — the fork has no Connect volume sync to fight the
-pin), and the user service is started with the bare binary and polled until
-it reaches active state. The account login (Settings → Providers) runs the
-daemon OAuth flow over HTTP and needs no pasted CLI listener.
+master/unity contract; the fork applies Qobuz Connect volume to its engine,
+so the running FXRoute re-pins it and routes the phone slider to the master
+through the soft pickup), and the user service is started with the bare
+binary and polled until it reaches active state. The fork's PipeWire backend
+routes by default sink only, so the unit sets
+`PIPEWIRE_NODE=fxroute_dsp_sink` to keep its stream on the FXRoute DSP sink
+while the system default stays on the hardware output; an unmodified
+FXRoute-owned unit from an earlier install is refreshed in place. The account
+login (Settings → Providers) runs the daemon OAuth flow over HTTP and needs
+no pasted CLI listener.
 
 The base installer supports apt, dnf, zypper, and pacman. Unsupported
 architectures are reported without downloading or building replacement

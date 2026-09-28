@@ -5,8 +5,9 @@
 When provider and FXRoute master levels disagree, soft pickup applies:
 the connect/reconnect push only anchors, far-side gestures never move the
 master, and only a gesture crossing the master level (bounded overshoot)
-takes over. Afterwards real remote changes drive the global master.
-Pre-gain and loudness volumeDb are never touched.
+takes over. Afterwards real remote changes drive the global master, until
+an external master change re-arms the pickup. Pre-gain and loudness
+volumeDb are never touched.
 
 Covers Spotify and Qobuz separately.
 """
@@ -53,7 +54,8 @@ class TranslatorSurfaceTests(unittest.TestCase):
     def test_qobuz_deps_pin_pickup_surface(self):
         self.assertEqual(
             set(QobuzVolumeWatchDependencies.__dataclass_fields__.keys()),
-            {"is_active", "apply_volume_value", "current_master", "on_device_active"},
+            {"is_active", "apply_volume_value", "current_master", "on_device_active",
+             "pin_unity", "read_engine_playback"},
         )
 
     def test_spotify_deps_pin_pickup_surface(self):
@@ -165,6 +167,61 @@ class SpotifyPickupContractTests(unittest.IsolatedAsyncioTestCase):
         translator.submit(44)
         await translator.flush()
         self.assertEqual(applied, [44])
+        self.assertFalse(translator.picked_up)
+
+
+class ExternalMasterChangeContractTests(unittest.IsolatedAsyncioTestCase):
+    """A master change outside the bridge re-arms the pickup (both bridges)."""
+
+    def _live_translator(self, applied, master):
+        # The master follows the bridge's own writes like the real readback.
+        state = {"master": master}
+
+        async def apply_value(value):
+            applied.append(value)
+            state["master"] = value
+
+        translator = RemoteVolumePickupTranslator(
+            is_active=lambda: True,
+            apply_volume_value=apply_value,
+            current_master=lambda: state["master"],
+        )
+        return translator, state
+
+    async def _pick_up(self, translator, *values):
+        for value in values:
+            translator.submit(value)
+            await translator.flush()
+
+    async def test_own_writes_keep_tracking(self):
+        applied = []
+        translator, _state = self._live_translator(applied, master=37)
+        await self._pick_up(translator, 40, 36, 30, 25)
+        self.assertEqual(applied, [36, 30, 25])
+        self.assertTrue(translator.picked_up)
+
+    async def test_external_change_rearms_without_jump(self):
+        applied = []
+        translator, state = self._live_translator(applied, master=37)
+        await self._pick_up(translator, 40, 36)
+        state["master"] = 60  # FXRoute slider / hardware keys
+        await self._pick_up(translator, 35, 40, 50)
+        # Controller moves below the new master: nothing is written.
+        self.assertEqual(applied, [36])
+        self.assertFalse(translator.picked_up)
+        self.assertEqual(state["master"], 60)
+        # Catching the new master level takes over again.
+        await self._pick_up(translator, 58, 61, 65)
+        self.assertEqual(applied, [36, 61, 65])
+        self.assertTrue(translator.picked_up)
+
+    async def test_external_change_to_the_controller_value_stays_silent(self):
+        applied = []
+        translator, state = self._live_translator(applied, master=37)
+        await self._pick_up(translator, 40, 36)
+        state["master"] = 20
+        await self._pick_up(translator, 36)
+        self.assertEqual(applied, [36])
         self.assertFalse(translator.picked_up)
 
 

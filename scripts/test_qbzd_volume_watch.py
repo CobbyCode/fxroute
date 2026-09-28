@@ -34,12 +34,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from playback.qbzd_volume_watch import (
+    ENGINE_IDLE_POLL_SECONDS,
+    ENGINE_PLAYING_POLL_SECONDS,
     QobuzRemoteVolumeTranslator,
     QobuzVolumeWatch,
     QobuzVolumeWatchDependencies,
+    is_fork_session_boundary,
     is_session_activation,
     is_session_deactivation,
     is_software_volume_apply,
+    parse_engine_volume,
     parse_ignored_volume,
 )
 
@@ -53,6 +57,23 @@ _ACTIVATION_LINE = (
 _DEACTIVATION_LINE = (
     "[QConnect] <-- Inbound renderer command: MESSAGE_TYPE_SRVR_RNDR_SET_ACTIVE "
     'payload={"active":false}'
+)
+
+
+# Live fork journal lines (qbzd 0.1.9, .130).
+_FORK_JOIN_LINE = (
+    "[2026-09-27T23:39:08.310Z INFO  qbzd::qconnect] [qbzd/qconnect] "
+    "Renderer join complete — visible to other devices"
+)
+_FORK_WS_DOWN_LINE = (
+    "[2026-09-27T23:40:00.000Z WARN  qbzd::qconnect] [qbzd/qconnect] "
+    "WebSocket disconnected, resetting renderer_joined"
+)
+_FORK_DISCONNECTED_LINE = (
+    "[2026-09-27T23:40:00.000Z WARN  qbzd::qconnect] [qbzd/qconnect] Disconnected"
+)
+_FORK_ENGINE_VOLUME_LINE = (
+    "[2026-09-28T00:02:49.268Z INFO  qbz_player::player] Audio thread: volume set to 0.33"
 )
 
 
@@ -114,6 +135,197 @@ class ParseTests(unittest.TestCase):
         )
         self.assertFalse(is_software_volume_apply(_LOCKED_LINE))
         self.assertFalse(is_software_volume_apply(None))
+
+
+class ForkParseTests(unittest.TestCase):
+    def test_fork_session_boundaries_are_recognized(self):
+        for line in (_FORK_JOIN_LINE, _FORK_WS_DOWN_LINE, _FORK_DISCONNECTED_LINE):
+            self.assertTrue(is_fork_session_boundary(line), line)
+
+    def test_fork_non_boundary_lines_are_ignored(self):
+        for line in (
+            _FORK_ENGINE_VOLUME_LINE,
+            "[qbzd/qconnect] Connected to Qobuz servers",
+            "[qbzd/qconnect] Renderer join with session_uuid=c5ad0b99",
+            _ACTIVATION_LINE,
+            "",
+            None,
+        ):
+            self.assertFalse(is_fork_session_boundary(line), line)
+        # The engine line is never a volume intent on its own: FXRoute's own
+        # unity pin logs the same line.
+        self.assertIsNone(parse_ignored_volume(_FORK_ENGINE_VOLUME_LINE))
+
+    def test_engine_volume_parse(self):
+        self.assertEqual(parse_engine_volume(0.33000001311302185), 33)
+        self.assertEqual(parse_engine_volume(1.0), 100)
+        self.assertEqual(parse_engine_volume(0), 0)
+        self.assertEqual(parse_engine_volume(1.7), 100)
+        for bad in (None, "0.5", True):
+            self.assertIsNone(parse_engine_volume(bad))
+
+
+class EngineUnityGuardTests(unittest.IsolatedAsyncioTestCase):
+    """Fork backend: remote SetVolume lands on the qbzd engine gain."""
+
+    def _guard(self, applied, readings, *, master=37, active=True):
+        pins = []
+        docs = iter(readings)
+
+        async def read():
+            return next(docs)
+
+        async def pin():
+            pins.append(True)
+
+        async def apply_value(value):
+            applied.append(value)
+
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: active,
+                apply_volume_value=apply_value,
+                current_master=lambda: master,
+                pin_unity=pin,
+                read_engine_playback=read,
+            ),
+            debounce_seconds=0.0,
+        )
+        return watch, pins
+
+    async def _passes(self, watch, count):
+        delays = []
+        for _ in range(count):
+            delays.append(await watch.poll_engine_once())
+            drain = watch._drain_task
+            if drain is not None:
+                await drain
+        return delays
+
+    async def test_deviating_engine_volume_is_pinned_and_only_anchors(self):
+        applied = []
+        watch, pins = self._guard(applied, [{"state": "Playing", "volume": 0.98}])
+        delays = await self._passes(watch, 1)
+        self.assertEqual(pins, [True])
+        # Connect-time/first value: anchors the controller scale, no write.
+        self.assertEqual(applied, [])
+        self.assertEqual(delays, [ENGINE_PLAYING_POLL_SECONDS])
+
+    async def test_unity_engine_volume_is_left_alone(self):
+        applied = []
+        watch, pins = self._guard(applied, [
+            {"state": "Paused", "volume": 1.0},
+            {"state": "Playing", "volume": 1.0},
+        ])
+        delays = await self._passes(watch, 2)
+        self.assertEqual(pins, [])
+        self.assertEqual(applied, [])
+        self.assertEqual(delays, [ENGINE_IDLE_POLL_SECONDS, ENGINE_PLAYING_POLL_SECONDS])
+
+    async def test_phone_drag_picks_up_at_the_master_and_tracks(self):
+        applied = []
+        playing = lambda volume: {"state": "Playing", "volume": volume}
+        # Every remote step is read once, then the pinned 1.0.
+        watch, pins = self._guard(applied, [
+            playing(0.98), playing(1.0),
+            playing(0.60), playing(1.0),
+            playing(0.38), playing(1.0),
+            playing(0.36), playing(1.0),
+            playing(0.30), playing(1.0),
+        ], master=37)
+        await self._passes(watch, 10)
+        self.assertEqual(len(pins), 5)
+        # 98 anchors; 60 and 38 stay above the master; 36 crosses 37 and
+        # picks up; 30 tracks absolutely.
+        self.assertEqual(applied, [36, 30])
+
+    async def test_value_stuck_after_failed_pin_is_one_intent(self):
+        applied = []
+        watch, pins = self._guard(applied, [
+            {"state": "Playing", "volume": 0.5},
+            {"state": "Playing", "volume": 0.5},
+        ], master=50)
+        await self._passes(watch, 2)
+        # The pin is retried, but the pickup sees the value once: a second
+        # submit of 50 at master 50 would count as a crossing and write.
+        self.assertEqual(len(pins), 2)
+        self.assertEqual(applied, [])
+
+    async def test_unreachable_daemon_polls_idle_without_pin(self):
+        applied = []
+        watch, pins = self._guard(applied, [None])
+        self.assertEqual(await self._passes(watch, 1), [ENGINE_IDLE_POLL_SECONDS])
+        self.assertEqual(pins, [])
+
+    async def test_non_owner_is_pinned_but_never_drives_the_master(self):
+        applied = []
+        watch, pins = self._guard(applied, [
+            {"state": "Playing", "volume": 0.40},
+            {"state": "Playing", "volume": 0.37},
+        ], master=37, active=False)
+        await self._passes(watch, 2)
+        self.assertEqual(len(pins), 2)
+        self.assertEqual(applied, [])
+
+    async def test_watch_loop_runs_the_guard_with_a_pin_writer(self):
+        applied = []
+        watch, pins = self._guard(applied, [{"state": "Playing", "volume": 0.5}] + [
+            {"state": "Playing", "volume": 1.0}
+        ] * 200)
+
+        async def hang(_cursor):
+            await asyncio.Event().wait()
+
+        with mock.patch.object(watch, "_poll_journal_lines", new=hang), \
+                mock.patch.object(watch, "_bootstrap_device_state", new=mock.AsyncMock()):
+            task = asyncio.create_task(watch.run_watch_loop())
+            await asyncio.sleep(0.2)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(pins, [True])
+        self.assertIsNone(watch._engine_guard_task)
+
+    async def test_fork_rejoin_rearms_pickup_without_touching_selection(self):
+        applied = []
+        device_events = []
+
+        async def apply_value(value):
+            applied.append(value)
+
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_value=apply_value,
+                current_master=lambda: 37,
+                on_device_active=lambda value: device_events.append(value),
+            ),
+            debounce_seconds=0.0,
+        )
+        translator = watch._translator
+        translator.submit(40)
+        translator.submit(36)
+        await translator.flush()
+        self.assertTrue(translator.picked_up)
+        batches = iter([([_FORK_JOIN_LINE], "c1")])
+
+        async def poll(_cursor):
+            try:
+                return next(batches)
+            except StopIteration:
+                await asyncio.Event().wait()
+
+        with mock.patch.object(watch, "_poll_journal_lines", new=poll), \
+                mock.patch.object(watch, "_bootstrap_device_state", new=mock.AsyncMock()):
+            try:
+                await asyncio.wait_for(watch.run_watch_loop(), timeout=0.3)
+            except asyncio.TimeoutError:
+                pass
+        # The rejoin reports 100% to the server: the next controller value
+        # only anchors again, and selection tracking stays untouched.
+        self.assertFalse(translator.picked_up)
+        self.assertFalse(translator.submit(99))
+        self.assertEqual(applied, [36])
+        self.assertEqual(device_events, [])
 
 
 class PickupTranslatorTests(unittest.IsolatedAsyncioTestCase):
@@ -751,10 +963,12 @@ class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
         # The bridge's only output is the canonical master writer; it has no
         # handle on loudness state by construction. Pin the dependency
         # surface: exactly is_active + apply_volume_value + current_master +
-        # the optional device-selection notifier, nothing else.
+        # the optional device-selection notifier + the fork unity guard's
+        # engine reader and qbzd unity pin, nothing else.
         self.assertEqual(
             set(QobuzVolumeWatchDependencies.__dataclass_fields__.keys()),
-            {"is_active", "apply_volume_value", "current_master", "on_device_active"},
+            {"is_active", "apply_volume_value", "current_master", "on_device_active",
+             "pin_unity", "read_engine_playback"},
         )
         applied = []
         watch, proc = self._watch(applied, [

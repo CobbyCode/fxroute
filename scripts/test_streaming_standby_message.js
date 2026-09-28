@@ -73,9 +73,23 @@ assert.deepEqual(
     },
 );
 
-// Without the flag the classic messages are preserved.
+// Signed-in qbzd with its Connect renderer up and nothing loaded reads as
+// ready (the fork backend never flags qbzd_standby).
+assert.deepEqual(
+    notPlayingContent('qobuz', { status: 'Stopped', connected: true }),
+    {
+        title: 'Ready for Qobuz Connect.',
+        message: '',
+    },
+);
+
+// Without the renderer the classic messages are preserved.
 assert.deepEqual(
     notPlayingContent('qobuz', { status: 'Stopped' }),
+    { title: 'Nothing is playing. Start a track from the Qobuz app.', message: '' },
+);
+assert.deepEqual(
+    notPlayingContent('qobuz', { status: 'Stopped', connected: false }),
     { title: 'Nothing is playing. Start a track from the Qobuz app.', message: '' },
 );
 

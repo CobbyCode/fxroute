@@ -652,6 +652,12 @@
         if (providerId === 'spotify' && data && data.connected === true) {
             return { title: 'Nothing is playing.', message: '' };
         }
+        // Signed-in qbzd with its Connect renderer up and nothing loaded is
+        // the ready state (after install/sign-in); the fork backend exposes
+        // no device selection, so qbzd_standby never reaches this path.
+        if (providerId === 'qobuz' && data && data.connected === true) {
+            return { title: 'Ready for Qobuz Connect.', message: '' };
+        }
         // Runtime-down state class (C): keep the provider-identifying
         // "not running" wording and add the same start guidance qbzd offers.
         if (providerId === 'spotify') return { title: 'Spotify is not running.', message: 'Start it to use Spotify Connect.' };

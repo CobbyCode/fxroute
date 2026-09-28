@@ -918,6 +918,7 @@ qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
     ),
     current_master=lambda: get_output_volume_safe(),
     on_device_active=lambda value: connect_state.set_device_active(value),
+    pin_unity=lambda: _qobuz_pin_unity(),
 ))
 spotifyd_volume_watch = SpotifydVolumeWatch(SpotifydVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "spotify",
@@ -2052,8 +2053,9 @@ async def _qobuz_pin_unity() -> None:
 
     The local control plane accepts volume writes, so this is the single
     write that keeps qbzd from attenuating; every user-facing volume input
-    (FXRoute web slider) drives the master. The fork backend has no
-    Connect volume sync to fight the pin.
+    (FXRoute web slider, phone slider via the pickup) drives the master.
+    The fork backend applies remote Connect volumes to its engine, so the
+    Qobuz volume watch re-pins through this call whenever it deviates.
 
     A failed pin is not treated as harmless: it is recorded in
     ``qobuz_unity_pin_state`` (health flag surfaced in the Qobuz UI state,

@@ -4269,11 +4269,37 @@ configure_qbzd_fork_runtime() {
   pass "qbzd DSP sink routing and unity pin verified across restart"
 }
 
+render_qbzd_service() {
+  # The fork daemon runs in the foreground with no subcommand (the official
+  # `qbzd run` no longer exists): the unit starts the bare binary. The fork's
+  # PipeWire backend routes by default sink only (with the sink-switch guard
+  # on it never targets the configured device), so PIPEWIRE_NODE pins its
+  # ALSA stream into the FXRoute DSP sink instead of the hardware default.
+  local binary_path="$1"
+  cat <<EOF
+[Unit]
+Description=qbzd Qobuz Connect receiver for FXRoute
+
+[Service]
+Type=simple
+ExecStart=$binary_path
+Environment=PATH=$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PIPEWIRE_NODE=fxroute_dsp_sink
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
 configure_qbzd_service() {
   local service_dir="$HOME/.config/systemd/user"
   local service_path="$service_dir/qbzd.service"
   local binary_path="$(qbzd_binary_path || true)"
   local current_sha256=""
+  local desired_unit=""
 
   QBZD_SERVICE_PATH="$service_path"
   [[ -n "$binary_path" ]] || {
@@ -4295,6 +4321,14 @@ configure_qbzd_service() {
         warn "FXRoute-owned qbzd service checksum changed; preserving the existing unit"
         return 0
       fi
+      # The unmodified owned unit is refreshed to the current rendering; the
+      # runtime pin below restarts the daemon onto it.
+      desired_unit="$(render_qbzd_service "$binary_path")"
+      if [[ "$(cat "$service_path")" != "$desired_unit" ]]; then
+        printf '%s\n' "$desired_unit" | run_as_target_user tee "$service_path" >/dev/null
+        QBZD_SERVICE_SHA256="$(sha256sum "$service_path" | awk '{print $1}')"
+        pass "FXRoute-owned qbzd service refreshed"
+      fi
       if ! user_systemctl daemon-reload || ! user_systemctl enable --now qbzd.service; then
         QBZD_SERVICE_SETUP_FAILED=1
         warn "FXRoute-owned qbzd service is present but could not be enabled in this shell"
@@ -4312,24 +4346,8 @@ configure_qbzd_service() {
     return 0
   fi
 
-  # The fork daemon runs in the foreground with no subcommand (the official
-  # `qbzd run` no longer exists): the unit starts the bare binary.
   run_as_target_user mkdir -p "$service_dir"
-  run_as_target_user tee "$service_path" >/dev/null <<EOF
-[Unit]
-Description=qbzd Qobuz Connect receiver for FXRoute
-
-[Service]
-Type=simple
-ExecStart=$binary_path
-Environment=PATH=$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Restart=on-failure
-RestartSec=10
-NoNewPrivileges=true
-
-[Install]
-WantedBy=default.target
-EOF
+  render_qbzd_service "$binary_path" | run_as_target_user tee "$service_path" >/dev/null
   QBZD_SERVICE_INSTALLED_BY_FXROUTE=1
   QBZD_SERVICE_SHA256="$(sha256sum "$service_path" | awk '{print $1}')"
 

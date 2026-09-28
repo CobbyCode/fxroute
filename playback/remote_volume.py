@@ -52,6 +52,9 @@ class RemoteVolumePickupTranslator:
       unrelated scale.
     * After the pickup the master tracks the controller value absolutely, so
       both displays show the same number.
+    * A master change from outside the bridge (FXRoute slider, hardware keys,
+      another client) drops the pickup: the controller has to catch the new
+      master level again instead of jumping the master back to its value.
 
     Absolute writes are idempotent: a failed write keeps the value pending
     for retry. Owner loss or a session (de)activation drops all state and
@@ -74,6 +77,9 @@ class RemoteVolumePickupTranslator:
         self._picked_up = False
         self._pending_value: int | None = None
         self._last_written: int | None = None
+        # Master readback right after this bridge's last committed write;
+        # any other master value later means an external change.
+        self._written_master: int | None = None
         self._activation_epoch = 0
         self._inflight_apply_task: asyncio.Task[Any] | None = None
 
@@ -97,8 +103,20 @@ class RemoteVolumePickupTranslator:
         self._picked_up = False
         self._pending_value = None
         self._last_written = None
+        self._written_master = None
         if self._inflight_apply_task is not None and not self._inflight_apply_task.done():
             self._inflight_apply_task.cancel()
+
+    def _master_moved_externally(self) -> bool:
+        """Return whether the master left the level this bridge last wrote.
+
+        Only meaningful while no own write is pending or in flight.
+        """
+        if self._written_master is None or self._pending_value is not None:
+            return False
+        if self._inflight_apply_task is not None and not self._inflight_apply_task.done():
+            return False
+        return max(0, min(100, int(self.current_master()))) != self._written_master
 
     def submit(self, percent: int) -> bool:
         """Record an observation; ``True`` when a write became pending."""
@@ -113,6 +131,13 @@ class RemoteVolumePickupTranslator:
             return False
         previous = self._last_value if self._last_value is not None else self._anchor
         self._last_value = percent
+        if self._picked_up and self._master_moved_externally():
+            # The master was changed outside this bridge: re-arm so the
+            # controller must cross the new master level before it drives
+            # the master again.
+            self._picked_up = False
+            self._last_written = None
+            self._written_master = None
         if self._picked_up:
             if percent == self._last_written and self._pending_value is None:
                 # Repeat of the already-applied value (echo/re-push): no write.
@@ -165,6 +190,7 @@ class RemoteVolumePickupTranslator:
             await apply_task
             if epoch == self._activation_epoch and self.is_active():
                 self._last_written = value
+                self._written_master = max(0, min(100, int(self.current_master())))
         except asyncio.CancelledError:
             if epoch != self._activation_epoch or not self.is_active():
                 if epoch == self._activation_epoch:

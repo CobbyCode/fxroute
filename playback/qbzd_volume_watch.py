@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Qobuz (qbzd) journal-driven remote volume-to-master coupling.
+"""Qobuz (qbzd) remote volume-to-master coupling.
 
 The official qbzd 2.0.2 decoupled QConnect volume from its applied gain only
 when ``qconnect.volume_mode=locked``: remote ``SetVolume`` commands were ignored
@@ -9,19 +9,24 @@ followed the phone slider. There was no volume event on ``/api/events`` and
 no HTTP endpoint carrying the session volume (live-verified on .104), so the
 phone intent was observable only through the daemon journal line::
 
-The compatible fork backend (installed since the official upstream shutdown)
-has no volume modes and no such journal lines: its engine volume is pinned
-to 100% at install and on every Qobuz claim/start, and this watch is a
-silent no-op for it. The parser below only recognizes official locked-mode
-lines, so on the fork backend nothing is ever submitted.
-
     [QConnect] volume_mode=locked: ignoring remote SetVolume(0.450); player stays at 100%
 
 This module polls that line via cursor-anchored ``journalctl --user-unit``
 one-shot queries and maps each intent onto the canonical FXRoute master
-volume. qbzd's own gain is never written here; the unity pin lives at the
-Qobuz claim/start path (``set_volume(100)`` works in locked mode through
-the local control plane).
+volume.
+
+The compatible fork backend (installed since the official upstream shutdown)
+has no volume modes: every remote ``SetVolume`` is applied straight to its
+engine gain (live-verified on .130: the phone slider attenuated qbzd to 33%
+while the FXRoute master stayed put). The only observable carrier of that
+intent is the engine volume on ``/api/playback``, so the unity guard polls it
+(fast while playing), writes 100% back through the unity pin as soon as it
+deviates, and routes the observed value through the same pickup translator.
+FXRoute itself only ever writes 100%, so every other engine value is a remote
+intent. A remote 100% is a no-op on an engine already at unity and never
+reaches FXRoute. The fork logs no ``SET_ACTIVE`` lines; its renderer
+(re)join and QConnect disconnect lines mark the session boundaries instead
+(a rejoin reports 100% to the Qobuz server, so the controller scale resets).
 
 Remote values are translated with **pickup semantics** (see
 :class:`playback.remote_volume.RemoteVolumePickupTranslator`): the
@@ -51,7 +56,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from playback.remote_volume import RemoteVolumePickupTranslator, drain_pending_loop
 
@@ -72,6 +77,11 @@ RESTART_BACKOFF_BASE_SECONDS = 1.0
 RESTART_BACKOFF_MAX_SECONDS = 30.0
 DEBOUNCE_SECONDS = 0.15
 OWNER_STATE_POLL_INTERVAL_SECONDS = 0.1
+# Fork unity guard: a remote SetVolume attenuates the engine until the pin
+# lands, so the playing interval bounds that audible dip.
+ENGINE_PLAYING_POLL_SECONDS = 0.05
+ENGINE_IDLE_POLL_SECONDS = 1.0
+ENGINE_READ_TIMEOUT_SECONDS = 1.0
 
 # qbzd 2.0.2 locked-mode line. The captured group is the remote volume in 0..1.
 _IGNORED_VOLUME_RE = re.compile(
@@ -84,6 +94,13 @@ _IGNORED_VOLUME_RE = re.compile(
 # a scale anchor, not user intent, so both transitions reset the anchor.
 _SESSION_ACTIVE_RE = re.compile(r"SET_ACTIVE payload=\{\"active\":true\}")
 _SESSION_INACTIVE_RE = re.compile(r"SET_ACTIVE payload=\{\"active\":false\}")
+
+# Fork QConnect session boundaries (no SET_ACTIVE lines on the fork): the
+# renderer (re)join reports volume 100 to the server, and a disconnect ends
+# the session.
+_FORK_SESSION_BOUNDARY_RE = re.compile(
+    r"\[qbzd/qconnect\] (?:Renderer join complete|WebSocket disconnected|Disconnected\b)"
+)
 
 # Software-mode line: qbzd applies the remote volume itself. The journal
 # coupling needs locked mode, so seeing this line means the config drifted.
@@ -122,6 +139,33 @@ def is_session_deactivation(line: str | None) -> bool:
     return _SESSION_INACTIVE_RE.search(line) is not None
 
 
+def is_fork_session_boundary(line: str | None) -> bool:
+    """Return whether the line (re)joins or drops the fork QConnect session."""
+    if not line:
+        return False
+    return _FORK_SESSION_BOUNDARY_RE.search(line) is not None
+
+
+def parse_engine_volume(value: Any) -> int | None:
+    """Return the engine volume percent from a ``/api/playback`` ``volume``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(0, min(100, int(round(float(value) * 100))))
+
+
+async def read_engine_playback() -> Mapping[str, Any] | None:
+    """Read the qbzd ``/api/playback`` document, or ``None`` when absent."""
+    from streaming.qobuz import backend as _qobuz_backend
+
+    if not _qobuz_backend.qbzd_installed():
+        return None
+    return await _qobuz_backend.get_json(
+        _qobuz_backend.default_base_url(),
+        "/api/playback",
+        timeout=ENGINE_READ_TIMEOUT_SECONDS,
+    )
+
+
 def is_software_volume_apply(line: str | None) -> bool:
     """Return whether the line shows qbzd applying volume itself (software mode)."""
     if not line:
@@ -146,10 +190,14 @@ class QobuzVolumeWatchDependencies:
     # Optional: notified when the journal shows this device becoming (True)
     # or ceasing to be (False) the actively selected Connect renderer.
     on_device_active: Callable[[bool], None] | None = None
+    # Fork unity guard: writes qbzd's engine volume back to 100%. Without a
+    # pin writer the guard does not run.
+    pin_unity: Callable[[], Awaitable[Any]] | None = None
+    read_engine_playback: Callable[[], Awaitable[Mapping[str, Any] | None]] = read_engine_playback
 
 
 class QobuzVolumeWatch:
-    """Tail qbzd's journal and route locked-mode remote volumes to the master."""
+    """Route qbzd remote volumes to the master and hold the engine at unity."""
 
     def __init__(
         self,
@@ -169,6 +217,8 @@ class QobuzVolumeWatch:
         self.watch_task: asyncio.Task | None = None
         self._drain_task: asyncio.Task | None = None
         self._owner_monitor_task: asyncio.Task | None = None
+        self._engine_guard_task: asyncio.Task | None = None
+        self._last_engine_percent: int | None = None
         self._backoff_seconds = 0.0
         # None means "never warned"; 0.0 would suppress the first warning while
         # the monotonic uptime is still below the rate-limit window.
@@ -202,6 +252,47 @@ class QobuzVolumeWatch:
             if current != previous:
                 previous = current
                 self._translator.observe_activation()
+
+    async def poll_engine_once(self) -> float:
+        """Run one unity-guard pass; return the delay before the next pass.
+
+        A deviating engine volume is a remote SetVolume (FXRoute only ever
+        writes 100%): unity is restored first so the attenuation stays as
+        short as possible, then the value goes through the pickup.
+        """
+        doc = await self._deps.read_engine_playback()
+        if not isinstance(doc, Mapping):
+            self._last_engine_percent = None
+            return ENGINE_IDLE_POLL_SECONDS
+        delay = (
+            ENGINE_PLAYING_POLL_SECONDS
+            if doc.get("state") == "Playing"
+            else ENGINE_IDLE_POLL_SECONDS
+        )
+        percent = parse_engine_volume(doc.get("volume"))
+        if percent is None or percent == 100:
+            self._last_engine_percent = percent
+            return delay
+        if self._deps.pin_unity is not None:
+            await self._deps.pin_unity()
+        # A value still read after a failed pin is the same intent: the pin
+        # is retried, the pickup sees it once.
+        is_new_intent = percent != self._last_engine_percent
+        self._last_engine_percent = percent
+        if is_new_intent and self._translator.submit(percent):
+            self._schedule_drain()
+        return delay
+
+    async def _run_engine_guard(self) -> None:
+        while True:
+            try:
+                delay = await self.poll_engine_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Qobuz engine unity guard pass failed: %s", exc)
+                delay = ENGINE_IDLE_POLL_SECONDS
+            await self._sleep(delay)
 
     def _next_backoff(self) -> float:
         if self._backoff_seconds <= 0.0:
@@ -332,6 +423,13 @@ class QobuzVolumeWatch:
             name="qobuz-volume-owner-monitor",
         )
         self._owner_monitor_task = owner_monitor
+        engine_guard: asyncio.Task | None = None
+        if self._deps.pin_unity is not None:
+            engine_guard = asyncio.create_task(
+                self._run_engine_guard(),
+                name="qobuz-engine-unity-guard",
+            )
+            self._engine_guard_task = engine_guard
         expect_ignore = False
         cursor: str | None = None
         try:
@@ -347,6 +445,13 @@ class QobuzVolumeWatch:
                     continue
                 self._backoff_seconds = 0.0
                 for text in lines:
+                    if is_fork_session_boundary(text):
+                        # Fork renderer (re)join or disconnect: a new
+                        # controller scale, re-arm the pickup. Not a
+                        # selection signal, so the device state is untouched.
+                        expect_ignore = False
+                        self._translator.observe_activation()
+                        continue
                     if is_session_activation(text) or is_session_deactivation(text):
                         # A fresh Connect session re-anchors the controller scale;
                         # the app's post-activation sync push must not move master.
@@ -377,24 +482,29 @@ class QobuzVolumeWatch:
         finally:
             if self._owner_monitor_task is owner_monitor:
                 self._owner_monitor_task = None
-            if not owner_monitor.done():
-                owner_monitor.cancel()
-            await asyncio.gather(owner_monitor, return_exceptions=True)
+            if self._engine_guard_task is engine_guard:
+                self._engine_guard_task = None
+            helpers = [task for task in (owner_monitor, engine_guard) if task is not None]
+            for task in helpers:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*helpers, return_exceptions=True)
 
     async def stop(self) -> None:
         drain_task = self._drain_task
         watch_task = self.watch_task
         owner_monitor_task = self._owner_monitor_task
-        for task in (drain_task, watch_task, owner_monitor_task):
+        engine_guard_task = self._engine_guard_task
+        all_tasks = (drain_task, watch_task, owner_monitor_task, engine_guard_task)
+        for task in all_tasks:
             if task is not None and not task.done():
                 task.cancel()
-        tasks = [
-            task for task in (drain_task, watch_task, owner_monitor_task)
-            if task is not None
-        ]
+        tasks = [task for task in all_tasks if task is not None]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._translator.observe_activation()
         self._drain_task = None
         self._owner_monitor_task = None
+        self._engine_guard_task = None
+        self._last_engine_percent = None
         self.watch_task = None

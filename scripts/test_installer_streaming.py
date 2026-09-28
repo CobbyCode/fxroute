@@ -1233,8 +1233,9 @@ printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
         service = extract_function(self.install, "configure_qbzd_service")
         self.assertIn("user_systemctl enable --now qbzd.service", service)
         self.assertIn("qbzd_wait_for_active_state qbzd.service", service)
-        self.assertIn("ExecStart=$binary_path\n", service)
-        self.assertNotIn("ExecStart=$binary_path run", service)
+        unit = extract_function(self.install, "render_qbzd_service")
+        self.assertIn("ExecStart=$binary_path\n", unit)
+        self.assertNotIn("ExecStart=$binary_path run", unit)
 
     def test_install_state_records_qconnect_ownership(self):
         for field in (
@@ -1455,9 +1456,73 @@ printf 'caller-tolerated status=<%s>\\n' "$QOBUZ_PROVIDER_STATUS"
         ):
             self.assertIn(token, runtime)
 
+    def _run_configure_qbzd_service(self, home: Path, unit_text: str, recorded_sha: str):
+        unit_dir = home / ".config" / "systemd" / "user"
+        unit_dir.mkdir(parents=True, exist_ok=True)
+        (unit_dir / "qbzd.service").write_text(unit_text)
+        harness = (
+            "set -euo pipefail\n"
+            "run_as_target_user() { \"$@\"; }\n"
+            "pass() { printf '[pass] %s\\n' \"$*\"; }\n"
+            "warn() { printf '[warn] %s\\n' \"$*\"; }\n"
+            "ensure_target_user_ownership() { :; }\n"
+            "qbzd_binary_path() { printf '%s\\n' \"$HOME/.local/bin/qbzd\"; }\n"
+            "user_unit_exists() { [[ -f \"$HOME/.config/systemd/user/$1\" ]]; }\n"
+            "user_systemctl() { printf 'systemctl %s\\n' \"$*\"; }\n"
+            "qbzd_wait_for_active_state() { return 0; }\n"
+            + extract_function(self.install, "render_qbzd_service") + "\n"
+            + extract_function(self.install, "configure_qbzd_service") + "\n"
+            + "QBZD_SERVICE_INSTALLED_BY_FXROUTE=1\n"
+            + f"QBZD_SERVICE_SHA256={recorded_sha}\n"
+            + "QBZD_SERVICE_IDENTITY_CHANGED=0\n"
+            + "QBZD_SERVICE_SETUP_FAILED=0\n"
+            + "configure_qbzd_service\n"
+            + "printf 'sha=%s changed=%s\\n' \"$QBZD_SERVICE_SHA256\" \"$QBZD_SERVICE_IDENTITY_CHANGED\"\n"
+        )
+        env = {**os.environ, "HOME": str(home), "PATH": "/usr/bin:/bin"}
+        result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        return unit_dir / "qbzd.service", result.stdout
+
+    def test_qbzd_unit_routes_stream_into_dsp_sink(self):
+        # The fork's PipeWire backend follows the default sink only; the
+        # unit pins its ALSA stream to the DSP sink instead.
+        unit = extract_function(self.install, "render_qbzd_service")
+        self.assertIn("Environment=PIPEWIRE_NODE=fxroute_dsp_sink\n", unit)
+
+    def test_owned_unmodified_qbzd_unit_is_refreshed_in_place(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            old_unit = (
+                "[Unit]\nDescription=qbzd Qobuz Connect receiver for FXRoute\n\n"
+                f"[Service]\nType=simple\nExecStart={home}/.local/bin/qbzd\n"
+                "Restart=on-failure\n\n[Install]\nWantedBy=default.target\n"
+            )
+            recorded = hashlib.sha256(old_unit.encode()).hexdigest()
+            unit_path, stdout = self._run_configure_qbzd_service(home, old_unit, recorded)
+            refreshed = unit_path.read_text()
+            self.assertIn("Environment=PIPEWIRE_NODE=fxroute_dsp_sink\n", refreshed)
+            self.assertIn(f"ExecStart={home}/.local/bin/qbzd\n", refreshed)
+            self.assertIn("qbzd service refreshed", stdout)
+            new_sha = hashlib.sha256(refreshed.encode()).hexdigest()
+            self.assertIn(f"sha={new_sha} changed=0", stdout)
+            # A rerun over the refreshed unit leaves it untouched.
+            _unit_path, rerun = self._run_configure_qbzd_service(home, refreshed, new_sha)
+            self.assertNotIn("refreshed", rerun)
+            self.assertIn(f"sha={new_sha} changed=0", rerun)
+
+    def test_modified_owned_qbzd_unit_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            edited = "[Service]\nExecStart=/opt/custom/qbzd\n"
+            unit_path, stdout = self._run_configure_qbzd_service(home, edited, "0" * 64)
+            self.assertEqual(unit_path.read_text(), edited)
+            self.assertIn("checksum changed; preserving", stdout)
+            self.assertIn("changed=1", stdout)
+
     def test_qbzd_service_is_durable_without_manual_restart(self):
         service = extract_function(self.install, "configure_qbzd_service")
-        self.assertIn("Restart=on-failure", service)
+        self.assertIn("Restart=on-failure", extract_function(self.install, "render_qbzd_service"))
         self.assertIn("qbzd_wait_for_active_state qbzd.service", service)
 
     def test_install_state_records_audio_output_ownership(self):
