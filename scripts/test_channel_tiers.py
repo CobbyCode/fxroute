@@ -697,5 +697,166 @@ class TierApplySnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(runtime.applied, "the unstoraged change must still drive the hardware stage")
 
 
+class TierAdapterMultiPassTests(unittest.IsolatedAsyncioTestCase):
+    """Real adapter multi-pass: each newly derived tier/rate gets its own apply.
+
+    Drives the real ``_RuntimeChannelTierMixin`` with real
+    ``ChannelTierChange`` objects over a fake pactl transport: two passes
+    must switch the hardware to the two derived tier/rate targets while the
+    pass-1 change stays the rollback record, and the rollback must restore
+    the pre-transition hardware state.
+    """
+
+    FULL_TIERS = [
+        {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000},
+        {"id": "14ch", "channels": 14, "rates": [88200, 96000], "probe_rate": 96000},
+        {"id": "10ch", "channels": 10, "rates": [176400, 192000], "probe_rate": 192000},
+    ]
+    CHANNELS_BY_RATE = {48000: 18, 96000: 14, 192000: 10}
+    MULTI_PROFILE = "output:multichannel-output+input:multichannel-input"
+
+    def setUp(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": root.name})
+        env.start()
+        self.addCleanup(env.stop)
+        self.old_key = "alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen_SERIAL-00.multichannel-output"
+        self.new_key = self.old_key.rsplit(".", 1)[0] + ".pro-output-0"
+        self.card = self.old_key.replace("alsa_output.", "alsa_card.", 1).rsplit(".", 1)[0]
+        self.key, self.channels, self.rate = self.old_key, 18, 48000
+        self.profile, self.volume, self.mute = self.MULTI_PROFILE, 23, False
+        self.force_rate = 48000
+        wake_patch = patch.object(channel_tiers.ChannelTierChange, "_wake_sink", return_value=None)
+        wake_patch.start()
+        self.addCleanup(wake_patch.stop)
+        prepare_patch = patch.object(channel_tiers, "prepare_change", self._prepare_with_fake_run)
+        prepare_patch.start()
+        self.addCleanup(prepare_patch.stop)
+        sleep_patch = patch("time.sleep", return_value=None)
+        sleep_patch.start()
+        self.addCleanup(sleep_patch.stop)
+        from audio.samplerate.persistence import _save_audio_output_selection
+        _save_audio_output_selection(self.old_key)
+
+    def _prepare_with_fake_run(self, output_key, tier, target_rate, tiers):
+        return channel_tiers.ChannelTierChange(
+            output_key, tier, target_rate, run=self.run_command, tiers=tiers,
+        )
+
+    def run_command(self, command):
+        if command == ["pactl", "-f", "json", "list", "sinks"]:
+            return json.dumps([{"name": self.key,
+                                 "sample_specification": f"s32le {self.channels}ch {self.rate}Hz",
+                                 "volume": {"aux0": {"value_percent": f"{self.volume}%"}}, "mute": self.mute}])
+        if command == ["pactl", "list", "cards"]:
+            return (f"Name: {self.card}\nProfiles:\n"
+                    "  off: Off (sinks: 0, sources: 0, priority: 0, available: yes)\n"
+                    "  output:multichannel-output+input:multichannel-input: Multichannel Duplex (sinks: 1, sources: 1, priority: 101, available: yes)\n"
+                    "  pro-audio: Pro Audio (sinks: 1, sources: 1, priority: 1, available: yes)\n"
+                    f"Active Profile: {self.profile}\n")
+        if command[:2] == ["pw-metadata", "-n"]:
+            self.force_rate = int(command[-1])
+            return ""
+        if command == ["systemctl", "--user", "restart", "wireplumber.service"]:
+            return ""
+        if command[:2] == ["pactl", "set-card-profile"]:
+            self.profile = command[-1]
+            if self.profile == "pro-audio":
+                self.key, self.channels, self.rate = self.new_key, self.CHANNELS_BY_RATE[self.force_rate], self.force_rate
+            elif self.profile != "off":
+                self.key, self.channels, self.rate = self.old_key, 18, self.force_rate
+            return ""
+        if command[:2] == ["pactl", "set-sink-mute"]:
+            self.mute = command[-1] == "1"
+            return ""
+        if command[:2] == ["pactl", "set-sink-volume"]:
+            self.volume = int(command[-1].rstrip("%"))
+            return ""
+        if command[:2] == ["pactl", "set-default-sink"]:
+            return ""
+        raise AssertionError(f"Unexpected command: {command}")
+
+    def _overview(self):
+        by_channels = {18: "18ch", 14: "14ch", 10: "10ch"}
+        return {"selected_output": {
+            "key": self.key,
+            "supported_rates": [44100, 48000, 88200, 96000, 176400, 192000],
+            "device_profile": {
+                "id": "scarlett-16i16-4th-gen",
+                "active_tier": by_channels[self.channels],
+                "tiers": [dict(tier) for tier in self.FULL_TIERS],
+            },
+        }}
+
+    def _runtime(self):
+        from playback.runtime.channel_tier import _RuntimeChannelTierMixin
+
+        class AdapterRuntime(_RuntimeChannelTierMixin):
+            def __init__(self, deps):
+                self._deps = deps
+                self._dsp_runtime = None
+                self.rates = []
+
+            def invalidate_gate_sink_resolution(self):
+                pass
+
+            async def establish_target_rate(self, request):
+                self.rates.append(request.target_rate)
+
+            async def establish_effects_and_helper(self, request):
+                pass
+
+            async def reconcile_post_start_graph(self, request):
+                pass
+
+            async def verify_output_mode_runtime(self, request):
+                pass
+
+            async def set_source_volume(self, volume, transition_id):
+                pass
+
+            async def stabilize_effects_after_rate_change(self, request, dsp_reinitialized=False):
+                pass
+
+        async def drain_worker(step):
+            step()
+
+        return AdapterRuntime(SimpleNamespace(
+            audio_configuration_lock=None,
+            measurement_audio_graph_owned=lambda: False,
+            drain_worker=drain_worker,
+            get_audio_output_overview=self._overview,
+        ))
+
+    def _request(self, tier_id, target_rate):
+        from playback.transition import TransitionRequest
+        tier = next(tier for tier in self.FULL_TIERS if tier["id"] == tier_id)
+        return TransitionRequest(
+            operation="sample-rate-policy", source="local",
+            target_rate=target_rate, target_url=None,
+            audio_overview=self._overview(),
+            channel_tier={"key": self.key, "tier": dict(tier), "rates": list(tier["rates"])},
+            sample_rate_policy={"mode": "fixed", "rate": target_rate},
+        )
+
+    async def test_two_passes_apply_two_targets_then_rollback_restores_origin(self):
+        runtime = self._runtime()
+        snapshot = {"player": {}, "sample_rate_policy": {"mode": "fixed", "rate": 48000}}
+        await runtime.apply_channel_tier(self._request("14ch", 96000), snapshot)
+        self.assertEqual((self.key, self.channels, self.rate), (self.new_key, 14, 96000))
+        await runtime.apply_channel_tier(self._request("10ch", 192000), snapshot)
+        self.assertEqual((self.key, self.channels, self.rate), (self.new_key, 10, 192000))
+        stored = snapshot.get("channel_tier_change")
+        self.assertEqual(stored.tier.get("id"), "14ch")
+        self.assertEqual(stored.target_rate, 96000)
+        self.assertTrue(await runtime.rollback_channel_tier(
+            self._request("10ch", 192000), snapshot, "test-tid"))
+        self.assertEqual((self.key, self.channels, self.rate, self.profile),
+                         (self.old_key, 18, 48000, self.MULTI_PROFILE))
+        from audio.samplerate.persistence import _load_audio_output_selection
+        self.assertEqual(_load_audio_output_selection()["selected_key"], self.old_key)
+
+
 if __name__ == "__main__":
     unittest.main()

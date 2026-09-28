@@ -941,11 +941,12 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                             # failure-restore machinery (including the tier
                             # rollback) runs instead of pinning an
                             # inconsistent rate/tier pair.
+                            tier_id = ((getattr(active_request, "channel_tier", None) or {}).get("tier") or {}).get("id")
                             raise RuntimeError(
                                 "Channel-tier reprobe did not converge after "
                                 f"{_MAX_TIER_REPROBE_PASSES} passes: "
                                 f"target_rate={active_request.target_rate} "
-                                f"tier={((active_request.channel_tier or {}).get('tier') or {}).get('id')}"
+                                f"tier={tier_id}"
                             )
                     # Re-validate against the resolved rate.  The output gate
                     # is already closed and the old source quieted at this

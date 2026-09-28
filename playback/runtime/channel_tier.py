@@ -28,21 +28,28 @@ class _RuntimeChannelTierMixin:
         return await asyncio.to_thread(self._deps.get_audio_output_overview)
 
     async def apply_channel_tier(self, request, snapshot):
-        change = (snapshot or {}).get("channel_tier_change")
-        if change is None:
+        stored = (snapshot or {}).get("channel_tier_change")
+        wanted_tier = dict((request.channel_tier or {}).get("tier") or {})
+        wanted_rate = getattr(request, "target_rate", None)
+        if (
+            stored is not None
+            and stored.tier == wanted_tier
+            and stored.target_rate == wanted_rate
+        ):
+            return await self._change_tier_hardware(stored)
+        from audio.channel_tiers import prepare_change
+        tiers = ((request.audio_overview or {}).get("selected_output") or {}).get(
+            "device_profile", {}).get("tiers") or []
+        if not wanted_tier or wanted_tier not in tiers:
+            raise ValueError("Channel-tier transition has no known destination tier")
+        change = prepare_change(
+            str((request.channel_tier or {}).get("key") or ""),
+            wanted_tier, wanted_rate, tiers,
+        )
+        if stored is None:
             # Coordinator-injected switches arrive without a pre-built change
             # (the target rate only resolves mid-transition): capture now,
             # still under the closed gate, and keep it for a later rollback.
-            from audio.channel_tiers import prepare_change
-            tiers = ((request.audio_overview or {}).get("selected_output") or {}).get(
-                "device_profile", {}).get("tiers") or []
-            selected_tier = dict((request.channel_tier or {}).get("tier") or {})
-            if not selected_tier or selected_tier not in tiers:
-                raise ValueError("Channel-tier transition has no known destination tier")
-            change = prepare_change(
-                str((request.channel_tier or {}).get("key") or ""),
-                selected_tier, request.target_rate, tiers,
-            )
             await self._deps.drain_worker(change.capture)
             try:
                 snapshot["channel_tier_change"] = change
@@ -53,6 +60,17 @@ class _RuntimeChannelTierMixin:
                 logger.warning(
                     "Channel-tier change could not be stored on the transition snapshot; rollback will be unavailable"
                 )
+        else:
+            # Later pass with a newly derived tier/rate: apply exactly this
+            # target with a fresh change, but carry the original hardware
+            # baseline instead of re-capturing. The current sink already
+            # reflects an earlier pass, so a re-capture would move the
+            # rollback point; the stored pass-1 change keeps restoring the
+            # pre-transition state. The source selection already points at
+            # the pro input, so there is nothing left to rewrite for it.
+            change.volume = stored.volume
+            change.old_source_selection = None
+            change.captured = True
         return await self._change_tier_hardware(change)
 
     async def rollback_channel_tier(self, request, snapshot, transition_id):
