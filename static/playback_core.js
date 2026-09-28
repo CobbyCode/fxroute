@@ -596,6 +596,10 @@ function triggerSamplerateBurstPolling() {
 // Signature of the playback/owner/metadata state the footer renders from.
 // Volume travels its own silent path (renderVolumeControlsFromActualVolume)
 // and never counts as a footer refresh.
+// Maintenance: whenever updatePlaybackUI (or the footer) starts rendering
+// from another playback field, add it here as well — otherwise that change
+// stays invisible on idle ticks, because the refresh gate below compares
+// this signature only.
 function playbackRefreshSignature(playback) {
     const track = playback?.current_track;
     const radio = playback?.radio_metadata;

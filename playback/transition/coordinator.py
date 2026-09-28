@@ -935,6 +935,18 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                             # new tier: fit the target rate against it so the
                             # rate stage pins a rate the new overview carries.
                             active_request = self._fit_transition_target_rate(active_request)
+                        else:
+                            # The bounded passes never settled rate and tier
+                            # onto each other: fail loudly so the
+                            # failure-restore machinery (including the tier
+                            # rollback) runs instead of pinning an
+                            # inconsistent rate/tier pair.
+                            raise RuntimeError(
+                                "Channel-tier reprobe did not converge after "
+                                f"{_MAX_TIER_REPROBE_PASSES} passes: "
+                                f"target_rate={active_request.target_rate} "
+                                f"tier={((active_request.channel_tier or {}).get('tier') or {}).get('id')}"
+                            )
                     # Re-validate against the resolved rate.  The output gate
                     # is already closed and the old source quieted at this
                     # point, so a rejection must run the failure-restore
