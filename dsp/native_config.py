@@ -165,7 +165,6 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
         gain_db = float(output.get("gain_db", 0.0))
         delay_ms = float(output.get("delay_ms", 0.0))
         oconv = None
-        equalizers = 0
         bank = output.get("bank") or {}
         if not bank.get("bypass"):
             for plugin in bank.get("chain", []):
@@ -173,7 +172,8 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
                     continue
                 plugin_type = plugin.get("type")
                 if plugin_type == "equalizer":
-                    equalizers += 1
+                    # Serial PEQs (e.g. combined presets) concatenate into one
+                    # biquad chain; the stage budget below is the only limit.
                     for band in _project_bands(role, plugin, sub_mode):
                         if not band["enabled"]:
                             continue
@@ -190,8 +190,6 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
                     oconv = _oconv_for_bank(role, plugin, resolve_ir, sub_mode)
                 else:
                     raise ValueError(f"Area bank {role} supports only PEQ and convolver presets")
-        if equalizers > 1:
-            raise ValueError(f"Area bank {role} supports a single equalizer")
         if sum(item["stages"] for item in filters) + len(sos) > OUTPUT_BIQUAD_BUDGET:
             raise ValueError(f"Area bank {role} exceeds {OUTPUT_BIQUAD_BUDGET} biquad stages")
         layout.append({"name": role, "routes": output.get("routes", []),

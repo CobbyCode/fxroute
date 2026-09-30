@@ -34,6 +34,10 @@ from http_errors import bad_request, internal_error
 from audio import pw_link
 from playback.transition import PlaybackTransitionFailure, TransitionRequest
 from streaming.qobuz import connect_state
+from streaming.qobuz.provider import (
+    QobuzSeekError, QobuzSeekNotConfirmed, QobuzSeekPositionError,
+    navigation_has_no_target,
+)
 from streaming.spotify import connect_name as spotify_connect_name
 
 logger = logging.getLogger(__name__)
@@ -171,6 +175,9 @@ async def _qobuz_ui_start_action(action: str) -> dict:
     authoritative coordinator path as a Qobuz Connect claim: quiet the
     previous owner, establish rate/graph, start qbzd, commit
     ``playback_owner=qobuz`` and publish it on the playback broadcast.
+    Next/Previous select and load their target under the same output gate,
+    resolving the decoded target rate before graph staging. Next at the end
+    of a non-repeating queue leaves the existing transport untouched.
     Toggling an already-playing Qobuz owner is transport-only, and replaying
     (``play``) an already-playing committed Qobuz owner is a no-op that never
     re-runs the handoff.  The 2s Qobuz Connect watcher stays responsible
@@ -180,6 +187,8 @@ async def _qobuz_ui_start_action(action: str) -> dict:
     capture = getattr(deps, "capture_source_intent", None)
     source_intent = capture() if callable(capture) else None
     qobuz_state = await deps.get_qobuz_ui_state()
+    if action in {"next", "previous"} and navigation_has_no_target(qobuz_state, action):
+        return qobuz_state
     if action == "toggle" and deps.is_qobuz_playback_active(qobuz_state):
         data = await deps.qobuz_pause()
         return await deps.broadcast_qobuz_state(data)
@@ -195,7 +204,7 @@ async def _qobuz_ui_start_action(action: str) -> dict:
     target_rate = deps.qobuz_target_rate(qobuz_state)
     qobuz_rate_change = await asyncio.to_thread(deps.coordinator_rate_change, target_rate)
     request = TransitionRequest(
-        operation="qobuz-play" if action == "play" else "qobuz-toggle",
+        operation=f"qobuz-{action}",
         source="qobuz",
         target_rate=target_rate,
         target_url=str(track.get("id") or ""),
@@ -229,12 +238,12 @@ async def _qobuz_ui_start_action(action: str) -> dict:
 async def api_streaming_provider_action(provider_id: str, action: str, request: Request):
     """Generic provider transport action, dispatched by capability.
 
-    This is the provider-level transport contract (no FXRoute source
-    transition). The existing ``/api/spotify/*`` endpoints keep their source
-    handoff semantics for Spotify. Spotify and Qobuz start actions
+    The existing ``/api/spotify/*`` endpoints keep their source handoff
+    semantics for Spotify. Spotify and Qobuz start actions
     (``play``/``toggle`` out of Paused/Stopped) are routed through the
-    authoritative source handoff instead of the raw provider transport;
-    all other actions stay transport-only on the provider.
+    authoritative source handoff instead of the raw provider transport.
+    Qobuz Next/Previous also use that coordinator because the fork selects
+    queue metadata without loading audio; other actions stay transport-only.
     """
     deps = _deps()
     provider = streaming.get_provider(provider_id)
@@ -244,14 +253,24 @@ async def api_streaming_provider_action(provider_id: str, action: str, request: 
         return await deps.api_spotify_play()
     if provider_id == "spotify" and action == "toggle":
         return await deps.api_spotify_toggle()
-    if provider_id == "qobuz" and action in ("play", "toggle"):
+    if provider_id == "qobuz" and action in ("play", "toggle", "next", "previous"):
         return await _qobuz_ui_start_action(action)
     if action == "seek":
         body = await _json_object(request)
         try:
-            return await provider.seek(float(body.get("position", 0)))
+            position = float(body.get("position", 0))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid seek position") from exc
+        try:
+            return await provider.seek(position)
         except streaming.ProviderNotImplemented as exc:
             raise HTTPException(status_code=501, detail=str(exc)) from exc
+        except QobuzSeekPositionError as exc:
+            raise HTTPException(status_code=400, detail="Invalid seek position") from exc
+        except QobuzSeekNotConfirmed as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except QobuzSeekError as exc:
+            raise HTTPException(status_code=502, detail="Qobuz seek request failed") from exc
     if action == "volume":
         body = await _json_object(request)
         if provider_id == "qobuz":

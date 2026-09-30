@@ -39,13 +39,14 @@ class SamplerateCommandTimeoutTests(unittest.TestCase):
     def test_bluetooth_overview_skips_device_queries_when_daemon_unreachable(self):
         # On hosts with bluetoothctl installed but no reachable BlueZ daemon,
         # bluetoothctl calls block until the command timeout. The overview
-        # must probe the D-Bus service first and skip all bluetoothctl
-        # queries when it is not there, keeping the audio overviews fast.
+        # must ask the bus daemon first (NameHasOwner, which never activates
+        # bluetoothd) and skip all bluetoothctl queries when nothing owns
+        # org.bluez, keeping the audio overviews fast.
         import audio.samplerate.bluetooth as bt
 
-        def fake_run(cmd):
-            if cmd[0] == "dbus-send":
-                raise RuntimeError("NameHasNoOwner")
+        def fake_run(cmd, timeout=None):
+            if "NameHasOwner" in cmd:
+                return "b false\n"
             raise AssertionError(f"unexpected command: {cmd}")
 
         with mock.patch.object(bt, "_command_available", return_value=True), \
@@ -63,10 +64,10 @@ class SamplerateCommandTimeoutTests(unittest.TestCase):
 
         calls = []
 
-        def fake_run(cmd):
+        def fake_run(cmd, timeout=None):
             calls.append(cmd)
-            if cmd[0] == "dbus-send":
-                return "method return sender=org.freedesktop.DBus -> dest=:1.2\n"
+            if "NameHasOwner" in cmd:
+                return "b true\n"
             if cmd[:2] == ["bluetoothctl", "show"]:
                 return "Controller AA:BB:CC:DD:EE:FF hostname alias\n"
             if cmd == ["bluetoothctl", "devices", "Paired"]:
@@ -90,9 +91,9 @@ class SamplerateCommandTimeoutTests(unittest.TestCase):
         # service stop. Both must become no-ops when the daemon is down.
         import audio.samplerate.bluetooth as bt
 
-        def fake_run(cmd):
-            if cmd[0] == "dbus-send":
-                raise RuntimeError("NameHasNoOwner")
+        def fake_run(cmd, timeout=None):
+            if "NameHasOwner" in cmd:
+                return "b false\n"
             raise AssertionError(f"unexpected command: {cmd}")
 
         with mock.patch.object(bt, "_command_available", return_value=True), \

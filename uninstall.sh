@@ -1058,6 +1058,9 @@ remove_owned_helper() {
 
   [[ -e "$path" || -L "$path" ]] || return 0
   case "$(basename "$path")" in
+    fxroute)
+      expected="#!/usr/bin/env bash"$'\n'"set -euo pipefail"$'\n'"exec \"$INSTALL_ROOT/.venv/bin/python3\" \"$INSTALL_ROOT/scripts/fxroute_stdin.py\" \"\$@\""
+      ;;
     fxroute-status)
       expected="#!/usr/bin/env bash"$'\n'"exec systemctl --user status $SERVICE_NAME"
       ;;
@@ -1088,6 +1091,7 @@ remove_owned_helper() {
 }
 
 remove_helpers() {
+  remove_owned_helper "$HOME/.local/bin/fxroute"
   remove_owned_helper "$HOME/.local/bin/fxroute-status"
   remove_owned_helper "$HOME/.local/bin/fxroute-logs"
   remove_owned_helper "$HOME/.local/bin/fxroute-restart"

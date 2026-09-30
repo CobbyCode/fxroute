@@ -258,6 +258,13 @@ def _active_line_source_for_power() -> str | None:
         external_source = ""
     if external_source:
         return "external-input"
+    try:
+        stdin_service = runtime.stdin_input
+        snapshot = stdin_service.snapshot() if stdin_service else None
+    except Exception:
+        snapshot = None
+    if snapshot and snapshot.get("selected") and snapshot.get("routed") and snapshot.get("state") == "streaming":
+        return "stdin"
     return None
 
 
@@ -309,6 +316,16 @@ async def _active_line_source_for_power_async() -> str | None:
         except Exception:
             return None
         return None
+    try:
+        stdin_service = runtime.stdin_input
+    except Exception:
+        stdin_service = None
+    if stdin_service is not None:
+        try:
+            if await stdin_service.active_for_power():
+                return "stdin"
+        except Exception:
+            return None
     return None
 
 
@@ -323,6 +340,8 @@ def _finish_power_state_payload(
         reason = "bluetooth"
     elif line_source == "external-input":
         reason = "external-input"
+    elif line_source == "stdin":
+        reason = "stdin"
     else:
         reason = "idle"
     return {
@@ -467,11 +486,17 @@ from audio.output_state import (
 )
 from audio.output_state_store import OutputStateStore, StateConflictError
 from audio.output_topology import MODES, SUB_ROLES, derive_topology, side_for_role
-from audio.filter_banks import bank_catalog, resolve_bank, selected_bank, summarize_banks
+from audio.filter_banks import bank_catalog, resolve_bank, selected_bank, summarize_all_banks
 from audio.output_state import switch_all_banks
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
+from audio.stdin_input import StdinInputDependencies, StdinInputService
+from audio.stdin_pipewire import PipeWirePcmSink, pcm_adapter_error
+from audio.stdin_protocol import socket_path
+from audio.source_feed import SourceOverviewFeed, SourceTransitionLock
+from audio.source_transitions import SourceTransitionDependencies, SourceTransitions
+from common.run_to_completion import finish_then_cancel
 from playback.radio_reconnect import RadioReconnect, RadioReconnectDependencies
 from playback.silent_active import SilentActiveDependencies, SilentActiveRecovery
 from playback.spotify_watch import (
@@ -528,9 +553,9 @@ from audio.samplerate import (
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_MODES,
     SOURCE_MODE_APP_PLAYBACK,
-    SOURCE_MODE_BLUETOOTH_INPUT,
-    SOURCE_MODE_EXTERNAL_INPUT,
     apply_persisted_audio_output_selection,
+    configure_source_availability,
+    configure_stdin_input_status,
     get_audio_output_overview,
     get_audio_source_overview,
     get_bluetooth_audio_overview,
@@ -541,11 +566,13 @@ from audio.samplerate import (
     set_audio_output_selection,
     set_audio_source_selection,
     set_bluetooth_receiver_enabled,
+    with_current_stdin_status,
 )
 import streaming
 from streaming.tidal import auth as tidal_auth
 from streaming.tidal import playback as tidal_playback
 from streaming.qobuz import connect_state
+from streaming.qobuz.provider import QobuzSeekError, QobuzSeekNotConfirmed, QobuzSeekPositionError
 from streaming.spotify import mpris as spotify_mpris
 from streaming.spotify.mpris import playerctl_available, spotify_installed
 from streaming.spotify.provider import (
@@ -646,6 +673,7 @@ class RuntimeResources:
     # concurrent requests cannot interleave their set -> verified get -> status
     # cache publish sequences.
     canonical_volume_write_lock: Optional[asyncio.Lock] = None
+    stdin_input: Any = None
 
     def reset(self) -> None:
         """Clear every lifecycle-owned resource at shutdown."""
@@ -664,6 +692,7 @@ class RuntimeResources:
         self.dsp_mutation_lock = None
         self.source_transition_lock = None
         self.canonical_volume_write_lock = None
+        self.stdin_input = None
 
 
 # Global instances (initialized on startup)
@@ -690,7 +719,7 @@ def _ensure_player_running() -> bool:
     """
     global _player_restart_cooldown_until
     player = runtime.player_instance
-    if player is not None and getattr(player, "_running", False):
+    if player is not None and _player_is_running(player):
         return True
     if time.monotonic() < _player_restart_cooldown_until:
         return False
@@ -702,7 +731,7 @@ def _ensure_player_running() -> bool:
         _player_restart_cooldown_until = time.monotonic() + PLAYER_RESTART_COOLDOWN_S
         return False
     runtime.player_instance = player
-    return bool(getattr(player, "_running", False))
+    return _player_is_running(player)
 
 
 def _dsp_mutation_lock() -> asyncio.Lock:
@@ -723,9 +752,9 @@ def _canonical_volume_write_lock() -> asyncio.Lock:
     return runtime.canonical_volume_write_lock
 
 
-def _source_transition_lock() -> asyncio.Lock:
+def _source_transition_lock() -> SourceTransitionLock:
     if runtime.source_transition_lock is None:
-        runtime.source_transition_lock = asyncio.Lock()
+        runtime.source_transition_lock = SourceTransitionLock()
     return runtime.source_transition_lock
 
 
@@ -870,16 +899,26 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
         samplerate._load_audio_source_selection().get("mode") or SOURCE_MODE_APP_PLAYBACK
     ),
     get_source_transition_lock=lambda: _source_transition_lock(),
-    sync_peak_monitor_for_source_mode_state=lambda overview: peak_monitor_coordinator.sync_source_mode_state(overview),
+    # Also pushes the overview to clients (SourceTransitions.sync_source_mode_state).
+    sync_peak_monitor_for_source_mode_state=lambda overview: source_transitions.sync_source_mode_state(overview),
 ))
 
 bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
-    sync_peak_monitor_for_source_mode_state=lambda overview=None: peak_monitor_coordinator.sync_source_mode_state(overview),
+    # Also pushes the overview to clients (SourceTransitions.sync_source_mode_state).
+    sync_peak_monitor_for_source_mode_state=lambda overview: source_transitions.sync_source_mode_state(overview),
     get_persisted_source_mode=lambda: (
         samplerate._load_audio_source_selection().get("mode") or SOURCE_MODE_APP_PLAYBACK
     ),
     get_source_transition_lock=lambda: _source_transition_lock(),
 ))
+
+# The monitors observe source availability and own the loss confirmation;
+# the source overview only reads it.
+configure_source_availability(
+    bluetooth_loss_confirmed=lambda: bluetooth_input.availability.confirmed(),
+    external_loss_confirmed=lambda: external_input.availability.confirmed(),
+    remembered_external_input=lambda key: external_input.remembered_input(key),
+)
 
 samplerate_drift = SamplerateDriftObserver(SamplerateDriftDependencies(
     get_current_track_info=lambda: playback_state.current_track_info,
@@ -969,6 +1008,12 @@ spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
         _dsp_mutation_lock(), func
     ),
 ))
+
+
+async def _noop_async() -> None:
+    return None
+
+
 def _make_measurement_services() -> MeasurementServices:
     """Bind the /api/measurements* module to the application services.
 
@@ -1015,6 +1060,8 @@ def _make_measurement_services() -> MeasurementServices:
             service=get_output_service(), output_key=output_key, channels=channels),
         stage_bank_v2_context=lambda *, measurement_bank, measurement_rate_hz: _stage_bank_v2_context(
             measurement_bank=measurement_bank, measurement_rate_hz=measurement_rate_hz),
+        stdin_measurement_acquire=lambda: runtime.stdin_input.set_measurement_active(True) if runtime.stdin_input else _noop_async(),
+        stdin_measurement_release=lambda: runtime.stdin_input.set_measurement_active(False) if runtime.stdin_input else _noop_async(),
     )
 
 
@@ -1088,9 +1135,12 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         get_qobuz_ui_state=lambda *a, **k: get_qobuz_ui_state(*a, **k),
         is_qobuz_playback_active=lambda *a, **k: _is_qobuz_playback_active(*a, **k),
         qobuz_play=lambda *a, **k: qobuz_play(*a, **k),
+        qobuz_play_track=lambda *a, **k: qobuz_play_track(*a, **k),
+        qobuz_loaded_track_id=lambda *a, **k: qobuz_loaded_track_id(*a, **k),
         qobuz_pause=lambda *a, **k: qobuz_pause(*a, **k),
         wait_for_pipewire_qobuz_release=lambda *a, **k: media_readiness.wait_for_pipewire_qobuz_release(*a, **k),
         wait_for_qobuz_sink_input_samplerate=lambda *a, **k: media_readiness.wait_for_qobuz_sink_input_samplerate(*a, **k),
+        qobuz_navigate=lambda action: getattr(streaming.get_provider("qobuz"), action)(),
         mark_player_state_authoritative=lambda *a, **k: _mark_player_state_authoritative(*a, **k),
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
@@ -1243,6 +1293,26 @@ async def _publish_committed_playback_owner(owner: str, transition_id: str | Non
     })
 
 
+source_overview_feed = SourceOverviewFeed(broadcast=lambda message: manager.broadcast(message))
+
+source_transitions = SourceTransitions(SourceTransitionDependencies(
+    get_lock=lambda: _source_transition_lock(),
+    feed=source_overview_feed,
+    build_overview=lambda: get_audio_source_overview(),
+    save_selection=lambda mode, input_key: set_audio_source_selection(mode, input_key),
+    load_selection=lambda: samplerate._load_audio_source_selection(),
+    with_current_stdin_status=lambda overview: with_current_stdin_status(overview),
+    sync_external_input=lambda overview: external_input.sync(overview),
+    sync_bluetooth_input=lambda overview: bluetooth_input.sync(overview),
+    finish_bluetoothctl_actions=lambda: bluetooth_input.finish_bluetoothctl_actions(),
+    get_stdin_input=lambda: runtime.stdin_input,
+    note_source_selection=lambda mode: playback_state.note_source_selection(mode),
+    pause_app_playback=lambda: _pause_all_app_playback_for_external_input(),
+    sync_peak_monitor=lambda overview: peak_monitor_coordinator.sync_source_mode_state(overview),
+    sync_peak_monitor_for_stdin=lambda overview: peak_monitor_coordinator.sync_stdin_state(overview),
+))
+
+
 async def _wait_playback_transition_settled() -> None:
     """Wait until no playback-transition attempt is pending (terminal state).
 
@@ -1263,15 +1333,22 @@ async def _wait_playback_transition_settled() -> None:
 
 
 def _player_is_running(player=None) -> bool:
-    """Return player availability without requiring a concrete MPV class.
+    """Return live player availability without requiring a concrete MPV class.
 
-    The production wrapper exposes ``_running``.  Keeping the adapter tolerant
-    of small player doubles is useful for the coordinator's failure-path tests
-    and does not weaken the production check: an explicit ``False`` still
-    means unavailable.
+    The production player exposes ``is_running()``, which follows the mpv
+    process rather than the last start() intent: a player that crashed must
+    not report itself as available, or the transition coordinator quiets a
+    source that is already gone and fails the whole transition.  Test doubles
+    without that method keep the previous ``_running`` adapter, and an
+    explicit ``False`` still means unavailable.
     """
     player = player if player is not None else runtime.player_instance
-    return bool(player is not None and getattr(player, "_running", True))
+    if player is None:
+        return False
+    live = getattr(player, "is_running", None)
+    if callable(live):
+        return bool(live())
+    return bool(getattr(player, "_running", True))
 
 
 def _load_player_paused(path: str) -> None:
@@ -2121,6 +2198,20 @@ async def qobuz_play() -> dict:
     return data
 
 
+async def qobuz_play_track(track_id: int | str) -> dict:
+    provider = streaming.get_provider("qobuz")
+    data = await provider.play_track(track_id)
+    playback_state.qobuz_state_read_sequence += 1
+    playback_state.qobuz_state_commit_sequence = playback_state.qobuz_state_read_sequence
+    playback_state.latest_qobuz_state = data
+    return data
+
+
+async def qobuz_loaded_track_id() -> int:
+    provider = streaming.get_provider("qobuz")
+    return await provider.loaded_track_id()
+
+
 async def qobuz_pause() -> dict:
     provider = streaming.get_provider("qobuz")
     data = await provider.pause()
@@ -2232,11 +2323,15 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         # runs before the transition lock, so a claim queued behind an
         # FXRoute-initiated Qobuz start must be re-checked inside the lock.
         # A source switch invalidates the claim the same way.
-        return (
+        if (
             playback_state.current_playback_owner == "qobuz"
             or playback_state.playback_intent_generation != claim_intent_generation
             or not playback_state.source_intent_is_current(claim_source_intent)
-        )
+        ):
+            return True
+        # As for Spotify: the Playing edge may come from a failed transition's
+        # own qbzd start, whose cleanup paused qbzd again.
+        return not _is_qobuz_playback_active(await get_qobuz_ui_state())
 
     track = _qobuz_target_track_from_state(qobuz_state)
     target_rate = _qobuz_target_rate(qobuz_state)
@@ -2296,11 +2391,17 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
         # re-validates inside the lock; the initiating start commits the
         # owner synchronously before the queued claim can acquire it.
         # A source switch invalidates the claim the same way.
-        return (
+        if (
             playback_state.current_playback_owner == "spotify"
             or playback_state.playback_intent_generation != claim_intent_generation
             or not playback_state.source_intent_is_current(claim_source_intent)
-        )
+        ):
+            return True
+        # The Playing edge that queued this claim can come from a failed
+        # transition's own Spotify start, whose cleanup paused Spotify again.
+        # Only a renderer that still plays is claimed; otherwise every failed
+        # claim would queue the next one.
+        return not _is_spotify_playback_active(await get_spotify_ui_state())
 
     target_rate = _coordinator_target_rate("spotify")
     rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
@@ -2752,7 +2853,7 @@ async def pause_spotify_for_local_playback_broadcast():
 
 async def pause_local_playback_for_spotify_broadcast():
     try:
-        if runtime.player_instance and runtime.player_instance._running:
+        if _player_is_running():
             await _drain_worker(runtime.player_instance.stop_playback)
             playback_state.current_track_info = None
             await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
@@ -2809,6 +2910,12 @@ async def lifespan(app: FastAPI):
             logger.warning("Downloader not available: %s", exc)
 
         dsp_manager = await _drain_worker(DSPManager)
+        try:
+            # After the preset tag migration, before any runtime sync.
+            for change in await _drain_worker(get_output_service().drop_foreign_bank_presets):
+                logger.warning("Output state bank cleanup: %s", change)
+        except Exception as exc:
+            logger.warning("Output state bank cleanup skipped: %s", exc)
         volume_read_monitor_task = start_volume_read_monitor()
         runtime.lifecycle_background_tasks.add(volume_read_monitor_task)
         volume_read_monitor_task.add_done_callback(runtime.lifecycle_background_tasks.discard)
@@ -2916,8 +3023,9 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
         peak_monitor_coordinator.reset()
+        source_overview_feed.reset()
         runtime.dsp_preset_load_lock = asyncio.Lock()
-        runtime.source_transition_lock = asyncio.Lock()
+        runtime.source_transition_lock = SourceTransitionLock()
         playback_state.latest_spotify_state = await get_spotify_ui_state()
         await peak_monitor_coordinator.sync_spotify_state(playback_state.latest_spotify_state)
         playback_state.latest_qobuz_state = await get_qobuz_ui_state()
@@ -2953,17 +3061,21 @@ async def lifespan(app: FastAPI):
             logger.warning("Failed to re-apply persisted audio output selection: %s", exc)
 
         try:
-            applied_source = get_audio_source_overview()
-            applied_source = await external_input.sync(applied_source)
-            applied_source = await bluetooth_input.sync(applied_source)
-            if applied_source.get("mode") == SOURCE_MODE_EXTERNAL_INPUT:
-                logger.info(
-                    "Re-applied persisted external-input monitoring: %s",
-                    ((applied_source.get("selected_input") or applied_source.get("current_input") or {}).get("label") or "unknown input"),
-                )
-            elif applied_source.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT:
-                logger.info("Re-applied persisted Bluetooth input mode")
-            await peak_monitor_coordinator.sync_source_mode_state(applied_source)
+            runtime.stdin_input = StdinInputService(StdinInputDependencies(
+                sink_factory=PipeWirePcmSink,
+                on_state_changed=lambda: source_transitions.publish_stdin_state(),
+                adapter_error=pcm_adapter_error,
+            ))
+            configure_stdin_input_status(lambda: runtime.stdin_input.snapshot()
+                                         if runtime.stdin_input else {
+                                             "available": False, "selectable": False,
+                                             "state": "unavailable", "routed": False})
+            await runtime.stdin_input.start(socket_path())
+        except Exception as exc:
+            logger.warning("STDIN listener unavailable: %s", exc)
+
+        try:
+            await source_transitions.reapply_persisted()
         except Exception as exc:
             logger.warning("Failed to re-apply source monitoring: %s", exc)
 
@@ -3078,6 +3190,9 @@ async def _shutdown_lifespan_resources() -> None:
             await cleanup("speaker-align", _speaker_align_service_instance.shutdown)
         await cleanup("measurement-store", measurement_store.shutdown)
     await cleanup("spl-calibration", spl_calibration.shutdown)
+    if runtime.stdin_input is not None:
+        await cleanup("stdin-input", runtime.stdin_input.stop)
+        configure_stdin_input_status(None)
     if measurement_sr_session is not None:
         await cleanup("measurement-session", measurement_sr_session.request_close)
     late_background_tasks = [task for task in runtime.lifecycle_background_tasks if not task.done()]
@@ -3266,6 +3381,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         get_samplerate_status=lambda: get_samplerate_status(),
         get_audio_output_overview=lambda *args, **kwargs: get_audio_output_overview(*args, **kwargs),
         get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
+        get_qobuz_ui_state=lambda *args, **kwargs: get_qobuz_ui_state(*args, **kwargs),
         get_player_audio_samplerate=lambda: media_readiness.get_player_audio_samplerate(runtime.player_instance),
         is_local_playback_active=_is_local_playback_active,
         is_spotify_playback_active=_is_spotify_playback_active,
@@ -3499,7 +3615,7 @@ def _native_mpv_direct_selection_ready(active_queue_ids: list) -> bool:
 @app.post("/api/play")
 async def play_track(req: PlayRequest):
     source_intent = _capture_source_intent()
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         if not await _drain_worker(_ensure_player_running):
             raise HTTPException(status_code=503, detail="Player not available")
     if not _can_send_play_command():
@@ -3718,7 +3834,7 @@ async def play_track(req: PlayRequest):
 
 @app.post("/api/pause")
 async def pause_playback():
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
@@ -3769,6 +3885,8 @@ async def _spotify_global_control(action: str, request: Request | None = None) -
 async def _qobuz_global_control(action: str, request: Request | None = None) -> dict:
     """Global transport for a Qobuz-owned playback context."""
     provider = streaming.get_provider("qobuz")
+    if action in {"next", "previous"}:
+        return await streaming_api._qobuz_ui_start_action(action)
     if action == "toggle":
         data = await get_qobuz_ui_state()
         if data.get("status") == "Playing":
@@ -3776,17 +3894,21 @@ async def _qobuz_global_control(action: str, request: Request | None = None) -> 
         else:
             data = await qobuz_play()
         return await broadcast_qobuz_state(data)
-    if action == "next":
-        return await broadcast_qobuz_state(await provider.next())
-    if action == "previous":
-        return await broadcast_qobuz_state(await provider.previous())
     if action == "seek":
         body = await _json_object(request) if request is not None else {}
         try:
             position = float(body.get("position", 0))
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, OverflowError) as exc:
             raise bad_request(exc) from exc
-        return await broadcast_qobuz_state(await provider.seek(position))
+        try:
+            data = await provider.seek(position)
+        except QobuzSeekPositionError as exc:
+            raise HTTPException(status_code=400, detail="Invalid seek position") from exc
+        except QobuzSeekNotConfirmed as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except QobuzSeekError as exc:
+            raise HTTPException(status_code=502, detail="Qobuz seek request failed") from exc
+        return await broadcast_qobuz_state(data)
     if action == "shuffle":
         return await broadcast_qobuz_state(await provider.shuffle())
     if action == "loop":
@@ -3815,7 +3937,7 @@ async def toggle_playback():
         routed = await _route_global_control("toggle")
     if routed is not None:
         return routed
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
@@ -3933,7 +4055,7 @@ async def toggle_playback():
 
 @app.post("/api/stop")
 async def stop_playback():
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
@@ -3994,7 +4116,7 @@ async def stop_playback():
 
 @app.post("/api/volume")
 async def set_volume(request: Request):
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
     try:
         body = await request.json()
@@ -4014,7 +4136,7 @@ async def next_playback():
     routed = await _route_global_control("next")
     if routed is not None:
         return routed
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
     if len(playback_queue.queue.tracks) <= 1:
         raise HTTPException(status_code=409, detail="No queue is active")
@@ -4040,7 +4162,7 @@ async def previous_playback():
     routed = await _route_global_control("previous")
     if routed is not None:
         return routed
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
     if len(playback_queue.queue.tracks) <= 1:
         raise HTTPException(status_code=409, detail="No queue is active")
@@ -4051,7 +4173,7 @@ async def previous_playback():
 
 @app.post("/api/playback/clear-queue")
 async def clear_playback_queue():
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
@@ -4079,7 +4201,7 @@ async def set_playback_shuffle(request: Request):
     # backend (ignoring `enabled`) while the UI keeps showing the local
     # queue state.
     enabled = bool(body["enabled"])
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
 
     try:
@@ -4105,7 +4227,7 @@ async def set_playback_loop(request: Request):
     routed = await _route_global_control("loop", request)
     if routed is not None:
         return routed
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
     try:
         body = await request.json()
@@ -4128,7 +4250,7 @@ async def seek_playback(request: Request):
         routed = await _route_global_control("seek", request)
     if routed is not None:
         return routed
-    if not runtime.player_instance or not runtime.player_instance._running:
+    if not _player_is_running():
         raise HTTPException(status_code=503, detail="Player not available")
     if _playback_transition_is_active():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
@@ -4450,7 +4572,8 @@ async def save_audio_output_selection_route(request: Request):
             async with measurement_sr_session.lock:
                 if measurement_sr_session.has_active_jobs:
                     raise HTTPException(status_code=423, detail="Measurement is active; output selection is locked")
-                result = await _shield_coro(_apply_audio_output_selection(output_key))
+                result = await finish_then_cancel(
+                    _apply_audio_output_selection(output_key), what="Output selection")
         await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-switch")
         return result
     except HTTPException:
@@ -4607,11 +4730,11 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int) -> dict:
         bank = raw_bank
     else:
         bank = resolve_bank(state["modes"][state["active_mode"]], raw_bank, topology["roles"])["id"]
-    fingerprint = service.fingerprint(state, output_key=output_key, channels=channel_count,
-                                      sample_rate_hz=sample_rate_hz)
+    plan = service.compile_plan(state, output_key=output_key, channels=channel_count,
+                                sample_rate_hz=sample_rate_hz)
     return freeze_measurement_target(
         state, bank_id=bank, output_key=output_key, channels=channel_count,
-        sample_rate_hz=sample_rate_hz, fingerprint=fingerprint)
+        sample_rate_hz=sample_rate_hz, fingerprint=service.fingerprint_plan(plan), plan=plan)
 
 
 def _live_measurement_sample_rate() -> int:
@@ -5159,7 +5282,7 @@ async def get_audio_output_state():
             "crossover_enabled": config["crossover_enabled"],
             "selected_bank": selected_bank(config, topology["roles"]),
             "banks": banks,
-            "all_banks": summarize_banks([config["banks"][role] for role in topology["roles"]]),
+            "all_banks": summarize_all_banks([config["banks"][role] for role in topology["roles"]]),
             "processing": config["processing"],
             "bass_management": config["bass_management"],
             "extras": config["extras"],
@@ -5583,12 +5706,12 @@ async def debug_21_runtime_state_route(request: Request):
 
 @app.get("/api/audio/source-mode")
 async def audio_source_overview():
-    return get_audio_source_overview()
+    return await source_transitions.read_overview()
 
 
 @app.get("/api/audio/bluetooth")
 async def audio_bluetooth_overview():
-    return get_bluetooth_audio_overview()
+    return await asyncio.to_thread(get_bluetooth_audio_overview)
 
 
 def _source_pause_baseline() -> dict[str, Any]:
@@ -5656,7 +5779,7 @@ async def _pause_scoped_app_playback(baseline: dict[str, Any]) -> None:
     try:
         if _source_pause_superseded(baseline):
             return
-        if runtime.player_instance and runtime.player_instance._running and not _mpv_pause_superseded(baseline):
+        if _player_is_running() and not _mpv_pause_superseded(baseline):
             await _drain_worker(runtime.player_instance.stop_playback)
             await manager.broadcast({"type": "playback", "data": build_playback_payload(runtime.player_instance.state)})
             released = await media_readiness.wait_for_pipewire_mpv_release()
@@ -5684,72 +5807,6 @@ async def _pause_scoped_app_playback(baseline: dict[str, Any]) -> None:
         logger.warning("Qobuz pause for external input failed: %s", exc)
 
 
-async def _shield_coro(coro) -> Any:
-    """Drain a coroutine to its terminal state, surviving caller cancellation.
-
-    The caller owns a critical section (here: the source-transition lock). A
-    cancelled caller must not release it while the body is still mutating
-    routing/playback state: the body runs to completion, then CancelledError
-    is re-raised. Body exceptions propagate unchanged; on the cancellation
-    path they are logged and cancellation takes precedence.
-    """
-    task: asyncio.Task = asyncio.create_task(coro)
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-    if cancelled:
-        try:
-            task.result()
-        except BaseException:
-            logger.exception("Source transition failed while its caller was cancelled")
-        raise asyncio.CancelledError
-    return task.result()
-
-
-async def _apply_audio_source_selection(mode: str, input_key: str | None) -> dict:
-    """Run one source-mode/input change: routing commit, pause, peak sync.
-
-    Runs under the source-transition lock with caller cancellation deferred
-    (see _shield_coro): routing, generations, transports and peak state are
-    always left consistent, never half-committed. The source generation (and
-    the playback intent generation) advances exactly when the committed
-    (mode, input) selection changed, before the external/bluetooth pause, so
-    in-flight playback transitions are discarded and the pause never stops a
-    newer commit.
-    """
-    previous_source_state = samplerate._load_audio_source_selection()
-    try:
-        result = set_audio_source_selection(mode, input_key)
-        result = await external_input.sync(result)
-        result = await bluetooth_input.sync(result)
-    except BaseException:
-        try:
-            restored = set_audio_source_selection(
-                str(previous_source_state.get("mode") or SOURCE_MODE_APP_PLAYBACK),
-                previous_source_state.get("selected_input_key"),
-            )
-            try:
-                restored = await external_input.sync(restored)
-                restored = await bluetooth_input.sync(restored)
-            except BaseException:
-                logger.exception("Failed to re-sync routing after source-mode rollback")
-        except BaseException:
-            logger.exception("Failed to restore previous source selection after routing failure")
-        raise
-    new_mode = str(result.get("mode") or SOURCE_MODE_APP_PLAYBACK)
-    previous_mode = str(previous_source_state.get("mode") or SOURCE_MODE_APP_PLAYBACK)
-    new_key = (result.get("selected_input") or {}).get("key") if isinstance(result.get("selected_input"), dict) else None
-    if new_mode != previous_mode or (new_key or None) != (previous_source_state.get("selected_input_key") or None):
-        playback_state.note_source_selection(new_mode)
-    if result.get("mode") in {SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
-        await _pause_all_app_playback_for_external_input()
-    await peak_monitor_coordinator.sync_source_mode_state(result)
-    return result
-
-
 @app.post("/api/audio/source-mode")
 async def save_audio_source_selection_route(request: Request):
     try:
@@ -5760,8 +5817,7 @@ async def save_audio_source_selection_route(request: Request):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "inputKey": <string?>}')
 
     try:
-        async with _source_transition_lock():
-            return await _shield_coro(_apply_audio_source_selection(mode, input_key))
+        return await source_transitions.save_selection(mode, input_key)
     except ValueError as exc:
         raise bad_request(exc)
     except RuntimeError as exc:
@@ -5902,7 +5958,7 @@ async def _commit_music_library_switch(
     active_refreshes = [task for task in runtime.library_refresh_tasks if not task.done()]
     if active_refreshes:
         await asyncio.gather(*active_refreshes, return_exceptions=True)
-    if runtime.player_instance is not None and runtime.player_instance._running:
+    if _player_is_running():
         _mark_playback_intent_changed()
         await _drain_worker(runtime.player_instance.stop_playback)
         playback_state.current_track_info = None

@@ -99,7 +99,7 @@ class BluetoothMonitorIdleSkipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_active_bluetooth_mode_still_syncs(self):
         monitor = _make_monitor(mode=SOURCE_MODE_BLUETOOTH_INPUT)
-        live_overview = {"mode": SOURCE_MODE_BLUETOOTH_INPUT, "bluetooth": {}}
+        live_overview = {"mode": SOURCE_MODE_BLUETOOTH_INPUT, "bluetooth": {"selectable": True}}
         with (
             patch.object(
                 bluetooth_module,

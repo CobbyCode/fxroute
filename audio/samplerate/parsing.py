@@ -18,14 +18,14 @@ from .constants import (
 from audio.tool_env import c_locale_env
 
 
-def _run_command(args: list[str]) -> str:
+def _run_command(args: list[str], timeout: float = COMMAND_TIMEOUT_SECONDS) -> str:
     try:
         result = subprocess.run(
             args,
             capture_output=True,
             text=True,
             check=False,
-            timeout=COMMAND_TIMEOUT_SECONDS,
+            timeout=timeout,
             env=c_locale_env(),
         )
     except subprocess.TimeoutExpired as exc:

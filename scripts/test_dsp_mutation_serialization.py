@@ -121,6 +121,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def get_status(self):
                 return {"status": "ok"}
 
+            def require_deletable_preset(self, preset_name):
+                return preset_name
+
             def delete_preset(self, preset_name, pinned_presets=()):
                 order.append("delete-entered")
                 return None
@@ -304,6 +307,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                     "format": "irs",
                 }
 
+            def require_deletable_preset(self, preset_name):
+                return preset_name
+
             def delete_preset(self, preset_name, pinned_presets=()):
                 order.append("delete-entered")
 
@@ -349,6 +355,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def get_active_preset(self):
                 return self.active
 
+            def require_deletable_preset(self, preset_name):
+                return preset_name
+
             def delete_preset(self, preset_name, pinned_presets=()):
                 self.deleted.append(preset_name)
                 if self.active == "Room":
@@ -385,6 +394,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
 
             def get_active_preset(self):
                 return "Other"
+
+            def require_deletable_preset(self, preset_name):
+                return preset_name
 
             def delete_preset(self, preset_name, pinned_presets=()):
                 self.deleted.append(preset_name)

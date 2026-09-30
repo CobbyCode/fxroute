@@ -136,6 +136,7 @@ class ConnectionManager:
             "spotify",
             "dsp",
             "playback_peak_warning",
+            "source",
         }
 
     @property

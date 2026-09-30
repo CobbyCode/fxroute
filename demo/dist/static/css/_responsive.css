@@ -1139,7 +1139,6 @@
         flex-direction: column;
         align-items: stretch;
         gap: 0.5rem;
-        margin-bottom: 0.7rem;
     }
     .playlist-save-controls {
         width: 100%;
@@ -1310,7 +1309,6 @@
     .playlist-save-row {
         flex-wrap: nowrap;
         align-items: stretch;
-        margin-bottom: 0.7rem;
     }
     .playlist-save-controls {
         width: 100%;

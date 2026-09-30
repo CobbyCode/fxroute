@@ -7,7 +7,7 @@
     grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
     justify-content: center;
     gap: var(--tile-gap);
-    margin-top: 1.25rem;
+    margin-top: 0.9rem;
 }
 .album-card {
     background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
@@ -401,10 +401,20 @@
 }
 
 /* Artwork-led detail heroes: the local album and playlist details and the
-   TIDAL detail roots share the same framed composition. */
-.album-detail--hero,
-.streaming-detail--hero {
-    gap: clamp(1rem, 1.8vw, 1.5rem);
+   TIDAL detail roots share the same framed composition (the rules below
+   list both roots). The column gap is deliberately not declared for both:
+   each host owns it in exactly one place, and the docked playlist row
+   pulls against that same owner, so gap and row margin cannot drift. */
+.album-detail--hero {
+    /* Local hero rhythm, and the single source for it: the docked
+       playlist row below computes its pull against this same property.
+       The TIDAL root keeps its own 0.7rem rhythm in .streaming-detail
+       (--tidal-detail-gap); giving it a gap here too would leave the
+       winner between two equal-specificity declarations to be decided by
+       source order alone, which is exactly how the docked TIDAL row
+       margin drifted away from its container. */
+    --detail-hero-gap: clamp(1rem, 1.8vw, 1.5rem);
+    gap: var(--detail-hero-gap);
 }
 .album-detail--hero .detail-hero-header,
 .streaming-detail--hero .detail-hero-header {
@@ -602,9 +612,14 @@
     padding-inline: 1.05rem;
     box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
 }
-.album-detail--hero > .album-detail-tracks,
-.streaming-detail--hero > .streaming-results {
+.album-detail--hero > .album-detail-tracks {
     margin-top: 0.2rem;
+}
+/* The TIDAL results margin mirrors the docked row's margin-top (both
+   express the reference standoff against the container gap), so the
+   row-to-results gap stays the reference too when the gap is tuned. */
+.streaming-detail--hero > .streaming-results {
+    margin-top: calc(0.9rem - var(--tidal-detail-gap));
 }
 .album-detail-tracks {
     display: flex;
@@ -735,7 +750,7 @@
     justify-content: space-between;
     gap: var(--control-gap);
     flex-wrap: nowrap;
-    margin: 0.15rem 0 1.15rem;
+    margin: 0.15rem 0 0.9rem;
     /* Same horizontal separator as the TIDAL subbar so both browse headers
        share one underline language. */
     border-bottom: 1px solid var(--border-strong);
@@ -815,10 +830,45 @@
     display: flex;
     align-items: center;
     gap: 0.65rem;
-    margin-bottom: 0.75rem;
+    /* Unified vertical rhythm: the reference is the TIDAL artist detail
+       (0.9rem of standoff above and below the row, 14.4px at the 16px root
+       size). The home row (direct child of the library tab, above
+       Tracks/Folders and the Albums/Favorites grid) owns the same 0.9rem
+       on both sides; the top margin takes the larger share against the
+       actions-row/folder-path margin, the bottom one against the grid
+       margin, so every overview lands on the reference standoff. The two
+       neighbour margins were aligned to the same rhythm (actions-row
+       bottom 1.15rem to 0.9rem, grid top 1.25rem to 0.9rem), which also
+       tightens the no-selection overview spacing by that difference. */
+    margin: 0.9rem 0;
     flex-wrap: nowrap;
     overflow: hidden;
     width: 100%;
+}
+/* Docked inside an album/playlist detail the row pulls exactly against the
+   hero gap via the same custom property that sets it, so header/row and
+   row/tracks both land on the 0.9rem reference standoff at any viewport
+   and the two declarations cannot drift apart. The container gap itself
+   is never touched, so the track-list to discover spacing stays identical
+   whether the row is visible or not. Margins on the hidden row take no
+   space. */
+.album-detail--hero > .playlist-save-row {
+    margin-top: calc(0.9rem - var(--detail-hero-gap));
+    margin-bottom: calc(0.9rem - var(--detail-hero-gap) - 0.2rem);
+}
+/* Same logic for the TIDAL hosts. Browse keeps its own gap and the row
+   adds the small difference to reach the reference standoff on both
+   sides. The detail pulls against the very token that sets its container
+   gap (--tidal-detail-gap, declared in .streaming-detail), so the gap and
+   both flanking margins express one value and stay drift-proof: the row
+   adds the difference above, the results margin below, and together with
+   the gap each side lands on the reference exactly. */
+.streaming-browse > .playlist-save-row {
+    margin: 0.15rem 0;
+}
+.streaming-detail > .playlist-save-row {
+    margin-top: calc(0.9rem - var(--tidal-detail-gap));
+    margin-bottom: 0;
 }
 .playlist-save-controls {
     display: flex;

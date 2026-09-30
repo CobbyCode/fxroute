@@ -114,7 +114,10 @@ const bluetoothOverview = {
     current_input: null,
     bluetooth: {
         selectable: true,
-        active_session: { device_name: 'ZENBOOK', active_codec: 'aac' },
+        // Flat fields, as the source overview sends them (not active_session,
+        // which only the /api/audio/bluetooth route carries).
+        connected_device: 'ZENBOOK',
+        active_codec: 'aac',
     },
 };
 
@@ -162,7 +165,7 @@ sandbox.state.settings = {
         inputs: scarlettInputs,
         selected_input: null,
         current_input: null,
-        bluetooth: { selectable: true, active_session: { device_name: 'ZENBOOK', active_codec: 'aac' } },
+        bluetooth: { selectable: true, connected_device: 'ZENBOOK', active_codec: 'aac' },
     },
 };
 vm.runInContext('stepSourceSwitcher(1)', sandbox);
@@ -174,8 +177,34 @@ assert.deepEqual(
     'backward step from unresolvable current wraps to the last entry',
 );
 
-// Without Bluetooth availability the switcher is inputs only.
-const noBt = buildSourceSwitcherEntries({ ...bluetoothOverview, bluetooth: { selectable: false } });
+// A saved external input that went missing stays listed and selected; it
+// is marked (and not selectable) once the loss is confirmed, and no other
+// input takes its place.
+const missingPair = {
+    key: 'alsa_input.scarlett::pair9', pair_label: 'Input 19–20',
+    label: 'Scarlett 16i16 4th Gen Multichannel — Input 19–20',
+    device_label: 'Scarlett 16i16 4th Gen Multichannel',
+    available: false, availability: 'unavailable',
+};
+const missingOverview = { ...externalOverview, selected_input: missingPair, current_input: null };
+const missingEntries = buildSourceSwitcherEntries(missingOverview);
+assert.equal(missingEntries.length, 11, 'bluetooth + missing selection + 9 present pairs');
+const missingIndex = findSourceSwitcherIndex(missingEntries, missingOverview);
+assert.equal(missingEntries[missingIndex].key, missingPair.key, 'the missing selection stays current');
+assert.equal(missingEntries[missingIndex].unavailable, true);
+assert.match(missingEntries[missingIndex].optionLabel, /— unavailable$/);
+assert.equal(missingEntries.filter((entry) => entry.unavailable).length, 1);
+const blipEntries = buildSourceSwitcherEntries({
+    ...missingOverview, selected_input: { ...missingPair, availability: 'unconfirmed' } });
+assert.equal(blipEntries.find((entry) => entry.key === missingPair.key).unavailable, false,
+    'an unconfirmed probe blip is not shown as unavailable');
+assert.ok(!blipEntries.find((entry) => entry.key === missingPair.key).optionLabel.includes('unavailable'));
+assert.ok(appSource.includes("${entry.unavailable ? ' disabled' : ''}"),
+    'an unavailable entry is rendered as a disabled option');
+
+// Without Bluetooth availability the switcher is inputs only (outside
+// Bluetooth mode; an unconfirmed loss in Bluetooth mode keeps its entry).
+const noBt = buildSourceSwitcherEntries({ ...externalOverview, bluetooth: { selectable: false } });
 assert.equal(noBt.length, 9);
 assert.equal(noBt[0].label, 'Input 1/2');
 assert.equal(findSourceSwitcherIndex(noBt, { ...externalOverview, bluetooth: { selectable: false } }), 1);
@@ -336,7 +365,7 @@ assert.equal(renderSandbox.elements.sourceSelect.writes, 1, 'identical poll must
 vm.runInContext(
     `state.settings.sourceMode = { mode: 'external-input', inputs: ${JSON.stringify(scarlettInputs)},
         selected_input: ${JSON.stringify(scarlettInputs[1])}, current_input: ${JSON.stringify(scarlettInputs[1])},
-        bluetooth: { selectable: true, active_session: null }, pending: false };
+        bluetooth: { selectable: true, connected_device: null, active_codec: null }, pending: false };
      renderSourceModeFooter()`,
     renderSandbox,
 );
@@ -348,7 +377,7 @@ renderSandbox.document.activeElement = renderSandbox.elements.sourceSelect;
 vm.runInContext(
     `state.settings.sourceMode = { mode: 'external-input', inputs: ${JSON.stringify(scarlettInputs)},
         selected_input: ${JSON.stringify(scarlettInputs[2])}, current_input: ${JSON.stringify(scarlettInputs[2])},
-        bluetooth: { selectable: true, active_session: null }, pending: false };
+        bluetooth: { selectable: true, connected_device: null, active_codec: null }, pending: false };
      renderSourceModeFooter()`,
     renderSandbox,
 );

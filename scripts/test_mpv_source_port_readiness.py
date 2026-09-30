@@ -250,6 +250,55 @@ class SharedPreparePathTests(unittest.IsolatedAsyncioTestCase):
         )
         ensure.assert_awaited_once_with()
 
+    async def _prepare_with(self, ensure, *, player=None):
+        """Run the shared local prepare path with a scripted readiness mock."""
+        player = player if player is not None else self.FakePlayer()
+        runtime = make_transition_runtime()
+        request = main.TransitionRequest(
+            operation="play",
+            source="local",
+            target_url="/music/current.flac",
+            target_rate=44100,
+            should_play=True,
+            rate_change=False,
+            reload_source=True,
+        )
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            playback_orchestration.configured(), "ensure_mpv_to_dsp_links", ensure
+        ):
+            await runtime.prepare_target_source(request)
+        return player
+
+    async def test_prepare_retries_the_readiness_window_for_a_live_player(self):
+        """A freshly (re)started mpv exposes its ports late.
+
+        Live regression: the first /api/play after a crashed mpv failed the
+        whole transition with "target source to DSP links were not confirmed"
+        while an immediate retry succeeded; the player had just been restarted
+        on demand.
+        """
+        ensure = AsyncMock(side_effect=[False, True])
+        await self._prepare_with(ensure)
+        self.assertEqual(ensure.await_count, 2)
+
+    async def test_prepare_fails_after_the_second_missing_window(self):
+        ensure = AsyncMock(return_value=False)
+        with self.assertRaisesRegex(RuntimeError, "links were not confirmed"):
+            await self._prepare_with(ensure)
+        self.assertEqual(ensure.await_count, 2)
+
+    async def test_prepare_fails_when_the_player_died_before_the_retry(self):
+        player = self.FakePlayer()
+
+        async def die_then_miss():
+            player._running = False
+            return False
+
+        ensure = AsyncMock(side_effect=die_then_miss)
+        with self.assertRaisesRegex(RuntimeError, "MPV player is not available"):
+            await self._prepare_with(ensure, player=player)
+        self.assertEqual(ensure.await_count, 1, "a dead player must not be retried")
+
 
 if __name__ == "__main__":
     unittest.main()

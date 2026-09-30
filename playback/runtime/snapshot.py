@@ -27,6 +27,7 @@ class _RuntimeSnapshotMixin:
     """Attributes provided by the composing adapter instance."""
     _deps: PlaybackRuntimeDependencies
     _staged_target_url: str | None
+    _quieted_external_source: str | None
 
     async def read_measurement_session_graph(self, target_rate: int) -> dict[str, Any]:
         """Read the active-measurement graph without touching playback state."""
@@ -64,6 +65,9 @@ class _RuntimeSnapshotMixin:
 
     async def read_transition_snapshot(self, request: TransitionRequest) -> dict[str, Any]:
         self._staged_target_url = None
+        self._quieted_external_source = None
+        self._staged_qobuz_track_id = None
+        self._qobuz_stream_rate = None
         state = dict(self._player.state if self._player else {})
         # Both builders run bounded PipeWire/BlueZ subprocess pipelines; keep
         # them off the event loop.  The status is read first so the overview
@@ -127,6 +131,10 @@ class _RuntimeSnapshotMixin:
         """Quiesce an active Spotify sink input within the bounded release."""
         return bool(await self._deps.wait_for_pipewire_spotify_release())
 
+    async def wait_for_pipewire_qobuz_release(self) -> bool:
+        """Confirm that the failed qbzd target released its active stream."""
+        return bool(await self._deps.wait_for_pipewire_qobuz_release())
+
     async def abort_failed_transition(
         self,
         request: TransitionRequest,
@@ -140,7 +148,7 @@ class _RuntimeSnapshotMixin:
         calls this hook.  Returns None when the committed context is unchanged
         (MPV still exposes the exact pre-transition file): nothing is
         invalidated and no restore runs.  Returns ``{"restore": <request>}``
-        when the previously committed Local/Radio source must be physically
+        when the previously committed source must be physically
         restored; the Coordinator then runs that request through its own
         transition stages under the still-closed output gate.  Returns
         ``{"invalidate": True}`` after stopping a staged target and
@@ -150,6 +158,21 @@ class _RuntimeSnapshotMixin:
         """
         snapshot_track = dict((snapshot or {}).get("current_track") or {})
         previous_state = dict((snapshot or {}).get("player") or {})
+        quieted = self._quieted_external_source
+        if quieted:
+            # Only resume the renderer this handoff actually paused. An empty
+            # or retained MPV state says nothing about external transport.
+            if source_policy.is_mpv_source(request.source):
+                if not await self._stop_staged_target_and_invalidate(require_release=True):
+                    return {"invalidate": True}
+            track = {"source": quieted}
+            if quieted == "qobuz":
+                state = await self._deps.get_qobuz_ui_state()
+                track["sample_rate_hz"] = state.get("sample_rate")
+            restore_request = await self._build_restore_request(
+                request, snapshot, previous_state, track
+            )
+            return {"restore": restore_request} if restore_request is not None else None
         if not source_policy.is_mpv_source(request.source):
             if request.source != "spotify" and request.source != "qobuz":
                 return None
@@ -222,8 +245,9 @@ class _RuntimeSnapshotMixin:
         await self._stop_staged_target_and_invalidate()
         return {"invalidate": True}
 
-    async def _stop_staged_target_and_invalidate(self) -> None:
+    async def _stop_staged_target_and_invalidate(self, *, require_release: bool = False) -> bool:
         """Stop a staged MPV target and invalidate only the active context."""
+        stopped = True
         if self._deps.player_is_running():
             try:
                 set_volume = getattr(self._player, "set_volume", None)
@@ -243,6 +267,7 @@ class _RuntimeSnapshotMixin:
                         self._player.set_pause, True
                     )
             except Exception:
+                stopped = False
                 logger.warning(
                     "Failed to stop staged MPV target during transition abort",
                     exc_info=True,
@@ -256,6 +281,11 @@ class _RuntimeSnapshotMixin:
         self._deps.set_current_track_info(None)
         self._deps.set_playback_owner(None)
         self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
+        if stopped and require_release and self._deps.player_is_running():
+            stopped = bool(await self._deps.wait_for_pipewire_mpv_release())
+        if stopped:
+            self._staged_target_url = None
+        return stopped
 
     async def _build_restore_request(
         self,
@@ -273,10 +303,17 @@ class _RuntimeSnapshotMixin:
         when the committed source is not physically restorable.
         """
         source = str(track.get("source") or "")
-        target_url = str(track.get("url") or previous_state.get("current_file") or "")
-        if not source_policy.is_mpv_source(source) or not target_url:
+        external = source_policy.is_external_source(source)
+        mpv = source_policy.is_mpv_source(source)
+        target_url = (
+            str(track.get("url") or previous_state.get("current_file") or "")
+            if mpv else None
+        )
+        if not (mpv or external) or (mpv and not target_url):
             return None
-        native_fields = self._deps.queue().native_request_fields()
+        if external and self._quieted_external_source != source:
+            return None
+        native_fields = self._deps.queue().native_request_fields() if mpv else {}
         native_committed = bool(native_fields)
         # The authoritative restore rate comes from the previously committed
         # snapshot, not from the failed request: preferred positive
@@ -312,7 +349,7 @@ class _RuntimeSnapshotMixin:
         live_active = int(live_status.get("active_rate") or 0)
         live_aligned = bool(live_active > 0 and live_active == restore_target_rate)
         restore_rate_change = bool(request.rate_change or not live_aligned)
-        was_playing = bool(
+        was_playing = external or bool(
             previous_state.get("playing")
             and not previous_state.get("paused")
             and not previous_state.get("ended")
@@ -320,7 +357,7 @@ class _RuntimeSnapshotMixin:
         previous_position = previous_state.get("position")
         restore_position = (
             max(0.0, float(previous_position))
-            if source == "local"
+            if source_policy.restores_position(source)
             and isinstance(previous_position, (int, float))
             and previous_position > 0
             else None
@@ -333,7 +370,8 @@ class _RuntimeSnapshotMixin:
             target_track=dict(track),
             should_play=was_playing,
             rate_change=restore_rate_change,
-            reload_source=True,
+            # External renderers retain their own track and position on pause.
+            reload_source=mpv,
             restore_position=restore_position,
             native_queue=(
                 tuple(native_fields["native_queue"]) if native_committed else None
@@ -345,6 +383,11 @@ class _RuntimeSnapshotMixin:
 
     async def publish_restored_source(self, request: TransitionRequest) -> None:
         """Publish a Coordinator-confirmed restored source as active context."""
+        if source_policy.is_external_source(request.source):
+            self._deps.set_current_track_info(None)
+            self._deps.set_playback_owner(request.source)
+            self._deps.mark_player_state_authoritative(self._player.state if self._player else {})
+            return
         track = dict(request.target_track or {})
         if not track:
             return

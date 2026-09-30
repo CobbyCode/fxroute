@@ -9,6 +9,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 
 import audio.samplerate as samplerate
+import playback.source_policy as source_policy
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,57 @@ class _RuntimeChannelTierMixin:
             change.volume = stored.volume
             change.old_source_selection = None
             change.captured = True
+            change.volume_monitor_recovery_owner = stored
         return await self._change_tier_hardware(change)
+
+    async def _previous_source_request(self, old_graph, snapshot):
+        """Describe the pre-transition source for the rollback.
+
+        Built from the snapshot only: the failed target is never a fallback.
+        """
+        graph_only = replace(
+            old_graph, target_url=None, target_track=None, reload_source=False,
+            should_play=False, restore_position=None,
+            native_queue=None, native_queue_index=None, native_queue_loop=False,
+        )
+        if source_policy.is_external_source(old_graph.source):
+            # An external target (Spotify/Qobuz) was paused by the failure
+            # cleanup: it is neither restarted nor awaited here. The rollback
+            # restores only the old tier graph; the committed MPV source
+            # follows the regular failed-handoff restore in the cleanup.
+            return graph_only
+        old_player = dict(snapshot.get("player") or {})
+        old_track = dict(snapshot.get("current_track") or {})
+        if source_policy.is_mpv_source(old_track.get("source")) and old_player.get("current_file"):
+            # Same source, URL, play/pause state, position and committed
+            # queue as the failed-handoff restore of the committed source.
+            restore = await self._build_restore_request(old_graph, snapshot, old_player, old_track)
+            if restore is not None:
+                return replace(
+                    old_graph, source=restore.source, target_url=restore.target_url,
+                    target_track=restore.target_track, reload_source=True,
+                    should_play=restore.should_play,
+                    restore_position=restore.restore_position,
+                    native_queue=restore.native_queue,
+                    native_queue_index=restore.native_queue_index,
+                    native_queue_loop=restore.native_queue_loop,
+                )
+        # No previous MPV source: the failed target may be staged in MPV and
+        # must not survive the rollback.
+        await self._stop_staged_mpv_target()
+        quieted = self._quieted_external_source
+        if quieted:
+            # The handoff paused a playing Spotify/qbzd renderer; resume it.
+            # The renderer keeps its own track position while paused.
+            return replace(graph_only, source=quieted, should_play=True)
+        return graph_only
+
+    async def _stop_staged_mpv_target(self) -> None:
+        if not self._deps.player_is_running():
+            return
+        await self._deps.drain_worker(self._player.stop_playback)
+        self._staged_target_url = None
+        self._deps.mark_player_state_authoritative(self._player.state)
 
     async def rollback_channel_tier(self, request, snapshot, transition_id):
         snapshot = snapshot or {}
@@ -84,18 +135,17 @@ class _RuntimeChannelTierMixin:
         policy = snapshot.get("sample_rate_policy") or {"mode": "auto", "rate": None}
         samplerate.persist_sample_rate_policy(policy)
         old_player = snapshot.get("player") or {}
-        old_request = replace(
+        old_graph = replace(
             request, channel_tier={}, target_rate=change.old_rate,
             audio_overview=overview, output_mode_target=overview,
             sample_rate_policy=policy, rate_change=True,
-            target_url=old_player.get("current_file") or request.target_url,
-            target_track=snapshot.get("current_track") or request.target_track,
-            reload_source=bool(old_player.get("current_file") or request.target_url),
-            restore_position=old_player.get("position"),
         )
+        old_request = await self._previous_source_request(old_graph, snapshot)
         await self.establish_target_rate(old_request)
         await self.establish_effects_and_helper(old_request)
-        if old_request.target_url:
+        if old_request.target_url or (
+            old_request.should_play and source_policy.is_external_source(old_request.source)
+        ):
             await self.prepare_target_source(old_request)
             await self.start_target_source(old_request)
         await self.reconcile_post_start_graph(old_request)

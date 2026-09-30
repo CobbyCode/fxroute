@@ -75,6 +75,15 @@ assert.equal(OutputState.modeSelectorVisible(2), false);
 assert.equal(OutputState.modeSelectorVisible(3), true);
 assert.equal(OutputState.modeSelectorVisible(18), true);
 
+// Mode status line: Stereo + Sub without a routed sub points to the routing;
+// the hint disappears as soon as a sub role is routed.
+const noSubHint = 'No subwoofer configured — assign a Sub output below.';
+assert.equal(OutputState.modeHint('stereo-sub', { sub_roles: [], sub_mode: 'none' }, 4), noSubHint);
+assert.equal(OutputState.modeHint('stereo-sub', catalog().modes['stereo-sub'].topology, 4),
+    'Stereo + Sub · 4 hardware outputs');
+assert.equal(OutputState.modeHint('stereo', { sub_roles: [], sub_mode: 'none' }, 4),
+    'Stereo · 4 hardware outputs');
+
 assert.equal(OutputState.topologySummary(catalog().modes['stereo-sub'].topology), 'Stereo · Mono sub');
 assert.equal(
     OutputState.topologySummary({ sub_mode: 'stereo', way_count: null, issues: [] }),

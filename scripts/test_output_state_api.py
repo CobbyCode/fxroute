@@ -263,21 +263,41 @@ class DspBankApiTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertFalse(self.manager.preset_store.path("Invalid group").exists())
 
-    def test_delete_pinned_bank_preset_is_refused(self):
+    def test_delete_releases_bank_slots_like_global_compare(self):
         self.service.apply(
             lambda state: set_bank_preset(state, "stereo-sub", "sub1", preset="Room"),
             expected_revision=1)
-        with self.assertRaises(dsp_api.HTTPException) as ctx:
-            asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertTrue(self.manager.preset_store.path("Room").is_file())
+        self.service.apply(
+            lambda state: set_bank_preset(state, "stereo-sub", "global", preset_b="Room", active_side="B"),
+            expected_revision=2)
+        sync = mock.AsyncMock(return_value={"live_applied": True, "live_reason": None})
+        dsp_api.configure_dsp_api(dsp_deps(self.service, self.manager, sync_hook=sync))
+        result = asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
+        self.assertEqual(result["deleted"], "Room")
+        self.assertFalse(self.manager.preset_store.path("Room").exists())
+        state = self.service.load()
+        banks = state["modes"]["stereo-sub"]["banks"]
+        self.assertEqual(state["revision"], 4)
+        self.assertEqual(banks["sub1"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
+        self.assertEqual(banks["global"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
+        sync.assert_awaited_once()
 
-    def test_delete_legacy_compare_preset_is_refused(self):
+    def test_delete_keeps_slots_when_the_preset_cannot_be_deleted(self):
+        self.service.apply(
+            lambda state: set_bank_preset(state, "stereo-sub", "sub1", preset_b="Direct"),
+            expected_revision=1)
+        before = self.service.load()
+        for name, status in (("Direct", 400), ("Missing", 404)):
+            with self.subTest(name=name), self.assertRaises(dsp_api.HTTPException) as ctx:
+                asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": name})))
+            self.assertEqual(ctx.exception.status_code, status)
+        self.assertEqual(self.service.load(), before)
+
+    def test_delete_legacy_compare_preset_normalizes_the_slot(self):
         self.manager.save_compare_state({"presetA": "Room", "presetB": "", "activeSide": "A"})
-        with self.assertRaises(dsp_api.HTTPException) as ctx:
-            asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertTrue(self.manager.preset_store.path("Room").is_file())
+        asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
+        self.assertFalse(self.manager.preset_store.path("Room").exists())
+        self.assertNotEqual(self.manager.load_compare_state()["presetA"], "Room")
 
     def test_delete_unpinned_preset_still_works(self):
         result = asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))

@@ -150,6 +150,9 @@ class PresetDeleteApiTests(unittest.IsolatedAsyncioTestCase):
             def get_active_preset(self):
                 return self.active
 
+            def require_deletable_preset(self, preset_name):
+                return preset_name
+
             def delete_preset(self, preset_name, pinned_presets=()):
                 self.active = "Neutral"
 

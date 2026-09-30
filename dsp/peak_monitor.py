@@ -21,7 +21,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 import playback.state as playback_state
 from common import process_stop
-from audio.samplerate import SOURCE_MODE_BLUETOOTH_INPUT, SOURCE_MODE_EXTERNAL_INPUT, authoritative_sample_rate, get_samplerate_status
+from audio.samplerate import SOURCE_MODE_BLUETOOTH_INPUT, SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_STDIN_INPUT, authoritative_sample_rate, get_samplerate_status
 
 logger = logging.getLogger(__name__)
 
@@ -268,28 +268,26 @@ class DSPPeakMonitor:
         # the child nor skip the task join. A caller cancellation is
         # remembered and re-raised only after the lifecycle below ended.
         stop_cancelled = False
+        if task is not None:
+            async def _join_cancelled_task() -> None:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.warning("Ignoring peak monitor shutdown error during stop: %s", exc)
+            # The capture task owns its readers and bounded child cleanup.
+            # Join it before any fallback communicate() can read those pipes.
+            if await process_stop.run_stop_shielded(
+                _join_cancelled_task(),
+                cleanup_log="Peak monitor task join failed",
+            ):
+                stop_cancelled = True
         if proc is not None and proc.returncode is None:
             if await process_stop.stop_command_child_cancellation_safe(
                 proc,
                 PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS,
                 cleanup_log="Peak monitor pw-record stop failed",
-            ):
-                stop_cancelled = True
-        if task is not None and not task.done():
-            async def _join_cancelled_task() -> None:
-                try:
-                    await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
-                except asyncio.TimeoutError:
-                    logger.warning("Peak monitor task did not cancel cleanly during stop")
-                except asyncio.CancelledError:
-                    pass
-                except Exception as exc:
-                    logger.warning("Ignoring peak monitor shutdown error during stop: %s", exc)
-            # Shielded: the join runs to completion even when stop() itself
-            # is cancelled; ownership below is released only afterwards.
-            if await process_stop.run_stop_shielded(
-                _join_cancelled_task(),
-                cleanup_log="Peak monitor task join failed",
             ):
                 stop_cancelled = True
         # Synchronous from here: no await below can be interrupted, so the
@@ -1258,11 +1256,26 @@ class PeakMonitorCoordinator:
     async def sync_qobuz_state(self, data: dict) -> None:
         await self.sync_external_state("qobuz", data)
 
+    async def sync_stdin_state(self, source_overview: dict) -> None:
+        """Apply a STDIN state event to the peak monitor.
+
+        The STDIN service notifies on every writer/stream change, whatever
+        source is selected. Only STDIN may be armed or released here: while
+        Bluetooth or external input is the effective source, its monitor
+        belongs to that source's own sync, and the overview a STDIN event
+        carries (e.g. an unconfirmed Bluetooth probe blip) must not stop and
+        later restart it.
+        """
+        stdin_selected = source_overview.get("mode") == SOURCE_MODE_STDIN_INPUT
+        armed_for_stdin = str(self.signature or "").startswith("stdin:")
+        if stdin_selected or armed_for_stdin:
+            await self.sync_source_mode_state(source_overview)
+
     async def sync_source_mode_state(self, source_overview: dict | None = None) -> None:
         if self._peak_monitor() is None:
             return
         async with self._get_lock():
-            overview = source_overview or self._deps.get_audio_source_overview()
+            overview = source_overview or await asyncio.to_thread(self._deps.get_audio_source_overview)
             bluetooth = overview.get("bluetooth") or {}
             is_bt_streaming = bool(
                 overview.get("mode") == SOURCE_MODE_BLUETOOTH_INPUT
@@ -1276,18 +1289,32 @@ class PeakMonitorCoordinator:
             is_external_active = bool(
                 overview.get("mode") == SOURCE_MODE_EXTERNAL_INPUT
                 and external_key
+                # A confirmed-missing saved input is shown, not linked.
+                and overview.get("external_input_state") != "unavailable"
             )
             desired_signature = None
             if is_bt_streaming:
                 desired_signature = f"bluetooth:{bluetooth.get('connected_device')}:{bluetooth.get('active_codec') or ''}"
             elif is_external_active:
                 desired_signature = f"external:{external_key}"
+            else:
+                stdin = overview.get("stdin") or {}
+                if (overview.get("mode") == SOURCE_MODE_STDIN_INPUT
+                        and stdin.get("available")
+                        and stdin.get("state") == "waiting"
+                        and not stdin.get("measurement_active")):
+                    # Capture real post-DSP silence while the listener waits.
+                    desired_signature = "stdin:waiting"
+                elif (overview.get("mode") == SOURCE_MODE_STDIN_INPUT
+                        and stdin.get("routed")
+                        and stdin.get("state") in {"streaming", "draining"}):
+                    desired_signature = f"stdin:{stdin.get('session_id')}"
 
             if desired_signature and (not self.armed or self.signature != desired_signature):
                 logger.info("Starting peak monitor for active line source: %s", desired_signature)
                 await self._restart_and_commit(desired_signature)
                 await self._broadcast_snapshot()
-            elif (not desired_signature) and self.armed and str(self.signature or "").startswith(("bluetooth:", "external:")):
+            elif (not desired_signature) and self.armed and str(self.signature or "").startswith(("bluetooth:", "external:", "stdin:")):
                 player_state = self._deps.get_player_state()
                 spotify_state = await self._deps.get_spotify_ui_state()
                 if not playback_state.is_local_playback_active(player_state) and not playback_state.is_spotify_playback_active(spotify_state):

@@ -246,6 +246,7 @@ class PlaybackOrchestrationOffloadTest(unittest.IsolatedAsyncioTestCase):
                 self._deps = _Deps()
                 self._player = SimpleNamespace(state={})
                 self._staged_target_url = None
+                self._quieted_external_source = None
 
         request = TransitionRequest(operation="radio-play", source="radio")
         snapshot = {

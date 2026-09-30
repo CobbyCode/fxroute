@@ -57,6 +57,7 @@ resolve_repo_path() {{ printf '%s\\n' "$FXROUTE_REPO_PATH"; }}
 install_dependencies_if_needed() {{ :; }}
 run_production_build() {{ :; }}
 cleanup_obsolete_root_modules() {{ :; }}
+install_stdin_cli_helper() {{ :; }}
 restart_service_if_needed() {{ printf 'restart\\n' > "$REPO_PATH/restart-called"; }}
 {helpers}
 main

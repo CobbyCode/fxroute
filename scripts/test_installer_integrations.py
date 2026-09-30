@@ -40,6 +40,15 @@ class InstallerIntegrationTests(unittest.TestCase):
         self.assertNotIn('qbzd.toml', self.install)
         self.assertNotIn('remove_owned_qbzd_config', self.uninstall)
 
+    def test_stdin_cli_helper_is_owned_across_install_update_uninstall(self):
+        update = (ROOT / "scripts/update_fxroute.sh").read_text()
+        self.assertIn('write_user_helper "$bin_dir/fxroute"', self.install)
+        self.assertIn('scripts/fxroute_stdin.py', self.install)
+        self.assertIn('install_stdin_cli_helper()', update)
+        self.assertIn('scripts/fxroute_stdin.py', update)
+        self.assertIn('remove_owned_helper "$HOME/.local/bin/fxroute"', self.uninstall)
+        self.assertIn('scripts/fxroute_stdin.py', self.uninstall)
+
 
 
     def test_qobuz_volume_ownership_is_persisted_and_uninstaller_handles_it(self):

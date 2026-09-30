@@ -742,6 +742,33 @@ class SpotifyClaimRaceTests(unittest.IsolatedAsyncioTestCase):
         broadcast.assert_not_awaited()
         self.assertEqual(main_module.playback_state.current_playback_owner, "qobuz")
 
+    async def test_claim_queued_behind_failed_transition_is_skipped_once_spotify_paused(self):
+        # The Playing edge came from a failed transition's own Spotify start;
+        # its cleanup paused Spotify before this claim acquired the lock.
+        live = {"state": self._playing_state()}
+
+        async def run_transition(request):
+            live["state"] = dict(self._playing_state(), status="Paused")
+            if await request.skip_if_committed_owner():
+                return self._skipped_result()
+            return self._committed_result()
+
+        with mock.patch.object(
+            main_module, "get_spotify_ui_state",
+            new=mock.AsyncMock(side_effect=lambda *_args, **_kwargs: dict(live["state"])),
+        ), mock.patch.object(
+            main_module, "_run_coordinated_transition", new=run_transition
+        ), mock.patch.object(
+            main_module, "_publish_committed_playback_owner", new=mock.AsyncMock()
+        ) as publish, mock.patch.object(
+            main_module, "broadcast_spotify_state", new=mock.AsyncMock()
+        ) as broadcast:
+            result = await main_module._claim_spotify_playback("playerctl-playing")
+
+        publish.assert_not_awaited()
+        broadcast.assert_not_awaited()
+        self.assertEqual(result["status"], "Paused")
+
 
 class QobuzClaimRaceTests(unittest.IsolatedAsyncioTestCase):
     """The qbzd claim watcher must re-validate the committed owner inside
@@ -874,6 +901,36 @@ class QobuzClaimRaceTests(unittest.IsolatedAsyncioTestCase):
         pin.assert_not_awaited()
         broadcast.assert_not_awaited()
         self.assertEqual(main_module.playback_state.current_playback_owner, "local")
+
+    async def test_claim_queued_behind_failed_transition_is_skipped_once_qbzd_paused(self):
+        # The Playing edge came from a failed transition's own qbzd start;
+        # its cleanup paused qbzd before this claim acquired the lock.
+        live = {"state": self._playing_state()}
+
+        async def run_transition(request):
+            live["state"] = dict(self._playing_state(), status="Paused")
+            if await request.skip_if_committed_owner():
+                return self._skipped_result()
+            return self._committed_result()
+
+        with mock.patch.object(
+            main_module, "get_qobuz_ui_state",
+            new=mock.AsyncMock(side_effect=lambda *_args, **_kwargs: dict(live["state"])),
+        ), mock.patch.object(
+            main_module, "_run_coordinated_transition", new=run_transition
+        ), mock.patch.object(
+            main_module, "_publish_committed_playback_owner", new=mock.AsyncMock()
+        ) as publish, mock.patch.object(
+            main_module, "_qobuz_pin_unity", new=mock.AsyncMock()
+        ) as pin, mock.patch.object(
+            main_module, "broadcast_qobuz_state", new=mock.AsyncMock()
+        ) as broadcast:
+            result = await main_module._claim_qobuz_playback("qbzd-playing")
+
+        publish.assert_not_awaited()
+        pin.assert_not_awaited()
+        broadcast.assert_not_awaited()
+        self.assertEqual(result["status"], "Paused")
 
 
 if __name__ == "__main__":

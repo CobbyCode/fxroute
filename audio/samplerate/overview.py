@@ -34,6 +34,93 @@ def configure_output_state_head(
     _output_state_head_loader = loader
 
 
+_stdin_status_reader: Callable[[], dict[str, Any]] | None = None
+
+# Late-bound source-loss readers. A single failed probe looks exactly like a
+# removed device, so the owning monitors (audio.bluetooth, audio.external_input)
+# observe availability once per tick and decide when a loss is confirmed; the
+# overview only reads that decision, it never records probes itself. Unset
+# (no monitors, e.g. scripts), the raw probe decides as before.
+_bluetooth_loss_confirmed: Callable[[], bool] | None = None
+_external_loss_confirmed: Callable[[], bool] | None = None
+_remembered_external_input: Callable[[str], dict[str, Any] | None] | None = None
+
+
+def configure_source_availability(
+    *,
+    bluetooth_loss_confirmed: Callable[[], bool] | None = None,
+    external_loss_confirmed: Callable[[], bool] | None = None,
+    remembered_external_input: Callable[[str], dict[str, Any] | None] | None = None,
+) -> None:
+    """Install (or clear) the readers for confirmed source loss."""
+    global _bluetooth_loss_confirmed, _external_loss_confirmed, _remembered_external_input
+    _bluetooth_loss_confirmed = bluetooth_loss_confirmed
+    _external_loss_confirmed = external_loss_confirmed
+    _remembered_external_input = remembered_external_input
+
+
+def _loss_confirmed(reader: Callable[[], bool] | None) -> bool:
+    if reader is None:
+        return True
+    try:
+        return bool(reader())
+    except Exception:
+        return True
+
+
+def _missing_selected_input(key: str, availability: str) -> dict[str, Any]:
+    """Placeholder for a saved external input the probe did not report."""
+    remembered = None
+    if _remembered_external_input is not None:
+        try:
+            remembered = _remembered_external_input(key)
+        except Exception:
+            remembered = None
+    if remembered is not None and remembered.get("key") == key:
+        entry = dict(remembered)
+    else:
+        source_name, port_key, pair = _split_source_selection_key(key)
+        device_label = _humanize_source_name(source_name)
+        pair_label = f"Input {pair[0]}\u2013{pair[1]}" if pair else None
+        entry = {
+            "key": key, "name": source_name, "source_key": source_name, "port_key": port_key,
+            "device_label": device_label, "pair_label": pair_label,
+            "label": f"{device_label} \u2014 {pair_label}" if pair_label else device_label,
+        }
+    return {**entry, "available": False, "availability": availability,
+            "selectable": False, "is_selected": True}
+
+
+def configure_stdin_input_status(
+    reader: Callable[[], dict[str, Any]] | None,
+) -> None:
+    """Install (or clear) the read-only STDIN status snapshot reader."""
+    global _stdin_status_reader
+    _stdin_status_reader = reader
+
+
+def _stdin_status() -> dict[str, Any]:
+    if _stdin_status_reader is None:
+        return {
+            "available": False, "selectable": False, "state": "unavailable",
+            "selected": False, "session_id": None, "format": None,
+            "rate": None, "channels": None, "left": None, "right": None,
+            "routed": False, "frames_received": 0, "error": None,
+            "measurement_active": False,
+        }
+    try:
+        status = _stdin_status_reader()
+    except Exception:
+        return {
+            "available": False, "selectable": False, "state": "unavailable",
+            "selected": False, "session_id": None, "format": None,
+            "rate": None, "channels": None, "left": None, "right": None,
+            "routed": False, "frames_received": 0, "error": None,
+            "measurement_active": False,
+        }
+    return dict(status) if isinstance(status, dict) else {}
+
+
 def _finite_or(value: Any, default: float) -> float:
     try:
         number = float(value)
@@ -193,6 +280,7 @@ from .constants import (
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
+    SOURCE_MODE_STDIN_INPUT,
 )
 from .parsing import (
     _bluetooth_profile_from_node_name,
@@ -750,13 +838,17 @@ def get_audio_source_overview() -> dict[str, Any]:
             f"Mono capture without a stereo pair is not offered as external input: {skipped_names}."
         )
 
+    saved_input_key = selected_input_key
     if selected_input_key and not any(item.get("key") == selected_input_key for item in inputs):
+        # Only keys that lack a port or pair (older formats) migrate, to the
+        # same physical channels; another port or pair is a different input.
         migrated_input = next(
             (item for item in inputs
              if item.get("source_key") == selected_source_name
-             and (selected_port_key is None or item.get("port_key") == selected_port_key)),
+             and (selected_port_key is None or item.get("port_key") == selected_port_key)
+             and (selected_pair is None or tuple(item.get("pair_channels") or ()) == selected_pair)),
             None,
-        ) or next((item for item in inputs if item.get("source_key") == selected_source_name), None)
+        )
         if migrated_input:
             selected_input_key = migrated_input.get("key")
             selected_source_name, selected_port_key, selected_pair = _split_source_selection_key(selected_input_key)
@@ -773,14 +865,35 @@ def get_audio_source_overview() -> dict[str, Any]:
     selected_input = next((item for item in inputs if item.get("key") == selected_input_key), None)
     current_input = selected_input or next((item for item in inputs if item.get("is_active_port")), None) or default_input
     mode = selection_state.get("mode") or SOURCE_MODE_APP_PLAYBACK
-    if mode == SOURCE_MODE_EXTERNAL_INPUT and not inputs:
-        mode = SOURCE_MODE_APP_PLAYBACK
-        notes.append("No real external inputs detected; staying on App playback.")
+    # external_input_state names the decision for a selected external input:
+    # "available", "unconfirmed" (missing from this probe, keep the loopback)
+    # or "unavailable" (loss confirmed: unlink, or fall back when no input is
+    # left). The monitor observes the raw availability from it.
+    external_input_state = None
+    if mode == SOURCE_MODE_EXTERNAL_INPUT:
+        missing_key = saved_input_key if selected_input is None else None
+        available = selected_input is not None if saved_input_key else bool(inputs)
+        if available:
+            external_input_state = "available"
+        elif _loss_confirmed(_external_loss_confirmed):
+            external_input_state = "unavailable"
+        else:
+            external_input_state = "unconfirmed"
+        if missing_key:
+            # Keep the saved selection: never substitute another input.
+            selected_input = _missing_selected_input(missing_key, external_input_state)
+            current_input = None
+        if external_input_state == "unavailable" and not inputs:
+            mode = SOURCE_MODE_APP_PLAYBACK
+            notes.append("No real external inputs detected; staying on App playback.")
     if mode == SOURCE_MODE_BLUETOOTH_INPUT:
         bt_input_role = ((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {})
-        if not bt_input_role.get("selectable"):
+        # Until confirmed, mode stays Bluetooth input while bluetooth.selectable
+        # reports the raw probe; that pair is the "unconfirmed" state.
+        if not bt_input_role.get("selectable") and _loss_confirmed(_bluetooth_loss_confirmed):
             mode = SOURCE_MODE_APP_PLAYBACK
             notes.append("Bluetooth input is not currently available on this host; staying on App playback.")
+    stdin_status = _stdin_status()
 
     return {
         "mode": mode,
@@ -788,10 +901,12 @@ def get_audio_source_overview() -> dict[str, Any]:
             {"key": SOURCE_MODE_APP_PLAYBACK, "label": "App playback", "selectable": True},
             {"key": SOURCE_MODE_EXTERNAL_INPUT, "label": "External input", "selectable": bool(inputs)},
             {"key": SOURCE_MODE_BLUETOOTH_INPUT, "label": "Bluetooth input", "selectable": bool(((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("selectable"))},
+            {"key": SOURCE_MODE_STDIN_INPUT, "label": "STDIN", "selectable": bool(stdin_status.get("selectable"))},
         ],
         "default_input": default_input,
         "selected_input": selected_input,
         "current_input": current_input,
+        "external_input_state": external_input_state,
         "inputs": inputs,
         "bluetooth": {
             "available": bluetooth_overview.get("available", False),
@@ -800,13 +915,32 @@ def get_audio_source_overview() -> dict[str, Any]:
             "receiver_enabled": ((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("enabled", False),
             "discoverable": ((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("discoverable", False),
             "pairable": ((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("pairable", False),
+            # Routing consumes this same generation-validated snapshot.
+            "source_name": ((bluetooth_overview.get("receiver_session") or {}).get("source_name")),
             "connected_device": ((bluetooth_overview.get("receiver_session") or {}).get("device_name")),
             "active_codec": ((bluetooth_overview.get("receiver_session") or {}).get("active_codec")),
             "active_rate": ((bluetooth_overview.get("receiver_session") or {}).get("active_rate")),
             "notes": list((((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("notes") or [])),
         },
+        "stdin": stdin_status,
         "notes": notes,
     }
+
+
+def with_current_stdin_status(overview: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``overview`` with its STDIN parts refreshed.
+
+    Only ``stdin`` and the STDIN mode's ``selectable`` flag depend on the
+    STDIN service, so a STDIN state change does not need the pactl/bluetooth
+    pipeline of a full :func:`get_audio_source_overview` build.
+    """
+    stdin_status = _stdin_status()
+    modes = [
+        {**entry, "selectable": bool(stdin_status.get("selectable"))}
+        if isinstance(entry, dict) and entry.get("key") == SOURCE_MODE_STDIN_INPUT else entry
+        for entry in overview.get("modes") or []
+    ]
+    return {**overview, "modes": modes, "stdin": stdin_status}
 
 
 def prepare_audio_output_selection(key: str) -> dict[str, Any]:
@@ -844,11 +978,17 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
 def set_audio_source_selection(mode: str, input_key: str | None = None) -> dict[str, Any]:
     normalized_mode = (mode or "").strip()
     normalized_input_key = (input_key or "").strip() or None
-    if normalized_mode not in {SOURCE_MODE_APP_PLAYBACK, SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT}:
+    if normalized_mode not in {SOURCE_MODE_APP_PLAYBACK, SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT, SOURCE_MODE_STDIN_INPUT}:
         raise ValueError(f"Unknown source mode: {normalized_mode or mode}")
 
     overview_before = get_audio_source_overview()
     inputs = overview_before.get("inputs") or []
+
+    if normalized_mode == SOURCE_MODE_STDIN_INPUT:
+        if not (overview_before.get("stdin") or {}).get("selectable"):
+            raise ValueError("STDIN input is unavailable")
+        _save_audio_source_selection(normalized_mode, None)
+        return get_audio_source_overview()
 
     if normalized_mode == SOURCE_MODE_BLUETOOTH_INPUT:
         bt_input_role = overview_before.get("bluetooth") or {}
@@ -865,6 +1005,8 @@ def set_audio_source_selection(mode: str, input_key: str | None = None) -> dict[
                 raise ValueError(f"Unknown input: {normalized_input_key}")
         elif overview_before.get("selected_input"):
             selected_input = overview_before["selected_input"]
+            if selected_input.get("available") is False:
+                raise ValueError(f"Selected input is not currently available: {selected_input.get('key')}")
         elif overview_before.get("current_input"):
             selected_input = overview_before["current_input"]
         elif inputs:

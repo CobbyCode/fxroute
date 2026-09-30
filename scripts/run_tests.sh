@@ -123,10 +123,16 @@ fi
 # test would otherwise fail with a launch error; detect it once here and
 # skip the whole group with a setup hint instead.  Never auto-install in
 # the suite run (see the header comment for the one-time host setup).
+# Every script that imports playwright at module level belongs here, or it
+# fails with ModuleNotFoundError instead of skipping; scripts that catch
+# the ImportError themselves are covered either way.
 BROWSER_TESTS=(
     scripts/check_crossover_graph_drag.py
+    scripts/check_crossover_trim_ui.py
     scripts/check_css_reorg_snapshot.py
+    scripts/check_output_system_ui.py
     scripts/check_select_popup_theme.py
+    scripts/check_subwoofer_trim_ui.py
     scripts/check_ui_walkthrough.py
     scripts/check_viewports.py
     scripts/test_brand_geometry.py

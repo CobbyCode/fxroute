@@ -666,7 +666,7 @@ async function createPeqPreset() {
                 presetName,
                 loadAfterCreate: false,
                 ...collectEffectsExtras(),
-                ...bankBindingJson(),
+                ...root.FXRouteBankUI.bankBindingJson(),
                 peq: {
                     enabled: true,
                     params: root.FXRouteBankUI.measurementPeqParams(leftBands, rightBands, eqMode),
@@ -712,11 +712,7 @@ function renderEffects() {
         deps.getElements().effectsStatus.innerHTML = '';
         return;
     }
-    if (presets.length === 0) {
-        deps.getElements().effectsDeleteBtn.disabled = true;
-    } else {
-        deps.getElements().effectsDeleteBtn.disabled = fx.active_preset === 'Direct' || fx.active_preset === 'Neutral';
-    }
+    // renderEffectsCompare below owns the Delete button (selected bank's active preset).
     if (deps.getElements().effectsToggleImportBtn) deps.getElements().effectsToggleImportBtn.disabled = false;
     if (deps.getElements().effectsRewDualCreatePresetBtn) deps.getElements().effectsRewDualCreatePresetBtn.disabled = false;
     if (deps.getElements().effectsPeqAddBandBtn) deps.getElements().effectsPeqAddBandBtn.disabled = false;

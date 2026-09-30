@@ -244,6 +244,20 @@ class AbortVerdictTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restore.restore_position, 37.25)
         self.assertFalse(restore.should_play)
 
+    async def test_tidal_position_restored_from_its_cache_file(self):
+        snapshot = local_snapshot(playing=False, position=81.5)
+        snapshot["current_track"]["source"] = "tidal"
+        verdict = await make_transition_runtime().abort_failed_transition(
+            spotify_request(),
+            snapshot,
+            target_staged=False,
+        )
+        self.assertIsNotNone(verdict)
+        restore = verdict["restore"]
+        self.assertEqual(restore.source, "tidal")
+        self.assertEqual(restore.restore_position, 81.5)
+        self.assertFalse(restore.should_play)
+
     async def test_radio_gets_no_position_restore(self):
         verdict = await make_transition_runtime().abort_failed_transition(
             spotify_request(),
@@ -667,6 +681,37 @@ class PositionRestoreOrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.state["position"], 37.25)
         self.assertTrue(player.state["playing"])
         self.assertFalse(player.state["paused"])
+
+    async def test_tidal_position_restore_seeks_for_any_restoring_operation(self):
+        # The channel-tier rollback keeps the failed request's operation
+        # (e.g. play) while restoring the previous TIDAL cache file.
+        player = RecordingPlayer()
+        runtime = make_transition_runtime()
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            main, "_load_player_paused",
+            side_effect=lambda path: player.set_pause(True) or player._state.update(current_file=path),
+        ), patch.object(
+            media_readiness, "wait_for_player_current_file", AsyncMock(return_value=True)
+        ), patch.object(playback_orchestration.configured(), "ensure_mpv_to_dsp_links", AsyncMock(return_value=True)):
+            request = TransitionRequest(
+                operation="play",
+                source="tidal",
+                target_rate=96_000,
+                target_url="/cache/tidal-old.mp4",
+                target_track={"source": "tidal", "url": "/cache/tidal-old.mp4"},
+                should_play=False,
+                rate_change=True,
+                reload_source=True,
+                restore_position=81.5,
+                detail="channel-tier-rollback",
+            )
+            await runtime.prepare_target_source(request)
+            await runtime.start_target_source(request)
+
+        self.assertIn("seek:81.5", player.ops)
+        self.assertNotIn("pause:False", player.ops)
+        self.assertEqual(player.state["position"], 81.5)
+        self.assertTrue(player.state["paused"])
 
     async def test_paused_restore_volume_100_then_resume_starts_from_100(self):
         player = RecordingPlayer()

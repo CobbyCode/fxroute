@@ -747,7 +747,11 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             main, "qobuz_play", new=AsyncMock(return_value={"status": "Playing"})
         ) as play, patch.object(
-            main, "get_qobuz_ui_state", new=AsyncMock(return_value={"status": "Playing"})
+            main, "get_qobuz_ui_state", new=AsyncMock(return_value={"status": "Playing", "trackId": "42"})
+        ), patch.object(
+            main, "qobuz_loaded_track_id", new=AsyncMock(return_value=42)
+        ), patch.object(
+            main, "get_samplerate_status", return_value={"active_rate": 88200, "force_rate": 88200}
         ):
             await runtime.restore_output_mode_transport(
                 request,
@@ -782,15 +786,17 @@ class ExternalOutputModeTransportTests(unittest.IsolatedAsyncioTestCase):
             "playback_graph_diagnosis",
             new=AsyncMock(return_value=diagnosis),
         ), patch.object(
-            main, "get_qobuz_ui_state", new=AsyncMock(return_value={"status": "Playing"})
+            main, "get_qobuz_ui_state", new=AsyncMock(return_value={"status": "Playing", "trackId": "42"})
+        ), patch.object(
+            main, "qobuz_loaded_track_id", new=AsyncMock(return_value=42)
         ), patch.object(
             media_readiness, "wait_for_qobuz_sink_input_samplerate",
             new=AsyncMock(return_value=None),
         ) as wait_rate:
-            with self.assertRaisesRegex(RuntimeError, "Qobuz stream rate mismatch"):
+            with self.assertRaisesRegex(RuntimeError, "Qobuz renderer rate"):
                 await runtime.verify_output_mode_runtime(request)
 
-        wait_rate.assert_awaited_once_with(expected_rate=44100)
+        wait_rate.assert_awaited_once_with(expected_rate=None)
 
 
 class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):

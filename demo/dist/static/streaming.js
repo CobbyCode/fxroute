@@ -1245,8 +1245,8 @@
                         '</div>' +
                     '</div>' +
                 '</div>' +
+                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-browse-body" id="tidal-browse-body"></div>' +
-                tidalPlaylistSaveRowHtml() +
             '</div>';
         const actions = content.querySelector('.tidal-toolbar-actions');
         if (actions && entry.els.statusLine) actions.prepend(entry.els.statusLine);
@@ -2365,7 +2365,7 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml() +
+                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
@@ -2664,7 +2664,7 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml() +
+                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);

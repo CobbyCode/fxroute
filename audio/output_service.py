@@ -21,10 +21,11 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from audio.output_state_migration import migrate_legacy_output_state
+from audio.output_state_migration import drop_foreign_bank_presets, migrate_legacy_output_state
 from audio.filter_banks import resolve_bank
 from audio.output_state_store import OutputStateStore, StateConflictError
 from dsp.native_config import layout_from_plan
+from dsp.persistence import preset_bank
 from dsp.processing_plan import compile_processing_plan
 
 __all__ = [
@@ -75,6 +76,27 @@ class OutputService:
                 expected_revision=0)
         except StateConflictError:
             return self._deps.store.load()
+
+    def drop_foreign_bank_presets(self) -> list[str]:
+        """Commit the foreign-slot cleanup of a stored document (startup).
+
+        A missing file is left to ``ensure_state``; unreadable presets count
+        as untagged and stay bound. Returns the applied changes.
+        """
+        if not self._deps.store.path.exists():
+            return []
+        state = self._deps.store.load()
+
+        def preset_bank_of(name: str) -> str | None:
+            try:
+                return preset_bank(self._deps.preset_loader(name))
+            except (FileNotFoundError, RuntimeError, ValueError):
+                return None
+
+        cleaned, changes = drop_foreign_bank_presets(state, preset_bank_of)
+        if changes:
+            self.commit_unowned(cleaned, expected_revision=state["revision"])
+        return changes
 
     def apply(self, mutate: Callable[[dict], dict], *, expected_revision: int) -> dict:
         """Apply a pure state mutation under the measurement and revision guards."""

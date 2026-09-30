@@ -60,7 +60,7 @@ The playback bar at the bottom is always visible:
 - the level badge shows the live peak against the DSP chain; radio and library rows show stream tech lines (codec, bitrate, sample rate)
 - click the current cover to open the detail card with metadata, "Recently played" where the source provides it, and the queue
 
-Source and app volumes (Spotify client, Qobuz app) stay separate from the FXRoute master volume. The compact source switcher next to the transport controls selects between app playback, an external input, and Bluetooth input.
+Source and app volumes (Spotify client, Qobuz app) stay separate from the FXRoute master volume. The compact source switcher next to the transport controls selects between app playback, an external input, Bluetooth input, and STDIN.
 
 ## 4. Sources
 
@@ -114,7 +114,24 @@ Disconnect in **Technical settings → Providers**; playback stops until you sig
 
 ### 4.6 Bluetooth and external input
 
-**Technical settings → Source** selects the active input: **App playback** (the default), **External input: …** for a detected stereo line/loopback source, or **Bluetooth input** when the host stack supports it. The Bluetooth status line reports the adapter state, the connected device, and the active codec. Mono-only captures are not offered as external input. Leaving Bluetooth input mode also disconnects Bluetooth audio source devices.
+**Technical settings → Source** selects the active input: **App playback** (the default), **External input: …** for a detected stereo line/loopback source, **Bluetooth input** when the host stack supports it, or **STDIN** for a piped PCM stream. The Bluetooth status line reports the adapter state, the connected device, and the active codec. Mono-only captures are not offered as external input. Leaving Bluetooth input mode also disconnects Bluetooth audio source devices.
+
+### 4.7 STDIN pipe input
+
+Select **STDIN** under **Source → Input**, then run the pipeline as the FXRoute audio user. The CLI accepts raw interleaved PCM; format, sample rate and channel count are required. For more than two channels, choose the channel feeding the left and right program inputs with `--left` and `--right`. The transport retains all input channels, while the current DSP program bus processes the selected pair. Mono is copied to both program inputs. Output continues through the configured FXRoute DSP and hardware routing. This mode uses the running FXRoute/PipeWire service and does not write processed PCM to stdout.
+
+```bash
+ffmpeg -v error -i album.flac -f s32le -acodec pcm_s32le -ar 48000 -ac 2 - \
+  | fxroute stdin --format s32le --rate 48000 --channels 2
+
+sox input.wav -t raw -e signed-integer -b 16 -L -r 44100 -c 2 - \
+  | fxroute stdin --format s16le --rate 44100 --channels 2
+
+ffmpeg -v error -i multichannel.wav -f f32le -acodec pcm_f32le -ar 48000 -ac 8 - \
+  | fxroute stdin --format f32le --rate 48000 --channels 8 --left 5 --right 6
+```
+
+Supported formats are `s16le`, packed 3-byte `s24le`, `s32le` and `f32le` with 1–32 channels at 8000–384000 Hz. The client may connect before STDIN is selected and then waits for selection; stdout stays empty and diagnostics go to stderr. Exit code is 0 after `done`, 2 for CLI/metadata errors, 1 for runtime errors, 130 for SIGINT and 143 for SIGTERM. A fixed sample-rate policy resamples the pipe stream to the graph rate; STDIN never changes the graph clock itself. An active measurement session stops a running STDIN stream and blocks new writers until it is released.
 
 ## 5. DSP
 
@@ -170,7 +187,7 @@ Autogain and Loudness can run together; the limiter stays the final stage.
 | Stereo + Sub | Off | `Off`, `Main L`, `Main R`, `Sub L`, `Sub R`, `Sub 1`, `Sub 2` |
 | Stereo / Stereo + Sub | On | `Off`, the ways `Low L`, `Low-Mid L`, `Mid L`, `High L` and their `R` counterparts, plus the sub roles in Stereo + Sub |
 
-One role may feed several outputs (fan-out); only the roles that actually appear are active. The **Mode** hint reads `<Mode> · <N> hardware outputs`, and the line under the routing grid shows the derived summary, for example `Stereo · Mono sub`, `3-Way · Dual-mono subs` — and, when the routing is incomplete, the first problem:
+One role may feed several outputs (fan-out); only the roles that actually appear are active. The **Mode** hint reads `<Mode> · <N> hardware outputs`; with **Stereo + Sub** selected but no sub role in the routing it reads *No subwoofer configured — assign a Sub output below.* until a sub is assigned. The line under the routing grid shows the derived summary, for example `Stereo · Mono sub`, `3-Way · Dual-mono subs` — and, when the routing is incomplete, the first problem:
 
 - *Stereo routing requires Main L and Main R*
 - *Crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways*

@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from audio.source_feed import SourceTransitionLock
 import main
 import audio.bluetooth as bluetooth_module
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
@@ -50,7 +51,7 @@ class SourceRaceCase(unittest.IsolatedAsyncioTestCase):
         self._state = _snapshot_playback_state()
         self._source_lock = main.runtime.source_transition_lock
         self._coordinator = main.playback_transition_coordinator
-        main.runtime.source_transition_lock = asyncio.Lock()
+        main.runtime.source_transition_lock = SourceTransitionLock()
         main.playback_state.source_mode = "app-playback"
 
     def tearDown(self) -> None:
@@ -474,7 +475,8 @@ class SourceRouteTests(SourceRaceCase):
         ), patch.object(main, "bluetooth_input", monitor), patch.object(
             main.external_input, "sync", AsyncMock(side_effect=lambda overview: overview)
         ), patch.object(monitor, "sync", AsyncMock(side_effect=lambda overview: overview)), patch.object(
-            bluetooth_module, "get_audio_source_overview", side_effect=lambda: {"mode": persisted["mode"]}
+            bluetooth_module, "get_audio_source_overview",
+            side_effect=lambda: {"mode": persisted["mode"], "bluetooth": {"selectable": True}},
         ), patch.object(main, "_pause_all_app_playback_for_external_input", AsyncMock()), patch.object(
             main.peak_monitor_coordinator, "sync_source_mode_state", route_peak
         ):
@@ -524,9 +526,6 @@ class SourceRouteTests(SourceRaceCase):
         ), patch.object(bluetooth_module, "input_links_present", AsyncMock(return_value=True)), patch.object(
             monitor, "stop_agent", AsyncMock()
         ), patch.object(
-            bluetooth_module, "get_bluetooth_audio_overview",
-            return_value={"receiver_session": {"source_name": "bluez-old"}},
-        ), patch.object(
             bluetooth_module, "get_audio_source_overview",
             side_effect=lambda: {"mode": persisted["mode"]},
         ), patch.object(bluetooth_module, "set_bluetooth_receiver_enabled"), patch.object(
@@ -534,7 +533,9 @@ class SourceRouteTests(SourceRaceCase):
         ), patch.object(main, "_pause_all_app_playback_for_external_input", AsyncMock()), patch.object(
             main.peak_monitor_coordinator, "sync_source_mode_state", AsyncMock()
         ):
-            older = asyncio.create_task(monitor.sync({"mode": "bluetooth-input", "bluetooth": {"selectable": True}}))
+            older = asyncio.create_task(monitor.sync({
+                "mode": "bluetooth-input", "bluetooth": {"selectable": True, "source_name": "bluez-old"},
+            }))
             try:
                 await asyncio.wait_for(entered.wait(), 2)
                 newer = asyncio.create_task(main.save_audio_source_selection_route(

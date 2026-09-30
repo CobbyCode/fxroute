@@ -50,6 +50,8 @@ _SOURCE_SCOPED_OPERATIONS = frozenset({
     "spotify-claim",
     "qobuz-play",
     "qobuz-toggle",
+    "qobuz-next",
+    "qobuz-previous",
     "qobuz-claim",
     "recovery",
     "graph-reconcile",
@@ -178,6 +180,7 @@ class PlaybackOrchestrationDeps:
     # requests. Optional; without it requests stay unstamped and the
     # Coordinator skips the source check (legacy/test wiring).
     get_source_generation: Callable[[], int | None] | None = None
+    get_qobuz_ui_state: Callable[..., Awaitable[dict]] | None = None
 
 
 class PlaybackOrchestrator:
@@ -234,7 +237,10 @@ class PlaybackOrchestrator:
             track_id = spotify.get("trackId") or spotify.get("url")
             return {"source": "spotify", "target_url": str(track_id or "") or None,
                     "target_track": self._deps.spotify_target_track(spotify), "should_play": True, "spotify": spotify}
-        qobuz = dict(state.latest_qobuz_state or {})
+        # The watcher can still say Playing immediately after a UI pause.
+        getter = self._deps.get_qobuz_ui_state
+        qobuz = dict(await getter() if getter is not None
+                     else state.latest_qobuz_state or {})
         if self._qobuz_playback_active(qobuz):
             track_id = qobuz.get("trackId") or qobuz.get("id")
             return {"source": "qobuz", "target_url": str(track_id or "") or None,
@@ -843,11 +849,12 @@ class PlaybackOrchestrator:
             else (dict(request.audio_overview) if request.audio_overview else None)
         )
         graph_source = request.source if request.target_url or request.should_play else None
-        if request.operation == "output-mode-switch" and not request.should_play:
-            # An output-mode switch never (re)starts its source: transport
-            # restore keeps a paused source paused, so a paused owner has no
-            # live stream ports by design. Only a playing source contributes
-            # stream links to the post-start production graph.
+        if not request.should_play and (
+            request.operation == "output-mode-switch"
+            or source_policy.is_external_source(request.source)
+        ):
+            # Paused external owners have no producer ports. A mode switch
+            # also keeps native sources paused without requiring their stream.
             graph_source = None
         include_source = graph_source is not None
         diagnosis = await self.playback_graph_diagnosis(overview, source=graph_source, target_rate=target_rate, require_source=include_source)

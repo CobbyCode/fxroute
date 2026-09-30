@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio import output_state as state_api
+from audio.filter_banks import summarize_all_banks
 from audio.output_topology import derive_topology
 from measurement.target import freeze_measurement_target, target_output_mask, sweep_output_masks
 
@@ -63,11 +64,26 @@ class FilterBankGroupsTests(unittest.TestCase):
         self.assertNotIn("all", banks)
         self.assertEqual(state, before)
 
-    def test_all_missing_b_refuses_entire_switch(self):
+    def test_all_switches_banks_with_b_and_keeps_the_rest_on_a(self):
         state = state_api.set_bank_preset(sub_state(), "stereo-sub", "main", preset_b="Main B")
+        after = state_api.switch_all_banks(state, "stereo-sub", "A", 4, "B")
+        banks = after["modes"]["stereo-sub"]["banks"]
+        self.assertEqual([banks[role]["preset"] for role in ("main_l", "main_r", "sub_l", "sub_r")],
+                         ["Main B", "Main B", "Neutral", "Neutral"])
+        summary = summarize_all_banks([banks[role] for role in ("main_l", "main_r", "sub_l", "sub_r")])
+        self.assertEqual((summary["active_side"], summary["can_b"]), ("B", True))
+        back = state_api.switch_all_banks(after, "stereo-sub", "A", 4, "A")
+        self.assertEqual(back["modes"]["stereo-sub"]["banks"], state["modes"]["stereo-sub"]["banks"])
+
+    def test_all_without_any_b_refuses_the_switch(self):
+        state = sub_state()
         before = copy.deepcopy(state)
-        with self.assertRaisesRegex(ValueError, "B"):
+        banks = state["modes"]["stereo-sub"]["banks"]
+        self.assertFalse(summarize_all_banks([banks[role] for role in ("main_l", "sub_l")])["can_b"])
+        with self.assertRaisesRegex(ValueError, "no assigned preset in any configured bank"):
             state_api.switch_all_banks(state, "stereo-sub", "A", 4, "B")
+        with self.assertRaisesRegex(ValueError, "A or B"):
+            state_api.switch_all_banks(state, "stereo-sub", "A", 4, "C")
         self.assertEqual(state, before)
 
     def test_all_is_not_an_assignable_or_measurable_bank(self):

@@ -42,6 +42,7 @@ from audio.samplerate.constants import (
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
+    SOURCE_MODE_STDIN_INPUT,
     effective_supported_rates,
 )
 
@@ -106,6 +107,7 @@ from audio.samplerate.bluetooth import (
     disconnect_connected_bluetooth_audio_sources,
     get_bluetooth_audio_overview,
     is_bluetooth_audio_streaming,
+    reconnect_bluetooth_audio_devices,
     set_bluetooth_receiver_enabled,
 )
 
@@ -119,6 +121,8 @@ from audio.samplerate.overview import (
     audio_output_overview_with_effective_rate,
     authoritative_sample_rate,
     configure_output_state_head,
+    configure_source_availability,
+    configure_stdin_input_status,
     get_audio_output_overview,
     get_audio_source_overview,
     get_samplerate_status,
@@ -132,6 +136,7 @@ from audio.samplerate.overview import (
     selected_output_default_state,
     set_audio_output_selection,
     set_audio_source_selection,
+    with_current_stdin_status,
 )
 
 from audio.samplerate.alignment import (
@@ -189,9 +194,12 @@ __all__ = [
     "SOURCE_MODE_APP_PLAYBACK",
     "SOURCE_MODE_BLUETOOTH_INPUT",
     "SOURCE_MODE_EXTERNAL_INPUT",
+    "SOURCE_MODE_STDIN_INPUT",
     "active_card_profile",
     "apply_persisted_audio_output_selection",
     "configure_output_state_head",
+    "configure_source_availability",
+    "configure_stdin_input_status",
     "audio_output_overview_with_effective_rate",
     "authoritative_sample_rate",
     "card_name_for_output",
@@ -222,6 +230,7 @@ __all__ = [
     "playback_target_rate",
     "pulse_suspend_sink_for_samplerate",
     "rate_renegotiation_trigger_path",
+    "reconnect_bluetooth_audio_devices",
     "recover_saved_output_sink",
     "reconcile_transition_sink_rate",
     "recycle_card_profile",
@@ -235,4 +244,5 @@ __all__ = [
     "trigger_card_rate_recycle",
     "trigger_idle_sink_renegotiation",
     "wait_for_samplerate_alignment",
+    "with_current_stdin_status",
 ]

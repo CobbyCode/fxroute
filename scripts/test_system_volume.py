@@ -5,6 +5,7 @@ import asyncio
 import pathlib
 import subprocess
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -242,6 +243,44 @@ class SystemVolumeStatusCacheTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
         self.assertEqual(system_volume.get_status_volume(), 70)
         run.assert_called()
+
+    async def test_missing_sink_outside_tier_change_remains_a_reported_error(self):
+        system_volume._status_volume_cache = (37, 0.0)
+        with mock.patch("audio.system_volume.subprocess.run",
+                        return_value=_completed(1, stderr="Failed to get sink information: No such entity")), \
+                self.assertLogs("audio.system_volume", level="WARNING") as logs:
+            system_volume.start_volume_read_monitor()
+            async with asyncio.timeout(2):
+                while not logs.records:
+                    await asyncio.sleep(0.01)
+            await system_volume.stop_volume_read_monitor()
+        self.assertEqual(system_volume.get_status_volume(), 37)
+        self.assertIsInstance(logs.records[0].exc_info[1], system_volume.SystemVolumeError)
+
+    async def test_stopped_monitor_does_not_publish_its_late_worker_read(self):
+        system_volume._status_volume_cache = (37, 0.0)
+        started = threading.Event()
+        release = threading.Event()
+        returned = threading.Event()
+
+        def delayed_read(args, **kwargs):
+            started.set()
+            if not release.wait(2):
+                raise RuntimeError("Test did not release the volume read")
+            returned.set()
+            return _completed(0, "Volume: 0.70\n")
+
+        try:
+            with mock.patch("audio.system_volume.subprocess.run", side_effect=delayed_read):
+                system_volume.start_volume_read_monitor()
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                await system_volume.stop_volume_read_monitor()
+                release.set()
+                self.assertTrue(await asyncio.to_thread(returned.wait, 2))
+                await asyncio.sleep(0.02)
+            self.assertEqual(system_volume.get_status_volume(), 37)
+        finally:
+            release.set()
 
 
 if __name__ == "__main__":

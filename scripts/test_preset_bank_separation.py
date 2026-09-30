@@ -99,6 +99,46 @@ class PresetBankSeparationTests(unittest.TestCase):
         created = self.manager.combine_presets("CombinedMain", ["A1", "A2"], bank="main")
         self.assertEqual(created.get("bank"), "main")
 
+    def test_combined_bank_preset_is_an_independent_b_slot(self):
+        self.manager.create_peq_preset("A1", PEQ, bank="main")
+        self.manager.create_peq_preset("A2", PEQ, bank="main")
+        self.manager.combine_presets("CombinedMain", ["A1", "A2"], bank="main")
+        state = self.service.load()
+        for preset in ("A1", "CombinedMain"):
+            self.service.validate_bank_preset(state, "stereo-sub", "main", preset)
+        state = state_api.set_bank_preset(state, "stereo-sub", "main", preset_a="A1", active_side="A")
+        state = state_api.set_bank_preset(state, "stereo-sub", "main", preset_b="CombinedMain")
+        banks = state["modes"]["stereo-sub"]["banks"]
+        for role in ("main_l", "main_r"):
+            self.assertEqual(banks[role], {"preset": "A1", "preset_a": "A1", "preset_b": "CombinedMain"})
+        state = state_api.set_bank_preset(state, "stereo-sub", "main", active_side="B")
+        banks = state["modes"]["stereo-sub"]["banks"]
+        for role in ("main_l", "main_r"):
+            self.assertEqual(banks[role], {"preset": "CombinedMain", "preset_a": "A1", "preset_b": "CombinedMain"})
+
+    def test_startup_cleanup_commits_foreign_slots_once(self):
+        self.manager.create_peq_preset("GlobCorr", PEQ, bank="global")
+        self.manager.create_peq_preset("MainCorr", PEQ, bank="main")
+        state = self.service.load()
+        for role in ("main_l", "main_r"):
+            state["modes"]["stereo-sub"]["banks"][role] = {
+                "preset": "GlobCorr", "preset_a": "MainCorr", "preset_b": "GlobCorr"}
+        committed = self.service.commit(state, expected_revision=state["revision"])
+        self.assertEqual(len(self.service.drop_foreign_bank_presets()), 2)
+        stored = self.service.load()
+        self.assertEqual(stored["revision"], committed["revision"] + 1)
+        for role in ("main_l", "main_r"):
+            self.assertEqual(stored["modes"]["stereo-sub"]["banks"][role],
+                             {"preset": "MainCorr", "preset_a": "MainCorr", "preset_b": None})
+        self.assertEqual(self.service.drop_foreign_bank_presets(), [])
+        self.assertEqual(self.service.load()["revision"], stored["revision"])
+        absent = OutputService(OutputServiceDeps(
+            store=OutputStateStore(self.home / "absent.json"),
+            preset_loader=lambda name: self.manager.preset_store.read(name),
+            resolve_ir=lambda kernel: {}, measurement_active=lambda: False))
+        self.assertEqual(absent.drop_foreign_bank_presets(), [])
+        self.assertFalse((self.home / "absent.json").exists())
+
     def test_same_bank_assignment_ok_cross_bank_refused(self):
         self.manager.create_peq_preset("MainCorr", PEQ, bank="main")
         self.manager.create_peq_preset("LowCorr", PEQ, bank="low")

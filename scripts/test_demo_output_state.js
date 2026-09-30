@@ -104,9 +104,16 @@ async function request(url, body) {
     assert.equal(conflicted.status, 409);
     assert.equal(conflicted.data.bank.assigned, false);
 
-    // Bank-pinned presets cannot be deleted.
+    // Deleting a bank preset releases its slots like Global's compare.
     await apply({ kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'sub', preset: 'Demo Bank EQ' });
-    assert.equal((await rawRequest('/api/dsp/presets/delete', { preset_name: 'Demo Bank EQ' })).status, 400);
+    assert.equal((await rawRequest('/api/dsp/presets/delete', { preset_name: 'Demo Bank EQ' })).status, 200);
+    const afterDelete = await request('/api/audio/output-state');
+    assert.equal(afterDelete.revision, revision + 1);
+    revision = afterDelete.revision;
+    const subBank = afterDelete.modes['stereo-sub'].banks.sub;
+    assert.equal(subBank.preset, 'Neutral');
+    assert.equal(subBank.preset_a, 'Neutral');
+    assert.equal((await rawRequest('/api/dsp/presets/delete', { preset_name: 'Neutral' })).status, 400);
 
     // Turn the crossover back on and route a complete stereo sub pair with
     // two ways per side; that is the shape the Crossover card graphs.
@@ -138,11 +145,18 @@ async function request(url, body) {
     // Compare slots per way bank, and the all-banks switch. Bank order
     // follows the routed roles, so the sub pair lands last.
     assert.deepEqual(Object.keys(current.modes['stereo-sub'].banks), ['global', 'low', 'high', 'sub']);
-    // The routed sub pair carries no B slot yet, so switching every bank to B
-    // must be refused and leave the state untouched.
-    const beforeRefusal = JSON.stringify(current);
-    assert.equal((await apply({ kind: 'switch_all_banks', active_side: 'B' }, 400)).status, 400);
-    assert.equal(JSON.stringify(current), beforeRefusal);
+    // The routed sub pair carries no B slot yet: All Banks still switches the
+    // ways that have one and keeps the sub pair on A.
+    assert.equal(current.modes['stereo-sub'].banks.sub.preset_b, null);
+    assert.ok(current.modes['stereo-sub'].banks.low.preset_b, 'the seeded ways carry a B slot');
+    await apply({ kind: 'switch_all_banks', active_side: 'B' });
+    const partial = current.modes['stereo-sub'];
+    assert.equal(partial.banks.low.preset, partial.banks.low.preset_b);
+    assert.equal(partial.banks.sub.preset, partial.banks.sub.preset_a);
+    assert.equal(partial.all_banks.active_side, 'B');
+    assert.equal(partial.all_banks.can_b, true);
+    await apply({ kind: 'switch_all_banks', active_side: 'A' });
+    assert.equal(current.modes['stereo-sub'].banks.low.preset, current.modes['stereo-sub'].banks.low.preset_a);
     await apply({ kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'low', preset_b: 'Low B' });
     await apply({ kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'high', preset_b: 'High B' });
     await apply({ kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'sub', preset_b: 'Sub B' });

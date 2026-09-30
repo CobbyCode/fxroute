@@ -10,6 +10,9 @@ normalized into the same flat wire shape Spotify already publishes.
 
 from __future__ import annotations
 
+import asyncio
+import math
+import time
 from typing import Any, ClassVar
 
 from streaming.base.capabilities import Capabilities
@@ -24,6 +27,25 @@ _REPEAT_TO_LOOP = {"off": "none", "one": "track", "track": "track", "all": "play
 _LOOP_TO_REPEAT = {"none": "off", "track": "track", "playlist": "queue"}
 _LOOP_CYCLE = {"none": "track", "track": "playlist", "playlist": "none"}
 
+# Track downloads run server-side before the play-track reply; a 20MB+
+# FLAC fetch needs far more than the 2s control-plane default.
+PLAY_TRACK_TIMEOUT = 120.0
+PLAY_TRACK_CONFIRM_TIMEOUT_S = 3.0
+SEEK_CONFIRM_TIMEOUT_S = 3.0
+SEEK_CONFIRM_INTERVAL_S = 0.05
+
+
+class QobuzSeekError(RuntimeError):
+    """The daemon did not accept a seek command."""
+
+
+class QobuzSeekPositionError(ValueError):
+    """The requested seek position is invalid."""
+
+
+class QobuzSeekNotConfirmed(QobuzSeekError):
+    """The daemon acknowledged a seek without confirming its execution."""
+
 
 def _int_or_none(value: Any) -> int | None:
     try:
@@ -37,8 +59,9 @@ def _int_or_none(value: Any) -> int | None:
 def _sample_rate_hz(value: Any) -> int | None:
     """Normalize a qbzd sample-rate value to Hz.
 
-    ``/api/queue`` track objects report sample rates in kHz (44.1, 88.2, 192)
-    while ``/api/playback`` reports the negotiated stream rate in Hz (44100).
+    ``/api/queue`` reports catalog maximum rates in kHz (44.1, 88.2, 192),
+    while ``/api/playback`` reports the decoded track rate in Hz (44100).
+    Neither reports the PipeWire renderer's possibly resampled output rate.
     Values below 1000 are kHz and are scaled up; audio sample rates never
     legitimately fall below 1000 Hz, so the distinction is unambiguous.
     """
@@ -66,6 +89,18 @@ def normalize_state(state: Any, is_playing: Any) -> str:
     if s == "paused":
         return "Paused"
     return "Stopped"
+
+
+def navigation_has_no_target(state: dict, action: str) -> bool:
+    """Recognize a known queue boundary without changing daemon transport."""
+    length = state.get("queue_len")
+    if state.get("available") is False or not isinstance(length, int):
+        return False
+    if length == 0:
+        return True
+    # get_state exposes upcoming in the actual shuffle order, even for One.
+    return bool(action == "next" and state.get("loop") != "playlist"
+                and "next_track" in state and state["next_track"] is None)
 
 
 class QobuzProvider(StreamingProvider):
@@ -172,6 +207,14 @@ class QobuzProvider(StreamingProvider):
         queue_state = await backend.get_json(self._base_url, "/api/queue") or {}
         queue_current = queue_state.get("current_track") if isinstance(queue_state, dict) else None
         track = queue_current if isinstance(queue_current, dict) else None
+        raw_track_id = playback.get("track_id")
+        player_track_id = "" if raw_track_id in (None, 0) else _id_str(raw_track_id)
+        if player_track_id and (track is None or _id_str(track.get("id")) != player_track_id):
+            # Navigation selects the queue before audio loads. Never combine
+            # the new queue track with the old player's transport or rate.
+            candidates = (queue_state.get("history") or []) + (queue_state.get("upcoming") or [])
+            track = next((item for item in candidates if isinstance(item, dict)
+                          and _id_str(item.get("id")) == player_track_id), None)
 
         if track is not None:
             result["title"] = track.get("title") or ""
@@ -186,8 +229,7 @@ class QobuzProvider(StreamingProvider):
             # only distinguishes 16/24-bit (reported as ``bit_depth``).
             result["audio_format"] = "flac"
         else:
-            raw_track_id = playback.get("track_id")
-            result["trackId"] = "" if raw_track_id in (None, 0) else _id_str(raw_track_id)
+            result["trackId"] = player_track_id
             result["duration"] = float(playback.get("duration_secs") or 0)
 
         result["status"] = normalize_state(playback.get("state"), None)
@@ -202,12 +244,15 @@ class QobuzProvider(StreamingProvider):
         if isinstance(volume, (int, float)):
             result["volume"] = max(0, min(100, round(float(volume) * 100)))
 
-        # The negotiated stream rate/depth from /api/playback fill any
-        # track-level gap (both are present while a stream is open).
-        if result["sample_rate"] is None:
-            result["sample_rate"] = _sample_rate_hz(playback.get("sample_rate"))
-        if result["bit_depth"] is None:
-            result["bit_depth"] = _int_or_none(playback.get("bit_depth"))
+        # Decoded facts take precedence over catalog maxima, but only for the
+        # loaded identity. The renderer format is observed separately in PW.
+        if player_track_id and player_track_id == result["trackId"]:
+            decoded_rate = _sample_rate_hz(playback.get("sample_rate"))
+            decoded_depth = _int_or_none(playback.get("bit_depth"))
+            if decoded_rate is not None:
+                result["sample_rate"] = decoded_rate
+            if decoded_depth is not None and decoded_depth > 0:
+                result["bit_depth"] = decoded_depth
         if result["bit_depth"] is not None and result["bit_depth"] <= 0:
             result["bit_depth"] = None
 
@@ -244,7 +289,15 @@ class QobuzProvider(StreamingProvider):
             if isinstance(current_index, int):
                 result["queue_index"] = max(0, current_index)
             upcoming = queue_state.get("upcoming")
-            if isinstance(upcoming, list) and upcoming:
+            # Automatic EOF clears the queue marker; get_state then exposes
+            # the whole queue as upcoming, not a new manual Next target.
+            duration = float(playback.get("duration_secs") or 0)
+            exhausted = bool(
+                queue_current is None and player_track_id
+                and result["status"] in {"Paused", "Stopped"}
+                and duration > 0 and result["position"] >= duration
+            )
+            if isinstance(upcoming, list) and upcoming and not exhausted:
                 nxt = upcoming[0]
                 if isinstance(nxt, dict):
                     result["next_track"] = {
@@ -277,12 +330,56 @@ class QobuzProvider(StreamingProvider):
         return await self.status()
 
     async def next(self) -> dict:
-        await backend.post_json(self._base_url, "/api/playback/next")
-        return await self.status()
+        return await self._navigate("next")
 
     async def previous(self) -> dict:
-        await backend.post_json(self._base_url, "/api/playback/previous")
-        return await self.status()
+        return await self._navigate("previous")
+
+    async def _navigate(self, action: str) -> dict:
+        """Select the fork queue target, load audio and confirm its identity."""
+        queue = await backend.get_json(self._base_url, "/api/queue")
+        if queue is None:
+            raise RuntimeError(f"qbzd {action} queue readback failed")
+        repeat_one = str(queue.get("repeat") or "").lower() in {"one", "track"}
+        if action == "next" and repeat_one:
+            # The fork reuses its automatic advance for manual Next, so One
+            # otherwise selects the same track. Suspend One only for queue
+            # selection (including shuffle); retain the user's repeat choice.
+            changed = await backend.post_json(self._base_url, "/api/queue/repeat", {"mode": "off"})
+            if changed is None:
+                raise RuntimeError("qbzd manual next could not suspend repeat-one")
+            try:
+                result = await backend.post_json(self._base_url, f"/api/playback/{action}")
+            finally:
+                restored = await backend.post_json(self._base_url, "/api/queue/repeat", {"mode": "one"})
+                if restored is None:
+                    raise RuntimeError("qbzd manual next could not restore repeat-one")
+        else:
+            result = await backend.post_json(self._base_url, f"/api/playback/{action}")
+        if not isinstance(result, dict) or "track" not in result:
+            raise RuntimeError(f"qbzd {action} request failed")
+        track = result["track"]
+        if track is None:
+            return {**await self.status(), "navigation_changed": False}
+        if not isinstance(track, dict) or not _int_or_none(track.get("id")):
+            raise RuntimeError(f"qbzd {action} returned no valid track")
+        track_id = _id_str(track["id"])
+        state = await self.play_track(track_id)
+        deadline = time.monotonic() + PLAY_TRACK_CONFIRM_TIMEOUT_S
+        while True:
+            loaded_id = await self.loaded_track_id()
+            if (str(loaded_id) == track_id and state.get("trackId") == track_id
+                    and state.get("status") == "Playing"):
+                return state
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.05, remaining))
+            try:
+                state = await asyncio.wait_for(self.status(), max(0, deadline - time.monotonic()))
+            except asyncio.TimeoutError:
+                break
+        raise RuntimeError(f"qbzd {action} track was not confirmed: expected={track_id} actual={state.get('trackId')}")
 
     async def toggle(self) -> dict:
         # The fork exposes no toggle endpoint: derive it from the live state.
@@ -309,11 +406,112 @@ class QobuzProvider(StreamingProvider):
         return await self.status()
 
     async def seek(self, position_sec: float) -> dict:
-        # The fork seeks in milliseconds.
-        await backend.post_json(
-            self._base_url, "/api/playback/seek", {"position_ms": max(0, int(position_sec * 1000))}
+        if not math.isfinite(position_sec):
+            raise QobuzSeekPositionError("Seek position must be finite")
+        original = await self.status()
+        if not original.get("available"):
+            raise QobuzSeekError("qbzd is unavailable")
+        observed_at = time.monotonic()
+        original_playback = await backend.get_json(self._base_url, "/api/playback")
+        if original_playback is None:
+            raise QobuzSeekError("qbzd playback readback failed")
+        track_id = _id_str(original_playback.get("track_id"))
+        if track_id in {"", "0"}:
+            raise QobuzSeekNotConfirmed("No Qobuz track is loaded")
+        if not original.get("trackId"):
+            raise QobuzSeekError("qbzd status readback is incomplete")
+        if original.get("trackId") != track_id:
+            raise QobuzSeekNotConfirmed("Qobuz track changed before seek")
+        original_position = float(original_playback.get("position_secs") or 0)
+        was_playing = normalize_state(
+            original_playback.get("state"), original_playback.get("is_playing")
+        ) == "Playing"
+        target = max(0, int(position_sec))
+        duration = original_playback.get("duration_secs") or 0
+        if math.isfinite(duration) and duration > 0:
+            target = min(target, int(duration))
+        # The daemon accepts unsigned whole seconds, not Connect milliseconds.
+        result = await backend.post_json(
+            self._base_url, "/api/playback/seek", {"position_secs": target}
         )
+        if result is None:
+            raise QobuzSeekError("qbzd seek request failed")
+        started = time.monotonic()
+        deadline = started + SEEK_CONFIRM_TIMEOUT_S
+        moved = target == original_position
+        while time.monotonic() < deadline:
+            try:
+                state = await asyncio.wait_for(self.status(), deadline - time.monotonic())
+                playback = await asyncio.wait_for(
+                    backend.get_json(self._base_url, "/api/playback"),
+                    max(0, deadline - time.monotonic()),
+                )
+            except asyncio.TimeoutError:
+                # A healthy late poll can exhaust the confirmation budget.
+                # Backend GET failures return None and remain transport errors.
+                break
+            if not state.get("available") or playback is None:
+                raise QobuzSeekError("qbzd seek readback failed")
+            if not state.get("trackId") and _id_str(playback.get("track_id")) == track_id:
+                raise QobuzSeekError("qbzd seek status readback is incomplete")
+            if (state.get("trackId") != track_id
+                    or _id_str(playback.get("track_id")) != track_id):
+                raise QobuzSeekNotConfirmed("Qobuz track changed during seek")
+            is_playing = normalize_state(playback.get("state"), playback.get("is_playing")) == "Playing"
+            if not was_playing and (is_playing or state.get("status") == "Playing"):
+                raise QobuzSeekNotConfirmed("Qobuz resumed externally during seek")
+            # The raw transport identity also guards stale queue metadata at EOF.
+            position = float(playback.get("position_secs") or 0)
+            # Whole-second telemetry cannot distinguish a close forward seek
+            # from natural advancement. Require an observable discontinuity.
+            natural_allowance = (
+                time.monotonic() - observed_at + 1
+                if was_playing else 0
+            )
+            moved = moved or (
+                max(position, state["position"]) < original_position
+                or min(position, state["position"]) > original_position + natural_allowance
+            )
+            allowance = time.monotonic() - started + 1 if state.get("status") == "Playing" else 0
+            if (moved and target <= position <= target + allowance
+                    and target <= state["position"] <= target + allowance):
+                return state
+            await asyncio.sleep(min(SEEK_CONFIRM_INTERVAL_S, max(0, deadline - time.monotonic())))
+        raise QobuzSeekNotConfirmed(
+            "Qobuz seek was not confirmed; suspended playback needs an explicit resume, "
+            "and close seeks may be indistinguishable from natural advancement"
+        )
+
+    async def play_track(self, track_id: int | str) -> dict:
+        """Load a track by id and start playback (cold start).
+
+        A bare resume cannot put audio into an empty fork player (Connect
+        handoff with no current track, fresh daemon): the track must be
+        downloaded first. The download runs server-side before the reply,
+        so this call carries the download-sized timeout instead of the
+        2s control-plane default.
+        """
+        try:
+            tid = int(str(track_id).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"qbzd play-track needs a numeric track id, got {track_id!r}") from None
+        if tid <= 0:
+            raise ValueError(f"qbzd play-track needs a numeric track id, got {track_id!r}")
+        result = await backend.post_json(
+            self._base_url, "/api/playback/play-track", {"track_id": tid},
+            timeout=PLAY_TRACK_TIMEOUT,
+        )
+        if not isinstance(result, dict) or not result.get("playing"):
+            raise RuntimeError(f"qbzd refused to play track {tid}")
         return await self.status()
+
+    async def loaded_track_id(self) -> int:
+        """Return the raw player track id, or 0 when nothing is loaded."""
+        playback = await backend.get_json(self._base_url, "/api/playback") or {}
+        try:
+            return max(0, int(playback.get("track_id") or 0))
+        except (TypeError, ValueError):
+            return 0
 
     async def set_volume(self, percent: float) -> dict:
         normalized = max(0.0, min(1.0, percent / 100.0))

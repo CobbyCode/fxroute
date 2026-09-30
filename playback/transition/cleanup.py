@@ -40,13 +40,14 @@ class _TransitionCleanupMixin:
         """Physically restore the previously committed source through the
         Coordinator's own transition stages (never a nested transition).
 
-        Runs the same bounded stage sequence as a normal Local/Radio handoff
+        Runs the same bounded stage sequence as a normal source handoff
         under the still-closed output gate: old rate, effects and helper for
         the old rate, source/queue transport (including a committed native
         MPV playlist), post-start graph reconcile, staged graph readback,
         source volume 100, DSP stabilization when the failed Spotify
         transition reinitialized the DSP, and a final commit readback that
-        must positively confirm source volume 100.  Between the critical
+        must positively confirm MPV source volume 100. External sources resume
+        without reloading or seeking their retained track. Between the critical
         stages the physical output gate is re-confirmed.  Returns True only
         when the old source is confirmed in its previous transport state on
         the complete old graph; any stage failure keeps the failure latch.
@@ -69,6 +70,13 @@ class _TransitionCleanupMixin:
                 if not await self.runtime.wait_for_pipewire_spotify_release():
                     logger.warning(
                         "Failed-transition source restore aborted: active Spotify sink "
+                        "input did not quiesce before the old source restore"
+                    )
+                    return False
+            elif failed_request.source == "qobuz":
+                if not await self.runtime.wait_for_pipewire_qobuz_release():
+                    logger.warning(
+                        "Failed-transition source restore aborted: active qbzd sink "
                         "input did not quiesce before the old source restore"
                     )
                     return False
@@ -153,11 +161,12 @@ class _TransitionCleanupMixin:
                     transition_id,
                     stage="failed-transition-restore-before-volume",
                 )
-            await self._stage(
-                stages,
-                "restore-volume",
-                lambda: self.runtime.set_source_volume(100, transition_id),
-            )
+            if source_policy.is_mpv_source(restore_request.source):
+                await self._stage(
+                    stages,
+                    "restore-volume",
+                    lambda: self.runtime.set_source_volume(100, transition_id),
+                )
             # DSP stabilization is not artificially forced for paused
             # restores; it keeps its existing rate/DSP-reinit condition.
             if restore_request.should_play and bool(
@@ -199,7 +208,7 @@ class _TransitionCleanupMixin:
                 source_volume = int(final_state.get("source_volume"))
             except (TypeError, ValueError):
                 source_volume = None
-            if source_volume != 100:
+            if source_policy.is_mpv_source(restore_request.source) and source_volume != 100:
                 logger.warning(
                     "Failed-transition source restore aborted: final commit readback "
                     "did not positively confirm source volume 100: volume=%s",
@@ -239,21 +248,32 @@ class _TransitionCleanupMixin:
             await self.runtime.pause_source_after_failure(request)
         except Exception:
             pass
+        tier_rolled_back = False
         if getattr(request, "channel_tier", None):
+            external_target = source_policy.is_external_source(request.source)
             try:
                 restored = await self.runtime.rollback_channel_tier(request, snapshot, transition_id)
                 if not restored:
                     raise RuntimeError("Previous channel-tier graph could not be restored")
-                if self.gate.closed:
-                    await self.ensure_output_gate_closed(transition_id, stage="channel-tier-rollback")
-                    await self._hold_gate_after_verification()
-                    await self._restore_gate(transition_id, audible_output=bool(request.should_play))
-                return False
+                if not external_target:
+                    if self.gate.closed:
+                        await self.ensure_output_gate_closed(transition_id, stage="channel-tier-rollback")
+                        await self._hold_gate_after_verification()
+                        await self._restore_gate(transition_id, audible_output=bool(request.should_play))
+                    return False
             except Exception:
                 logger.warning("Channel-tier rollback failed", exc_info=True)
                 await self._latch_failure(transition_id)
                 return True
-        if request.operation == "output-mode-switch":
+            # The tier rollback restored only the old graph for an external
+            # target: the committed source is restored by the same abort
+            # path as a failed handoff without a tier switch (below).
+            tier_rolled_back = True
+        if tier_rolled_back:
+            # The tier rollback already restored the old rate and policy;
+            # the operation rollbacks never ran after it.
+            pass
+        elif request.operation == "output-mode-switch":
             try:
                 await self.runtime.rollback_output_mode_runtime(request, snapshot)
             except Exception:

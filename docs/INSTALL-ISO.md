@@ -1,5 +1,14 @@
 # FXRoute Leap 16 Installation ISO
 
+> **Status (1.0-beta11):** this document describes the Leap 16 / Agama
+> builder in `iso/` (`iso/build-leap-16-iso.sh`, `iso/test-leap-16-iso.sh`),
+> which is retained and covered by `scripts/test_install_iso.py`. The x86_64
+> installation ISO published with FXRoute since 1.0-beta10 is **not** built
+> from here: it is the Ubuntu 26.04 ISO produced by
+> `ubuntu/build-ubuntu-iso.sh` (Subiquity/autoinstall, see
+> `ubuntu/README.md`), and no Leap 16 ISO was published for beta10 or
+> beta11. Everything below stays valid for the Leap builder itself.
+
 The ISO builder creates an x86_64 openSUSE Leap 16 installation medium from
 the official offline installer. It adds exactly these FXRoute entries to the
 normal Agama boot menu:

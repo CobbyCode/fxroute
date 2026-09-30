@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.279">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.285">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -110,7 +110,7 @@
                             <select id="settings-samplerate-select" class="url-input">
                                 <option value="auto">Auto</option>
                             </select>
-                            <p id="settings-samplerate-hint" class="settings-inline-note">Follows the effective playback sample rate.</p>
+                            <p id="settings-samplerate-hint" class="settings-inline-note">Follows playback sample rate.</p>
                         </div>
                         <div class="field-group settings-field-group" id="settings-mode-group">
                             <label for="settings-output-mode-select">Mode</label>
@@ -139,14 +139,15 @@
                     <section class="radio-manage-section settings-section">
                         <div class="radio-manage-section-header">
                             <h3>Source</h3>
-                            <p id="settings-source-mode-hint">Loading sources…</p>
                         </div>
                         <div class="field-group settings-field-group">
                             <label for="settings-source-select">Input</label>
                             <select id="settings-source-select" class="url-input" disabled>
                                 <option value="app-playback" selected>Loading…</option>
                             </select>
+                            <p id="settings-source-status" class="settings-inline-note hidden" role="status" aria-live="polite"></p>
                             <p id="settings-bluetooth-status" class="settings-inline-note">Bluetooth: loading…</p>
+                            <p id="settings-stdin-status" class="settings-inline-note hidden" aria-live="polite"></p>
                         </div>
                     </section>
 
@@ -445,6 +446,20 @@
                 </div>
                 <div id="library-folder-path" class="library-folder-path hidden"></div>
                 <div class="content-state content-state--loading">Loading library…</div>
+                <div id="playlist-save-row" class="playlist-save-row hidden">
+                    <div class="playlist-save-controls">
+                        <input
+                            type="text"
+                            id="playlist-name"
+                            class="url-input"
+                            placeholder="Save as playlist…"
+                            aria-label="Save as playlist"
+                            autocomplete="off"
+                        >
+                        <button id="save-playlist" class="btn-secondary">Save</button>
+                        <button id="cancel-playlist-selection" class="btn-secondary" type="button">Cancel</button>
+                    </div>
+                </div>
                 <div id="tracks-list" class="tracks-list"></div>
                 <div id="albums-grid" class="albums-grid hidden"></div>
                 <div id="album-detail" class="album-detail album-detail--hero hidden">
@@ -483,21 +498,6 @@
                         <button id="playlist-detail-back" class="album-detail-back" type="button" aria-label="Back">← Back</button>
                     </div>
                     <div id="playlist-detail-tracks" class="album-detail-tracks tracks-list"></div>
-                </div>
-                <div id="playlist-save-row" class="playlist-save-row hidden">
-                    <div class="playlist-save-controls">
-                        <input
-                            type="text"
-                            id="playlist-name"
-                            class="url-input"
-                            placeholder="Save as playlist…"
-                            aria-label="Save as playlist"
-                            autocomplete="off"
-                        >
-                        <button id="save-playlist" class="btn-secondary">Save</button>
-                        <button id="delete-playlist" class="btn-secondary" type="button">Delete</button>
-                        <button id="cancel-playlist-selection" class="btn-secondary" type="button">Cancel</button>
-                    </div>
                 </div>
                 <div id="library-info"></div>
             </div>
@@ -887,7 +887,7 @@
                         <section class="effects-card effects-card-create effects-card-extras">
                             <div class="effects-card-header">
                                 <h3>Output extras</h3>
-                                <p>Global helpers. Applied automatically, except Direct.</p>
+                                <p>Applied globally, except Direct.</p>
                             </div>
                             <div class="effects-stack effects-extras-stack">
                                 <div class="effects-extras-inner">
@@ -1741,7 +1741,7 @@
     <script src="/static/measurement_flows.js?v=0.9.41"></script>
     <script src="/static/ui_helpers.js?v=0.9.1"></script>
     <script src="/static/tooltip.js?v=0.9.2"></script>
-    <script src="/static/output_state.js?v=0.9.14"></script>
+    <script src="/static/output_state.js?v=0.9.15"></script>
     <script src="/static/crossover.js?v=0.9.7"></script>
     <script src="/static/crossover_view.js?v=0.9.2"></script>
     <script src="/static/crossover_ui.js?v=0.9.4"></script>
@@ -1752,8 +1752,8 @@
     <script src="/static/settings_system.js?v=0.9.2"></script>
     <script src="/static/subwoofer_ui.js?v=0.9.5"></script>
     <script src="/static/output_system_controller.js?v=0.9.1"></script>
-    <script src="/static/output_bank_ui.js?v=0.9.5"></script>
-    <script src="/static/output_effects_ui.js?v=0.9.4"></script>
+    <script src="/static/output_bank_ui.js?v=0.9.7"></script>
+    <script src="/static/output_effects_ui.js?v=0.9.6"></script>
     <script src="/static/measurement_panel_ui.js?v=0.9.8"></script>
     <script src="/static/measurement_saved_ui.js?v=0.9.6"></script>
     <script src="/static/measurement_editors_ui.js?v=0.9.2"></script>
@@ -1765,11 +1765,11 @@
     <script src="/static/measurement_job.js?v=0.9.4"></script>
     <script src="/static/measurement_saved_actions.js?v=0.9.3"></script>
     <script src="/static/measurement_spl_calibration.js?v=0.9.2"></script>
-    <script src="/static/library_ui.js?v=0.9.5"></script>
+    <script src="/static/library_ui.js?v=0.9.9"></script>
     <script src="/static/playback_core.js?v=0.9.8"></script>
     <script src="/static/playback_ui.js?v=0.9.4"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.255"></script>
-    <script src="/static/streaming.js?v=0.9.76"></script>
+    <script src="/static/app.js?v=0.9.267"></script>
+    <script src="/static/streaming.js?v=0.9.77"></script>
 </body>
 </html>

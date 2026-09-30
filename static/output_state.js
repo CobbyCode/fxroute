@@ -95,6 +95,16 @@ function modeSelectorVisible(channelCount) {
     return Number(channelCount) >= 3;
 }
 
+// Status line under the Mode selector. Stereo + Sub without a routed sub
+// role plays mains only, so the line points to the routing instead.
+function modeHint(mode, topology, channelCount) {
+    const subs = Array.isArray(topology?.sub_roles) ? topology.sub_roles : [];
+    if (mode === 'stereo-sub' && !subs.length) {
+        return 'No subwoofer configured — assign a Sub output below.';
+    }
+    return `${modeLabel(mode)} · ${Number(channelCount) || 0} hardware outputs`;
+}
+
 function subModeLabel(subMode) {
     if (subMode === 'stereo') return 'Stereo subs';
     if (subMode === 'dual-mono') return 'Dual-mono subs';
@@ -377,6 +387,7 @@ function renderBankSelector(select, catalog, mode) {
         rolesForMode,
         modeLabel,
         modeSelectorVisible,
+        modeHint,
         subModeLabel,
         FAMILY_LABELS,
         SUB_SIDES,

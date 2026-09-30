@@ -177,7 +177,10 @@ class QobuzStatusNormalizationTests(unittest.IsolatedAsyncioTestCase):
             "duration_secs": 200, "artwork_url": "", "hires": False,
             "bit_depth": 16, "sample_rate": 44.1, "source": "qobuz",
         })
-        getter = _fake_get(_full_routes(**{"/api/queue": queue}))
+        getter = _fake_get(_full_routes(**{
+            "/api/queue": queue,
+            "/api/playback": _playback_payload(track_id=7, sample_rate=0, bit_depth=0),
+        }))
         with mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
@@ -443,12 +446,19 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_transport_posts_correct_routes_and_bodies(self):
         provider = QobuzProvider()
         calls = []
+        routes = _full_routes()
 
         async def fake_post(base_url, path, body=None, timeout=2.0):
             calls.append((path, body or {}))
+            if path in {"/api/playback/next", "/api/playback/previous"}:
+                return {"track": _track_payload()}
+            if path == "/api/playback/play-track":
+                return {"playing": True, "track_id": body["track_id"]}
+            if path == "/api/playback/seek":
+                routes["/api/playback"]["position_secs"] = body["position_secs"]
             return {}
 
-        getter = _fake_get(_full_routes())
+        getter = _fake_get(routes)
         with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter), \
              mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
@@ -467,7 +477,7 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("/api/playback/pause", {}), calls)
         self.assertIn(("/api/playback/next", {}), calls)
         self.assertIn(("/api/playback/previous", {}), calls)
-        self.assertIn(("/api/playback/seek", {"position_ms": 90400}), calls)
+        self.assertIn(("/api/playback/seek", {"position_secs": 90}), calls)
         self.assertIn(("/api/playback/volume", {"volume": 0.5}), calls)
 
     async def test_toggle_plays_when_stopped(self):
@@ -574,6 +584,72 @@ class QobuzQueueAndArtworkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["queue_len"], 0)
         self.assertEqual(status["queue_index"], 0)
         self.assertIsNone(status["next_track"])
+
+
+class QobuzPlayTrackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_play_track_posts_id_with_download_timeout(self):
+        provider = QobuzProvider()
+        calls = []
+
+        async def fake_post(base_url, path, body=None, timeout=2.0):
+            calls.append((path, body or {}, timeout))
+            return {"playing": True, "track_id": 107361968}
+
+        with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post):
+            result = await provider.play_track(107361968)
+        self.assertEqual(len(calls), 1)
+        path, body, timeout = calls[0]
+        self.assertEqual(path, "/api/playback/play-track")
+        self.assertEqual(body, {"track_id": 107361968})
+        self.assertGreaterEqual(timeout, 60.0)
+        self.assertIsInstance(result, dict)
+
+    async def test_play_track_accepts_numeric_string_id(self):
+        provider = QobuzProvider()
+        calls = []
+
+        async def fake_post(base_url, path, body=None, timeout=2.0):
+            calls.append((path, body or {}, timeout))
+            return {"playing": True, "track_id": 42}
+
+        with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post):
+            await provider.play_track("42")
+        self.assertIn(("/api/playback/play-track", {"track_id": 42}), [(p, b) for p, b, _t in calls])
+
+    async def test_play_track_rejects_unparseable_id(self):
+        provider = QobuzProvider()
+        with mock.patch("streaming.qobuz.backend.post_json") as post:
+            with self.assertRaises(ValueError):
+                await provider.play_track("not-a-track")
+        post.assert_not_awaited()
+
+    async def test_play_track_raises_when_daemon_refuses(self):
+        provider = QobuzProvider()
+
+        async def fake_post(base_url, path, body=None, timeout=2.0):
+            return None
+
+        with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post):
+            with self.assertRaises(RuntimeError):
+                await provider.play_track(42)
+
+    async def test_loaded_track_id_reads_raw_playback(self):
+        provider = QobuzProvider()
+        getter = _fake_get(_full_routes(**{
+            "/api/playback": _playback_payload(state="Stopped", track_id=0),
+        }))
+        with mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
+            self.assertEqual(await provider.loaded_track_id(), 0)
+        getter = _fake_get(_full_routes(**{
+            "/api/playback": _playback_payload(state="Paused", track_id=42),
+        }))
+        with mock.patch("streaming.qobuz.backend.get_json", side_effect=getter):
+            self.assertEqual(await provider.loaded_track_id(), 42)
+
+    async def test_loaded_track_id_is_zero_when_unreachable(self):
+        provider = QobuzProvider()
+        with mock.patch("streaming.qobuz.backend.get_json", return_value=None):
+            self.assertEqual(await provider.loaded_track_id(), 0)
 
 
 def _reachable(value):

@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Mapping
+from dataclasses import replace
+from typing import Any, Awaitable, Mapping
 from urllib.parse import unquote
 
 import audio.samplerate as samplerate
@@ -23,6 +24,7 @@ from streaming.spotify.provider import (
     next_track as spotify_next,
     previous as spotify_previous,
 )
+from streaming.qobuz.provider import navigation_has_no_target
 from playback.transition import TransitionRequest
 
 from .deps import PlaybackRuntimeDependencies
@@ -41,10 +43,47 @@ SPOTIFY_PLAYING_CONFIRM_TIMEOUT_S = 3.0
 logger = logging.getLogger(__name__)
 
 
+async def _drain_qobuz_operation(operation: Awaitable[Any]) -> Any:
+    """Keep daemon mutations and their readback inside transition ownership."""
+    task = asyncio.create_task(operation, name="qobuz-transition-operation")
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        except Exception:
+            break
+    if cancelled is not None:
+        try:
+            task.result()
+        except BaseException:
+            logger.warning("Qobuz operation failed while cancellation was draining", exc_info=True)
+        raise cancelled
+    return task.result()
+
+
 class _RuntimeSourceMixin:
     """Attributes provided by the composing adapter instance."""
     _deps: PlaybackRuntimeDependencies
     _staged_target_url: str | None
+    _quieted_external_source: str | None
+
+    async def refresh_transition_request(self, request: TransitionRequest) -> TransitionRequest | str:
+        """Refresh generic Qobuz UI intent after acquiring transition ownership."""
+        if request.source != "qobuz" or request.operation not in {
+            "qobuz-play", "qobuz-toggle", "qobuz-next", "qobuz-previous",
+        }:
+            return request
+        state = await self._deps.get_qobuz_ui_state()
+        action = request.operation.removeprefix("qobuz-")
+        if action in {"next", "previous"}:
+            return "no-navigation-target" if navigation_has_no_target(state, action) else request
+        # A generic Play resumes the live selection, not a pre-lock track id.
+        track_id = str(state.get("trackId") or "")
+        track = {**dict(request.target_track), "id": track_id, "url": track_id,
+                 "sample_rate_hz": state.get("sample_rate")}
+        return replace(request, target_url=track_id, target_track=track)
 
     async def quiet_old_source(self, request: TransitionRequest) -> None:
         if request.graph_only:
@@ -102,6 +141,7 @@ class _RuntimeSourceMixin:
                 spotify_state = await self._deps.get_spotify_ui_state()
                 if self._deps.is_spotify_playback_active(spotify_state):
                     await self._deps.pause_spotify_for_local_playback_broadcast()
+                    self._quieted_external_source = "spotify"
                     if not await self._deps.wait_for_pipewire_spotify_release():
                         raise RuntimeError(
                             "active Spotify sink input did not quiesce before Qobuz handoff"
@@ -110,6 +150,7 @@ class _RuntimeSourceMixin:
                 qobuz_state = await self._deps.get_qobuz_ui_state()
                 if self._deps.is_qobuz_playback_active(qobuz_state):
                     await self._deps.qobuz_pause()
+                    self._quieted_external_source = "qobuz"
                     if not await self._deps.wait_for_pipewire_qobuz_release():
                         raise RuntimeError(
                             "active qbzd sink input did not quiesce before Spotify handoff"
@@ -126,6 +167,8 @@ class _RuntimeSourceMixin:
         )
         if self._deps.is_spotify_playback_active(spotify_state):
             await self._deps.pause_spotify_for_local_playback_broadcast()
+            # Failure cleanup resumes the renderer this handoff paused.
+            self._quieted_external_source = "spotify"
             # The output gate is already closed at this Coordinator stage.
             # Do not touch rate/DSP/helper state until the active Spotify
             # stream has disappeared. Corked historical inputs are ignored by
@@ -136,6 +179,7 @@ class _RuntimeSourceMixin:
                 )
         if self._deps.is_qobuz_playback_active(qobuz_state):
             await self._deps.qobuz_pause()
+            self._quieted_external_source = "qobuz"
             if not await self._deps.wait_for_pipewire_qobuz_release():
                 raise RuntimeError(
                     "active qbzd sink input did not quiesce before MPV handoff"
@@ -174,6 +218,33 @@ class _RuntimeSourceMixin:
 
     async def resolve_target_rate(self, request: TransitionRequest) -> int | None:
         """Resolve a post-load source rate while the output gate is closed."""
+        if request.source == "qobuz" and request.operation in {"qobuz-play", "qobuz-toggle"}:
+            state = await _drain_qobuz_operation(self._start_qobuz_source(request, establish_rate=False))
+            self._staged_qobuz_track_id = int(state["trackId"])
+            source_rate = state.get("sample_rate")
+            if not isinstance(source_rate, int) or source_rate <= 0:
+                raise RuntimeError("Qobuz start has no decoded track rate")
+            return samplerate.playback_target_rate(source_rate, request.sample_rate_policy or None)
+        if request.source == "qobuz" and request.operation in {"qobuz-next", "qobuz-previous"}:
+            navigate = self._deps.qobuz_navigate
+            if navigate is None:
+                raise RuntimeError("Qobuz navigation is unavailable")
+            state = await _drain_qobuz_operation(navigate(request.operation.removeprefix("qobuz-")))
+            if state.get("navigation_changed") is False:
+                raise RuntimeError("Qobuz navigation has no next or previous target")
+            track_id = self._qobuz_request_track_id(
+                TransitionRequest(operation=request.operation, source="qobuz",
+                                  target_url=state.get("trackId"))
+            )
+            if not track_id:
+                raise RuntimeError("Qobuz navigation has no loaded track identity")
+            self._staged_qobuz_track_id = track_id
+            source_rate = state.get("sample_rate")
+            if not isinstance(source_rate, int) or source_rate <= 0:
+                raise RuntimeError("Qobuz navigation has no decoded track rate")
+            logger.info("Qobuz navigation staged: action=%s track=%s decoded_rate=%s",
+                        request.operation, track_id, source_rate)
+            return samplerate.playback_target_rate(source_rate, request.sample_rate_policy or None)
         if (
             request.source == "local"
             and request.reload_source
@@ -395,9 +466,10 @@ class _RuntimeSourceMixin:
             else:
                 await self._deps.drain_worker(self._player.set_pause, True)
 
+        # Only restores carry a position: replay, measurement restore, the
+        # local sample-rate-policy reload and the channel-tier rollback.
         if (
-            request.operation in {"measurement-restore", "replay", "sample-rate-policy"}
-            and request.source == "local"
+            source_policy.restores_position(request.source)
             and request.restore_position is not None
         ):
             position = max(0.0, float(request.restore_position))
@@ -422,16 +494,108 @@ class _RuntimeSourceMixin:
                         f"expected={position} actual={readback}"
                     )
             logger.info(
-                "Local playback position restored under output gate: "
-                "url=%s position=%.3f",
+                "Playback position restored under output gate: "
+                "source=%s url=%s position=%.3f",
+                request.source,
                 request.target_url,
                 position,
             )
 
         if not await self._deps.ensure_mpv_to_dsp_links():
-            raise RuntimeError("target source to DSP links were not confirmed")
+            # The player is (re)started lazily on demand, so a freshly spawned
+            # mpv can still be announcing its source ports when the first
+            # bounded readiness window expires.  Live regression: the first
+            # /api/play after a crashed mpv failed the whole transition with
+            # "target source to DSP links were not confirmed" while an
+            # immediate retry succeeded.  While the process is alive, give the
+            # graph one more bounded window; a player that died meanwhile
+            # fails immediately instead of spinning.
+            if not self._deps.player_is_running():
+                raise RuntimeError("MPV player is not available")
+            if not await self._deps.ensure_mpv_to_dsp_links():
+                raise RuntimeError("target source to DSP links were not confirmed")
         if not request.should_play:
             await self._deps.drain_worker(self._player.set_pause, True)
+
+    @staticmethod
+    def _qobuz_request_track_id(request: TransitionRequest) -> int:
+        """Return the requested qbzd track id, or 0 when unusable."""
+        candidates = []
+        target_track = getattr(request, "target_track", None)
+        if isinstance(target_track, Mapping):
+            candidates.append(target_track.get("id"))
+        candidates.append(getattr(request, "target_url", None))
+        for candidate in candidates:
+            try:
+                tid = int(str(candidate).strip())
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if tid > 0:
+                return tid
+        return 0
+
+    @staticmethod
+    def _qobuz_state_at_track_end(state: Mapping[str, Any]) -> bool:
+        """Return whether the loaded track already played through."""
+        try:
+            position = float(state.get("position") or 0)
+            duration = float(state.get("duration") or 0)
+        except (TypeError, ValueError):
+            return False
+        return duration > 0 and position >= duration - 2.0
+
+    async def _ensure_qobuz_track_loaded(self, request: TransitionRequest) -> None:
+        """Load the requested track into an empty qbzd player.
+
+        A bare resume cannot put audio into an empty fork player (Connect
+        handoff with no current track, fresh daemon): without this the
+        Playing-confirm below times out on a silently stopped daemon.
+        A paused mid-track player keeps its position: only an unloaded or
+        finished player is (re)loaded, never a matching one.
+        """
+        state = await self._deps.get_qobuz_ui_state()
+        target_id = self._staged_qobuz_track_id or self._qobuz_request_track_id(request)
+        if not target_id:
+            return
+        loaded_id = await self._deps.qobuz_loaded_track_id()
+        if loaded_id == target_id and (
+            state.get("status") in {"Playing", "playing"}
+            or not self._qobuz_state_at_track_end(state)
+        ):
+            return
+        logger.info("Qobuz cold start: loading track %s into the qbzd player", target_id)
+        await self._deps.qobuz_play_track(target_id)
+
+    async def _start_qobuz_source(
+        self, request: TransitionRequest, *, establish_rate: bool = True,
+    ) -> dict[str, Any]:
+        """Load/resume and confirm the raw player before returning ownership."""
+        await self._ensure_qobuz_track_loaded(request)
+        await self._deps.qobuz_play()
+        # Resume acknowledges before the renderer enters Playing. Cancellation
+        # must drain this edge too, not just the thread-backed HTTP request.
+        deadline = time.monotonic() + QOBUZ_PLAYING_CONFIRM_TIMEOUT_S
+        expected_id = self._staged_qobuz_track_id or self._qobuz_request_track_id(request)
+        last_state: dict[str, Any] = {}
+        identity_matches = False
+        while time.monotonic() <= deadline:
+            last_state = await self._deps.get_qobuz_ui_state()
+            loaded_id = await self._deps.qobuz_loaded_track_id()
+            identity_matches = bool(
+                loaded_id > 0
+                and (not expected_id or loaded_id == expected_id)
+                and str(last_state.get("trackId") or "") == str(loaded_id)
+            )
+            if last_state.get("status") in {"Playing", "playing"} and identity_matches:
+                break
+            await asyncio.sleep(0.05)
+        if last_state.get("status") not in {"Playing", "playing"} or not identity_matches:
+            raise RuntimeError(f"Qobuz did not enter Playing state: {last_state}")
+        # The daemon can retain a different renderer rate and overwrite the
+        # graph pin even when its decoded rate equals the transition target.
+        if establish_rate:
+            await self.establish_target_rate(request)
+        return last_state
 
     async def start_target_source(self, request: TransitionRequest) -> None:
         if request.graph_only:
@@ -464,26 +628,7 @@ class _RuntimeSourceMixin:
             return
         if request.source == "qobuz":
             if request.should_play:
-                # UI starts ride the same start boundary as Spotify: actually
-                # start qbzd (a no-op when a Connect claim already plays),
-                # then validate the Playing state before the commit.
-                await self._deps.qobuz_play()
-                # qbzd resumes asynchronously: after a pause-suspend the audio
-                # thread reinitializes the PipeWire stream (~1s) before it
-                # reports Playing, so a single immediate status read would see
-                # the stale Paused state and abort the handoff.  Wait bounded
-                # for the real Playing edge instead, mirroring the MPV IPC
-                # readback loop below.
-                deadline = time.monotonic() + QOBUZ_PLAYING_CONFIRM_TIMEOUT_S
-                last_state: dict[str, Any] = {}
-                while time.monotonic() <= deadline:
-                    qobuz_state = await self._deps.get_qobuz_ui_state()
-                    last_state = qobuz_state
-                    if qobuz_state.get("status") in {"Playing", "playing"}:
-                        break
-                    await asyncio.sleep(0.05)
-                if last_state.get("status") not in {"Playing", "playing"}:
-                    raise RuntimeError(f"Qobuz did not enter Playing state: {last_state}")
+                await _drain_qobuz_operation(self._start_qobuz_source(request))
             else:
                 qobuz_state = await self._deps.get_qobuz_ui_state()
             return

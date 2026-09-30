@@ -58,6 +58,11 @@ class BankCompileTests(unittest.TestCase):
                 {"filterType": "pk", "frequencyHz": 700, "gainDb": -2, "q": 1},
                 {"filterType": "low_shelf", "frequencyHz": 200, "gainDb": 1, "q": 0.7},
                 {"filterType": "high_pass", "frequencyHz": 5000, "gainDb": 0, "q": 0.7}]))]),
+            ("Serial EQ", [{**eq_plugin(eq_preset(bands=[bell(1000, -3)])), "id": "equalizer#0"},
+                           {**eq_plugin(eq_preset(bands=[
+                               bell(2000, 1), {"filterType": "gain", "frequencyHz": 1000, "gainDb": 2, "q": 1},
+                               {"filterType": "delay", "frequencyHz": 1000, "gainDb": 0, "q": 1,
+                                "delayMs": 1.5}])), "id": "equalizer#1"}]),
             ("Big EQ", [eq_plugin(eq_preset(
                 bands=[bell(100 + i * 100, -1) for i in range(20)]))]),
             ("Mid IR", [{"id": "conv", "type": "convolver", "params": {"kernel": "mid"}}]),
@@ -123,6 +128,14 @@ class BankCompileTests(unittest.TestCase):
         self.assertEqual(rows["left_mid"]["gain_db"], 2.0)
         self.assertEqual(rows["left_mid"]["delay_ms"], 1.5)
         self.assertEqual([item["type"] for item in rows["left_mid"]["filters"]], ["bell"])
+
+    def test_serial_eqs_concatenate_in_chain_order(self):
+        state = self.crossover_state()
+        state["modes"]["stereo-sub"]["banks"]["left_mid"]["preset"] = "Serial EQ"
+        rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
+        self.assertEqual([item["frequency_hz"] for item in rows["left_mid"]["filters"]], [1000, 2000])
+        self.assertEqual(rows["left_mid"]["gain_db"], 2.0)
+        self.assertEqual(rows["left_mid"]["delay_ms"], 1.5)
 
     def test_dual_eq_projects_matching_side(self):
         state = self.crossover_state()

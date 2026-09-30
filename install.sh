@@ -510,6 +510,7 @@ ensure_target_user_ownership() {
     "$HOME/.config/spotifyd/spotifyd.conf"
     "$HOME/.config/qbzd"
     "$HOME/.config/autostart/fxroute-spotify.desktop"
+    "$HOME/.local/bin/fxroute"
     "$HOME/.local/bin/fxroute-status"
     "$HOME/.local/bin/fxroute-logs"
     "$HOME/.local/bin/fxroute-restart"
@@ -622,6 +623,7 @@ reject_managed_user_symlinks() {
     "$HOME/.config/autostart/fxroute-spotify.desktop"
     "$HOME/.local"
     "$HOME/.local/bin"
+    "$HOME/.local/bin/fxroute"
     "$HOME/.local/bin/fxroute-status"
     "$HOME/.local/bin/fxroute-logs"
     "$HOME/.local/bin/fxroute-restart"
@@ -5232,6 +5234,11 @@ EOF
 set -euo pipefail
 exec "$INSTALL_ROOT/scripts/update_fxroute.sh" "\$@"
 EOF
+  write_user_helper "$bin_dir/fxroute" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$INSTALL_ROOT/.venv/bin/python3" "$INSTALL_ROOT/scripts/fxroute_stdin.py" "\$@"
+EOF
   write_user_helper "$bin_dir/fxroute-update-ytdlp" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -6226,7 +6233,7 @@ print_summary() {
   echo
   echo "Service: systemctl --user status $SERVICE_NAME"
   echo "Logs: journalctl --user -u $SERVICE_NAME -f"
-  echo "Helpers: fxroute-status, fxroute-logs, fxroute-restart, fxroute-update, fxroute-update-ytdlp"
+  echo "Helpers: fxroute, fxroute-status, fxroute-logs, fxroute-restart, fxroute-update, fxroute-update-ytdlp"
 
   if [[ $MDNS_GUARD_ENABLED -eq 1 ]]; then
     echo "mDNS guard: installed (keeps Spotify user-space mDNS from overriding Avahi host advertisement)"

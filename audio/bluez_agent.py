@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import itertools
 import signal
 import sys
 
@@ -18,6 +19,8 @@ AGENT_INTERFACE = "org.bluez.Agent1"
 AGENT_MANAGER_INTERFACE = "org.bluez.AgentManager1"
 AGENT_PATH = "/fxroute/agent"
 CAPABILITY = "DisplayYesNo"
+REREGISTER_RETRY_MS = 500
+REREGISTER_ATTEMPTS = 10
 
 AUDIO_UUID_PREFIXES = {
     "0000110a",  # Audio Source
@@ -75,6 +78,45 @@ class Agent(dbus.service.Object):
         return
 
 
+class Registration:
+    """Keep the agent registered with the running bluetoothd instance."""
+
+    def __init__(self, bus, schedule=None):
+        self._bus = bus
+        self._schedule = schedule or GLib.timeout_add
+        self.manager = None
+
+    def register(self) -> None:
+        manager = dbus.Interface(self._bus.get_object(BUS_NAME, "/org/bluez"), AGENT_MANAGER_INTERFACE)
+        manager.RegisterAgent(AGENT_PATH, CAPABILITY)
+        manager.RequestDefaultAgent(AGENT_PATH)
+        self.manager = manager
+
+    def on_owner_changed(self, name, _old_owner, new_owner) -> None:
+        """Re-register once a restarted bluetoothd owns org.bluez again.
+
+        Registrations die with the old daemon. Without this the process
+        lives on unregistered, and FXRoute never replaces a live agent, so
+        incoming connections would fail ("Authentication attempt without
+        agent"). Retries cover AgentManager1 not being exported yet.
+        """
+        if name != BUS_NAME or not new_owner:
+            return
+        # Counted per owner change, so an older retry timer keeps its own budget.
+        attempts = itertools.count(1)
+
+        def attempt() -> bool:
+            """One registration attempt; True keeps the GLib retry timer."""
+            try:
+                self.register()
+                return False
+            except dbus.DBusException:
+                return next(attempts) < REREGISTER_ATTEMPTS
+
+        if attempt():
+            self._schedule(REREGISTER_RETRY_MS, attempt)
+
+
 mainloop: GLib.MainLoop
 
 
@@ -91,9 +133,15 @@ def main() -> int:
     bus = dbus.SystemBus()
 
     agent = Agent(bus, AGENT_PATH)
-    manager = dbus.Interface(bus.get_object(BUS_NAME, "/org/bluez"), AGENT_MANAGER_INTERFACE)
-    manager.RegisterAgent(AGENT_PATH, CAPABILITY)
-    manager.RequestDefaultAgent(AGENT_PATH)
+    registration = Registration(bus)
+    registration.register()
+    bus.add_signal_receiver(
+        registration.on_owner_changed,
+        signal_name="NameOwnerChanged",
+        dbus_interface="org.freedesktop.DBus",
+        bus_name="org.freedesktop.DBus",
+        arg0=BUS_NAME,
+    )
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, _quit)
@@ -102,10 +150,12 @@ def main() -> int:
     try:
         mainloop.run()
     finally:
-        try:
-            manager.UnregisterAgent(AGENT_PATH)
-        except Exception:
-            pass
+        if registration.manager is not None:
+            try:
+                # Fails harmlessly when bluetoothd went away meanwhile.
+                registration.manager.UnregisterAgent(AGENT_PATH)
+            except Exception:
+                pass
         del agent
     return 0
 

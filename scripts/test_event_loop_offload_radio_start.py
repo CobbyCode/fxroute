@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import audio.bluetooth as bluetooth_module
 import main
 import playback.media_readiness as media_readiness
-from audio.bluetooth import BluetoothInputMonitor
+from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from dsp.orchestration import DspOrchestrationDeps, DspOrchestrator
 from playback_transition_test_support import make_transition_runtime
 from playback.runtime.mute import _RuntimeMuteMixin
@@ -149,7 +149,7 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
     async def test_bluetooth_monitor_loop_builds_overview_off_loop(self):
         seen = []
         monitor = BluetoothInputMonitor(
-            SimpleNamespace(sync_peak_monitor_for_source_mode_state=None)
+            BluetoothInputDependencies(sync_peak_monitor_for_source_mode_state=None)
         )
 
         async def one_sleep(_delay):
@@ -174,7 +174,7 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
     async def test_bluetooth_monitor_skips_overview_when_source_mode_is_app_playback(self):
         seen = []
         monitor = BluetoothInputMonitor(
-            SimpleNamespace(
+            BluetoothInputDependencies(
                 sync_peak_monitor_for_source_mode_state=None,
                 get_persisted_source_mode=lambda: "app-playback",
             )
@@ -202,7 +202,7 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
     async def test_bluetooth_monitor_without_mode_provider_keeps_legacy_overview(self):
         seen = []
         monitor = BluetoothInputMonitor(
-            SimpleNamespace(sync_peak_monitor_for_source_mode_state=None)
+            BluetoothInputDependencies(sync_peak_monitor_for_source_mode_state=None)
         )
 
         async def one_sleep(_delay):

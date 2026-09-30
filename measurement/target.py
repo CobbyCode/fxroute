@@ -18,6 +18,8 @@ This module is pure: no files, no hardware, no runtime, no global state.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from collections.abc import Sequence
 
 from audio.output_routing import device_key
@@ -69,6 +71,33 @@ def _fingerprint_token(value: object) -> str:
     return value
 
 
+def commit_context(plan: dict, *, bank_id: str, measured_roles: Sequence[str]) -> dict:
+    """Processing a correction committed into the measured bank depends on.
+
+    The measured roles' rendered outputs and everything upstream of them,
+    without the measured bank's own chain: a generated preset replaces that
+    chain, so an earlier commit from the same measurement or an A/B switch
+    in that bank leaves the measurement valid. Roles an area sweep mutes are
+    left out, so edits in other banks do not invalidate it either.
+    """
+    measured = set(measured_roles)
+    measures_global = bank_id == GLOBAL_BANK_ID
+    roles = [output["role"] for output in plan["outputs"]]
+    context = {key: plan[key] for key in ("mode", "device_key", "sample_rate_hz", "crossover_enabled", "order")}
+    if not measures_global:
+        context["global"] = plan["global"]
+    context["outputs"] = [{key: value for key, value in output.items() if measures_global or key != "bank"}
+                          for output in plan["outputs"] if output["role"] in measured]
+    context["physical_routes"] = [{"role": roles[edge["output"]], "channel": edge["channel"]}
+                                  for edge in plan["physical_routes"] if roles[edge["output"]] in measured]
+    return context
+
+
+def _context_token(context: dict) -> str:
+    canonical = json.dumps(context, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def freeze_measurement_target(
     state: dict,
     *,
@@ -77,12 +106,15 @@ def freeze_measurement_target(
     channels: int,
     sample_rate_hz: int,
     fingerprint: str,
+    plan: dict | None = None,
 ) -> dict:
     """Freeze the measurement target from committed output state.
 
     ``fingerprint`` is the service-computed processing fingerprint for the
-    same device and rate.  The result is a detached, JSON-serializable
-    document; later state edits never change a frozen target.
+    same device and rate.  ``plan``, the compiled plan behind it, adds the
+    commit fingerprint (see commit_context).  The result is a detached,
+    JSON-serializable document; later state edits never change a frozen
+    target.
     """
     validated = validate_output_state(state)
     mode = validated["active_mode"]
@@ -121,6 +153,9 @@ def freeze_measurement_target(
         "measured_roles": list(topology.roles) if bank_id == GLOBAL_BANK_ID else list(measured),
         "reference_tap": REFERENCE_TAP_INGRESS,
     }
+    if plan is not None:
+        target["commit_fingerprint"] = _context_token(
+            commit_context(plan, bank_id=bank_id, measured_roles=target["measured_roles"]))
     if bank_id != GLOBAL_BANK_ID and len(measured) == 1 and measured[0] in SUB_ROLES:
         # An isolated sub has no broadband plateau at 120 Hz..8 kHz.
         # Freeze its rendered band, including per-side bass and way filters.
@@ -242,6 +277,10 @@ _LIVE_FIELDS = (
     ("reference_tap", "reference tap"),
     ("measured_roles", "measured roles"),
 )
+# Targets carrying a commit fingerprint compare only the processing a commit
+# into the measured bank depends on (see commit_context).
+_COMMIT_FIELDS = tuple(("commit_fingerprint", label) if field == "processing_fingerprint" else (field, label)
+                       for field, label in _LIVE_FIELDS)
 
 
 def require_commit_target(target: dict, live: dict, *, mode: str, bank_id: str) -> None:
@@ -253,7 +292,9 @@ def require_commit_target(target: dict, live: dict, *, mode: str, bank_id: str) 
     into the measurement's own area while its processing is untouched; anything
     else is rejected with the differing fields named, so a correction measured
     through one area or one revision can never be committed as if it were
-    measured through another.
+    measured through another.  A target with a commit fingerprint ignores the
+    measured bank's own chain and unmeasured roles, so one measurement can
+    feed several presets (A/B variants); older targets compare the whole plan.
     """
     if isinstance(target, dict) and target.get("legacy"):
         return
@@ -266,9 +307,10 @@ def require_commit_target(target: dict, live: dict, *, mode: str, bank_id: str) 
         )
     if not isinstance(live, dict) or live.get("schema") != SCHEMA or live.get("legacy"):
         raise ValueError("Live measurement context is unavailable")
+    fields = _COMMIT_FIELDS if target.get("commit_fingerprint") is not None else _LIVE_FIELDS
     mismatches = [
         f"{label} {target.get(field)!r} != {live.get(field)!r}"
-        for field, label in _LIVE_FIELDS
+        for field, label in fields
         if target.get(field) != live.get(field)
     ]
     if mismatches:

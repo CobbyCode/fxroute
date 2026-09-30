@@ -141,20 +141,33 @@ class LibraryPhoneLayoutTests(unittest.TestCase):
         controls = match.group(0)
         self.assertIn('id="playlist-name"', controls)
         self.assertIn('id="save-playlist"', controls)
-        self.assertIn('id="delete-playlist"', controls)
         self.assertIn('id="cancel-playlist-selection"', controls)
-        # One shared editor row below the detail card: name, save, delete,
-        # cancel in that order.
+        self.assertNotIn('id="delete-playlist"', controls,
+                         "Delete no longer lives in the save row (separate delete path instead)")
+        # One shared editor row: name, save, cancel in that order.
         order = ['id="playlist-name"', 'id="save-playlist"',
-                 'id="delete-playlist"', 'id="cancel-playlist-selection"']
+                 'id="cancel-playlist-selection"']
         positions = [controls.index(marker) for marker in order]
         self.assertEqual(positions, sorted(positions),
-                         "editor row must read name | save | delete | cancel")
+                         "editor row must read name | save | cancel")
 
     def test_playlist_editor_sits_below_the_detail_card(self):
-        self.assertLess(HTML.index('id="playlist-detail"'),
-                        HTML.index('id="playlist-save-row"'),
-                        "editor panel must open below the detail card, not above it")
+        # Home is above the lists (same top position as the Albums reference);
+        # while a detail is open the shared row docks inside the detail
+        # between header and tracks, i.e. below the detail header at runtime.
+        self.assertLess(HTML.index('id="playlist-save-row"'),
+                        HTML.index('id="tracks-list"'),
+                        "editor home must sit above the lists (Tracks/Folders/Albums/Favorites)")
+        # The playlist-detail docking branch must exist as logic, not just as
+        # an identifier: these two statements occur only in dockPlaylistSaveRow
+        # (the bare 'playlistDetailTracks' name also appears in unrelated
+        # selection-sync code, so asserting it alone would prove nothing).
+        # Functional coverage lives in scripts/test_library_save_row.js.
+        library_js = (ROOT / "static" / "library_ui.js").read_text(encoding="utf-8")
+        self.assertIn('els.playlistDetail.classList.contains', library_js,
+                      "the editor must test the playlist detail visibility when docking")
+        self.assertIn('els.playlistDetail.insertBefore(row, els.playlistDetailTracks)', library_js,
+                      "the editor must dock inside the playlist detail between header and tracks")
         self.assertNotIn('id="playlist-detail-favorite"', HTML,
                          "the separate top delete button must be gone (moved into the editor row)")
 

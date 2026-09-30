@@ -31,6 +31,7 @@ The demo is the real FXRoute frontend — same UI — with simulated backend sta
 - Spotify control for a local desktop client or spotifyd (Spotify Connect pairing, no FXRoute login), including Lossless-aware playback through a current desktop client
 - Qobuz Connect player control and a full TIDAL catalog browser with native playback through FXRoute's audio engine
 - Bluetooth and external line input as selectable sources when the host audio stack supports them
+- STDIN pipe input for raw PCM from shell pipelines (`decoder | fxroute stdin …`)
 
 **DSP and output**
 

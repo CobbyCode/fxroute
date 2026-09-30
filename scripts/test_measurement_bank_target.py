@@ -19,6 +19,7 @@ from audio.output_state import (
     set_bank_preset,
     set_crossover,
     set_mode_routing,
+    set_output_processing,
     switch_mode,
     validate_output_state,
 )
@@ -136,11 +137,12 @@ class TargetFixture:
                                         sample_rate_hz=sample_rate_hz)
 
     def freeze(self, state, bank_id, *, channels=8, output_key="A", sample_rate_hz=48000):
+        # Same inputs as main._freeze_measurement_target: fingerprint and plan.
+        plan = self.service.compile_plan(state, output_key=output_key, channels=channels,
+                                         sample_rate_hz=sample_rate_hz)
         return freeze_measurement_target(
             state, bank_id=bank_id, output_key=output_key, channels=channels,
-            sample_rate_hz=sample_rate_hz,
-            fingerprint=self.fingerprint(state, channels=channels, output_key=output_key,
-                                         sample_rate_hz=sample_rate_hz))
+            sample_rate_hz=sample_rate_hz, fingerprint=self.service.fingerprint_plan(plan), plan=plan)
 
     @staticmethod
     def raw_freeze(state, bank_id, **overrides):
@@ -226,8 +228,9 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
         self.assertEqual(frozen["processing_fingerprint"], live["processing_fingerprint"])
         require_commit_target(frozen, live, mode="stereo-sub", bank_id="left_mid")
 
-        # A processing edit breaks it; the differing field is named.
-        edited = set_bank_preset(selected, "stereo-sub", "left_mid", preset="Room EQ")
+        # A processing edit on the measured output breaks it; the differing
+        # field is named. (The bank's own preset is what a commit replaces.)
+        edited = set_output_processing(selected, "stereo-sub", "left_mid", level_db=-2.0)
         with self.assertRaisesRegex(ValueError, "processing '.*' != '.*"):
             require_commit_target(frozen, self.freeze(edited, "left_mid"),
                                   mode="stereo-sub", bank_id="left_mid")
@@ -361,7 +364,7 @@ class CommitTargetTests(TargetFixture, unittest.TestCase):
     def test_processing_and_device_changes_are_rejected_with_details(self):
         target = self.freeze(crossover_state(), "left_mid")
         for field, value, label in (
-            ("processing_fingerprint", "other-fingerprint", "processing"),
+            ("commit_fingerprint", "other-fingerprint", "processing"),
             ("device_key", "device-b", "output device"),
             ("sample_rate_hz", 44100, "sample rate"),
             ("reference_tap", "later", "reference tap"),
@@ -371,6 +374,59 @@ class CommitTargetTests(TargetFixture, unittest.TestCase):
             live[field] = value
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, label):
                 require_commit_target(target, live, mode="stereo-sub", bank_id="left_mid")
+
+    def test_second_preset_from_one_measurement_is_accepted(self):
+        state = crossover_state()
+        target = self.freeze(state, "mid")
+        # The first commit assigns its preset to the listened slot; a second
+        # variant from the same measurement, or an A/B switch there, still fits.
+        first = set_bank_preset(state, "stereo-sub", "mid", preset="Room EQ")
+        live = self.freeze(first, "mid")
+        self.assertNotEqual(live["processing_fingerprint"], target["processing_fingerprint"])
+        require_commit_target(target, live, mode="stereo-sub", bank_id="mid")
+        compared = set_bank_preset(first, "stereo-sub", "mid", preset_b="Direct", active_side="B")
+        require_commit_target(target, self.freeze(compared, "mid"), mode="stereo-sub", bank_id="mid")
+
+    def test_other_bank_edits_do_not_invalidate_an_area_measurement(self):
+        state = crossover_state()
+        target = self.freeze(state, "mid")
+        for bank_id in ("low", "high", "sub1", "sub2"):
+            state = set_bank_preset(state, "stereo-sub", bank_id, preset="Room EQ")
+        state = set_output_processing(state, "stereo-sub", "sub1", level_db=-4.0)
+        require_commit_target(target, self.freeze(state, "mid"), mode="stereo-sub", bank_id="mid")
+
+    def test_upstream_and_measured_output_changes_still_invalidate(self):
+        state = crossover_state()
+        target = self.freeze(state, "mid")
+        for label, changed in (
+            ("global", set_bank_preset(state, "stereo-sub", "global", preset="Room EQ")),
+            ("trim", set_output_processing(state, "stereo-sub", "left_mid", level_db=-2.0)),
+            ("crossover", set_output_processing(state, "stereo-sub", "right_mid",
+                                                lowpass=crossover_filter(3000))),
+        ):
+            with self.subTest(label), self.assertRaisesRegex(ValueError, "processing"):
+                require_commit_target(target, self.freeze(changed, "mid"),
+                                      mode="stereo-sub", bank_id="mid")
+
+    def test_global_measurement_ignores_only_the_global_chain(self):
+        state = crossover_state()
+        target = self.freeze(state, GLOBAL_BANK_ID)
+        committed = set_bank_preset(state, "stereo-sub", "global", preset="Room EQ")
+        require_commit_target(target, self.freeze(committed, GLOBAL_BANK_ID),
+                              mode="stereo-sub", bank_id=GLOBAL_BANK_ID)
+        area = set_bank_preset(state, "stereo-sub", "sub1", preset="Room EQ")
+        with self.assertRaisesRegex(ValueError, "processing"):
+            require_commit_target(target, self.freeze(area, GLOBAL_BANK_ID),
+                                  mode="stereo-sub", bank_id=GLOBAL_BANK_ID)
+
+    def test_targets_without_a_commit_fingerprint_compare_the_whole_plan(self):
+        state = crossover_state()
+        target = self.freeze(state, "mid")
+        del target["commit_fingerprint"]
+        require_commit_target(target, self.freeze(state, "mid"), mode="stereo-sub", bank_id="mid")
+        live = self.freeze(set_bank_preset(state, "stereo-sub", "sub1", preset="Room EQ"), "mid")
+        with self.assertRaisesRegex(ValueError, "processing"):
+            require_commit_target(target, live, mode="stereo-sub", bank_id="mid")
 
     def test_legacy_and_unavailable_contexts(self):
         # A measurement from before the frozen-target era stays committable.

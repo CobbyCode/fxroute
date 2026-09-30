@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable
 from audio import pw_link
 from audio.input_links import input_links_present
 from audio.samplerate import SOURCE_MODE_EXTERNAL_INPUT
+from audio.source_monitor import UnavailabilityConfirmation, run_source_monitor_loop
 
 logger = logging.getLogger(__name__)
 EXTERNAL_INPUT_MONITOR_INTERVAL_SECONDS = 3
@@ -57,6 +58,15 @@ class ExternalInputRouting:
         self._pending_channels: tuple[str, str] | None = None
         self._sync_lock = asyncio.Lock()
         self.monitor_task: asyncio.Task | None = None
+        # Observed once per monitor tick; the source overview reads
+        # confirmed() and remembered_input() for a missing selection.
+        self.availability = UnavailabilityConfirmation()
+        self._remembered_input: dict[str, Any] | None = None
+
+    def remembered_input(self, key: str) -> dict[str, Any] | None:
+        """Last linked entry for ``key``, to label it while it is missing."""
+        entry = self._remembered_input
+        return dict(entry) if entry is not None and entry.get("key") == key else None
 
     def _candidate_source_ports(self, source_name: str, channel: str) -> tuple[str, ...]:
         return (
@@ -157,8 +167,19 @@ class ExternalInputRouting:
             return await self._sync_unlocked(source_overview)
 
     async def _sync_unlocked(self, source_overview: dict[str, Any] | None = None) -> dict[str, Any]:
-        overview = source_overview or self._deps.get_audio_source_overview()
+        overview = source_overview or await asyncio.to_thread(self._deps.get_audio_source_overview)
+        if not self._external_persisted():
+            # Left external input: an old outage must not count later.
+            self.availability.reset()
         if overview.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
+            await self.disable()
+            return overview
+        input_state = overview.get("external_input_state")
+        if input_state == "unconfirmed":
+            # One failed probe: keep the working loopback until confirmed.
+            return overview
+        if input_state == "unavailable":
+            # Confirmed loss of the saved input: unlink, never substitute.
             await self.disable()
             return overview
         current_input = overview.get("selected_input") or overview.get("current_input") or {}
@@ -173,37 +194,61 @@ class ExternalInputRouting:
             right,
             selection_key=str(current_input.get("key") or ""),
         )
+        self._remembered_input = dict(current_input)
         return overview
 
     async def _monitor_once(self) -> None:
-        overview = await asyncio.to_thread(self._deps.get_audio_source_overview)
+        """One tick outside the loop: build, then act without lock handling."""
+        await self._act(await asyncio.to_thread(self._deps.get_audio_source_overview))
+
+    async def _act(self, overview: dict[str, Any]) -> None:
+        self._observe_availability(overview)
         if overview.get("mode") == SOURCE_MODE_EXTERNAL_INPUT:
+            if overview.get("external_input_state") == "unconfirmed":
+                # Keep the loopback and the published state until a later
+                # probe confirms the loss or reports the input again.
+                return
             overview = await self.sync(overview)
         elif self.loopback_source_name is not None:
             await self.sync(overview)
-        else:
+        elif not self._external_persisted():
             return
+        # Otherwise external input stays selected, the overview fell back
+        # (no input present) and no loopback was ever established (linking
+        # failed, or started without the interface): publish that state
+        # like any other fallback. Unchanged ticks are deduplicated by the
+        # shared publish path.
         if self._deps.sync_peak_monitor_for_source_mode_state is not None:
             await self._deps.sync_peak_monitor_for_source_mode_state(overview)
 
+    def _observe_availability(self, overview: dict[str, Any]) -> None:
+        """Record this tick's raw probe: is the saved input present?"""
+        if self._external_persisted():
+            self.availability.observe(overview.get("external_input_state") == "available")
+        else:
+            self.availability.reset()
+
+    def _external_persisted(self) -> bool:
+        mode_provider = self._deps.get_persisted_source_mode
+        return mode_provider is not None and mode_provider() == SOURCE_MODE_EXTERNAL_INPUT
+
     async def run_monitor_loop(self) -> None:
-        while True:
-            mode_provider = self._deps.get_persisted_source_mode
-            if mode_provider is not None and mode_provider() != SOURCE_MODE_EXTERNAL_INPUT and self.loopback_source_name is None:
-                await asyncio.sleep(EXTERNAL_INPUT_MONITOR_INTERVAL_SECONDS)
-                continue
-            try:
-                lock_provider = self._deps.get_source_transition_lock
-                if lock_provider is not None:
-                    async with lock_provider():
-                        await self._monitor_once()
-                else:
-                    await self._monitor_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.debug("External input monitor loop check failed: %s", exc)
-            await asyncio.sleep(EXTERNAL_INPUT_MONITOR_INTERVAL_SECONDS)
+        await run_source_monitor_loop(
+            name="External input",
+            interval=EXTERNAL_INPUT_MONITOR_INTERVAL_SECONDS,
+            idle=self._idle,
+            build=lambda: self._deps.get_audio_source_overview(),
+            act=self._act,
+            lock_provider=self._deps.get_source_transition_lock,
+        )
+
+    def _idle(self) -> bool:
+        mode_provider = self._deps.get_persisted_source_mode
+        return (
+            mode_provider is not None
+            and mode_provider() != SOURCE_MODE_EXTERNAL_INPUT
+            and self.loopback_source_name is None
+        )
 
     async def stop(self) -> None:
         task = self.monitor_task

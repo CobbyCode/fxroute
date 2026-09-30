@@ -10,9 +10,81 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import (default_bass_management, default_output_state,
-                                routing_for_device, validate_output_state)
-from audio.output_state_migration import migrate_legacy_output_state, upgrade_output_state
+                                routing_for_device, set_crossover, set_mode_routing,
+                                validate_output_state)
+from audio.output_state_migration import (drop_foreign_bank_presets, migrate_legacy_output_state,
+                                          upgrade_output_state)
 from audio.output_topology import derive_topology
+
+
+TAGS = {"Room": "global", "MainEQ": "main", "MainIR": "main", "LowEQ": "low",
+        "LeftLow": "left_low", "Sub1EQ": "sub1"}
+
+
+def bank_state(bindings):
+    state = set_crossover(default_output_state(), "stereo", True)
+    state = set_mode_routing(state, "stereo", "A", ["left_low", "right_low", "left_high", "right_high"])
+    state = set_mode_routing(state, "stereo-sub", "A", ["main_l", "main_r", "sub1", "sub2"])
+    for (mode, role), (preset, preset_a, preset_b) in bindings.items():
+        state["modes"][mode]["banks"][role] = {"preset": preset, "preset_a": preset_a, "preset_b": preset_b}
+    return validate_output_state(state)
+
+
+class ForeignBankPresetTests(unittest.TestCase):
+    def drop(self, state):
+        return drop_foreign_bank_presets(state, TAGS.get)
+
+    def banks(self, state, mode):
+        return state["modes"][mode]["banks"]
+
+    def test_foreign_b_is_cleared_and_listening_falls_back_to_a(self):
+        state = bank_state({("stereo", "left_low"): ("Room", "Neutral", "Room"),
+                            ("stereo", "right_low"): ("Room", "Neutral", "Room")})
+        result, changes = self.drop(state)
+        for role in ("left_low", "right_low"):
+            self.assertEqual(self.banks(result, "stereo")[role],
+                             {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
+        self.assertEqual(len(changes), 2)
+        self.assertIn("stereo/left_low", changes[0])
+
+    def test_foreign_a_falls_back_to_neutral_and_keeps_an_owned_b(self):
+        state = bank_state({("stereo-sub", "main_l"): ("MainEQ", "Room", "MainEQ"),
+                            ("stereo-sub", "main_r"): ("Room", "Room", "MainIR"),
+                            ("stereo-sub", "sub1"): ("Room", "Room", "Neutral")})
+        banks = self.banks(self.drop(state)[0], "stereo-sub")
+        self.assertEqual(banks["main_l"], {"preset": "MainEQ", "preset_a": "Neutral", "preset_b": "MainEQ"})
+        self.assertEqual(banks["main_r"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": "MainIR"})
+        self.assertEqual(banks["sub1"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
+
+    def test_global_drops_area_presets_and_keeps_its_own(self):
+        state = bank_state({("stereo", "global"): ("Room", "Room", "MainEQ"),
+                            ("stereo-sub", "global"): ("MainEQ", "Room", "MainEQ")})
+        result = self.drop(state)[0]
+        self.assertEqual(self.banks(result, "stereo")["global"],
+                         {"preset": "Room", "preset_a": "Room", "preset_b": None})
+        self.assertEqual(self.banks(result, "stereo-sub")["global"],
+                         {"preset": "Room", "preset_a": "Room", "preset_b": None})
+
+    def test_valid_bindings_are_untouched_and_the_cleanup_is_idempotent(self):
+        state = bank_state({("stereo", "global"): ("Room", "Neutral", "Room"),
+                            ("stereo", "left_low"): ("LowEQ", "LeftLow", "LowEQ"),
+                            ("stereo", "left_high"): ("Direct", "Neutral", "Direct"),
+                            ("stereo-sub", "main_l"): ("MainIR", "MainEQ", "MainIR"),
+                            ("stereo-sub", "main_r"): ("Untagged", "Untagged", "MainIR"),
+                            ("stereo-sub", "sub1"): ("Sub1EQ", "Sub1EQ", "Direct")})
+        result, changes = self.drop(state)
+        self.assertEqual(changes, [])
+        self.assertEqual(result, state)
+        dirty = bank_state({("stereo", "left_low"): ("Room", "Neutral", "Room")})
+        cleaned = self.drop(dirty)[0]
+        self.assertEqual(self.drop(cleaned), (cleaned, []))
+
+    def test_an_unlisted_listening_preset_is_kept_unless_foreign(self):
+        state = bank_state({("stereo-sub", "sub1"): ("Neutral", "Direct", "Room"),
+                            ("stereo-sub", "sub2"): ("Room", "Direct", "Sub1EQ")})
+        banks = self.banks(self.drop(state)[0], "stereo-sub")
+        self.assertEqual(banks["sub1"], {"preset": "Neutral", "preset_a": "Direct", "preset_b": None})
+        self.assertEqual(banks["sub2"], {"preset": "Direct", "preset_a": "Direct", "preset_b": None})
 
 
 class OutputStateMigrationTests(unittest.TestCase):

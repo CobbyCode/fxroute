@@ -1428,11 +1428,17 @@ class DSPManager:
                            "q": float(band.get("q", 1.0))})
         return result
 
-    def delete_preset(self, preset_name: str, *,
-                      pinned_presets: tuple[str, ...] | frozenset[str] | set[str] | list[str] = ()) -> None:
+    def require_deletable_preset(self, preset_name: str) -> str:
+        """Return the clean name of an existing, non-built-in preset."""
         name = clean_name(preset_name)
         if name in self.PROTECTED_PRESETS:
             raise ValueError(f'Preset "{name}" is a built-in preset and cannot be deleted')
+        self.preset_store.read(name)
+        return name
+
+    def delete_preset(self, preset_name: str, *,
+                      pinned_presets: tuple[str, ...] | frozenset[str] | set[str] | list[str] = ()) -> None:
+        name = self.require_deletable_preset(preset_name)
         if name in {clean_name(pinned) for pinned in pinned_presets}:
             raise ValueError(f'Preset "{name}" is used by an output bank and cannot be deleted')
         payload = self.preset_store.read(name)

@@ -36,7 +36,7 @@ from dsp.effects_extras import (
 from dsp.persistence import clean_name
 from audio.output_service import MeasurementActiveError
 from audio.filter_banks import resolve_bank
-from audio.output_state import referenced_presets, set_bank_preset
+from audio.output_state import referenced_presets, release_bank_presets, set_bank_preset
 from audio.output_state_store import StateConflictError
 from library.core import path_within_root
 from library.api import _cleanup_temp_file
@@ -354,24 +354,48 @@ def _verify_measurement_commit(source_measurement_id: object, binding: dict | No
         }) from exc
 
 
-def _pinned_deletion_presets(dsp_mgr) -> set[str]:
-    """Presets referenced by output banks or legacy compare slots."""
-    pinned: set[str] = set()
+def _pinned_deletion_presets() -> set[str]:
+    """Presets still referenced by output bank slots (checked after release).
+
+    Legacy compare slots never pin: reading them drops missing presets.
+    """
     service = _output_state_service()
-    if service is not None:
-        try:
-            pinned.update(referenced_presets(service.load()))
-        except ValueError:
-            logger.warning("Output state unavailable; bank-pinned preset guard skipped")
+    if service is None:
+        return set()
     try:
-        compare = dsp_mgr.load_compare_state()
-    except Exception:
-        compare = {}
-    if isinstance(compare, dict):
-        for key in ("presetA", "presetB"):
-            if compare.get(key):
-                pinned.add(compare[key])
-    return pinned
+        return referenced_presets(service.load())
+    except ValueError:
+        logger.warning("Output state unavailable; bank-pinned preset guard skipped")
+        return set()
+
+
+async def _release_bank_slots(name: str) -> bool:
+    """Release every bank slot referencing a preset that is being deleted.
+
+    Global and every area bank follow the same compare rules (see
+    release_bank_presets). Returns whether a slot was released.
+    """
+    service = _output_state_service()
+    if service is None:
+        return False
+    try:
+        state = service.load()
+    except ValueError:
+        logger.warning("Output state unavailable; bank slots not released")
+        return False
+    released, changes = release_bank_presets(state, lambda _role, preset: preset == name)
+    if not changes:
+        return False
+    try:
+        await _deps().drain_worker(service.commit_unowned, released,
+                                   expected_revision=state["revision"])
+    except MeasurementActiveError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except StateConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    for change in changes:
+        logger.info("Preset delete: %s", change)
+    return True
 
 
 @router.get("/api/dsp/extras")
@@ -1401,9 +1425,13 @@ async def delete_dsp_preset(request: Request):
 
     try:
         async with _deps().dsp_mutation_lock():
-            deleted_active = dsp_mgr.get_active_preset() == clean_name(preset_name)
-            dsp_mgr.delete_preset(
-                preset_name, pinned_presets=_pinned_deletion_presets(dsp_mgr))
+            name = dsp_mgr.require_deletable_preset(preset_name)
+            deleted_active = dsp_mgr.get_active_preset() == name
+            released = await _release_bank_slots(name)
+            dsp_mgr.delete_preset(name, pinned_presets=_pinned_deletion_presets())
+        if released and _deps().sync_v2_head_live is not None:
+            # The released slots are committed; render them before reporting.
+            await _deps().sync_v2_head_live()
         if deleted_active:
             # The manager already moved the persisted active state to the
             # Neutral fallback; resync the running native engine through the

@@ -212,6 +212,11 @@ UFW/firewalld rule, in
 `~/.config/fxroute/install-state.json` so the uninstaller can distinguish its
 components from pre-existing installations.
 
+The installer also places an `fxroute` pipe client in `~/.local/bin` (the
+`fxroute stdin` command for STDIN pipe input, see the manual). Reruns and the
+in-app update refresh only this exact owned wrapper and never overwrite a
+foreign file of the same name; the uninstaller removes it only when unchanged.
+
 The home-directory install record represents one active FXRoute target. A
 second target is rejected until the recorded installation is removed, avoiding
 cross-target ownership cleanup. Project-directory removal also refuses the

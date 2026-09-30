@@ -19,6 +19,10 @@ EXTERNAL_SOURCES = frozenset({"spotify", "qobuz"})
 
 ALL_SOURCES = frozenset((*MPV_SOURCES, *EXTERNAL_SOURCES))
 
+# MPV sources backed by a seekable file (TIDAL plays a local cache file);
+# radio is a live stream and restarts instead.
+POSITION_RESTORE_SOURCES = frozenset({"local", "tidal"})
+
 # Playback engine per source. ``tidal`` uses the MPV engine but stays its own
 # source for footer/debug/queue/measurement-restore semantics.
 ENGINE_BY_SOURCE = {
@@ -57,6 +61,11 @@ def is_mpv_source(source: str | None) -> bool:
 def is_external_source(source: str | None) -> bool:
     """Return whether ``source`` is an external renderer (spotify/qobuz)."""
     return source in EXTERNAL_SOURCES
+
+
+def restores_position(source: str | None) -> bool:
+    """Return whether a playback position of ``source`` can be restored."""
+    return source in POSITION_RESTORE_SOURCES
 
 
 def engine_for(source: str | None) -> str | None:

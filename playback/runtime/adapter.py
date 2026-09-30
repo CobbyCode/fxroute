@@ -33,6 +33,9 @@ class FxrouteTransitionRuntime(
         self._deps = deps
         self._output_key: str | None = None
         self._staged_target_url: str | None = None
+        self._quieted_external_source: str | None = None
+        self._staged_qobuz_track_id: int | None = None
+        self._qobuz_stream_rate: int | None = None
 
     @property
     def _player(self) -> Any:

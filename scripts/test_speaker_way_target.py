@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from audio.output_state import default_output_state, set_crossover, set_mode_routing, switch_mode
+from dsp.processing_plan import compile_processing_plan
 
 
 def crossover_state():
@@ -46,9 +47,15 @@ class FakeService:
     def ensure_state(self):
         return self._state
 
-    def fingerprint(self, state, *, output_key, channels, sample_rate_hz):
+    def compile_plan(self, state, *, output_key, channels, sample_rate_hz):
         assert state is self._state
-        return f"fp-{output_key}-{channels}-{sample_rate_hz}"
+        return compile_processing_plan(state, output_key=output_key, channels=channels,
+                                       sample_rate_hz=sample_rate_hz,
+                                       preset_loader=lambda _name: {"chain": []})
+
+    @staticmethod
+    def fingerprint_plan(plan):
+        return f"fp-{plan['device_key']}-{len(plan['outputs'])}-{plan['sample_rate_hz']}"
 
 
 class WayTargetTests(unittest.TestCase):

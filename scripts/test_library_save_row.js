@@ -2,23 +2,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Functional + structural checks for the local library playlist save row.
 //
-// The save row is a single shared node. Its home is below the detail cards
-// (right before #library-info), but while an album detail is open it docks
-// inside the detail between header and tracks — like the TIDAL save row —
-// instead of sitting misplaced under the track list. This test executes the
-// real dockPlaylistSaveRow/updatePlaylistSaveRowVisibility functions
-// extracted from static/library_ui.js against a minimal parent/child DOM model and
+// The save row is a single shared node. Its home is above the content lists
+// (right before #tracks-list, hence above the Tracks/Folders list and above
+// the Albums/Favorites grid at the same full content width), but while an
+// album or playlist detail is open it docks inside the detail between header
+// and tracks — like the TIDAL save row — instead of sitting misplaced under
+// the track list. This test executes the real
+// dockPlaylistSaveRow/updatePlaylistSaveRowVisibility functions extracted
+// from static/library_ui.js against a minimal parent/child DOM model and
 // asserts that:
 //
 //   1. with an open album detail the row docks between header and tracks,
-//   2. with a closed detail the row returns home before #library-info,
-//   3. docking is idempotent and preserves node identity (typing in the
+//   2. with an open playlist detail the row docks between header and tracks,
+//   3. with a closed detail the row returns home before #tracks-list (above
+//      Tracks/Folders/Albums-grid/Favorites, never under the result list),
+//   4. static/index.html keeps the row before #tracks-list,
+//   5. docking is idempotent and preserves node identity (typing in the
 //      name field never moves the focused input),
-//   4. visibility still follows the selection/edit state.
+//   6. visibility follows the selection in every view including the
+//      playlist detail (hidden at 0, visible with selection, hidden again
+//      after the last deselect).
 //
 // It also asserts the desktop CSS contract: the local row uses the full
 // content width with the name field absorbing the extra space while
-// Save/Delete/Cancel keep compact natural widths (like the TIDAL row).
+// Save/Delete/Cancel keep compact natural widths (like the TIDAL album row).
 
 const assert = require('assert/strict');
 const fs = require('fs');
@@ -26,9 +33,9 @@ const path = require('path');
 const vm = require('vm');
 
 const root = path.join(__dirname, '..');
-const appJs = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
 const libraryJs = fs.readFileSync(path.join(root, 'static', 'library_ui.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'static', 'style.css'), 'utf8');
+const html = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
 
 function extractFunction(source, name) {
     const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -123,9 +130,11 @@ function orderNames(parent) {
 }
 
 function makeTree() {
-    // Mirrors static/index.html: tracks, grid, album detail
-    // (header/tracks/discover), playlist detail, save row, library info.
+    // Mirrors static/index.html: save row home before #tracks-list, then
+    // tracks, grid, album detail (header/tracks/discover), playlist detail
+    // (header/tracks), library info.
     const tab = makeNode('tab-library');
+    const saveRow = makeNode('playlist-save-row', { hidden: true });
     const tracksList = makeNode('tracks-list');
     const albumsGrid = makeNode('albums-grid', { hidden: true });
     const albumDetail = makeNode('album-detail', { hidden: true });
@@ -136,25 +145,33 @@ function makeTree() {
     albumDetail.appendChild(albumTracks);
     albumDetail.appendChild(albumDiscover);
     const playlistDetail = makeNode('playlist-detail', { hidden: true });
-    const saveRow = makeNode('playlist-save-row', { hidden: true });
+    const playlistHeader = makeNode('playlist-detail-header');
+    const playlistTracks = makeNode('playlist-detail-tracks');
+    playlistDetail.appendChild(playlistHeader);
+    playlistDetail.appendChild(playlistTracks);
     const saveControls = makeNode('playlist-save-controls');
-    const deleteBtn = makeNode('delete-playlist', { hidden: true });
     const libraryInfo = makeNode('library-info');
+    tab.appendChild(saveRow);
     tab.appendChild(tracksList);
     tab.appendChild(albumsGrid);
     tab.appendChild(albumDetail);
     tab.appendChild(playlistDetail);
-    tab.appendChild(saveRow);
     tab.appendChild(libraryInfo);
     const elements = {
         albumDetail,
         albumDetailTracks: albumTracks,
+        playlistDetail,
+        playlistDetailTracks: playlistTracks,
+        tracksList,
+        albumsGrid,
         libraryInfo,
         playlistSaveRow: saveRow,
         playlistSaveControls: saveControls,
-        deletePlaylistBtn: deleteBtn,
     };
-    return { tab, elements, albumDetail, albumTracks, saveRow, libraryInfo };
+    return {
+        tab, elements, albumDetail, albumTracks, playlistDetail, playlistTracks,
+        saveRow, tracksList, albumsGrid, libraryInfo,
+    };
 }
 
 function makeSandbox(tree, { selected = 0, editingPlaylist = false } = {}) {
@@ -194,7 +211,19 @@ async function runVisibility(sandbox) {
             'the save row must be visible with a track selection');
     }
 
-    // 2. Closed detail: row returns home before #library-info.
+    // 2. Open playlist detail: row docks between header and tracks as well.
+    {
+        const tree = makeTree();
+        tree.playlistDetail.classList.remove('hidden');
+        await runVisibility(makeSandbox(tree, { selected: 0, editingPlaylist: true }));
+        assert.deepEqual(orderNames(tree.playlistDetail),
+            ['playlist-detail-header', 'playlist-save-row', 'playlist-detail-tracks'],
+            'the save row must dock between header and tracks while the playlist detail is open');
+    }
+
+    // 3. Closed detail: row returns home before #tracks-list (above the
+    // Tracks/Folders list and above the Albums/Favorites grid, never under
+    // the result list).
     {
         const tree = makeTree();
         tree.albumDetail.classList.remove('hidden');
@@ -204,11 +233,27 @@ async function runVisibility(sandbox) {
         await runVisibility(makeSandbox(tree, { selected: 2 }));
         assert.equal(tree.saveRow.parentElement.name, 'tab-library',
             'the save row must return to the library tab when the detail closes');
-        assert.equal(tree.saveRow.nextSibling, tree.libraryInfo,
-            'the save row must sit right before #library-info at home');
+        assert.equal(tree.saveRow.nextSibling, tree.tracksList,
+            'the save row must sit right before #tracks-list at home (above Tracks/Folders/Albums/Favorites)');
     }
 
-    // 3. Idempotent: repeated updates keep order and node identity.
+    // 4. Static home in index.html: row before tracks list, not at the bottom.
+    {
+        const rowPos = html.indexOf('id="playlist-save-row"');
+        const tracksPos = html.indexOf('id="tracks-list"');
+        const gridPos = html.indexOf('id="albums-grid"');
+        const infoPos = html.indexOf('id="library-info"');
+        assert.ok(rowPos >= 0 && tracksPos >= 0 && gridPos >= 0 && infoPos >= 0,
+            'index.html must contain the save row, lists and info');
+        assert.ok(rowPos < tracksPos,
+            'the save row home must precede #tracks-list (same logical position as the album detail row)');
+        assert.ok(rowPos < gridPos,
+            'the save row home must precede #albums-grid (Favorites/Albums share the top position)');
+        assert.ok(tracksPos < infoPos,
+            'sanity: the lists must precede #library-info');
+    }
+
+    // 5. Idempotent: repeated updates keep order and node identity.
     {
         const tree = makeTree();
         tree.albumDetail.classList.remove('hidden');
@@ -223,20 +268,29 @@ async function runVisibility(sandbox) {
             'docking must preserve the save row node (and its focused input)');
     }
 
-    // 4. Visibility still follows selection/edit state.
+    // 6. Visibility follows the selection in every view, including the
+    // playlist detail: hidden at 0 selected tracks, visible with a
+    // selection, hidden again once the last track is deselected.
     {
         const tree = makeTree();
         await runVisibility(makeSandbox(tree, { selected: 0 }));
         assert.ok(tree.saveRow.classList.contains('hidden'),
             'the save row must stay hidden without a selection');
         await runVisibility(makeSandbox(tree, { selected: 0, editingPlaylist: true }));
+        assert.ok(tree.saveRow.classList.contains('hidden'),
+            'the save row must stay hidden in the playlist detail without a selection');
+        await runVisibility(makeSandbox(tree, { selected: 2, editingPlaylist: true }));
         assert.ok(!tree.saveRow.classList.contains('hidden'),
-            'the save row must stay open while a playlist is edited');
-        assert.ok(!tree.elements.deletePlaylistBtn.classList.contains('hidden'),
-            'Delete must be reachable while a playlist is edited');
+            'the save row must be visible in the playlist detail with a selection');
+        await runVisibility(makeSandbox(tree, { selected: 0, editingPlaylist: true }));
+        assert.ok(tree.saveRow.classList.contains('hidden'),
+            'the save row must hide again once the last track is deselected');
+        await runVisibility(makeSandbox(tree, { selected: 1 }));
+        assert.ok(!tree.saveRow.classList.contains('hidden'),
+            'the save row must be visible with a track selection');
     }
 
-    // 5. Desktop CSS contract: full-width row, growing name field, compact
+    // 7. Desktop CSS contract: full-width row, growing name field, compact
     // buttons — the local row follows the TIDAL album row language.
     const rowRule = css.match(/\.playlist-save-row\s*\{[^}]*\}/);
     assert.ok(rowRule && /width:\s*100%/.test(rowRule[0]),

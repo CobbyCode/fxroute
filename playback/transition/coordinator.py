@@ -372,6 +372,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
         self,
         stages: _TransitionStages,
         request: TransitionRequest,
+        reason: str = "claim-owner-already-committed",
     ) -> TransitionResult:
         """Discard a stale external-renderer claim without mutating playback.
 
@@ -387,7 +388,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             state={
                 "committed": False,
                 "skipped": True,
-                "reason": "claim-owner-already-committed",
+                "reason": reason,
             },
         )
         self._record_result(result)
@@ -789,7 +790,14 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     if should_skip:
                         return await self._skip_claim_noop(stages, active_request)
                 self._ensure_source_current(active_request, "lock-acquired")
-                snapshot = await self.runtime.read_transition_snapshot(request)
+                refresher = getattr(self.runtime, "refresh_transition_request", None)
+                if callable(refresher):
+                    refreshed = await refresher(active_request)
+                    if isinstance(refreshed, str):
+                        return await self._skip_claim_noop(stages, active_request, refreshed)
+                    if isinstance(refreshed, TransitionRequest):
+                        active_request = refreshed
+                snapshot = await self.runtime.read_transition_snapshot(active_request)
                 if (
                     not active_request.audio_overview
                     and isinstance(snapshot, Mapping)
@@ -838,7 +846,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                         lambda: self._close_gate(stages.transition_id, audible_output=audible_output),
                     )
 
-                await self._stage(stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(request))
+                await self._stage(stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(active_request))
 
                 if (
                     active_request.operation == "measurement-restore"

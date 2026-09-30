@@ -13,7 +13,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -72,6 +72,20 @@ class PeakMonitorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MPVCommandTests(unittest.TestCase):
+    @staticmethod
+    def _attach_live_child(wrapper):
+        """Make the wrapper report available without touching liveness.
+
+        is_running() follows the child process (a stale _running flag must
+        not survive mpv), so an IPC test needs a child that is still alive:
+        mock.poll() returning None is exactly that. The gate itself stays
+        under test in scripts/test_player_lifecycle.py.
+        """
+        process = Mock()
+        process.poll.return_value = None
+        wrapper.process = process
+        return process
+
     def test_empty_and_error_responses_are_failures(self):
         class FakeSocket:
             response = b""
@@ -98,6 +112,7 @@ class MPVCommandTests(unittest.TestCase):
 
         wrapper = player.MPVWrapper()
         wrapper._running = True
+        self._attach_live_child(wrapper)
         empty = FakeSocket()
         with patch("playback.player.socket.socket", return_value=empty):
             with self.assertRaises(player.MPVError):
@@ -151,6 +166,7 @@ class MPVCommandTests(unittest.TestCase):
 
         wrapper = player.MPVWrapper()
         wrapper._running = True
+        self._attach_live_child(wrapper)
         fake = EventThenResponseSocket()
         with patch("playback.player.socket.socket", return_value=fake):
             result = wrapper._send_command("loadfile", "/music/a.flac", "replace")

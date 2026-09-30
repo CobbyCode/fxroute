@@ -12,6 +12,7 @@ child/task lifecycle before publishing new state or freeing ownership.
 """
 
 import asyncio
+import signal
 import sys
 import unittest
 from pathlib import Path
@@ -56,6 +57,93 @@ class _FakeProc:
     async def communicate(self):
         await self._exited.wait()
         return (b"", b"")
+
+
+class PeakMonitorRealCaptureTests(unittest.IsolatedAsyncioTestCase):
+    async def _stop_real_capture(self, *, cancel_stop=False, grace=0.1):
+        monitor = DSPPeakMonitor()
+        monitor._discover_target = AsyncMock(return_value=TARGET)
+        monitor._link_capture_stream = AsyncMock()
+        create = asyncio.create_subprocess_exec
+        children = []
+        read_errors = []
+        drains = []
+        terminated = asyncio.Event()
+
+        async def spawn(*argv, **kwargs):
+            # Hold both real pipes open until kill(), including after SIGTERM.
+            proc = await create(sys.executable, "-c",
+                                "import signal,sys,time; "
+                                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                                "sys.stdout.buffer.write(b'\\0'*8); "
+                                "sys.stdout.buffer.flush(); time.sleep(30)", **kwargs)
+            children.append(proc)
+            communicate = proc.communicate
+            terminate = proc.terminate
+
+            async def observe_drain():
+                drains.append(proc)
+                try:
+                    return await communicate()
+                except RuntimeError as exc:
+                    read_errors.append(str(exc))
+                    raise
+
+            def observe_terminate():
+                terminate()
+                terminated.set()
+
+            proc.communicate = observe_drain
+            proc.terminate = observe_terminate
+            return proc
+
+        try:
+            with patch.object(peak_monitor.asyncio, "create_subprocess_exec", side_effect=spawn), \
+                    patch.object(peak_monitor, "_resolve_capture_rate", return_value=48000), \
+                    patch.object(peak_monitor, "PEAK_MONITOR_COMMAND_TERMINATE_GRACE_SECONDS", grace):
+                await monitor.start()
+                task = monitor._task
+                async with asyncio.timeout(3):
+                    while not children or monitor._last_audio_sample_at is None \
+                            or children[0].stdout._waiter is None:
+                        await asyncio.sleep(0.001)
+                proc = children[0]
+                stop = asyncio.create_task(monitor.stop())
+                await asyncio.wait_for(terminated.wait(), 3)
+                if cancel_stop:
+                    stop.cancel()
+                    await asyncio.sleep(0.01)
+                    self.assertIs(monitor._proc, proc)
+                    self.assertIs(monitor._task, task)
+                    stop.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await asyncio.wait_for(stop, 4)
+                else:
+                    await asyncio.wait_for(stop, 4)
+                self.assertEqual(read_errors, [])
+                self.assertEqual(len(drains), 2)  # terminate timeout, then kill/reap
+                self.assertEqual(proc.returncode, -signal.SIGKILL)
+                self.assertTrue(task.done())
+                self.assertTrue(proc.stdout.at_eof())
+                self.assertTrue(proc.stderr.at_eof())
+                self.assertIsNone(monitor._task)
+                self.assertIsNone(monitor._proc)
+                self.assertFalse(monitor._running)
+        finally:
+            await monitor.stop()
+            for proc in children:
+                if proc.returncode is None:
+                    proc.kill()
+                await proc.wait()
+
+    async def test_capture_stop_joins_reader_before_fallback_drain(self):
+        await self._stop_real_capture()
+
+    async def test_repeated_stop_cancellation_still_joins_capture_reader_and_reaps(self):
+        await self._stop_real_capture(cancel_stop=True)
+
+    async def test_capture_cleanup_longer_than_one_second_retains_task_ownership(self):
+        await self._stop_real_capture(grace=1.1)
 
 
 class PeakMonitorOwnershipTests(unittest.IsolatedAsyncioTestCase):

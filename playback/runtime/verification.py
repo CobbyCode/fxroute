@@ -330,6 +330,30 @@ class _RuntimeVerificationMixin:
                 raise RuntimeError(f"MPV source volume was not restored: {live_volume}")
         return live_volume
 
+    async def _verify_qobuz_stream(self, request: TransitionRequest, state: Mapping[str, Any]) -> int:
+        """Confirm loaded identity and the renderer rate, not catalog maxima."""
+        expected_id = self._staged_qobuz_track_id or self._qobuz_request_track_id(request)
+        loaded_id = await self._deps.qobuz_loaded_track_id()
+        if (loaded_id <= 0 or (expected_id and loaded_id != expected_id)
+                or str(state.get("trackId") or "") != str(loaded_id)):
+            raise RuntimeError(
+                f"Qobuz track mismatch at commit: expected={expected_id} "
+                f"loaded={loaded_id} metadata={state.get('trackId')}"
+            )
+        stream_rate = await self._deps.wait_for_qobuz_sink_input_samplerate(
+            expected_rate=self._qobuz_stream_rate
+        )
+        if not isinstance(stream_rate, int) or stream_rate <= 0:
+            raise RuntimeError(f"Qobuz renderer rate is not readable: {stream_rate}")
+        if self._qobuz_stream_rate is not None and stream_rate != self._qobuz_stream_rate:
+            raise RuntimeError(
+                f"Qobuz renderer rate changed at commit: expected={self._qobuz_stream_rate} actual={stream_rate}"
+            )
+        self._qobuz_stream_rate = stream_rate
+        logger.info("Qobuz commit readback: track=%s decoded_rate=%s renderer_rate=%s graph_rate=%s",
+                    state.get("trackId"), state.get("sample_rate"), stream_rate, request.target_rate)
+        return stream_rate
+
     async def _verify_transition(
         self,
         request: TransitionRequest,
@@ -337,12 +361,6 @@ class _RuntimeVerificationMixin:
         require_source_volume: bool,
         require_effects_runtime: bool = True,
     ) -> dict[str, Any]:
-        try:
-            rate = dict(
-                await asyncio.to_thread(self._deps.get_samplerate_status)
-            )
-        except Exception:
-            rate = {}
         state = dict(self._player.state if self._player else {})
         if request.audio_overview:
             overview = dict(request.audio_overview)
@@ -387,17 +405,12 @@ class _RuntimeVerificationMixin:
                     f"expected={source_rate} actual={spotify_stream_rate}"
                 )
         if request.source == "qobuz" and request.should_play:
-            source_rate = self._deps.coordinator_source_rate("qobuz", request.target_track)
-            qobuz_stream_rate = await self._deps.wait_for_qobuz_sink_input_samplerate(expected_rate=source_rate)
-            if (
-                isinstance(source_rate, int)
-                and qobuz_stream_rate != source_rate
-            ):
-                raise RuntimeError(
-                    "Qobuz stream rate mismatch at commit: "
-                    f"expected={source_rate} actual={qobuz_stream_rate}"
-                )
+            qobuz_stream_rate = await self._verify_qobuz_stream(request, qobuz_state)
 
+        try:
+            rate = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
+        except Exception:
+            rate = {}
         if isinstance(request.target_rate, int) and request.target_rate > 0:
             if rate.get("active_rate") != request.target_rate:
                 raise RuntimeError(
@@ -405,11 +418,15 @@ class _RuntimeVerificationMixin:
                 )
             if samplerate.honoured_force_rate(rate) not in {None, request.target_rate}:
                 raise RuntimeError(f"force-rate mismatch at commit: {rate.get('force_rate')}")
+        source_required = bool(
+            request.should_play
+            or (request.target_url and source_policy.is_mpv_source(request.source))
+        )
         graph_complete = await self._deps.playback_graph_links_complete(
             audio_overview=overview,
-            source=request.source,
+            source=request.source if source_required else None,
             target_rate=request.target_rate,
-            require_source=True,
+            require_source=source_required,
         )
         if not graph_complete:
             raise RuntimeError("production playback links were not complete at commit")
@@ -476,6 +493,7 @@ class _RuntimeVerificationMixin:
             "active_rate": rate.get("active_rate"),
             "force_rate": rate.get("force_rate"),
             "spotify_stream_rate": spotify_stream_rate,
+            "qobuz_stream_rate": qobuz_stream_rate,
             "graph_complete": True,
             "helper_rate": helper_rate,
             "source_volume": state.get("volume"),
@@ -587,8 +605,9 @@ class _RuntimeVerificationMixin:
         # An output-mode switch never (re)starts its source (see the
         # post-start reconcile): only a playing source has stream links, so
         # a paused owner must not pull its suspended stream into the verdict.
-        # Other operations keep the established target-or-play contract.
-        if request.operation == "output-mode-switch":
+        # Paused external owners also have no producer during policy changes.
+        if (request.operation == "output-mode-switch"
+                or source_policy.is_external_source(request.source)):
             graph_source = request.source if request.should_play else None
             require_source = bool(request.should_play)
         else:
@@ -630,24 +649,8 @@ class _RuntimeVerificationMixin:
                     f"expected={source_rate} actual={spotify_stream_rate}"
                 )
         elif request.source == "qobuz" and request.should_play:
-            # A Connect track change after the request was built invalidates
-            # the cached track rate; the live qbzd state read here is the
-            # fresher authority (falling back to the request track rate).
             qobuz_state = await self._deps.get_qobuz_ui_state()
-            fresh_rate = qobuz_state.get("sample_rate")
-            source_rate = (
-                samplerate.effective_playback_rate(fresh_rate)
-                if isinstance(fresh_rate, int) and fresh_rate > 0
-                else self._deps.coordinator_source_rate("qobuz", request.target_track)
-            )
-            qobuz_stream_rate = await self._deps.wait_for_qobuz_sink_input_samplerate(
-                expected_rate=source_rate
-            )
-            if qobuz_stream_rate != source_rate:
-                raise RuntimeError(
-                    "Qobuz stream rate mismatch during output-mode commit: "
-                    f"expected={source_rate} actual={qobuz_stream_rate}"
-                )
+            qobuz_stream_rate = await self._verify_qobuz_stream(request, qobuz_state)
 
         if source_policy.is_mpv_source(request.source) and request.target_url:
             state = dict(self._player.state if self._player else {})

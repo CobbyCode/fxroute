@@ -450,7 +450,7 @@
         if (deps.getElements().effectsCompareToggle) {
             deps.getElements().effectsCompareToggle.disabled = busy || unavailable;
             deps.getElements().effectsCompareToggle.title = unavailable ? (compare.aggregate
-                ? 'Assign preset B in every configured bank first.' : 'Select preset B to compare.') : '';
+                ? 'Assign preset B in at least one bank first.' : 'Select preset B to compare.') : '';
         }
         if (deps.getElements().effectsBankSelect) deps.getElements().effectsBankSelect.disabled = busy;
     }
@@ -552,7 +552,7 @@
         }
         if (deps.getElements().effectsCompareToggle) deps.getElements().effectsCompareToggle.textContent = aggregate
             ? `Switch all to ${effectiveActiveSide === 'A' ? 'B' : 'A'}` : 'Compare A/B';
-        deps.getElements().effectsDeleteBtn?.classList.toggle('hidden', !!aggregate);
+        syncEffectsDeleteButton();
         const badge = document.getElementById('effects-compare-active-badge');
         if (badge) {
             badge.classList.toggle('is-side-a', effectiveActiveSide === 'A');
@@ -566,6 +566,17 @@
         });
         renderEffectsBankSelector();
         setEffectsCompareLoadBusy(effectsCompareLoadInFlight);
+    }
+
+    // Delete targets the selected bank's active preset, as in Global; All
+    // Banks has no Delete.
+    function syncEffectsDeleteButton() {
+        const button = deps.getElements().effectsDeleteBtn;
+        if (!button) return;
+        const { activePreset, aggregate } = getEffectsCompareState();
+        button.classList.toggle('hidden', !!aggregate);
+        button.disabled = !deps.getState().dsp?.available || !activePreset
+            || activePreset === 'Direct' || activePreset === 'Neutral';
     }
 
     function getEffectsCombineValidationState() {
@@ -738,7 +749,7 @@
             const current = getEffectsCompareState();
             if (current.aggregate) return;
             const selectedValue = (slot === 'A' ? deps.getElements().effectsCompareA?.value : deps.getElements().effectsCompareB?.value) || null;
-            if (selectedValue && selectedValue === (slot === 'A' ? current.presetB : current.presetA)) {
+            if (slot === 'B' && selectedValue && selectedValue === current.presetA) {
                 deps.showToast('A and B must use different presets', 'warning');
                 renderEffectsCompare();
                 return;
@@ -747,6 +758,11 @@
                 [slot === 'A' ? 'preset_a' : 'preset_b']: selectedValue };
             if (selectedValue && (!current.effectiveActiveSide || current.effectiveActiveSide === slot)) fields.active_side = slot;
             if (!selectedValue && slot === 'B' && current.effectiveActiveSide === 'B') fields.active_side = 'A';
+            if (slot === 'A' && selectedValue && selectedValue === current.presetB) {
+                // Global's compare always did this: A takes B's preset and B is cleared.
+                fields.preset_b = null;
+                fields.active_side = 'A';
+            }
             await deps.applyMutation('set_bank_preset', fields, false);
             renderEffectsCompare();
             return;
@@ -805,7 +821,7 @@
             if (compareState.aggregate) {
                 const side = compareState.effectiveActiveSide === 'A' ? 'B' : 'A';
                 if (!(side === 'B' ? compareState.canB : compareState.canA)) {
-                    deps.showToast('Assign preset B in every configured bank first.', 'warning');
+                    deps.showToast('Assign preset B in at least one bank first.', 'warning');
                     return;
                 }
                 await deps.applyMutation('switch_all_banks', {
@@ -1092,7 +1108,7 @@
         } catch (e) {
             deps.showToast(e.message || 'Preset delete failed', 'error');
         } finally {
-            deps.getElements().effectsDeleteBtn.disabled = false;
+            syncEffectsDeleteButton();
         }
     }
 
@@ -1230,6 +1246,7 @@
         getCompactDisplayName,
         renderPresetDownloadLink,
         renderEffectsCompare,
+        syncEffectsDeleteButton,
         getEffectsCombineValidationState,
         renderEffectsCombine,
         createCombinedEffectsPreset,

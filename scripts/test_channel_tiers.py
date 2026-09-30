@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Scarlett playback altsets and explicit tier rate selection."""
 
+import asyncio
 import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
@@ -14,6 +16,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audio import device_profiles as profiles
 from audio import channel_tiers
+from audio import system_volume
 
 DESCRIPTORS = """Focusrite Scarlett 16i16 4th Gen
 Playback:
@@ -360,6 +363,127 @@ class HardwareTierTests(unittest.TestCase):
         self.assertEqual((self.channels, self.rate, self.volume, self.mute), (18, 48000, 23, True))
         self.assertFalse(change.rule_path.exists())
 
+    async def _monitor_during_reprobe(self, *, rollback=False, pending_read=False, failed_apply=False):
+        change = self.change()
+        change.capture()
+        if rollback:
+            with patch("audio.channel_tiers.time.sleep", return_value=None):
+                change.apply()
+        old_cache = system_volume._status_volume_cache
+        system_volume._status_volume_cache = (23, 0.0)
+        offline = threading.Event()
+        release_offline = threading.Event()
+        read_started = threading.Event()
+        release_read = threading.Event()
+        applying = threading.Event()
+        overlap = threading.Event()
+        ticked = asyncio.Event()
+        real_run = self.run_command
+        real_sleep = asyncio.sleep
+        ticks = 0
+
+        def hardware(command):
+            if command[:2] == ["pactl", "set-card-profile"] and command[-1] == "off":
+                if pending_read and not release_read.is_set():
+                    overlap.set()
+                result = real_run(command)
+                offline.set()
+                if not pending_read and not release_offline.wait(3):
+                    raise RuntimeError("Test did not release the offline sink")
+                return result
+            return real_run(command)
+
+        def volume_command(args, **kwargs):
+            if args[:2] != ["pactl", "get-sink-volume"]:
+                raise AssertionError(f"Unexpected volume command: {args}")
+            if pending_read and not read_started.is_set():
+                read_started.set()
+                if not release_read.wait(3):
+                    raise RuntimeError("Test did not release the pending volume read")
+            missing = self.profile == "off" or args[2] != self.key
+            return system_volume.subprocess.CompletedProcess(
+                args, 1 if missing else 0,
+                stdout="" if missing else f"Volume: aux0: 15000 / {self.volume}% / -20.0 dB",
+                stderr="Failed to get sink information: No such entity" if missing else "")
+
+        async def monitor_sleep(delay):
+            nonlocal ticks
+            ticks += 1
+            if ticks >= 2:
+                ticked.set()
+            await real_sleep(0.01)
+
+        def reconfigure():
+            applying.set()
+            if failed_apply:
+                self.fail_reprobe = True
+                change.apply()
+            else:
+                (change.rollback if rollback else change.apply)()
+
+        change.run = hardware
+        worker = None
+        try:
+            with patch("audio.channel_tiers.time.sleep", return_value=None), \
+                    patch("audio.system_volume.subprocess.run", side_effect=volume_command), \
+                    patch("audio.system_volume.asyncio.sleep", side_effect=monitor_sleep), \
+                    self.assertNoLogs("audio.system_volume", level="WARNING"):
+                if pending_read:
+                    system_volume.start_volume_read_monitor()
+                    self.assertTrue(await asyncio.to_thread(read_started.wait, 2))
+                worker = asyncio.create_task(asyncio.to_thread(reconfigure))
+                self.assertTrue(await asyncio.to_thread(applying.wait, 2))
+                if pending_read:
+                    # The hardware worker must wait for the bounded read,
+                    # not invalidate its target while that read is pending.
+                    await real_sleep(0.05)
+                    self.assertFalse(overlap.is_set())
+                    release_read.set()
+                else:
+                    self.assertTrue(await asyncio.to_thread(offline.wait, 2))
+                    system_volume.start_volume_read_monitor()
+                    await asyncio.wait_for(ticked.wait(), 2)
+                    self.assertEqual(system_volume.get_status_volume(), 23)
+                    release_offline.set()
+                if failed_apply:
+                    with self.assertRaisesRegex(RuntimeError, "reprobe failed"):
+                        await asyncio.wait_for(worker, 3)
+                    ticks = 0
+                    ticked.clear()
+                    await asyncio.wait_for(ticked.wait(), 2)
+                    self.assertEqual(self.profile, "off")
+                    worker = asyncio.create_task(asyncio.to_thread(change.rollback))
+                await asyncio.wait_for(worker, 3)
+                self.assertEqual((self.channels, self.volume, self.mute),
+                                 (18 if rollback or failed_apply else 14, 23, True))
+                self.volume = 41  # An external change after the sink returned.
+                async with asyncio.timeout(2):
+                    while system_volume.get_status_volume() != 41:
+                        await real_sleep(0.01)
+                await system_volume.stop_volume_read_monitor()
+        finally:
+            release_read.set()
+            release_offline.set()
+            if worker is not None:
+                await asyncio.gather(worker, return_exceptions=True)
+            if failed_apply and self.profile == "off":
+                with patch("audio.channel_tiers.time.sleep", return_value=None):
+                    await asyncio.to_thread(change.rollback)
+            await system_volume.stop_volume_read_monitor()
+            system_volume._status_volume_cache = old_cache
+
+    def test_volume_monitor_retains_cache_during_tier_reprobe_then_reads_new_sink(self):
+        asyncio.run(self._monitor_during_reprobe())
+
+    def test_volume_monitor_retains_cache_during_rollback_then_resumes(self):
+        asyncio.run(self._monitor_during_reprobe(rollback=True))
+
+    def test_tier_reprobe_waits_for_pending_volume_monitor_read(self):
+        asyncio.run(self._monitor_during_reprobe(pending_read=True))
+
+    def test_failed_apply_keeps_monitor_paused_until_rollback_restores_sink(self):
+        asyncio.run(self._monitor_during_reprobe(failed_apply=True))
+
     def test_wake_keepalive_spans_gate_confirm(self):
         self._stop_wake_patch()
         FakeWakeProcess.created = []
@@ -646,6 +770,55 @@ class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime.muted)
         self.assertEqual(runtime.rate, 44100)
 
+    async def test_failed_external_claim_rolls_back_tier_then_restores_committed_source(self):
+        from test_playback_transition_coordinator import FakeRuntime
+        from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
+
+        restore = TransitionRequest(
+            operation="replay", source="tidal", target_rate=44100,
+            target_url="/cache/tidal.mp4",
+            target_track={"source": "tidal", "url": "/cache/tidal.mp4"},
+            should_play=False, rate_change=True, reload_source=True,
+            detail="failed-transition-restore",
+        )
+
+        class TierRuntime(FakeRuntime):
+            async def apply_channel_tier(self, request, snapshot):
+                self.events.append("tier")
+                return {"selected_output": {"supported_rates": [88200, 96000]}}
+
+            async def rollback_channel_tier(self, request, snapshot, transition_id):
+                self.events.append("rollback-tier")
+                self.rate = snapshot["active_rate"]
+                return True
+
+            async def reconcile_post_start_graph(self, request):
+                await self._stage("reconcile-post-start-graph")
+                if request.source == "spotify":
+                    raise RuntimeError("no producer ports for source 'spotify'")
+                return {"graph_complete": True, "committed": True}
+
+            async def abort_failed_transition(self, request, snapshot, *, target_staged):
+                self.events.append("abort")
+                return {"restore": restore}
+
+        runtime = TierRuntime()
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        with self.assertRaises(PlaybackTransitionFailure) as failure:
+            await coordinator.execute(TransitionRequest(
+                operation="spotify-claim", source="spotify", target_rate=96000,
+                should_play=True, rate_change=True, reload_source=True,
+                audio_overview={"selected_output": dict(self.PROFILE_18)},
+            ))
+        # Same restore contract as a failed handoff without a tier switch:
+        # old tier graph first, then the committed source, then the gate.
+        self.assertLess(runtime.events.index("rollback-tier"), runtime.events.index("abort"))
+        self.assertLess(runtime.events.index("abort"), runtime.events.index("publish-restored-source"))
+        self.assertFalse(failure.exception.failure_latched)
+        self.assertFalse(coordinator.gate.failure_latched)
+        self.assertFalse(runtime.muted)
+        self.assertEqual(runtime.rate, 44100)
+
 
 class TierApplySnapshotTests(unittest.IsolatedAsyncioTestCase):
     """apply_channel_tier stores the captured change on the snapshot for rollback."""
@@ -789,13 +962,17 @@ class TierAdapterMultiPassTests(unittest.IsolatedAsyncioTestCase):
             },
         }}
 
-    def _runtime(self):
+    def _runtime(self, *, player=None, quieted=None):
         from playback.runtime.channel_tier import _RuntimeChannelTierMixin
+        from playback.runtime.snapshot import _RuntimeSnapshotMixin
 
-        class AdapterRuntime(_RuntimeChannelTierMixin):
+        class AdapterRuntime(_RuntimeChannelTierMixin, _RuntimeSnapshotMixin):
             def __init__(self, deps):
                 self._deps = deps
                 self._dsp_runtime = None
+                self._player = player
+                self._staged_target_url = None
+                self._quieted_external_source = quieted
                 self.rates = []
 
             def invalidate_gate_sink_resolution(self):
@@ -819,14 +996,19 @@ class TierAdapterMultiPassTests(unittest.IsolatedAsyncioTestCase):
             async def stabilize_effects_after_rate_change(self, request, dsp_reinitialized=False):
                 pass
 
-        async def drain_worker(step):
-            step()
+        async def drain_worker(step, *args):
+            return step(*args)
 
         return AdapterRuntime(SimpleNamespace(
             audio_configuration_lock=None,
             measurement_audio_graph_owned=lambda: False,
             drain_worker=drain_worker,
             get_audio_output_overview=self._overview,
+            player_is_running=lambda: player is not None,
+            mark_player_state_authoritative=lambda _state: None,
+            queue=lambda: SimpleNamespace(native_request_fields=lambda: {}),
+            get_samplerate_status=lambda: {"active_rate": self.rate},
+            coordinator_target_rate=lambda _source, _track: None,
         ))
 
     def _request(self, tier_id, target_rate):
@@ -856,6 +1038,175 @@ class TierAdapterMultiPassTests(unittest.IsolatedAsyncioTestCase):
                          (self.old_key, 18, 48000, self.MULTI_PROFILE))
         from audio.samplerate.persistence import _load_audio_output_selection
         self.assertEqual(_load_audio_output_selection()["selected_key"], self.old_key)
+
+    def _record_source_stages(self, runtime):
+        started, reconciled = [], []
+
+        async def prepare_target_source(request):
+            started.append(("prepare", request))
+
+        async def start_target_source(request):
+            started.append(("start", request))
+
+        async def reconcile_post_start_graph(request):
+            reconciled.append(request)
+
+        runtime.prepare_target_source = prepare_target_source
+        runtime.start_target_source = start_target_source
+        runtime.reconcile_post_start_graph = reconcile_post_start_graph
+        return started, reconciled
+
+    def _old_tidal_snapshot(self):
+        return {
+            "player": {"current_file": "/cache/tidal.mp4", "paused": True, "position": 12.0},
+            "current_track": {"source": "tidal", "url": "/cache/tidal.mp4"},
+            "sample_rate_policy": {"mode": "fixed", "rate": 48000},
+        }
+
+    async def test_rollback_after_external_target_neither_starts_nor_awaits_it(self):
+        from dataclasses import replace
+        runtime = self._runtime()
+        started, reconciled = self._record_source_stages(runtime)
+        snapshot = self._old_tidal_snapshot()
+        request = replace(self._request("14ch", 96000), operation="spotify-claim",
+                          source="spotify", should_play=True)
+        await runtime.apply_channel_tier(request, snapshot)
+        self.assertTrue(await runtime.rollback_channel_tier(request, snapshot, "test-tid"))
+        self.assertEqual((self.key, self.channels, self.rate), (self.old_key, 18, 48000))
+        self.assertEqual(started, [])
+        self.assertIsNone(reconciled[0].target_url)
+        self.assertFalse(reconciled[0].should_play)
+
+    NEW_TIDAL = "/cache/tidal-new.mp4"
+    NEW_RADIO = "https://radio.example/new"
+
+    async def _rollback_mpv_target(self, source, target_url, snapshot, *, quieted=None):
+        """Fail a TIDAL/Radio target after its tier switch and roll back."""
+        from dataclasses import replace
+        player = SimpleNamespace(stops=0, state={})
+
+        def stop_playback():
+            player.stops += 1
+
+        player.stop_playback = stop_playback
+        runtime = self._runtime(player=player, quieted=quieted)
+        started, reconciled = self._record_source_stages(runtime)
+        snapshot = dict(snapshot, active_rate=48000,
+                        sample_rate_policy={"mode": "auto", "rate": None})
+        request = replace(
+            self._request("14ch", 96000), operation="play", source=source,
+            target_url=target_url, target_track={"source": source, "url": target_url},
+            should_play=True, sample_rate_policy=None,
+        )
+        await runtime.apply_channel_tier(request, snapshot)
+        self.assertTrue(await runtime.rollback_channel_tier(request, snapshot, "test-tid"))
+        self.assertEqual((self.key, self.channels, self.rate), (self.old_key, 18, 48000))
+        # The failed target is never started, loaded or awaited again.
+        for stage_request in [req for _, req in started] + reconciled:
+            self.assertNotEqual(stage_request.target_url, target_url)
+        return [(stage, req.source, req.target_url, req.should_play, req.restore_position)
+                for stage, req in started], reconciled, player
+
+    async def test_rollback_spotify_to_tidal_resumes_spotify(self):
+        started, _reconciled, player = await self._rollback_mpv_target(
+            "tidal", self.NEW_TIDAL, {"player": {"current_file": None}}, quieted="spotify")
+        self.assertEqual(started, [("prepare", "spotify", None, True, None),
+                                   ("start", "spotify", None, True, None)])
+        self.assertEqual(player.stops, 1)
+
+    async def test_rollback_qobuz_to_radio_resumes_qobuz(self):
+        started, _reconciled, player = await self._rollback_mpv_target(
+            "radio", self.NEW_RADIO, {"player": {"current_file": None}}, quieted="qobuz")
+        self.assertEqual(started, [("prepare", "qobuz", None, True, None),
+                                   ("start", "qobuz", None, True, None)])
+        self.assertEqual(player.stops, 1)
+
+    async def test_rollback_from_empty_mpv_starts_nothing(self):
+        for source, url in (("tidal", self.NEW_TIDAL), ("radio", self.NEW_RADIO)):
+            with self.subTest(source=source):
+                started, reconciled, player = await self._rollback_mpv_target(
+                    source, url, {"player": {}})
+                self.assertEqual(started, [])
+                self.assertEqual(player.stops, 1)
+                self.assertIsNone(reconciled[0].target_url)
+                self.assertFalse(reconciled[0].should_play)
+
+    async def test_rollback_restores_playing_local_source_at_position(self):
+        snapshot = {
+            "player": {"current_file": "/music/old.flac", "playing": True, "paused": False,
+                       "position": 30.0},
+            "current_track": {"source": "local", "url": "/music/old.flac"},
+        }
+        started, _reconciled, player = await self._rollback_mpv_target(
+            "radio", self.NEW_RADIO, snapshot)
+        self.assertEqual(started, [("prepare", "local", "/music/old.flac", True, 30.0),
+                                   ("start", "local", "/music/old.flac", True, 30.0)])
+        self.assertEqual(player.stops, 0)
+
+    async def test_rollback_restores_paused_tidal_source_at_position(self):
+        snapshot = {
+            "player": {"current_file": "/cache/tidal-old.mp4", "playing": False, "paused": True,
+                       "position": 12.0},
+            "current_track": {"source": "tidal", "url": "/cache/tidal-old.mp4"},
+        }
+        started, _reconciled, player = await self._rollback_mpv_target(
+            "radio", self.NEW_RADIO, snapshot, quieted=None)
+        self.assertEqual(started, [("prepare", "tidal", "/cache/tidal-old.mp4", False, 12.0),
+                                   ("start", "tidal", "/cache/tidal-old.mp4", False, 12.0)])
+        self.assertEqual(player.stops, 0)
+
+    async def test_rollback_restores_playing_radio_without_position(self):
+        snapshot = {
+            "player": {"current_file": "https://radio.example/old", "playing": True,
+                       "paused": False, "position": 95.0},
+            "current_track": {"source": "radio", "url": "https://radio.example/old"},
+        }
+        started, _reconciled, _player = await self._rollback_mpv_target(
+            "tidal", self.NEW_TIDAL, snapshot)
+        self.assertEqual(started, [("prepare", "radio", "https://radio.example/old", True, None),
+                                   ("start", "radio", "https://radio.example/old", True, None)])
+
+    async def test_failed_later_pass_keeps_pause_on_original_rollback_owner(self):
+        runtime = self._runtime()
+        snapshot = {"player": {}, "sample_rate_policy": {"mode": "fixed", "rate": 48000}}
+        await runtime.apply_channel_tier(self._request("14ch", 96000), snapshot)
+        request = self._request("10ch", 192000)
+        run = self.run_command
+
+        def fail_restart(command):
+            if command == ["systemctl", "--user", "restart", "wireplumber.service"]:
+                raise RuntimeError("later reprobe failed")
+            return run(command)
+
+        def read_volume(args, **kwargs):
+            missing = self.profile == "off" or args[2] != self.key
+            return system_volume.subprocess.CompletedProcess(
+                args, 1 if missing else 0,
+                stdout="" if missing else f"Volume: aux0: 15000 / {self.volume}% / -20.0 dB",
+                stderr="Failed to get sink information: No such entity" if missing else "")
+
+        old_cache = system_volume._status_volume_cache
+        system_volume._status_volume_cache = (23, 0.0)
+        self.run_command = fail_restart
+        try:
+            with patch("audio.system_volume.subprocess.run", side_effect=read_volume), \
+                    patch.object(system_volume, "VOLUME_MONITOR_INTERVAL_SECONDS", 0.01), \
+                    self.assertNoLogs("audio.system_volume", level="WARNING"):
+                with self.assertRaisesRegex(RuntimeError, "later reprobe failed"):
+                    await runtime.apply_channel_tier(request, snapshot)
+                system_volume.start_volume_read_monitor()
+                await asyncio.sleep(0.05)
+                self.assertEqual(system_volume.get_status_volume(), 23)
+                self.assertTrue(await runtime.rollback_channel_tier(request, snapshot, "test-tid"))
+                self.assertEqual((self.key, self.channels, self.rate), (self.old_key, 18, 48000))
+                self.volume = 41
+                async with asyncio.timeout(2):
+                    while system_volume.get_status_volume() != 41:
+                        await asyncio.sleep(0.01)
+                await system_volume.stop_volume_read_monitor()
+        finally:
+            await system_volume.stop_volume_read_monitor()
+            system_volume._status_volume_cache = old_cache
 
 
 if __name__ == "__main__":

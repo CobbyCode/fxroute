@@ -46,7 +46,7 @@ function stubClassList() {
 }
 
 function stubEl(overrides = {}) {
-    return { value: '', textContent: '', innerHTML: '', disabled: false, checked: false,
+    return { value: '', textContent: '', innerHTML: '', disabled: false, checked: false, style: {},
         dataset: {}, files: [], accept: '', placeholder: '', classList: stubClassList(),
         setAttribute() {}, addEventListener() {}, focus() {}, select() {},
         closest: () => null, ...overrides };
@@ -56,6 +56,7 @@ const nodes = {};
 const documentStub = {
     getElementById: (id) => nodes[id] || (nodes[id] = stubEl()),
     querySelector: (sel) => nodes[sel] || (nodes[sel] = stubEl()),
+    querySelectorAll: () => [],
 };
 globalThis.document = documentStub;
 
@@ -189,6 +190,82 @@ const realFetch = globalThis.fetch;
     assert.equal(BankUI.detectEffectsImportType({ name: 'a.zip' }), 'preset-bundle');
     assert.equal(BankUI.detectEffectsImportType({ name: 'a.txt' }), null);
     assert.equal(BankUI.detectEffectsImportType(null), null);
+
+    // Delete follows the selected bank's active preset exactly like Global,
+    // not the legacy DSP active preset; All Banks has no Delete.
+    {
+        const bank = (id, preset, preset_a, preset_b) => ({ id, label: id, preset, preset_a, preset_b,
+            active_side: preset === preset_a ? 'A' : 'B', can_a: true, can_b: !!preset_b });
+        const catalog = { revision: 3, active_mode: 'stereo-sub',
+            modes: { 'stereo-sub': { selected_bank: 'main',
+                banks: { global: bank('global', 'Neutral', 'Neutral', 'Room'),
+                    main: bank('main', '3', '2', '3'), sub1: bank('sub1', 'Direct', 'Neutral', 'Direct') },
+                all_banks: { preset: null, preset_a: null, preset_b: null, active_side: 'A', can_a: true, can_b: true },
+                topology: { roles: ['main_l', 'main_r', 'sub1'] } } } };
+        const state = { outputSystem: { catalog }, dsp: { available: true, presets: [], compare: {}, active_preset: 'Neutral' } };
+        const elements = bankElements();
+        initBankUI(state, elements);
+        const deleteButton = () => [elements.effectsDeleteBtn.disabled, elements.effectsDeleteBtn.classList.contains('hidden')];
+        BankUI.syncEffectsDeleteButton();
+        assert.deepEqual(deleteButton(), [false, false], 'Main listening to B=3 can delete 3');
+        const deleted = [];
+        globalThis.fetch = async (url, options) => {
+            deleted.push(JSON.parse(options.body).preset_name);
+            return { ok: true, json: async () => ({}) };
+        };
+        await BankUI.deleteEffectsPreset();
+        globalThis.fetch = realFetch;
+        assert.deepEqual(deleted, ['3'], 'Delete targets the bank\'s listened preset');
+        for (const [selected, expected] of [['global', [true, false]], ['sub1', [true, false]], ['all', [true, true]]]) {
+            catalog.modes['stereo-sub'].selected_bank = selected;
+            BankUI.syncEffectsDeleteButton();
+            assert.deepEqual(deleteButton(), expected, `Delete button in ${selected}`);
+        }
+    }
+
+    // Picking B's preset for A works like Global's compare: A takes it and B
+    // is cleared. B cannot take A's preset.
+    {
+        const bank = (id, preset, preset_a, preset_b) => ({ id, label: id, preset, preset_a, preset_b,
+            active_side: preset === preset_a ? 'A' : 'B', can_a: true, can_b: !!preset_b });
+        const catalog = { revision: 3, active_mode: 'stereo-sub',
+            modes: { 'stereo-sub': { selected_bank: 'main',
+                banks: { global: bank('global', 'Neutral', 'Neutral', null), main: bank('main', '3', '2', '3') },
+                topology: { roles: ['main_l', 'main_r'] } } } };
+        const mutations = [];
+        const toasts = [];
+        const state = { outputSystem: { catalog }, dsp: { presets: [], compare: {}, active_preset: '' } };
+        const elements = bankElements();
+        initBankUI(state, elements, { applyMutation: async (kind, fields) => { mutations.push([kind, fields]); },
+            showToast: (message, type) => toasts.push([message, type]) });
+        elements.effectsCompareA.value = '3';
+        await BankUI.handleEffectsCompareSelectionChange('A');
+        assert.deepEqual(mutations, [['set_bank_preset', { mode: 'stereo-sub', bank_id: 'main',
+            preset_a: '3', preset_b: null, active_side: 'A' }]]);
+        elements.effectsCompareB.value = '2';
+        await BankUI.handleEffectsCompareSelectionChange('B');
+        assert.equal(mutations.length, 1, 'B cannot take A\'s preset');
+        assert.deepEqual(toasts.at(-1), ['A and B must use different presets', 'warning']);
+    }
+
+    // All Banks switches to B once one bank has a B; the others stay on A.
+    {
+        const mutations = [];
+        const toasts = [];
+        const catalog = bankCatalog('all');
+        catalog.modes['stereo-sub'].all_banks = { preset: null, preset_a: null, preset_b: null,
+            active_side: 'A', can_a: true, can_b: true };
+        const state = { outputSystem: { catalog }, dsp: { presets: [], compare: {}, active_preset: '' } };
+        const elements = bankElements();
+        initBankUI(state, elements, { applyMutation: async (kind, fields) => { mutations.push([kind, fields]); },
+            showToast: (message, type) => toasts.push([message, type]) });
+        await BankUI.toggleComparePreset();
+        assert.deepEqual(mutations, [['switch_all_banks', { mode: 'stereo-sub', active_side: 'B' }]]);
+        catalog.modes['stereo-sub'].all_banks.can_b = false;
+        await BankUI.toggleComparePreset();
+        assert.equal(mutations.length, 1);
+        assert.deepEqual(toasts.at(-1), ['Assign preset B in at least one bank first.', 'warning']);
+    }
 
     // Preset delete guards the empty and built-in cases before confirming.
     {

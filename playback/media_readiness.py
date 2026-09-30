@@ -290,8 +290,12 @@ async def wait_for_qobuz_sink_input_samplerate(
     expected_rate: int | None = None,
     timeout_ms: int = SPOTIFY_SINK_INPUT_RATE_TIMEOUT_MS,
 ) -> int:
-    """Read a stable qbzd stream rate before an entry transition commits."""
-    if not isinstance(expected_rate, int) or expected_rate <= 0:
+    """Discover the renderer rate, or confirm a previously observed rate.
+
+    qbzd can retain/resample into an earlier stream format. Its decoded track
+    rate is therefore not an expected PipeWire rate.
+    """
+    if expected_rate is not None and (not isinstance(expected_rate, int) or expected_rate <= 0):
         raise RuntimeError(f"Qobuz entry has no valid expected samplerate: {expected_rate}")
     poll_interval_ms = max(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS, 1)
     max_polls = max(1, math.ceil(max(timeout_ms, 0) / poll_interval_ms) + 1)
@@ -311,14 +315,15 @@ async def wait_for_qobuz_sink_input_samplerate(
         if observation is not None:
             identity, rate = observation
             last_rate = rate
-            if rate == expected_rate and observation == last_observation:
+            matches = expected_rate is None or rate == expected_rate
+            if matches and observation == last_observation:
                 stable_polls += 1
-            elif rate == expected_rate:
+            elif matches:
                 stable_polls = 1
             else:
                 stable_polls = 0
             last_observation = (identity, rate)
-            if rate == expected_rate and stable_polls >= SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS:
+            if matches and stable_polls >= SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS:
                 return rate
         else:
             last_observation = None

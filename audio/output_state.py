@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import math
+from collections.abc import Callable
 
 from audio.output_routing import device_key
 from audio.filter_banks import bank_definitions, resolve_bank, summarize_banks
@@ -320,15 +321,24 @@ def set_bank_preset(state: dict, mode: str, bank_id: str, *, preset: str | None 
 
 
 def switch_all_banks(state: dict, mode: str, output_key: str, channels: int, active_side: str) -> dict:
-    """Switch configured area bindings atomically, excluding Global and dormant roles."""
+    """Switch configured area bindings atomically, excluding Global and dormant roles.
+
+    B needs a B slot in at least one bank; banks without one stay on A.
+    """
     result = validate_output_state(state)
     config = result["modes"][mode]
     topology = derive_topology(mode, routing_for_device(result, mode, output_key), channels=channels,
                                crossover_enabled=config["crossover_enabled"])
     if not topology.roles:
         raise ValueError("No configured area banks")
+    if active_side not in {"A", "B"}:
+        raise ValueError("Compare side must be A or B")
+    comparable = {role for role in topology.roles if config["banks"][role]["preset_b"] is not None}
+    if active_side == "B" and not comparable:
+        raise ValueError("Compare side B has no assigned preset in any configured bank")
     for role in topology.roles:
-        config["banks"][role] = BankState.from_dict(config["banks"][role]).select(active_side).to_dict()
+        side = active_side if role in comparable else "A"
+        config["banks"][role] = BankState.from_dict(config["banks"][role]).select(side).to_dict()
     return validate_output_state(result)
 
 
@@ -416,6 +426,41 @@ def select_bank(state: dict, mode: str, output_key: str, channels: int, bank_id:
         raise ValueError("Bank is not configured on the available hardware outputs")
     result["modes"][mode]["selected_bank"] = bank_id
     return validate_output_state(result)
+
+
+def release_bank_presets(state: dict, drop: Callable[[str, str], bool]) -> tuple[dict, list[str]]:
+    """Clear every bank slot whose preset ``drop(role, name)`` selects.
+
+    Global's compare rules for a preset that goes away: a released A falls
+    back to Neutral, a released B is cleared, and a role listening to a
+    released slot falls back to A. Returns the new state and one line per
+    touched role.
+    """
+    result = validate_output_state(state)
+    changes = []
+    for mode, config in result["modes"].items():
+        for role, binding in config["banks"].items():
+            def released(name):
+                return name is not None and drop(role, name)
+
+            names = [name for name in dict.fromkeys(binding.values()) if released(name)]
+            if not names:
+                continue
+            side = BankState.from_dict(binding).active_side
+            preset_a = "Neutral" if released(binding["preset_a"]) else binding["preset_a"]
+            preset_b = binding["preset_b"]
+            if released(preset_b) or preset_b == preset_a:
+                preset_b = None
+            if side == "B" and preset_b is not None:
+                preset = preset_b
+            elif side is None and not released(binding["preset"]):
+                preset = binding["preset"]
+            else:
+                preset = preset_a
+            config["banks"][role] = BankState(preset, preset_a, preset_b).to_dict()
+            changes.append(f"{mode}/{role}: released {', '.join(map(repr, names))}; "
+                           f"A={preset_a!r} B={preset_b!r} listening={preset!r}")
+    return validate_output_state(result), changes
 
 
 def referenced_presets(state: dict) -> set[str]:

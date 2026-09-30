@@ -17,6 +17,7 @@ from .constants import (
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
+    SOURCE_MODE_STDIN_INPUT,
 )
 from .parsing import _parse_pipewire_clock_rate_dropin, _safe_int
 
@@ -217,7 +218,7 @@ def _load_audio_source_selection() -> dict[str, Any]:
     mode = payload.get("mode")
     selected_input_key = payload.get("selected_input_key")
     return {
-        "mode": mode if mode in {SOURCE_MODE_APP_PLAYBACK, SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT} else SOURCE_MODE_APP_PLAYBACK,
+        "mode": mode if mode in {SOURCE_MODE_APP_PLAYBACK, SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT, SOURCE_MODE_STDIN_INPUT} else SOURCE_MODE_APP_PLAYBACK,
         "selected_input_key": selected_input_key if isinstance(selected_input_key, str) and selected_input_key else None,
     }
 

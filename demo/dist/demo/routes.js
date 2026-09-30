@@ -404,6 +404,23 @@
             active_side: common(bindings.map(bank => bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null)),
             can_a: bindings.length > 0, can_b: bindings.length > 0 && bindings.every(bank => !!bank.preset_b) };
     }
+    // Mirror of summarize_all_banks: B needs one bank with a B; banks
+    // without one stay on A and do not decide the joint side.
+    function demoAllBanksSummary(bindings) {
+        const comparable = bindings.filter(bank => !!bank.preset_b);
+        const fixedOnA = bindings.every(bank => !!bank.preset_b || bank.preset === bank.preset_a);
+        const sides = demoBankSummary(comparable.length && fixedOnA ? comparable : bindings).active_side;
+        return { ...demoBankSummary(bindings), active_side: sides, can_b: comparable.length > 0 };
+    }
+    function switchDemoAllBanks(config, roles, side) {
+        if (!['A', 'B'].includes(side)) throw new Error('Compare side must be A or B');
+        const comparable = roles.filter(role => !!config.banks[role].preset_b);
+        if (side === 'B' && !comparable.length) throw new Error('Compare side B has no assigned preset in any configured bank');
+        for (const role of roles) {
+            const bank = config.banks[role];
+            config.banks[role] = { ...bank, preset: comparable.includes(role) && side === 'B' ? bank.preset_b : bank.preset_a };
+        }
+    }
     function updateDemoBanks(config, roles, mutation) {
         const slot = mutation.active_side || demoBankSummary(roles.map(role => config.banks[role])).active_side || 'A';
         if (!['A', 'B'].includes(slot)) throw new Error('Compare side must be A or B');
@@ -572,7 +589,7 @@
                 crossover_enabled: config.crossover_enabled,
                 selected_bank: pureStereo ? 'global' : (config.selected_bank === 'all' || banks[config.selected_bank] ? config.selected_bank : 'global'),
                 banks,
-                all_banks: demoBankSummary(topology.roles.map(role => config.banks[role])),
+                all_banks: demoAllBanksSummary(topology.roles.map(role => config.banks[role])),
                 processing: JSON.parse(JSON.stringify(config.processing)),
                 bass_management: { ...config.bass_management },
                 extras: JSON.parse(JSON.stringify(config.extras)),
@@ -1070,12 +1087,20 @@
                 { key: 'app-playback', label: 'App playback', selectable: true },
                 { key: 'external-input', label: 'External input', selectable: true },
                 { key: 'bluetooth-input', label: 'Bluetooth input', selectable: true },
+                { key: 'stdin-input', label: 'STDIN', selectable: true },
             ],
             default_input: withSelected(SOURCE_INPUTS[0]),
             selected_input: withSelected(selected),
             current_input: withSelected(selected),
             inputs: SOURCE_INPUTS.map(withSelected),
             bluetooth: { ...BLUETOOTH_SOURCE },
+            stdin: {
+                available: true, selectable: true, state: 'waiting',
+                selected: sourceMode === 'stdin-input', session_id: null,
+                format: null, rate: null, channels: null, left: null,
+                right: null, routed: false, frames_received: 0, error: null,
+                measurement_active: false,
+            },
             notes: [],
             pending: false,
         };
@@ -2542,7 +2567,7 @@
                 try { updateDemoBanks(config, bank.roles, mutation); } catch (error) { return fail(error.message); }
             } else if (mutation.kind === 'switch_all_banks') {
                 const roles = outputStateCatalog().modes[mode].topology.roles;
-                try { updateDemoBanks(config, roles, mutation); } catch (error) { return fail(error.message); }
+                try { switchDemoAllBanks(config, roles, mutation.active_side); } catch (error) { return fail(error.message); }
             } else if (mutation.kind === 'set_processing') {
                 const settings = config.processing[mutation.role];
                 if (!settings) return fail(`Unknown role ${mutation.role}`);
@@ -2682,6 +2707,11 @@
                     sourceMode = mode;
                     return j(sourceOverview());
                 }
+                if (mode === 'stdin-input') {
+                    S.stop();
+                    sourceMode = mode;
+                    return j(sourceOverview());
+                }
                 sourceMode = 'app-playback';
                 if (inputKey && sourceInputByKey(inputKey)) selectedSourceInputKey = inputKey;
                 return j(sourceOverview());
@@ -2794,15 +2824,22 @@
         }
         if (p === '/api/dsp/presets/delete' && post) {
             const name = String(body.preset_name || body.name || '');
-            const pinned = new Set();
+            if (name === 'Direct' || name === 'Neutral') return err(`Preset "${name}" is a built-in preset and cannot be deleted`, 400);
+            // Same release as the backend: A falls back to Neutral, B clears,
+            // a bank listening to the deleted slot falls back to A.
+            let released = false;
             for (const config of Object.values(outputStateStore.modes)) {
                 for (const bank of Object.values(config.banks)) {
-                    for (const key of ['preset', 'preset_a', 'preset_b']) {
-                        if (bank[key]) pinned.add(bank[key]);
-                    }
+                    if (![bank.preset, bank.preset_a, bank.preset_b].includes(name)) continue;
+                    const side = bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null;
+                    if (bank.preset_a === name) bank.preset_a = 'Neutral';
+                    if (bank.preset_b === name || bank.preset_b === bank.preset_a) bank.preset_b = null;
+                    bank.preset = side === 'B' && bank.preset_b ? bank.preset_b
+                        : side === null && bank.preset !== name ? bank.preset : bank.preset_a;
+                    released = true;
                 }
             }
-            if (pinned.has(name)) return err(`Preset "${name}" is used by an output bank and cannot be deleted`, 400);
+            if (released) outputStateStore.revision += 1;
             const idx = dspPresets.findIndex(pr => pr.name === name);
             if (idx >= 0 && name !== 'Direct' && name !== 'Neutral') dspPresets.splice(idx, 1);
             if (dspActivePreset === name) dspActivePreset = 'Direct';

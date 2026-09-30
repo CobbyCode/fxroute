@@ -13,13 +13,14 @@ therefore never treat ``percent / 100`` as a linear gain; use
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import logging
 import math
 import re
 import subprocess
 import threading
 import time
-from typing import Any
+from typing import Any, Iterator
 
 from audio.tool_env import c_locale_env
 
@@ -54,6 +55,8 @@ VOLUME_MONITOR_INTERVAL_SECONDS = 1.0
 # its check+write under a small threading lock.  Reads stay lock-free.
 _status_volume_cache: tuple[int, float] | None = None
 _status_volume_publish_lock = threading.Lock()
+_volume_monitor_read_lock = threading.Lock()
+_volume_monitor_pause_count = 0
 _volume_monitor_task: asyncio.Task[Any] | None = None
 
 
@@ -239,13 +242,39 @@ def get_status_volume(default: int = 100) -> int:
     return entry[0]
 
 
+@contextmanager
+def pause_volume_read_monitor() -> Iterator[None]:
+    """Drain any monitor read and pause refreshes during a hardware reprobe."""
+    global _volume_monitor_pause_count
+    with _volume_monitor_read_lock:
+        _volume_monitor_pause_count += 1
+    try:
+        yield
+    finally:
+        with _volume_monitor_read_lock:
+            _volume_monitor_pause_count -= 1
+
+
+def _read_status_volume() -> tuple[int, float] | None:
+    # Skip paused ticks instead of queuing reads against a disappearing sink.
+    if not _volume_monitor_read_lock.acquire(blocking=False):
+        return
+    try:
+        if _volume_monitor_pause_count:
+            return
+        started_at = time.monotonic()
+        return get_output_volume(), started_at
+    finally:
+        _volume_monitor_read_lock.release()
+
+
 async def _volume_monitor_loop() -> None:
     """Refresh the status volume cache with real reads outside the loop."""
     while True:
-        started_at = time.monotonic()
         try:
-            percent = await asyncio.to_thread(get_output_volume)
-            _publish_status_volume(percent, started_at)
+            reading = await asyncio.to_thread(_read_status_volume)
+            if reading is not None:
+                _publish_status_volume(*reading)
         except Exception:
             logger.warning("Volume read monitor refresh failed", exc_info=True)
         await asyncio.sleep(VOLUME_MONITOR_INTERVAL_SECONDS)

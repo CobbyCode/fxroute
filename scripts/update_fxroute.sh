@@ -214,6 +214,33 @@ cleanup_obsolete_root_modules() {
   fi
 }
 
+install_stdin_cli_helper() {
+  local destination="$HOME/.local/bin/fxroute"
+  local staged
+  mkdir -p "$HOME/.local/bin"
+  staged="$(mktemp "$HOME/.local/bin/.fxroute-helper.XXXXXX")"
+  if ! cat > "$staged" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$REPO_PATH/.venv/bin/python3" "$REPO_PATH/scripts/fxroute_stdin.py" "\$@"
+EOF
+  then
+    rm -f "$staged"
+    return 1
+  fi
+  if [[ -e "$destination" || -L "$destination" ]]; then
+    if [[ ! -f "$destination" || -L "$destination" ]] || ! cmp -s "$destination" "$staged"; then
+      rm -f "$staged"
+      log "Refusing to overwrite a non-FXRoute-owned helper: $destination"
+      return 1
+    fi
+  fi
+  if ! chmod 755 "$staged" || ! mv -f "$staged" "$destination"; then
+    rm -f "$staged"
+    return 1
+  fi
+}
+
 restart_service_if_needed() {
   case "$RESTART_MODE" in
     none)
@@ -247,6 +274,10 @@ reconcile_checkout() {
   cleanup_obsolete_root_modules
   if ! build_native_dsp_if_needed; then
     log "Reconciliation remains incomplete because a native build failed."
+    return 1
+  fi
+  if ! install_stdin_cli_helper; then
+    log "STDIN CLI helper reconciliation failed."
     return 1
   fi
   restart_service_if_needed

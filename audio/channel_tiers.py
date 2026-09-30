@@ -26,6 +26,7 @@ from audio.samplerate.persistence import (
     _load_audio_output_selection,
     _save_audio_output_selection,
 )
+from audio.system_volume import pause_volume_read_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,8 @@ class ChannelTierChange:
         self.rule_path = root / "wireplumber" / "wireplumber.conf.d" / f"90-fxroute-tier-{digest}.conf"
         self.captured = False
         self.started = False
+        self.volume_monitor_recovery_owner = None
+        self._volume_monitor_recovery_pause = None
 
     def _sinks(self) -> list[dict]:
         return json.loads(self.run(["pactl", "-f", "json", "list", "sinks"]))
@@ -234,35 +237,58 @@ class ChannelTierChange:
             f"after channel-tier reprobe (polls={iterations})"
         )
 
+    def _defer_volume_monitor_resume(self) -> None:
+        # A later reprobe pass still rolls back through the original snapshot.
+        owner = self.volume_monitor_recovery_owner or self
+        if owner._volume_monitor_recovery_pause is None:
+            pause = pause_volume_read_monitor()
+            pause.__enter__()
+            owner._volume_monitor_recovery_pause = pause
+
     def apply(self) -> None:
         if not self.captured:
             raise RuntimeError("Channel-tier change has no hardware snapshot")
         self.started = True
-        self._release_and_pin(self.target_rate)
-        rule = {"monitor.alsa.rules": [{
-            "matches": [{"device.name": self.card}],
-            "actions": {"update-props": {
-                "api.acp.pro-channels": self.tier["channels"],
-                "api.acp.probe-rate": self.tier["probe_rate"],
-                "device.profile": "pro-audio",
-            }},
-        }]}
-        self._write_rule((json.dumps(rule, indent=2) + "\n").encode())
-        self._reopen(self.new_key, "pro-audio", self.tier["channels"])
-        # Tier-to-tier switches stay on pro-audio: then the old source has
-        # the pro-input suffix as well and the rewrite below is a no-op.
-        old_suffix = ".pro-input-0" if self.old_key.endswith(".pro-output-0") else ".multichannel-input"
-        new_suffix = ".pro-input-0"
-        if self.old_source_selection:
-            old_source = self.old_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + old_suffix
-            new_source = self.new_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + new_suffix
-            _audio_source_selection_path().write_bytes(self.old_source_selection.replace(old_source.encode(), new_source.encode()))
+        with pause_volume_read_monitor():
+            try:
+                self._release_and_pin(self.target_rate)
+                rule = {"monitor.alsa.rules": [{
+                    "matches": [{"device.name": self.card}],
+                    "actions": {"update-props": {
+                        "api.acp.pro-channels": self.tier["channels"],
+                        "api.acp.probe-rate": self.tier["probe_rate"],
+                        "device.profile": "pro-audio",
+                    }},
+                }]}
+                self._write_rule((json.dumps(rule, indent=2) + "\n").encode())
+                self._reopen(self.new_key, "pro-audio", self.tier["channels"])
+                # Tier-to-tier switches stay on pro-audio: then the old source has
+                # the pro-input suffix as well and the rewrite below is a no-op.
+                old_suffix = ".pro-input-0" if self.old_key.endswith(".pro-output-0") else ".multichannel-input"
+                new_suffix = ".pro-input-0"
+                if self.old_source_selection:
+                    old_source = self.old_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + old_suffix
+                    new_source = self.new_key.replace("alsa_output.", "alsa_input.", 1).rsplit(".", 1)[0] + new_suffix
+                    _audio_source_selection_path().write_bytes(self.old_source_selection.replace(old_source.encode(), new_source.encode()))
+            except BaseException:
+                # Keep the expected disappearance covered while the caller
+                # drains failed-transition cleanup before its rollback.
+                self._defer_volume_monitor_resume()
+                raise
 
     def rollback(self) -> None:
         if not self.started:
             return
-        self._release_and_pin(self.old_rate)
-        self._write_rule(self.old_rule)
-        self._reopen(self.old_key, self.old_profile, self.old_channels)
-        if self.old_source_selection is not None:
-            _audio_source_selection_path().write_bytes(self.old_source_selection)
+        try:
+            with pause_volume_read_monitor():
+                self._release_and_pin(self.old_rate)
+                self._write_rule(self.old_rule)
+                self._reopen(self.old_key, self.old_profile, self.old_channels)
+                if self.old_source_selection is not None:
+                    _audio_source_selection_path().write_bytes(self.old_source_selection)
+        finally:
+            # A terminal rollback failure must not hide subsequent real errors.
+            pause = self._volume_monitor_recovery_pause
+            self._volume_monitor_recovery_pause = None
+            if pause is not None:
+                pause.__exit__(None, None, None)

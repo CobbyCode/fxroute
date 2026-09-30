@@ -10,6 +10,7 @@ NON_SELECTABLE_INPUT_KEYS: set[str] = set()
 SOURCE_MODE_APP_PLAYBACK = "app-playback"
 SOURCE_MODE_EXTERNAL_INPUT = "external-input"
 SOURCE_MODE_BLUETOOTH_INPUT = "bluetooth-input"
+SOURCE_MODE_STDIN_INPUT = "stdin-input"
 OUTPUT_MODE_STEREO = "stereo"
 OUTPUT_MODE_SUBWOOFER_21 = "subwoofer-2.1"
 OUTPUT_MODE_SUBWOOFER_22 = "subwoofer-2.2"

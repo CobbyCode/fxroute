@@ -864,8 +864,21 @@ let state = {
             current_input: null,
             inputs: [],
             bluetooth: {},
+            stdin: {},
             notes: [],
             pending: false,
+        },
+        // Inputs of sourceMode (see composeSourceModeState): the newest server
+        // overview by (epoch, revision), the mode an in-flight save shows and
+        // the last fetch failure, kept apart from the good snapshot.
+        sourceSync: {
+            epoch: null,
+            retiredEpochs: [],
+            revision: -1,
+            overview: null,
+            saveMode: null,
+            saveSerial: 0,
+            fetchError: null,
         },
         musicLibrary: {
             active_id: 'local',
@@ -987,8 +1000,9 @@ const elements = {
     effectsCrossoverPolarity: document.getElementById('effects-crossover-polarity'),
     effectsCrossoverLink: document.getElementById('effects-crossover-link'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
-    settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
+    settingsSourceStatus: document.getElementById('settings-source-status'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
+    settingsStdinStatus: document.getElementById('settings-stdin-status'),
     settingsMusicLibrarySelect: document.getElementById('settings-music-library-select'),
     settingsMusicLibraryHint: document.getElementById('settings-music-library-hint'),
     settingsProvidersList: document.getElementById('settings-providers-list'),
@@ -1070,7 +1084,6 @@ const elements = {
     playlistDetailCount: document.getElementById('playlist-detail-count'),
     playlistDetailInfo: document.getElementById('playlist-detail-info'),
     playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
-    deletePlaylistBtn: document.getElementById('delete-playlist'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
     savePlaylistBtn: document.getElementById('save-playlist'),
@@ -1474,6 +1487,9 @@ function connectWebSocket() {
         PlaybackCore.stopMetadataPolling();
         PlaybackCore.startPeakStatusPolling();
         void PlaybackCore.resyncPlaybackAfterReconnect();
+        // Source pushes sent while the socket was down or not yet ready are
+        // lost; the revision check keeps a newer push that lands first.
+        void fetchAudioSourceOverview();
         if (isMeasurementPanelOpen()) void MeasurementFlows.recoverAutoSubJob();
     };
     socket.onclose = (event) => {
@@ -1701,6 +1717,13 @@ function handleWebSocketMessage(msg) {
             state.playback.output_peak_warning = data || state.playback.output_peak_warning;
             PlaybackUI.renderPeakWarningBadge();
             break;
+        case 'source':
+            // Live audio source overview. The settings poll only runs while
+            // the dialog is open, so source switches and STDIN connect/stream/
+            // drop would otherwise leave tabs, the footer switcher and VU
+            // gating stale.
+            if (applySourceOverview(data)) renderSourceState();
+            break;
         case 'download':
             state.download = data;
             LibraryUI.updateDownloadUI();
@@ -1921,6 +1944,8 @@ function setupSettingsActions() {
                 void saveAudioSourceSelection('app-playback');
             } else if (value === 'bluetooth-input') {
                 void saveAudioSourceSelection('bluetooth-input');
+            } else if (value === 'stdin-input') {
+                void saveAudioSourceSelection('stdin-input');
             } else if (value.startsWith('external-input::')) {
                 void saveAudioSourceSelection('external-input', value.slice('external-input::'.length));
             }
@@ -2587,46 +2612,10 @@ function renderSettingsPanel() {
         const tierNote = activeTier ? ` · ${activeTier.channels} channels active` : '';
         elements.settingsSamplerateHint.textContent = sampleRatePolicy.mode === 'fixed'
             ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}${tierNote}.`
-            : `Follows the effective playback sample rate${activeTier ? '; the device switches channel inventory automatically' : ''}.`;
+            : `Follows playback sample rate${activeTier ? '; channel count adjusts automatically' : ''}.`;
     }
 
-    const sourceOverview = state.settings?.sourceMode || {};
-    const sourceInputs = Array.isArray(sourceOverview.inputs) ? sourceOverview.inputs : [];
-    const bluetooth = sourceOverview.bluetooth || {};
-    const currentSourceInput = sourceOverview.current_input || sourceOverview.default_input || null;
-    const selectedSourceInput = sourceOverview.selected_input || currentSourceInput || null;
-    const currentMode = sourceOverview.mode || 'app-playback';
-    const bluetoothSelectable = !!bluetooth.selectable;
-
-    if (elements.settingsSourceSelect) {
-        const inputOptions = [
-            '<option value="app-playback">App playback</option>',
-            ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
-            `<option value="bluetooth-input"${bluetoothSelectable ? '' : ' disabled'}>Bluetooth input</option>`,
-        ];
-        elements.settingsSourceSelect.innerHTML = inputOptions.join('');
-        if (currentMode === 'external-input') {
-            elements.settingsSourceSelect.value = `external-input::${selectedSourceInput?.key || currentSourceInput?.key || ''}`;
-        } else if (currentMode === 'bluetooth-input') {
-            elements.settingsSourceSelect.value = 'bluetooth-input';
-        } else {
-            elements.settingsSourceSelect.value = 'app-playback';
-        }
-        elements.settingsSourceSelect.disabled = !!sourceOverview.pending;
-    }
-    if (elements.settingsSourceModeHint) {
-        if (currentMode === 'external-input') {
-            elements.settingsSourceModeHint.textContent = `Current: ${selectedSourceInput?.label || currentSourceInput?.label || 'No inputs detected'}`;
-        } else if (currentMode === 'bluetooth-input') {
-            elements.settingsSourceModeHint.textContent = 'Current: Bluetooth input';
-        } else {
-            elements.settingsSourceModeHint.textContent = 'Current: App playback';
-        }
-    }
-    if (elements.settingsBluetoothStatus) {
-        const bluetoothNote = Array.isArray(bluetooth.notes) && bluetooth.notes.length ? ` · ${bluetooth.notes[0]}` : '';
-        elements.settingsBluetoothStatus.textContent = `Bluetooth: ${formatBluetoothModeStatus(bluetooth)}${bluetoothNote}`;
-    }
+    renderSourceSection();
     const musicLibrary = state.settings?.musicLibrary || {};
     if (elements.settingsMusicLibrarySelect && !isSelectFocused(elements.settingsMusicLibrarySelect)) {
         const model = SettingsSystem.musicLibrarySelectModel(musicLibrary);
@@ -2648,6 +2637,81 @@ function renderSettingsPanel() {
     applySourceModeUiState();
 }
 
+// Source-overview changes only touch the source section, the tabs/footer
+// switcher and the footer VU gating, not the rest of the settings panel.
+function renderSourceState() {
+    renderSourceSection();
+    applySourceModeUiState();
+    PlaybackUI.renderPeakWarningBadge();
+}
+
+function renderSourceSection() {
+    const sourceOverview = state.settings?.sourceMode || {};
+    const sourceInputs = Array.isArray(sourceOverview.inputs) ? sourceOverview.inputs : [];
+    const bluetooth = sourceOverview.bluetooth || {};
+    const currentSourceInput = sourceOverview.current_input || sourceOverview.default_input || null;
+    const selectedSourceInput = sourceOverview.selected_input || currentSourceInput || null;
+    const currentMode = sourceOverview.mode || 'app-playback';
+    const bluetoothSelectable = !!bluetooth.selectable;
+    const stdin = sourceOverview.stdin || {};
+    const stdinSelectable = !!stdin.selectable;
+
+    if (elements.settingsSourceSelect) {
+        const missingSelection = currentMode === 'external-input' && selectedSourceInput?.available === false
+            && !sourceInputs.some((input) => input.key === selectedSourceInput.key);
+        const missingLabel = missingSelection
+            ? `External input: ${selectedSourceInput.label || selectedSourceInput.key}${selectedSourceInput.availability === 'unavailable' ? ' (unavailable)' : ''}`
+            : '';
+        const inputOptions = [
+            '<option value="app-playback">App playback</option>',
+            ...(missingSelection
+                ? [`<option value="external-input::${escapeHtml(selectedSourceInput.key)}" disabled>${escapeHtml(missingLabel)}</option>`]
+                : []),
+            ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
+            `<option value="bluetooth-input"${bluetoothSelectable || currentMode === 'bluetooth-input' ? '' : ' disabled'}>Bluetooth input</option>`,
+            `<option value="stdin-input"${stdinSelectable || currentMode === 'stdin-input' ? '' : ' disabled'}>STDIN</option>`,
+        ];
+        elements.settingsSourceSelect.innerHTML = inputOptions.join('');
+        if (currentMode === 'external-input') {
+            elements.settingsSourceSelect.value = `external-input::${selectedSourceInput?.key || currentSourceInput?.key || ''}`;
+        } else if (currentMode === 'bluetooth-input') {
+            elements.settingsSourceSelect.value = 'bluetooth-input';
+        } else if (currentMode === 'stdin-input') {
+            elements.settingsSourceSelect.value = 'stdin-input';
+        } else {
+            elements.settingsSourceSelect.value = 'app-playback';
+        }
+        elements.settingsSourceSelect.disabled = !!sourceOverview.pending;
+    }
+    if (elements.settingsSourceStatus) {
+        const fetchError = sourceOverview.fetch_error || '';
+        elements.settingsSourceStatus.textContent = fetchError
+            ? `Could not refresh the source status: ${fetchError}`
+            : '';
+        elements.settingsSourceStatus.classList.toggle('hidden', !fetchError);
+    }
+    if (elements.settingsBluetoothStatus) {
+        const bluetoothNote = Array.isArray(bluetooth.notes) && bluetooth.notes.length ? ` · ${bluetooth.notes[0]}` : '';
+        elements.settingsBluetoothStatus.textContent = `Bluetooth: ${formatBluetoothModeStatus(bluetooth)}${bluetoothNote}`;
+    }
+    if (elements.settingsStdinStatus) {
+        const details = stdin.channels
+            ? `${stdin.format} · ${formatSampleRateKhz(stdin.rate)} · ${stdin.channels} ch · ${stdin.left} → L / ${stdin.right} → R`
+            : '';
+        const labels = {
+            unavailable: 'Unavailable', waiting: 'Waiting for PCM',
+            connected: 'Connected · select STDIN to play', ready: 'Ready for PCM',
+            streaming: 'Streaming', draining: 'Finishing stream', error: 'Input error',
+        };
+        const label = stdin.measurement_active ? 'Waiting for measurement to finish'
+            : (labels[stdin.state] || 'Waiting for PCM');
+        elements.settingsStdinStatus.textContent =
+            ['STDIN: ' + label, details, stdin.error?.message].filter(Boolean).join(' · ');
+        elements.settingsStdinStatus.classList.toggle('hidden',
+            currentMode !== 'stdin-input' && !stdin.session_id);
+    }
+}
+
 // Select-model for the Music Library selector in Technical settings.
 // While a discovery fetch is in flight and no list is cached yet, the
 // selector shows an explicit disabled loading state instead of a bare
@@ -2663,17 +2727,23 @@ function externalInputModeActive() {
 }
 
 function nonAppSourceModeActive() {
-    return ['external-input', 'bluetooth-input'].includes(state.settings?.sourceMode?.mode);
+    return ['external-input', 'bluetooth-input', 'stdin-input'].includes(state.settings?.sourceMode?.mode);
 }
 
 // The footer meter/badge show the live post-DSP output level. App playback
 // pauses when a line source takes over, but the DSP path stays live then,
-// so source modes count as active signal too.
+// so source modes count as active signal too. A waiting STDIN input without
+// a routed stream is selected but silent.
 function isFooterSignalActive() {
     if (PlaybackCore.isStreamingFooterSource(window.__footerSource)) {
         return PlaybackCore.streamingFooterData()?.status === 'Playing';
     }
     if (!!state.playback.playing && !state.playback.paused) return true;
+    const sourceMode = state.settings?.sourceMode || {};
+    if (sourceMode.mode === 'stdin-input') {
+        const stdin = sourceMode.stdin || {};
+        return !!stdin.routed && ['streaming', 'draining'].includes(stdin.state);
+    }
     return nonAppSourceModeActive();
 }
 
@@ -2681,7 +2751,9 @@ function isFooterSignalActive() {
 // Entries reuse the audio source overview, so only real, selectable sources
 // appear: Bluetooth first (when available), then every external stereo pair
 // in overview order. Labels stay short ("Input 1/2"); the human device name
-// is option text only, never a PipeWire/ALSA node name.
+// is option text only, never a PipeWire/ALSA node name. The overview's
+// bluetooth.source_name is such a node name (backend routing only, carries
+// the device MAC): never render it.
 function shortSourcePairLabel(pairLabel) {
     const text = String(pairLabel || '').trim();
     const match = /^Input\s+(\d+)\s*[–—-]\s*(\d+)$/.exec(text);
@@ -2693,24 +2765,36 @@ function buildSourceSwitcherEntries(sourceMode) {
     const mode = sourceMode || {};
     const entries = [];
     const bluetooth = mode.bluetooth || {};
-    if (bluetooth.selectable) {
-        const session = bluetooth.active_session || {};
-        const detail = [session.device_name, session.active_codec].filter(Boolean).join(' · ');
+    if (bluetooth.selectable || mode.mode === 'bluetooth-input') {
+        const detail = [bluetooth.connected_device, bluetooth.active_codec].filter(Boolean).join(' · ');
         entries.push({ kind: 'bluetooth', key: 'bluetooth-input', label: 'Bluetooth', sub: detail, optionLabel: detail ? `Bluetooth — ${detail}` : 'Bluetooth' });
     }
     const inputs = Array.isArray(mode.inputs) ? mode.inputs : [];
-    inputs.forEach((input) => {
+    // A saved external input the backend no longer reports stays listed and
+    // selected instead of yielding to another input; marked once confirmed.
+    const selected = mode.selected_input;
+    const missingSelection = mode.mode === 'external-input' && !!selected?.key
+        && selected.available === false && !inputs.some((input) => input?.key === selected.key);
+    (missingSelection ? [selected, ...inputs] : inputs).forEach((input) => {
         if (!input || !input.key) return;
         const label = shortSourcePairLabel(input.pair_label) || shortSourcePairLabel(input.label) || 'Input';
         const sub = String(input.device_label || input.label || '');
+        const optionLabel = (sub && sub !== label) ? `${label} — ${sub}` : label;
+        const unavailable = input.availability === 'unavailable';
         entries.push({
             kind: 'external',
             key: String(input.key),
             label,
             sub,
-            optionLabel: (sub && sub !== label) ? `${label} — ${sub}` : label,
+            optionLabel: unavailable ? `${optionLabel} — unavailable` : optionLabel,
+            unavailable,
         });
     });
+    const stdin = mode.stdin || {};
+    if (stdin.selectable || mode.mode === 'stdin-input') {
+        const detail = stdin.channels ? `${stdin.channels} ch` : (stdin.state || 'waiting');
+        entries.push({ kind: 'stdin', key: 'stdin-input', label: 'STDIN', sub: String(detail || ''), optionLabel: detail ? `STDIN — ${detail}` : 'STDIN' });
+    }
     return entries;
 }
 
@@ -2719,6 +2803,10 @@ function findSourceSwitcherIndex(entries, sourceMode) {
     if (!Array.isArray(entries) || entries.length === 0) return -1;
     if ((mode.mode || '') === 'bluetooth-input') {
         return entries.findIndex((entry) => entry.kind === 'bluetooth');
+    }
+    if ((mode.mode || '') === 'stdin-input') {
+        const index = entries.findIndex((entry) => entry.kind === 'stdin');
+        return index >= 0 ? index : -1;
     }
     const key = mode.selected_input?.key || mode.current_input?.key || '';
     if (!key) return -1;
@@ -2736,6 +2824,8 @@ function activateSourceSwitcherEntry(entry) {
     if (!entry) return;
     if (entry.kind === 'bluetooth') {
         void saveAudioSourceSelection('bluetooth-input');
+    } else if (entry.kind === 'stdin') {
+        void saveAudioSourceSelection('stdin-input');
     } else {
         void saveAudioSourceSelection('external-input', entry.key);
     }
@@ -2797,7 +2887,7 @@ function renderSourceModeFooter() {
     if (elements.sourceSelect && signature !== _sourceSelectSignature
         && document.activeElement !== elements.sourceSelect) {
         elements.sourceSelect.innerHTML = entries.map((entry) =>
-            `<option value="${escapeHtml(entry.key)}">${escapeHtml(entry.optionLabel)}</option>`).join('');
+            `<option value="${escapeHtml(entry.key)}"${entry.unavailable ? ' disabled' : ''}>${escapeHtml(entry.optionLabel)}</option>`).join('');
         elements.sourceSelect.value = currentEntry ? currentEntry.key : '';
         _sourceSelectSignature = signature;
     }
@@ -3100,7 +3190,7 @@ function renderOutputSystemSection() {
         elements.osTopology.textContent = mod.topologySummary(topology);
     }
     if (elements.settingsOutputModeHint) {
-        elements.settingsOutputModeHint.textContent = `${mod.modeLabel(mode)} · ${device.channels || 0} hardware outputs`;
+        elements.settingsOutputModeHint.textContent = mod.modeHint(mode, topology, device.channels || 0);
     }
     if (elements.settingsRoutingHint) {
         elements.settingsRoutingHint.textContent = 'Assign a role to each hardware output. Off leaves an output silent.';
@@ -3169,10 +3259,15 @@ async function maybeApplyCrossoverStarters() {
 }
 
 async function saveAudioSourceSelection(mode, inputKey = '') {
-    const nextMode = ['external-input', 'bluetooth-input'].includes(mode) ? mode : 'app-playback';
-    state.settings.sourceMode.pending = true;
-    state.settings.sourceMode.mode = nextMode;
-    renderSettingsPanel();
+    const nextMode = ['external-input', 'bluetooth-input', 'stdin-input'].includes(mode) ? mode : 'app-playback';
+    const sync = state.settings.sourceSync;
+    const serial = ++sync.saveSerial;
+    sync.saveMode = nextMode;
+    composeSourceModeState();
+    renderSourceState();
+    const settleSave = () => {
+        if (serial === sync.saveSerial) sync.saveMode = null;
+    };
     try {
         const resp = await fetch('/api/audio/source-mode', {
             method: 'POST',
@@ -3181,61 +3276,93 @@ async function saveAudioSourceSelection(mode, inputKey = '') {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save source mode');
-        state.settings.sourceMode = {
-            mode: data.mode || 'app-playback',
-            modes: Array.isArray(data.modes) ? data.modes : [],
-            default_input: data.default_input || null,
-            selected_input: data.selected_input || null,
-            current_input: data.current_input || null,
-            inputs: Array.isArray(data.inputs) ? data.inputs : [],
-            bluetooth: data.bluetooth || {},
-            notes: Array.isArray(data.notes) ? data.notes : [],
-            pending: false,
-        };
-        renderSettingsPanel();
+        settleSave();
+        // A newer push may already have landed; then it stays authoritative.
+        if (!applySourceOverview(data)) composeSourceModeState();
+        renderSourceState();
         const successMessage = nextMode === 'external-input'
             ? 'External input mode enabled'
-            : (nextMode === 'bluetooth-input' ? 'Bluetooth input mode enabled' : 'App playback mode enabled');
+            : (nextMode === 'bluetooth-input' ? 'Bluetooth input mode enabled'
+                : (nextMode === 'stdin-input' ? 'STDIN input mode enabled' : 'App playback mode enabled'));
         showToast(successMessage, 'success');
     } catch (error) {
-        state.settings.sourceMode.pending = false;
-        renderSettingsPanel();
+        settleSave();
+        composeSourceModeState();
+        renderSourceState();
         showToast(error.message || 'Failed to save source mode', 'error');
         void fetchAudioSourceOverview();
     }
 }
 
 
+const SOURCE_RETIRED_EPOCH_LIMIT = 8;
+
+// Accept a server overview unless a newer revision already landed. Pushes,
+// polls and save responses travel on different connections; the backend
+// stamps them in commit order. A new epoch is a restarted backend whose
+// counter starts over, so the revision base resets instead of rejecting it;
+// the replaced epoch is retired, so a straggler from it can never re-base
+// the client backwards. The save state is left alone: only the save request
+// releases its mode.
+function applySourceOverview(data) {
+    if (!data || typeof data !== 'object') return false;
+    const sync = state.settings.sourceSync;
+    const epoch = typeof data.epoch === 'string' ? data.epoch : null;
+    if (epoch !== null && epoch !== sync.epoch) {
+        if (sync.retiredEpochs.includes(epoch)) return false;
+        if (sync.epoch !== null) {
+            sync.retiredEpochs = [...sync.retiredEpochs, sync.epoch].slice(-SOURCE_RETIRED_EPOCH_LIMIT);
+        }
+        sync.epoch = epoch;
+        sync.revision = -1;
+    }
+    const revision = Number.isFinite(data.revision) ? data.revision : null;
+    if (revision !== null && revision < sync.revision) return false;
+    if (revision !== null) sync.revision = revision;
+    sync.overview = data;
+    sync.fetchError = null;
+    composeSourceModeState();
+    return true;
+}
+
+
+// Single writer of state.settings.sourceMode: the newest server overview
+// (always a full payload), shown with the mode of an in-flight save. Before
+// any snapshot arrived (first fetch failed) only App playback is known.
+function composeSourceModeState() {
+    const sync = state.settings.sourceSync;
+    const data = sync.overview || {
+        modes: [{ key: 'app-playback', label: 'App playback', selectable: true }],
+    };
+    state.settings.sourceMode = {
+        mode: sync.saveMode || data.mode || 'app-playback',
+        modes: Array.isArray(data.modes) ? data.modes : [],
+        default_input: data.default_input || null,
+        selected_input: data.selected_input || null,
+        current_input: data.current_input || null,
+        inputs: Array.isArray(data.inputs) ? data.inputs : [],
+        bluetooth: data.bluetooth || {},
+        stdin: data.stdin || {},
+        notes: Array.isArray(data.notes) ? data.notes : [],
+        fetch_error: sync.fetchError,
+        pending: !!sync.saveMode,
+    };
+}
+
+
 async function fetchAudioSourceOverview() {
+    const sync = state.settings.sourceSync;
     try {
         const resp = await fetch('/api/audio/source-mode');
         if (!resp.ok) throw new Error('Failed to fetch source mode');
         const data = await resp.json();
-        state.settings.sourceMode = {
-            mode: data.mode || 'app-playback',
-            modes: Array.isArray(data.modes) ? data.modes : [],
-            default_input: data.default_input || null,
-            selected_input: data.selected_input || null,
-            current_input: data.current_input || null,
-            inputs: Array.isArray(data.inputs) ? data.inputs : [],
-            bluetooth: data.bluetooth || {},
-            notes: Array.isArray(data.notes) ? data.notes : [],
-            pending: false,
-        };
-        renderSettingsPanel();
+        if (applySourceOverview(data)) renderSourceState();
     } catch (e) {
-        state.settings.sourceMode = {
-            mode: 'app-playback',
-            modes: [{ key: 'app-playback', label: 'App playback', selectable: true }],
-            default_input: null,
-            selected_input: null,
-            current_input: null,
-            inputs: [],
-            bluetooth: {},
-            notes: [e.message || 'Failed to fetch source mode'],
-            pending: false,
-        };
-        renderSettingsPanel();
+        // A failed fetch says nothing about the source state: keep the last
+        // good snapshot and only record the failure.
+        sync.fetchError = e.message || 'Failed to fetch source mode';
+        composeSourceModeState();
+        renderSourceState();
     }
 }
 

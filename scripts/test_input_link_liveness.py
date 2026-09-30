@@ -44,7 +44,9 @@ class InputLinkLivenessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bluetooth_monitor_repairs_link_loss_without_source_change(self):
         graph = LinkGraph()
-        overview = {"mode": "bluetooth-input", "bluetooth": {"selectable": True}}
+        overview = {"mode": "bluetooth-input", "bluetooth": {
+            "selectable": True, "discoverable": True, "pairable": True, "source_name": "bluez.source",
+        }}
         monitor = BluetoothInputMonitor(BluetoothInputDependencies(
             sync_peak_monitor_for_source_mode_state=AsyncMock(),
             get_persisted_source_mode=lambda: "bluetooth-input",
@@ -53,9 +55,6 @@ class InputLinkLivenessTests(unittest.IsolatedAsyncioTestCase):
             pw_link, "connect_ports", graph.connect
         ), patch.object(pw_link, "disconnect_ports", graph.disconnect), patch.object(
             bluetooth_module, "get_audio_source_overview", return_value=overview
-        ), patch.object(
-            bluetooth_module, "get_bluetooth_audio_overview",
-            return_value={"receiver_session": {"source_name": "bluez.source"}},
         ), patch.object(monitor, "_ensure_agent", AsyncMock()), patch.object(
             bluetooth_module, "disconnect_connected_bluetooth_audio_sources", return_value=[]
         ), patch.object(bluetooth_module, "BLUETOOTH_INPUT_MONITOR_INTERVAL_SECONDS", 0.01, create=True):

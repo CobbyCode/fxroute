@@ -130,6 +130,34 @@ class MPVWrapper:
                 return
             self._start_locked()
 
+    def _forget_previous_process_state(self) -> None:
+        """Drop the dead process's transport state when a new mpv starts.
+
+        Neither ``stop()`` nor a crash clears ``_state``, so a restarted
+        player inherited ``current_file`` from the process that just died.
+        ``/api/play`` derives its same-target fast path from that field and
+        then skipped the reload, so the transition waited for MPV source
+        ports that could never appear ("target source to DSP links were not
+        confirmed").  A new process owns no file until it loads one.
+        """
+        with self.lock:
+            self._state.update(
+                playing=False,
+                paused=False,
+                position=0.0,
+                duration=0.0,
+                current_file=None,
+                file_loaded=False,
+                playlist_pos=None,
+                ended=False,
+                error=None,
+                end_reason=None,
+                end_entry_id=None,
+            )
+            self._last_end_reason = None
+            self._last_end_entry_id = None
+            self._state_snapshot = self._state.copy()
+
     def _start_locked(self):
         """MPV startup; callers hold _start_lock (see start)."""
 
@@ -176,6 +204,7 @@ class MPVWrapper:
 
         self._running = True
         self._listener_stop_event.clear()
+        self._forget_previous_process_state()
         logger.info("MPV started successfully")
 
         self._listener_thread = threading.Thread(target=self._event_listener_loop, daemon=True)
@@ -200,6 +229,31 @@ class MPVWrapper:
             "--audio-device=pipewire/fxroute_dsp_sink",
             "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_delay_max=5",
         ]
+
+    def is_running(self) -> bool:
+        """Report live MPV availability, not the last start() intent.
+
+        ``_running`` records that start() succeeded.  It is never cleared
+        when mpv dies on its own, so a crashed player kept reporting itself
+        as running and every IPC call then failed on a missing socket.
+        The transition coordinator uses this to decide whether a source has
+        to be quieted; a dead player has nothing to quiet, so the answer
+        must follow the process.  poll() also reaps the exited child, so a
+        crashed mpv does not linger as a zombie.
+        """
+        if not self._running:
+            return False
+        process = self.process
+        if process is None:
+            # No child at all: never started, or already released by stop().
+            return False
+        if process.poll() is None:
+            return True
+        self._running = False
+        self._listener_stop_event.set()
+        logger.warning("MPV process exited unexpectedly (rc=%s); player is no longer available",
+                       process.returncode)
+        return False
 
     def stop(self):
         """Stop the mpv subprocess."""
@@ -244,7 +298,7 @@ class MPVWrapper:
         lines until the matching request_id arrives instead of stopping at
         the first newline.
         """
-        if not self._running:
+        if not self.is_running():
             raise MPVError("MPV is not running")
 
         msg = {"command": [command, *args], "request_id": int(time.time() * 1000)}

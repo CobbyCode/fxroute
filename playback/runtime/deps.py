@@ -66,6 +66,8 @@ class PlaybackRuntimeDependencies:
     get_qobuz_ui_state: Callable[..., Awaitable[dict]]
     is_qobuz_playback_active: Callable[..., bool]
     qobuz_play: Callable[..., Awaitable[Any]]
+    qobuz_play_track: Callable[..., Awaitable[Any]]
+    qobuz_loaded_track_id: Callable[..., Awaitable[int]]
     qobuz_pause: Callable[..., Awaitable[Any]]
     wait_for_pipewire_qobuz_release: Callable[..., Awaitable[bool]]
     wait_for_qobuz_sink_input_samplerate: Callable[..., Awaitable[Any]]
@@ -94,3 +96,4 @@ class PlaybackRuntimeDependencies:
     audio_configuration_lock: Callable[[], Any] | None = None
     # Authoritative output-state service for v2 transitions (main.py).
     get_output_service: Callable[[], Any] | None = None
+    qobuz_navigate: Callable[[str], Awaitable[dict]] | None = None

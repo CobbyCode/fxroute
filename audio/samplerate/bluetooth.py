@@ -61,6 +61,63 @@ def set_bluetooth_receiver_enabled(enabled: bool) -> dict[str, Any]:
 
     return get_bluetooth_audio_overview()
 
+def _normalized_bluetooth_addresses(addresses: Any) -> list[str]:
+    """Normalize, deduplicate and bound an address list in input order."""
+    normalized: list[str] = []
+    for value in list(addresses or []):
+        address = _extract_bluetooth_address(str(value or ""))
+        if address and address not in normalized:
+            normalized.append(address)
+    return normalized
+
+
+def reconnect_bluetooth_audio_devices(addresses: Any) -> list[str]:
+    """Connect the paired audio sources we disconnected when leaving Bluetooth input.
+
+    Leaving Bluetooth input mode kicks the connected A2DP source so the peer
+    keeps playing to its own speakers. Selecting the mode again has to bring
+    that device back without a manual ``bluetoothctl connect``: the same
+    addresses are connected here, in order, off the source-transition lock.
+
+    Only already paired (or trusted) devices are touched; an unpaired one is
+    skipped instead of being paired implicitly, and an address that vanished
+    from BlueZ is left to the next bounded attempt. A device that is connected
+    again counts as reconnected, so a peer that came back on its own retires
+    its retry. Returns the addresses that are connected afterwards; fails only
+    when every attempt failed, like the disconnect helper.
+    """
+    targets = _normalized_bluetooth_addresses(addresses)
+    if not targets:
+        return []
+    if not _command_available("bluetoothctl"):
+        raise RuntimeError("bluetoothctl is not installed or not available in PATH")
+    if not _bluetooth_daemon_reachable():
+        return []
+
+    connected: list[str] = []
+    failures: list[str] = []
+    for address in targets:
+        try:
+            info = _parse_bluetoothctl_info(_run_command(["bluetoothctl", "info", address]))
+        except Exception as exc:
+            failures.append(f"info {address}: {exc}")
+            continue
+        if info.get("connected"):
+            connected.append(address)
+            continue
+        if not info.get("paired") and not info.get("trusted"):
+            continue
+        try:
+            _run_command(["bluetoothctl", "connect", address])
+            connected.append(address)
+        except Exception as exc:
+            failures.append(f"connect {address}: {exc}")
+
+    if failures and not connected:
+        raise RuntimeError("; ".join(failures))
+    return connected
+
+
 def disconnect_connected_bluetooth_audio_sources() -> list[str]:
     if not _command_available("bluetoothctl"):
         raise RuntimeError("bluetoothctl is not installed or not available in PATH")
@@ -92,26 +149,37 @@ def disconnect_connected_bluetooth_audio_sources() -> list[str]:
         raise RuntimeError("; ".join(failures))
     return disconnected
 
+# The bus daemon answers NameHasOwner itself, at once.
+BLUEZ_PRESENCE_PROBE_TIMEOUT_SECONDS = 1.0
+_BLUEZ_PRESENCE_PROBES = (
+    (["busctl", "--system", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
+      "org.freedesktop.DBus", "NameHasOwner", "s", "org.bluez"], "b true"),
+    (["dbus-send", "--system", "--print-reply", "--dest=org.freedesktop.DBus",
+      "/org/freedesktop/DBus", "org.freedesktop.DBus.NameHasOwner", "string:org.bluez"], "boolean true"),
+)
+
+
 def _bluetooth_daemon_reachable() -> bool:
-    """Return True when the system BlueZ D-Bus service answers quickly.
+    """Return True when a running bluetoothd owns org.bluez.
 
     bluetoothctl blocks until its command timeout when bluez is installed
-    but not running (no D-Bus service), so probing the bus first keeps the
-    audio overviews fast on hosts without an active Bluetooth stack.
+    but not running, so the overviews ask first. The question goes to the
+    bus daemon (NameHasOwner), never to org.bluez: a message addressed to
+    org.bluez D-Bus-activates a stopped bluetoothd, and while bluetoothd
+    shuts down it may not answer until the timeout. A failing probe tool
+    falls through to the next one; only when every available tool failed
+    is the daemon treated as unreachable.
     """
-    probes = [
-        ["dbus-send", "--system", "--print-reply", "--dest=org.bluez", "/org/bluez", "org.freedesktop.DBus.Peer.Ping"],
-        ["busctl", "--system", "status", "org.bluez"],
-    ]
-    for probe in probes:
+    probe_failed = False
+    for probe, owned in _BLUEZ_PRESENCE_PROBES:
         if not _command_available(probe[0]):
             continue
         try:
-            _run_command(probe)
+            return owned in _run_command(probe, timeout=BLUEZ_PRESENCE_PROBE_TIMEOUT_SECONDS)
         except Exception:
-            return False
-        return True
-    return True  # no probe tool; fall back to the bounded bluetoothctl call
+            probe_failed = True
+    # No probe tool: fall back to the bounded bluetoothctl call.
+    return not probe_failed
 
 
 def is_bluetooth_audio_streaming(source_name: str | None) -> bool:

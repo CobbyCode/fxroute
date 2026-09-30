@@ -61,6 +61,9 @@ class SourceModeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             sync_order.append(f"bluetooth:{overview.get('mode')}")
             return overview
 
+        async def bluetooth_finish():
+            return None
+
         async def no_pause():
             return None
 
@@ -72,7 +75,8 @@ class SourceModeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "set_audio_source_selection", side_effect=set_source),
                 patch.object(main.samplerate, "_load_audio_source_selection", side_effect=lambda: dict(state)),
                 patch.object(main, "external_input", SimpleNamespace(sync=external_sync)),
-                patch.object(main, "bluetooth_input", SimpleNamespace(sync=bluetooth_sync)),
+                patch.object(main, "bluetooth_input", SimpleNamespace(
+                    sync=bluetooth_sync, finish_bluetoothctl_actions=bluetooth_finish)),
                 patch.object(main, "_pause_all_app_playback_for_external_input", no_pause),
                 patch.object(main.peak_monitor_coordinator, "sync_source_mode_state", no_peak_sync),
             ):

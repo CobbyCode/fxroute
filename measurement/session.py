@@ -115,6 +115,8 @@ class MeasurementServices:
     # Without it (or on None) manual measurements keep the legacy overview
     # route, whose mode/layout check then refuses any crossover/bank graph.
     stage_bank_v2_context: Callable[..., Any] | None = None
+    stdin_measurement_acquire: Callable[[], Awaitable[None]] | None = None
+    stdin_measurement_release: Callable[[], Awaitable[None]] | None = None
 
 
 _services: MeasurementServices | None = None
@@ -269,6 +271,15 @@ class MeasurementSampleRateSession:
         _run_coordinated_transition = services.run_coordinated_transition
         if self.active:
             return self.generation
+        stdin_acquired = False
+        acquire = getattr(services, "stdin_measurement_acquire", None)
+        release = getattr(services, "stdin_measurement_release", None)
+        if callable(acquire):
+            try:
+                await acquire()
+                stdin_acquired = True
+            except Exception:
+                raise
         # Reset old snapshots so a new session always starts fresh.
         global _playback_state_before_measurement
         _playback_state_before_measurement = None
@@ -305,6 +316,11 @@ class MeasurementSampleRateSession:
             self._rate_changed = self.original_force_rate != self.measurement_rate
         except asyncio.CancelledError:
             self.entry_in_progress = False
+            if stdin_acquired and callable(release):
+                try:
+                    await release()
+                except Exception:
+                    pass
             raise
         except Exception as exc:
             logger.error(
@@ -316,6 +332,11 @@ class MeasurementSampleRateSession:
             _playback_state_before_measurement = None
             self.original_force_rate = 0
             self.entry_in_progress = False
+            if stdin_acquired and callable(release):
+                try:
+                    await release()
+                except Exception:
+                    pass
             raise RuntimeError(
                 f"Could not establish guarded measurement entry at {self.measurement_rate} Hz"
             ) from exc
@@ -719,6 +740,12 @@ class MeasurementSampleRateSession:
             self.original_force_rate = 0
             _playback_state_before_measurement = None
             self.generation += 1
+            release_stdin = getattr(services, "stdin_measurement_release", None)
+            if callable(release_stdin):
+                try:
+                    await release_stdin()
+                except Exception:
+                    pass
             logger.info(
                 "Measurement sample-rate session released: generation=%s next_generation=%s restore_rate=%s",
                 completed_generation,

@@ -50,6 +50,30 @@ async def run_to_completion(awaitable: Awaitable[T]) -> T:
     return result
 
 
+async def finish_then_cancel(awaitable: Awaitable[T], *, what: str) -> T:
+    """Await ``awaitable`` to its end; a caller cancel then wins over its result.
+
+    For a caller that owns a critical section (a lock) and must not release
+    it while the work still mutates state. Unlike ``run_to_completion``, a
+    cancel received meanwhile takes precedence even over the work's own
+    exception, which is logged instead.
+    """
+    task: asyncio.Future[Any] = asyncio.ensure_future(awaitable)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        try:
+            task.result()
+        except BaseException:
+            logger.exception("%s failed while its caller was cancelled", what)
+        raise asyncio.CancelledError
+    return task.result()
+
+
 async def restore_after(error: BaseException, restore: Awaitable[Any], *, what: str) -> None:
     """Run the restore that follows ``error`` to its end without replacing ``error``.
 

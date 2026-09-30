@@ -1,5 +1,189 @@
 # Changelog
 
+## 1.0-beta11 (2026-09-29)
+
+Eleventh public beta and the last stand before the larger surround
+rebuild. Distribution: web demo on GitHub Pages, Raspberry Pi 4/5 images
+via GitHub Release, x86_64 Ubuntu 26.04 ISO via SourceForge.
+Khadas/VIM1S stays internal and gets no public image.
+
+### Release provenance
+
+- Source stand: `main`. No Armbian or live-converter changes this cycle.
+  The installer does change for STDIN pipe input (the `fxroute` wrapper,
+  see below); the installer download/fallback harnesses additionally gained
+  a `PATH` isolation fix for host-installed provider binaries, which has no
+  product behavior change.
+- The x86_64 Ubuntu 26.04 ISO and the Pi 4/Pi 5 images are built from the
+  release commit; their SHA-256 digests are recorded in this section once
+  the builds exist.
+- The web demo snapshot follows this stand (`demo/dist` parity is green);
+  the full local suite is green (523 passed, 0 failed, 16 skipped — the
+  skips are the native DSP suites that build on the test machine).
+- Explicitly not included: the adaptive convolver-headroom work (headroom
+  derived from the realized filter peak). The surround rebuild starts
+  after this beta; no surround changes are contained here.
+
+### STDIN pipe input (new source)
+
+- New source **STDIN** for raw PCM from shell pipelines
+  (`decoder | fxroute stdin …`): a multichannel PCM pipe client and wire
+  protocol with 1–32 channels at 8000–384000 Hz in `s16le`, packed
+  `s24le`, `s32le` and `f32le`, selectable writer sessions (the client may
+  connect before STDIN is selected and waits), and routing of the chosen
+  channel pair through the DSP ingress while the transport keeps every
+  input channel.
+- STDIN joins the source and audio lifecycle: peak monitoring, the source
+  overview and its WebSocket pushes, the settings and footer switcher, and
+  the measurement session (an active measurement stops a running stream
+  and blocks new writers until it is released). A fixed sample-rate policy
+  resamples the pipe stream to the graph rate; STDIN never changes the
+  graph clock itself.
+- The UI exposes the STDIN source and its stream state (connected,
+  streaming, dropped) in the source section, the footer switcher and the
+  VU gating; the demo transport carries the matching routes.
+- The installer places an `fxroute` pipe-client wrapper in `~/.local/bin`;
+  reruns and the in-app update refresh only that owned wrapper, and the
+  uninstaller removes it only when it is unchanged.
+- Documented in MANUAL §4.7 (formats, rates, channel selection, exit
+  codes, resampling and measurement interaction) with a README feature
+  bullet.
+
+### Qobuz / streaming
+
+- Cold qbzd starts load the requested track before the Playing confirm: a
+  bare resume cannot put audio into an empty fork player (Connect handoff
+  with no current track, fresh daemon), so an unloaded or finished player
+  is loaded via `play-track` first while a paused mid-track player keeps
+  resuming with its position. The server-side track download carries a
+  download-sized timeout instead of the 2 s control-plane default, and a
+  refused play fails closed.
+- Browser login on a reachable legacy daemon without the OAuth route now
+  reports the provider update instead of the opaque missing-URL error
+  (probed via `/api/status`).
+
+### Library / playlist UI
+
+- One shared playlist action row in every view: TIDAL browse renders it
+  before the results body with the full-width album variant, local library
+  homes it before the tracks list and docks it inside the open album or
+  playlist detail between header and tracks; radio has no row on the
+  shared selection path.
+- Uniform 0.9rem row standoff against converged neighbours (TIDAL artist
+  detail as the reference), symmetric header/row and row/content gaps in
+  library details and TIDAL browse/details, and the TIDAL detail column
+  rhythm coupled to a single token instead of competing gap/margin
+  literals. Measured no-op on the tuned values.
+- The save row is Save/Cancel only everywhere; playlist deletion stays on
+  the grid heart and the tracks-list button. The detail row follows the
+  track selection in every view, and navigation preserves the selection:
+  opening or switching a playlist keeps the current selection instead of
+  clearing it.
+- Responsive rules no longer override row margins.
+
+### Source state and overview push
+
+- Every client-facing source overview (WebSocket push, settings poll, save
+  response, STDIN state) carries a revision and is recorded in order, so a
+  pre-switch snapshot can no longer overtake a committed switch; clients
+  retire replaced epochs and re-read the overview on every (re)connect.
+  Overviews carry a per-process epoch next to a counter that restarts at 1,
+  so a restarted backend is accepted again after a backward clock step.
+- Source-mode commits and the external and Bluetooth monitor loops publish
+  too, not only STDIN; a selected Bluetooth adapter that vanishes while
+  idle pushes its App-playback fallback instead of leaving clients on
+  Bluetooth until the next poll.
+- The settings poll builds outside the source-transition lock and records
+  its build only when the lock shows no holder ran meanwhile: a poll no
+  longer delays a source switch. A failed fetch keeps the last good
+  snapshot and reports the error in its own field instead of flipping the
+  UI to App playback.
+- The frontend derives the source mode from one writer (the newest
+  overview plus the mode of an in-flight save) and re-renders only the
+  source section, the switchers and the VU gating.
+
+### Source input resilience
+
+- Bluetooth and external input losses are confirmed instead of reacting to
+  a single failed probe: two consecutive unavailable observations
+  spanning 5 s decide, so a bluetoothctl timeout or a pactl blip no longer
+  unlinks a working loopback or falls back to App playback. The BlueZ
+  agent re-registers when `org.bluez` gets a new owner, so a bluetoothd
+  restart shorter than the confirmation window keeps working.
+- A confirmed Bluetooth idle loss stops only the agent instead of
+  disconnecting a paired device; a saved external input that disappears
+  stays selected with its last-seen label, marked unavailable, and is
+  relinked when it returns. The footer switcher and the settings select
+  keep it as a disabled entry.
+- STDIN state events only arm or release the peak monitor while STDIN is
+  the selected source, so a STDIN event cannot stop another source's
+  monitor.
+- The source monitor counts consecutive skipped ticks and reports a run of
+  them once at info instead of staying silent.
+
+### Bluetooth responsiveness
+
+- bluetoothctl work (receiver toggle, device disconnect) no longer runs
+  under the source-transition lock: sync/disable record it as a pending
+  goal that is executed after the lock is released, so a hanging command
+  (BlueZ gone after the reachability check, ~5 s per command) cannot stall
+  source switches or player callbacks.
+- Routing works from the validated overview snapshot built outside the
+  lock instead of rereading under it; newer decisions collapse stale
+  recorded actions and an interrupted finish puts back what it has not
+  run, so a recorded action is never lost before it ran.
+- The presence probe falls through to `dbus-send` when the `busctl` probe
+  fails, and the footer source switcher shows the connected Bluetooth
+  device instead of a bare "Bluetooth".
+
+### Output and settings UI
+
+- The Mode status line reads *No subwoofer configured — assign a Sub
+  output below.* while Stereo + Sub is selected and the derived topology
+  holds no sub role, and returns to `<Mode> · <N> hardware outputs` once a
+  sub is routed (documented in the manual; mode/routing architecture is
+  unchanged).
+- The sample-rate Auto hint is shorter — "Follows playback sample rate;
+  channel count adjusts automatically." — and keeps its channel-tier
+  condition.
+- The Source card drops the redundant `Current:` line; the Input dropdown
+  already names the active source.
+
+### Docs
+
+- Ubuntu 26.04 is the only x86 installation ISO (the beta10 entry is
+  corrected accordingly: no Leap 16 ISO was published this cycle).
+  README and MANUAL point at the Ubuntu path.
+- `docs/INSTALL-ISO.md` is scoped to the retained Leap 16 / Agama builder
+  in `iso/` and now states that the published x86 ISO is the Ubuntu 26.04
+  build (`ubuntu/build-ubuntu-iso.sh`); the Leap builder and its contract
+  tests are unchanged.
+- The STDIN implementation spec stays an internal working document and is
+  not part of the repository or any release artifact.
+
+### Internal maintenance
+
+- Installer download/fallback harnesses pin `PATH` to
+  `/usr/bin:/bin` so host-installed provider binaries cannot take the
+  already-installed exit before any download stage runs.
+- Source transitions moved out of `main.py` into
+  `audio/source_transitions.py` (switch with rollback, startup re-apply,
+  overview read and publishing), the cancellation-safe runner moved to
+  `common/run_to_completion.py`, and loss confirmation is owned by the
+  source monitors while the overview only reads it — no behavior change.
+- Regression coverage for the cold-start track load, the legacy-daemon
+  login probe, the playlist-row position/width/spacing contract, the STDIN
+  pipeline (protocol, client, PipeWire adapter, writer sessions, source
+  and UI integration, installer wrapper), source-overview push ordering
+  and epochs, Bluetooth and external-input unavailability, BlueZ agent
+  re-registration, the footer source switcher and the output-mode hint.
+
+Public release artifact names (to be built from tag `v1.0-beta11`):
+
+- `fxroute-1.0-beta11-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta11-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta11-x86_64-ubuntu26.04.iso` (SourceForge, + `.sha256`)
+
 ## 1.0-beta10 (2026-09-27)
 
 Tenth public beta. Distribution: web demo on GitHub Pages,

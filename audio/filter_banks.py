@@ -44,6 +44,16 @@ def bank_definitions(roles) -> dict[str, dict]:
     return definitions
 
 
+def owning_bank_ids(role: str) -> set[str]:
+    """Bank ids a role can own presets under in any topology.
+
+    A pair role resolves to its pair bank, or to itself when routed alone.
+    """
+    if role == "global":
+        return {"global"}
+    return {role} | {bank_id for bank_id, members in STEREO_PAIRS.items() if role in members}
+
+
 def resolve_bank(config: dict, bank_id: str, roles=None) -> dict:
     """Resolve a logical bank or an old role selection to its whole group."""
     if bank_id == "global":
@@ -68,6 +78,19 @@ def summarize_banks(bindings: list[dict]) -> dict:
             "active_side": next(iter(sides)) if len(sides) == 1 else None,
             "can_a": bool(bindings),
             "can_b": bool(bindings) and all(binding["preset_b"] is not None for binding in bindings)}
+
+
+def summarize_all_banks(bindings: list[dict]) -> dict:
+    """All Banks aggregate: B needs one bank with a B; banks without B stay on A.
+
+    The aggregate listens to B while every bank with a B does and every bank
+    without one sits on A, so the joint A/B switch reads as B after it.
+    """
+    comparable = [binding for binding in bindings if binding["preset_b"] is not None]
+    fixed_on_a = all(BankState.from_dict(binding).active_side == "A"
+                     for binding in bindings if binding["preset_b"] is None)
+    sides = summarize_banks(comparable if comparable and fixed_on_a else bindings)["active_side"]
+    return {**summarize_banks(bindings), "active_side": sides, "can_b": bool(comparable)}
 
 
 def bank_catalog(config: dict, roles) -> dict:

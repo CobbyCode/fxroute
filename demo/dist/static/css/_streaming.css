@@ -521,6 +521,15 @@
 #tidal-fav-results,
 #tidal-playlists-results,
 #tidal-search-items { margin-top: 0.35rem; }
+/* While the playlist action row is visible it already holds the reference
+   standoff below itself, so a results container opening the body drops its
+   own top margin — the first tile/row then starts exactly like in the
+   Library overviews and switching tabs stops jumping. Hidden, the margin
+   still reserves the subtab-to-content gap. */
+.streaming-browse:has(> #tidal-playlist-save-row:not(.hidden)) > #tidal-browse-body > #tidal-fav-results:first-child,
+.streaming-browse:has(> #tidal-playlist-save-row:not(.hidden)) > #tidal-browse-body > #tidal-playlists-results:first-child {
+    margin-top: 0;
+}
 .tidal-search-results-header { display: flex; flex-direction: column; gap: 0.5rem; }
 .streaming-results-title { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 700; }
 .streaming-results-heading {
@@ -563,7 +572,17 @@
 .streaming-result .track-info { flex: 1; min-width: 0; }
 
 
-.streaming-detail { display: flex; flex-direction: column; gap: 0.7rem; }
+.streaming-detail {
+    display: flex;
+    flex-direction: column;
+    /* Single source for the TIDAL detail column rhythm: the docked
+       playlist row and the results margin both pull against this same
+       property, so the container gap and the two flanking margins cannot
+       drift apart. This is also the only gap declaration reaching this
+       root, so nothing is decided by source order. */
+    --tidal-detail-gap: 0.7rem;
+    gap: var(--tidal-detail-gap);
+}
 /* The detail header grid (cover/meta/back) is the shared rule defined with
    .album-detail-header above; this block keeps the streaming-specific chrome. */
 .streaming-detail-cover {
