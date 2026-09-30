@@ -18,7 +18,7 @@ Khadas/VIM1S stays internal and gets no public image.
   release commit; their SHA-256 digests are recorded in this section once
   the builds exist.
 - The web demo snapshot follows this stand (`demo/dist` parity is green);
-  the full local suite is green (523 passed, 0 failed, 16 skipped — the
+  the full local suite is green (530 passed, 0 failed, 16 skipped — the
   skips are the native DSP suites that build on the test machine).
 - Explicitly not included: the adaptive convolver-headroom work (headroom
   derived from the realized filter peak). The surround rebuild starts
@@ -176,7 +176,45 @@ Khadas/VIM1S stays internal and gets no public image.
   pipeline (protocol, client, PipeWire adapter, writer sessions, source
   and UI integration, installer wrapper), source-overview push ordering
   and epochs, Bluetooth and external-input unavailability, BlueZ agent
-  re-registration, the footer source switcher and the output-mode hint.
+  re-registration, the footer source switcher and the output-mode hint,
+  plus the 30.09 wave below (external failure restore, external rate
+  policy, Qobuz seek/transport regression, STDIN waiting VU, PEQ bank
+  creation).
+
+### Stabilization wave 2026-09-30 (live-verified on the test machine)
+
+- STDIN lifecycle hardening: a hard-killed buffered writer is detected
+  via peer-shutdown polling and replaceable after ~370 ms while a live
+  writer is never replaced; a normal writer EOF rearms waiting VU so the
+  selected listener keeps fresh post-DSP VU while waiting and unrouted;
+  the VU live probe is skipped under measurement ownership; STDIN and
+  peak-capture teardown are cancellation-safe (shielded stdin-close
+  waiter, owned peak-capture stop); the volume monitor pauses across
+  channel-tier reprobes instead of reading a sink that tier apply
+  deliberately removed.
+- Qobuz transport and seek: seeks use integer daemon seconds and only
+  report independently confirmed positions — refused commands fail
+  closed (HTTP 502), invalid input is HTTP 400, unconfirmed seeks are
+  HTTP 409 without broadcast or implicit resume; play/next/previous
+  coordinate track loading with renderer rate readbacks (a fixed-rate
+  entry re-establishes the resolved graph rate after the daemon starts,
+  paused external sources need no producer ports); policy transitions
+  read the live transport; queued external claims are skipped once the
+  renderer stopped playing.
+- Failed handoffs and tier rollback: a failed source handoff resumes the
+  quieted external renderer (Spotify/Qobuz) at its retained position
+  through the Coordinator instead of a channel-tier rollback; the
+  rollback restores the previous source, never the failed target, and
+  never restarts an external target; a kicked A2DP source reconnects
+  when the input mode returns.
+- Output banks and PEQ: bank-bound PEQ creation calls the owning
+  `FXRouteBankUI.bankBindingJson()` helper, fixing the create error in
+  area banks; area banks compile serial PEQs instead of rejecting them;
+  startup drops foreign legacy preset references from bank slots;
+  deleting the active preset and A-takes-B compare behave like Global
+  in every bank; one measurement can feed several presets into its bank.
+- The output extras helper text reads "Applied globally, except
+  Direct."
 
 Public release artifact names (to be built from tag `v1.0-beta11`):
 
