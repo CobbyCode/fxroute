@@ -15,8 +15,16 @@ Khadas/VIM1S stays internal and gets no public image.
   a `PATH` isolation fix for host-installed provider binaries, which has no
   product behavior change.
 - The x86_64 Ubuntu 26.04 ISO and the Pi 4/Pi 5 images are built from the
-  release commit; their SHA-256 digests are recorded in this section once
-  the builds exist.
+  release commit (`644ffb0a`, embedded `VERSION 1.0-beta11`,
+  `source.tar` SHA-256
+  `14d71d76a4ad425c300d07a50f3edc1e238462c1aad5d744bc15ee270e26c088`);
+  SHA-256:
+  - `fxroute-1.0-beta11-rpi4-trixie-current.img.xz` —
+    `ed16e45ce89f4c7c53e219209683c7fc4050929bfb2c5159e3d97ecc192e0fc2`
+  - `fxroute-1.0-beta11-rpi5-trixie-current.img.xz` —
+    `63707f7da4a31994c265e0c4de57322cb8ae3cab5a036593d00b6daff0efd396`
+  - `fxroute-1.0-beta11-x86_64-ubuntu26.04.iso` (SourceForge) —
+    `6eae228423bd05c10c2164f903a4917fda74fd3a37a0fe3969699dc00f5f99cf`
 - The web demo snapshot follows this stand (`demo/dist` parity is green);
   the full local suite is green (530 passed, 0 failed, 16 skipped — the
   skips are the native DSP suites that build on the test machine).
