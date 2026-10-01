@@ -172,6 +172,8 @@ def exercise(binary, root, rate, swaps, forced=False, blocked=False, probe=False
                     reply, _ = control("timing get")
                     timing = json.loads(reply)
                     assert timing["workers"] == len(identity), timing
+                    assert timing["worker_limit"] == (0 if forced else 3), timing
+                    assert timing["worker_mode"] == ("disabled" if forced else "serial" if kind == "serial" else "pool"), timing
                     assert timing["worker_jobs"] == (1 if kind == "serial" else 8), timing
                     assert timing["worker_used"] == (0 if forced or kind == "serial" else 3), timing
                     assert timing["callback"]["samples"] > 0, timing

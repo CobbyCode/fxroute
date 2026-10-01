@@ -174,7 +174,7 @@ int main(int argc, char **argv) {
 def test_timing_reset_is_acknowledged_at_a_drained_callback_boundary(tmp_path):
     # Catches reset erasing maxima of retained samples and acknowledges only
     # a completed reset, even when the graph initially has no callbacks.
-    from test_native_dsp_kernel_parity import compile_native
+    from test_native_dsp_kernel_parity import CORE_SOURCES, compile_native
     harness = tmp_path / "timing-reset.c"
     harness.write_text(r'''
 #define _POSIX_C_SOURCE 200809L
@@ -214,7 +214,7 @@ int main(int argc, char **argv) {
 }
 ''')
     target = tmp_path / "timing-reset"
-    compile_native(target, [NATIVE / name for name in ("dsp.c", "autogain.c", "crystalizer.c", "lv2_host.c")] + [harness])
+    compile_native(target, [*CORE_SOURCES, harness])
     config = tmp_path / "neutral.conf"
     config.write_text("rate 48000\ninputs 2\noutputs 2\nmatrix 0 0 1\nmatrix 1 1 1\n")
     subprocess.run([str(target), str(config)], check=True, timeout=10)
@@ -223,7 +223,7 @@ int main(int argc, char **argv) {
 def test_borrowed_destruction_keeps_helpers_and_offline_destruction_joins(tmp_path):
     # Catches ownership changes, creation for the initial serial graph only,
     # and joining a borrowed pool while another graph still needs it.
-    from test_native_dsp_kernel_parity import compile_native
+    from test_native_dsp_kernel_parity import CORE_SOURCES, compile_native
     serial = tmp_path / "serial.conf"
     serial.write_text("rate 48000\ninputs 2\noutputs 4\nmatrix 0 0 1\nmatrix 1 1 1\n")
     parallel = tmp_path / "parallel.conf"
@@ -273,18 +273,38 @@ int main(int argc, char **argv) {
 }
 ''')
     target = tmp_path / "ownership"
-    compile_native(target, [NATIVE / name for name in
-                           ("dsp.c", "autogain.c", "crystalizer.c", "lv2_host.c")] + [harness])
+    compile_native(target, [*CORE_SOURCES, harness])
     subprocess.run([str(target), str(serial), str(parallel)], check=True, timeout=30)
+
+
+def test_timing_names_keep_json_metric_mapping_and_reject_unknown_indices(tmp_path):
+    # Catches swapped metric labels and out-of-bounds name lookup.
+    from test_native_dsp_kernel_parity import CORE_SOURCES, compile_native
+    harness = tmp_path / "names.c"
+    harness.write_text(r'''
+#include "dsp.h"
+#include <assert.h>
+#include <string.h>
+int main(void) {
+    assert(!strcmp(fxdsp_timing_name(FXDSP_TIMING_CALLBACK), "callback"));
+    assert(!strcmp(fxdsp_timing_name(FXDSP_TIMING_BARRIER), "barrier"));
+    assert(!strcmp(fxdsp_timing_name(FXDSP_TIMING_WAKE), "wake"));
+    assert(!fxdsp_timing_name(FXDSP_TIMING_COUNT));
+    assert(!fxdsp_timing_name(UINT32_MAX));
+    return 0;
+}
+''')
+    target = tmp_path / "names"
+    compile_native(target, [*CORE_SOURCES, harness])
+    subprocess.run([str(target)], check=True, timeout=10)
 
 
 def test_live_swap_fixtures_load_through_the_real_config_parser(tmp_path):
     # Catches stage index gaps and bank lines placed after the stage section.
-    from test_native_dsp_kernel_parity import compile_native
+    from test_native_dsp_kernel_parity import CORE_SOURCES, compile_native
     from verify_native_worker_swaps import write_configs
     target = tmp_path / "offline"
-    compile_native(target, [NATIVE / name for name in
-                           ("dsp.c", "autogain.c", "crystalizer.c", "lv2_host.c", "offline.c")])
+    compile_native(target, [*CORE_SOURCES, NATIVE / "offline.c"])
     for rate in (44100, 48000):
         write_configs(tmp_path, rate)
         for kind in ("serial", "stage", "bank"):

@@ -577,15 +577,6 @@ void fx_crystalizer_process(fx_crystalizer *c, const float *input, float *output
     }
 }
 
-void fx_crystalizer_process_pair(fx_crystalizer *left, fx_crystalizer *right,
-                                 const float *input_l, const float *input_r,
-                                 float *output_l, float *output_r, size_t frames) {
-    if (!left || !right || !input_l || !input_r || !output_l || !output_r) return;
-    /* Graphs own parallelism; standalone callers never spawn lazy helpers. */
-    fx_crystalizer_process(left, input_l, output_l, frames);
-    fx_crystalizer_process(right, input_r, output_r, frames);
-}
-
 size_t fx_crystalizer_latency(const fx_crystalizer *c) {
     if (!c) return 0U;
     return BLOCK_SIZE / 2U + (c->kernel_size - 1U) / 4U +

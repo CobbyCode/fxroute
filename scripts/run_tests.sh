@@ -106,6 +106,7 @@ NATIVE_HELPER_TESTS=(
     "scripts/test_native_dsp_workers.py"
 )
 NATIVE_C_TESTS=(
+    "native_dsp/test_engine_workers.sh"
     "native_dsp/test_lv2_host.sh"
     "native_dsp/test_master_gain.sh"
     "native_dsp/test_loudness_strength.sh"

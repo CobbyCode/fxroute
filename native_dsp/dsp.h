@@ -19,12 +19,16 @@ unsigned fxdsp_prepare_workers(fxdsp *dsp, const fx_worker_policy *policy);
  * Binding changes only an unpublished/stopped graph, never the borrowed pool.
  * All graphs using that pool must share one serialized processing caller. */
 fx_workers *fxdsp_create_engine_workers(const fxdsp *dsp, const fx_worker_policy *policy);
+/* Plan once before live creation, after environment/layout/CPU policy caps. */
+unsigned fxdsp_engine_worker_limit(const fxdsp *dsp, const fx_worker_policy *policy);
 void fxdsp_borrow_workers(fxdsp *dsp, fx_workers *pool);
 unsigned fxdsp_worker_demand(const fxdsp *dsp);
 /* Available capacity, not the number of helpers used in a particular phase. */
 unsigned fxdsp_worker_count(const fxdsp *dsp);
 int fxdsp_worker_scheduler(const fxdsp *dsp, int *priority);
 enum { FXDSP_TIMING_CALLBACK, FXDSP_TIMING_BARRIER, FXDSP_TIMING_WAKE, FXDSP_TIMING_COUNT };
+/* Returns NULL for an unknown metric. */
+const char *fxdsp_timing_name(unsigned metric);
 /* Enable only on a stopped graph. Reset requests a drained callback boundary
  * and waits at most 250ms on the non-RT control path. A stopped graph retains
  * a pending reset for its next callback; timeout never resets mid-job. */

@@ -710,12 +710,17 @@ static unsigned worker_capacity(unsigned jobs, unsigned limit) {
     return allowed < jobs - 1 ? allowed : jobs - 1;
 }
 
+static unsigned prepare_worker_limit(unsigned jobs, const fx_worker_policy *requested) {
+    unsigned count = requested ? requested->count : FX_WORKER_LIMIT;
+    unsigned limit = worker_env_limit();
+    if (limit < count) count = limit;
+    return worker_capacity(jobs, count);
+}
+
 static fx_workers *prepare_worker_pool(unsigned jobs, const fx_worker_policy *requested) {
     fx_worker_policy policy = {.count = FX_WORKER_LIMIT};
     if (requested) policy = *requested;
-    unsigned limit = worker_env_limit();
-    if (limit < policy.count) policy.count = limit;
-    policy.count = worker_capacity(jobs, policy.count);
+    policy.count = prepare_worker_limit(jobs, requested);
     return fx_workers_create(&policy);
 }
 
@@ -731,6 +736,11 @@ fx_workers *fxdsp_create_engine_workers(const fxdsp *d, const fx_worker_policy *
     return prepare_worker_pool(jobs, policy);
 }
 
+unsigned fxdsp_engine_worker_limit(const fxdsp *d, const fx_worker_policy *policy) {
+    unsigned jobs = d->inputs > d->outputs ? d->inputs : d->outputs;
+    return prepare_worker_limit(jobs, policy);
+}
+
 void fxdsp_borrow_workers(fxdsp *d, fx_workers *pool) {
     fx_workers_destroy(d->owned_workers); d->owned_workers = NULL;
     (void)plan_workers(d);
@@ -739,6 +749,15 @@ void fxdsp_borrow_workers(fxdsp *d, fx_workers *pool) {
 
 unsigned fxdsp_worker_count(const fxdsp *d) { return fx_workers_count(d->workers); }
 int fxdsp_worker_scheduler(const fxdsp *d, int *priority) { return fx_workers_scheduler(d->workers, priority); }
+const char *fxdsp_timing_name(unsigned metric) {
+    static const char *const names[] = {
+        [FXDSP_TIMING_CALLBACK] = "callback",
+        [FXDSP_TIMING_BARRIER] = "barrier",
+        [FXDSP_TIMING_WAKE] = "wake",
+    };
+    _Static_assert(sizeof names / sizeof names[0] == FXDSP_TIMING_COUNT, "timing name count");
+    return metric < FXDSP_TIMING_COUNT ? names[metric] : NULL;
+}
 int fxdsp_enable_timing(fxdsp *d, int enabled) {
     d->measure = enabled && fx_timing_available(&d->timing[0]);
     return d->measure;

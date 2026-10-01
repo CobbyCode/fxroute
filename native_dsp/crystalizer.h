@@ -16,11 +16,6 @@ void fx_crystalizer_set_band_intensity_db(fx_crystalizer *crystalizer, size_t ba
  * overflow to Inf, before any state is mutated. */
 int fx_crystalizer_intensity_db_valid(float db);
 void fx_crystalizer_process(fx_crystalizer *crystalizer, const float *input, float *output, size_t frames);
-/* Stereo convenience: runs both channels concurrently (results bitwise
- * identical to calling fx_crystalizer_process sequentially). */
-void fx_crystalizer_process_pair(fx_crystalizer *left, fx_crystalizer *right,
-                                 const float *input_l, const float *input_r,
-                                 float *output_l, float *output_r, size_t frames);
 size_t fx_crystalizer_latency(const fx_crystalizer *crystalizer);
 
 size_t fx_crystalizer_band_count(void);

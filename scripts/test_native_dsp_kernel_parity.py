@@ -14,6 +14,7 @@ from native_test_runner import run_pytest_style_module
 
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "native_dsp"
+CORE_SOURCES = tuple(NATIVE / name for name in ("dsp.c", "autogain.c", "crystalizer.c", "lv2_host.c"))
 
 
 def compile_native(target, sources, flags=()):
@@ -87,14 +88,14 @@ int main(void) {
 }
 ''')
     target = tmp_path / "spectrum"
-    compile_native(target, [source, NATIVE / "autogain.c", NATIVE / "crystalizer.c", NATIVE / "lv2_host.c"], ["-ffp-contract=off"])
+    compile_native(target, [source, *CORE_SOURCES[1:]], ["-ffp-contract=off"])
     subprocess.run([str(target)], check=True)
 
 
 def test_optimized_stream_matches_reference_with_irregular_quanta(tmp_path):
     # Catches state/latency changes, aliasing mistakes, FFT lane errors, and
     # changes to adaptive intensity after a silent tail and restart.
-    sources = [NATIVE / name for name in ("dsp.c", "autogain.c", "crystalizer.c", "lv2_host.c", "offline.c")]
+    sources = [*CORE_SOURCES, NATIVE / "offline.c"]
     optimized, scalar = tmp_path / "optimized", tmp_path / "scalar"
     compile_native(optimized, sources)
     # Keep the existing fused NEON arithmetic on ARM. Only x86's new SSE2
@@ -142,7 +143,7 @@ def test_optimized_stream_matches_reference_with_irregular_quanta(tmp_path):
 
 
 def test_benchmark_stimulus_is_quantum_independent(tmp_path):
-    sources = [NATIVE / name for name in ("dsp.c", "autogain.c", "crystalizer.c", "lv2_host.c", "benchmark_pipeline.c")]
+    sources = [*CORE_SOURCES, NATIVE / "benchmark_pipeline.c"]
     target = tmp_path / "benchmark"
     compile_native(target, sources)
     config = tmp_path / "neutral.conf"

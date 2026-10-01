@@ -252,17 +252,18 @@ pool capacity can differ from the old graph-specific allocation.
   **context-owned** thread utilities for creation, RT acquisition, and joining
   (including the existing permission broker and its thread registry). It
   verifies each helper's kernel TID scheduler/priority, allowing up to 500 ms
-  outside processing for asynchronous broker grants and masking reset-on-fork
+  per helper at startup for asynchronous broker grants and masking reset-on-fork
   policy flags. Any failed
   acquisition, inconsistent scheduling, or partial thread creation destroys
   all prepared helpers and selects serial processing. Offline tools explicitly
   use normal-priority helpers. No service privilege or RT-limit changes are
-  required, and no affinity/governor tuning is applied.
+  required, and no affinity/governor tuning is applied. The control socket is
+  started after this preparation; its 1 s reply timeout does not cover startup
+  admission. Engine startup/readiness still includes those costs.
 - `FXROUTE_DSP_WORKERS=0` forces serial execution; values `1` through `3` cap
   the pool, and invalid values select serial execution. The live engine reads
   it **once at startup**, not per graph load, so changing it later requires a
-  restart. The old public Crystalizer pair function is a sequential
-  compatibility wrapper, not a hidden fallback thread.
+  restart.
 - A stateful job already running cannot safely be cancelled, duplicated, or
   abandoned at a timeout. The barrier must drain even after a deadline miss;
   the serial fallback handles **preparation failures**, not a hung running
@@ -274,11 +275,24 @@ pool capacity can differ from the old graph-specific allocation.
 live engine. The non-RT datagram control socket accepts `timing reset` and
 `timing get`. Timing is disabled for ordinary product playback. Histograms
 stay **graph-owned**: a swapped-in graph starts with its own empty histograms,
-and `timing get` reports capacity, demand and engaged helpers of the current
-graph (`workers`, `worker_jobs`, `worker_used`). A failed startup admission
-keeps that engine serial; graph swaps do not retry admission. The native
-benchmark always enables timing and includes these
-objects in its JSON:
+and `timing get` reports these worker fields:
+
+- `workers`: successfully prepared helper capacity.
+- `worker_limit`: intended startup capacity after environment/layout/CPU caps,
+  retained even when pool preparation fails.
+- `worker_jobs` / `worker_used`: graph demand and maximum planned helper use.
+- `worker_mode`: `disabled` for zero intended capacity; `degraded` for failed
+  preparation despite positive capacity; `serial` for a serial graph with a
+  prepared pool; `pool` for a graph eligible to use that pool. This is not a
+  bypass-aware instantaneous callback measurement. `degraded` does not identify
+  a specific RTKit error: missing thread utilities or other preparation failures
+  can produce it too.
+
+Failed startup preparation keeps that engine serial; graph swaps do not retry
+admission. Startup stderr reports the same capacity/limit/mode distinction.
+Metric labels come from one enum-indexed table, with a compile-time count guard.
+The native benchmark enables timing by default and includes these objects in
+its JSON; the ordinary product engine remains disabled by default:
 
 - `callback`: full live processing callback (buffer acquisition and incomplete
   buffer handling included); offline, the measured DSP invocation.

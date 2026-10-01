@@ -27,6 +27,7 @@ struct engine {
     /* One helper pool for the whole process.  Owned by the engine, borrowed by
      * every graph: helpers are a machine property, not a graph property. */
     fx_workers *workers;
+    unsigned worker_limit;
     _Atomic(fxdsp *) dsp;
     _Atomic unsigned processing;
     void *input[FXDSP_MAX_CHANNELS];
@@ -55,15 +56,22 @@ static int acquire_worker_rt(void *thread, int priority, void *context) {
 static fx_workers *start_workers(struct engine *engine, const fxdsp *dsp) {
     fx_worker_policy policy = {.count=FX_WORKER_LIMIT, .require_rt=1,
                               .priority=-1, .create_thread=create_worker, .join_thread=join_worker,
-                              .acquire_rt=acquire_worker_rt, .context=engine->thread_utils};
-    if (!engine->thread_utils) policy.count = 0;
-    fx_workers *pool = fxdsp_create_engine_workers(dsp, &policy);
-    unsigned count = fx_workers_count(pool);
-    int priority, scheduler = fx_workers_scheduler(pool, &priority);
-    fprintf(stderr, "DSP worker capacity: %u, scheduler: %s, priority: %d%s\n", count,
-            scheduler == SCHED_RR ? "RR" : scheduler == SCHED_FIFO ? "FIFO" : "OTHER", priority,
-            count ? "" : " (serial fallback)");
-    return pool;
+                              .acquire_rt=engine->thread_utils ? acquire_worker_rt : NULL,
+                              .context=engine->thread_utils};
+    engine->worker_limit = fxdsp_engine_worker_limit(dsp, &policy);
+    policy.count = engine->worker_limit;
+    return fx_workers_create(&policy);
+}
+static const char *worker_mode(const struct engine *engine, unsigned jobs) {
+    if (!engine->worker_limit) return "disabled";
+    if (!engine->workers) return "degraded";
+    return jobs > 1 ? "pool" : "serial";
+}
+static void log_worker_status(const struct engine *engine, unsigned jobs) {
+    int priority, scheduler = fx_workers_scheduler(engine->workers, &priority);
+    fprintf(stderr, "DSP worker capacity: %u/%u, mode: %s, scheduler: %s, priority: %d\n",
+            fx_workers_count(engine->workers), engine->worker_limit, worker_mode(engine, jobs),
+            scheduler == SCHED_RR ? "RR" : scheduler == SCHED_FIFO ? "FIFO" : "OTHER", priority);
 }
 /* Helpers a graph actually engages: the pool is sized for the widest possible
  * dispatch, a serial graph uses none of it. */
@@ -88,16 +96,15 @@ static void reply_timing(struct engine *engine, const struct sockaddr_un *client
     int scheduler = fx_workers_scheduler(engine->workers, &priority);
     unsigned jobs = dsp ? fxdsp_worker_demand(dsp) : 0;
     size_t used = (size_t)snprintf(reply, sizeof reply,
-                                 "{\"workers\":%u,\"worker_jobs\":%u,\"worker_used\":%u,"
-                                 "\"scheduler\":%d,\"priority\":%d",
-                                 fx_workers_count(engine->workers), jobs,
-                                 engaged_helpers(engine, jobs), scheduler, priority);
-    static const char *names[] = {"callback", "barrier", "wake"};
+                                 "{\"workers\":%u,\"worker_limit\":%u,\"worker_jobs\":%u,\"worker_used\":%u,"
+                                 "\"worker_mode\":\"%s\",\"scheduler\":%d,\"priority\":%d",
+                                 fx_workers_count(engine->workers), engine->worker_limit, jobs,
+                                 engaged_helpers(engine, jobs), worker_mode(engine, jobs), scheduler, priority);
     for (unsigned i = 0; i < FXDSP_TIMING_COUNT; i++) {
         fx_timing_summary t = fxdsp_read_timing(dsp, i);
         used += (size_t)snprintf(reply + used, sizeof reply - used,
                                 ",\"%s\":{\"samples\":%" PRIu64 ",\"p99_upper_ms\":%.6f,\"max_ms\":%.6f}",
-                                names[i], t.samples, t.p99_ns * 1e-6, t.max_ns * 1e-6);
+                                 fxdsp_timing_name(i), t.samples, t.p99_ns * 1e-6, t.max_ns * 1e-6);
     }
     used += (size_t)snprintf(reply + used, sizeof reply - used, "}\n");
     (void)sendto(engine->control_fd, reply, used, 0, (const struct sockaddr *)client, client_size);
@@ -369,7 +376,8 @@ int main(int argc, char **argv) {
     }
     pw_filter_add_listener(engine.filter, &engine.filter_listener, &filter_events, &engine);
     engine.workers = start_workers(&engine, initial_dsp);
-    (void)prepare_graph(&engine, initial_dsp);
+    unsigned jobs = prepare_graph(&engine, initial_dsp);
+    log_worker_status(&engine, jobs);
     for (unsigned i = 0; i < fxdsp_inputs(initial_dsp); i++) {
         char name[32]; snprintf(name, sizeof name, "input_%u", i + 1);
         engine.input[i] = pw_filter_add_port(engine.filter, PW_DIRECTION_INPUT,

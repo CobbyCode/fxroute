@@ -87,11 +87,10 @@ int main(int argc, char **argv) {
            rate, inputs, outputs, quantum, (double)frames / rate, wall, thread, cpu,
            times[(calls - 1) / 2] * 1000, times[(calls - 1) * 95 / 100] * 1000,
             times[(calls - 1) * 99 / 100] * 1000, times[calls - 1] * 1000, deadline * 1000, misses, hash, fxdsp_worker_count(dsp));
-    static const char *names[] = {"callback", "barrier", "wake"};
     for (unsigned i = 0; i < FXDSP_TIMING_COUNT; i++) {
         fx_timing_summary t = fxdsp_read_timing(dsp, i);
         printf(",\"%s\":{\"samples\":%" PRIu64 ",\"p99_upper_ms\":%.6f,\"max_ms\":%.6f}",
-               names[i], t.samples, t.p99_ns * 1e-6, t.max_ns * 1e-6);
+               fxdsp_timing_name(i), t.samples, t.p99_ns * 1e-6, t.max_ns * 1e-6);
     }
     puts("}");
     if (file && fclose(file)) return 2;
