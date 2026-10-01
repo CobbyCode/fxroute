@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.0-beta12 (2026-10-01)
+
+Twelfth public beta. Distribution: web demo on GitHub Pages,
+Raspberry Pi 4/5 images via GitHub Release, x86_64 Ubuntu 26.04 ISO
+via SourceForge. Khadas/VIM1S stays internal and gets no public image.
+
+### Release provenance
+
+- Source stand: `main` @ `90cc18dd` plus the VERSION/CHANGELOG bump.
+  No Armbian, installer, or live-converter changes this cycle.
+- The x86_64 Ubuntu 26.04 ISO and the Pi 4/Pi 5 images are built from the
+  release commit; their SHA-256 digests are recorded in this section once
+  the builds exist.
+- The web demo snapshot follows this stand (`demo/dist` parity is green).
+- Explicitly not included: the unmerged `feature/adaptive-headroom` work
+  (convolver headroom derived from the realized filter peak). The surround
+  rebuild has not started; no surround changes are contained here.
+
+### Measurement
+
+- Reset (Clear) discards unsaved captures: a single unsaved sweep, pending
+  LR Repeat takes and AutoSub takes now enable Reset at default settings,
+  and Reset clears them together with the PEQ/convolver assistant state.
+  A saved capture alone still does not enable Reset.
+- Reset stays locked while a start, save, or any active measurement job
+  (sweep, repeat, AutoSub, speaker align, hybrid wizard) is in flight, and
+  stays limited to the frequency view.
+- Asset bumps: `measurement_ui.js` v0.9.23, `measurement_panel_ui.js`
+  v0.9.10, `app.js` v0.9.269.
+
+Public release artifact names (to be built from tag `v1.0-beta12`):
+
+- `fxroute-1.0-beta12-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta12-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta12-x86_64-ubuntu26.04.iso` (SourceForge, + `.sha256`)
+
 ## 1.0-beta11 (2026-09-29)
 
 Eleventh public beta and the last stand before the larger surround
