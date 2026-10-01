@@ -462,6 +462,17 @@
         height: 40px;
         font-size: .92rem;
     }
+    /* Phone source switcher: the select shrinks to the row instead of
+       its longest option, so the arrows and Auto always stay on screen. */
+    .source-switcher {
+        min-width: 0;
+        min-height: 40px;
+        gap: .4rem;
+    }
+    .source-select {
+        padding-block: .4rem;
+        font-size: .84rem;
+    }
     .control-btn-secondary {
         width: 29px;
         height: 29px;
@@ -561,14 +572,15 @@
         font-size: .64rem;
         line-height: 1;
     }
-    /* Phone: no-media fallback keeps track + volume only. */
-    .playback-bar:not(.has-media) {
+    /* Phone: no-media fallback keeps track + volume only. Line sources
+       never carry app media; they keep their switcher and meter. */
+    .playback-bar:not(.has-media):not(.source-mode) {
         grid-template-areas:
             "track track"
             "volume volume";
     }
-    .playback-bar:not(.has-media) .playback-center,
-    .playback-bar:not(.has-media) .playback-meter { display: none; }
+    .playback-bar:not(.has-media):not(.source-mode) .playback-center,
+    .playback-bar:not(.has-media):not(.source-mode) .playback-meter { display: none; }
     /* Phone slider paint and thumb geometry. */
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
@@ -629,6 +641,11 @@
     @media (max-width: 390px) {
         .playback-bar {
             grid-template-areas: "track track" "transport transport" "volume volume";
+        }
+        /* The meter row would stay empty: switcher and volume only. */
+        .playback-bar.source-mode {
+            grid-template-rows: auto auto;
+            grid-template-areas: "transport transport" "volume volume";
         }
         .playback-meter { display: none; }
     }

@@ -206,8 +206,8 @@ class FooterResponsiveLayoutTests(unittest.TestCase):
             r"@media \(max-width: 700px\)[\s\S]*?grid-template-areas:\s*"
             r'\s*"track meter"\s*"transport transport"\s*"volume volume"',
         )
-        self.assertIn(".playback-bar:not(.has-media)", CSS)
-        self.assertIn(".playback-bar:not(.has-media) .playback-center", CSS)
+        self.assertIn(".playback-bar:not(.has-media):not(.source-mode)", CSS)
+        self.assertIn(".playback-bar:not(.has-media):not(.source-mode) .playback-center", CSS)
 
     def test_compact_tablet_spans_two_rows(self):
         self.assertRegex(

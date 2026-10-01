@@ -245,6 +245,18 @@ assert.ok(
     /\.playback-bar\.source-mode \.track-info\s*\{\s*display:\s*none/s.test(styleSource),
     'source-mode footer must hide the track/metadata block',
 );
+// Phone: line sources never carry app media, so the no-media fallback that
+// hides the center column must not apply in source modes (the switcher would
+// vanish after a step), and the select must shrink so the arrows and Auto
+// stay on screen.
+const phoneBlock = /@media \(max-width: 700px\) \{([\s\S]*?)\n\}\n/.exec(styleSource);
+assert.ok(phoneBlock, 'phone footer block');
+assert.ok(phoneBlock[1].includes('.playback-bar:not(.has-media):not(.source-mode) .playback-center'),
+    'phone no-media fallback must spare source modes');
+assert.ok(!/\.playback-bar:not\(\.has-media\) \.playback-center/.test(phoneBlock[1]),
+    'no unscoped no-media rule may hide the switcher');
+assert.ok(/\.source-switcher \{[^}]*min-width: 0/.test(phoneBlock[1]),
+    'phone switcher must shrink to the row');
 // Option writes must be stable across polls: rebuilding the native select
 // on every status update closes its popup instantly (no usable dropdown).
 function makeClassList() {
