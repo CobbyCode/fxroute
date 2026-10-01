@@ -406,7 +406,7 @@
 .source-select {
     min-width: 0;
     flex: 1 1 auto;
-    max-width: min(460px, 100%);
+    max-width: min(360px, 100%);
     padding: .45rem .6rem;
     border: 1px solid rgba(110,231,183,.28);
     border-radius: 999px;
@@ -431,6 +431,49 @@
 }
 .source-select:disabled { opacity: .45; cursor: default; }
 .source-select option { background: #16281f; color: #f0fff8; }
+/* Auto-select toggle for the shown input: a quiet pill when off, accent
+   when armed. A dot marks a live signal; it glows while the input was
+   selected automatically. */
+.source-auto-btn {
+    flex: 0 0 auto;
+    position: relative;
+    height: 30px;
+    padding: 0 .62rem;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color .15s var(--ease), border-color .15s var(--ease), background .15s var(--ease);
+}
+.source-auto-btn:hover:not(:disabled),
+.source-auto-btn:focus-visible:not(:disabled) {
+    color: #f0fff8;
+    border-color: rgba(110,231,183,.42);
+    outline: none;
+}
+.source-auto-btn.is-armed {
+    color: var(--accent);
+    border-color: rgba(110,231,183,.5);
+    background: var(--accent-dim);
+}
+.source-auto-btn.has-signal::after {
+    content: "";
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+.source-auto-btn.is-engaged::after { box-shadow: 0 0 0 2px rgba(110,231,183,.22), 0 0 8px rgba(110,231,183,.7); }
+.source-auto-btn:disabled { opacity: .38; cursor: default; }
 .control-btn, .control-btn-secondary, .control-btn-mode, .control-btn-clear { padding: 0;
     line-height: 1;
     align-self: center;

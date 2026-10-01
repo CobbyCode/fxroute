@@ -154,6 +154,34 @@ class SourceTransitions:
         finally:
             await self._finish_bluetoothctl_actions()
 
+    async def save_selection_if(self, decide: Callable[[dict], tuple[str, str | None] | None]) -> dict | None:
+        """Automatic switch: decide on the committed selection under the lock.
+
+        ``decide`` sees the persisted selection and returns the (mode,
+        input key) to commit, or None to decline; the commit then runs
+        exactly like save_selection.
+        """
+        try:
+            async with self._deps.get_lock():
+                target = decide(self._deps.load_selection())
+                if target is None:
+                    return None
+                return await finish_then_cancel(self.apply_selection(*target), what="Source transition")
+        finally:
+            await self._finish_bluetoothctl_actions()
+
+    async def republish_latest(self) -> dict | None:
+        """Re-push the newest overview, e.g. after decorated state changed.
+
+        Under the lock like every publish; nothing is pushed before the
+        first overview was recorded.
+        """
+        async with self._deps.get_lock():
+            latest = self.feed.latest
+            if latest is None:
+                return None
+            return await self.feed.publish(latest, full_build=False)
+
     async def _set_selected_stdin(self, selected: bool) -> None:
         stdin = self._deps.get_stdin_input()
         if stdin is not None:

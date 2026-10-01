@@ -491,6 +491,7 @@ from audio.output_state import switch_all_banks
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
+from audio.input_auto_select import InputAutoSelect, InputAutoSelectDependencies
 from audio.stdin_input import StdinInputDependencies, StdinInputService
 from audio.stdin_pipewire import PipeWirePcmSink, pcm_adapter_error
 from audio.stdin_protocol import socket_path
@@ -533,7 +534,7 @@ from measurement.target import (
     measurement_target_from_context,
     require_commit_target,
 )
-from dsp.peak_monitor import DSPPeakMonitor, PeakMonitorCoordinator, PeakMonitorCoordinatorDeps
+from dsp.peak_monitor import DSPPeakMonitor, PeakMonitorCoordinator, PeakMonitorCoordinatorDeps, resolve_capture_rate
 from playback.transition import (
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
@@ -1293,7 +1294,10 @@ async def _publish_committed_playback_owner(owner: str, transition_id: str | Non
     })
 
 
-source_overview_feed = SourceOverviewFeed(broadcast=lambda message: manager.broadcast(message))
+source_overview_feed = SourceOverviewFeed(
+    broadcast=lambda message: manager.broadcast(message),
+    decorate=lambda overview: input_auto_select.decorate_overview(overview),
+)
 
 source_transitions = SourceTransitions(SourceTransitionDependencies(
     get_lock=lambda: _source_transition_lock(),
@@ -1310,6 +1314,17 @@ source_transitions = SourceTransitions(SourceTransitionDependencies(
     pause_app_playback=lambda: _pause_all_app_playback_for_external_input(),
     sync_peak_monitor=lambda overview: peak_monitor_coordinator.sync_source_mode_state(overview),
     sync_peak_monitor_for_stdin=lambda overview: peak_monitor_coordinator.sync_stdin_state(overview),
+))
+
+input_auto_select = InputAutoSelect(InputAutoSelectDependencies(
+    get_fresh_overview=lambda max_age: source_overview_feed.fresh_latest(max_age),
+    read_overview=lambda: source_transitions.read_overview(),
+    publish_state=lambda: source_transitions.republish_latest(),
+    load_selection=lambda: samplerate._load_audio_source_selection(),
+    switch_if=lambda decide: source_transitions.save_selection_if(decide),
+    get_stdin_status=lambda: runtime.stdin_input.snapshot() if runtime.stdin_input else None,
+    measurement_owns_graph=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
+    resolve_capture_rate=lambda: resolve_capture_rate(),
 ))
 
 
@@ -3086,6 +3101,9 @@ async def lifespan(app: FastAPI):
             bluetooth_input.run_monitor_loop(),
             name="bluetooth-input-monitor",
         )
+        input_auto_select.task = asyncio.create_task(
+            input_auto_select.run(), name="input-auto-select",
+        )
         logger.info("Starting Spotify playerctl watch task")
         await spotify_playerctl_watch.rearm()
         logger.info("Starting Qobuz qbzd claim watch task")
@@ -3177,6 +3195,8 @@ async def _shutdown_lifespan_resources() -> None:
     await cleanup("spotifyd-volume-watch", spotifyd_volume_watch.stop)
     await cleanup("radio-reconnect", radio_reconnect.stop)
     await cleanup("silent-active-recovery", silent_active_recovery.stop)
+    # Before the source services stop: no automatic switch during shutdown.
+    await cleanup("input-auto-select", input_auto_select.stop)
     runtime.lifecycle_background_tasks.clear()
 
     if runtime.player_instance is not None:
@@ -5707,6 +5727,23 @@ async def debug_21_runtime_state_route(request: Request):
 @app.get("/api/audio/source-mode")
 async def audio_source_overview():
     return await source_transitions.read_overview()
+
+
+@app.post("/api/audio/source-auto")
+async def save_audio_source_auto_route(request: Request):
+    try:
+        body = await request.json()
+        input_key = str(body.get("inputKey", body.get("input_key", ""))).strip()
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"inputKey": <string>, "enabled": <bool>}')
+    try:
+        overview = await input_auto_select.set_armed(input_key, enabled)
+    except ValueError as exc:
+        raise bad_request(exc)
+    return overview if overview is not None else await source_transitions.read_overview()
 
 
 @app.get("/api/audio/bluetooth")

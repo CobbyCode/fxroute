@@ -51,9 +51,13 @@ class SourceOverviewFeed:
         self,
         broadcast: Callable[[dict], Awaitable[Any]],
         monotonic: Callable[[], float] = time.monotonic,
+        decorate: Callable[[dict], dict] | None = None,
     ) -> None:
         self._broadcast = broadcast
         self._monotonic = monotonic
+        # Adds state that is not part of the overview build (input
+        # auto-select) to every recorded overview.
+        self._decorate = decorate
         self.epoch = uuid4().hex
         self._revision = 0
         self._latest: dict | None = None
@@ -87,6 +91,8 @@ class SourceOverviewFeed:
     def record(self, overview: dict, *, full_build: bool = True) -> dict:
         """Stamp ``overview`` with the next revision and keep it as newest."""
         self._revision += 1
+        if self._decorate is not None:
+            overview = self._decorate(overview)
         body = {key: value for key, value in overview.items() if key not in _STAMP_KEYS}
         self._latest = {**body, "epoch": self.epoch, "revision": self._revision}
         if full_build:

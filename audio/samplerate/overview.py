@@ -771,6 +771,8 @@ def get_audio_source_overview() -> dict[str, Any]:
             "state": details.get("state") or source.get("state"),
             "is_default": name == default_source_name,
             "selectable": True,
+            # Input auto-select reads the digital-input lock of this card.
+            "alsa_card": details.get("alsa_card"),
         }
 
         def _pair_entry(

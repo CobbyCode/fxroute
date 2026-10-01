@@ -133,6 +133,16 @@ ffmpeg -v error -i multichannel.wav -f f32le -acodec pcm_f32le -ar 48000 -ac 8 -
 
 Supported formats are `s16le`, packed 3-byte `s24le`, `s32le` and `f32le` with 1–32 channels at 8000–384000 Hz. The client may connect before STDIN is selected and then waits for selection; stdout stays empty and diagnostics go to stderr. Exit code is 0 after `done`, 2 for CLI/metadata errors, 1 for runtime errors, 130 for SIGINT and 143 for SIGTERM. A fixed sample-rate policy resamples the pipe stream to the graph rate; STDIN never changes the graph clock itself. An active measurement session stops a running STDIN stream and blocks new writers until it is released.
 
+### 4.8 Input auto-select
+
+While a line source is active, the **Auto** button next to the footer source switcher arms the shown input. External inputs and STDIN can be armed; armed inputs are marked "· Auto" in the switcher list. FXRoute then watches every armed input in the background and switches to it as soon as it carries a signal, pausing app playback like a manual switch. When that signal has ended for good, FXRoute returns to the selection that was active before the automatic switch. A manual selection ends the automatic one and becomes the selection the next automatic switch returns to. The button glows while the current input was selected automatically; its tooltip names the return target.
+
+- **Digital inputs (S/PDIF):** activity is the digital stream itself: PCM above dither level or an encoded bitstream (Dolby Digital, DTS, AAC/MPEG via IEC 61937, raw DTS). Exact digital silence, null/pause bursts and a lost receiver lock count as no signal. Where the card reports its S/PDIF lock (for example USB Audio Class 2 "S/PDIF Validity"), a lost lock returns after 10 s.
+- **Analog inputs:** about one second of programme level (−50 dBFS RMS) arms; peaks above −60 dBFS keep it active.
+- **STDIN:** a connected `fxroute stdin` writer is the signal; the return follows 10 s after the last writer disconnected.
+- Pauses, track changes and quiet passages do not return: only 60 s without signal (10 s for a removed input) does. When two armed inputs carry signal, the one selected first keeps the route and the other takes over when it ends.
+- While a measurement session owns the audio graph, auto-select is paused.
+
 ## 5. DSP
 
 Open **DSP** to shape the sound. The **Measure** button on this page opens the measurement assistant (section 6). The **Import** button opens the filter import panel.

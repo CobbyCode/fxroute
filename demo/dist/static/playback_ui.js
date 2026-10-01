@@ -36,6 +36,7 @@
         buildSourceSwitcherEntries: () => [],
         activateSourceSwitcherEntry: () => {},
         stepSourceSwitcher: () => {},
+        toggleSourceAuto: () => {},
         spotifyCommand: async () => {},
         qobuzCommand: async () => {},
         spotifySeek: async () => {},
@@ -166,6 +167,7 @@ function setupPlaybackControls() {
     if (deps.getElements().btnNext) deps.getElements().btnNext.addEventListener('click', deps.globalNext);
     if (deps.getElements().sourcePrev) deps.getElements().sourcePrev.addEventListener('click', () => deps.stepSourceSwitcher(-1));
     if (deps.getElements().sourceNext) deps.getElements().sourceNext.addEventListener('click', () => deps.stepSourceSwitcher(1));
+    if (deps.getElements().sourceAuto) deps.getElements().sourceAuto.addEventListener('click', () => deps.toggleSourceAuto());
     if (deps.getElements().sourceSelect) deps.getElements().sourceSelect.addEventListener('change', (event) => {
         const key = event.target.value || '';
         const sourceMode = deps.getState().settings?.sourceMode || {};

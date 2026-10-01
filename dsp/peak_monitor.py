@@ -99,6 +99,11 @@ def _resolve_capture_rate() -> int:
     return FALLBACK_CAPTURE_RATE
 
 
+def resolve_capture_rate() -> int:
+    """Rate for a monitoring capture stream (shared with input auto-select)."""
+    return _resolve_capture_rate()
+
+
 async def _run_bounded_command(
     args: list[str],
     *,

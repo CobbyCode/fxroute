@@ -1075,6 +1075,8 @@
     };
     let sourceMode = 'app-playback';
     let selectedSourceInputKey = SOURCE_INPUTS[0].key;
+    // Input auto-select: armed keys only; the demo has no signal to detect.
+    let sourceAutoArmed = [];
     function sourceInputByKey(key) {
         return SOURCE_INPUTS.find((item) => item.key === String(key || '')) || null;
     }
@@ -1100,6 +1102,13 @@
                 format: null, rate: null, channels: null, left: null,
                 right: null, routed: false, frames_received: 0, error: null,
                 measurement_active: false,
+            },
+            auto_select: {
+                armed: [...sourceAutoArmed],
+                engaged: null,
+                paused: false,
+                inputs: Object.fromEntries(sourceAutoArmed.map((key) => [key,
+                    { active: false, format: null, lock: null }])),
             },
             notes: [],
             pending: false,
@@ -2683,6 +2692,14 @@
                 return j(samplerate);
             }
             return j(samplerate);
+        }
+        if (p === '/api/audio/source-auto' && post) {
+            const key = String(body.inputKey || body.input_key || '');
+            if (typeof body.enabled !== 'boolean') return err('enabled must be a boolean', 400);
+            if (key !== 'stdin-input' && !sourceInputByKey(key)) return err('Unknown input: ' + key, 400);
+            sourceAutoArmed = sourceAutoArmed.filter((item) => item !== key);
+            if (body.enabled) sourceAutoArmed.push(key);
+            return j(sourceOverview());
         }
         if (p === '/api/audio/source-mode') {
             if (post) {
