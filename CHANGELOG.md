@@ -11,9 +11,24 @@ via SourceForge. Khadas/VIM1S stays internal and gets no public image.
 - Source stand: `main` @ `90cc18dd` plus the VERSION/CHANGELOG bump.
   No Armbian, installer, or live-converter changes this cycle.
 - The x86_64 Ubuntu 26.04 ISO and the Pi 4/Pi 5 images are built from the
-  release commit; their SHA-256 digests are recorded in this section once
-  the builds exist.
-- The web demo snapshot follows this stand (`demo/dist` parity is green).
+  release commit (`d2564c32`, embedded `VERSION 1.0-beta12`,
+  `source.tar` SHA-256
+  `9d4a5c6ab7f5ca82ee98ad0f9eba686a388d40499523d58cd0182884d7eff9c8`);
+  SHA-256:
+  - `fxroute-1.0-beta12-rpi4-trixie-current.img.xz` —
+    `66a8537be4eb1ad32f29dd192a2a0e46814c4c477065bf76846362faa7c17aec`
+  - `fxroute-1.0-beta12-rpi5-trixie-current.img.xz` —
+    `b782dd679a866dab0e7effb7d339f7635b110af06a91a4b5e473e47aa94b9ff3`
+  - `fxroute-1.0-beta12-x86_64-ubuntu26.04.iso` (SourceForge) —
+    `2de04abf1b0d34500e15d78b9d582b9e5417264924c46240424b295799eb7dc7`
+- The web demo snapshot follows this stand (`demo/dist` parity is green);
+  the full local suite is green (530 passed, 0 failed, 16 skipped — the
+  skips are the native DSP suites that build on the test machine).
+  Ubuntu seed/profile/harness suites pass (48 tests, 1 skipped) and the
+  Armbian image suite passes (46 tests). The ISO carries the release
+  `source.tar`/`build-commit`, the three GRUB entries (Try FXRoute Live,
+  Install FXRoute Desktop/Headless) and a refreshed `md5sum.txt`; both
+  Pi images pass fsck with the release payload.
 - Explicitly not included: the unmerged `feature/adaptive-headroom` work
   (convolver headroom derived from the realized filter peak). The surround
   rebuild has not started; no surround changes are contained here.
