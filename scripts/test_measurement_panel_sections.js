@@ -5,6 +5,7 @@
 const assert = require('node:assert/strict');
 const panel = require('../static/measurement_panel_ui.js');
 const measurementUI = require('../static/measurement_ui.js');
+const measurementJob = require('../static/measurement_job.js');
 const { escapeHtml } = require('../static/ui_helpers.js');
 
 function element() {
@@ -56,7 +57,7 @@ panel.init({
     measurementAreaBadge: () => ({ title: 'Left mid · measured area' }),
     syncMeasurementSweepButton: () => calls.push('sweep'),
     getActiveMeasurementKind: () => activeKind,
-    hasActiveMeasurementJob: () => activeJob,
+    hasActiveMeasurementJob: () => activeJob || measurementJob.hasActiveMeasurementJob(),
     measurementRepeatBlockedReason: () => repeatReason,
     syncMeasurementRepeatNote: (running, blocked) => calls.push(['repeat', running, blocked]),
     measurementModeReady: () => true,
@@ -124,8 +125,31 @@ const savedOnlyContext = { ...context, current: null, peq: { filters: [] },
     measurements: [savedTake], measurementState: { ...measurementState, visibilityById: { 'take-before': true } } };
 panel.renderMeasurementPanelViewSection(savedOnlyContext);
 assert.equal(elements.measurementClearBtn.disabled, true);
-panel.renderMeasurementPanelViewSection({ ...savedOnlyContext, current: { id: 'align-before' } });
-assert.equal(elements.measurementClearBtn.disabled, true, 'a measurement alone does not enable Reset');
+for (const assistMode of ['peq', 'convolver']) {
+    for (const [label, pending] of [
+        ['single sweep', { currentMeasurement: { id: 'unsaved' } }],
+        ['LR Repeat', { pendingRepeatMeasurements: [{ id: 'repeat-left' }, { id: 'repeat-right' }] }],
+        ['AutoSub', { autoSubMeasurements: [{ id: 'auto-sub' }] }],
+    ]) {
+        const unsavedContext = { ...savedOnlyContext, assistMode,
+            measurementState: { ...measurementState, currentMeasurementSaved: false, ...pending } };
+        panel.renderMeasurementPanelViewSection(unsavedContext);
+        assert.equal(elements.measurementClearBtn.disabled, false, `${label} enables ${assistMode} Reset at default settings`);
+        for (const lock of [{ startInFlight: true }, { activeJobId: 'job-1' }, { saveInFlight: true },
+            { autoSubInFlight: true, autoSubJobId: 'recovered-job' }, { speakerAlignInFlight: true }, { hybridWizard: { running: true } }]) {
+            const lockedContext = { ...unsavedContext, measurementState: { ...unsavedContext.measurementState, ...lock } };
+            measurementJob.init({ getState: () => ({ measurement: lockedContext.measurementState }) });
+            panel.renderMeasurementPanelViewSection(lockedContext);
+            assert.equal(elements.measurementClearBtn.disabled, true, 'active captures lock Reset');
+        }
+        measurementJob.init({ getState: () => ({ measurement: {} }) });
+        panel.renderMeasurementPanelViewSection({ ...unsavedContext, graphView: 'ir', frequencyView: false });
+        assert.equal(elements.measurementClearBtn.disabled, true, 'IR does not offer capture Reset');
+    }
+}
+panel.renderMeasurementPanelViewSection({ ...savedOnlyContext,
+    measurementState: { ...measurementState, currentMeasurement: savedTake, currentMeasurementSaved: true } });
+assert.equal(elements.measurementClearBtn.disabled, true, 'a saved capture alone does not enable Reset');
 for (const [label, overrides, enabled] of [
     ['neutral PEQ', {}, false],
     ['PEQ filters', { peq: { filters: [{ id: 'f1' }] } }, true],
@@ -145,8 +169,11 @@ for (const [label, overrides, enabled] of [
     panel.renderMeasurementPanelViewSection({ ...savedOnlyContext, ...overrides });
     assert.equal(elements.measurementClearBtn.disabled, !enabled, label);
 }
-panel.renderMeasurementPanelViewSection({ ...savedOnlyContext, conv: { ...savedOnlyContext.conv, targetCurve: 'harman' }, measurementState: { ...measurementState, activeJobId: 'job-1' } });
+const activeJobContext = { ...savedOnlyContext, conv: { ...savedOnlyContext.conv, targetCurve: 'harman' }, measurementState: { ...measurementState, activeJobId: 'job-1' } };
+measurementJob.init({ getState: () => ({ measurement: activeJobContext.measurementState }) });
+panel.renderMeasurementPanelViewSection(activeJobContext);
 assert.equal(elements.measurementClearBtn.disabled, true, 'active jobs lock Reset');
+measurementJob.init({ getState: () => ({ measurement: measurementState }) });
 panel.renderMeasurementPanelViewSection(context);
 panel.renderMeasurementPanelStatusSection(context);
 assert.equal(elements.measurementSetupStatus.textContent, 'Host capture ready');

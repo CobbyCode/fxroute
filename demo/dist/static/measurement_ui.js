@@ -172,6 +172,12 @@ function getDefaultMeasurementConvolverState() {
     };
 }
 
+function hasUnsavedMeasurementContent(measurementState = {}) {
+    return (!!measurementState.currentMeasurement && !measurementState.currentMeasurementSaved)
+        || (Array.isArray(measurementState.pendingRepeatMeasurements) && measurementState.pendingRepeatMeasurements.length > 0)
+        || (Array.isArray(measurementState.autoSubMeasurements) && measurementState.autoSubMeasurements.length > 0);
+}
+
 function hasResettableMeasurementSettings(assistMode, peq, conv, defaults = getDefaultMeasurementConvolverState()) {
     if (assistMode !== 'peq' && assistMode !== 'convolver') return false;
     if (conv.targetCurve !== defaults.targetCurve) return true;
@@ -1011,6 +1017,7 @@ function hybridSpeakerName(channel) {
         getDefaultMeasurementPeqFilter,
         getDefaultMeasurementPeqState,
         getDefaultMeasurementConvolverState,
+        hasUnsavedMeasurementContent,
         hasResettableMeasurementSettings,
         getMeasurementConvolverDraftPhaseMode,
         getMeasurementPeqNameSuffix,

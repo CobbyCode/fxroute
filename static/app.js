@@ -3615,12 +3615,14 @@ function getMeasurementTargetCurvePreview() {
 
 
 function resetMeasurementGraph() {
-    if (getMeasurementGraphView() !== 'freq' || state.measurement.startInFlight || state.measurement.activeJobId) return;
+    if (getMeasurementGraphView() !== 'freq' || state.measurement.startInFlight || state.measurement.saveInFlight
+        || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
     const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
     const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
     const defaults = window.FXRouteMeasurementConvolverEditor.getDefaultMeasurementConvolverState();
     const assistMode = state.measurement.assistMode;
-    if (!MeasurementUI.hasResettableMeasurementSettings(assistMode, peq, conv, defaults)) return;
+    const hasUnsavedContent = MeasurementUI.hasUnsavedMeasurementContent(state.measurement);
+    if (!hasUnsavedContent && !MeasurementUI.hasResettableMeasurementSettings(assistMode, peq, conv, defaults)) return;
     setMeasurementActiveEditor(assistMode === 'peq' ? 'peq' : 'none');
     if (assistMode === 'peq') {
         peq.filters = [];
@@ -3632,6 +3634,13 @@ function resetMeasurementGraph() {
         conv.targetCurve = defaults.targetCurve;
     } else {
         Object.assign(conv, defaults);
+    }
+    if (hasUnsavedContent) {
+        state.measurement.currentMeasurement = null;
+        state.measurement.pendingRepeatMeasurements = [];
+        state.measurement.autoSubMeasurements = [];
+        state.measurement.currentMeasurementSaved = false;
+        state.measurement.currentMeasurementName = '';
     }
     renderMeasurementPanel();
     MeasurementGraph.scheduleMeasurementGraphRender();

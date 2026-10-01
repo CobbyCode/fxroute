@@ -7,6 +7,7 @@ const path = require('path');
 const vm = require('vm');
 const MeasurementUI = require('../static/measurement_ui.js');
 const calibration = require('../static/measurement_calibration.js');
+const measurementJob = require('../static/measurement_job.js');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 const dspSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'measurement_dsp.js'), 'utf8');
@@ -50,6 +51,7 @@ const state = {
         convolverAssistant: { ...MeasurementUI.getDefaultMeasurementConvolverState() },
     },
 };
+measurementJob.init({ getState: () => state });
 const pointerState = { x: 0, y: 0, bounds: { left: 50, top: 20, width: 1000, height: 400 }, range: { minDb: -18, maxDb: 18 } };
 const graph = {
     setPointerCapture: (pointerId) => { graph.captured = pointerId; },
@@ -104,6 +106,7 @@ for (const name of ['ensureCustomHouseCurveState', 'openCustomHouseCurveEditor',
     context[name] = (...args) => calibration[name](...args);
 }
 context.window = {
+    FXRouteMeasurementJob: measurementJob,
     FXRouteMeasurementPeqEditor: {
         clearMeasurementPeqPointerDrag: () => { state.measurement.peqAssistant.dragFilterId = null; },
         ensureMeasurementPeqState: (...args) => context.ensureMeasurementPeqState(...args),

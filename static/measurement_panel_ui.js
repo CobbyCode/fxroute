@@ -264,7 +264,9 @@
         if (elements.measurementClearBtn) {
             const hasResettableSettings = root.FXRouteMeasurementUI.hasResettableMeasurementSettings(
                 assistMode, peq, conv, deps.getDefaultMeasurementConvolverState());
-            elements.measurementClearBtn.disabled = !frequencyView || !hasResettableSettings || measurementState.startInFlight || !!measurementState.activeJobId;
+            const hasUnsavedContent = root.FXRouteMeasurementUI.hasUnsavedMeasurementContent(measurementState);
+            elements.measurementClearBtn.disabled = !frequencyView || (!hasResettableSettings && !hasUnsavedContent)
+                || measurementState.startInFlight || measurementState.saveInFlight || deps.hasActiveMeasurementJob();
             elements.measurementClearBtn.title = frequencyView ? '' : 'Only available in frequency view.';
         }
     }
