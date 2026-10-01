@@ -127,7 +127,7 @@ remained `powersave`; no affinity, clock, priority, or quantum tuning was used.
 The final after-run restores the original meter consumer topology. An earlier
 after-run immediately after service restart lacked that consumer; it is not
 the source of the table below. Busy values are medians of `pw-top`'s sampled
-window averages, **not individual callback p99 or worst-case measurements**.
+latest-cycle durations, **not individual callback p99 or worst-case measurements**.
 Unavailable BUSY readings are omitted from the medians. Three high-rate
 before cases have fewer valid samples: 176.4 kHz Both has 23/25, 192 kHz
 Convolver has 22/25, and 192 kHz Both has 16/25. Counter deltas still use the
@@ -201,3 +201,164 @@ Useful next steps, in order:
 
 Arithmetic vectorization reduces work without adding worker wake-ups, memory
 allocation, synchronization, buffering, or audio latency to the RT path.
+
+## Graph-owned worker scaling
+
+The worker-pool comparison uses **current main at `69286835`** as its reference,
+including the preceding SIMD improvements. The assessment above describes
+that reference's global lazy Crystalizer helper, not the new pool.
+
+### Execution and scheduling policy
+
+- Prepare helpers after graph loading, before initial activation or publishing
+  a compatible replacement. Join them before releasing any channel state.
+- Use at most three helpers, also limited by the caller's available processors
+  minus one and by independent graph jobs. The callback contributes one lane.
+  Job `channel % (helpers + 1)` has stable ownership within that graph.
+- Complete each stage synchronously before the next stage or matrix reads its
+  scratch buffers. Output-bank jobs preserve route summation order, then run
+  that output's PEQ/convolver, delay, gain, mute, and meters. Unlinked outputs
+  still advance bank histories but retain the original skipped delay/meters.
+- Helpers use release/acquire sequence publication and predicate-checked Linux
+  private futex waits. The callback sleeps at unfinished barriers rather than
+  spinning at RT priority; it creates no threads, allocates no memory, and owns
+  no synchronization mutex. Non-Linux pool preparation falls back to serial.
+- Autogain and LV2 stereo instances remain indivisible **serial** jobs on the
+  callback. Their existing asynchronous estimator and shared compensation
+  timing are not moved to helpers in this step. Each parallel phase propagates
+  the processing caller's FP environment, including rounding and denormal mode,
+  rather than inheriting the graph-preparation thread's potentially different
+  environment. This does not enable FTZ/DAZ or change resampler/filter quality.
+- The live engine requests PipeWire's configured RT priority via its thread
+  **context-owned** thread utilities for creation, RT acquisition, and joining
+  (including the existing permission broker and its thread registry). It
+  verifies each helper's kernel TID scheduler/priority, allowing up to 500 ms
+  outside processing for asynchronous broker grants and masking reset-on-fork
+  policy flags. Any failed
+  acquisition, inconsistent scheduling, or partial thread creation destroys
+  all prepared helpers and selects serial processing. Offline tools explicitly
+  use normal-priority helpers. No service privilege or RT-limit changes are
+  required, and no affinity/governor tuning is applied.
+- `FXROUTE_DSP_WORKERS=0` forces serial execution; values `1` through `3` cap
+  the pool, and invalid values select serial execution. The old public
+  Crystalizer pair function is a sequential compatibility wrapper, not a
+  hidden fallback thread.
+- A stateful job already running cannot safely be cancelled, duplicated, or
+  abandoned at a timeout. The barrier must drain even after a deadline miss;
+  the serial fallback handles **preparation failures**, not a hung running
+  kernel. Graph reclamation also waits for every synchronous helper job.
+
+### Timing definitions
+
+`FXROUTE_DSP_TIMING=1` enables fixed-size lock-free atomic histograms in the
+live engine. The non-RT datagram control socket accepts `timing reset` and
+`timing get`. Timing is disabled for ordinary product playback. The native
+benchmark always enables timing and includes these objects in its JSON:
+
+- `callback`: full live processing callback (buffer acquisition and incomplete
+  buffer handling included); offline, the measured DSP invocation.
+- `barrier`: residual wait after the callback finishes its own lane, per
+  parallel phase. This includes helper work remaining, not just futex cost.
+- `wake`: dispatch publication to helper entry, per awakened helper. This
+  includes publication/wake syscall ordering and scheduler delay; it is not
+  an isolated kernel wakeup-latency measurement.
+
+Each object reports sample count, `p99_upper_ms`, and exact observed `max_ms`.
+Histogram p99 is a nearest-rank bucket upper bound (32 subdivisions per power
+of two, at most about 3.125% relative bucket width), capped by the observed
+maximum. Reset is requested by control and acknowledged at the next drained
+callback boundary; a 250 ms control timeout leaves the request pending rather
+than clearing metrics mid-job. Snapshot readers retry reset generations so
+retained samples cannot lose their maximum. Live snapshots are not atomic cuts
+across all running jobs. Maxima are **observed**, not a
+hard-real-time WCET guarantee. `pw-top` sampled latest-cycle durations remain separate from
+individual callback timing.
+
+### Matched offline worker results
+
+These are medians of three interleaved reference/pool runs on the same N150,
+using 10 s of deterministic input, quantum 1024, the unchanged 32,825-frame
+48 kHz stereo IR, and the same `-O2` compiler/library setup. Both binaries
+include the same timing histogram implementation; the instrumented reference
+keeps `69286835`'s DSP and global-helper synchronization unchanged. Native
+tests and live measurements did not overlap these runs.
+
+| Workload | Rate kHz | Inputs → outputs | Critical wall s, reference → pool | Callback CPU s, reference → pool | Total CPU s, reference → pool | Wall reduction | Offline misses, total across three runs |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Convolver | 176.4 | 2 → 4 | 3.815 → 2.460 | 3.800 → 2.256 | 3.803 → 4.672 | 35.5% | 0 → 0 |
+| Convolver | 192 | 2 → 4 | 4.609 → 2.957 | 4.517 → 2.726 | 4.520 → 5.631 | 35.8% | 0 → 0 |
+| Both | 176.4 | 2 → 4 | 5.290 → 3.919 | 5.216 → 3.623 | 6.490 → 7.466 | 25.9% | 1 → 2 |
+| Both | 192 | 2 → 4 | 6.270 → 4.660 | 6.181 → 4.301 | 7.651 → 8.836 | 25.7% | 14 → 0 |
+| Stage Convolver + Crystalizer | 48 | 6 → 6 | 2.317 → 1.174 | 2.286 → 1.097 | 2.551 → 3.418 | 49.3% | 0 → 0 |
+| Output-bank Convolver + Crystalizer | 48 | 6 → 6 | 2.268 → 1.124 | 2.238 → 1.074 | 2.491 → 3.357 | 50.4% | 0 → 0 |
+| Stage Convolver + Crystalizer | 48 | 8 → 8 | 3.133 → 1.459 | 3.099 → 1.225 | 3.363 → 4.845 | 53.4% | 1 → 0 |
+| Output-bank Convolver + Crystalizer | 48 | 8 → 8 | 3.101 → 1.396 | 3.074 → 1.185 | 3.334 → 4.728 | 55.0% | 0 → 0 |
+
+All paired output hashes match, including the small-quantum probes. The
+6/8-channel graphs are synthetic native graphs, not newly supported product
+surround sources. Stage cases have channel-local output PEQ; bank cases put
+the Convolver after that PEQ. Crystalizer remains before the matrix in both.
+
+The tradeoff is explicit: callback CPU and critical wall time decrease, but
+total CPU increases by roughly 15–44%. This is synchronous scaling, not a
+reduction in total DSP work. A single 8-channel stage-graph pair at quantum
+128 reduces offline deadline misses from 468 to 75; at quantum 256, from 20
+to 1. Neither probe establishes live stability. The combined 176.4 kHz pool
+also has an 8.048 ms observed offline outlier, versus 5.934 ms in the reference.
+
+### Matched live worker results
+
+Thirteen cases × two interleaved repetitions × reference/pool (52 runs) on
+the same N150/Scarlett hardware, with identical configs, stereo IR,
+deterministic periodic source, `-30 dB` gain, 5 s warm-up, and active
+post-effect meter taps. Higher rates use the existing Scarlett tier
+mechanism (`14ch` for 96 kHz, `10ch` for 176.4/192 kHz) with capture/rollback
+to the original `18ch` tier; the physical graph rate/quantum is verified per
+run. Pool helpers and the callback are kernel-verified `SCHED_RR/20` in the
+systemd user-manager context. Timing reset is drained at a callback boundary;
+control waits at most 250 ms.
+
+Validation: every run has ≥20 common running `pw-top` snapshots covering the
+DSP, source, meter, capture-driver, and hardware-output nodes, with stable
+node IDs, monotonic ERR counters, and exact delta agreement
+(`validate_live.py`). Callback CPU counts only the verified `RR/20`
+`data-loop.0` thread, so the reference Crystalizer helper is not
+misattributed. Reported callback/barrier/wake p99 is the worse per-run
+histogram bucket upper bound (not pooled p99); observed maxima are exact.
+Zero-sample barrier/wake entries mean N/A, not zero latency. `pw-top` BUSY is
+the median of sampled latest-cycle durations, separate from individual
+callback timing. ERR columns sum both repetitions per label (DSP / capture
+driver / hardware output / meter / source).
+
+| Case | Rate/quantum | Callback p99 ms, ref → pool | Callback max ms, ref → pool | Barrier p99/max pool ms | Wake p99/max pool ms | BUSY median ms, ref → pool | Callback CPU %, ref → pool | Total CPU %, ref → pool | ERR DSP/driver/output/meter/source, ref → pool |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| conv-48000 | 48 kHz/1024 | 3.736 → 2.425 | 3.758 → 2.493 | 0.319/0.367 | 0.113/0.178 | 3.35 → 2.15 | 15.9 → 9.2 | 15.9 → 19.5 | 0/0/0/0/0 → 0/0/0/0/0 |
+| both-48000 | 48 kHz/1024 | 5.636 → 4.981 | 6.009 → 4.989 | 0.483/0.514 | 0.109/0.230 | 5.35 → 4.38 | 23.7 → 18.7 | 32.2 → 38.3 | 0/0/0/0/0 → 0/0/0/0/0 |
+| stage-6ch | 48 kHz/1024 | 11.010 → 8.258 | 12.045 → 8.368 | 0.369/0.480 | 0.106/0.214 | 9.45 → 7.42 | 44.1 → 33.9 | 48.7 → 106.5 | 0/0/0/0/0 → 0/0/0/0/0 |
+| bank-6ch | 48 kHz/1024 | 11.272 → 8.389 | 12.618 → 8.479 | 0.418/0.488 | 0.117/0.274 | 8.75 → 7.75 | 42.4 → 34.2 | 49.7 → 107.6 | 0/0/0/0/0 → 0/0/0/0/0 |
+| stage-8ch | 48 kHz/1024 | 9.699 → 8.913 | 12.527 → 9.033 | 0.557/0.662 | 0.113/0.205 | 8.75 → 8.50 | 41.3 → 37.5 | 44.4 → 147.7 | 0/0/0/0/0 → 0/0/0/0/0 |
+| bank-8ch | 48 kHz/1024 | 11.534 → 8.913 | 14.173 → 9.166 | 0.508/0.789 | 0.104/0.193 | 9.45 → 8.45 | 44.5 → 37.5 | 50.5 → 146.7 | 0/0/0/0/0 → 0/0/0/0/0 |
+| stage-8ch-q256 | 48 kHz/256 | 7.995 → 5.636 | 9.169 → 5.758 | 0.385/0.600 | 0.139/0.301 | 1.98 → 1.75 | 45.5 → 38.3 | 49.5 → 149.2 | 761/1523/0/0/0 → 729/1466/2/2/72 |
+| conv-96000 | 96 kHz/4096 | 13.894 → 10.748 | 14.975 → 11.800 | 0.393/0.472 | 0.152/0.200 | 13.03 → 9.95 | 30.6 → 20.8 | 30.7 → 43.8 | 0/0/0/0/0 → 0/0/0/0/0 |
+| both-96000 | 96 kHz/4096 | 18.350 → 15.729 | 21.386 → 16.872 | 0.328/0.474 | 0.117/0.179 | 16.85 → 14.93 | 38.4 → 32.5 | 49.2 → 65.9 | 0/0/0/0/0 → 0/0/0/0/0 |
+| conv-176400 | 176.4 kHz/8192 | 24.642 → 25.166 | 27.938 → 34.082 | 0.385/0.530 | 0.117/0.205 | 21.42 → 20.50 | 46.3 → 42.0 | 46.3 → 85.8 | 0/0/0/0/0 → 0/0/0/0/0 |
+| both-176400 | 176.4 kHz/8192 | 29.360 → 27.787 | 32.655 → 37.694 | 0.246/0.561 | 0.080/0.168 | 25.35 → 22.82 | 54.0 → 48.1 | 66.2 → 97.0 | 0/0/0/0/0 → 0/0/0/0/0 |
+| conv-192000 | 192 kHz/4096 | 11.010 → 13.894 | 17.661 → 17.231 | 0.270/0.493 | 0.092/0.177 | 9.90 → 10.30 | 46.6 → 46.4 | 46.6 → 94.4 | 0/0/0/0/0 → 0/0/0/0/0 |
+| both-192000 | 192 kHz/4096 | 15.729 → 14.156 | 18.494 → 22.896 | 0.217/0.482 | 0.076/0.170 | 12.28 → 11.00 | 57.6 → 48.4 | 70.4 → 98.3 | 0/0/0/0/0 → 1/1/0/0/0 |
+
+At 48 kHz/1024 the 6/8-channel graphs stay ERR-free while callback p99
+falls roughly 8–26% and callback CPU falls, but total process CPU rises
+sharply (three helpers + callback). The 256-frame 8-channel case is unstable
+in both builds (hundreds of DSP/driver ERR deltas); the pool does not make it
+stable. High-rate behavior is mixed: 96 kHz improves, while 176.4/192 kHz
+show equal or worse p99/maxima in several pool runs and one residual
+DSP/driver ERR pair in `both-192000`. The established boundaries therefore
+stand: 176.4 kHz with Crystalizer and 192 kHz are not universally XRun-free,
+and no complete surround RT certification is claimed. Synthetic 6/8-channel
+graphs are not newly supported product surround sources.
+
+Live graph-swap smoke (24 compatible swaps across pooled/serial graphs,
+forced `FXROUTE_DSP_WORKERS=0` serial mode, drained timing resets, bounded
+helper counts, clean engine exits) passes; rapid graph churn can hit the
+existing RTKit burst limit, in which case verified serial fallback is the
+correct result and partial pools are never used.

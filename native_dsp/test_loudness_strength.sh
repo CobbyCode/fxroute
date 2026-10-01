@@ -16,7 +16,7 @@ SPEEXDSP_CFLAGS="$(pkg-config --cflags speexdsp)"
 SPEEXDSP_LIBS="$(pkg-config --libs speexdsp)"
 ${CC:-cc} -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
     $EBUR128_CFLAGS $LILV_CFLAGS $SAMPLERATE_CFLAGS $SPEEXDSP_CFLAGS \
-    dsp.c autogain.c crystalizer.c lv2_host.c test_loudness_strength.c \
+    dsp.c worker_pool.c timing.c autogain.c crystalizer.c lv2_host.c test_loudness_strength.c \
     $EBUR128_LIBS $LILV_LIBS $SAMPLERATE_LIBS $SPEEXDSP_LIBS \
     -lm -pthread -o build/test-loudness-strength
 ./build/test-loudness-strength

@@ -1,7 +1,6 @@
 #include "crystalizer.h"
 
 #include <math.h>
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -578,72 +577,13 @@ void fx_crystalizer_process(fx_crystalizer *c, const float *input, float *output
     }
 }
 
-/* Stereo channels complete their heavy frequency-domain blocks on the same
- * audio-clock phase and would coincide in every other callback. Running both
- * channel instances concurrently keeps per-callback wall time near the
- * single-channel level; outputs stay bitwise identical to sequential calls. */
-struct fx_crystalizer_worker {
-    pthread_mutex_t lock;
-    pthread_cond_t kick, done;
-    int running, shutdown, started_ok;
-    fx_crystalizer *instance;
-    const float *in;
-    float *out;
-    size_t frames;
-};
-
-static struct fx_crystalizer_worker pair_worker;
-static pthread_once_t pair_worker_once = PTHREAD_ONCE_INIT;
-
-static void *pair_worker_main(void *arg) {
-    struct fx_crystalizer_worker *w = arg;
-    pthread_mutex_lock(&w->lock);
-    while (!w->shutdown) {
-        while (!w->running && !w->shutdown)
-            pthread_cond_wait(&w->kick, &w->lock);
-        if (w->shutdown) break;
-        fx_crystalizer_process(w->instance, w->in, w->out, w->frames);
-        w->running = 0;
-        pthread_cond_signal(&w->done);
-    }
-    pthread_mutex_unlock(&w->lock);
-    return NULL;
-}
-
-static void pair_worker_init(void) {
-    memset(&pair_worker, 0, sizeof pair_worker);
-    pthread_mutex_init(&pair_worker.lock, NULL);
-    pthread_cond_init(&pair_worker.kick, NULL);
-    pthread_cond_init(&pair_worker.done, NULL);
-    pthread_t thread;
-    if (pthread_create(&thread, NULL, pair_worker_main, &pair_worker) == 0)
-        pair_worker.started_ok = 1;
-}
-
 void fx_crystalizer_process_pair(fx_crystalizer *left, fx_crystalizer *right,
                                  const float *input_l, const float *input_r,
                                  float *output_l, float *output_r, size_t frames) {
     if (!left || !right || !input_l || !input_r || !output_l || !output_r) return;
-    pthread_once(&pair_worker_once, pair_worker_init);
-    if (!pair_worker.started_ok) {
-        /* No worker available: fall back to plain sequential processing. */
-        fx_crystalizer_process(left, input_l, output_l, frames);
-        fx_crystalizer_process(right, input_r, output_r, frames);
-        return;
-    }
-    pthread_mutex_lock(&pair_worker.lock);
-    pair_worker.instance = right;
-    pair_worker.in = input_r;
-    pair_worker.out = output_r;
-    pair_worker.frames = frames;
-    pair_worker.running = 1;
-    pthread_cond_signal(&pair_worker.kick);
-    pthread_mutex_unlock(&pair_worker.lock);
+    /* Graphs own parallelism; standalone callers never spawn lazy helpers. */
     fx_crystalizer_process(left, input_l, output_l, frames);
-    pthread_mutex_lock(&pair_worker.lock);
-    while (pair_worker.running)
-        pthread_cond_wait(&pair_worker.done, &pair_worker.lock);
-    pthread_mutex_unlock(&pair_worker.lock);
+    fx_crystalizer_process(right, input_r, output_r, frames);
 }
 
 size_t fx_crystalizer_latency(const fx_crystalizer *c) {

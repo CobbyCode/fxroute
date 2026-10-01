@@ -3,6 +3,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "worker_pool.h"
+#include "timing.h"
 
 #define FXDSP_MAX_CHANNELS 32
 
@@ -10,6 +12,21 @@ typedef struct fxdsp fxdsp;
 
 fxdsp *fxdsp_load(const char *path, char *error, size_t error_size);
 void fxdsp_free(fxdsp *dsp);
+/* Outside processing only. NULL policy prepares a normal-priority offline
+ * pool; live callers must supply require_rt and an RT acquisition policy. */
+unsigned fxdsp_prepare_workers(fxdsp *dsp, const fx_worker_policy *policy);
+unsigned fxdsp_worker_count(const fxdsp *dsp);
+int fxdsp_worker_scheduler(const fxdsp *dsp, int *priority);
+enum { FXDSP_TIMING_CALLBACK, FXDSP_TIMING_BARRIER, FXDSP_TIMING_WAKE, FXDSP_TIMING_COUNT };
+/* Enable only on a stopped graph. Reset requests a drained callback boundary
+ * and waits at most 250ms on the non-RT control path. A stopped graph retains
+ * a pending reset for its next callback; timeout never resets mid-job. */
+int fxdsp_enable_timing(fxdsp *dsp, int enabled);
+int fxdsp_timing_enabled(const fxdsp *dsp);
+void fxdsp_begin_callback(fxdsp *dsp);
+void fxdsp_record_callback(fxdsp *dsp, uint64_t nanoseconds);
+fx_timing_summary fxdsp_read_timing(const fxdsp *dsp, unsigned metric);
+int fxdsp_reset_timing(fxdsp *dsp);
 unsigned fxdsp_inputs(const fxdsp *dsp);
 unsigned fxdsp_outputs(const fxdsp *dsp);
 unsigned fxdsp_rate(const fxdsp *dsp);

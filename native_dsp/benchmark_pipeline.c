@@ -27,6 +27,9 @@ int main(int argc, char **argv) {
     char error[256];
     fxdsp *dsp = fxdsp_load(argv[1], error, sizeof error);
     if (!dsp) { fprintf(stderr, "%s\n", error); return 2; }
+    fxdsp_prepare_workers(dsp, NULL);
+    const char *timing = getenv("FXROUTE_DSP_TIMING");
+    fxdsp_enable_timing(dsp, !timing || strcmp(timing, "0"));
     double duration = strtod(argv[2], NULL);
     size_t quantum = strtoul(argv[3], NULL, 10);
     if (!isfinite(duration) || duration <= 0 || duration > 3600 || !quantum || quantum > 8192) return 2;
@@ -58,10 +61,12 @@ int main(int argc, char **argv) {
     for (size_t call = 0, offset = 0; offset < frames; call++, offset += quantum) {
         size_t count = frames - offset < quantum ? frames - offset : quantum;
         for (unsigned c = 0; c < inputs; c++) source[c] = input[c] + offset;
+        fxdsp_begin_callback(dsp);
         double c0 = seconds(CLOCK_PROCESS_CPUTIME_ID), t0 = seconds(CLOCK_THREAD_CPUTIME_ID);
         double w0 = seconds(CLOCK_MONOTONIC);
         fxdsp_process(dsp, source, output, count);
         times[call] = seconds(CLOCK_MONOTONIC) - w0;
+        fxdsp_record_callback(dsp, (uint64_t)(times[call] * 1e9));
         thread += seconds(CLOCK_THREAD_CPUTIME_ID) - t0;
         cpu += seconds(CLOCK_PROCESS_CPUTIME_ID) - c0;
         wall += times[call];
@@ -78,10 +83,17 @@ int main(int argc, char **argv) {
     printf("{\"rate\":%u,\"inputs\":%u,\"outputs\":%u,\"quantum\":%zu,\"audio_s\":%.6f,"
            "\"wall_s\":%.6f,\"thread_s\":%.6f,\"cpu_s\":%.6f,\"p50_ms\":%.6f,"
            "\"p95_ms\":%.6f,\"p99_ms\":%.6f,\"max_ms\":%.6f,\"deadline_ms\":%.6f,"
-           "\"deadline_misses\":%zu,\"hash\":\"%016" PRIx64 "\"}\n",
+            "\"deadline_misses\":%zu,\"hash\":\"%016" PRIx64 "\",\"workers\":%u",
            rate, inputs, outputs, quantum, (double)frames / rate, wall, thread, cpu,
            times[(calls - 1) / 2] * 1000, times[(calls - 1) * 95 / 100] * 1000,
-           times[(calls - 1) * 99 / 100] * 1000, times[calls - 1] * 1000, deadline * 1000, misses, hash);
+            times[(calls - 1) * 99 / 100] * 1000, times[calls - 1] * 1000, deadline * 1000, misses, hash, fxdsp_worker_count(dsp));
+    static const char *names[] = {"callback", "barrier", "wake"};
+    for (unsigned i = 0; i < FXDSP_TIMING_COUNT; i++) {
+        fx_timing_summary t = fxdsp_read_timing(dsp, i);
+        printf(",\"%s\":{\"samples\":%" PRIu64 ",\"p99_upper_ms\":%.6f,\"max_ms\":%.6f}",
+               names[i], t.samples, t.p99_ns * 1e-6, t.max_ns * 1e-6);
+    }
+    puts("}");
     if (file && fclose(file)) return 2;
     for (unsigned c = 0; c < inputs; c++) free(input[c]);
     for (unsigned c = 0; c < outputs; c++) free(output[c]);

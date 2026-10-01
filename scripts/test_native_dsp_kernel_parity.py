@@ -17,6 +17,9 @@ NATIVE = ROOT / "native_dsp"
 
 
 def compile_native(target, sources, flags=()):
+    for name in ("worker_pool.c", "timing.c"):
+        if NATIVE / name not in sources:
+            sources = [*sources, NATIVE / name]
     packages = ["libebur128", "lilv-0", "samplerate", "speexdsp"]
     cflags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", *packages], text=True))
     libs = shlex.split(subprocess.check_output(["pkg-config", "--libs", *packages], text=True))

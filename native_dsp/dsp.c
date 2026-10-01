@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 #include "dsp.h"
 #include "autogain.h"
 #include "crystalizer.h"
@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define MAX_ROUTES 1024
 #define MAX_BIQUADS 32
@@ -120,6 +121,11 @@ struct fxdsp {
     live_update live[MAX_LIVE_UPDATES];
     _Atomic unsigned live_count;
     _Atomic int live_commit;
+    fx_workers *workers;
+    int parallel_outputs;
+    int measure;
+    fx_timing timing[FXDSP_TIMING_COUNT];
+    _Atomic int timing_reset;
 };
 
 static uint32_t float_bits(float value) { uint32_t bits; memcpy(&bits,&value,sizeof bits); return bits; }
@@ -635,6 +641,7 @@ static void free_convolution(convolution *c) {
 
 void fxdsp_free(fxdsp *d) {
     if(!d)return;
+    fx_workers_destroy(d->workers);
     for(unsigned i=0;i<FXDSP_MAX_CHANNELS;i++) {
         free(d->out[i].delay_line); free(d->scratch[0][i]); free(d->scratch[1][i]);
         free_convolution(&d->out[i].conv);
@@ -652,6 +659,75 @@ void fxdsp_free(fxdsp *d) {
     free(d->fft_reverse);free(d->fft_roots);free(d);
 }
 unsigned fxdsp_inputs(const fxdsp*d){return d->inputs;} unsigned fxdsp_outputs(const fxdsp*d){return d->outputs;} unsigned fxdsp_rate(const fxdsp*d){return d->rate;}
+
+unsigned fxdsp_prepare_workers(fxdsp *d, const fx_worker_policy *requested) {
+    fx_worker_policy policy = {.count = FX_WORKER_LIMIT};
+    if (requested) policy = *requested;
+    fx_workers_destroy(d->workers); d->workers = NULL;
+    unsigned jobs = 1;
+    d->parallel_outputs = 0;
+    for (unsigned s = 0; s < d->stage_count; s++) {
+        stage_kind kind = d->stages[s].kind;
+        unsigned count = kind == STAGE_CONVOLVER || kind == STAGE_CRYSTALIZER ? d->inputs : 1;
+        if (count > jobs) jobs = count;
+    }
+    for (unsigned o = 0; o < d->outputs; o++)
+        if (d->out[o].has_conv || d->out[o].filter_count) d->parallel_outputs = 1;
+    if (d->parallel_outputs && d->outputs > jobs) jobs = d->outputs;
+    const char *override = getenv("FXROUTE_DSP_WORKERS");
+    if (override) {
+        char *end; unsigned long value = strtoul(override, &end, 10);
+        if (!*override || *end || value > FX_WORKER_LIMIT) policy.count = 0;
+        else if (value < policy.count) policy.count = (unsigned)value;
+    }
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+#if defined(__linux__)
+    cpu_set_t available;
+    if (!sched_getaffinity(0, sizeof available, &available)) cpus = CPU_COUNT(&available);
+#endif
+    unsigned limit = cpus > 1 ? (unsigned)(cpus - 1) : 0;
+    if (limit > FX_WORKER_LIMIT) limit = FX_WORKER_LIMIT;
+    if (limit > jobs - 1) limit = jobs - 1;
+    if (policy.count > limit) policy.count = limit;
+    d->workers = fx_workers_create(&policy);
+    return fx_workers_count(d->workers);
+}
+unsigned fxdsp_worker_count(const fxdsp *d) { return fx_workers_count(d->workers); }
+int fxdsp_worker_scheduler(const fxdsp *d, int *priority) { return fx_workers_scheduler(d->workers, priority); }
+int fxdsp_enable_timing(fxdsp *d, int enabled) {
+    d->measure = enabled && fx_timing_available(&d->timing[0]);
+    return d->measure;
+}
+int fxdsp_timing_enabled(const fxdsp *d) { return d->measure; }
+void fxdsp_begin_callback(fxdsp *d) {
+    if (!atomic_load_explicit(&d->timing_reset, memory_order_acquire)) return;
+    for (unsigned i = 0; i < FXDSP_TIMING_COUNT; i++) fx_timing_reset(&d->timing[i]);
+    atomic_store_explicit(&d->timing_reset, 0, memory_order_release);
+}
+void fxdsp_record_callback(fxdsp *d, uint64_t ns) {
+    if (d->measure) fx_timing_record(&d->timing[FXDSP_TIMING_CALLBACK], ns);
+}
+fx_timing_summary fxdsp_read_timing(const fxdsp *d, unsigned metric) {
+    fx_timing_summary empty = {0};
+    return metric < FXDSP_TIMING_COUNT ? fx_timing_read(&d->timing[metric]) : empty;
+}
+int fxdsp_reset_timing(fxdsp *d) {
+    if (!d->measure) return 1;
+    atomic_store_explicit(&d->timing_reset, 1, memory_order_release);
+    uint64_t deadline = fx_workers_now_ns() + UINT64_C(250000000);
+    while (atomic_load_explicit(&d->timing_reset, memory_order_acquire)) {
+        if (fx_workers_now_ns() >= deadline) return 0;
+        struct timespec pause = {.tv_nsec=1000000}; nanosleep(&pause, NULL);
+    }
+    return 1;
+}
+
+static void run_jobs(fxdsp *d, fx_workers *pool, unsigned jobs, void (*function)(void *, unsigned), void *context) {
+    fx_worker_sample sample = fx_workers_run(pool, jobs, function, context, d->measure);
+    if (!d->measure || !sample.wakes) return;
+    fx_timing_record(&d->timing[FXDSP_TIMING_BARRIER], sample.barrier_ns);
+    for (unsigned i = 0; i < sample.wakes; i++) fx_timing_record(&d->timing[FXDSP_TIMING_WAKE], sample.wake_ns[i]);
+}
 
 static dsp_stage *find_stage(fxdsp *d, const char *id) {
     for (unsigned i = 0; i < d->stage_count; i++)
@@ -855,6 +931,85 @@ int fxdsp_live_commit(fxdsp *d) {
     return 1;
 }
 
+typedef struct {
+    fxdsp *d;
+    dsp_stage *stage;
+    unsigned source, target;
+    size_t count, offset;
+    uint32_t mute_mask;
+    float *const *output;
+} process_job;
+
+static void process_channel(void *context, unsigned channel) {
+    process_job *j = context;
+    fxdsp *d = j->d; dsp_stage *stage = j->stage;
+    float *src = d->scratch[j->source][channel], *dst = d->scratch[j->target][channel];
+    if (stage->kind == STAGE_CRYSTALIZER) {
+        fx_crystalizer_process(stage->crystalizer[channel], src, dst, j->count);
+    } else for (size_t n = 0; n < j->count; n++) {
+        float driven = src[n] * stage->input_gain;
+        float value = stage->output_gain * (stage->dry * driven + stage->wet * convolve(d, &stage->conv[channel], driven));
+        dst[n] = isfinite(value) ? value : 0.0f;
+    }
+}
+
+static void process_pair(void *context, unsigned pair) {
+    process_job *j = context;
+    fxdsp *d = j->d; dsp_stage *stage = j->stage;
+    unsigned left = pair * 2U, right = left + 1U;
+    if (stage->kind == STAGE_AUTOGAIN) {
+        (void)fx_autogain_process(stage->autogain[pair], d->scratch[j->source][left], d->scratch[j->source][right],
+                                 d->scratch[j->target][left], d->scratch[j->target][right], j->count);
+    } else {
+        (void)fx_lv2_host_run(stage->lv2[pair], d->scratch[j->source][left], d->scratch[j->source][right],
+                            d->scratch[j->target][left], d->scratch[j->target][right], (uint32_t)j->count, NULL, 0);
+        /* Shared compensation timing is read-only until the stage barrier. */
+        if (stage->lv2_comp_transition) {
+            for (size_t n = 0; n < j->count; n++) {
+                size_t s = stage->lv2_frames_fed + n;
+                d->scratch[j->target][left][n] *= lv2_comp_gain(stage, s, 0U);
+                d->scratch[j->target][right][n] *= lv2_comp_gain(stage, s, 1U);
+            }
+        } else if (stage->output_gain != 1.0f) {
+            for (size_t n = 0; n < j->count; n++) {
+                d->scratch[j->target][left][n] *= stage->output_gain;
+                d->scratch[j->target][right][n] *= stage->output_gain;
+            }
+        }
+    }
+}
+
+static void process_output_bank(void *context, unsigned channel) {
+    process_job *j = context;
+    fxdsp *d = j->d; output_state *state = &d->out[channel];
+    for (size_t n = 0; n < j->count; n++) {
+        float value = 0.0f;
+        for (unsigned order = d->route_start[channel]; order < d->route_start[channel + 1]; order++) {
+            const route *r = &d->routes[d->route_order[order]];
+            value += d->scratch[j->source][r->in][n] * r->gain;
+        }
+        for (unsigned filter = 0; filter < state->filter_count; filter++) value = run_biquad(&state->filters[filter], value);
+        if (state->has_conv) {
+            float driven = value * state->conv_in_gain;
+            value = state->conv_out_gain * (state->conv_dry * driven + state->conv_wet * convolve(d, &state->conv, driven));
+        }
+        d->scratch[j->target][channel][n] = isfinite(value) ? value : 0.0f;
+    }
+    if (!j->output[channel]) return; /* Preserve unlinked bank, but not delay/meter, histories. */
+    for (size_t n = 0; n < j->count; n++) {
+        float value = d->scratch[j->target][channel][n];
+        state->delay_line[state->delay_pos] = value;
+        size_t read = (state->delay_pos + state->delay_size - state->delay) % state->delay_size;
+        value = state->delay_line[read] * state->gain * state->polarity;
+        state->delay_pos = (state->delay_pos + 1U) % state->delay_size;
+        value *= bits_float(atomic_load_explicit(&d->output_gain_bits, memory_order_relaxed));
+        if (!isfinite(value) || (j->mute_mask & (UINT32_C(1) << channel))) value = 0.0f;
+        j->output[channel][j->offset + n] = value;
+        float magnitude = fabsf(value); if (magnitude > state->peak) state->peak = magnitude;
+        update_peak(&d->peak_bits[channel], magnitude); state->square_sum += value * value; state->meter_frames++;
+    }
+}
+
 void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *output,
                           float *const *post_effect, size_t frames) {
     for(size_t offset=0;offset<frames;offset+=PROCESS_BLOCK) {
@@ -867,35 +1022,13 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
         if(!atomic_load_explicit(&d->effect_bypass,memory_order_relaxed)) {
             for(unsigned index=0;index<d->stage_count;index++) {
                 dsp_stage *stage=&d->stages[index]; unsigned target=1U-source;
-                if(stage->kind==STAGE_AUTOGAIN || stage->kind==STAGE_LV2) {
-                    for(unsigned pair=0;pair<d->inputs/2U;pair++) {
-                        unsigned left=pair*2U,right=left+1U;
-                        if(stage->kind==STAGE_AUTOGAIN) {
-                            (void)fx_autogain_process(stage->autogain[pair],d->scratch[source][left],d->scratch[source][right],d->scratch[target][left],d->scratch[target][right],count);
-                        } else {
-                            (void)fx_lv2_host_run(stage->lv2[pair],d->scratch[source][left],d->scratch[source][right],d->scratch[target][left],d->scratch[target][right],(uint32_t)count,NULL,0);
-                            /* The loudness compensation is applied after the
-                             * plugin so the work point and its inverse trim
-                             * stay one level-neutral transaction.  A Strength
-                             * change alters the work-point curve through the
-                             * plugin's FFT/OLA path (latency 2^rank, Hann
-                             * overlap); the trim switches with the same sample
-                             * timing instead of instantly, so the work-point
-                             * delta is never exposed as a positive excursion. */
-                            if(stage->lv2_comp_transition) {
-                                for(size_t n=0;n<count;n++) {
-                                    size_t s=stage->lv2_frames_fed+n;
-                                    d->scratch[target][left][n]*=lv2_comp_gain(stage,s,0U);
-                                    d->scratch[target][right][n]*=lv2_comp_gain(stage,s,1U);
-                                }
-                            } else if(stage->output_gain != 1.0f) {
-                                for(size_t n=0;n<count;n++) {
-                                    d->scratch[target][left][n]*=stage->output_gain;
-                                    d->scratch[target][right][n]*=stage->output_gain;
-                                }
-                            }
-                        }
-                    }
+                process_job job = {.d=d, .stage=stage, .source=source, .target=target, .count=count};
+                if(stage->kind==STAGE_CONVOLVER || stage->kind==STAGE_CRYSTALIZER) {
+                    run_jobs(d, d->workers, d->inputs, process_channel, &job);
+                } else if(stage->kind==STAGE_AUTOGAIN || stage->kind==STAGE_LV2) {
+                    /* Stereo instances stay indivisible on the callback;
+                     * this pool only moves native channel/bank kernels. */
+                    run_jobs(d, NULL, d->inputs/2U, process_pair, &job);
                     if(stage->kind==STAGE_LV2) {
                         stage->lv2_frames_fed += count;
                         if(stage->lv2_comp_transition) {
@@ -905,20 +1038,11 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                         }
                     }
                 } else {
-                    unsigned channel=0;
-                    if(stage->kind==STAGE_CRYSTALIZER && d->inputs>=2U && stage->crystalizer[0] && stage->crystalizer[1]) {
-                        fx_crystalizer_process_pair(stage->crystalizer[0],stage->crystalizer[1],
-                            d->scratch[source][0],d->scratch[source][1],
-                            d->scratch[target][0],d->scratch[target][1],count);
-                        channel=2U;
-                    }
-                    for(;channel<d->inputs;channel++) {
+                    for(unsigned channel=0;channel<d->inputs;channel++) {
                     float *src=d->scratch[source][channel],*dst=d->scratch[target][channel];
-                    if(stage->kind==STAGE_CRYSTALIZER) fx_crystalizer_process(stage->crystalizer[channel],src,dst,count);
-                    else for(size_t n=0;n<count;n++) {
+                    for(size_t n=0;n<count;n++) {
                         float value=src[n];
                         if(stage->kind==STAGE_HEADROOM || stage->kind==STAGE_MASTER_GAIN) value*=stage->gain;
-                        else if(stage->kind==STAGE_CONVOLVER) { float driven=value*stage->input_gain; value=stage->output_gain*(stage->dry*driven+stage->wet*convolve(d,&stage->conv[channel],driven)); }
                         else if(stage->kind==STAGE_DELAY) {
                             stage->delay_line[channel][stage->delay_pos[channel]]=value;
                             size_t read=(stage->delay_pos[channel]+stage->delay_size[channel]-stage->delay[channel])%stage->delay_size[channel];
@@ -941,34 +1065,9 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
             write_post_effect_taps(post_effect,d->inputs,d->scratch[source],offset,count);
         }
         unsigned routed=1U-source;
-        for(unsigned channel=0;channel<d->outputs;channel++) for(size_t n=0;n<count;n++) {
-            float value=0.0f;
-            for(unsigned order=d->route_start[channel];order<d->route_start[channel+1];order++) {
-                const route *r=&d->routes[d->route_order[order]];
-                value+=d->scratch[source][r->in][n]*r->gain;
-            }
-            output_state *state=&d->out[channel];
-            for(unsigned filter=0;filter<state->filter_count;filter++) value=run_biquad(&state->filters[filter],value);
-            if(state->has_conv) {
-                float driven=value*state->conv_in_gain;
-                value=state->conv_out_gain*(state->conv_dry*driven+state->conv_wet*convolve(d,&state->conv,driven));
-            }
-            d->scratch[routed][channel][n]=isfinite(value)?value:0.0f;
-        }
-        for(unsigned channel=0;channel<d->outputs;channel++) {
-            if(!output[channel])continue; /* unlinked hardware output channel */
-            for(size_t n=0;n<count;n++) {
-                output_state *state=&d->out[channel]; float value=d->scratch[routed][channel][n];
-                state->delay_line[state->delay_pos]=value;
-                size_t read=(state->delay_pos+state->delay_size-state->delay)%state->delay_size;
-                value=state->delay_line[read]*state->gain*state->polarity;
-                state->delay_pos=(state->delay_pos+1U)%state->delay_size;
-                value*=bits_float(atomic_load_explicit(&d->output_gain_bits,memory_order_relaxed));
-                if(!isfinite(value)||(mute_mask&(UINT32_C(1)<<channel)))value=0.0f;
-                output[channel][offset+n]=value;float magnitude=fabsf(value);if(magnitude>state->peak)state->peak=magnitude;
-                update_peak(&d->peak_bits[channel],magnitude);state->square_sum+=value*value;state->meter_frames++;
-            }
-        }
+        process_job bank = {.d=d, .source=source, .target=routed, .count=count,
+                            .offset=offset, .mute_mask=mute_mask, .output=output};
+        run_jobs(d, d->parallel_outputs ? d->workers : NULL, d->outputs, process_output_bank, &bank);
     }
 }
 void fxdsp_process(fxdsp*d,const float*const*input,float*const*output,size_t frames){fxdsp_process_tapped(d,input,output,NULL,frames);}

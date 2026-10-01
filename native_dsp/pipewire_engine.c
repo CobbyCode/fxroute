@@ -1,6 +1,8 @@
 #include "dsp.h"
 
 #include <pipewire/pipewire.h>
+#include <pipewire/thread.h>
+#include <inttypes.h>
 #include <errno.h>
 #include <math.h>
 #include <poll.h>
@@ -17,6 +19,10 @@
 
 struct engine {
     struct pw_main_loop *loop;
+    struct pw_context *context;
+    struct pw_core *core;
+    struct spa_thread_utils *thread_utils;
+    struct spa_hook filter_listener;
     struct pw_filter *filter;
     _Atomic(fxdsp *) dsp;
     _Atomic unsigned processing;
@@ -28,6 +34,46 @@ struct engine {
     pthread_t control_thread;
     _Atomic int control_stop;
 };
+
+static void *create_worker(void *(*function)(void *), void *argument, void *context) {
+    struct spa_dict_item items[] = {{SPA_KEY_THREAD_NAME, "fxdsp-worker"}};
+    return spa_thread_utils_create(context, &SPA_DICT_INIT_ARRAY(items), function, argument);
+}
+static void join_worker(void *thread, void *context) {
+    (void)spa_thread_utils_join(context, thread, NULL);
+}
+static int acquire_worker_rt(void *thread, int priority, void *context) {
+    return spa_thread_utils_acquire_rt(context, thread, priority);
+}
+static void prepare_graph(struct engine *engine, fxdsp *dsp) {
+    fx_worker_policy policy = {.count=FX_WORKER_LIMIT, .require_rt=1,
+                              .priority=-1, .create_thread=create_worker, .join_thread=join_worker,
+                              .acquire_rt=acquire_worker_rt, .context=engine->thread_utils};
+    if (!engine->thread_utils) policy.count = 0;
+    unsigned count = fxdsp_prepare_workers(dsp, &policy);
+    int priority, scheduler = fxdsp_worker_scheduler(dsp, &priority);
+    const char *timing = getenv("FXROUTE_DSP_TIMING");
+    fxdsp_enable_timing(dsp, timing && !strcmp(timing, "1"));
+    fprintf(stderr, "DSP workers: %u, scheduler: %s, priority: %d%s\n", count,
+            scheduler == SCHED_RR ? "RR" : scheduler == SCHED_FIFO ? "FIFO" : "OTHER", priority,
+            count ? "" : " (serial fallback)");
+}
+static void reply_timing(struct engine *engine, const struct sockaddr_un *client, socklen_t client_size) {
+    fxdsp *dsp = atomic_load_explicit(&engine->dsp, memory_order_acquire);
+    char reply[1024]; int priority;
+    int scheduler = fxdsp_worker_scheduler(dsp, &priority);
+    size_t used = (size_t)snprintf(reply, sizeof reply, "{\"workers\":%u,\"scheduler\":%d,\"priority\":%d",
+                                 fxdsp_worker_count(dsp), scheduler, priority);
+    static const char *names[] = {"callback", "barrier", "wake"};
+    for (unsigned i = 0; i < FXDSP_TIMING_COUNT; i++) {
+        fx_timing_summary t = fxdsp_read_timing(dsp, i);
+        used += (size_t)snprintf(reply + used, sizeof reply - used,
+                                ",\"%s\":{\"samples\":%" PRIu64 ",\"p99_upper_ms\":%.6f,\"max_ms\":%.6f}",
+                                names[i], t.samples, t.p99_ns * 1e-6, t.max_ns * 1e-6);
+    }
+    used += (size_t)snprintf(reply + used, sizeof reply - used, "}\n");
+    (void)sendto(engine->control_fd, reply, used, 0, (const struct sockaddr *)client, client_size);
+}
 
 static void reply_peaks(struct engine *engine, const struct sockaddr_un *client, socklen_t client_size) {
     float peaks[FXDSP_MAX_CHANNELS];
@@ -55,6 +101,7 @@ static int fxdsp_swap_config(struct engine *engine, const char *path, float gain
         return 0;
     }
     fxdsp_set_output_gain_db(candidate, gain_db);
+    prepare_graph(engine, candidate);
     /* Epoch reclamation: the processing counter and the dsp pointer must be
      * seq_cst.  A reader (on_process) increments the counter, then loads the
      * pointer; the writer swaps the pointer, then drains the counter before
@@ -91,6 +138,12 @@ static void handle_control(struct engine *engine, char *command, const struct so
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     }
     else if(!strcmp(command,peaks_get_command))reply_peaks(engine,client,client_size);
+    else if(!strcmp(command,"timing get"))reply_timing(engine,client,client_size);
+    else if(!strcmp(command,"timing reset")) {
+        const char *reply = fxdsp_reset_timing(atomic_load_explicit(&engine->dsp,memory_order_acquire))
+            ? "ok\n" : "error timing reset pending\n";
+        (void)sendto(engine->control_fd,reply,strlen(reply),0,(const struct sockaddr *)client,client_size);
+    }
     else if(sscanf(command,"effects bypass %d %c",&value,&extra)==1&&!strncmp(command,effects_bypass_command,sizeof effects_bypass_command-1)&&(value==0||value==1)) {
         fxdsp_set_effect_bypass(atomic_load_explicit(&engine->dsp,memory_order_acquire),value);
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
@@ -175,12 +228,25 @@ static void stop_control(struct engine *engine) {
     unlink(engine->control_path);
 }
 
+static void destroy_engine(struct engine *engine) {
+    /* Control swaps and helper joins still need the context's RT registry. */
+    stop_control(engine);
+    if (engine->filter) pw_filter_destroy(engine->filter);
+    fxdsp_free(atomic_load(&engine->dsp));
+    if (engine->core) pw_core_disconnect(engine->core);
+    if (engine->context) pw_context_destroy(engine->context);
+    if (engine->loop) pw_main_loop_destroy(engine->loop);
+    pw_deinit();
+}
+
 static void on_process(void *data, struct spa_io_position *position) {
     struct engine *engine = data;
     /* seq_cst pairs with the writer's drain in fxdsp_swap_config so a reader
      * that loaded the previous graph keeps the writer from freeing it. */
     atomic_fetch_add_explicit(&engine->processing, 1, memory_order_seq_cst);
     fxdsp *dsp = atomic_load_explicit(&engine->dsp, memory_order_seq_cst);
+    fxdsp_begin_callback(dsp);
+    uint64_t started = fxdsp_timing_enabled(dsp) ? fx_workers_now_ns() : 0;
     uint32_t frames = position && position->clock.duration ? position->clock.duration : 1024;
     const float *input[FXDSP_MAX_CHANNELS];
     float *output[FXDSP_MAX_CHANNELS];
@@ -205,11 +271,13 @@ static void on_process(void *data, struct spa_io_position *position) {
             if (output[i]) memset(output[i], 0, frames * sizeof *output[i]);
         for (unsigned i = 0; i < 2; i++)
             if (post_effect[i]) memset(post_effect[i], 0, frames * sizeof *post_effect[i]);
+        if (started) fxdsp_record_callback(dsp, fx_workers_now_ns() - started);
         atomic_fetch_sub_explicit(&engine->processing, 1, memory_order_seq_cst);
         return;
     }
     fxdsp_process_tapped(dsp, input, output,
-                         post_effect[0] && post_effect[1] ? post_effect : NULL, frames);
+                          post_effect[0] && post_effect[1] ? post_effect : NULL, frames);
+    if (started) fxdsp_record_callback(dsp, fx_workers_now_ns() - started);
     atomic_fetch_sub_explicit(&engine->processing, 1, memory_order_seq_cst);
 }
 
@@ -237,24 +305,32 @@ int main(int argc, char **argv) {
         return 1;
     }
     pw_init(&argc, &argv);
+    atomic_init(&engine.dsp, initial_dsp);
+    atomic_init(&engine.processing, 0);
     engine.loop = pw_main_loop_new(NULL);
     if (!engine.loop) {
         fprintf(stderr, "cannot create PipeWire main loop\n");
-        fxdsp_free(initial_dsp); pw_deinit();
+        destroy_engine(&engine);
         return 1;
     }
-    engine.filter = pw_filter_new_simple(
-        pw_main_loop_get_loop(engine.loop), "fxroute-dsp",
+    engine.context = pw_context_new(pw_main_loop_get_loop(engine.loop),
+                                    pw_properties_new(PW_KEY_APP_NAME, "fxroute-dsp", NULL), 0);
+    if (engine.context) engine.core = pw_context_connect(engine.context, NULL, 0);
+    if (!engine.core) {
+        fprintf(stderr, "cannot connect PipeWire context\n");
+        destroy_engine(&engine); return 1;
+    }
+    engine.thread_utils = pw_context_get_object(engine.context, SPA_TYPE_INTERFACE_ThreadUtils);
+    engine.filter = pw_filter_new(engine.core, "fxroute-dsp",
         pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Filter",
-                          PW_KEY_MEDIA_ROLE, "DSP", PW_KEY_NODE_NAME, "fxroute_dsp", NULL),
-        &filter_events, &engine);
+                          PW_KEY_MEDIA_ROLE, "DSP", PW_KEY_NODE_NAME, "fxroute_dsp", NULL));
     if (!engine.filter) {
         fprintf(stderr, "cannot create PipeWire filter\n");
-        pw_main_loop_destroy(engine.loop); fxdsp_free(initial_dsp); pw_deinit();
+        destroy_engine(&engine);
         return 1;
     }
-    atomic_init(&engine.dsp, initial_dsp);
-    atomic_init(&engine.processing, 0);
+    pw_filter_add_listener(engine.filter, &engine.filter_listener, &filter_events, &engine);
+    prepare_graph(&engine, initial_dsp);
     for (unsigned i = 0; i < fxdsp_inputs(initial_dsp); i++) {
         char name[32]; snprintf(name, sizeof name, "input_%u", i + 1);
         engine.input[i] = pw_filter_add_port(engine.filter, PW_DIRECTION_INPUT,
@@ -275,19 +351,16 @@ int main(int argc, char **argv) {
         pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, "post_effect_FR", NULL), NULL, 0);
     if (pw_filter_connect(engine.filter, PW_FILTER_FLAG_RT_PROCESS, NULL, 0) < 0) {
         fprintf(stderr, "cannot connect PipeWire filter\n");
-        pw_filter_destroy(engine.filter); pw_main_loop_destroy(engine.loop);
-        fxdsp_free(atomic_load(&engine.dsp)); pw_deinit();
+        destroy_engine(&engine);
         return 1;
     }
     if(argc==3&&start_control(&engine,argv[2])) {
-        pw_filter_destroy(engine.filter); pw_main_loop_destroy(engine.loop);
-        fxdsp_free(atomic_load(&engine.dsp)); pw_deinit();
+        destroy_engine(&engine);
         return 1;
     }
     signal_engine = &engine;
     signal(SIGINT, stop_engine); signal(SIGTERM, stop_engine);
     pw_main_loop_run(engine.loop);
-    pw_filter_destroy(engine.filter); pw_main_loop_destroy(engine.loop); stop_control(&engine);
-    fxdsp_free(atomic_load(&engine.dsp)); pw_deinit();
+    destroy_engine(&engine);
     return 0;
 }

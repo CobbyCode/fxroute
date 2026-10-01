@@ -5,6 +5,7 @@
 int main(int argc,char**argv){
     char error[256]; if(argc!=4&&argc!=5){fprintf(stderr,"usage: %s CONFIG INPUT.f32 OUTPUT.f32 [QUANTUM]\n",argv[0]);return 2;}
     fxdsp*d=fxdsp_load(argv[1],error,sizeof error);if(!d){fprintf(stderr,"%s\n",error);return 1;}
+    fxdsp_prepare_workers(d, NULL);
     unsigned inputs=fxdsp_inputs(d),outputs=fxdsp_outputs(d);
     if(inputs<1||inputs>FXDSP_MAX_CHANNELS||outputs<1||outputs>FXDSP_MAX_CHANNELS){fprintf(stderr,"config channels must be 1..%u (inputs=%u outputs=%u)\n",FXDSP_MAX_CHANNELS,inputs,outputs);fxdsp_free(d);return 1;}
     FILE*in=fopen(argv[2],"rb"),*out=fopen(argv[3],"wb");if(!in||!out){perror("audio file");return 1;}

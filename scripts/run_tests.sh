@@ -103,6 +103,7 @@ NATIVE_HELPER_TESTS=(
     "scripts/test_native_dsp_safety.py"
     "scripts/test_native_dsp_sos.py"
     "scripts/test_native_dsp_stages.py"
+    "scripts/test_native_dsp_workers.py"
 )
 NATIVE_C_TESTS=(
     "native_dsp/test_lv2_host.sh"
