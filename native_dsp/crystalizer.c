@@ -14,6 +14,15 @@
 #define FXROUTE_NEON 0
 #endif
 
+/* SSE2 uses separate multiply/add operations to match the scalar path;
+ * no FMA, alignment requirement, or host-specific compiler flags. */
+#if defined(__SSE2__) && !defined(FXROUTE_FORCE_SCALAR)
+#include <xmmintrin.h>
+#define FXROUTE_SSE2 1
+#else
+#define FXROUTE_SSE2 0
+#endif
+
 /* Compile-time escape hatch for verifying the scalar reference path. */
 #if defined(FXROUTE_FORCE_SCALAR) && FXROUTE_NEON
 #undef FXROUTE_NEON
@@ -124,6 +133,19 @@ static void dif_stage(size_t half, const float *tw_cos, const float *tw_sin,
             vst1q_f32(upper_im + j, pi);
         }
         for (; j < half; j++)
+#elif FXROUTE_SSE2
+        size_t j = 0;
+        for (; j + 4U <= half; j += 4U) {
+            __m128 lr = _mm_loadu_ps(lower_re + j), li = _mm_loadu_ps(lower_im + j);
+            __m128 ur = _mm_loadu_ps(upper_re + j), ui = _mm_loadu_ps(upper_im + j);
+            __m128 kr = _mm_loadu_ps(tw_cos + j), ki = _mm_loadu_ps(tw_sin + j);
+            _mm_storeu_ps(lower_re + j, _mm_add_ps(lr, ur));
+            _mm_storeu_ps(lower_im + j, _mm_add_ps(li, ui));
+            __m128 dr = _mm_sub_ps(lr, ur), di = _mm_sub_ps(li, ui);
+            _mm_storeu_ps(upper_re + j, _mm_sub_ps(_mm_mul_ps(dr, kr), _mm_mul_ps(di, ki)));
+            _mm_storeu_ps(upper_im + j, _mm_add_ps(_mm_mul_ps(dr, ki), _mm_mul_ps(di, kr)));
+        }
+        for (; j < half; j++)
 #else
         for (size_t j = 0; j < half; j++)
 #endif
@@ -158,6 +180,20 @@ static void dit_stage(size_t half, const float *tw_cos, const float *tw_sin,
             vst1q_f32(lower_im + j, vaddq_f32(li, pi));
             vst1q_f32(upper_re + j, vsubq_f32(lr, pr));
             vst1q_f32(upper_im + j, vsubq_f32(li, pi));
+        }
+        for (; j < half; j++)
+#elif FXROUTE_SSE2
+        size_t j = 0;
+        for (; j + 4U <= half; j += 4U) {
+            __m128 lr = _mm_loadu_ps(lower_re + j), li = _mm_loadu_ps(lower_im + j);
+            __m128 ur = _mm_loadu_ps(upper_re + j), ui = _mm_loadu_ps(upper_im + j);
+            __m128 kr = _mm_loadu_ps(tw_cos + j), ki = _mm_loadu_ps(tw_sin + j);
+            __m128 pr = _mm_sub_ps(_mm_mul_ps(ur, kr), _mm_mul_ps(ui, ki));
+            __m128 pi = _mm_add_ps(_mm_mul_ps(ur, ki), _mm_mul_ps(ui, kr));
+            _mm_storeu_ps(lower_re + j, _mm_add_ps(lr, pr));
+            _mm_storeu_ps(lower_im + j, _mm_add_ps(li, pi));
+            _mm_storeu_ps(upper_re + j, _mm_sub_ps(lr, pr));
+            _mm_storeu_ps(upper_im + j, _mm_sub_ps(li, pi));
         }
         for (; j < half; j++)
 #else

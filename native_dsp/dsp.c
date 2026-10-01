@@ -267,6 +267,17 @@ static int prepare_convolution(fxdsp *d, convolution *c, float *taps, size_t cou
     return 0;
 }
 
+/* Independent bins, disjoint spectra: expose aliasing guarantees to the
+ * vectorizer without changing partition order or float rounding. */
+static void accumulate_convolution_spectrum(const complex_value *restrict x,
+                                             const complex_value *restrict h,
+                                             complex_value *restrict work, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        work[i].re += x[i].re * h[i].re - x[i].im * h[i].im;
+        work[i].im += x[i].re * h[i].im + x[i].im * h[i].re;
+    }
+}
+
 static float convolve(fxdsp *d, convolution *c, float input) {
     const size_t h = c->head_count;
     if (!h || !c->win || !c->head_fwd) return 0.0f;
@@ -305,7 +316,7 @@ static float convolve(fxdsp *d, convolution *c, float input) {
         for (size_t p = 0; p < c->partition_count; p++) {
             size_t x_index = (c->spectrum_pos + c->partition_count - p) % c->partition_count;
             complex_value *x = c->input_spectra + x_index * fft_size, *h = c->ir_spectra + p * fft_size;
-            for (size_t i = 0; i < fft_size; i++) { c->work[i].re += x[i].re*h[i].re-x[i].im*h[i].im; c->work[i].im += x[i].re*h[i].im+x[i].im*h[i].re; }
+            accumulate_convolution_spectrum(x, h, c->work, fft_size);
         }
         fft(d, c->work, 1);
         for (size_t i = 0; i < CONV_BLOCK; i++) { c->tail_output[i] = c->work[i].re + c->overlap[i]; c->overlap[i] = c->work[i + CONV_BLOCK].re; }
