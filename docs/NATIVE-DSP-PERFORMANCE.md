@@ -182,8 +182,10 @@ mechanism is unchanged by these arithmetic optimizations.
 
 Useful next steps, in order:
 
-- Prepare a **bounded, graph-owned worker pool outside the RT callback**,
-  with explicit lifetime, scheduling/priority policy, and failure fallback.
+- Prepare a **bounded worker pool outside the RT callback**, with explicit
+  lifetime, scheduling/priority policy, and failure fallback. The live engine
+  owns one pool for the whole process and lends it to every graph; offline
+  tools own theirs.
   Parallelize independent convolver/Crystalizer channels, then independent
   output banks after the matrix. Keep per-channel state on one worker and
   stage barriers; autogain/LV2 stereo pairs remain indivisible jobs.
@@ -208,12 +210,29 @@ The worker-pool comparison uses **current main at `69286835`** as its reference,
 including the preceding SIMD improvements. The assessment above describes
 that reference's global lazy Crystalizer helper, not the new pool.
 
+The measurements below describe `4fde713e`'s per-graph pool, not a remeasurement
+of the engine-owned pool. The live engine now sizes one pool per process and
+lends it to compatible graphs. Arithmetic and stage barriers are unchanged;
+pool capacity can differ from the old graph-specific allocation.
+
 ### Execution and scheduling policy
 
-- Prepare helpers after graph loading, before initial activation or publishing
-  a compatible replacement. Join them before releasing any channel state.
+- **The live engine owns one pool for the whole process.** It is prepared after
+  graph loading and before the filter activates, then lent to every graph,
+  including later compatible replacements. Live graphs borrow helpers; offline
+  graphs retain their existing owned pools and free them in `fxdsp_free()`.
+  Live swaps no longer create, admit, or join pool helpers. Graph loading,
+  reclamation and other stage cleanup still contribute to the 1 s reply budget;
+  this is not a hard deadline guarantee. The live pool is joined after
+  `pw_filter_destroy()` has synchronized filter deactivation with the data
+  loop and before the context is destroyed.
 - Use at most three helpers, also limited by the caller's available processors
-  minus one and by independent graph jobs. The callback contributes one lane.
+  minus one and by the widest possible dispatch of the fixed channel layout.
+  Capacity is fixed for the engine layout: a serial graph leaves helpers idle
+  rather than churning them, and the helpers a graph engages are reported
+  separately (`worker_used` vs. `workers`). `worker_used` is the maximum planned
+  helper use, not an instantaneous count or a bypass-aware callback sample.
+  The callback contributes one lane.
   Job `channel % (helpers + 1)` has stable ownership within that graph.
 - Complete each stage synchronously before the next stage or matrix reads its
   scratch buffers. Output-bank jobs preserve route summation order, then run
@@ -240,9 +259,10 @@ that reference's global lazy Crystalizer helper, not the new pool.
   use normal-priority helpers. No service privilege or RT-limit changes are
   required, and no affinity/governor tuning is applied.
 - `FXROUTE_DSP_WORKERS=0` forces serial execution; values `1` through `3` cap
-  the pool, and invalid values select serial execution. The old public
-  Crystalizer pair function is a sequential compatibility wrapper, not a
-  hidden fallback thread.
+  the pool, and invalid values select serial execution. The live engine reads
+  it **once at startup**, not per graph load, so changing it later requires a
+  restart. The old public Crystalizer pair function is a sequential
+  compatibility wrapper, not a hidden fallback thread.
 - A stateful job already running cannot safely be cancelled, duplicated, or
   abandoned at a timeout. The barrier must drain even after a deadline miss;
   the serial fallback handles **preparation failures**, not a hung running
@@ -252,8 +272,13 @@ that reference's global lazy Crystalizer helper, not the new pool.
 
 `FXROUTE_DSP_TIMING=1` enables fixed-size lock-free atomic histograms in the
 live engine. The non-RT datagram control socket accepts `timing reset` and
-`timing get`. Timing is disabled for ordinary product playback. The native
-benchmark always enables timing and includes these objects in its JSON:
+`timing get`. Timing is disabled for ordinary product playback. Histograms
+stay **graph-owned**: a swapped-in graph starts with its own empty histograms,
+and `timing get` reports capacity, demand and engaged helpers of the current
+graph (`workers`, `worker_jobs`, `worker_used`). A failed startup admission
+keeps that engine serial; graph swaps do not retry admission. The native
+benchmark always enables timing and includes these
+objects in its JSON:
 
 - `callback`: full live processing callback (buffer acquisition and incomplete
   buffer handling included); offline, the measured DSP invocation.
@@ -357,8 +382,53 @@ stand: 176.4 kHz with Crystalizer and 192 kHz are not universally XRun-free,
 and no complete surround RT certification is claimed. Synthetic 6/8-channel
 graphs are not newly supported product surround sources.
 
-Live graph-swap smoke (24 compatible swaps across pooled/serial graphs,
-forced `FXROUTE_DSP_WORKERS=0` serial mode, drained timing resets, bounded
-helper counts, clean engine exits) passes; rapid graph churn can hit the
-existing RTKit burst limit, in which case verified serial fallback is the
-correct result and partial pools are never used.
+The historical 24-swap smoke used the per-graph pool and a 30 s socket timeout;
+it did not establish compliance with the production 1 s reply deadline.
+
+### Live-pool reuse verification
+
+The ownership repair was checked separately on the same N150, at 44.1 kHz
+with a requested 1024-frame quantum. An 8-input/8-output synthetic graph cycles
+through serial, stage-Convolver + Crystalizer, and output-bank-Convolver +
+Crystalizer configurations using a 32,825-frame mono IR. All control requests
+use the production **1.0 s** socket timeout. These are short lifecycle tests,
+not new performance or XRun-certification measurements.
+
+| Engine | Mode | Successful swaps | Maximum observed reply ms |
+|---|---|---:|---:|
+| Product binary, no test instrumentation | Pool | 30 | 68.529 |
+| Product binary, no test instrumentation | Forced serial | 30 | 61.104 |
+| Test probe | Pool | 30 | 66.266 |
+| Test probe | Forced serial | 30 | 69.038 |
+
+- Pool helper kernel TIDs, start times, and `SCHED_RR/20` remain identical
+  throughout each engine's swaps. Capacity remains three even across serial
+  graphs; planned use changes between zero and three. Nonzero barrier/wake
+  samples establish helper execution in every pooled stage/bank check.
+- The test probe observes real SPA calls: exactly three creates/admissions at
+  startup, none during swaps, and three joins at shutdown. Forced serial has
+  zero creates, admissions, and joins. Invalid replacement configs leave the
+  existing pool intact.
+- A real Crystalizer helper is blocked after processing starts, then the engine
+  receives SIGTERM. Filter destruction enters but cannot finish during the
+  150 ms observation interval; no helper joins occur. Releasing the job allows
+  filter destruction to complete, then all helpers join and the engine exits
+  cleanly. No production shutdown gate or test hook is added.
+- Native regressions compare PCM, post-effect taps, and meters byte-for-byte
+  against serial runs at quanta 17/128/511/1024/8192, across 2/6/8-channel graphs
+  and graph A followed by a narrower graph B on the same pool. Independently
+  owned offline pools are also processed concurrently. Counted lifecycle tests
+  verify that borrowed graph destruction never joins the pool, while offline
+  graph destruction still does; graph timing remains independent.
+
+The opt-in verifier is `scripts/verify_native_worker_swaps.py`; it requires an
+unused product DSP node and a separately built `native_dsp/test_engine_workers.c`
+probe, linked with `-Wl,--wrap=fx_crystalizer_process` instead of compiling
+`pipewire_engine.c` separately. It creates only synthetic source/meter links and
+does not change hardware links, services, or global clock metadata.
+
+Reuse removes per-swap **pool** RT-admission requests, not all user-wide RTKit
+activity: other processes or existing stage helpers can still consume that
+budget. Failed startup admission retains serial fallback until engine restart.
+Graph loading/drain/free still has no universal subsecond bound. The high-rate
+and small-quantum limitations above remain unchanged.

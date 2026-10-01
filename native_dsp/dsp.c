@@ -121,7 +121,10 @@ struct fxdsp {
     live_update live[MAX_LIVE_UPDATES];
     _Atomic unsigned live_count;
     _Atomic int live_commit;
+    /* Borrowed: the owner of the pool is whoever called fx_workers_create. */
     fx_workers *workers;
+    fx_workers *owned_workers;
+    unsigned worker_demand;
     int parallel_outputs;
     int measure;
     fx_timing timing[FXDSP_TIMING_COUNT];
@@ -641,7 +644,7 @@ static void free_convolution(convolution *c) {
 
 void fxdsp_free(fxdsp *d) {
     if(!d)return;
-    fx_workers_destroy(d->workers);
+    fx_workers_destroy(d->owned_workers);
     for(unsigned i=0;i<FXDSP_MAX_CHANNELS;i++) {
         free(d->out[i].delay_line); free(d->scratch[0][i]); free(d->scratch[1][i]);
         free_convolution(&d->out[i].conv);
@@ -660,10 +663,10 @@ void fxdsp_free(fxdsp *d) {
 }
 unsigned fxdsp_inputs(const fxdsp*d){return d->inputs;} unsigned fxdsp_outputs(const fxdsp*d){return d->outputs;} unsigned fxdsp_rate(const fxdsp*d){return d->rate;}
 
-unsigned fxdsp_prepare_workers(fxdsp *d, const fx_worker_policy *requested) {
-    fx_worker_policy policy = {.count = FX_WORKER_LIMIT};
-    if (requested) policy = *requested;
-    fx_workers_destroy(d->workers); d->workers = NULL;
+/* Graph side: how far one dispatch spreads over jobs.  Published with the
+ * per-graph parallel-output selection, which the callback reads, so this runs
+ * on a stopped graph only. */
+static unsigned plan_workers(fxdsp *d) {
     unsigned jobs = 1;
     d->parallel_outputs = 0;
     for (unsigned s = 0; s < d->stage_count; s++) {
@@ -674,24 +677,66 @@ unsigned fxdsp_prepare_workers(fxdsp *d, const fx_worker_policy *requested) {
     for (unsigned o = 0; o < d->outputs; o++)
         if (d->out[o].has_conv || d->out[o].filter_count) d->parallel_outputs = 1;
     if (d->parallel_outputs && d->outputs > jobs) jobs = d->outputs;
+    d->worker_demand = jobs;
+    return jobs;
+}
+
+unsigned fxdsp_worker_demand(const fxdsp *d) { return d->worker_demand; }
+
+/* FXROUTE_DSP_WORKERS caps the helper count.  Read by whoever builds the
+ * pool; the live engine reads it once per process, not per graph load. */
+static unsigned worker_env_limit(void) {
     const char *override = getenv("FXROUTE_DSP_WORKERS");
-    if (override) {
-        char *end; unsigned long value = strtoul(override, &end, 10);
-        if (!*override || *end || value > FX_WORKER_LIMIT) policy.count = 0;
-        else if (value < policy.count) policy.count = (unsigned)value;
-    }
+    if (!override) return FX_WORKER_LIMIT;
+    char *end; unsigned long value = strtoul(override, &end, 10);
+    if (!*override || *end || value > FX_WORKER_LIMIT) return 0;
+    return (unsigned)value;
+}
+
+/* Owner side: helper capacity is a machine property, not a graph property.
+ * Kept independent of the graph so one pool can serve every graph of a fixed
+ * channel layout; a serial graph then leaves helpers idle instead of churning
+ * create/admission/join work on every swap. */
+static unsigned worker_capacity(unsigned jobs, unsigned limit) {
+    if (!jobs || !limit) return 0;
     long cpus = sysconf(_SC_NPROCESSORS_ONLN);
 #if defined(__linux__)
     cpu_set_t available;
     if (!sched_getaffinity(0, sizeof available, &available)) cpus = CPU_COUNT(&available);
 #endif
-    unsigned limit = cpus > 1 ? (unsigned)(cpus - 1) : 0;
-    if (limit > FX_WORKER_LIMIT) limit = FX_WORKER_LIMIT;
-    if (limit > jobs - 1) limit = jobs - 1;
-    if (policy.count > limit) policy.count = limit;
-    d->workers = fx_workers_create(&policy);
+    unsigned allowed = cpus > 1 ? (unsigned)(cpus - 1) : 0;
+    if (allowed > limit) allowed = limit;
+    if (allowed > FX_WORKER_LIMIT) allowed = FX_WORKER_LIMIT;
+    return allowed < jobs - 1 ? allowed : jobs - 1;
+}
+
+static fx_workers *prepare_worker_pool(unsigned jobs, const fx_worker_policy *requested) {
+    fx_worker_policy policy = {.count = FX_WORKER_LIMIT};
+    if (requested) policy = *requested;
+    unsigned limit = worker_env_limit();
+    if (limit < policy.count) policy.count = limit;
+    policy.count = worker_capacity(jobs, policy.count);
+    return fx_workers_create(&policy);
+}
+
+unsigned fxdsp_prepare_workers(fxdsp *d, const fx_worker_policy *requested) {
+    fx_workers_destroy(d->owned_workers);
+    d->owned_workers = prepare_worker_pool(plan_workers(d), requested);
+    d->workers = d->owned_workers;
     return fx_workers_count(d->workers);
 }
+
+fx_workers *fxdsp_create_engine_workers(const fxdsp *d, const fx_worker_policy *policy) {
+    unsigned jobs = d->inputs > d->outputs ? d->inputs : d->outputs;
+    return prepare_worker_pool(jobs, policy);
+}
+
+void fxdsp_borrow_workers(fxdsp *d, fx_workers *pool) {
+    fx_workers_destroy(d->owned_workers); d->owned_workers = NULL;
+    (void)plan_workers(d);
+    d->workers = pool;
+}
+
 unsigned fxdsp_worker_count(const fxdsp *d) { return fx_workers_count(d->workers); }
 int fxdsp_worker_scheduler(const fxdsp *d, int *priority) { return fx_workers_scheduler(d->workers, priority); }
 int fxdsp_enable_timing(fxdsp *d, int enabled) {

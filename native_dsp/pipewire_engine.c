@@ -24,6 +24,9 @@ struct engine {
     struct spa_thread_utils *thread_utils;
     struct spa_hook filter_listener;
     struct pw_filter *filter;
+    /* One helper pool for the whole process.  Owned by the engine, borrowed by
+     * every graph: helpers are a machine property, not a graph property. */
+    fx_workers *workers;
     _Atomic(fxdsp *) dsp;
     _Atomic unsigned processing;
     void *input[FXDSP_MAX_CHANNELS];
@@ -45,25 +48,50 @@ static void join_worker(void *thread, void *context) {
 static int acquire_worker_rt(void *thread, int priority, void *context) {
     return spa_thread_utils_acquire_rt(context, thread, priority);
 }
-static void prepare_graph(struct engine *engine, fxdsp *dsp) {
+/* Pool capacity is fixed before the filter activates and never changes: it is
+ * derived from the channel layout, the CPU affinity and FXROUTE_DSP_WORKERS,
+ * read once here instead of on every graph load.  Graph swaps then reuse the
+ * same verified RT helpers. */
+static fx_workers *start_workers(struct engine *engine, const fxdsp *dsp) {
     fx_worker_policy policy = {.count=FX_WORKER_LIMIT, .require_rt=1,
                               .priority=-1, .create_thread=create_worker, .join_thread=join_worker,
                               .acquire_rt=acquire_worker_rt, .context=engine->thread_utils};
     if (!engine->thread_utils) policy.count = 0;
-    unsigned count = fxdsp_prepare_workers(dsp, &policy);
-    int priority, scheduler = fxdsp_worker_scheduler(dsp, &priority);
-    const char *timing = getenv("FXROUTE_DSP_TIMING");
-    fxdsp_enable_timing(dsp, timing && !strcmp(timing, "1"));
-    fprintf(stderr, "DSP workers: %u, scheduler: %s, priority: %d%s\n", count,
+    fx_workers *pool = fxdsp_create_engine_workers(dsp, &policy);
+    unsigned count = fx_workers_count(pool);
+    int priority, scheduler = fx_workers_scheduler(pool, &priority);
+    fprintf(stderr, "DSP worker capacity: %u, scheduler: %s, priority: %d%s\n", count,
             scheduler == SCHED_RR ? "RR" : scheduler == SCHED_FIFO ? "FIFO" : "OTHER", priority,
             count ? "" : " (serial fallback)");
+    return pool;
+}
+/* Helpers a graph actually engages: the pool is sized for the widest possible
+ * dispatch, a serial graph uses none of it. */
+static unsigned engaged_helpers(const struct engine *engine, unsigned jobs) {
+    unsigned capacity = fx_workers_count(engine->workers);
+    if (!jobs || !capacity) return 0;
+    return capacity < jobs - 1 ? capacity : jobs - 1;
+}
+/* The candidate is fully prepared before it is published: the borrowed pool,
+ * the per-graph parallel-output selection and the timing mode are all fixed
+ * here while nothing processes the candidate.  Kept before the exchange
+ * because the callback reads plain fields this writes. */
+static unsigned prepare_graph(struct engine *engine, fxdsp *dsp) {
+    fxdsp_borrow_workers(dsp, engine->workers);
+    const char *timing = getenv("FXROUTE_DSP_TIMING");
+    fxdsp_enable_timing(dsp, timing && !strcmp(timing, "1"));
+    return fxdsp_worker_demand(dsp);
 }
 static void reply_timing(struct engine *engine, const struct sockaddr_un *client, socklen_t client_size) {
     fxdsp *dsp = atomic_load_explicit(&engine->dsp, memory_order_acquire);
     char reply[1024]; int priority;
-    int scheduler = fxdsp_worker_scheduler(dsp, &priority);
-    size_t used = (size_t)snprintf(reply, sizeof reply, "{\"workers\":%u,\"scheduler\":%d,\"priority\":%d",
-                                 fxdsp_worker_count(dsp), scheduler, priority);
+    int scheduler = fx_workers_scheduler(engine->workers, &priority);
+    unsigned jobs = dsp ? fxdsp_worker_demand(dsp) : 0;
+    size_t used = (size_t)snprintf(reply, sizeof reply,
+                                 "{\"workers\":%u,\"worker_jobs\":%u,\"worker_used\":%u,"
+                                 "\"scheduler\":%d,\"priority\":%d",
+                                 fx_workers_count(engine->workers), jobs,
+                                 engaged_helpers(engine, jobs), scheduler, priority);
     static const char *names[] = {"callback", "barrier", "wake"};
     for (unsigned i = 0; i < FXDSP_TIMING_COUNT; i++) {
         fx_timing_summary t = fxdsp_read_timing(dsp, i);
@@ -101,7 +129,13 @@ static int fxdsp_swap_config(struct engine *engine, const char *path, float gain
         return 0;
     }
     fxdsp_set_output_gain_db(candidate, gain_db);
-    prepare_graph(engine, candidate);
+    unsigned demand = prepare_graph(engine, candidate);
+    if (demand != fxdsp_worker_demand(previous)) {
+        /* Same pool, different spread: report it once per change instead of
+         * creating, admitting and joining helpers again. */
+        fprintf(stderr, "DSP graph swap: %u jobs, %u/%u helpers\n", demand,
+                engaged_helpers(engine, demand), fx_workers_count(engine->workers));
+    }
     /* Epoch reclamation: the processing counter and the dsp pointer must be
      * seq_cst.  A reader (on_process) increments the counter, then loads the
      * pointer; the writer swaps the pointer, then drains the counter before
@@ -231,8 +265,12 @@ static void stop_control(struct engine *engine) {
 static void destroy_engine(struct engine *engine) {
     /* Control swaps and helper joins still need the context's RT registry. */
     stop_control(engine);
+    /* pw_filter_destroy() deactivates the implementation node and removes its
+     * processing source under the data loop's lock, so no callback can still
+     * reach the graph before it or the helpers it borrows are released. */
     if (engine->filter) pw_filter_destroy(engine->filter);
     fxdsp_free(atomic_load(&engine->dsp));
+    fx_workers_destroy(engine->workers);
     if (engine->core) pw_core_disconnect(engine->core);
     if (engine->context) pw_context_destroy(engine->context);
     if (engine->loop) pw_main_loop_destroy(engine->loop);
@@ -330,7 +368,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     pw_filter_add_listener(engine.filter, &engine.filter_listener, &filter_events, &engine);
-    prepare_graph(&engine, initial_dsp);
+    engine.workers = start_workers(&engine, initial_dsp);
+    (void)prepare_graph(&engine, initial_dsp);
     for (unsigned i = 0; i < fxdsp_inputs(initial_dsp); i++) {
         char name[32]; snprintf(name, sizeof name, "input_%u", i + 1);
         engine.input[i] = pw_filter_add_port(engine.filter, PW_DIRECTION_INPUT,
