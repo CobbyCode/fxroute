@@ -5733,7 +5733,7 @@ async def audio_source_overview():
 async def save_audio_source_auto_route(request: Request):
     try:
         body = await request.json()
-        input_key = str(body.get("inputKey", body.get("input_key", ""))).strip()
+        input_key = str(body.get("inputKey") or body.get("input_key") or "").strip()
         enabled = body.get("enabled")
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be a boolean")
