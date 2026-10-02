@@ -431,9 +431,10 @@
 }
 .source-select:disabled { opacity: .45; cursor: default; }
 .source-select option { background: #16281f; color: #f0fff8; }
-/* Auto-select toggle for the shown input: a quiet pill when off, accent
-   when armed. A dot marks a live signal; it glows while the input was
-   selected automatically. */
+/* App playback shortcut and the auto-select toggle for the shown input:
+   quiet pills; Auto turns accent when armed. A dot marks a live signal;
+   it glows while the input was selected automatically. */
+.source-app-btn,
 .source-auto-btn {
     flex: 0 0 auto;
     position: relative;
@@ -451,6 +452,8 @@
     cursor: pointer;
     transition: color .15s var(--ease), border-color .15s var(--ease), background .15s var(--ease);
 }
+.source-app-btn:hover:not(:disabled),
+.source-app-btn:focus-visible:not(:disabled),
 .source-auto-btn:hover:not(:disabled),
 .source-auto-btn:focus-visible:not(:disabled) {
     color: #f0fff8;
@@ -473,6 +476,7 @@
     background: var(--accent);
 }
 .source-auto-btn.is-engaged::after { box-shadow: 0 0 0 2px rgba(110,231,183,.22), 0 0 8px rgba(110,231,183,.7); }
+.source-app-btn:disabled,
 .source-auto-btn:disabled { opacity: .38; cursor: default; }
 .control-btn, .control-btn-secondary, .control-btn-mode, .control-btn-clear { padding: 0;
     line-height: 1;

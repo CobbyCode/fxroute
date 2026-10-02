@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Footer Auto toggle of the source switcher: which entries can be armed,
 // how armed/engaged/active state renders, and the human return label.
+// Also the App shortcut back to app playback.
 // Tests the pure model extracted from static/app.js plus the markup and
 // render wiring.
 
@@ -135,8 +136,15 @@ assert.ok(uiSource.includes("sourceAuto.addEventListener('click', () => deps.tog
     'Auto toggle is wired in the playback UI');
 assert.ok(appSource.includes("sourceAuto: document.getElementById('source-auto')"));
 assert.ok(appSource.includes("fetch('/api/audio/source-auto'"), 'toggle posts to the auto-select endpoint');
+assert.ok(/<button id="source-app" class="source-app-btn"[^>]*>App<\/button>\s*<button id="source-prev"/.test(indexSource),
+    'footer switcher leads with the App shortcut');
+assert.ok(uiSource.includes("sourceApp.addEventListener('click', () => deps.selectAppPlaybackSource())"),
+    'App shortcut is wired in the playback UI');
+assert.ok(appSource.includes("sourceApp: document.getElementById('source-app')"));
+assert.ok(/function selectAppPlaybackSource\(\) \{[^}]*saveAudioSourceSelection\('app-playback'\)/s.test(appSource),
+    'App shortcut selects app playback');
 assert.ok(/auto_select: data\.auto_select \|\| null/.test(appSource), 'source state keeps the auto-select snapshot');
-for (const selector of ['.source-auto-btn {', '.source-auto-btn.is-armed', '.source-auto-btn.has-signal::after',
+for (const selector of ['.source-app-btn,\n.source-auto-btn {', '.source-auto-btn.is-armed', '.source-auto-btn.has-signal::after',
     '.source-auto-btn.is-engaged::after']) {
     assert.ok(styleSource.includes(selector), `style.css missing ${selector}`);
 }
@@ -169,6 +177,7 @@ const renderSandbox = {
         sourcePrev: makeButton('Previous source'),
         sourceNext: makeButton('Next source'),
         sourceAuto: makeButton('Auto-select this input on signal'),
+        sourceApp: makeButton('Switch to app playback'),
     },
 };
 vm.createContext(renderSandbox);
@@ -192,6 +201,9 @@ assert.equal(autoButton.classList.toggled['is-armed'], true);
 assert.equal(autoButton.classList.toggled['is-engaged'], true);
 assert.equal(autoButton.classList.toggled['has-signal'], true);
 assert.match(autoButton.getAttribute('data-tooltip'), /returns to App playback/);
+const appButton = renderSandbox.elements.sourceApp;
+assert.equal(appButton.disabled, false);
+assert.equal(appButton.getAttribute('data-tooltip'), 'Back to app playback');
 
 renderSandbox.state.settings.sourceMode = { ...armedOverview, mode: 'bluetooth-input', pending: false };
 vm.runInContext('renderSourceModeFooter()', renderSandbox);
@@ -202,5 +214,7 @@ renderSandbox.state.settings.sourceMode = { ...armedOverview, pending: true };
 vm.runInContext('renderSourceModeFooter()', renderSandbox);
 assert.equal(autoButton.disabled, true, 'parked while a switch is pending');
 assert.equal(autoButton.getAttribute('data-tooltip'), 'Switching sources…');
+assert.equal(appButton.disabled, true, 'App shortcut parked while a switch is pending');
+assert.equal(appButton.getAttribute('data-tooltip'), 'Switching sources…');
 
 console.log('test_footer_source_auto: ok');

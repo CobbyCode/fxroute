@@ -247,6 +247,7 @@ window.FXRoutePlaybackUI?.init({
     activateSourceSwitcherEntry: (...args) => activateSourceSwitcherEntry(...args),
     stepSourceSwitcher: (...args) => stepSourceSwitcher(...args),
     toggleSourceAuto: (...args) => toggleSourceAuto(...args),
+    selectAppPlaybackSource: (...args) => selectAppPlaybackSource(...args),
     spotifyCommand: (...args) => StreamingRuntime.spotifyCommand(...args),
     qobuzCommand: (...args) => StreamingRuntime.qobuzCommand(...args),
     spotifySeek: (...args) => StreamingRuntime.spotifySeek(...args),
@@ -1343,6 +1344,7 @@ const elements = {
     btnClearQueue: document.getElementById('btn-clear-queue'),
     transportControls: document.querySelector('.playback-center .transport-controls'),
     sourceSwitcher: document.getElementById('source-switcher'),
+    sourceApp: document.getElementById('source-app'),
     sourcePrev: document.getElementById('source-prev'),
     sourceSelect: document.getElementById('source-select'),
     sourceNext: document.getElementById('source-next'),
@@ -2835,6 +2837,12 @@ function activateSourceSwitcherEntry(entry) {
     }
 }
 
+// Footer shortcut back to app playback; the switcher only lists line sources.
+function selectAppPlaybackSource() {
+    if (sourceSwitcherGuardReason()) return;
+    void saveAudioSourceSelection('app-playback');
+}
+
 function stepSourceSwitcher(delta) {
     if (sourceSwitcherGuardReason()) return;
     const sourceMode = state.settings?.sourceMode || {};
@@ -2970,6 +2978,10 @@ function renderSourceModeFooter() {
     if (elements.sourceSelect) {
         elements.sourceSelect.disabled = !!guard || entries.length === 0;
         elements.sourceSelect.title = guard || 'Choose audio source';
+    }
+    if (elements.sourceApp) {
+        elements.sourceApp.disabled = !!guard;
+        elements.sourceApp.setAttribute('data-tooltip', guard || 'Back to app playback');
     }
     const arrowsDisabled = !!guard || entries.length < 2;
     for (const button of [elements.sourcePrev, elements.sourceNext]) {
