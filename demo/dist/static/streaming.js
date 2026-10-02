@@ -2170,17 +2170,24 @@
     // Detail views replace the browse content in place and share the window
     // scroll (no inner scroll container), so every detail open resets it to
     // the top instead of inheriting the browse position.
-    function openTidalDetail(view, id, title, artUrl) {
+    function openTidalDetail(view, id, title, artUrl, options) {
         // Push the full current detail state so Back returns exactly through
         // nested details (browse -> artist -> album) with the previous view's
         // own id/title/art restored, instead of jumping straight to browse.
+        // Similar-artist hops (artist -> artist) pass { replace: true } so no
+        // endless artist back-history builds up: the new artist replaces the
+        // current one and Back returns to the entry context before the
+        // artist view.
+        const replace = Boolean(options && options.replace);
         state.tidal.detailRequestId += 1;
-        state.tidal.viewStack.push({
-            view: state.tidal.view,
-            detailId: state.tidal.detailId,
-            detailTitle: state.tidal.detailTitle,
-            detailArt: state.tidal.detailArt,
-        });
+        if (!replace) {
+            state.tidal.viewStack.push({
+                view: state.tidal.view,
+                detailId: state.tidal.detailId,
+                detailTitle: state.tidal.detailTitle,
+                detailArt: state.tidal.detailArt,
+            });
+        }
         state.tidal.view = view;
         state.tidal.detailId = id;
         state.tidal.detailTitle = title;
@@ -2198,9 +2205,9 @@
         openTidalDetail('playlist', id, title, artUrl);
     }
 
-    function openTidalArtist(id, name, artUrl) {
+    function openTidalArtist(id, name, artUrl, options) {
         rememberTidalArtist({ id: id, name: name, art_url: artUrl });
-        openTidalDetail('artist', id, name, artUrl);
+        openTidalDetail('artist', id, name, artUrl, options);
     }
 
     function closeTidalDetail() {
@@ -2375,8 +2382,16 @@
         loadTidalArtist(content, requestId);
     }
 
-    // Directly-visible artist about, compact in the hero. Long bios are clamped
-    // to a few lines with a subtle More/Less toggle instead of an accordion.
+    // Short bios render fully in the hero without any toggle; only longer
+    // texts start clamped (the clamp budget matches the hero text column, so
+    // the available hero space is used before truncating).
+    const ARTIST_ABOUT_INLINE_LIMIT = 500;
+
+    // Directly-visible artist about, compact in the hero. Long bios are
+    // clamped with a subtle More/Less toggle instead of an accordion — but
+    // the toggle only stays when the text is actually truncated: after
+    // layout, an untruncated clamp loses the toggle again, so short bios
+    // (2Pac, The Prodigy, …) show fully without More/Less.
     function renderArtistAbout(element, about) {
         if (!element) return;
         const text = (about || '').trim();
@@ -2385,19 +2400,39 @@
             element.innerHTML = '';
             return;
         }
-        const long = text.length > 200;
         element.hidden = false;
+        if (text.length <= ARTIST_ABOUT_INLINE_LIMIT) {
+            element.innerHTML =
+                '<p class="streaming-about-text">' + escapeHtml(text) + '</p>';
+            return;
+        }
         element.innerHTML =
-            '<p class="streaming-about-text' + (long ? ' is-clamped' : '') + '">' + escapeHtml(text) + '</p>' +
-            (long ? '<button type="button" class="about-more-toggle" aria-expanded="false">More</button>' : '');
-        if (long) {
-            const bio = element.querySelector('.streaming-about-text');
-            const toggle = element.querySelector('.about-more-toggle');
-            toggle.addEventListener('click', () => {
-                const clamped = bio.classList.toggle('is-clamped');
-                toggle.setAttribute('aria-expanded', clamped ? 'false' : 'true');
-                toggle.textContent = clamped ? 'More' : 'Less';
-            });
+            '<p class="streaming-about-text is-clamped">' + escapeHtml(text) + '</p>' +
+            '<button type="button" class="about-more-toggle" aria-expanded="false">More</button>';
+        const bio = element.querySelector('.streaming-about-text');
+        const toggle = element.querySelector('.about-more-toggle');
+        if (!bio || !toggle) return;
+        toggle.addEventListener('click', () => {
+            const clamped = bio.classList.toggle('is-clamped');
+            toggle.setAttribute('aria-expanded', clamped ? 'false' : 'true');
+            toggle.textContent = clamped ? 'More' : 'Less';
+        });
+        // Drop the toggle again when the clamped text is not actually
+        // truncated (the bio fits the hero budget). Runs after layout so the
+        // heights reflect the clamped render; contexts without layout keep
+        // the toggle via the length gate above.
+        const dropToggleWhenUntruncated = () => {
+            try {
+                if (!bio.isConnected) return;
+                if (bio.scrollHeight > bio.clientHeight + 1) return;
+            } catch (err) { return; }
+            bio.classList.remove('is-clamped');
+            toggle.remove();
+        };
+        if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+            window.requestAnimationFrame(dropToggleWhenUntruncated);
+        } else {
+            dropToggleWhenUntruncated();
         }
     }
 
@@ -2593,22 +2628,26 @@
     // artist directly; otherwise exactly one normal TIDAL artist search by the
     // artist name runs, opening its single unique match or falling back to the
     // existing TIDAL search-result flow. Never a live per-keystroke search.
+    // Hops starting from an artist view replace it (no artist back-history
+    // grows); Back then returns to the entry context before the artist view.
+    // Hops from other views (e.g. album Discover Similar) push normally.
     function openTidalSimilarArtist(item) {
+        const replace = state.tidal.view === 'artist' ? { replace: true } : undefined;
         if (item && item.provider_artist_id) {
-            openTidalArtist(item.provider_artist_id, item.artist || '', item.art_url || '');
+            openTidalArtist(item.provider_artist_id, item.artist || '', item.art_url || '', replace);
             return;
         }
         const name = (item && item.artist) || '';
         if (!name) return;
-        void resolveTidalArtistByName(name, state.tidal.detailRequestId);
+        void resolveTidalArtistByName(name, state.tidal.detailRequestId, replace);
     }
 
-    async function resolveTidalArtistByName(name, detailRequestId) {
+    async function resolveTidalArtistByName(name, detailRequestId, openOptions) {
         try {
             const match = await resolveTidalArtistMatch(name);
             if (detailRequestId !== state.tidal.detailRequestId || !isTidalDetailView()) return;
             if (match && !match.ambiguous) {
-                openTidalArtist(match.id, match.name || name, match.art_url || '');
+                openTidalArtist(match.id, match.name || name, match.art_url || '', openOptions);
                 return;
             }
             throw new Error('no unique artist match');

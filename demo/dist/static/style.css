@@ -4266,7 +4266,9 @@ select.url-input {
 
 /* TIDAL artist about: directly visible in the hero, reusing the library
    .album-detail-about text styling (colors, size, max-width) without its
-   accordion. Long bios clamp to a few lines with a subtle More/Less toggle. */
+   accordion. Long bios clamp to the hero text budget (about the cover
+   height) with a subtle More/Less toggle that only stays when the text is
+   actually truncated. */
 .tidal-artist-about { margin-top: 0.5rem; }
 .streaming-about-text {
     margin: 0;
@@ -4277,7 +4279,7 @@ select.url-input {
 }
 .streaming-about-text.is-clamped {
     display: -webkit-box;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 5;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }

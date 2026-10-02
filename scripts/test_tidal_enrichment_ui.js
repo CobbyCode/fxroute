@@ -69,8 +69,12 @@ assert.ok(artistLoad.includes("renderArtistAbout(content.querySelector('#tidal-a
 const aboutRender = extractFunction(js, 'renderArtistAbout');
 assert.ok(aboutRender.includes('.streaming-about-text'),
     'artist About must render plain text markup');
-assert.ok(aboutRender.includes('text.length > 200'),
-    'long artist bios must be bounded');
+assert.ok(aboutRender.includes('ARTIST_ABOUT_INLINE_LIMIT'),
+    'short artist bios must render fully without any toggle');
+assert.ok(aboutRender.includes('scrollHeight') && aboutRender.includes('clientHeight'),
+    'the toggle must only stay when the clamped text is actually truncated');
+assert.ok(aboutRender.includes('toggle.remove()'),
+    'an untruncated clamp must lose the toggle again');
 assert.ok(aboutRender.includes('is-clamped') && aboutRender.includes("'More'") && aboutRender.includes("'Less'"),
     'long bios must clamp with a subtle More/Less toggle');
 assert.ok(!aboutRender.includes('<details'),
@@ -79,6 +83,8 @@ assert.ok(!aboutRender.includes('<details'),
 // CSS for the direct about + clamp + toggle.
 assert.ok(css.includes('.streaming-about-text') && css.includes('.streaming-about-text.is-clamped'),
     'clamped about text styles must ship');
+assert.ok(css.includes('-webkit-line-clamp: 5'),
+    'the hero clamp budget must use the available hero space');
 assert.ok(css.includes('.about-more-toggle'),
     'the subtle about toggle style must ship');
 assert.ok(css.includes('.tidal-artist-about'),
@@ -150,14 +156,25 @@ assert.ok(openSimilar.includes('item.provider_artist_id'),
     'a cached provider mapping must open the artist directly');
 assert.ok(openSimilar.includes("openTidalArtist(item.provider_artist_id"),
     'mapped similar artists jump straight into the artist detail');
-assert.ok(openSimilar.includes('resolveTidalArtistByName(name, state.tidal.detailRequestId)'),
+assert.ok(openSimilar.includes('resolveTidalArtistByName(name, state.tidal.detailRequestId'),
     'unmapped similar artists trigger one generation-scoped name resolver');
+// No endless artist back-history: hops starting from an artist view replace
+// it, so Back returns to the entry context before the artist view.
+assert.ok(openSimilar.includes("state.tidal.view === 'artist'") && openSimilar.includes('replace: true'),
+    'similar-artist hops from an artist view must replace it instead of pushing history');
+const openDetail = extractFunction(js, 'openTidalDetail');
+assert.ok(openDetail.includes('options.replace') || openDetail.includes('options && options.replace'),
+    'detail navigation must support replacing the current view');
+assert.ok(openDetail.includes('if (!replace)') && openDetail.includes('viewStack.push'),
+    'a replacing navigation must not push onto the back-history stack');
 
 const resolveByName = extractFunction(js, 'resolveTidalArtistByName');
 assert.ok(resolveByName.includes('resolveTidalArtistMatch(name)'),
     'similar-artist navigation must reuse the shared artist lookup');
 assert.ok(resolveByName.includes("openTidalArtist(match.id"),
     'a single unique match must open the matching TIDAL artist');
+assert.ok(resolveByName.includes('openOptions') && resolveByName.includes("openTidalArtist(match.id, match.name || name, match.art_url || '', openOptions)"),
+    'the async similar-artist hop must preserve the replace semantics');
 assert.ok(resolveByName.includes('showTidalSearchResultsFor(name)'),
     'an ambiguous fallback must reuse the existing search-result flow');
 assert.ok(resolveByName.includes('detailRequestId !== state.tidal.detailRequestId') && resolveByName.includes('isTidalDetailView()'),
