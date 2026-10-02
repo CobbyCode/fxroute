@@ -2174,10 +2174,8 @@
         // Push the full current detail state so Back returns exactly through
         // nested details (browse -> artist -> album) with the previous view's
         // own id/title/art restored, instead of jumping straight to browse.
-        // Similar-artist hops (artist -> artist) pass { replace: true } so no
-        // endless artist back-history builds up: the new artist replaces the
-        // current one and Back returns to the entry context before the
-        // artist view.
+        // Callers pass { replace: true } to swap the current detail without
+        // growing history (used by Discover Similar navigation).
         const replace = Boolean(options && options.replace);
         state.tidal.detailRequestId += 1;
         if (!replace) {
@@ -2628,26 +2626,34 @@
     // artist directly; otherwise exactly one normal TIDAL artist search by the
     // artist name runs, opening its single unique match or falling back to the
     // existing TIDAL search-result flow. Never a live per-keystroke search.
-    // Hops starting from an artist view replace it (no artist back-history
-    // grows); Back then returns to the entry context before the artist view.
-    // Hops from other views (e.g. album Discover Similar) push normally.
     function openTidalSimilarArtist(item) {
-        const replace = state.tidal.view === 'artist' ? { replace: true } : undefined;
         if (item && item.provider_artist_id) {
-            openTidalArtist(item.provider_artist_id, item.artist || '', item.art_url || '', replace);
+            openTidalSimilarArtistDetail(item.provider_artist_id, item.artist || '', item.art_url || '');
             return;
         }
         const name = (item && item.artist) || '';
         if (!name) return;
-        void resolveTidalArtistByName(name, state.tidal.detailRequestId, replace);
+        void resolveTidalArtistByName(name, state.tidal.detailRequestId);
     }
 
-    async function resolveTidalArtistByName(name, detailRequestId, openOptions) {
+    // Discover Similar is lateral navigation, not drill-down: any open detail
+    // chain collapses back to the entry context, and the new artist replaces
+    // the current detail on top of it. Back therefore always returns to the
+    // entry context in one step (Albums -> album -> Similar -> artists ->
+    // one Back -> Albums) instead of stepping through intermediate artists.
+    function openTidalSimilarArtistDetail(id, name, artUrl) {
+        if (state.tidal.viewStack.length > 1) {
+            state.tidal.viewStack = state.tidal.viewStack.slice(0, 1);
+        }
+        openTidalArtist(id, name, artUrl, { replace: true });
+    }
+
+    async function resolveTidalArtistByName(name, detailRequestId) {
         try {
             const match = await resolveTidalArtistMatch(name);
             if (detailRequestId !== state.tidal.detailRequestId || !isTidalDetailView()) return;
             if (match && !match.ambiguous) {
-                openTidalArtist(match.id, match.name || name, match.art_url || '', openOptions);
+                openTidalSimilarArtistDetail(match.id, match.name || name, match.art_url || '');
                 return;
             }
             throw new Error('no unique artist match');

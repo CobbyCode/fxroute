@@ -154,14 +154,17 @@ assert.ok(hydrateSimilar.includes('state.tidal.detailRequestId') && hydrateSimil
 const openSimilar = extractFunction(js, 'openTidalSimilarArtist');
 assert.ok(openSimilar.includes('item.provider_artist_id'),
     'a cached provider mapping must open the artist directly');
-assert.ok(openSimilar.includes("openTidalArtist(item.provider_artist_id"),
-    'mapped similar artists jump straight into the artist detail');
-assert.ok(openSimilar.includes('resolveTidalArtistByName(name, state.tidal.detailRequestId'),
+assert.ok(openSimilar.includes('openTidalSimilarArtistDetail(item.provider_artist_id'),
+    'mapped similar artists jump straight into the similar-artist detail');
+assert.ok(openSimilar.includes('resolveTidalArtistByName(name, state.tidal.detailRequestId)'),
     'unmapped similar artists trigger one generation-scoped name resolver');
-// No endless artist back-history: hops starting from an artist view replace
-// it, so Back returns to the entry context before the artist view.
-assert.ok(openSimilar.includes("state.tidal.view === 'artist'") && openSimilar.includes('replace: true'),
-    'similar-artist hops from an artist view must replace it instead of pushing history');
+// Discover Similar is lateral: the open detail chain collapses to the entry
+// context, so one Back always returns there (never to an intermediate artist).
+const openSimilarDetail = extractFunction(js, 'openTidalSimilarArtistDetail');
+assert.ok(openSimilarDetail.includes('viewStack.slice(0, 1)'),
+    'similar-artist navigation must collapse the detail chain to the entry context');
+assert.ok(openSimilarDetail.includes("openTidalArtist(id, name, artUrl, { replace: true })"),
+    'the similar artist must replace the current detail without pushing history');
 const openDetail = extractFunction(js, 'openTidalDetail');
 assert.ok(openDetail.includes('options.replace') || openDetail.includes('options && options.replace'),
     'detail navigation must support replacing the current view');
@@ -171,10 +174,8 @@ assert.ok(openDetail.includes('if (!replace)') && openDetail.includes('viewStack
 const resolveByName = extractFunction(js, 'resolveTidalArtistByName');
 assert.ok(resolveByName.includes('resolveTidalArtistMatch(name)'),
     'similar-artist navigation must reuse the shared artist lookup');
-assert.ok(resolveByName.includes("openTidalArtist(match.id"),
-    'a single unique match must open the matching TIDAL artist');
-assert.ok(resolveByName.includes('openOptions') && resolveByName.includes("openTidalArtist(match.id, match.name || name, match.art_url || '', openOptions)"),
-    'the async similar-artist hop must preserve the replace semantics');
+assert.ok(resolveByName.includes('openTidalSimilarArtistDetail(match.id, match.name || name, match.art_url'),
+    'a single unique match must open the matching TIDAL artist through the similar-artist detail');
 assert.ok(resolveByName.includes('showTidalSearchResultsFor(name)'),
     'an ambiguous fallback must reuse the existing search-result flow');
 assert.ok(resolveByName.includes('detailRequestId !== state.tidal.detailRequestId') && resolveByName.includes('isTidalDetailView()'),
