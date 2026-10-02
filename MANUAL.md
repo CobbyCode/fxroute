@@ -141,6 +141,7 @@ While a line source is active, the **Auto** button next to the footer source swi
 - **Analog inputs:** about one second of programme level (−50 dBFS RMS) arms; peaks above −60 dBFS keep it active.
 - **STDIN:** a connected `fxroute stdin` writer is the signal; the return follows 10 s after the last writer disconnected.
 - Pauses, track changes and quiet passages do not return: only 60 s without signal (10 s for a removed input) does. When two armed inputs carry signal, the one selected first keeps the route and the other takes over when it ends.
+- After a manual switch away, ongoing signal does not undo the selection. One second without signal rearms the input, so the next signal can select it again without waiting for the automatic return hold.
 - While a measurement session owns the audio graph, auto-select is paused.
 
 ## 5. DSP

@@ -385,6 +385,64 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(h.switches, [])
         self.assertIsNone(h.controller.snapshot()["engaged"])
 
+    async def test_manual_app_selection_rearms_after_short_silence(self):
+        h = self.harness(mode="external-input", input_key=X)
+        await h.controller.set_armed(X, True)
+        await h.tick()
+        await h.signal(X, 2)
+        self.assertEqual(h.switches, [], "arming the selected input does not engage it")
+        h.selection = {"mode": "app-playback", "selected_input_key": X}
+        await h.signal(X, 3)
+        await h.silence(X, 0.5)
+        await h.signal(X, 2)
+        self.assertEqual(h.switches, [], "ongoing signal and brief gaps respect the manual choice")
+        await h.silence(X, 2)
+        self.assertFalse(h.controller.snapshot()["inputs"][X]["active"])
+        await h.signal(X, 0.5)
+        self.assertEqual(h.switches, [], "a new signal still needs the normal attack")
+        await h.signal(X, 1.5)
+        self.assertEqual(h.switches, [("external-input", X)])
+        self.assertEqual(h.controller.snapshot()["engaged"]["return_mode"], "app-playback")
+        await h.silence(X, 59)
+        self.assertEqual(h.switches, [("external-input", X)], "automatic return keeps the long hold")
+        await h.silence(X, 2)
+        self.assertEqual(h.switches[-1], ("app-playback", None))
+
+    async def test_manual_override_rearms_an_automatically_selected_input(self):
+        h = self.harness()
+        await h.controller.set_armed(X, True)
+        await h.tick()
+        await h.signal(X, 2)
+        h.selection = {"mode": "external-input", "selected_input_key": Z}
+        await h.signal(X, 2)
+        self.assertIsNone(h.controller.snapshot()["engaged"])
+        self.assertEqual(h.switches, [("external-input", X)], "ongoing signal does not undo the override")
+        await h.silence(X, 2)
+        await h.signal(X, 2)
+        self.assertEqual(h.switches, [("external-input", X), ("external-input", X)])
+        self.assertEqual(h.controller.snapshot()["engaged"]["return_input_key"], Z)
+
+    async def test_digital_input_rearms_after_manual_app_selection(self):
+        h = self.harness(mode="external-input", input_key=Y)
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        await h.signal(Y, 2)
+        h.selection = {"mode": "app-playback", "selected_input_key": Y}
+        await h.signal(Y, 2)
+        self.assertEqual(h.switches, [])
+        await h.silence(Y, 2)
+        await h.signal(Y, 1.5)
+        self.assertEqual(h.switches, [("external-input", Y)])
+
+    async def test_silent_input_at_arming_switches_on_the_first_signal(self):
+        h = self.harness(mode="external-input", input_key=X)
+        await h.controller.set_armed(X, True)
+        await h.tick()
+        await h.silence(X, 2)
+        h.selection = {"mode": "app-playback", "selected_input_key": X}
+        await h.signal(X, 2)
+        self.assertEqual(h.switches, [("external-input", X)])
+
     async def test_first_signal_keeps_the_route_then_hands_over(self):
         h = self.harness()
         await h.controller.set_armed(X, True)
@@ -453,6 +511,20 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(h.switches), 1, "a short gap between writers keeps STDIN")
         await h.tick(1.0)
         self.assertEqual(h.switches[-1], ("app-playback", None))
+
+    async def test_stdin_reconnect_rearms_after_manual_app_selection(self):
+        h = self.harness(mode="stdin-input")
+        await h.controller.set_armed("stdin-input", True)
+        h.stdin = {"session_id": "abc", "state": "connected"}
+        await h.tick()
+        h.selection = {"mode": "app-playback", "selected_input_key": None}
+        await h.tick()
+        self.assertEqual(h.switches, [], "the existing writer does not undo the manual choice")
+        h.stdin = {"session_id": None, "state": "waiting"}
+        await h.tick(2.0)
+        h.stdin = {"session_id": "def", "state": "connected"}
+        await h.tick()
+        self.assertEqual(h.switches, [("stdin-input", None)])
 
     async def test_disarming_the_engaged_input_stays_on_it(self):
         h = self.harness()

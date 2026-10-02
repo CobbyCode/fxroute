@@ -35,6 +35,7 @@ from audio.input_activity import (
     KIND_ANALOG,
     KIND_DIGITAL,
     KIND_STDIN,
+    RELEASE_SECONDS,
     ActivityDetector,
     analyze_block,
 )
@@ -51,6 +52,8 @@ logger = logging.getLogger(__name__)
 
 STDIN_KEY = SOURCE_MODE_STDIN_INPUT
 TICK_SECONDS = 0.5
+# Idle inputs rearm after a short absence; only the engagement needs a long hold.
+REARM_SECONDS = 1.0
 OVERVIEW_MAX_AGE_SECONDS = 15.0
 CAPTURE_RATE_REFRESH_SECONDS = 15.0
 PROBE_LINK_TIMEOUT_SECONDS = 3.0
@@ -291,6 +294,8 @@ class InputAutoSelect:
     def _set_engaged(self, engaged: dict[str, Any] | None) -> None:
         if engaged != self._engaged:
             self._engaged = dict(engaged) if engaged else None
+            for key, detector in self._detectors.items():
+                detector.release_seconds = RELEASE_SECONDS if engaged and engaged["key"] == key else REARM_SECONDS
             self._save()
 
     # Client state ----------------------------------------------------------
@@ -410,7 +415,10 @@ class InputAutoSelect:
             if detector is None:
                 kind = KIND_STDIN if key == STDIN_KEY else (KIND_DIGITAL if spec and spec.digital else KIND_ANALOG)
                 engaged = bool(self._engaged and self._engaged["key"] == key)
-                detector = self._detectors[key] = ActivityDetector(kind, now, assume_active=engaged)
+                detector = self._detectors[key] = ActivityDetector(
+                    kind, now, assume_active=engaged,
+                    release_seconds=RELEASE_SECONDS if engaged else REARM_SECONDS,
+                )
                 self._was_active[key] = engaged
             elif spec is not None and spec.digital:
                 detector.mark_digital()

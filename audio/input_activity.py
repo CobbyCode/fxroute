@@ -17,9 +17,10 @@ Detection works on the bit-exact stream:
   dither level.
 
 Hysteresis: arming needs a sustained signal (attack), releasing needs a
-continuous absence for the release hold, so pauses, track changes and
-quiet passages never release. A lost digital lock or a missing input
-releases after a shorter hold, since that is a definite end of signal.
+continuous absence for the release hold. An automatically selected input
+uses a long hold for pauses and track changes; idle monitoring uses a
+shorter hold to rearm. A lost digital lock or a missing input caps the
+hold, since that is a definite end of signal.
 """
 
 from __future__ import annotations
@@ -132,9 +133,11 @@ class ActivityDetector:
     hold, for an engagement that must survive a restart.
     """
 
-    def __init__(self, kind: str, now: float, *, assume_active: bool = False) -> None:
+    def __init__(self, kind: str, now: float, *, assume_active: bool = False,
+                 release_seconds: float = RELEASE_SECONDS) -> None:
         self.kind = kind
         self.active = assume_active
+        self.release_seconds = release_seconds
         self.lock: bool | None = None
         self._digital = kind == KIND_DIGITAL
         self._stream = STREAM_PCM
@@ -202,12 +205,12 @@ class ActivityDetector:
 
     def _release_hold(self) -> float:
         if self.kind == KIND_STDIN:
-            return STDIN_RELEASE_SECONDS
+            return min(self.release_seconds, STDIN_RELEASE_SECONDS)
         if self._missing:
-            return MISSING_RELEASE_SECONDS
+            return min(self.release_seconds, MISSING_RELEASE_SECONDS)
         if self.lock is False:
-            return UNLOCKED_RELEASE_SECONDS
-        return RELEASE_SECONDS
+            return min(self.release_seconds, UNLOCKED_RELEASE_SECONDS)
+        return self.release_seconds
 
     def _step(self, now: float, on: bool, keep: bool, attack: float) -> None:
         if keep:
