@@ -338,8 +338,9 @@ class InputAutoSelect:
         elif not enabled and key in self._armed:
             self._armed.remove(key)
             if self._engaged and self._engaged["key"] == key:
-                self._engaged = None
-            self._save()
+                self._set_engaged(None)
+            else:
+                self._save()
         return await self._publish()
 
     async def _publish(self) -> dict | None:

@@ -537,6 +537,22 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(h.probes["alsa_input.usb-Focusrite-00.pro-input-0"].stopped)
         self.assertEqual(h.switches, [("external-input", X)])
 
+    async def test_rapid_auto_off_on_rearms_the_reused_detector(self):
+        h = self.harness()
+        await h.controller.set_armed(X, True)
+        await h.tick()
+        await h.signal(X, 2)
+        await h.controller.set_armed(X, False)
+        await h.controller.set_armed(X, True)
+        h.selection = {"mode": "app-playback", "selected_input_key": X}
+        await h.signal(X, 2)
+        self.assertEqual(h.switches, [("external-input", X)], "ongoing signal respects the manual choice")
+        await h.silence(X, 2)
+        self.assertFalse(h.controller.snapshot()["inputs"][X]["active"])
+        await h.signal(X, 2)
+        self.assertEqual(h.switches, [("external-input", X), ("external-input", X)])
+        self.assertEqual(h.controller.snapshot()["engaged"]["return_mode"], "app-playback")
+
     async def test_unknown_key_is_rejected(self):
         h = self.harness()
         with self.assertRaises(ValueError):
