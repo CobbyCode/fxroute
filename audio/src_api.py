@@ -42,8 +42,8 @@ class SrcController:
                 raise RuntimeError(result["error"])
             return result
         except Exception as exc:
-            await asyncio.to_thread(src_policy.persist_policy, previous["mode"])
             try:
+                await asyncio.to_thread(src_policy.persist_policy, previous["mode"])
                 await self._restart(state)
             except Exception as rollback:
                 raise RuntimeError(f"SRC apply failed: {exc}; previous graph could not be restored: {rollback}") from exc

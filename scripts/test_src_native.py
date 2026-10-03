@@ -139,6 +139,30 @@ class NativeSrcTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stdout+result.stderr+reports)
             self.assertNotIn("WARNING: ThreadSanitizer",reports)
 
+    def test_channel_tables_stay_in_bounds_up_to_the_spa_channel_maximum(self):
+        build=ROOT / "native_src/build"
+        includes=build / "sources/pipewire/pipewire-1.6.8/spa/include"
+        upstream=includes.parent / "plugins/audioconvert"
+        with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,{"XDG_CONFIG_HOME":directory}):
+            path=Path(directory)
+            probe=subprocess.run(["cc","-fsanitize=address","-x","c","-","-o",str(path / "asan-probe")],
+                input="int main(void){return 0;}\n",text=True,capture_output=True)
+            if probe.returncode:
+                self.skipTest("Compiler AddressSanitizer runtime is unavailable: "+probe.stderr.strip())
+            flags=["cc","-std=gnu11","-O1","-g","-fsanitize=address","-fno-omit-frame-pointer","-fPIC","-D_GNU_SOURCE",
+                   "-DRESAMPLE_DISABLE_PRECOMP","-I",str(includes),"-I",str(upstream),"-I",str(ROOT / "native_src")]
+            subprocess.run([*flags,"-c",str(ROOT / "native_src/resample-worker.c"),"-o",str(path / "composition.o")],check=True)
+            objects=[str(p) for p in build.glob("*.o") if p.name!="resample-worker.o"]
+            library=path / "bounds-src.so"
+            subprocess.run(["cc","-fsanitize=address","-shared",*objects,str(path / "composition.o"),
+                            "-l:libsoxr.so.0","-lpthread","-lm","-o",str(library)],check=True)
+            executable=path / "channel-bounds"
+            subprocess.run([*flags,str(ROOT / "scripts/src_channel_bounds.c"),"-ldl","-lm","-o",str(executable)],check=True)
+            result=subprocess.run([str(executable),str(library)],text=True,capture_output=True,timeout=20,
+                env={**os.environ,"ASAN_OPTIONS":"detect_leaks=0"})
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertNotIn("AddressSanitizer",result.stderr)
+
     def test_high_18_channel_merge_retains_reserve_during_graph_clock_changes(self):
         includes=ROOT / "native_src/build/sources/pipewire/pipewire-1.6.8/spa/include"
         with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,{"XDG_CONFIG_HOME":directory}):
@@ -171,6 +195,9 @@ class NativeSrcTests(unittest.TestCase):
                 rendered=actual.read_bytes();prefix=metrics["lead"]*8
                 self.assertFalse(any(rendered[:prefix]),scenario)
                 if scenario!="post-start":self.assertEqual(rendered[prefix:],reference.read_bytes(),scenario)
+                # Lifetime underruns count queue starvation only, never the startup timeout.
+                lifetime=json.loads(re.search(r"FXSRC_WORKER_STATS (\{.*\})",result.stderr)[1])
+                self.assertEqual(lifetime["underruns"],1 if scenario=="post-start" else 0,scenario)
 
     def test_reserve_conserves_nominal_input_progress_through_drift_eof_and_reset(self):
         includes=ROOT / "native_src/build/sources/pipewire/pipewire-1.6.8/spa/include"

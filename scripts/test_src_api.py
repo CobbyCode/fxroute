@@ -111,6 +111,7 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
               patch.object(main, "get_audio_output_overview", return_value=overview),
               patch.object(main.samplerate, "get_current_pipewire_force_rate", return_value=48000),
               patch.object(main.samplerate, "set_pipewire_force_rate", side_effect=set_rate),
+              patch.object(main.samplerate, "prepare_audio_output_selection", return_value=overview["selected_output"]),
               patch.object(main.samplerate, "set_audio_output_selection", return_value=overview),
               patch.object(main.dsp_orchestrator, "sync_runtime", AsyncMock())):
             await main._restart_src_graph()
@@ -222,16 +223,23 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
         wrong="alsa_output.pci-Onboard.stereo"
         for returned in (original,"alsa_output.usb-Original.pro-output-0"):
             with self.subTest(returned=returned):
-                state={"force_rate":0,"selected":wrong,"probes":0,"rebuilt":False}
+                state={"force_rate":0,"selected":wrong,"probes":0,"rebuilt":False,"selections":0}
                 def overview():
                     state["probes"]+=1
                     outputs=[{"key":wrong}]
                     if state["probes"]>=3:
                         outputs.append({"key":returned})
                     return {"selected_output":{"key":state["selected"],"target_name":state["selected"]},"outputs":outputs}
-                def select(key):
+                def prepare(key):
+                    # Listed before it is selectable: polling must stay read-only.
                     self.assertEqual(key,returned)
-                    self.assertGreaterEqual(state["probes"],3)
+                    if state["probes"]<5:
+                        raise ValueError(f"Output is not selectable: {key}")
+                    return {"key":key}
+                def select(key):
+                    state["selections"]+=1
+                    self.assertEqual(key,returned)
+                    self.assertGreaterEqual(state["probes"],5)
                     state["selected"]=key
                     return {"selected_output":{"key":key,"target_name":key}}
                 async def rebuild(**kwargs):
@@ -245,12 +253,72 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
                       patch.object(main.asyncio,"create_subprocess_exec",AsyncMock(return_value=process)),
                       patch.object(main.asyncio,"sleep",AsyncMock()),
                       patch.object(main,"get_audio_output_overview",side_effect=overview),
+                      patch.object(main.samplerate,"prepare_audio_output_selection",side_effect=prepare),
                       patch.object(main.samplerate,"set_audio_output_selection",side_effect=select),
                       patch.object(main.samplerate,"set_pipewire_force_rate",side_effect=lambda rate:state.update(force_rate=rate)),
                       patch.object(main.dsp_orchestrator,"sync_runtime",side_effect=rebuild)):
                     await main._restart_src_graph({"force_rate":48000,"output_key":original})
                 self.assertTrue(state["rebuilt"])
                 self.assertEqual(state["selected"],returned)
+                self.assertEqual(state["selections"],1,"Output selection must be committed once, not polled")
+
+    async def test_src_restart_does_not_retry_a_failed_output_commit(self):
+        import main
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+        original="alsa_output.usb-Original.stereo"
+        overview={"selected_output":{"key":original,"target_name":original},"outputs":[{"key":original}]}
+        select=MagicMock(return_value={"selected_output":{"key":original,"target_name":"fxroute_dsp_sink"}})
+        dsp=SimpleNamespace(stop=AsyncMock(),verify=AsyncMock(return_value=True))
+        process=SimpleNamespace(returncode=0,communicate=AsyncMock(return_value=(b"",b"")))
+        with (patch.object(main.runtime,"dsp_runtime",dsp),patch.object(main.runtime,"player_instance",None),
+              patch.object(src_policy,"activate_environment"),
+              patch.object(main.asyncio,"create_subprocess_exec",AsyncMock(return_value=process)),
+              patch.object(main.asyncio,"sleep",AsyncMock()),
+              patch.object(main,"get_audio_output_overview",return_value=overview),
+              patch.object(main.samplerate,"set_pipewire_force_rate"),
+              patch.object(main.samplerate,"prepare_audio_output_selection",return_value={"key":original}),
+              patch.object(main.samplerate,"set_audio_output_selection",select),
+              patch.object(main.dsp_orchestrator,"sync_runtime",AsyncMock()) as sync):
+            with self.assertRaisesRegex(RuntimeError,"could not be reselected"):
+                await main._restart_src_graph({"force_rate":48000,"output_key":original})
+        select.assert_called_once_with(original)
+        sync.assert_not_awaited()
+
+    async def test_unwritable_policy_returns_a_structured_actionable_error(self):
+        import main
+        from unittest.mock import AsyncMock
+        from fastapi.testclient import TestClient
+        restart=AsyncMock()
+        with (patch.object(main,"_guard_src_change",AsyncMock()),
+              patch.object(main,"_src_graph_lock",asyncio.Lock),
+              patch.object(main,"_snapshot_src_graph",AsyncMock(return_value={"force_rate":48000})),
+              patch.object(main,"_restart_src_graph",restart),
+              patch.object(src_policy,"atomic_write_text",side_effect=OSError(30,"Read-only file system"))):
+            response=await asyncio.to_thread(TestClient(main.app,raise_server_exceptions=False).post,
+                                             "/api/audio/src",json={"mode":"high"},headers={"Accept-Encoding":"identity"})
+        self.assertEqual(response.status_code,503)
+        self.assertIn("Cannot save SRC policy",response.json()["detail"])
+        restart.assert_not_awaited()
+        self.assertEqual(src_policy.load_policy(),{"mode":"standard"})
+
+    async def test_failed_rollback_persistence_reports_both_causes(self):
+        from audio import src_api
+        calls=[]
+        real_persist=src_policy.persist_policy
+        def persist(mode):
+            calls.append(mode)
+            if len(calls)>1:
+                raise RuntimeError("Cannot save SRC policy: disk full")
+            return real_persist(mode)
+        async def idle():
+            pass
+        async def restart():
+            raise RuntimeError("new graph failed")
+        with patch.object(src_api.src_policy,"persist_policy",side_effect=persist):
+            with self.assertRaisesRegex(RuntimeError,"new graph failed; previous graph could not be restored: Cannot save SRC policy"):
+                await self.Controller(idle,restart,asyncio.Lock()).apply("high")
+        self.assertEqual(calls,["high","standard"])
 
     async def test_src_rejects_a_released_measurement_lock_reserved_for_a_waiter(self):
         import main

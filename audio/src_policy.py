@@ -53,7 +53,10 @@ def load_policy() -> dict:
 
 def persist_policy(mode: object) -> dict:
     policy = {"mode": normalize_mode(mode)}
-    atomic_write_text(policy_path(), json.dumps(policy, indent=2) + "\n")
+    try:
+        atomic_write_text(policy_path(), json.dumps(policy, indent=2) + "\n")
+    except OSError as exc:
+        raise RuntimeError(f"Cannot save SRC policy: {exc}") from exc
     return policy
 
 
@@ -213,7 +216,8 @@ def status() -> dict:
     mismatches = [n["name"] for n in observed if n["mode"] not in {"unconfigured", "peaks", selected}
                   or (n.get("expected") and not n.get("bound"))
                   or (n["state"] == "running" and n["mode"] == "unconfigured")]
-    restart_required = bool(mismatches) or not observed
+    # No adapter boundary to bind (no device or stream) is not pending activation.
+    restart_required = bool(mismatches)
     try:
         generation = json.loads((RUNTIME / "manifest.json").read_text()).get("generation")
     except (OSError, ValueError):

@@ -35,7 +35,7 @@
         if (pending) return;
         try {
             const response = await deps.fetchFn('/api/audio/src');
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data.detail || 'Cannot read SRC mode');
             status = data;
         } catch (error) { status = { ...status, available: false, error: error.message }; }
@@ -49,7 +49,7 @@
             const response = await deps.fetchFn('/api/audio/src', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
             });
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data.detail || 'Cannot apply SRC mode');
             status = data;
             await deps.onApplied();

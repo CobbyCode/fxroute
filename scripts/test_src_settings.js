@@ -23,6 +23,16 @@ const src = require('../static/src_settings.js');
     assert.equal(select.value, 'standard');
     assert.equal(errors.at(-1), 'Stop playback before changing SRC');
     assert.deepEqual(JSON.parse(requests.at(-1).options.body), { mode: 'high' });
+    // A non-JSON error body (plain-text 500, proxy page) must not surface as a parse error.
+    const plainText = { ok: false, status: 500, json: async () => { throw new SyntaxError('Unexpected token \'I\''); } };
+    response = plainText;
+    await src.save('high');
+    assert.equal(errors.at(-1), 'Cannot apply SRC mode');
+    assert.equal(select.disabled, false);
+    await src.refresh();
+    assert.equal(hint.textContent, 'Cannot read SRC mode');
+    response = { ok: true, json: async () => ({ mode: 'standard', available: true }) };
+    await src.refresh();
     response = { ok: true, json: async () => ({ mode: 'high', available: true }) };
     await src.save('high');
     assert.equal(select.value, 'high');

@@ -50,8 +50,14 @@ int main(int argc,char **argv)
         }
         assert(error(&r)==ETIMEDOUT&&seconds()-start>=3.5&&seconds()-start<4.5);
         assert(submitted<frames&&"A full input FIFO must not disable the startup timeout");
-        resample_reset(&r);
         struct fx_resample_stats state;
+        for(unsigned n=0;n<4;++n) {
+            const void *src[]={planes,planes+frames};unsigned take=n&1?512:0,made=n&1?512:0;
+            resample_process(&r,src,&take,dst,&made);assert(!made);
+        }
+        stats(&r,&state);
+        assert(error(&r)==ETIMEDOUT&&!state.underruns&&"A startup timeout is neither rearmed nor an underrun");
+        resample_reset(&r);
         do{stats(&r,&state);usleep(1000);}while(state.worker.acknowledged!=state.worker.generation);
         assert(!error(&r));pid=child();assert(!kill(pid,SIGSTOP));
     }

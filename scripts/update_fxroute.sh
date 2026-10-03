@@ -287,9 +287,10 @@ reconcile_checkout() {
     log "Reconciliation remains incomplete because a native build failed."
     return 1
   fi
+  # SRC needs installer-provided build dependencies and a privileged plugin
+  # link; without them the update completes with the existing conversion.
   if ! build_common_src_if_needed; then
-    log "Common SRC reconciliation failed; install its documented build dependencies."
-    return 1
+    log "Common SRC reconciliation skipped; the existing audio conversion stays in use. Rerun the installer to enable or repair SRC."
   fi
   if ! install_stdin_cli_helper; then
     log "STDIN CLI helper reconciliation failed."

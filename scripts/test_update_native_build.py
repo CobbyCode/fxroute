@@ -26,7 +26,8 @@ def update_request():
     })
 
 
-def make_update_harness(root: Path, work: Path, *, build_succeeds: bool, src_configuration_succeeds: bool = True) -> Path:
+def make_update_harness(root: Path, work: Path, *, build_succeeds: bool, src_configuration_succeeds: bool = True,
+                        src_build_succeeds: bool = True) -> Path:
     source = work / "native_dsp"
     source.mkdir()
     if build_succeeds:
@@ -36,7 +37,8 @@ def make_update_harness(root: Path, work: Path, *, build_succeeds: bool, src_con
     (source / "build.sh").write_text(build)
     src = work / "native_src"
     src.mkdir()
-    (src / "build.py").write_text('from pathlib import Path\np=Path("native_src/build");p.mkdir(exist_ok=True)\n(p/"libspa-fxroute-src.so").touch()\n')
+    (src / "build.py").write_text('from pathlib import Path\np=Path("native_src/build");p.mkdir(exist_ok=True)\n(p/"libspa-fxroute-src.so").touch()\n'
+                                  if src_build_succeeds else 'raise SystemExit("Package soxr was not found")\n')
     scripts = work / "scripts"
     scripts.mkdir(exist_ok=True)
     configuration='from pathlib import Path\nPath("src-configured").touch()\n' if src_configuration_succeeds else (
@@ -82,17 +84,25 @@ def run_update(script: Path, work: Path) -> subprocess.CompletedProcess:
 
 
 class NativeBuildUpdateTests(unittest.TestCase):
-    def test_missing_src_plugin_keeps_reconciliation_incomplete_without_restart(self):
-        with tempfile.TemporaryDirectory() as td:
-            root=Path(td)
-            work=make_repo(root)
-            script=make_update_harness(root,work,build_succeeds=True,src_configuration_succeeds=False)
-            result=run_update(script,work)
-            self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
-            self.assertIn("standard SPA path",result.stderr)
-            self.assertFalse((work / "src-configured").exists())
-            self.assertFalse((work / "restart-called").exists())
-            self.assertFalse((work / ".venv/.fxroute-reconciled-commit").exists())
+    def test_pre_src_install_completes_update_with_stock_conversion(self):
+        # Pre-SRC installs lack the privileged plugin link and may lack SRC build dependencies.
+        for name, options, cause in (
+                ("missing plugin link", {"src_configuration_succeeds": False}, "standard SPA path"),
+                ("missing build dependencies", {"src_build_succeeds": False}, "soxr")):
+            with self.subTest(name), tempfile.TemporaryDirectory() as td:
+                root=Path(td)
+                work=make_repo(root)
+                script=make_update_harness(root,work,build_succeeds=True,**options)
+                result=run_update(script,work)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn(cause,result.stderr)
+                self.assertIn("Common SRC reconciliation skipped",result.stdout)
+                self.assertFalse((work / "src-configured").exists())
+                self.assertEqual((work / "restart-called").read_text(),"restart\n")
+                self.assertEqual(
+                    (work / ".venv/.fxroute-reconciled-commit").read_text().strip(),
+                    subprocess.check_output(["git", "-C", str(work), "rev-parse", "HEAD"], text=True).strip(),
+                )
 
     def test_failed_native_build_fails_reconciliation_before_restart(self):
         with tempfile.TemporaryDirectory() as td:

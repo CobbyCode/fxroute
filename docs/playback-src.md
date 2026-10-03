@@ -106,11 +106,13 @@ Readiness distinguishes installed runtime from effective activation. Observed
 unbound adapters, missing parameters on running adapters, and an older runtime
 generation require activation. Idle, configured-but-not-started adapters can
 remain `unconfigured`; passive graph-only split loopbacks and MIDI nodes are not
-native audio boundaries. After a runtime update, stop playback, select App
-playback and use **Restart audio to apply SRC** if activation is pending. Updating
-an older installation without the standard-path plugin requires the installer;
-the configuration helper reports that missing prerequisite instead of silently
-publishing unusable client rules.
+native audio boundaries. With no device or stream observed there is nothing to
+bind, which is not pending activation. After a runtime update, stop playback,
+select App playback and use **Restart audio to apply SRC** if activation is
+pending. Updating an older installation without the standard-path plugin or
+the SRC build dependencies still completes: the update logs the skipped SRC
+reconciliation, stock PipeWire conversion stays in use, and the configuration
+helper refuses to publish client rules until the installer has been rerun.
 
 SRC rejects busy graph locks, including asyncio's released-but-reserved waiter
 handoff, rather than blocking with other graph locks held. Application snapshots
@@ -139,7 +141,10 @@ changes. Raw output padding can therefore vary with the graph-clock scale;
 elapsed reserve is not reset or shortened when that scale changes. The 750 ms
 figure is a minimum: under CPU contention the first usable burst may arrive
 later within the 3,750 ms bound, and a startup that never becomes ready fails
-with `ETIMEDOUT` instead of underrunning silently.
+with `ETIMEDOUT` instead of underrunning silently. That timeout never replaces an
+earlier adapter error and is not counted in `underruns`, which count queue
+starvation only. Worker channels are limited to 32; an unequal-rate adapter
+with more channels is rejected at construction.
 
 This qualification is not a guarantee for every PipeWire version, channel/rate
 combination, scheduler, device, sustained load or child stall. ARM has not been

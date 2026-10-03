@@ -5,6 +5,7 @@ import importlib.util
 import json
 import mmap
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,34 @@ class RuntimePublishTests(unittest.TestCase):
             finally:
                 process.terminate()
                 process.wait(timeout=5)
+
+
+class InstallArchiveTests(unittest.TestCase):
+    def test_install_archive_excludes_the_generated_src_runtime(self):
+        body = re.search(r"^sync_project_tree\(\) \{\n.*?\n\}", (ROOT / "install.sh").read_text(), re.MULTILINE | re.DOTALL)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, home = root / "source", root / "home"
+            target = home / "fxroute"
+            (source / "native_src/build/runtime-old").mkdir(parents=True)
+            (source / "native_src/build/runtime-old/sox").write_text("stale engine")
+            (source / "native_src/build.py").write_text("# builder\n")
+            (source / "native_src/worker.c").write_text("/* source */\n")
+            home.mkdir()
+            script = f'''set -Eeuo pipefail
+LOCAL_PROJECT_MODE=0 SOURCE_DIR="{source}" INSTALL_ROOT="{target}" HOME="{home}"
+log() {{ :; }}
+pass() {{ :; }}
+run_as_target_user() {{ "$@"; }}
+ensure_target_user_ownership() {{ :; }}
+cleanup_obsolete_root_modules() {{ :; }}
+{body}
+sync_project_tree
+'''
+            subprocess.run(["bash", "-c", script], check=True)
+            self.assertTrue((target / "native_src/build.py").is_file())
+            self.assertTrue((target / "native_src/worker.c").is_file())
+            self.assertFalse((target / "native_src/build").exists())
 
 
 if __name__ == "__main__":

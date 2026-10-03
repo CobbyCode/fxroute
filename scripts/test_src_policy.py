@@ -99,11 +99,31 @@ class SrcPolicyTests(unittest.TestCase):
         self.assertFalse(nodes[0]["nominal_bypass"])
 
     def test_disk_readiness_does_not_claim_effective_activation(self):
-        with (patch.object(self.policy, "runtime_error", return_value=None),
-              patch.object(self.policy, "nodes", return_value=[])):
+        from types import SimpleNamespace
+        dump = [{"id":42,"type":"PipeWire:Interface:Node","info":{"state":"suspended","props":{
+            "node.name":"alsa_output.hw_test", "device.api":"alsa", "media.class":"Audio/Sink"}}}]
+        with (patch.object(self.policy.subprocess,"run",return_value=SimpleNamespace(stdout=json.dumps(dump))),
+              patch.object(self.policy, "runtime_error", return_value=None)):
             status = self.policy.status()
         self.assertFalse(status["available"])
         self.assertTrue(status["restart_required"])
+        self.assertIn("activation is pending", status["error"])
+
+    def test_nothing_to_bind_is_not_pending_activation(self):
+        with (patch.object(self.policy, "runtime_error", return_value=None),
+              patch.object(self.policy, "nodes", return_value=[])):
+            status = self.policy.status()
+        self.assertTrue(status["available"])
+        self.assertFalse(status["restart_required"])
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["effective_nodes"], [])
+
+    def test_unwritable_policy_is_a_structured_runtime_failure(self):
+        self.policy.persist_policy("high")
+        with patch.object(self.policy, "atomic_write_text", side_effect=OSError(30, "Read-only file system")):
+            with self.assertRaisesRegex(RuntimeError, "Cannot save SRC policy: .*Read-only file system"):
+                self.policy.persist_policy("low")
+        self.assertEqual(self.policy.load_policy(), {"mode": "high"})
 
     def test_running_unconfigured_or_unbound_stream_requires_activation(self):
         from types import SimpleNamespace

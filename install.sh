@@ -2804,6 +2804,7 @@ sync_project_tree() {
     --exclude='backups' \
     --exclude='*.pyc' \
     --exclude='outputs/*.patch' \
+    --exclude='native_src/build' \
     -C "$SOURCE_DIR" -cf "$archive" .
   chmod 644 "$archive"
   run_as_target_user tar -C "$INSTALL_ROOT" -xf "$archive"

@@ -3,6 +3,8 @@
 #define FX_WORKER_H
 #include <stdint.h>
 enum fx_profile { FX_LOW, FX_STANDARD, FX_HIGH };
+/* Upper bound for worker channels; callers size per-channel tables from it. */
+#define FX_WORKER_MAX_CHANNELS 32
 struct fx_worker;
 struct fx_worker_stats {
     uint64_t accepted, produced, delivered, max_input, max_output;

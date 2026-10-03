@@ -129,16 +129,22 @@ void fx_resample_note_callback(struct resample *r,uint64_t ns)
     if(ns>c->max_callback_ns)c->max_callback_ns=ns;
     ++c->callbacks;
 }
+/* Startup timeout is its own terminal error: it never replaces an existing
+ * error and is not a queue underrun. */
+static int startup_expired(struct composition *c)
+{
+    if(!c->worker||c->eof||c->error||!c->startup_armed||c->real||fx_worker_error(c->worker)||
+       startup_now_ns()-c->startup_start_ns<=STARTUP_WAIT_NS)return 0;
+    c->error=ETIMEDOUT;
+    return 1;
+}
 static void process_composition(struct resample *r,const void * SPA_RESTRICT src[],uint32_t *input,
     void * SPA_RESTRICT dst[],uint32_t *output)
 {
     struct composition *c=r->data;
     unsigned offered=*input,capacity=*output;*input=*output=0;
     if(c->done||c->error||(!capacity&&(c->worker||c->eof))) {
-        if(c->worker&&!c->eof&&!capacity&&c->startup_armed&&c->real==0&&!fx_worker_error(c->worker)&&
-           startup_now_ns()-c->startup_start_ns>STARTUP_WAIT_NS) {
-            ++c->underruns;++c->total_underruns;c->error=ETIMEDOUT;
-        }
+        startup_expired(c);
         return;
     }
     if(!c->eof) {
@@ -160,10 +166,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
         *input=take;c->accepted+=take;
         if(!c->worker)return;
         if(!capacity){
-            if(c->worker&&!c->eof&&c->startup_armed&&c->real==0&&!fx_worker_error(c->worker)&&
-               startup_now_ns()-c->startup_start_ns>STARTUP_WAIT_NS) {
-                ++c->underruns;++c->total_underruns;c->error=ETIMEDOUT;return;
-            }
+            if(startup_expired(c))return;
 #ifdef FX_SRC_VERIFY
             fx_verify_account(take,0,c->rate,0,c->prime!=0);
 #endif
@@ -186,16 +189,15 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
     unsigned need=resample_in_len(&c->match,capacity);
     if(c->worker&&c->buffered<need) {
         unsigned wanted=need-c->buffered;if(wanted>BUFFER-c->buffered)wanted=BUFFER-c->buffered;
-        float *pointers[32];for(unsigned i=0;i<r->channels;++i)pointers[i]=c->buffer[i]+c->buffered;
+        /* A worker exists only for r->channels <= FX_WORKER_MAX_CHANNELS. */
+        float *pointers[FX_WORKER_MAX_CHANNELS];for(unsigned i=0;i<r->channels;++i)pointers[i]=c->buffer[i]+c->buffered;
         unsigned pulled=fx_worker_pull(c->worker,pointers,wanted);
         c->buffered+=pulled;c->nominal_pulled+=pulled;
     }
     int nominal_done=c->eof&&(!c->worker||fx_worker_finished(c->worker));
     if(c->buffered<need&&!nominal_done&&!c->eof) {
         if(c->worker&&c->real==0&&!fx_worker_error(c->worker)) {
-            if(c->startup_armed&&startup_now_ns()-c->startup_start_ns>STARTUP_WAIT_NS) {
-                ++c->underruns;++c->total_underruns;c->error=ETIMEDOUT;return;
-            }
+            if(startup_expired(c))return;
             for(unsigned i=0;i<r->channels;++i)memset(dst[i],0,capacity*4);
             c->lead+=capacity;*output=capacity;
 #ifdef FX_SRC_VERIFY

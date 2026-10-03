@@ -254,7 +254,7 @@ static void *worker_loop(void *object)
 }
 struct fx_worker *fx_worker_create(enum fx_profile p,unsigned channels,unsigned ir,unsigned ore,unsigned capacity)
 {
-    if(p>FX_HIGH||!channels||channels>32||!ir||!ore||capacity<256||capacity>262144){errno=EINVAL;return NULL;}
+    if(p>FX_HIGH||!channels||channels>FX_WORKER_MAX_CHANNELS||!ir||!ore||capacity<256||capacity>262144){errno=EINVAL;return NULL;}
     struct fx_worker *w=calloc(1,sizeof(*w));if(!w)return NULL;
     w->profile=p;w->channels=channels;w->ir=ir;w->ore=ore;w->capacity=capacity;w->bypass=ir==ore;w->wake=-1;
     w->input.data=calloc(capacity*channels,4);w->output.data=calloc(capacity*channels,4);

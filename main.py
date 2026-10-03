@@ -4595,20 +4595,23 @@ async def _restart_src_graph(state=None):
         raise RuntimeError(stderr.decode(errors="replace")[-1024:] or "Audio service restart failed")
     await asyncio.to_thread(samplerate.set_pipewire_force_rate, state["force_rate"])
     from audio.samplerate.parsing import successor_sink_key
+    # Poll read-only until the output is selectable again, then commit the selection once.
     for _ in range(100):
         overview = await asyncio.to_thread(get_audio_output_overview)
         live = successor_sink_key(state["output_key"], [item.get("key") for item in overview.get("outputs", [])])
         if live:
             try:
-                restored = await asyncio.to_thread(samplerate.set_audio_output_selection, live)
-                output = (restored or {}).get("selected_output") or {}
-                if output.get("key") == live and output.get("target_name") and output["target_name"] != "fxroute_dsp_sink":
-                    break
-            except Exception:
+                await asyncio.to_thread(samplerate.prepare_audio_output_selection, live)
+                break
+            except ValueError:
                 pass
         await asyncio.sleep(0.1)
     else:
         raise RuntimeError("The selected audio output did not return after restart")
+    restored = await asyncio.to_thread(samplerate.set_audio_output_selection, live)
+    output = (restored or {}).get("selected_output") or {}
+    if output.get("key") != live or not output.get("target_name") or output["target_name"] == "fxroute_dsp_sink":
+        raise RuntimeError("The selected audio output could not be reselected after restart")
     await dsp_orchestrator.sync_runtime(reason="src-mode", _rate_lock_held=True)
     if not await runtime.dsp_runtime.verify():
         raise RuntimeError("DSP graph did not reconnect after SRC mode change")
