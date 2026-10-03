@@ -719,6 +719,7 @@
     }
 
     let samplerate = { available: true, active_rate: 48000, mode: 'auto', policy: { mode: 'auto', rate: null }, support: { rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] } };
+    let srcMode = 'standard';
 
     // Native-kHz simulation: mirrors the real rate resolution
     // (playback/orchestration.py coordinator_source_rate +
@@ -2667,6 +2668,16 @@
                 bass_management: { ...config.bass_management },
                 sub_roles: [...(config.topology.sub_roles || [])],
                 sample_rate_hz: 48000, ways });
+        }
+        if (p === '/api/audio/src') {
+            if (post) {
+                if (!['low', 'standard', 'high'].includes(body.mode)) return err('SRC mode must be low, standard or high', 400);
+                srcMode = body.mode;
+            }
+            return j({ mode: srcMode, modes: ['low', 'standard', 'high'], available: true,
+                error: null, effective_nodes: [], simulated: true, startup_reserve_ms: 750,
+                startup_timeout_ms: 3750,
+                fifo_frames: 65536, sizing_provisional: true, apply_requires_stopped_playback: true });
         }
         if (p === '/api/audio/samplerate') {
             if (post) {

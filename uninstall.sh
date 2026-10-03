@@ -646,10 +646,35 @@ remove_dsp_ingress_sink() {
 }
 
 remove_wireplumber_bluetooth_config() {
+  local directory plugin
+  local remove_cmd=(rm)
+  if [[ "$(id -u)" -ne 0 ]]; then remove_cmd=(sudo rm); fi
+  for directory in /usr/lib64/spa-0.2 /usr/lib/x86_64-linux-gnu/spa-0.2 /usr/lib/spa-0.2; do
+    plugin="$directory/libspa-fxroute-src.so"
+    if [[ -L "$plugin" && "$(readlink "$plugin")" == "$INSTALL_ROOT/native_src/build/libspa-fxroute-src.so" ]]; then
+      if ! "${remove_cmd[@]}" -f "$plugin"; then
+        warn "Could not remove the owned SRC plugin; retaining runtime files"
+        PRESERVE_INSTALL_STATE=1
+      fi
+    fi
+  done
+  local src_config
+  for src_config in \
+      "$HOME/.config/environment.d/80-fxroute-src.conf" \
+      "$HOME/.config/pipewire/client.conf.d/80-fxroute-src.conf" \
+      "$HOME/.config/pipewire/pipewire-pulse.conf.d/80-fxroute-src.conf" \
+      "$HOME/.config/pipewire/pipewire.conf.d/80-fxroute-src.conf" \
+      "$HOME/.config/wireplumber/wireplumber.conf.d/80-fxroute-src.conf"; do
+    run_as_target_user rm -f "$src_config"
+  done
+  user_systemctl unset-environment SPA_PLUGIN_DIR >/dev/null 2>&1 || true
   local config_file="$HOME/.config/wireplumber/wireplumber.conf.d/50-fxroute-bluetooth.conf"
   remove_file_if_exists "$config_file"
   run_as_target_user rmdir "$(dirname "$config_file")" >/dev/null 2>&1 || true
-  user_systemctl restart wireplumber.service >/dev/null 2>&1 || true
+  if ! user_systemctl restart pipewire.service pipewire-pulse.service wireplumber.service >/dev/null 2>&1; then
+    warn "Could not deactivate SRC bindings; retaining runtime files"
+    PRESERVE_INSTALL_STATE=1
+  fi
 }
 
 remove_user_linger_if_owned() {

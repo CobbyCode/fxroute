@@ -1728,6 +1728,9 @@ function handleWebSocketMessage(msg) {
             // gating stale.
             if (applySourceOverview(data)) renderSourceState();
             break;
+        case 'src':
+            window.FXRouteSrcSettings.update(data);
+            break;
         case 'download':
             state.download = data;
             LibraryUI.updateDownloadUI();
@@ -1907,6 +1910,19 @@ function setupSettingsActions() {
             void saveSampleRatePolicy(event.target.value || 'auto');
         });
     }
+    window.FXRouteSrcSettings.init({
+        select: document.getElementById('settings-src-select'),
+        hint: document.getElementById('settings-src-hint'),
+        restart: document.getElementById('settings-src-restart'),
+        onError: message => showToast(message, 'error'),
+        onApplied: async () => { await fetchAudioOutputOverview(); PlaybackCore.triggerSamplerateBurstPolling(); },
+    });
+    document.getElementById('settings-src-select')?.addEventListener('change', event => {
+        void window.FXRouteSrcSettings.save(event.target.value);
+    });
+    document.getElementById('settings-src-restart')?.addEventListener('click', () => {
+        void window.FXRouteSrcSettings.restart();
+    });
     if (elements.settingsCrossoverSelect) {
         elements.settingsCrossoverSelect.addEventListener('change', (event) => {
             const catalog = state.outputSystem.catalog;
@@ -2250,7 +2266,7 @@ function toggleSettingsPanel(forceOpen = null) {
     if (shouldOpen) {
         settingsOutputScanOnFocusDone = false;
         renderSettingsPanel();
-        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), SettingsSystem.fetchHardwareStatus(), SettingsSystem.fetchMusicLibraries(), fetchProviderAdmin(), SettingsSystem.checkFxrouteUpdate({ silent: true })]);
+        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), window.FXRouteSrcSettings.refresh(), SettingsSystem.fetchHardwareStatus(), SettingsSystem.fetchMusicLibraries(), fetchProviderAdmin(), SettingsSystem.checkFxrouteUpdate({ silent: true })]);
         startSettingsStatusPolling();
         window.FXRouteModal?.open(elements.settingsPanel, {
             initialFocus: elements.settingsCloseBtn,

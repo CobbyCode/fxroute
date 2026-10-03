@@ -214,6 +214,17 @@ cleanup_obsolete_root_modules() {
   fi
 }
 
+build_common_src_if_needed() {
+  local source_dir="$REPO_PATH/native_src"
+  local binary="$source_dir/build/libspa-fxroute-src.so"
+  if [[ ! -f "$binary" ]] || find "$source_dir" -type f -newer "$binary" \
+      ! -path "$source_dir/build/*" ! -path '*/__pycache__/*' -print -quit | grep -q .; then
+    log "Building common playback SRC (pinned CPU-only engines)."
+    python3 "$source_dir/build.py" || return 1
+  fi
+  python3 "$REPO_PATH/scripts/configure_src.py" || return 1
+}
+
 install_stdin_cli_helper() {
   local destination="$HOME/.local/bin/fxroute"
   local staged
@@ -274,6 +285,10 @@ reconcile_checkout() {
   cleanup_obsolete_root_modules
   if ! build_native_dsp_if_needed; then
     log "Reconciliation remains incomplete because a native build failed."
+    return 1
+  fi
+  if ! build_common_src_if_needed; then
+    log "Common SRC reconciliation failed; install its documented build dependencies."
     return 1
   fi
   if ! install_stdin_cli_helper; then

@@ -14,6 +14,7 @@ from audio import pw_link
 from audio.input_links import input_links_present
 from audio.stdin_protocol import CHUNK_BYTES, PcmSpec
 from audio.tool_env import c_locale_env
+from audio.src_policy import client_env
 from common.process_stop import run_stop_shielded
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,7 @@ class PipeWirePcmSink:
             self.process = await asyncio.create_subprocess_exec(
                 *pw_cat_argv(self.spec, self.node_name), stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-                env=c_locale_env(),
+                env=client_env(c_locale_env()),
             )
             self._stderr_task = asyncio.create_task(self._read_stderr(), name="stdin-adapter-stderr")
             async with asyncio.timeout(2):

@@ -31,6 +31,7 @@ manual_backup.zip
 
 # Generated native helper binary
 native_dsp/build/
+native_src/build/
 
 # Generated provider build artifacts
 /dist/

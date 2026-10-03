@@ -108,7 +108,7 @@ class WireplumberBluetoothDropinTests(unittest.TestCase):
             content = dropin.read_text()
             for snippet in EXPECTED_SNIPPETS:
                 self.assertIn(snippet, content)
-            self.assertIn("restart wireplumber.service", calls.read_text())
+            self.assertIn("wireplumber.service", calls.read_text())
 
     def test_dropin_disables_autoconnect_only_for_capture_nodes(self) -> None:
         configure = extract_function(self.install, "configure_wireplumber_bluetooth")
@@ -143,13 +143,46 @@ class WireplumberBluetoothDropinTests(unittest.TestCase):
                 f"user_systemctl() {{ printf '%s\\n' \"$*\" >> {calls}; }}\n"
                 "remove_file_if_exists() { rm -f \"$1\"; }\n"
                 "warn() { :; }\n"
-                "log() { :; }\n",
+                "log() { :; }\n"
+                'SUDO_CMD=(); INSTALL_ROOT="$HOME/fxroute"\n',
                 f"{remove}\nremove_wireplumber_bluetooth_config",
                 home,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertFalse(dropin.exists(), "drop-in not removed")
-            self.assertIn("restart wireplumber.service", calls.read_text())
+            self.assertIn("restart pipewire.service pipewire-pulse.service wireplumber.service", calls.read_text())
+
+    def test_src_removal_restarts_all_affected_services_after_deleting_their_rules(self):
+        remove=extract_function(self.uninstall,"remove_wireplumber_bluetooth_config")
+        with tempfile.TemporaryDirectory() as td:
+            home=Path(td)
+            paths=[home / ".config" / name / "80-fxroute-src.conf" for name in (
+                "environment.d", "pipewire/client.conf.d", "pipewire/pipewire.conf.d",
+                "pipewire/pipewire-pulse.conf.d", "wireplumber/wireplumber.conf.d")]
+            for path in paths:
+                path.parent.mkdir(parents=True,exist_ok=True);path.write_text("SRC factory binding")
+            prelude='''run_as_target_user() { "$@"; }
+remove_file_if_exists() { rm -f "$1"; }
+log() { :; }; warn() { :; }
+SUDO_CMD=(); INSTALL_ROOT="$HOME/fxroute"
+user_systemctl() {
+  if [[ "$1" == restart ]]; then
+    for unit in "${@:2}"; do
+      case "$unit" in
+        pipewire.service) file="$HOME/.config/pipewire/pipewire.conf.d/80-fxroute-src.conf" ;;
+        pipewire-pulse.service) file="$HOME/.config/pipewire/pipewire-pulse.conf.d/80-fxroute-src.conf" ;;
+        wireplumber.service) file="$HOME/.config/wireplumber/wireplumber.conf.d/80-fxroute-src.conf" ;;
+      esac
+      [[ ! -e "$file" ]] || return 73
+      printf '%s\n' "$unit" >> "$HOME/restarted"
+    done
+  fi
+}
+'''
+            result=run_harness(prelude,f"{remove}\nremove_wireplumber_bluetooth_config",home)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(set((home / "restarted").read_text().splitlines()),
+                {"pipewire.service","pipewire-pulse.service","wireplumber.service"})
 
 
 if __name__ == "__main__":

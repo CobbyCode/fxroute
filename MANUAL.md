@@ -239,6 +239,8 @@ The **Subwoofer** card appears on the DSP page when at least one sub role is rou
 
 **Sample Rate** defaults to **Auto**: the PipeWire graph and DAC follow the effective playback rate of the current source (local files, radio, TIDAL, Spotify, Qobuz, Bluetooth can differ). A source rate the selected output does not support plays at the highest supported rate below it (for example 96 kHz on a 48 kHz-only card, 384 kHz on a 192 kHz device), and PipeWire resamples the source; supported rates always stay native. A fixed rate forces one clock; FXRoute rejects rates the selected output does not support and caps processing at 384 kHz. Switching policy can restart the audio path, so stop playback first and re-check the output afterwards. Use Auto when sources with different native rates play together; use a fixed rate when the DAC, DSP chain, or external hardware needs one clock.
 
+**SRC Quality** is independent of Sample Rate: **Low** uses libsoxr VHQ, **Standard** (default) uses pinned CPU-only SoX 16.2.1, and **High** uses the approved extended profile from that same binary. One common PipeWire converter applies the choice across provider and input boundaries, retaining PipeWire clock matching. Stop playback and select App playback before changing it; applying a mode restarts audio and reconnects the existing DSP graph. Measurements and active input sessions block a change. Unequal-rate playback keeps a provisional 750 ms minimum startup reserve, with a bounded 3,750 ms startup wait for the first usable output under load. See [Common playback SRC](docs/playback-src.md) for profiles, API, build and tested coverage.
+
 Some USB interfaces offer fewer hardware channels at higher rates. For known profiles (Scarlett 16i16, 18i16, and 18i20 4th Gen), FXRoute offers every supported rate — for example 18 channels at 44.1/48 kHz, 14 at 88.2/96 kHz, 10 at 176.4/192 kHz on the 16i16 — and switches the channel inventory internally to the tier that carries the rate. There is no separate tier control: Fixed and Auto both select a rate, and the rate determines the tier. Switching tiers re-probes the device (audible relay clicks), so keep track changes within one band when that matters. **Auto** follows the source rate and switches tiers with it; it never resamples to stay inside an inventory.
 
 ## 6. Measurement assistant
@@ -353,7 +355,7 @@ Checkboxes show/hide runs on the graph (a hidden run is still available as a das
 The FXRoute logo opens **Technical settings**:
 
 - **Providers** — install, update, or remove each streaming backend, show/hide its tab, and connect or disconnect accounts. *Installed* is a fact about the machine; the checkbox only decides whether the tab is shown.
-- **Audio Output** — output device, **Sample Rate** policy, **Mode** (Stereo, Stereo + Sub), **Crossover** (Off/On), and **Output Routing** (on devices with more than two outputs)
+- **Audio Output** — output device, **Sample Rate** policy, **SRC Quality** (Low, Standard, High), **Mode** (Stereo, Stereo + Sub), **Crossover** (Off/On), and **Output Routing** (on devices with more than two outputs)
 - **Source** — active input mode and Bluetooth status
 - **Music Library** — local folder or a discovered/entered SMB share
 - **Device Name** — the `<name>.local` address on the LAN (lowercase letters, digits and hyphens)

@@ -5255,10 +5255,10 @@ build_native_dsp_engine() {
   [[ -f "$build_script" ]] || die "Missing FXRoute native DSP build script: $build_script"
   prepare_target_user_directory "$INSTALL_ROOT/native_dsp/build"
   case "$PACKAGE_MANAGER" in
-    apt) dsp_packages=(gcc libc6-dev pkg-config libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lilv-utils lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev) ;;
-    dnf) dsp_packages=(gcc pkgconf-pkg-config pipewire-devel lilv lilv-devel lv2-devel lsp-plugins-lv2 lv2-zam-plugins lv2-calf-plugins libebur128-devel libsamplerate-devel speexdsp-devel) ;;
-    zypper) dsp_packages=(gcc gcc-c++ cmake pkgconf-pkg-config pipewire-devel lilv liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel) ;;
-    pacman) dsp_packages=(gcc pkgconf libpipewire lilv lilv-tools lv2 lsp-plugins zam-plugins calf libebur128 libsamplerate speexdsp) ;;
+    apt) dsp_packages=(gcc g++ cmake libc6-dev pkg-config libsoxr-dev libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lilv-utils lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev) ;;
+    dnf) dsp_packages=(gcc gcc-c++ cmake pkgconf-pkg-config soxr-devel pipewire-devel lilv lilv-devel lv2-devel lsp-plugins-lv2 lv2-zam-plugins lv2-calf-plugins libebur128-devel libsamplerate-devel speexdsp-devel) ;;
+    zypper) dsp_packages=(gcc gcc-c++ cmake pkgconf-pkg-config libsoxr-devel pipewire-devel lilv liblilv-0-devel lv2-devel lv2-lsp-plugins lv2-zam-plugins libebur128-devel libsamplerate-devel speexdsp-devel libexpat-devel fluidsynth-devel) ;;
+    pacman) dsp_packages=(gcc cmake pkgconf soxr libpipewire lilv lilv-tools lv2 lsp-plugins zam-plugins calf libebur128 libsamplerate speexdsp) ;;
   esac
   # On Debian 13 the backported PipeWire 1.4.9 runtime needs its matching
   # -dev packages from the same suite; the trixie/main 1.4.2 -dev packages
@@ -7616,8 +7616,12 @@ main() {
   install_provider_privileged_helper
   setup_python_env
   build_native_dsp_engine
+  log "Building the common playback SRC converter"
+  run_as_target_user python3 "$INSTALL_ROOT/native_src/build.py"
+  "${SUDO_CMD[@]}" python3 "$INSTALL_ROOT/scripts/install_src_plugin.py"
   ensure_target_user_ownership
   enable_user_session_persistence
+  run_as_target_user python3 "$INSTALL_ROOT/scripts/configure_src.py"
   ensure_target_user_audio_access
   enable_user_audio_services
   configure_pipewire_samplerates_if_available

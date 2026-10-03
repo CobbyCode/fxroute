@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, Optional
 
 from playback.mpv_process import _stop_orphan_mpv_processes
+from audio.src_policy import client_env
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,7 @@ class MPVWrapper:
 
         cmd = self._mpv_command(self.socket_path)
         logger.info(f"Starting mpv: {' '.join(cmd)}")
-        self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=client_env())
 
         timeout = 15
         start = time.time()
