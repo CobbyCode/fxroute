@@ -4,9 +4,17 @@
 #include "resample.h"
 #include "worker.h"
 struct fx_resample_stats {
-    /* Diagnostic fields are sampled independently across processing threads. */
+    /* Diagnostic fields are sampled independently across processing threads.
+     * Within one generation a snapshot keeps reserve_frames <= lead_frames and
+     * publishes each latency before the frame counter that depends on it. */
     struct fx_worker_stats worker;
-    uint64_t lead_frames, real_frames;
+    /* Silent output frames emitted before the first real output: the minimum
+     * startup reserve plus any readiness extension. reserve_frames is the
+     * minimum-reserve part; neither grows after real output begins. */
+    uint64_t lead_frames, reserve_frames, real_frames;
+    /* First real output latency from the first callback offering input;
+     * 0 until real output begins. */
+    uint64_t first_real_ns;
     unsigned underruns, input_pending, buffered;
 };
 int fx_resample_init(struct resample *);

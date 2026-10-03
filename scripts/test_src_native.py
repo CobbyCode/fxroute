@@ -113,7 +113,7 @@ class NativeSrcTests(unittest.TestCase):
             subprocess.run([executable,str(LIBRARY)],check=True,timeout=5)
             subprocess.run([executable,str(LIBRARY),"drain"],check=True,timeout=5)
 
-    def test_error_snapshot_is_race_free_while_a_dead_worker_continues_eof_drain(self):
+    def run_stats_race(self,*scenario,timeout=10):
         build=ROOT / "native_src/build"
         includes=build / "sources/pipewire/pipewire-1.6.8/spa/include"
         upstream=includes.parent / "plugins/audioconvert"
@@ -131,13 +131,19 @@ class NativeSrcTests(unittest.TestCase):
             library=path / "race-src.so"
             subprocess.run(["cc","-fsanitize=thread","-shared",*objects,str(path / "composition.o"),str(path / "audioconvert.o"),
                             "-l:libsoxr.so.0","-lpthread","-lm","-o",str(library)],check=True)
-            executable=path / "failure-props"
+            executable=path / "stats-race"
             subprocess.run([*flags,str(ROOT / "scripts/src_stats_race.c"),"-ldl","-lpthread","-o",str(executable)],check=True)
-            result=subprocess.run([str(executable),str(library)],text=True,capture_output=True,timeout=10,
+            result=subprocess.run([str(executable),str(library),*scenario],text=True,capture_output=True,timeout=timeout,
                 env={**os.environ,"TSAN_OPTIONS":"halt_on_error=0:log_path="+str(path / "tsan")})
             reports="\n".join(p.read_text() for p in path.glob("tsan.*"))
             self.assertEqual(result.returncode,0,result.stdout+result.stderr+reports)
             self.assertNotIn("WARNING: ThreadSanitizer",reports)
+
+    def test_error_snapshot_is_race_free_while_a_dead_worker_continues_eof_drain(self):
+        self.run_stats_race()
+
+    def test_startup_telemetry_snapshots_are_race_free_and_reset_per_generation(self):
+        self.run_stats_race("startup",timeout=30)
 
     def test_channel_tables_stay_in_bounds_up_to_the_spa_channel_maximum(self):
         build=ROOT / "native_src/build"
@@ -182,7 +188,7 @@ class NativeSrcTests(unittest.TestCase):
                                                for i in range(176400) for c in range(2))).tobytes())
             executable=path / "startup-ready"
             subprocess.run(["cc","-std=gnu11","-I",str(includes),"-I",str(upstream),"-I",str(ROOT / "native_src"),
-                            str(ROOT / "scripts/src_startup_ready.c"),"-ldl","-o",str(executable)],check=True)
+                            str(ROOT / "scripts/src_startup_ready.c"),"-ldl","-lm","-o",str(executable)],check=True)
             subprocess.run([str(ROOT / "native_src/build/sox"),"--buffer","512","-D","-L","-t","raw","-r","44100",
                             "-e","floating-point","-b","32","-c","2",str(source),"-t","raw","-r","48000","-e","floating-point",
                             "-b","32",str(reference),"rate","-M","-v","-s"],check=True,capture_output=True,
@@ -198,6 +204,9 @@ class NativeSrcTests(unittest.TestCase):
                 # Lifetime underruns count queue starvation only, never the startup timeout.
                 lifetime=json.loads(re.search(r"FXSRC_WORKER_STATS (\{.*\})",result.stderr)[1])
                 self.assertEqual(lifetime["underruns"],1 if scenario=="post-start" else 0,scenario)
+                # The teardown diagnostics carry the same write-once startup telemetry.
+                for key in ("lead","reserve","first_output_ns","first_real_ns"):
+                    self.assertEqual(lifetime[key],metrics[key],(scenario,key))
 
     def test_reserve_conserves_nominal_input_progress_through_drift_eof_and_reset(self):
         includes=ROOT / "native_src/build/sources/pipewire/pipewire-1.6.8/spa/include"

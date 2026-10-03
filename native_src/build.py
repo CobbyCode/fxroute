@@ -77,10 +77,11 @@ def overlay(original):
             "\t\tstruct fx_resample_stats s;\n\t\tfx_resample_stats(&this->resample, &s);\n"
             "\t\tfprintf(stderr, \"FXSRC_ERROR_STATS {\\\"error\\\":%d,\\\"channels\\\":%u,\\\"input_rate\\\":%u,\\\"output_rate\\\":%u,\"\n"
             "\t\t\t\"\\\"accepted\\\":%lu,\\\"produced\\\":%lu,\\\"delivered\\\":%lu,\\\"max_input\\\":%lu,\\\"max_output\\\":%lu,\"\n"
-            "\t\t\t\"\\\"lead\\\":%lu,\\\"real\\\":%lu,\\\"buffered\\\":%u}\\n\",\n"
+            "\t\t\t\"\\\"lead\\\":%lu,\\\"reserve\\\":%lu,\\\"real\\\":%lu,\\\"buffered\\\":%u,\"\n"
+            "\t\t\t\"\\\"first_output_ns\\\":%lu,\\\"first_real_ns\\\":%lu}\\n\",\n"
             "\t\t\tfx_resample_error(&this->resample), this->resample.channels, this->resample.i_rate, this->resample.o_rate,\n"
             "\t\t\ts.worker.accepted, s.worker.produced, s.worker.delivered, s.worker.max_input, s.worker.max_output,\n"
-            "\t\t\ts.lead_frames, s.real_frames, s.buffered);\n\t}\n"
+            "\t\t\ts.lead_frames, s.reserve_frames, s.real_frames, s.buffered, s.worker.first_output_ns, s.first_real_ns);\n\t}\n"
             "\tthis->params[IDX_Props].user++;\n"
             "\tthis->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;\n\temit_node_info(this, false);\n}\n\n"
             "static void emit_port_info(struct impl *this, struct port *port, bool full)")

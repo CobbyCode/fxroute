@@ -23,8 +23,8 @@ struct composition {
     float **buffer;
     _Atomic uint32_t buffered;
     uint32_t flush;
-    uint64_t accepted, nominal_pulled;
-    _Atomic uint64_t real, lead;
+    uint64_t accepted, nominal_pulled, first_input_ns;
+    _Atomic uint64_t real, lead, reserve, first_real_ns;
     double rate, fraction, prime, rate_min, rate_max;
     uint64_t rate_updates, max_callback_ns, callbacks;
     unsigned eof, flushed, done, total_underruns;
@@ -43,10 +43,12 @@ static void free_composition(struct resample *r)
     /* Destruction is outside the graph process callback. */
     fprintf(stderr,"FXSRC_WORKER_STATS {\"mode\":\"%s\",\"channels\":%u,\"input_rate\":%u,\"output_rate\":%u,\"spawns\":%u,"
         "\"max_callback_ms\":%.6f,\"callbacks\":%lu,\"underruns\":%u,\"max_input\":%lu,\"max_output\":%lu,"
-        "\"accepted\":%lu,\"produced\":%lu,\"delivered\":%lu,\"rate_min\":%.9f,\"rate_max\":%.9f,\"error\":%d}\n",
+        "\"accepted\":%lu,\"produced\":%lu,\"delivered\":%lu,\"lead\":%lu,\"reserve\":%lu,"
+        "\"first_output_ns\":%lu,\"first_real_ns\":%lu,\"rate_min\":%.9f,\"rate_max\":%.9f,\"error\":%d}\n",
         fx_src_profile_name(c->profile),r->channels,r->i_rate,r->o_rate,stats.spawns,
         c->max_callback_ns/1e6,c->callbacks,c->total_underruns,stats.max_input,stats.max_output,
-        stats.accepted,stats.produced,stats.delivered,c->rate_min,c->rate_max,c->error?c->error:stats.error);
+        stats.accepted,stats.produced,stats.delivered,(uint64_t)c->lead,(uint64_t)c->reserve,
+        stats.first_output_ns,(uint64_t)c->first_real_ns,c->rate_min,c->rate_max,c->error?c->error:stats.error);
     if(c->worker)fx_worker_destroy(c->worker);
     if(c->match.free)resample_free(&c->match);
     if(c->buffer)for(unsigned i=0;i<r->channels;++i)free(c->buffer[i]);
@@ -95,7 +97,8 @@ static void reset_composition(struct resample *r)
     c->buffered=c->flush=0;
     c->eof=c->flushed=c->done=c->underruns=0;c->error=0;
     c->startup_armed=0;c->startup_start_ns=0;
-    c->accepted=c->nominal_pulled=c->real=c->lead=0;c->fraction=0;
+    c->accepted=c->nominal_pulled=c->real=c->lead=c->reserve=0;c->fraction=0;
+    c->first_input_ns=0;c->first_real_ns=0;
     c->prime=c->worker?ceil(.750*r->o_rate):0;
 }
 void fx_resample_finish(struct resample *r)
@@ -120,7 +123,10 @@ void fx_resample_stats(struct resample *r,struct fx_resample_stats *stats)
     struct composition *c=r->data;
     memset(stats,0,sizeof(*stats));
     if(c->worker)fx_worker_stats(c->worker,&stats->worker);
-    stats->real_frames=c->real;stats->lead_frames=c->lead;stats->underruns=c->underruns;
+    /* reserve before lead and real before first_real_ns: each counter is
+     * published after the value it is checked against. */
+    stats->reserve_frames=c->reserve;stats->lead_frames=c->lead;
+    stats->real_frames=c->real;stats->first_real_ns=c->first_real_ns;stats->underruns=c->underruns;
     stats->buffered=c->buffered;
 }
 void fx_resample_note_callback(struct resample *r,uint64_t ns)
@@ -128,6 +134,13 @@ void fx_resample_note_callback(struct resample *r,uint64_t ns)
     struct composition *c=r->data;
     if(ns>c->max_callback_ns)c->max_callback_ns=ns;
     ++c->callbacks;
+}
+/* First real output latency, written once on the processing thread before
+ * the real frames are published. */
+static void add_real(struct composition *c,unsigned made)
+{
+    if(made&&!c->first_real_ns){uint64_t ns=c->first_input_ns?startup_now_ns()-c->first_input_ns:0;c->first_real_ns=ns?ns:1;}
+    c->real+=made;
 }
 /* Startup timeout is its own terminal error: it never replaces an existing
  * error and is not a queue underrun. */
@@ -148,6 +161,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
         return;
     }
     if(!c->eof) {
+        if(offered&&!c->first_input_ns)c->first_input_ns=startup_now_ns();
         unsigned take=offered;
         if(c->worker) {
             unsigned wanted=input_length(r,capacity);if(take>wanted)take=wanted;
@@ -161,7 +175,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
             fx_verify_match(c->rate,src,offered,capacity,take,made,dst);
             fx_verify_account(take,made,c->rate,0,0);
 #endif
-            *output=made;c->real+=made;c->nominal_pulled+=take;
+            *output=made;add_real(c,made);c->nominal_pulled+=take;
         }
         *input=take;c->accepted+=take;
         if(!c->worker)return;
@@ -178,7 +192,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
         double remaining=ceil(c->prime*c->rate);
         unsigned made=capacity<remaining?capacity:remaining;
         for(unsigned i=0;i<r->channels;++i)memset(dst[i],0,made*4);
-        c->prime=fmax(0,c->prime-made/c->rate);c->lead+=made;*output=made;
+        c->prime=fmax(0,c->prime-made/c->rate);c->lead+=made;c->reserve+=made;*output=made;
         if(c->prime==0&&!c->startup_armed){c->startup_armed=1;c->startup_start_ns=startup_now_ns();}
 #ifdef FX_SRC_VERIFY
         fx_verify_account(*input,made,c->rate,c->eof,c->prime!=0);
@@ -226,7 +240,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
     if(take>c->buffered){c->error=EPROTO;return;}
     c->buffered-=take;
     for(unsigned i=0;i<r->channels;++i)memmove(c->buffer[i],c->buffer[i]+take,c->buffered*4);
-    c->real+=made;*output=made;
+    add_real(c,made);*output=made;
     if(!c->eof)c->fraction+=made*(double)r->i_rate/(r->o_rate*c->rate);
     if(nominal_done&&!c->flush&&!c->buffered&&!made)c->done=1;
 }
@@ -236,9 +250,11 @@ int fx_resample_init(struct resample *r)
     int result=fx_src_load_profile(&profile);if(result<0)return result;
     struct composition *c=calloc(1,sizeof(*c));if(!c)return -ENOMEM;
     atomic_init(&c->buffered,0);atomic_init(&c->real,0);atomic_init(&c->lead,0);
+    atomic_init(&c->reserve,0);atomic_init(&c->first_real_ns,0);
     atomic_init(&c->underruns,0);atomic_init(&c->error,0);
     /* Cross-thread diagnostics must not add locks to graph processing. */
     if(!atomic_is_lock_free(&c->buffered)||!atomic_is_lock_free(&c->real)||!atomic_is_lock_free(&c->lead)||
+       !atomic_is_lock_free(&c->reserve)||!atomic_is_lock_free(&c->first_real_ns)||
        !atomic_is_lock_free(&c->underruns)||!atomic_is_lock_free(&c->error)){free(c);return -ENOTSUP;}
 #ifdef FX_SRC_VERIFY
     fx_verify_init(r);

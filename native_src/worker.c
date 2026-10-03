@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <sys/eventfd.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <soxr.h>
 #include "worker.h"
@@ -28,13 +29,22 @@ struct fx_worker {
     int wake, bypass, thread_started;
     _Atomic unsigned generation, acknowledged, eof, done, stop, spawns;
     _Atomic int error;
-    _Atomic uint64_t accepted, produced, delivered, max_input, max_output;
+    _Atomic uint64_t accepted, produced, delivered, max_input, max_output, first_input_ns, first_output_ns;
     float *in_stage, *out_stage;
 };
 static uint64_t available(struct ring *r)
 { return atomic_load_explicit(&r->write,memory_order_acquire)-atomic_load_explicit(&r->read,memory_order_acquire); }
 static void notify(struct fx_worker *w)
 { uint64_t one=1; ssize_t result=write(w->wake,&one,sizeof(one)); (void)result; }
+static uint64_t now_ns(void)
+{ struct timespec now; clock_gettime(CLOCK_MONOTONIC,&now); return (uint64_t)now.tv_sec*1000000000+now.tv_nsec; }
+/* Written once per generation by the single producer, before its frames
+ * and the produced counter are published. */
+static void note_output(struct fx_worker *w,unsigned frames)
+{
+    uint64_t start=atomic_load(&w->first_input_ns);
+    if(frames&&start&&!atomic_load(&w->first_output_ns)){uint64_t ns=now_ns()-start;atomic_store(&w->first_output_ns,ns?ns:1);}
+}
 static int ready(struct fx_worker *w)
 { return atomic_load_explicit(&w->generation,memory_order_acquire)==atomic_load_explicit(&w->acknowledged,memory_order_acquire); }
 static void clear_ring(struct ring *r)
@@ -44,6 +54,7 @@ static void clear_generation(struct fx_worker *w)
     clear_ring(&w->input); clear_ring(&w->output);
     atomic_store(&w->accepted,0); atomic_store(&w->produced,0); atomic_store(&w->delivered,0);
     atomic_store(&w->done,0); atomic_store(&w->error,0);
+    atomic_store(&w->first_input_ns,0); atomic_store(&w->first_output_ns,0);
 }
 static unsigned ring_read(struct fx_worker *w,struct ring *r,float *dst,unsigned frames)
 {
@@ -62,6 +73,7 @@ static unsigned ring_write(struct fx_worker *w,struct ring *r,const float *src,u
     unsigned first=w->capacity-pos%w->capacity; if(first>frames)first=frames;
     memcpy(r->data+(pos%w->capacity)*w->channels,src,first*w->channels*4);
     memcpy(r->data,src+first*w->channels,(frames-first)*w->channels*4);
+    if(r==&w->output)note_output(w,frames);
     atomic_store_explicit(&r->write,pos+frames,memory_order_release);
     if(r==&w->output) {
         atomic_fetch_add(&w->produced,frames);
@@ -77,6 +89,9 @@ unsigned fx_worker_push(struct fx_worker *w,const float *const *src,unsigned fra
     if(frames>room)frames=room;
     for(unsigned i=0;i<frames;++i)for(unsigned c=0;c<w->channels;++c)
         r->data[((pos+i)%w->capacity)*w->channels+c]=src[c][i];
+    /* Published with the frames, so the producer always sees the start time. */
+    if(frames&&!atomic_load_explicit(&w->first_input_ns,memory_order_relaxed))atomic_store(&w->first_input_ns,now_ns());
+    if(w->bypass)note_output(w,frames);
     atomic_store_explicit(&r->write,pos+frames,memory_order_release);
     atomic_fetch_add(&w->accepted,frames);
     uint64_t used=available(r);
@@ -118,8 +133,11 @@ int fx_worker_finished(struct fx_worker *w)
 int fx_worker_error(struct fx_worker *w) { return ready(w)?atomic_load(&w->error):0; }
 void fx_worker_stats(struct fx_worker *w,struct fx_worker_stats *s)
 {
-    *s=(struct fx_worker_stats){.accepted=atomic_load(&w->accepted),.produced=atomic_load(&w->produced),
+    /* produced first: within a generation produced frames imply a latency. */
+    uint64_t produced=atomic_load(&w->produced);
+    *s=(struct fx_worker_stats){.accepted=atomic_load(&w->accepted),.produced=produced,
         .delivered=atomic_load(&w->delivered),.max_input=atomic_load(&w->max_input),.max_output=atomic_load(&w->max_output),
+        .first_output_ns=atomic_load(&w->first_output_ns),
         .generation=atomic_load(&w->generation),.acknowledged=atomic_load(&w->acknowledged),
         .spawns=atomic_load(&w->spawns),.error=atomic_load(&w->error)};
 }

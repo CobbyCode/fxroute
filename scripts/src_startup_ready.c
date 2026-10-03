@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,8 +58,11 @@ int main(int argc,char **argv)
         }
         stats(&r,&state);
         assert(error(&r)==ETIMEDOUT&&!state.underruns&&"A startup timeout is neither rearmed nor an underrun");
+        assert(!state.worker.first_output_ns&&!state.first_real_ns&&state.lead_frames>state.reserve_frames&&
+               "A startup that never became ready shows no engine output, only extended silence");
         resample_reset(&r);
         do{stats(&r,&state);usleep(1000);}while(state.worker.acknowledged!=state.worker.generation);
+        assert(!state.worker.first_output_ns&&!state.first_real_ns&&!state.lead_frames&&!state.reserve_frames);
         assert(!error(&r));pid=child();assert(!kill(pid,SIGSTOP));
     }
     double start=seconds(),first_real=0;unsigned submitted=0,eof=0,resumed=!pause_start,paused_late=0;
@@ -81,6 +85,14 @@ int main(int argc,char **argv)
     }
     if(!strcmp(argv[2],"post-start"))assert(error(&r)==EPIPE&&first_real);
     else assert(finished(&r)&&submitted==frames&&!error(&r)&&after.worker.delivered==192000&&after.lead_frames>36000);
-    fprintf(stdout,"STARTUP_READY {\"lead\":%lu,\"first_real_s\":%.6f}\n",after.lead_frames,first_real);
+    /* Product telemetry: starvation after real output keeps both latencies,
+     * a delayed engine shows up in first_output_ns, and first_real_ns agrees
+     * with this harness's independent clock. */
+    assert(after.reserve_frames==36000&&after.lead_frames>=after.reserve_frames);
+    assert(after.worker.first_output_ns&&after.first_real_ns>=after.worker.first_output_ns&&after.first_real_ns>=700000000);
+    assert(fabs(after.first_real_ns/1e9-first_real)<.05);
+    if(pause_start)assert(after.worker.first_output_ns>=1000000000&&after.lead_frames>after.reserve_frames);
+    fprintf(stdout,"STARTUP_READY {\"lead\":%lu,\"reserve\":%lu,\"first_output_ns\":%lu,\"first_real_ns\":%lu,\"first_real_s\":%.6f}\n",
+            after.lead_frames,after.reserve_frames,after.worker.first_output_ns,after.first_real_ns,first_real);
     fclose(target);resample_free(&r);dlclose(library);free(planes);return 0;
 }

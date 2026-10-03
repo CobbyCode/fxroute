@@ -151,6 +151,33 @@ combination, scheduler, device, sustained load or child stall. ARM has not been
 qualified. Bluetooth needs an actual connected audio sender for end-to-end
 verification; a configured rule alone is not a playback pass.
 
+## Diagnostics
+
+Each converter writes one `FXSRC_WORKER_STATS` JSON line to its host's stderr
+when it is destroyed, and one `FXSRC_ERROR_STATS` line from a non-realtime loop
+event when it fails. The process callback only updates lock-free counters and
+write-once timestamps; it never formats or writes diagnostics. Startup fields
+describe the current generation, and a reset clears them:
+
+- `lead`: silent output frames emitted before the first real output, i.e. the
+  minimum startup reserve plus any readiness extension. It does not grow once
+  real output begins.
+- `reserve`: the minimum-reserve part of `lead`; `lead - reserve` is the
+  readiness extension.
+- `first_output_ns`: engine first-output latency, from the first frame the
+  nominal worker accepted to its first produced frame; 0 while the engine has
+  produced nothing.
+- `first_real_ns`: from the first callback that offered input to the first real
+  output frame; 0 before real output.
+
+Within one generation each latency is published before the frame counter that
+depends on it, and `reserve` never exceeds `lead`. A startup that never became
+ready shows `first_output_ns` 0, `lead` above `reserve` and `error` 110
+(`ETIMEDOUT`). Starvation after real output shows both latencies set and
+`error` 32 (`EPIPE`); `underruns` counts only such queue starvation over the
+converter's lifetime. `max_callback_ms` is the converter process callback's
+maximum wall time. These values are telemetry, not tuned sizing targets.
+
 ## Verification (2026-10-03)
 
 The corrected product sources passed **126 complete-SPA feedback/drain oracle
@@ -255,16 +282,18 @@ they do not explain away the product-path underrun or qualify sustained load.
 Controlled contention uses three separately owned, approved High CPU-only CLI
 jobs on that same fixture while the real STDIN path starts. On the four-core
 N150 test host, all three product trials fail at startup, not after real PCM:
-the converter accepted 73,728 frames, emitted its 36,000-frame lead, and had
-produced/delivered only 0–192 nominal frames with `real = 0`. Maximum input
-queues were 57,344–63,488 frames, near but below the 65,536-frame bound. This
+the converter accepted 73,728 frames, emitted its 36,000-frame minimum
+reserve, and had produced/delivered only 0–192 nominal frames with `real = 0`.
+Maximum input queues were 57,344–63,488 frames, near but below the 65,536-frame
+bound. This
 shows that 750 ms is not a sufficient startup margin under this controlled
 contention. It does not justify an arbitrary replacement reserve or imply the
 engine is incapable of sustained conversion. No provider media was replaced by
 these transport/load fixtures, and all additional CPU jobs were cleaned up.
 
 With the readiness wait active and the same three owned CLI companions, all
-three product trials now start real PCM (lead 62,464, real 23,552) but still
+three product trials now start real PCM (lead 62,464 silent frames including
+the reserve, real 23,552) but still
 fail at about 27 s with `error = 32`: the worker input FIFO fills to
 65,536 frames while the SoX child, starved of CPU, cannot sustain nominal
 throughput. This is a sustained-load failure under 3× full-core contention on a
@@ -297,8 +326,10 @@ These are 100 ms `/proc` CPU samples, not complete child accounting or total
 PipeWire/DSP CPU. Wall durations were 9.83–10.10 s; High32's sampled child CPU
 averages about 48.4% of one core over its run. Across these captures, observed
 queue maxima were 14,336 input / 36,632 output frames. Callback wall maxima
-include scheduling and teardown; they are not a deadline or sustained-load
-guarantee. The controlled contention failures remain disqualifying evidence.
+time only the converter process callback, so they include scheduling delays
+inside it; construction and teardown run outside it. They are not a deadline or
+sustained-load guarantee. The controlled contention failures remain
+disqualifying evidence.
 
 ### Reproduce the focused checks
 

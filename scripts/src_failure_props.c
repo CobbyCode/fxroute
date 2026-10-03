@@ -145,6 +145,8 @@ int main(int argc,char **argv)
     assert(strstr(text,"FXSRC_ERROR_STATS ")&&strstr(text,code));
     assert(strstr(text,"\"channels\":2")&&strstr(text,"\"input_rate\":44100")&&strstr(text,"\"output_rate\":48000"));
     assert(strstr(text,"\"accepted\":")&&strstr(text,"\"produced\":")&&strstr(text,"\"max_input\":")&&strstr(text,"\"lead\":"));
+    /* Failure before the reserve ends: no real output, so first_real_ns stays 0. */
+    assert(strstr(text,"\"reserve\":")&&strstr(text,"\"first_output_ns\":")&&strstr(text,"\"first_real_ns\":0}"));
     assert(!strstr(strstr(text,"FXSRC_ERROR_STATS ")+1,"FXSRC_ERROR_STATS "));
     spa_hook_remove(&hook);spa_handle_clear(handle);assert(destroyed==1);free(handle);dlclose(library);
     assert(!fflush(stderr));assert(dup2(saved_stderr,STDERR_FILENO)>=0);close(saved_stderr);fclose(diagnostic);

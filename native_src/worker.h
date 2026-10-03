@@ -8,6 +8,9 @@ enum fx_profile { FX_LOW, FX_STANDARD, FX_HIGH };
 struct fx_worker;
 struct fx_worker_stats {
     uint64_t accepted, produced, delivered, max_input, max_output;
+    /* Engine first-output latency in this generation: first produced frame
+     * after the first accepted frame; 0 until the engine produced output. */
+    uint64_t first_output_ns;
     unsigned generation, acknowledged, spawns;
     int error;
 };
