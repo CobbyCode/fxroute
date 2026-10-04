@@ -2786,8 +2786,6 @@ function shortSourcePairLabel(pairLabel) {
 function buildSourceSwitcherEntries(sourceMode) {
     const mode = sourceMode || {};
     const entries = [];
-    const armed = Array.isArray(mode.auto_select?.armed) ? mode.auto_select.armed : [];
-    const autoSuffix = (key) => (armed.includes(key) ? ' · Auto' : '');
     const bluetooth = mode.bluetooth || {};
     if (bluetooth.selectable || mode.mode === 'bluetooth-input') {
         const detail = [bluetooth.connected_device, bluetooth.active_codec].filter(Boolean).join(' · ');
@@ -2803,7 +2801,7 @@ function buildSourceSwitcherEntries(sourceMode) {
         if (!input || !input.key) return;
         const label = shortSourcePairLabel(input.pair_label) || shortSourcePairLabel(input.label) || 'Input';
         const sub = String(input.device_label || input.label || '');
-        const optionLabel = ((sub && sub !== label) ? `${label} — ${sub}` : label) + autoSuffix(String(input.key));
+        const optionLabel = (sub && sub !== label) ? `${label} — ${sub}` : label;
         const unavailable = input.availability === 'unavailable';
         entries.push({
             kind: 'external',
@@ -2817,7 +2815,7 @@ function buildSourceSwitcherEntries(sourceMode) {
     const stdin = mode.stdin || {};
     if (stdin.selectable || mode.mode === 'stdin-input') {
         const detail = stdin.channels ? `${stdin.channels} ch` : (stdin.state || 'waiting');
-        entries.push({ kind: 'stdin', key: 'stdin-input', label: 'STDIN', sub: String(detail || ''), optionLabel: (detail ? `STDIN — ${detail}` : 'STDIN') + autoSuffix('stdin-input') });
+        entries.push({ kind: 'stdin', key: 'stdin-input', label: 'STDIN', sub: String(detail || ''), optionLabel: detail ? `STDIN — ${detail}` : 'STDIN' });
     }
     return entries;
 }
@@ -2876,20 +2874,6 @@ const SOURCE_AUTO_FORMAT_LABELS = {
     truehd: 'Dolby TrueHD', aac: 'AAC', mpeg: 'MPEG audio', encoded: 'Bitstream',
 };
 
-// Human name of the selection an automatic switch returns to.
-function sourceAutoReturnLabel(sourceMode, engaged) {
-    const mode = engaged?.return_mode || 'app-playback';
-    if (mode === 'bluetooth-input') return 'Bluetooth';
-    if (mode === 'stdin-input') return 'STDIN';
-    if (mode === 'external-input') {
-        const input = (Array.isArray(sourceMode?.inputs) ? sourceMode.inputs : [])
-            .find((item) => item?.key === engaged?.return_input_key);
-        if (!input) return 'the previous input';
-        return shortSourcePairLabel(input.pair_label) || shortSourcePairLabel(input.label) || 'the previous input';
-    }
-    return 'App playback';
-}
-
 // Footer Auto toggle model for the shown entry. Line inputs and STDIN can
 // be armed; Bluetooth has no signal probe.
 function sourceAutoModel(sourceMode, entry) {
@@ -2905,8 +2889,6 @@ function sourceAutoModel(sourceMode, entry) {
         tooltip = 'Auto-select is available for line inputs and STDIN';
     } else if (armed && auto.paused) {
         tooltip = 'Auto-select is paused while a measurement owns the inputs';
-    } else if (engaged) {
-        tooltip = `Selected automatically · returns to ${sourceAutoReturnLabel(sourceMode, auto.engaged)} when the signal stops`;
     } else if (armed && active) {
         tooltip = `Auto · signal detected${format ? ` (${format})` : ''}`;
     } else if (armed && activity.lock === false) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Footer Auto toggle of the source switcher: which entries can be armed,
-// how armed/engaged/active state renders, and the human return label.
+// how armed/engaged/active state renders without hiding signal formats.
 // Also the App shortcut back to app playback.
 // Tests the pure model extracted from static/app.js plus the markup and
 // render wiring.
@@ -52,7 +52,6 @@ vm.runInContext([
     extractFunction('shortSourcePairLabel'),
     extractFunction('buildSourceSwitcherEntries'),
     extractFunction('findSourceSwitcherIndex'),
-    extractFunction('sourceAutoReturnLabel'),
     extractFunction('sourceAutoModel'),
 ].join('\n'), sandbox);
 const { buildSourceSwitcherEntries, sourceAutoModel } = sandbox;
@@ -75,15 +74,16 @@ function overview(autoSelect, extra = {}) {
     };
 }
 
-// Armed entries are marked in the native dropdown; others stay unchanged.
+// Auto state belongs to the button, not the source labels in the dropdown.
 const armedOverview = overview({ armed: [Y, 'stdin-input'], engaged: null, paused: false, inputs: {} });
 const entries = buildSourceSwitcherEntries(armedOverview);
 assert.equal(entries.find((entry) => entry.key === X).optionLabel, 'Input 1/2 — Scarlett 16i16');
-assert.equal(entries.find((entry) => entry.key === Y).optionLabel, 'Input 3/4 — Scarlett 16i16 · Auto');
-assert.equal(entries.find((entry) => entry.kind === 'stdin').optionLabel, 'STDIN — waiting · Auto');
+assert.equal(entries.find((entry) => entry.key === Y).optionLabel, 'Input 3/4 — Scarlett 16i16');
+assert.equal(entries.find((entry) => entry.kind === 'stdin').optionLabel, 'STDIN — waiting');
 assert.equal(entries.find((entry) => entry.kind === 'bluetooth').optionLabel, 'Bluetooth — Phone');
-assert.ok(!buildSourceSwitcherEntries(overview(null)).some((entry) => entry.optionLabel.includes('Auto')),
-    'no auto state: labels unchanged');
+assert.deepEqual(entries.map((entry) => entry.optionLabel),
+    buildSourceSwitcherEntries(overview(null)).map((entry) => entry.optionLabel),
+    'arming inputs leaves source labels unchanged');
 
 // Bluetooth has no signal probe; a missing input cannot be armed.
 const bluetoothEntry = entries.find((entry) => entry.kind === 'bluetooth');
@@ -110,20 +110,35 @@ const unlockedOverview = overview({ armed: [Y], engaged: null, paused: false,
     inputs: { [Y]: { active: false, format: null, lock: false } } });
 assert.match(sourceAutoModel(unlockedOverview, yEntry).tooltip, /no digital lock/);
 
-// Engaged: the tooltip names the return target like the switcher does.
-const engagedOverview = (returnMode, returnKey) => overview({
+// Automatic selection must not replace the detected signal/format status.
+const engagedOverview = (returnMode, returnKey, format = 'pcm') => overview({
     armed: [X], paused: false,
     engaged: { key: X, return_mode: returnMode, return_input_key: returnKey },
-    inputs: { [X]: { active: true, format: 'pcm', lock: null } },
+    inputs: { [X]: { active: true, format, lock: null } },
 });
 model = sourceAutoModel(engagedOverview('app-playback', null), xEntry);
 assert.equal(model.engaged, true);
-assert.equal(model.tooltip, 'Selected automatically · returns to App playback when the signal stops');
-assert.match(sourceAutoModel(engagedOverview('external-input', Y), xEntry).tooltip, /returns to Input 3\/4 when/);
-assert.match(sourceAutoModel(engagedOverview('bluetooth-input', null), xEntry).tooltip, /returns to Bluetooth when/);
-assert.match(sourceAutoModel(engagedOverview('external-input', 'gone'), xEntry).tooltip, /returns to the previous input/);
-assert.ok(!sourceAutoModel(engagedOverview('external-input', Y), xEntry).tooltip.includes('alsa_'),
-    'no node names in the tooltip');
+assert.equal(model.tooltip, 'Auto · signal detected (PCM)');
+for (const [format, label] of [
+    ['pcm', 'PCM'], ['ac3', 'Dolby Digital'], ['eac3', 'Dolby Digital Plus'],
+    ['dts', 'DTS'], ['truehd', 'Dolby TrueHD'], ['encoded', 'Bitstream'], [null, ''],
+]) {
+    for (const [returnMode, returnKey] of [
+        ['app-playback', null], ['external-input', Y], ['bluetooth-input', null],
+        ['stdin-input', null], ['external-input', 'gone'],
+    ]) {
+        const automatic = engagedOverview(returnMode, returnKey, format);
+        const manual = { ...automatic, auto_select: { ...automatic.auto_select, engaged: null } };
+        const automaticModel = sourceAutoModel(automatic, xEntry);
+        assert.equal(automaticModel.engaged, true);
+        assert.equal(automaticModel.tooltip, label ? `Auto · signal detected (${label})` : 'Auto · signal detected');
+        assert.equal(automaticModel.tooltip, sourceAutoModel(manual, xEntry).tooltip,
+            'automatic selection keeps the same signal status as manual selection');
+    }
+}
+const engagedUnlocked = engagedOverview('app-playback', null);
+engagedUnlocked.auto_select.inputs[X] = { active: false, format: null, lock: false };
+assert.match(sourceAutoModel(engagedUnlocked, xEntry).tooltip, /no digital lock/);
 
 // Measurement pause is explained instead of a stale state.
 const pausedOverview = overview({ armed: [X], engaged: null, paused: true, inputs: {} });
@@ -189,7 +204,6 @@ vm.runInContext([
     extractFunction('buildSourceSwitcherEntries'),
     extractFunction('findSourceSwitcherIndex'),
     extractFunction('sourceSwitcherGuardReason'),
-    extractFunction('sourceAutoReturnLabel'),
     extractFunction('sourceAutoModel'),
     extractFunction('renderSourceModeFooter'),
 ].join('\n'), renderSandbox);
@@ -200,7 +214,16 @@ assert.equal(autoButton.getAttribute('aria-pressed'), 'true');
 assert.equal(autoButton.classList.toggled['is-armed'], true);
 assert.equal(autoButton.classList.toggled['is-engaged'], true);
 assert.equal(autoButton.classList.toggled['has-signal'], true);
-assert.match(autoButton.getAttribute('data-tooltip'), /returns to App playback/);
+assert.equal(autoButton.getAttribute('data-tooltip'), 'Auto · signal detected (PCM)');
+assert.ok(!renderSandbox.elements.sourceSelect.innerHTML.includes('Auto'),
+    'automatically selected source is marked only by the Auto button');
+for (const [format, label] of [['ac3', 'Dolby Digital'], ['dts', 'DTS'], ['pcm', 'PCM']]) {
+    renderSandbox.state.settings.sourceMode = engagedOverview('app-playback', null, format);
+    vm.runInContext('renderSourceModeFooter()', renderSandbox);
+    assert.equal(autoButton.getAttribute('data-tooltip'), `Auto · signal detected (${label})`);
+    assert.equal(autoButton.getAttribute('aria-pressed'), 'true');
+    assert.equal(autoButton.classList.toggled['is-engaged'], true);
+}
 const appButton = renderSandbox.elements.sourceApp;
 assert.equal(appButton.disabled, false);
 assert.equal(appButton.getAttribute('data-tooltip'), 'Back to app playback');
