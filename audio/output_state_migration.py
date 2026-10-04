@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 from audio.filter_banks import owning_bank_ids
 from audio.output_routing import device_key
-from audio.output_state import (BASS_FIELDS, default_bass_management, default_output_state,
+from audio.output_state import (BASS_FIELDS, SUB_SIDES, default_bass_management, default_output_state,
                                 default_processing, release_bank_presets, set_mode_routing,
                                 validate_output_state)
 from audio.output_topology import MAX_CHANNELS, SUB_ROLES, roles_for_mode
@@ -124,6 +124,26 @@ def _defaulted_bass_management(bass: object) -> dict:
     return upgraded
 
 
+def _drop_stale_surround_side_overrides(payload: object) -> object:
+    """Drop Left/Right sub overrides an early Surround document may hold.
+
+    Surround first stored its sub overrides under the stereo sides. Its subs
+    never read them (they run the shared crossover), so dropping them keeps
+    the audible result while the document validates against the speaker
+    groups again. Every other invalid override still fails closed.
+    """
+    try:
+        filters = payload["modes"]["surround"]["bass_management"]["sub_filters"]
+    except (KeyError, TypeError):
+        return payload
+    if not isinstance(filters, dict) or not set(filters) & set(SUB_SIDES):
+        return payload
+    result = copy.deepcopy(payload)
+    for side in SUB_SIDES:
+        result["modes"]["surround"]["bass_management"]["sub_filters"].pop(side, None)
+    return result
+
+
 def _upgrade_v2_bass_management(payload: dict) -> dict:
     """Give a version-two document the shared sub crossover defaults."""
     result = copy.deepcopy(payload)
@@ -159,7 +179,7 @@ def upgrade_output_state(payload: dict) -> dict:
     if isinstance(payload, dict) and payload.get("version") == 2:
         return _upgrade_v2_bass_management(payload)
     if not isinstance(payload, dict) or payload.get("version") != 1:
-        return validate_output_state(payload)
+        return validate_output_state(_drop_stale_surround_side_overrides(payload))
     if (set(payload) != {"schema", "version", "revision", "active_mode", "modes", "legacy"}
             or payload["schema"] != "fxroute.output-state"
             or payload["active_mode"] not in ("stereo", "crossover")
