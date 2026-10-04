@@ -93,6 +93,10 @@ class SavedCaptureTests(unittest.TestCase):
     def test_source_decoded_mpeg_pcm(self):
         self.check_capture("surround-mpeg-source-20261004-113459", "pair", "pcm", BUS[:2])
 
+    def test_mpeg_pcm_with_raw_dts_lookalike_stays_unity(self):
+        # Real TV MPEG-2 PCM whose -225/+232 pair at 49.5 s once latched raw DTS.
+        self.check_capture("surround-mpeg-rawdts-hit-20261004", "pair", "pcm", BUS[:2])
+
 
 if __name__ == "__main__":
     unittest.main()
