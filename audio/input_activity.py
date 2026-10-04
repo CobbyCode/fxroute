@@ -21,6 +21,11 @@ continuous absence for the release hold. An automatically selected input
 uses a long hold for pauses and track changes; idle monitoring uses a
 shorter hold to rearm. A lost digital lock or a missing input caps the
 hold, since that is a definite end of signal.
+
+An external presence report (TTL-filtered by its owner, e.g. Home
+Assistant) is OR-ed with the local detection: it is signal on its own and
+arms immediately, while a local signal still keeps the input active when
+the presence report ends.
 """
 
 from __future__ import annotations
@@ -138,6 +143,9 @@ class ActivityDetector:
         self.kind = kind
         self.active = assume_active
         self.release_seconds = release_seconds
+        # External presence (TTL-filtered by its owner, e.g. Home
+        # Assistant), OR-ed with the local detection in ``_step``.
+        self.external_presence = False
         self.lock: bool | None = None
         self._digital = kind == KIND_DIGITAL
         self._stream = STREAM_PCM
@@ -186,6 +194,21 @@ class ActivityDetector:
         self._missing = False
         self._step(now, present, present, 0.0)
 
+    def observe_external_presence(self, now: float, present: bool) -> None:
+        """Mirror one external presence report (already TTL-filtered).
+
+        Presence counts as signal on its own and is OR-ed with the local
+        detection inside ``_step``, so it arms immediately like a connected
+        writer while the capture probe keeps working unchanged. Absence only
+        clears the flag: the normal release hold decides when the input
+        releases, and an in-flight local attack is never reset early.
+        """
+        self.external_presence = bool(present)
+        if present:
+            self._step(now, True, True, 0.0)
+        else:
+            self.update(now)
+
     def observe_missing(self, now: float) -> None:
         """No capture: input gone, probe down or its port not active."""
         self.lock = None
@@ -213,6 +236,11 @@ class ActivityDetector:
         return self.release_seconds
 
     def _step(self, now: float, on: bool, keep: bool, attack: float) -> None:
+        if self.external_presence:
+            # OR with the local detection: explicit presence keeps the input
+            # active and arms without the local attack time.
+            on = keep = True
+            attack = 0.0
         if keep:
             self._last_signal_at = now
         if on:

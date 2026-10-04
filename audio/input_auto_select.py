@@ -3,12 +3,14 @@
 
 Each armed external input gets a capture probe (pw-record linked to its
 stereo pair) that feeds an ActivityDetector; STDIN activity is a connected
-PCM writer. A rising activity edge on an armed input switches to it and
-remembers the selection it replaced (the engagement). Once the engaged
-input released (no signal for the release hold), another armed input that
-is still active takes over, otherwise the remembered selection is
-restored. Any other selection change ends the engagement, so a manual
-selection is what the next automatic switch returns to.
+PCM writer, and an external presence reader (e.g. Home Assistant) feeds the
+same detector, OR-ed with the local detection. A rising activity edge on an
+armed input switches to it and remembers the selection it replaced (the
+engagement). Once the engaged input released (no signal for the release
+hold), another armed input that is still active takes over, otherwise the
+remembered selection is restored. Any other selection change ends the
+engagement, so a manual selection is what the next automatic switch returns
+to.
 
 No imports from ``main``: the composition root injects the services.
 """
@@ -239,6 +241,9 @@ class InputAutoSelectDependencies:
     measurement_owns_graph: Callable[[], bool]
     # Blocking; always run in a worker thread.
     resolve_capture_rate: Callable[[], int]
+    # External presence per input key (e.g. Home Assistant), already
+    # TTL-filtered by its owner; None means no external signal source.
+    external_presence: Callable[[str], bool] | None = None
     probe_factory: Callable[[ProbeSpec, ActivityDetector], Any] = InputProbe
     state_path: Callable[[], Path] = default_state_path
     monotonic: Callable[[], float] = time.monotonic
@@ -310,6 +315,7 @@ class InputAutoSelect:
                     "active": detector.active,
                     "format": detector.format,
                     "lock": detector.lock,
+                    "presence": detector.external_presence,
                 }
                 for key in self._armed
                 if (detector := self._detectors.get(key)) is not None
@@ -437,6 +443,9 @@ class InputAutoSelect:
                 detector.update(now)
             else:
                 detector.observe_missing(now)
+            # Fed every tick: while the report is fresh it keeps the input
+            # active, once its TTL passed the normal release hold applies.
+            detector.observe_external_presence(now, self._external_presence(key))
 
     def _probe_spec(self, entry: dict[str, Any] | None) -> ProbeSpec | None:
         # Another port of a multi-port source is not what its capture
@@ -461,6 +470,16 @@ class InputAutoSelect:
     def _stdin_present(self) -> bool:
         status = self._deps.get_stdin_status() or {}
         return bool(status.get("session_id")) and status.get("state") in _STDIN_PRESENT_STATES
+
+    def _external_presence(self, key: str) -> bool:
+        """Fail-closed read of the external presence feed for one input."""
+        reader = self._deps.external_presence
+        if reader is None:
+            return False
+        try:
+            return bool(reader(key))
+        except Exception:
+            return False
 
     async def _stop_probes(self, keep: dict[str, ProbeSpec]) -> None:
         for key, probe in list(self._probes.items()):

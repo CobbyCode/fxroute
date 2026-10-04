@@ -87,6 +87,8 @@ Supported package managers are apt, dnf, zypper, and pacman. Streaming providers
 
 `GET /api/power/state` is a read-only amplifier power hint for external automation: `amp_should_be_on` is true while local, TIDAL, Spotify, or Qobuz playback is active, while the measurement assistant is open, while Bluetooth audio is streaming, or while an external input is routed. The payload also carries a `reason` field. FXRoute does not require MQTT. A complete configuration example is in the [manual](MANUAL.md#10-home-assistant--external-automation).
 
+`POST /api/audio/input-presence` is the optional return channel: an automation reports presence for an existing input key (`{"inputKey": "<key>", "present": true}`) as a 30 s heartbeat, and input auto-select OR-s it with the local signal detection (expired or unknown reports read as absent).
+
 ## Documentation
 
 - [MANUAL.md](MANUAL.md) — the user manual: output modes and routing, crossover, subwoofers, the measurement assistant, and the settings

@@ -494,7 +494,13 @@ from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
 from audio.input_output_mode import input_identity, remember_mode, restore_mode
-from audio.input_auto_select import InputAutoSelect, InputAutoSelectDependencies
+from audio.input_auto_select import (
+    OVERVIEW_MAX_AGE_SECONDS,
+    STDIN_KEY,
+    InputAutoSelect,
+    InputAutoSelectDependencies,
+)
+from audio.input_presence import InputPresenceFeed
 from audio.stdin_input import StdinInputDependencies, StdinInputService
 from audio.stdin_pipewire import PipeWirePcmSink, pcm_adapter_error
 from audio.stdin_protocol import socket_path
@@ -1331,6 +1337,10 @@ source_transitions = SourceTransitions(SourceTransitionDependencies(
     restore_output_mode_state=lambda previous, overview, state: _restore_input_output_mode(previous, overview, saved_state=state),
 ))
 
+# External presence reports (HTTP, e.g. Home Assistant); a report is a
+# heartbeat with a hard TTL, everything else reads as absent.
+input_presence = InputPresenceFeed()
+
 input_auto_select = InputAutoSelect(InputAutoSelectDependencies(
     get_fresh_overview=lambda max_age: source_overview_feed.fresh_latest(max_age),
     read_overview=lambda: source_transitions.read_overview(),
@@ -1340,6 +1350,7 @@ input_auto_select = InputAutoSelect(InputAutoSelectDependencies(
     get_stdin_status=lambda: runtime.stdin_input.snapshot() if runtime.stdin_input else None,
     measurement_owns_graph=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
     resolve_capture_rate=lambda: resolve_capture_rate(),
+    external_presence=lambda key: input_presence.present(key),
 ))
 
 
@@ -6032,6 +6043,59 @@ async def save_audio_source_auto_route(request: Request):
     except ValueError as exc:
         raise bad_request(exc)
     return overview if overview is not None else await source_transitions.read_overview()
+
+
+async def _known_audio_input_key(input_key: str) -> bool:
+    """Input identity check for the presence feed: existing keys only.
+
+    The fixed STDIN key is always addressable (same contract as
+    ``set_armed``); anything else must be an input the current overview
+    reports, so the feed can never invent an address.
+    """
+    if input_key == STDIN_KEY:
+        return True
+    overview = source_overview_feed.fresh_latest(OVERVIEW_MAX_AGE_SECONDS) or await source_transitions.read_overview()
+    return any(
+        isinstance(entry, dict) and entry.get("key") == input_key
+        for entry in overview.get("inputs") or []
+    )
+
+
+@app.post("/api/audio/input-presence")
+async def report_audio_input_presence(request: Request):
+    """Ingest one external presence report (fail-closed heartbeat).
+
+    ``present: true`` records a fresh report for the input key; absent or
+    expired reports read as no presence, and ``present: false`` clears the
+    key immediately. Only keys the audio source overview already defines
+    are accepted.
+    """
+    try:
+        body = await request.json()
+        input_key = str(body.get("inputKey") or body.get("input_key") or "").strip()
+        present = body.get("present")
+        if not input_key or not isinstance(present, bool):
+            raise ValueError("inputKey and present are required")
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail='Invalid JSON body, expected {"inputKey": <string>, "present": <bool>}',
+        )
+    if not await _known_audio_input_key(input_key):
+        raise bad_request(ValueError(f"Unknown input: {input_key}"))
+    input_presence.report(input_key, present)
+    return {
+        "status": "ok",
+        "input_key": input_key,
+        "present": present,
+        "ttl_seconds": input_presence.ttl_seconds,
+    }
+
+
+@app.get("/api/audio/input-presence")
+async def audio_input_presence_status():
+    """Read-only view of the fresh external presence reports."""
+    return input_presence.snapshot()
 
 
 @app.get("/api/audio/bluetooth")

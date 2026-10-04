@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Input auto-select: signal analysis, hysteresis, switching and return."""
+"""Input auto-select: signal analysis, hysteresis, switching and return.
+
+Includes the external presence feed OR-ed into the detector and the
+unchanged analog detection next to it.
+"""
 
 import asyncio
 import ctypes
@@ -182,6 +186,31 @@ class DetectorTests(unittest.TestCase):
         detector.observe_presence(10.6, False)
         self.assertFalse(detector.active)
 
+    def test_external_presence_arms_immediately_and_holds_the_release(self):
+        detector = ActivityDetector(activity.KIND_ANALOG, 0.0)
+        detector.observe_external_presence(1.0, True)
+        self.assertTrue(detector.active, "an external report arms without the analog attack")
+        self.assertEqual(detector.format, "pcm")
+        detector.observe_external_presence(30.0, False)
+        self.assertTrue(detector.active, "the hold still applies once the report ends")
+        detector.update(60.9)
+        self.assertTrue(detector.active, "less than the 60 s hold")
+        detector.update(61.5)
+        self.assertFalse(detector.active, "released after the hold")
+
+    def test_external_presence_ors_with_local_detection(self):
+        detector = ActivityDetector(activity.KIND_ANALOG, 0.0)
+        detector.observe_external_presence(0.0, True)
+        now = self.feed(detector, 0.0, 10, analysis(-100.0))
+        self.assertTrue(detector.active, "local silence cannot release a fresh report")
+        detector.observe_external_presence(now, False)
+        now = self.feed(detector, now, 5, analysis(-20.0))
+        self.assertTrue(detector.active, "an ongoing local signal keeps it active")
+        now = self.feed(detector, now, 59, analysis(-100.0))
+        self.assertTrue(detector.active, "the analog hold still applies")
+        self.feed(detector, now, 2, analysis(-100.0))
+        self.assertFalse(detector.active)
+
     def test_assumed_active_keeps_a_fresh_hold(self):
         detector = ActivityDetector(activity.KIND_ANALOG, 100.0, assume_active=True)
         detector.update(159.0)
@@ -299,6 +328,7 @@ class Harness:
         self.measurement = False
         self.stdin = None
         self.probes = {}
+        self.presence = {}
         self.state_path = Path(state_dir) / "input-auto-select.json"
 
         async def read_overview():
@@ -333,6 +363,7 @@ class Harness:
             get_stdin_status=lambda: self.stdin,
             measurement_owns_graph=lambda: self.measurement,
             resolve_capture_rate=lambda: RATE,
+            external_presence=lambda key: self.presence.get(key, False),
             probe_factory=probe_factory,
             state_path=lambda: self.state_path,
             monotonic=lambda: self.now,
@@ -554,6 +585,72 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         h.stdin = {"session_id": "def", "state": "connected"}
         await h.tick()
         self.assertEqual(h.switches, [("stdin-input", None)])
+
+    async def test_external_presence_switches_and_returns(self):
+        h = self.harness()
+        await h.controller.set_armed(X, True)
+        await h.tick()
+        self.assertEqual(h.switches, [], "no presence yet")
+        h.presence[X] = True
+        await h.tick()
+        self.assertEqual(h.switches, [("external-input", X)])
+        self.assertEqual(h.controller.snapshot()["engaged"]["key"], X)
+        self.assertTrue(h.controller.snapshot()["inputs"][X]["presence"])
+        h.presence[X] = False
+        await h.tick()
+        self.assertEqual(len(h.switches), 1, "presence off keeps the release hold")
+        await h.tick(61)
+        self.assertEqual(h.switches[-1], ("app-playback", None))
+        self.assertIsNone(h.controller.snapshot()["engaged"])
+
+    async def test_external_presence_composes_with_the_local_signal(self):
+        h = self.harness()
+        await h.controller.set_armed(X, True)
+        h.presence[X] = True
+        await h.tick()
+        self.assertEqual(h.switches, [("external-input", X)])
+        h.presence[X] = False
+        await h.signal(X, 2)
+        self.assertTrue(h.detector(X).active, "the local signal keeps the input active")
+        self.assertEqual(len(h.switches), 1)
+        await h.silence(X, 61)
+        self.assertEqual(h.switches[-1], ("app-playback", None))
+
+    async def test_auto_off_ends_a_presence_engagement_without_returning(self):
+        h = self.harness()
+        await h.controller.set_armed(X, True)
+        h.presence[X] = True
+        await h.tick()
+        self.assertEqual(h.switches, [("external-input", X)])
+        await h.controller.set_armed(X, False)
+        await h.tick()
+        self.assertEqual(h.controller.snapshot()["inputs"], {})
+        self.assertIsNone(h.controller.snapshot()["engaged"])
+        await h.tick(3)
+        self.assertEqual(h.switches, [("external-input", X)], "unarmed presence never switches")
+
+    async def test_analog_attack_is_unchanged_with_a_presence_reader(self):
+        h = self.harness()
+        await h.controller.set_armed(X, True)
+        await h.tick()
+        await h.signal(X, 0.8)
+        self.assertEqual(h.switches, [], "0.8 s stays below the analog attack")
+        await h.signal(X, 0.4)
+        self.assertEqual(h.switches, [("external-input", X)])
+
+    async def test_presence_reader_failure_is_fail_closed(self):
+        h = self.harness()
+        await h.controller.set_armed(X, True)
+        await h.tick()
+        h.presence[X] = True
+
+        def boom(key):
+            raise RuntimeError("feed down")
+
+        h.controller._deps.external_presence = boom
+        await h.tick()
+        self.assertEqual(h.switches, [], "a failing reader never counts as presence")
+        self.assertFalse(h.controller.snapshot()["inputs"][X]["presence"])
 
     async def test_disarming_the_engaged_input_stays_on_it(self):
         h = self.harness()

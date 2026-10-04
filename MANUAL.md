@@ -408,6 +408,33 @@ automation:
           entity_id: switch.verstaerker_steckdose  # Adapt to your smart plug.
 ```
 
+FXRoute can also take an external presence status for any known input key: `POST /api/audio/input-presence` with `{"inputKey": "<key from /api/audio/source-mode>", "present": true}`. The key is the same input key the footer switcher uses. The report is a heartbeat: repeat it while the source is present; it reads as absent once it is older than 30 seconds, and `{"present": false}` clears it immediately. Unknown keys are rejected with 400. An armed input switches and returns exactly as with a local signal, because the external presence is OR-ed with the local detection; `/api/audio/source-mode` gains a per-input `presence` flag, and `GET /api/audio/input-presence` lists the currently fresh reports (fail-closed: expired reports never count).
+
+A minimal Home Assistant automation reports a turntable sensor while it stays on:
+
+```yaml
+rest_command:
+  fxroute_input_presence:
+    url: "http://fxroute.local:8000/api/audio/input-presence"  # Adapt host/port.
+    method: POST
+    content_type: "application/json"
+    payload: '{"inputKey": "{{ input_key }}", "present": {{ present | lower }}}'
+
+automation:
+  - alias: "FXRoute: turntable presence heartbeat"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.plattenspieler
+      - platform: time_pattern
+        seconds: "/15"
+    mode: restart
+    action:
+      - service: rest_command.fxroute_input_presence
+        data:
+          input_key: "alsa_input.usb-Focusrite-00.pro-input-0::pair:1-2"  # Key from /api/audio/source-mode.
+          present: "{{ is_state('binary_sensor.plattenspieler', 'on') }}"
+```
+
 ## 11. If something fails
 
 1. Start with **Radio** — it is the simplest source and proves output and DSP routing.
