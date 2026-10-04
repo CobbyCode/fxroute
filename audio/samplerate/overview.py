@@ -162,7 +162,7 @@ def _derived_output_mode(
         return None
     try:
         from audio.output_routing import device_key
-        from audio.output_state import (bass_crossover_for_side, filter_label,
+        from audio.output_state import (bass_crossover_for_group, bass_crossover_for_side, filter_label,
                                         routing_for_device, shared_bass_crossover)
         from audio.output_topology import derive_topology
     except ImportError:
@@ -194,12 +194,21 @@ def _derived_output_mode(
     bass = bass if isinstance(bass, Mapping) else {}
     highpass = bool(bass.get("main_highpass_enabled", True))
     stereo_pair = topology.sub_mode == "stereo"
+    surround = mode == "surround"
+    if surround:
+        # Surround subs run the Front group's low-pass on their primary bus.
+        try:
+            highpass = bass_crossover_for_group(dict(bass), "front")[1]
+        except (KeyError, TypeError, ValueError):
+            pass
 
     def crossover(side: str) -> dict[str, Any]:
         """Effective crossover of one side; only a Stereo pair resolves per side."""
         try:
             if stereo_pair:
                 definition = bass_crossover_for_side(dict(bass), side)
+            elif surround:
+                definition = bass_crossover_for_group(dict(bass), "front")[0]
             else:
                 definition = shared_bass_crossover(dict(bass))
             frequency = max(40, min(200, int(round(_finite_or(definition["frequency_hz"], 80)))))

@@ -18,6 +18,9 @@ const MUTATION_KINDS = ['set_routing', 'switch_mode', 'select_bank', 'set_bank_p
 const FAMILY_LABELS = { 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' };
 const FAMILY_PREFIXES = { 'linkwitz-riley': 'LR', butterworth: 'BW', bessel: 'BS' };
 const SUB_SIDES = ['left', 'right'];
+// Surround bass-management speaker groups, in display order.
+const SURROUND_GROUPS = ['front', 'center', 'side', 'rear'];
+const SURROUND_GROUP_LABELS = { front: 'Front L/R', center: 'Center', side: 'Side L/R', rear: 'Rear L/R' };
 
 function filterLabel(family, slope) {
     return `${FAMILY_PREFIXES[family] || String(family || '')}${slope}`;
@@ -42,6 +45,30 @@ function bassCrossoverForSide(bass, side, stereo) {
     if (!stereo || source.sub_link !== false || !SUB_SIDES.includes(side)) return shared;
     const override = (source.sub_filters || {})[side];
     return override ? normalizedCrossover(override, shared) : shared;
+}
+
+// Configured Surround speaker groups; Front covers Main L/R and crossover ways.
+function surroundGroups(topology) {
+    const roles = Array.isArray(topology?.roles) ? topology.roles : [];
+    const present = {
+        front: roles.some(role => /^(main_[lr]|left_|right_)/.test(role)),
+        center: roles.includes('center'),
+        side: roles.includes('side_l') || roles.includes('side_r'),
+        rear: roles.includes('rear_l') || roles.includes('rear_r'),
+    };
+    return SURROUND_GROUPS.filter(group => present[group]);
+}
+
+// Effective crossover and high-pass switch of one Surround speaker group:
+// linked groups share the mode crossover and Main high-pass switch.
+function bassCrossoverForGroup(bass, group) {
+    const source = bass || {};
+    const shared = normalizedCrossover(null, {
+        family: source.family, slope_db_oct: source.slope_db_oct, frequency_hz: source.frequency_hz });
+    const sharedHighpass = source.main_highpass_enabled !== false;
+    const override = source.sub_link === false ? (source.sub_filters || {})[group] : null;
+    if (!override) return { ...shared, highpass_enabled: sharedHighpass };
+    return { ...normalizedCrossover(override, shared), highpass_enabled: override.highpass_enabled !== false };
 }
 
 function esc(value) {
@@ -135,6 +162,7 @@ function subwooferView(catalog) {
     const offset = Math.max(0, ...(topology.roles || []).map(role => -(processing[role]?.alignment_ms || 0)));
     const bass = config?.bass_management || {};
     const stereo = topology.sub_mode === 'stereo';
+    const surround = catalog?.active_mode === 'surround';
     const shared = bassCrossoverForSide(bass, 'left', false);
     const left = bassCrossoverForSide(bass, 'left', stereo);
     const right = bassCrossoverForSide(bass, 'right', stereo);
@@ -151,9 +179,15 @@ function subwooferView(catalog) {
         // Shared and per-side sub crossover; the link switch is only offered
         // for a true Stereo sub pair.
         crossover: { ...shared, label: filterLabel(shared.family, shared.slope_db_oct),
-            link: bass.sub_link !== false, stereo,
+            link: bass.sub_link !== false, stereo, surround,
             left, right, left_label: filterLabel(left.family, left.slope_db_oct),
-            right_label: filterLabel(right.family, right.slope_db_oct) },
+            right_label: filterLabel(right.family, right.slope_db_oct),
+            // Surround reuses the link/tab scheme for its speaker groups.
+            groups: surround ? surroundGroups(topology).map(id => {
+                const shape = bassCrossoverForGroup(bass, id);
+                return { id, name: SURROUND_GROUP_LABELS[id], ...shape,
+                    label: filterLabel(shape.family, shape.slope_db_oct) };
+            }) : [] },
         derived_main_delay_ms: offset,
         derived_sub1_delay_ms: offset + (first.alignment_ms || 0),
         derived_sub2_delay_ms: offset + (processing[roles[1]]?.alignment_ms || 0),
@@ -219,14 +253,17 @@ function measurementArea(catalog, bankId) {
     };
 }
 
+// Surround offers no Global bank: the catalog omits it and so does the selector.
 function bankOptions(modeConfig) {
     const banks = modeConfig?.banks || {};
-    return [{ id: 'global', label: 'Global' }, { id: 'all', label: 'All Banks' },
+    const surround = modeConfig?.topology?.mode === 'surround';
+    return [...(surround ? [] : [{ id: 'global', label: 'Global' }]), { id: 'all', label: 'All Banks' },
         ...Object.entries(banks).filter(([id]) => id !== 'global').map(([id, bank]) => ({ id, label: bank.label || roleLabel(id) }))];
 }
 
 function bankSelectorVisible(modeConfig) {
     const roles = modeConfig?.topology?.roles || [];
+    if (modeConfig?.topology?.mode === 'surround') return roles.length > 0;
     return roles.length > 0 && !(roles.length === 2 && roles.includes('main_l') && roles.includes('main_r'));
 }
 
@@ -405,8 +442,12 @@ function renderBankSelector(select, catalog, mode) {
         subModeLabel,
         FAMILY_LABELS,
         SUB_SIDES,
+        SURROUND_GROUPS,
+        SURROUND_GROUP_LABELS,
         filterLabel,
         bassCrossoverForSide,
+        surroundGroups,
+        bassCrossoverForGroup,
         subwooferView,
         topologySummary,
         summedRoleIds,

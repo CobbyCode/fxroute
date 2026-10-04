@@ -4863,7 +4863,10 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int) -> dict:
     output_key, channels = _output_state_device(overview)
     channel_count = int(channels or 0)
     topology = _output_state_topology(state, state["active_mode"], output_key, channel_count)
-    raw_bank = str(bank_id or "").strip() or selected_bank(state["modes"][state["active_mode"]], topology["roles"])
+    raw_bank = str(bank_id or "").strip() or selected_bank(state["modes"][state["active_mode"]], topology["roles"],
+                                                           state["active_mode"])
+    if state["active_mode"] == "surround" and raw_bank == "global":
+        raise ValueError("Surround has no Global bank; select an area bank for measurement")
     # A single actively routed way keeps its own target so per-way captures
     # isolate exactly that way; area ids still resolve to their owning bank.
     if raw_bank in topology["roles"]:
@@ -5421,12 +5424,12 @@ async def get_audio_output_state():
     modes = {}
     for mode, config in state["modes"].items():
         topology = _output_state_topology(state, mode, output_key, channels)
-        banks = bank_catalog(config, topology["roles"])
+        banks = bank_catalog(config, topology["roles"], mode)
         if mode == "surround" and "main" in banks:
             banks["main"]["label"] = "Front L/R"
         modes[mode] = {
             "crossover_enabled": config["crossover_enabled"],
-            "selected_bank": selected_bank(config, topology["roles"]),
+            "selected_bank": selected_bank(config, topology["roles"], mode),
             "banks": banks,
             "all_banks": summarize_all_banks([config["banks"][role] for role in topology["roles"]]),
             "processing": config["processing"],

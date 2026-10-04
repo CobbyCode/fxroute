@@ -5,10 +5,13 @@ Surround is an output mode in the existing Output System. The mode is remembered
 ## Routing and processing
 
 - Program PCM uses the fixed position bus `FL, FR, FC, LFE, SL, SR, BL, BR`. Absent positions are zero, not duplicated or guessed.
-- Front L/R reuse the existing Main L/R roles and banks. Center is mono; Side L/R and Rear L/R are independent stereo banks.
+- Front L/R reuse the existing Main L/R roles and banks. Center is mono; Side L/R and Rear L/R are independent stereo banks. Side and Rear are routed as complete L/R pairs.
+- A program position without its own speaker folds down instead of going silent: Center to Front L/R at -3 dB each, Side to Rear (or Rear to Side) at unity, and to Front L/R at -3 dB when neither surround pair is routed. Sweeps excite only each speaker's own position, never its fold-down sends.
 - The independent Crossover switch splits Front L/R through the existing speaker ways. Center, Side, Rear and Sub routing remain available.
 - Surround permits Sub 1 and optional Sub 2, both fed by the same mono bass bus. Sub L/Sub R are not valid Surround roles.
 - Full-range speaker bass is low-passed into the common sub bus. LFE is a separate program input: it bypasses that bass-management low-pass, then shares the sub bank, physical gain/delay/polarity and guard mute. With no sub configured, LFE feeds Front L/R at 0.5 per side, through any configured front speaker crossover.
+- Bass management uses the sub tile's link scheme per speaker group (Front L/R, Center, Side L/R, Rear L/R). Linked, every group shares one crossover and the speaker high-pass switch. Unlinked, each configured group has its own crossover type, slope, frequency and high-pass switch; each program position's bass is low-passed at the crossover of the group that plays it, so Sub 1 and Sub 2 still receive one identical mono bass bus.
+- Surround offers no Global bank: its whole-system chain stays Neutral, while the global helpers still apply. Area banks and All Banks remain selectable.
 - Sub 1/Sub 2 use the existing mono/dual-mono adjustment and optimization paths. No parallel Surround optimizer or DSP engine is created.
 
 ## Digital ingress

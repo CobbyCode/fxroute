@@ -9,7 +9,8 @@ from collections.abc import Callable
 
 from audio.output_routing import device_key
 from audio.filter_banks import bank_definitions, resolve_bank, summarize_banks
-from audio.output_topology import MAIN_ROLES, MODES, derive_topology, roles_for_mode, validate_assignments
+from audio.output_topology import (MAIN_ROLES, MODES, SURROUND_GROUPS, derive_topology, roles_for_mode,
+                                   validate_assignments)
 from dsp.banks import BankState
 
 SCHEMA = "fxroute.output-state"
@@ -112,6 +113,20 @@ def validate_bass_filter(payload: object) -> None:
     _finite_range(payload["frequency_hz"], 40, 200, "Sub crossover frequency")
 
 
+def validate_group_bass_filter(payload: object) -> None:
+    """Surround group crossover: the sub crossover shape plus its own high-pass switch."""
+    _object_fields(payload, {"family", "slope_db_oct", "frequency_hz", "highpass_enabled"},
+                   "Speaker group crossover")
+    validate_bass_filter({key: payload[key] for key in ("family", "slope_db_oct", "frequency_hz")})
+    if type(payload["highpass_enabled"]) is not bool:
+        raise ValueError("Speaker group high-pass enabled must be a boolean")
+
+
+def bass_override_keys(mode: str) -> tuple[str, ...]:
+    """Unlinked crossover keys: L/R sub sides, or Surround speaker groups."""
+    return SURROUND_GROUPS if mode == "surround" else SUB_SIDES
+
+
 def shared_bass_crossover(bass: dict) -> dict:
     """The mode's shared sub crossover: Mono, Dual-Mono and coupled Stereo."""
     return {"family": bass["family"], "slope_db_oct": bass["slope_db_oct"],
@@ -134,6 +149,21 @@ def bass_crossover_for_side(bass: dict, side: str) -> dict:
     return shared_bass_crossover(bass)
 
 
+def bass_crossover_for_group(bass: dict, group: str) -> tuple[dict, bool]:
+    """Effective Surround crossover and high-pass switch of one speaker group.
+
+    Linked groups share the mode crossover and Main high-pass switch; an
+    unlinked group without a stored override falls back to them.
+    """
+    if group not in SURROUND_GROUPS:
+        raise ValueError("Unknown Surround speaker group")
+    override = None if bass["sub_link"] else bass["sub_filters"].get(group)
+    if override is None:
+        return shared_bass_crossover(bass), bool(bass["main_highpass_enabled"])
+    return ({key: override[key] for key in ("family", "slope_db_oct", "frequency_hz")},
+            bool(override["highpass_enabled"]))
+
+
 def _validate_processing(payload: object) -> None:
     _object_fields(payload, {"highpass", "lowpass", "level_db", "alignment_ms", "polarity"}, "Output processing")
     for key in ("highpass", "lowpass"):
@@ -151,6 +181,18 @@ def _device_identity(key: object) -> str:
     if not isinstance(key, str) or not key.strip() or key != key.strip():
         raise ValueError("Output device key must be a non-empty string")
     return device_key(key)
+
+
+def _validate_bass_overrides(mode: str, overrides: object) -> None:
+    keys = bass_override_keys(mode)
+    if not isinstance(overrides, dict) or any(key not in keys for key in overrides):
+        raise ValueError(f"Sub crossover overrides must be keyed by {', '.join(keys)}")
+    validate = validate_group_bass_filter if mode == "surround" else validate_bass_filter
+    for key, definition in overrides.items():
+        try:
+            validate(definition)
+        except ValueError as exc:
+            raise ValueError(f"Sub crossover override {key}: {exc}") from exc
 
 
 def validate_output_state(payload: object) -> dict:
@@ -206,14 +248,7 @@ def validate_output_state(payload: object) -> dict:
         _validate_family_slope(bass["family"], bass["slope_db_oct"], "sub crossover")
         if type(bass["sub_link"]) is not bool:
             raise ValueError("Sub L/R link must be a boolean")
-        overrides = bass["sub_filters"]
-        if not isinstance(overrides, dict) or any(side not in SUB_SIDES for side in overrides):
-            raise ValueError("Sub crossover overrides must be keyed by left and right")
-        for side, definition in overrides.items():
-            try:
-                validate_bass_filter(definition)
-            except ValueError as exc:
-                raise ValueError(f"Sub crossover override {side}: {exc}") from exc
+        _validate_bass_overrides(mode, bass["sub_filters"])
         if not isinstance(config["extras"], dict):
             raise ValueError("Global helpers must be an object")
     return copy.deepcopy(payload)
@@ -256,6 +291,16 @@ def effective_crossover_enabled(state: dict, mode: str, channels: int | None = N
     return bool(state["modes"][mode]["crossover_enabled"])
 
 
+def fallback_bank(mode: str, roles) -> str:
+    """Selection when the stored bank is gone: Surround offers no Global bank."""
+    return "all" if mode == "surround" and tuple(roles) else "global"
+
+
+def pure_stereo_roles(mode: str, roles) -> bool:
+    """Plain Main L/R outside Surround keeps the single Global A/B surface."""
+    return mode != "surround" and set(roles) == set(MAIN_ROLES)
+
+
 def set_mode_routing(state: dict, mode: str, output_key: str, assignments: object) -> dict:
     """Update visible ports while retaining assignments in a higher hardware tier."""
     result = validate_output_state(state)
@@ -272,13 +317,14 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
             config["processing"].setdefault(role, default_processing())
     topology = derive_topology(mode, values, channels=count, crossover_enabled=config["crossover_enabled"])
     active = topology.bank_ids
+    fallback = fallback_bank(mode, topology.roles)
     try:
         selected = resolve_bank(config, config["selected_bank"], topology.roles)["id"]
     except ValueError:
-        selected = "global"
-    if selected not in (*active, "all"):
-        selected = "global"
-    if set(topology.roles) == {"main_l", "main_r"}:
+        selected = fallback
+    if selected not in (*active, "all") or (mode == "surround" and selected == "global"):
+        selected = fallback
+    if pure_stereo_roles(mode, topology.roles):
         selected = "global"
     config["selected_bank"] = selected
     return validate_output_state(result)
@@ -313,7 +359,7 @@ def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
                 config["banks"].setdefault(role, BankState().to_dict())
                 config["processing"].setdefault(role, default_processing())
     if config["selected_bank"] not in ("global", "all", *allowed, *bank_definitions(allowed)):
-        config["selected_bank"] = "global"
+        config["selected_bank"] = "all" if mode == "surround" else "global"
     return validate_output_state(result)
 
 
@@ -334,6 +380,8 @@ def set_bank_preset(state: dict, mode: str, bank_id: str, *, preset: str | None 
     roles_for_mode(mode)
     banks = result["modes"][mode]["banks"]
     members = resolve_bank(result["modes"][mode], bank_id, roles)["roles"]
+    if mode == "surround" and members == ["global"]:
+        raise ValueError("Surround has no Global bank; select an area bank or All Banks")
     if active_side is not None and active_side not in {"A", "B"}:
         raise ValueError("Compare side must be A or B")
     slot = active_side or summarize_banks([banks[role] for role in members])["active_side"] or "A"
@@ -425,14 +473,15 @@ def set_bass_management(state: dict, mode: str, *, frequency_hz: float | None = 
         bass["sub_link"] = sub_link
     if sub_filters is not None:
         if not isinstance(sub_filters, dict):
-            raise ValueError("Sub crossover overrides must be an object keyed by side")
-        for side, definition in sub_filters.items():
-            if side not in SUB_SIDES:
-                raise ValueError("Sub crossover overrides must be keyed by left and right")
+            raise ValueError("Sub crossover overrides must be an object keyed by side or group")
+        keys = bass_override_keys(mode)
+        for key, definition in sub_filters.items():
+            if key not in keys:
+                raise ValueError(f"Sub crossover overrides must be keyed by {', '.join(keys)}")
             if definition is None:
-                bass["sub_filters"].pop(side, None)
+                bass["sub_filters"].pop(key, None)
             else:
-                bass["sub_filters"][side] = definition
+                bass["sub_filters"][key] = definition
     return validate_output_state(result)
 
 
@@ -449,8 +498,10 @@ def select_bank(state: dict, mode: str, output_key: str, channels: int, bank_id:
     result = validate_output_state(state)
     active = derive_topology(mode, routing_for_device(result, mode, output_key, channels), channels=channels,
                              crossover_enabled=effective_crossover_enabled(result, mode, channels))
-    if set(active.roles) == {"main_l", "main_r"} and bank_id != "global":
+    if pure_stereo_roles(mode, active.roles) and bank_id != "global":
         raise ValueError("Pure stereo uses the Global bank; no bank selection is shown")
+    if mode == "surround" and bank_id == "global":
+        raise ValueError("Surround has no Global bank; select an area bank or All Banks")
     if bank_id == "all":
         if not active.roles:
             raise ValueError("No configured area banks")

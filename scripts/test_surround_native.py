@@ -57,6 +57,32 @@ output 1 0 0 normal
         self.assertAlmostEqual(bass[1][0], 0.005, places=7)
         self.assertGreater(bass[1][1], 0)
 
+    def test_group_buses_are_low_passed_separately_before_lfe(self):
+        text = """rate 1000
+inputs 8
+surround 1
+outputs 1
+matrix 0 0 1
+gmatrix 0 1 6 1
+gmatrix 0 2 4 0.5
+postmatrix 0 3 1
+xsos 0 0.25 0 0 0 0
+gxsos 0 1 0.5 0.5 0 0 0
+gxsos 0 2 2 0 0 0 0
+output 0 0 0 normal
+"""
+        def impulse(channel):
+            frame = [0.0] * 8
+            frame[channel] = 1.0
+            return self.process(text, frame + [0.0] * (8 * 3), 1)[0]
+        self.assertEqual(list(impulse(0)), [0.25, 0.0, 0.0, 0.0])
+        self.assertEqual(list(impulse(6)), [0.5, 0.5, 0.0, 0.0])
+        self.assertEqual(list(impulse(4)), [1.0, 0.0, 0.0, 0.0])
+        self.assertEqual(list(impulse(3)), [1.0, 0.0, 0.0, 0.0])
+        for invalid in ("gmatrix 0 0 6 1\n", "gmatrix 0 4 6 1\n", "gxsos 0 4 1 0 0 0 0\n"):
+            with self.subTest(invalid=invalid), self.assertRaises(subprocess.CalledProcessError):
+                self.process(text + invalid, [0.0] * 8, 1)
+
     def test_center_does_not_drive_lfe_limiter_detector(self):
         text = "rate 48000\ninputs 8\nsurround 1\noutputs 8\n"
         text += "".join(f"matrix {i} {i} 1\n" for i in range(8))

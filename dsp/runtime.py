@@ -1215,7 +1215,7 @@ class DSPRuntime:
             elif kind == "output" and len(parts) == 5:
                 shape.append((kind, parts[1]))
                 values.append((kind, int(parts[1]), float(parts[2]), float(parts[3]), parts[4]))
-            elif kind in {"sos", "oconv", "xsos", "postmatrix", "inputs", "surround"} and len(parts) >= 2:
+            elif kind in {"sos", "oconv", "xsos", "gxsos", "gmatrix", "postmatrix", "inputs", "surround"} and len(parts) >= 2:
                 # Output-bank lines join the shape with full content: any
                 # bank change forces a rebuild, while identical banks allow
                 # live updates of unrelated parameters. Live updates *for*

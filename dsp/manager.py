@@ -153,6 +153,8 @@ class DSPManager:
     # Output crossover PEQ types accepted by native_dsp/dsp.c design().
     OUTPUT_FILTER_TYPES = {"bell", "notch", "lowpass", "highpass", "lowshelf", "highshelf"}
     OUTPUT_FILTER_MAX_BIQUADS = 32
+    # Bass buses per output, each low-passed separately (native FXDSP_XO_GROUPS).
+    OUTPUT_CROSSOVER_GROUPS = 4
     # The engine clamps at/rt/lk to the LSP sc_limiter port bounds
     # (0.25..20 / 0.25..20 / 0.1..20 ms, verified against the installed
     # sc_limiter_stereo metadata).  Params are normalized into this same range
@@ -860,7 +862,22 @@ class DSPManager:
                     raise ValueError("Post-crossover routes require finite gains and input indices 0..31")
                 outputs[-1]["post_crossover_routes"] = copy.deepcopy(post_routes)
                 outputs[-1]["crossover_sos"] = self._validate_output_sos(channel.get("crossover_sos", []), index, [])
+                groups = channel.get("crossover_groups", [])
+                if (not isinstance(groups, list) or len(groups) > self.OUTPUT_CROSSOVER_GROUPS - 1
+                        or any(not isinstance(group, dict) or not isinstance(group.get("routes"), list)
+                               or not group["routes"]
+                               or any(not isinstance(route, dict) or type(route.get("input")) is not int
+                                      or not 0 <= route["input"] < 32
+                                      or type(route.get("gain")) not in (int, float)
+                                      or not math.isfinite(route["gain"]) for route in group["routes"])
+                               for group in groups)):
+                    raise ValueError("Crossover groups require routes with finite gains and input indices 0..31")
+                if groups:
+                    outputs[-1]["crossover_groups"] = [
+                        {"routes": copy.deepcopy(group["routes"]),
+                         "sos": self._validate_output_sos(group.get("sos", []), index, [])} for group in groups]
                 budget = (len(outputs[-1]["sos"]) + len(outputs[-1]["crossover_sos"])
+                          + sum(len(group["sos"]) for group in outputs[-1].get("crossover_groups", []))
                           + sum(item["stages"] for item in validated_filters))
                 if budget > self.OUTPUT_FILTER_MAX_BIQUADS:
                     raise ValueError("Output crossover and bank exceed the shared biquad budget")
@@ -890,7 +907,8 @@ class DSPManager:
             output_layout, preset_name=preset_name, sample_rate_hz=sample_rate_hz,
             extras_override=extras_override)
         max_input = max(route["input"] for output in config["outputs"]
-                        for route in output["routes"] + output.get("post_crossover_routes", []))
+                        for route in output["routes"] + output.get("post_crossover_routes", [])
+                        + [item for group in output.get("crossover_groups", []) for item in group["routes"]])
         surround = any("input_positions" in output for output in config["outputs"])
         lines = [f"rate {sample_rate_hz}", f"inputs {8 if surround else max_input + 1}"]
         if surround:
@@ -903,6 +921,11 @@ class DSPManager:
                 lines.append(f"postmatrix {output_index} {route['input']} {route['gain']:.9g}")
             for section in output.get("crossover_sos", []):
                 lines.append("xsos %d %.9g %.9g %.9g %.9g %.9g" % (output_index, *section))
+            for group_index, group in enumerate(output.get("crossover_groups", []), start=1):
+                for route in group["routes"]:
+                    lines.append(f"gmatrix {output_index} {group_index} {route['input']} {route['gain']:.9g}")
+                for section in group["sos"]:
+                    lines.append("gxsos %d %d %.9g %.9g %.9g %.9g %.9g" % (output_index, group_index, *section))
             for filter_def in output.get("filters", []):
                 for _ in range(int(filter_def["stages"])):
                     lines.append("peq %d %s %.9g %.9g %.9g" % (

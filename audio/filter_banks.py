@@ -95,21 +95,32 @@ def summarize_all_banks(bindings: list[dict]) -> dict:
     return {**summarize_banks(bindings), "active_side": sides, "can_b": bool(comparable)}
 
 
-def bank_catalog(config: dict, roles) -> dict:
-    """Project only configured banks, with topology-derived channel metadata."""
-    definitions = {"global": resolve_bank(config, "global"), **bank_definitions(roles)}
+def bank_catalog(config: dict, roles, mode: str | None = None) -> dict:
+    """Project only configured banks, with topology-derived channel metadata.
+
+    Surround offers no Global bank: its program has no stereo whole-system
+    path, so only area banks and All Banks are selectable.
+    """
+    definitions = {} if mode == "surround" else {"global": resolve_bank(config, "global")}
+    definitions.update(bank_definitions(roles))
     return {bank_id: {**definition, **summarize_banks([config["banks"][role] for role in definition["roles"]])}
             for bank_id, definition in definitions.items()}
 
 
-def selected_bank(config: dict, roles) -> str:
-    """Pure stereo keeps the original single global A/B surface."""
+def selected_bank(config: dict, roles, mode: str | None = None) -> str:
+    """Pure stereo keeps the original single global A/B surface.
+
+    Surround never selects Global; a stored Global selection reads as All Banks.
+    """
     roles = tuple(roles)
-    if set(roles) == {"main_l", "main_r"}:
+    surround = mode == "surround"
+    fallback = "all" if surround and roles else "global"
+    if not surround and set(roles) == {"main_l", "main_r"}:
         return "global"
     if config["selected_bank"] == "all" and roles:
         return "all"
     try:
-        return resolve_bank(config, config["selected_bank"], roles)["id"]
+        selected = resolve_bank(config, config["selected_bank"], roles)["id"]
     except ValueError:
-        return "global"
+        return fallback
+    return fallback if surround and selected == "global" else selected

@@ -204,6 +204,13 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
         if output.get("lfe_routes"):
             layout[-1]["crossover_sos"] = bass_sos
             layout[-1]["post_crossover_routes"] = output["lfe_routes"]
+            # Further speaker groups low-pass their bass sends separately.
+            groups = [{"routes": group["routes"],
+                       "sos": [[b0, b1, b2, a1, a2] for b0, b1, b2, _, a1, a2
+                               in design_crossover(dict(group["crossover"]), rate)]}
+                      for group in output.get("bass_groups", [])]
+            if groups:
+                layout[-1]["crossover_groups"] = groups
         if plan.get("mode") == "surround":
             layout[-1]["input_positions"] = list(plan["input_positions"])
     return layout

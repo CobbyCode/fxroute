@@ -478,7 +478,9 @@ class MeasurementRouting:
             if mask & (1 << index) or row["name"] in SUB_ROLES:
                 continue
             routes = row.get("routes") or [{"input": row.get("source"), "gain": 1.0}]
-            inputs.update(route["input"] for route in routes if route.get("gain", 1.0) != 0)
+            # The first route is the speaker's own position; later Surround
+            # routes are fold-down/LFE sends that must not add excitation.
+            inputs.update(route["input"] for route in routes[:1] if route.get("gain", 1.0) != 0)
         # Full-plan AutoSub uses only the shared L/R bass bus. Bank-only
         # speaker plans have no front inputs and retain their position routes.
         if raw_helper and inputs & {0, 1}:

@@ -19,6 +19,9 @@
 
 #define MAX_ROUTES 1024
 #define MAX_BIQUADS 32
+/* Separately low-passed pre-crossover buses per output (Surround speaker
+ * groups); group 0 carries matrix/xsos lines, groups 1.. gmatrix/gxsos. */
+#define FXDSP_XO_GROUPS 4U
 #define MAX_LINE 4096
 #define CONV_BLOCK 256
 #define PROCESS_BLOCK 1024
@@ -38,7 +41,7 @@
 #define PEQ_STAGE_DELAY_MAX_MS 10000.0f
 #define OUTPUT_DELAY_MAX_MS 500.0f
 
-typedef struct { unsigned in, out; float gain; int post_crossover; } route;
+typedef struct { unsigned in, out; float gain; int post_crossover; unsigned group; } route;
 typedef struct { float b0, b1, b2, a1, a2, z1, z2; } biquad;
 typedef struct { float re, im; } complex_value;
 typedef struct {
@@ -53,7 +56,8 @@ typedef struct {
     biquad filters[MAX_BIQUADS];
     unsigned filter_count;
     biquad crossover_filters[MAX_BIQUADS];
-    unsigned crossover_filter_count;
+    unsigned char crossover_group[MAX_BIQUADS];
+    unsigned crossover_filter_count, crossover_groups;
     /* Per-output correction bank: raw SOS biquads share filters[] in file
      * order (live_peq addresses array positions); at most one convolver. */
     int has_conv;
@@ -549,7 +553,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     FILE *file = fopen(path, "r");
     fxdsp *d = calloc(1, sizeof *d);
     char line[MAX_LINE], arg[256], backend[1024], type[32], extra;
-    unsigned line_no = 0, out, in;
+    unsigned line_no = 0, out, in, group;
     dsp_stage *current = NULL;
     int stage_section = 0, post_section = 0;
     if (!file || !d) { fail(error,error_size,"cannot open config"); if(file)fclose(file); free(d); return NULL; }
@@ -598,7 +602,9 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
             else if (!stage_section && !post_section && sscanf(p,"outputs %u %c",&d->outputs,&extra)==1) {}
             else if (!stage_section && !post_section && sscanf(p,"matrix %u %u %f %c",&out,&in,&route_gain,&extra)==3 && d->route_count<MAX_ROUTES) { d->routes[d->route_count].out=out; d->routes[d->route_count].in=in; d->routes[d->route_count++].gain=route_gain; }
             else if (!stage_section && !post_section && sscanf(p,"postmatrix %u %u %f %c",&out,&in,&route_gain,&extra)==3 && d->route_count<MAX_ROUTES && isfinite(route_gain)) { route *r=&d->routes[d->route_count++]; r->out=out; r->in=in; r->gain=route_gain; r->post_crossover=1; }
-            else if (!stage_section && !post_section && sscanf(p,"xsos %u %f %f %f %f %f %c",&out,&b0,&b1,&b2,&a1,&a2,&extra)==6 && out<FXDSP_MAX_CHANNELS && d->out[out].crossover_filter_count<MAX_BIQUADS && isfinite(b0) && isfinite(b1) && isfinite(b2) && isfinite(a1) && isfinite(a2) && sos_stable(a1,a2)) { biquad *target=&d->out[out].crossover_filters[d->out[out].crossover_filter_count++]; target->b0=b0; target->b1=b1; target->b2=b2; target->a1=a1; target->a2=a2; }
+            else if (!stage_section && !post_section && sscanf(p,"xsos %u %f %f %f %f %f %c",&out,&b0,&b1,&b2,&a1,&a2,&extra)==6 && out<FXDSP_MAX_CHANNELS && d->out[out].crossover_filter_count<MAX_BIQUADS && isfinite(b0) && isfinite(b1) && isfinite(b2) && isfinite(a1) && isfinite(a2) && sos_stable(a1,a2)) { d->out[out].crossover_group[d->out[out].crossover_filter_count]=0; biquad *target=&d->out[out].crossover_filters[d->out[out].crossover_filter_count++]; target->b0=b0; target->b1=b1; target->b2=b2; target->a1=a1; target->a2=a2; }
+            else if (!stage_section && !post_section && sscanf(p,"gmatrix %u %u %u %f %c",&out,&group,&in,&route_gain,&extra)==4 && group>0U && group<FXDSP_XO_GROUPS && out<FXDSP_MAX_CHANNELS && d->route_count<MAX_ROUTES && isfinite(route_gain)) { route *r=&d->routes[d->route_count++]; r->out=out; r->in=in; r->gain=route_gain; r->group=group; if (d->out[out].crossover_groups<=group) d->out[out].crossover_groups=group+1U; }
+            else if (!stage_section && !post_section && sscanf(p,"gxsos %u %u %f %f %f %f %f %c",&out,&group,&b0,&b1,&b2,&a1,&a2,&extra)==7 && group>0U && group<FXDSP_XO_GROUPS && out<FXDSP_MAX_CHANNELS && d->out[out].crossover_filter_count<MAX_BIQUADS && isfinite(b0) && isfinite(b1) && isfinite(b2) && isfinite(a1) && isfinite(a2) && sos_stable(a1,a2)) { d->out[out].crossover_group[d->out[out].crossover_filter_count]=(unsigned char)group; biquad *target=&d->out[out].crossover_filters[d->out[out].crossover_filter_count++]; target->b0=b0; target->b1=b1; target->b2=b2; target->a1=a1; target->a2=a2; if (d->out[out].crossover_groups<=group) d->out[out].crossover_groups=group+1U; }
             else if (!stage_section && !post_section && sscanf(p,"peq %u %31s %f %f %f %c",&out,type,&x,&y,&z,&extra)==5 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && !design(&d->out[out].filters[d->out[out].filter_count],type,d->rate,x,y,z)) d->out[out].filter_count++;
             else if (!stage_section && !post_section && sscanf(p,"sos %u %f %f %f %f %f %c",&out,&b0,&b1,&b2,&a1,&a2,&extra)==6 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && isfinite(b0) && isfinite(b1) && isfinite(b2) && isfinite(a1) && isfinite(a2) && sos_stable(a1,a2)) { biquad *target=&d->out[out].filters[d->out[out].filter_count++]; target->b0=b0; target->b1=b1; target->b2=b2; target->a1=a1; target->a2=a2; target->z1=target->z2=0.0f; }
             else if (!stage_section && !post_section && sscanf(p,"oconv %u %u %f %f %f %f %n",&out,&in,&x,&y,&z,&route_gain,&consumed)==6 && out<FXDSP_MAX_CHANNELS && !d->out[out].has_conv) {
@@ -1070,12 +1076,17 @@ static void process_output_bank(void *context, unsigned channel) {
     process_job *j = context;
     fxdsp *d = j->d; output_state *state = &d->out[channel];
     for (size_t n = 0; n < j->count; n++) {
-        float value = 0.0f;
+        float bus[FXDSP_XO_GROUPS] = {0.0f};
         for (unsigned order = d->route_start[channel]; order < d->route_start[channel + 1]; order++) {
             const route *r = &d->routes[d->route_order[order]];
-            if (!r->post_crossover) value += d->scratch[j->source][r->in][n] * r->gain;
+            if (!r->post_crossover) bus[r->group] += d->scratch[j->source][r->in][n] * r->gain;
         }
-        for (unsigned filter = 0; filter < state->crossover_filter_count; filter++) value = run_biquad(&state->crossover_filters[filter], value);
+        for (unsigned filter = 0; filter < state->crossover_filter_count; filter++) {
+            unsigned group = state->crossover_group[filter];
+            bus[group] = run_biquad(&state->crossover_filters[filter], bus[group]);
+        }
+        float value = bus[0];
+        for (unsigned group = 1; group < state->crossover_groups; group++) value += bus[group];
         for (unsigned order = d->route_start[channel]; order < d->route_start[channel + 1]; order++) {
             const route *r = &d->routes[d->route_order[order]];
             if (r->post_crossover) value += d->scratch[j->source][r->in][n] * r->gain;

@@ -696,9 +696,13 @@
                                         <button type="button" class="sub-side-tab is-active" id="effects-subwoofer-tab-left" data-sub-side="left" role="tab" aria-selected="true">Sub L</button>
                                         <button type="button" class="sub-side-tab" id="effects-subwoofer-tab-right" data-sub-side="right" role="tab" aria-selected="false">Sub R</button>
                                         <button type="button" class="sub-side-tab hidden" id="effects-subwoofer-tab-both" role="tab" aria-selected="false">Sub L/R</button>
+                                        <button type="button" class="sub-side-tab hidden" data-sub-group="front" role="tab" aria-selected="false">Front L/R</button>
+                                        <button type="button" class="sub-side-tab hidden" data-sub-group="center" role="tab" aria-selected="false">Center</button>
+                                        <button type="button" class="sub-side-tab hidden" data-sub-group="side" role="tab" aria-selected="false">Side L/R</button>
+                                        <button type="button" class="sub-side-tab hidden" data-sub-group="rear" role="tab" aria-selected="false">Rear L/R</button>
                                     </div>
                                     <label class="crossover-link-label hidden" id="effects-subwoofer-link-wrap" for="effects-subwoofer-link">
-                                        <input type="checkbox" id="effects-subwoofer-link" checked> Link L/R
+                                        <input type="checkbox" id="effects-subwoofer-link" checked> <span id="effects-subwoofer-link-text">Link L/R</span>
                                     </label>
                                 </div>
                                 <div class="effects-subwoofer-preview-wrap">
@@ -1765,7 +1769,7 @@
     <script src="/static/measurement_flows.js?v=0.9.41"></script>
     <script src="/static/ui_helpers.js?v=0.9.1"></script>
     <script src="/static/tooltip.js?v=0.9.2"></script>
-    <script src="/static/output_state.js?v=0.9.17"></script>
+    <script src="/static/output_state.js?v=0.9.18"></script>
     <script src="/static/crossover.js?v=0.9.7"></script>
     <script src="/static/crossover_view.js?v=0.9.2"></script>
     <script src="/static/crossover_ui.js?v=0.9.4"></script>
@@ -1775,7 +1779,7 @@
     <script src="/static/provider_settings.js?v=0.9.2"></script>
     <script src="/static/settings_system.js?v=0.9.2"></script>
     <script src="/static/src_settings.js?v=0.1.6"></script>
-    <script src="/static/subwoofer_ui.js?v=0.9.5"></script>
+    <script src="/static/subwoofer_ui.js?v=0.9.6"></script>
     <script src="/static/output_system_controller.js?v=0.9.1"></script>
     <script src="/static/output_bank_ui.js?v=0.9.7"></script>
     <script src="/static/output_effects_ui.js?v=0.9.6"></script>
@@ -1794,7 +1798,7 @@
     <script src="/static/playback_core.js?v=0.9.8"></script>
     <script src="/static/playback_ui.js?v=0.9.6"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.276"></script>
+    <script src="/static/app.js?v=0.9.277"></script>
     <script src="/static/streaming.js?v=0.9.79"></script>
 </body>
 </html>

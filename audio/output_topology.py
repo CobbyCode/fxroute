@@ -11,6 +11,8 @@ MODES = ("stereo", "stereo-sub", "surround")
 MAIN_ROLES = ("main_l", "main_r")
 SURROUND_SPEAKERS = ("center", "side_l", "side_r", "rear_l", "rear_r")
 SURROUND_POSITIONS = ("FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR")
+# Speaker groups of Surround bass management, in display order.
+SURROUND_GROUPS = ("front", "center", "side", "rear")
 SUB_ROLES = ("sub_l", "sub_r", "sub1", "sub2")
 WAYS = ("low", "low_mid", "mid", "high")
 SPEAKER_ROLES = tuple(f"{side}_{way}" for side in ("left", "right") for way in WAYS)
@@ -34,6 +36,15 @@ def side_for_role(role: str) -> str:
     if role in ("left_low", "main_l", "sub_l") or str(role).startswith("left_"):
         return "left"
     return "right"
+
+
+def surround_group(role: str) -> str:
+    """Surround bass-management group of a speaker role (fronts include ways)."""
+    if role in MAIN_ROLES or role in SPEAKER_ROLES:
+        return "front"
+    if role in SURROUND_SPEAKERS:
+        return role.split("_")[0]
+    raise ValueError(f"Role {role} belongs to no Surround speaker group")
 
 
 def validate_assignments(mode: str, assignments: object, *, crossover_enabled: bool = False) -> tuple[str, ...]:
@@ -82,6 +93,10 @@ def derive_topology(mode: str, assignments: object, *, channels: int | None = No
     issues = []
     if mode == "surround" and "sub2" in subs and "sub1" not in subs:
         issues.append("Surround Sub 2 requires Sub 1")
+    if mode == "surround":
+        for label, pair in (("Side", ("side_l", "side_r")), ("Rear", ("rear_l", "rear_r"))):
+            if len(active & set(pair)) == 1:
+                issues.append(f"Surround {label} requires {label} L and {label} R")
     if len(subs) > 2:
         issues.append("At most two distinct sub roles are supported")
     left = tuple(role for role in roles if role.startswith("left_"))

@@ -152,6 +152,19 @@ class SurroundMeasurementTests(unittest.TestCase):
                                     (f"{PLAY}:output_FL", "fxroute_dsp:input_7"),
                                     (f"{PLAY}:output_FR", "fxroute_dsp:input_8")})
 
+    def test_fold_down_sends_add_no_sweep_excitation(self):
+        roles = ["main_l", "main_r", "rear_l", "rear_r", "sub1", "sub2"]
+        self.state = switch_mode(set_mode_routing(default_output_state(), "surround", "device", roles), "surround")
+        self.plan = self.compile(self.state)
+        self.layout = layout_from_plan(self.plan, resolve_ir=lambda _: self.fail("Unexpected IR"))
+        fixture, routing, route = self.route("rear")
+        self.link(fixture, routing, route)
+        self.assert_links(fixture, {(f"{PLAY}:output_FL", "fxroute_dsp:input_7"),
+                                    (f"{PLAY}:output_FR", "fxroute_dsp:input_8")})
+        fixture, routing, route = self.route("main")
+        self.link(fixture, routing, route)
+        self.assert_links(fixture, set())
+
     def test_sub_measurement_uses_only_existing_shared_lr_bus(self):
         for bank in ("sub1", "sub2"):
             with self.subTest(bank=bank):
