@@ -453,7 +453,7 @@ import playback.state as playback_state_helpers
 from playback.state import PlaybackState
 import playback.source_policy as source_policy
 import audio.samplerate as samplerate
-from audio import src_policy
+from audio import alsa_ctl, src_policy
 from library.core import (
     LibraryScanner,
 )
@@ -907,7 +907,7 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     # Also pushes the overview to clients (SourceTransitions.sync_source_mode_state).
     sync_peak_monitor_for_source_mode_state=lambda overview: source_transitions.sync_source_mode_state(overview),
     get_output_mode=lambda: get_output_service().ensure_state()["active_mode"],
-    sync_digital_input=lambda source, left, right: _sync_surround_input(source, left, right),
+    sync_digital_input=lambda source, left, right, card: _sync_surround_input(source, left, right, card),
     stop_digital_input=lambda: _stop_surround_input(),
 ))
 
@@ -3163,7 +3163,7 @@ async def lifespan(app: FastAPI):
 
 async def _shutdown_lifespan_resources() -> None:
     global settings, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator
-    global _surround_input, _surround_carrier_owned
+    global _surround_input, _surround_carrier_owned, _surround_clock_card
 
     async def cleanup(label: str, operation) -> None:
         nonlocal cleanup_cancelled
@@ -3271,6 +3271,7 @@ async def _shutdown_lifespan_resources() -> None:
         await cleanup("digital-input", _surround_input.stop)
     _surround_input = None
     _surround_carrier_owned = False
+    _surround_clock_card = None
     if runtime.peak_monitor is not None:
         await cleanup("peak-monitor", runtime.peak_monitor.stop)
     if hardware_controller is not None:
@@ -5473,11 +5474,24 @@ async def apply_audio_output_state(request: Request):
 
 _surround_input = None
 _surround_carrier_owned = False
+_surround_clock_card: int | None = None
 
 
-async def _set_surround_carrier_owned(enabled: bool) -> None:
-    """Borrow the carrier rate through the coordinator, without changing policy."""
-    global _surround_carrier_owned
+async def _select_surround_clock(card: int | None, *, digital: bool) -> None:
+    selected = await asyncio.to_thread(alsa_ctl.select_clock_source, card, digital=digital)
+    if selected:
+        logger.info("Digital carrier clock: ALSA card %s now runs on %s", card, selected)
+
+
+async def _set_surround_carrier_owned(enabled: bool, card: int | None = None) -> None:
+    """Borrow the carrier rate through the coordinator, without changing policy.
+
+    While owned, the clock of the input's card follows its locked S/PDIF
+    receiver (rechecked on every call), so the capture never slips against
+    the source. Releasing returns that clock to Internal before the rate
+    moves, so later playback is not held to the source's clock.
+    """
+    global _surround_carrier_owned, _surround_clock_card
     if not enabled and not _surround_carrier_owned:
         return
     status = await asyncio.to_thread(get_samplerate_status)
@@ -5494,18 +5508,25 @@ async def _set_surround_carrier_owned(enabled: bool) -> None:
             if confirmed.get("active_rate") != 48000:
                 raise RuntimeError("Digital carrier clock did not settle at 48000 Hz")
         _surround_carrier_owned = True
+        if card is not None:
+            if _surround_clock_card not in (None, card):
+                await _select_surround_clock(_surround_clock_card, digital=False)
+            _surround_clock_card = card
+            await _select_surround_clock(card, digital=True)
     elif _surround_carrier_owned:
+        await _select_surround_clock(_surround_clock_card, digital=False)
+        _surround_clock_card = None
         await _transition_sample_rate_policy(samplerate.load_sample_rate_policy(), detail="digital-input-clock-release")
         _surround_carrier_owned = False
 
 
-async def _sync_surround_input(source: str, left: str, right: str) -> None:
+async def _sync_surround_input(source: str, left: str, right: str, card: int | None = None) -> None:
     global _surround_input
     if _measurement_session_owns_live_rate():
         if runtime.dsp_runtime is not None:
             await runtime.dsp_runtime.set_surround_input(False)
         return
-    await _set_surround_carrier_owned(True)
+    await _set_surround_carrier_owned(True, card)
     if _surround_input is None:
         from audio.digital_input import DigitalInput
         _surround_input = DigitalInput()

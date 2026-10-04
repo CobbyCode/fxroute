@@ -104,5 +104,63 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
             transition.assert_not_awaited()
 
 
+
+class CarrierClockTests(unittest.IsolatedAsyncioTestCase):
+    """The input card's clock moves only on a settled 48 kHz carrier."""
+
+    def setUp(self):
+        self.calls = []
+        self.rates = [{"active_rate": 48000, "force_rate": 48000}]
+
+        def status():
+            return self.rates.pop(0) if len(self.rates) > 1 else self.rates[0]
+
+        def select(card, *, digital):
+            self.calls.append(("clock", card, digital))
+            return None
+
+        async def coordinated(request):
+            self.calls.append(("rate", request.target_rate))
+
+        async def release(policy, *, detail):
+            self.calls.append(("policy", detail))
+
+        orchestration = SimpleNamespace(sample_rate_policy_request=AsyncMock(
+            return_value=main.TransitionRequest(operation="policy", source="local", target_rate=44100)))
+        for patcher in (
+            patch.object(main, "_surround_carrier_owned", False),
+            patch.object(main, "_surround_clock_card", None),
+            patch.object(main, "get_samplerate_status", status),
+            patch.object(main.alsa_ctl, "select_clock_source", select),
+            patch.object(main, "_run_coordinated_transition", coordinated),
+            patch.object(main, "_transition_sample_rate_policy", release),
+            patch.object(main.samplerate, "load_sample_rate_policy", return_value={"mode": "auto"}),
+            patch.object(main.playback_orchestration, "configured", return_value=orchestration),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def test_clock_follows_the_receiver_after_the_rate_settles(self):
+        self.rates = [{"active_rate": 44100, "force_rate": 0}, {"active_rate": 48000, "force_rate": 48000}]
+        await main._set_surround_carrier_owned(True, 3)
+        self.assertEqual(self.calls, [("rate", 48000), ("clock", 3, True)])
+        await main._set_surround_carrier_owned(True, 3)
+        self.assertEqual(self.calls[-1], ("clock", 3, True), "every sync rechecks the lock")
+
+    async def test_release_returns_the_clock_before_the_rate_moves(self):
+        await main._set_surround_carrier_owned(True, 3)
+        await main._set_surround_carrier_owned(True)
+        self.assertEqual(main._surround_clock_card, 3, "a card-less sync keeps the clock owner")
+        await main._set_surround_carrier_owned(False)
+        self.assertEqual(self.calls[-2:], [("clock", 3, False), ("policy", "digital-input-clock-release")])
+        self.assertFalse(main._surround_carrier_owned)
+        self.assertIsNone(main._surround_clock_card)
+
+    async def test_switching_cards_releases_the_previous_clock(self):
+        await main._set_surround_carrier_owned(True, 3)
+        await main._set_surround_carrier_owned(True, 5)
+        self.assertEqual(self.calls, [("clock", 3, True), ("clock", 3, False), ("clock", 5, True)])
+
+
 if __name__ == "__main__":
     unittest.main()

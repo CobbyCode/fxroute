@@ -2,6 +2,7 @@
 """Input auto-select: signal analysis, hysteresis, switching and return."""
 
 import asyncio
+import ctypes
 import json
 import sys
 import tempfile
@@ -13,8 +14,9 @@ import numpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import audio.alsa_ctl as alsa_ctl
 import audio.input_activity as activity
-from audio.alsa_ctl import is_digital_lock_control, read_digital_lock
+from audio.alsa_ctl import clock_source_target, is_digital_lock_control, read_digital_lock, select_clock_source
 from audio.input_activity import ActivityDetector, BlockAnalysis, analyze_block, detect_encoding
 from audio.input_auto_select import InputAutoSelect, InputAutoSelectDependencies, selection_key
 from audio.samplerate.parsing import _parse_pactl_sources_detailed
@@ -205,6 +207,33 @@ class AlsaLockTests(unittest.TestCase):
         with patch("audio.alsa_ctl.read_boolean_controls", side_effect=OSError("denied")):
             self.assertIsNone(read_digital_lock(3))
         self.assertIsNone(read_digital_lock(None))
+
+    def test_clock_follows_only_a_locked_digital_source(self):
+        names = ["Internal", "S/PDIF", "ADAT"]
+        locked = {"Internal Validity": True, "S/PDIF Validity": True, "ADAT Validity": True}
+        unlocked = {**locked, "S/PDIF Validity": False}
+        self.assertEqual(clock_source_target(names, 0, locked, digital=True), 1)
+        self.assertIsNone(clock_source_target(names, 0, unlocked, digital=True), "no lock: stay internal")
+        self.assertIsNone(clock_source_target(names, 1, locked, digital=True))
+        self.assertIsNone(clock_source_target(names, 2, locked, digital=True), "ADAT is the user's choice")
+        self.assertIsNone(clock_source_target(["Clock 1", "S/PDIF"], 0, locked, digital=True))
+
+    def test_clock_release_returns_only_digital_to_internal(self):
+        names = ["Internal", "S/PDIF", "ADAT"]
+        self.assertEqual(clock_source_target(names, 1, {}, digital=False), 0)
+        self.assertIsNone(clock_source_target(names, 0, {}, digital=False))
+        self.assertIsNone(clock_source_target(names, 2, {}, digital=False))
+        self.assertIsNone(clock_source_target(names, 7, {}, digital=False))
+
+    def test_clock_selection_without_a_card_is_a_no_op(self):
+        self.assertIsNone(select_clock_source(None, digital=True))
+        with patch("audio.alsa_ctl.os.open", side_effect=FileNotFoundError("gone")):
+            self.assertIsNone(select_clock_source(3, digital=False))
+
+    @unittest.skipUnless(ctypes.sizeof(ctypes.c_long) == 8, "LP64 kernel ABI sizes")
+    def test_control_structs_match_the_kernel_abi(self):
+        self.assertEqual(ctypes.sizeof(alsa_ctl._ElemInfo), 272)
+        self.assertEqual(ctypes.sizeof(alsa_ctl._ElemValue), 1224)
 
     def test_source_details_carry_the_alsa_card(self):
         details = _parse_pactl_sources_detailed(

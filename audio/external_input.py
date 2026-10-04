@@ -46,7 +46,8 @@ class ExternalInputRoutingDependencies:
     get_source_transition_lock: Callable[[], asyncio.Lock] | None = None
     sync_peak_monitor_for_source_mode_state: Callable[[dict[str, Any]], Awaitable[None]] | None = None
     get_output_mode: Callable[[], str] | None = None
-    sync_digital_input: Callable[[str, str, str], Awaitable[None]] | None = None
+    # (source, left, right, ALSA card of the source or None)
+    sync_digital_input: Callable[[str, str, str, int | None], Awaitable[None]] | None = None
     stop_digital_input: Callable[[], Awaitable[None]] | None = None
 
 
@@ -202,7 +203,8 @@ class ExternalInputRouting:
             if self.loopback_source_name is not None:
                 await self.disable()
             try:
-                await self._deps.sync_digital_input(str(source_name), left, right)
+                await self._deps.sync_digital_input(str(source_name), left, right,
+                                                    current_input.get("alsa_card"))
             except BaseException:
                 if self._deps.stop_digital_input is not None:
                     await self._deps.stop_digital_input()

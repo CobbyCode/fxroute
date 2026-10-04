@@ -165,18 +165,18 @@ class SourceOrderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_surround_never_links_the_carrier_to_stereo_ingress(self):
         overview = {"mode": "external-input", "selected_input": {
-            "key": "scarlett::pair:9-10", "source_key": "scarlett",
+            "key": "scarlett::pair:9-10", "source_key": "scarlett", "alsa_card": 3,
             "left_channel": "AUX8", "right_channel": "AUX9"}}
         calls = []
-        async def digital(source, left, right):
-            calls.append((source, left, right))
+        async def digital(source, left, right, card):
+            calls.append((source, left, right, card))
         routing = ExternalInputRouting(ExternalInputRoutingDependencies(
             get_audio_source_overview=lambda: overview, get_output_mode=lambda: "surround",
             sync_digital_input=digital, stop_digital_input=AsyncMock()))
         with patch("audio.pw_link.connect_ports", side_effect=AssertionError("carrier leaked to PCM")):
             await routing.sync()
             await routing.sync()
-        self.assertEqual(calls, [("scarlett", "AUX8", "AUX9")] * 2)
+        self.assertEqual(calls, [("scarlett", "AUX8", "AUX9", 3)] * 2, "the card owns the carrier clock")
 
     async def test_paused_app_drift_cannot_override_external_rate_owner(self):
         def stale_track():
