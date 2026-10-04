@@ -173,6 +173,12 @@ def get_output_volume() -> int:
     """Read the saved FXRoute sink by name, even if the system default drifted."""
     selected = _selected_output_name()
     if selected:
+        from audio.samplerate.parsing import is_hifi_combined_key, real_sinks_for_output_key
+
+        if is_hifi_combined_key(selected):
+            members = [sink for sink in real_sinks_for_output_key(selected) if not is_hifi_combined_key(sink)]
+            if members:
+                return max(_get_target_volume(member, sink=True) for member in members)
         return _get_target_volume(selected, sink=True)
     return _get_target_volume(TARGET_SINK)
 
@@ -188,6 +194,12 @@ def get_output_volume_unclamped() -> int:
     """
     selected = _selected_output_name()
     if selected:
+        from audio.samplerate.parsing import is_hifi_combined_key, real_sinks_for_output_key
+
+        if is_hifi_combined_key(selected):
+            members = [sink for sink in real_sinks_for_output_key(selected) if not is_hifi_combined_key(sink)]
+            if members:
+                return max(_get_target_volume(member, clamp_upper=False, sink=True) for member in members)
         return _get_target_volume(selected, clamp_upper=False, sink=True)
     return _get_target_volume(TARGET_SINK, clamp_upper=False)
 
@@ -195,6 +207,15 @@ def get_output_volume_unclamped() -> int:
 def set_output_volume(percent: int | float) -> int:
     selected = _selected_output_name()
     if selected:
+        from audio.samplerate.parsing import is_hifi_combined_key, real_sinks_for_output_key
+
+        if is_hifi_combined_key(selected):
+            members = [sink for sink in real_sinks_for_output_key(selected) if not is_hifi_combined_key(sink)]
+            if members:
+                # Keep write and readback on stable names across node rebuilds;
+                # all siblings track the same master level.
+                verified = [_set_target_volume(member, percent, sink=True, master=True) for member in members]
+                return max(verified)
         # Keep write and readback on one stable name across node ID rebuilds.
         return _set_target_volume(selected, percent, sink=True, master=True)
     return _set_target_volume(TARGET_SINK, percent)

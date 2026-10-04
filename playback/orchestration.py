@@ -22,6 +22,7 @@ import audio.samplerate as samplerate
 from audio.output_routing import output_route_pairs
 from audio.output_ports import (
     HARDWARE_CHANNEL_ORDER,
+    hardware_link_target,
     hardware_playback_port_fallback_from_mode,
     hardware_playback_ports_from_mode,
     resolve_hardware_playback_ports,
@@ -564,7 +565,7 @@ class PlaybackOrchestrator:
         # signal derivation so wider graphs are not misread as bypass.
         route_pairs = planned_pairs if planned_pairs is not None else output_route_pairs(
             output_mode, hardware_ports)
-        output_targets = tuple(f"{output_key}:{port}" for _, port in route_pairs)
+        output_targets = tuple(hardware_link_target(output_key, port) for _, port in route_pairs)
         dsp_ports = tuple(f"fxroute_dsp:output_{signal}" for signal, _ in route_pairs)
         result["output_targets"] = output_targets
         ingress_sources = ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR")
@@ -584,7 +585,7 @@ class PlaybackOrchestrator:
         for node in dict.fromkeys(source_policy.GRAPH_NODE_BY_SOURCE.values()):
             for channel in HARDWARE_CHANNEL_ORDER:
                 bypass_ports.extend((f"{node}:output_{channel}", f"{node}:playback_{channel}"))
-        all_hardware_targets = tuple(f"{output_key}:{port}" for port in hardware_ports)
+        all_hardware_targets = tuple(hardware_link_target(output_key, port) for port in hardware_ports)
         result["direct_source_to_hw_present"] = any(
             self._deps.contains_link(link_text, port, target)
             for port in bypass_ports

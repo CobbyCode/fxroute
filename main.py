@@ -468,7 +468,7 @@ import dsp.preset_loading as preset_loading
 import playback.orchestration as playback_orchestration
 from audio import pw_link
 from audio.input_links import input_links_present
-from audio.output_ports import hardware_playback_port_fallback_from_mode
+from audio.output_ports import hardware_link_target, hardware_playback_port_fallback_from_mode
 from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
 from audio.output_state import (
     FILTER_SLOPES,
@@ -1852,11 +1852,11 @@ def _sub_output_targets(runtime_config: dict, *, output_key: str, hardware_ports
             role = str((channel or {}).get("role") or (channel or {}).get("name") or "")
             port = routes.get(index)
             if role in SUB_ROLES and port:
-                targets[side_for_role(role)] = (f"fxroute_dsp:output_{index}", f"{device}:{port}")
+                targets[side_for_role(role)] = (f"fxroute_dsp:output_{index}", hardware_link_target(device, port))
         return targets
     for side, index in (("left", 3), ("right", 4)):
         if index <= len(hardware_ports) and device:
-            targets[side] = (f"fxroute_dsp:output_{index}", f"{device}:{hardware_ports[index - 1]}")
+            targets[side] = (f"fxroute_dsp:output_{index}", hardware_link_target(device, hardware_ports[index - 1]))
     return targets
 
 
@@ -1896,7 +1896,7 @@ async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> di
         hardware_ports = list(hardware_playback_port_fallback_from_mode(output_mode))
     if not hardware_ports:
         hardware_ports = ["playback_FL", "playback_FR", "playback_RL", "playback_RR"]
-    hw_targets = [f"{output_key}:{port}" for port in hardware_ports[:4]] if output_key else []
+    hw_targets = [hardware_link_target(output_key, port) for port in hardware_ports[:4]] if output_key else []
     hw_fl = hw_targets[0] if len(hw_targets) > 0 else ""
     hw_fr = hw_targets[1] if len(hw_targets) > 1 else ""
     sub_targets = _sub_output_targets(snapshot.get("config") or {},

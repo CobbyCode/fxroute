@@ -21,6 +21,7 @@ from .parsing import (
     _parse_pactl_sinks_short,
     _run_command,
     card_name_for_sink_key,
+    combined_key_for_selected_key,
     successor_sink_key,
 )
 from .persistence import _load_audio_output_selection
@@ -78,6 +79,16 @@ def recover_saved_output_sink() -> dict[str, Any]:
     if live == str(selected_key):
         report["reason"] = "saved-sink-present"
         return report
+    grouped = combined_key_for_selected_key(str(selected_key), _sink_names())
+    if grouped is not None:
+        report["reason"] = "sink-present-under-new-name"
+        report["sink_key"] = grouped
+        logger.info(
+            "Saved output sink %s is already present as %s; no WirePlumber re-probe needed",
+            selected_key,
+            grouped,
+        )
+        return report
     if live is not None:
         report["reason"] = "sink-present-under-new-name"
         report["sink_key"] = live
@@ -103,11 +114,23 @@ def recover_saved_output_sink() -> dict[str, Any]:
     while time.monotonic() < deadline:
         time.sleep(RECOVERY_POLL_SECONDS)
         try:
-            live = successor_sink_key(str(selected_key), _sink_names())
+            names = _sink_names()
+            live = successor_sink_key(str(selected_key), names)
             if live == str(selected_key):
                 report["recovered"] = True
                 report["reason"] = "sink-restored"
                 logger.info("Saved output sink %s restored after WirePlumber re-probe", selected_key)
+                return report
+            grouped = combined_key_for_selected_key(str(selected_key), names)
+            if grouped is not None:
+                report["recovered"] = True
+                report["reason"] = "sink-restored-under-new-name"
+                report["sink_key"] = grouped
+                logger.info(
+                    "Saved output sink %s restored as %s after WirePlumber re-probe",
+                    selected_key,
+                    grouped,
+                )
                 return report
             if live is not None:
                 report["recovered"] = True

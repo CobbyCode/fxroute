@@ -78,6 +78,118 @@ def card_name_for_sink_key(key: str | None) -> str | None:
     return f"alsa_card.{device}"
 
 
+def is_hifi_split_sink_key(key: str | None) -> bool:
+    """True for one UCM HiFi split sink (e.g. UMC ``HiFi__Line1__sink``).
+
+    Split siblings share the same ALSA card and expose two channels each;
+    the Device selector must group them into one physical device instead of
+    listing bare ``Line A``/``Line B`` entries.
+    """
+    normalized = (key or "").strip()
+    if not normalized.startswith("alsa_output."):
+        return False
+    if normalized.endswith(".HiFi__combined"):
+        return False
+    return ".HiFi__" in normalized and normalized.endswith("__sink")
+
+
+def is_hifi_combined_key(key: str | None) -> bool:
+    """True for a virtual HiFi split-group key (``*.HiFi__combined``)."""
+    normalized = (key or "").strip()
+    return normalized.startswith("alsa_output.") and normalized.endswith(".HiFi__combined")
+
+
+def combined_hifi_key_for_card(card: str | None) -> str | None:
+    """Virtual output key grouping a card's HiFi split sinks (None if no card)."""
+    normalized = (card or "").strip()
+    if not normalized.startswith("alsa_card."):
+        return None
+    device = normalized[len("alsa_card."):]
+    if not device:
+        return None
+    return f"alsa_output.{device}.HiFi__combined"
+
+
+def group_hifi_split_sinks(sink_names: Iterable[str] | None) -> dict[str, list[str]]:
+    """Group UCM HiFi split sinks by ALSA card (only complete pairs).
+
+    Returns ``{card: [member_keys...]}`` in stable sink-name order for cards
+    with two or more split siblings.  A lone split sink stays ungrouped so a
+    half-present profile never claims the full device.
+    """
+    by_card: dict[str, list[str]] = {}
+    for raw in sink_names or []:
+        name = str(raw or "").strip()
+        if not name or not is_hifi_split_sink_key(name):
+            continue
+        card = card_name_for_sink_key(name)
+        if card is None:
+            continue
+        by_card.setdefault(card, []).append(name)
+    grouped: dict[str, list[str]] = {}
+    for card, members in by_card.items():
+        ordered = sorted(set(members))
+        if len(ordered) >= 2:
+            grouped[card] = ordered
+    return grouped
+
+
+def combined_key_for_selected_key(
+    saved_key: str | None, sink_names: Iterable[str] | None
+) -> str | None:
+    """Virtual HiFi group key for a saved selection on a split card, if live.
+
+    Maps a legacy single-sink name (analog-surround), a split member, or an
+    already-combined key to the card's ``*.HiFi__combined`` key when that
+    card currently exposes a complete split pair.  Otherwise None: single-sink
+    successor logic stays authoritative and ambiguous cards never resolve.
+    """
+    saved = (saved_key or "").strip()
+    if not saved:
+        return None
+    if is_hifi_combined_key(saved):
+        card = card_name_for_sink_key(saved)
+        groups = group_hifi_split_sinks(sink_names)
+        if card and card in groups:
+            return combined_hifi_key_for_card(card)
+        return None
+    card = card_name_for_sink_key(saved)
+    if card is None:
+        return None
+    groups = group_hifi_split_sinks(sink_names)
+    if card in groups:
+        return combined_hifi_key_for_card(card)
+    return None
+
+
+def real_sinks_for_output_key(output_key: str | None) -> list[str]:
+    """Live ALSA sink names behind an output key (combined expands to members).
+
+    Single-sink keys pass through unchanged.  A virtual ``*.HiFi__combined``
+    key expands to its card's live split members; when the group is gone the
+    unique card-mate successor is used so volume/suspend keep working across
+    profile switches, otherwise the virtual key is returned for a clear error.
+    """
+    normalized = (output_key or "").strip()
+    if not normalized:
+        return []
+    if not is_hifi_combined_key(normalized):
+        return [normalized]
+    try:
+        live = [sink.get("name") for sink in _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))]
+    except Exception:
+        return [normalized]
+    live = [str(name or "").strip() for name in live if str(name or "").strip()]
+    groups = group_hifi_split_sinks(live)
+    card = card_name_for_sink_key(normalized)
+    if card and card in groups:
+        return list(groups[card])
+    successor = successor_sink_key(normalized, live)
+    if successor and successor != normalized:
+        return [successor]
+    return [normalized]
+
+
 def successor_sink_key(saved_key: str | None, sink_names: Iterable[str] | None) -> str | None:
     """Resolve a saved sink against live sink names through stable identity.
 

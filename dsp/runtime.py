@@ -22,6 +22,7 @@ from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
 from audio.output_routing import output_route_pairs
 from audio.output_ports import (
     HARDWARE_CHANNEL_ORDER,
+    hardware_link_target,
     hardware_playback_port_fallback_from_mode,
     resolve_hardware_playback_ports,
     warn_semantic_playback_fallback,
@@ -516,8 +517,9 @@ class DSPRuntime:
         # The source nodes keep their fixed output_FL/FR/RL/RR naming; only
         # the hardware side is resolved, so a direct source→sink link is
         # removed no matter how the device names its playback ports.
+        # Split-group ports are already qualified (sink:port).
         candidates = {
-            PipeWireLink(f"{node}:output_{channel}", f"{self._config.output_key}:{port}")
+            PipeWireLink(f"{node}:output_{channel}", hardware_link_target(self._config.output_key, port))
             for node in DIRECT_SOURCE_NODES
             for port in self._config.hardware_ports
             for channel in HARDWARE_CHANNEL_ORDER
@@ -541,7 +543,7 @@ class DSPRuntime:
                     for channel in HARDWARE_CHANNEL_ORDER:
                         await self._run((
                             "pw-link", "-d", f"{node}:output_{channel}",
-                            f"{self._config.output_key}:{port}",
+                            hardware_link_target(self._config.output_key, port),
                         ))
             return
         live = {PipeWireLink(source, target) for source, target in parsed}
@@ -1253,7 +1255,7 @@ class DSPRuntime:
     async def _reconcile_output_links(self, config: DSPRuntimeConfig) -> None:
         """Reconcile live hardware edges, including links created by other clients."""
         desired = [
-            PipeWireLink(f"{DSP_NODE_NAME}:output_{signal}", f"{config.output_key}:{port}")
+            PipeWireLink(f"{DSP_NODE_NAME}:output_{signal}", hardware_link_target(config.output_key, port))
             for signal, port in config_route_pairs(config)
         ]
         result = await self._run(("pw-link", "-l"))

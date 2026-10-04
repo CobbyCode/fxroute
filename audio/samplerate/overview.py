@@ -14,6 +14,7 @@ from audio.output_ports import (
     channel_suffix_for_position,
     parse_channel_map_positions,
     playback_ports_from_channel_map,
+    resolve_group_hardware_playback_ports,
     resolve_hardware_playback_ports,
 )
 
@@ -301,6 +302,12 @@ from .parsing import (
     _parse_pw_node_ids,
     _parse_sample_spec_channels,
     _run_command,
+    card_name_for_sink_key,
+    combined_hifi_key_for_card,
+    combined_key_for_selected_key,
+    group_hifi_split_sinks,
+    is_hifi_combined_key,
+    is_hifi_split_sink_key,
     successor_sink_key,
 )
 from .persistence import (
@@ -597,6 +604,149 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
             "metadata_capable": False if _is_bluetooth_sink_name(name) else None,
         })
 
+    # UCM HiFi split siblings (UMC Line A/B) share one card and two channels
+    # each.  Listing them separately forces bare ``Line A``/``Line B`` labels
+    # and hides the 4-channel device the routing grid needs, so group each
+    # complete pair into one selectable device while keeping the members for
+    # routing diagnostics (non-selectable, never in the Device selector).
+    hifi_groups = group_hifi_split_sinks([item.get("key") for item in explicit_outputs])
+    combined_by_card: dict[str, str] = {}
+    if hifi_groups:
+        sink_by_key = {str(item.get("key") or ""): item for item in explicit_outputs}
+        for card, members in hifi_groups.items():
+            combined_key = combined_hifi_key_for_card(card)
+            if not combined_key:
+                continue
+            combined_by_card[card] = combined_key
+            member_entries = [sink_by_key[key] for key in members if key in sink_by_key]
+            if len(member_entries) < 2:
+                continue
+            total_channels = 0
+            channels_known = True
+            for entry in member_entries:
+                count = entry.get("channels")
+                if isinstance(count, int) and count > 0:
+                    total_channels += count
+                else:
+                    channels_known = False
+            # Device label, never a bare port name: the card's own description
+            # (``UMC204HD 192k``), not ``Line A``/``Line B``.
+            device_label = None
+            for key in members:
+                candidate = (sink_details.get(key) or {}).get("device_description")
+                if candidate and str(candidate).strip():
+                    device_label = str(candidate).strip()
+                    break
+            if not device_label:
+                for entry in member_entries:
+                    candidate = entry.get("label")
+                    if candidate and str(candidate).strip():
+                        device_label = str(candidate).strip()
+                        break
+            if not device_label:
+                device_label = _humanize_sink_name(combined_key)
+            rate_sets = [
+                [rate for rate in (entry.get("supported_rates") or []) if isinstance(rate, int)]
+                for entry in member_entries
+            ]
+            if all(rate_sets) and all(set(rate_sets[0]) == set(rates) for rates in rate_sets):
+                supported = sorted(set(rate_sets[0]))
+            else:
+                union = sorted({rate for rates in rate_sets for rate in rates})
+                inter = [rate for rate in (rate_sets[0] if rate_sets else []) if all(rate in rates for rates in rate_sets)]
+                supported = sorted(inter) or union
+            native_sets = [
+                [rate for rate in (entry.get("native_supported_rates") or []) if isinstance(rate, int)]
+                for entry in member_entries
+            ]
+            if all(native_sets) and all(set(native_sets[0]) == set(rates) for rates in native_sets):
+                native_supported = sorted(set(native_sets[0]))
+            else:
+                union_native = sorted({rate for rates in native_sets for rate in rates})
+                inter_native = [rate for rate in (native_sets[0] if native_sets else []) if all(rate in rates for rates in native_sets)]
+                native_supported = sorted(inter_native) or union_native
+            active_rate = next(
+                (entry.get("active_rate") for entry in member_entries if isinstance(entry.get("active_rate"), int)),
+                None,
+            )
+            state_rank = {"RUNNING": 3, "IDLE": 2, "SUSPENDED": 1}
+            state = None
+            best_rank = -1
+            for entry in member_entries:
+                rank = state_rank.get(str(entry.get("state") or "").upper(), 0)
+                if rank > best_rank:
+                    best_rank = rank
+                    state = entry.get("state")
+            first_spec = next(
+                (str(entry.get("sample_spec") or "") for entry in member_entries if entry.get("sample_spec")),
+                "",
+            )
+            if first_spec and channels_known and total_channels > 0:
+                import re as _re
+                sample_spec = _re.sub(r"\b\d+\s*ch\b", f"{total_channels}ch", first_spec, count=1)
+                if sample_spec == first_spec:
+                    sample_spec = first_spec
+            else:
+                sample_spec = first_spec or None
+            primary = members[0]
+            explicit_outputs.append({
+                "id": member_entries[0].get("id"),
+                "key": combined_key,
+                "name": primary,
+                "label": device_label,
+                "sample_spec": sample_spec,
+                "channels": total_channels if channels_known else None,
+                "device_profile": None,
+                "active_rate": active_rate,
+                "supported_rates": supported,
+                "native_supported_rates": native_supported,
+                "state": state,
+                "is_default": any(entry.get("is_default") for entry in member_entries),
+                "is_current": any(entry.get("is_current") for entry in member_entries),
+                "is_selected": False,
+                "selectable": True,
+                "inventory_source": "hifi-split-group",
+                "transport": "local",
+                "device_class": "local_output",
+                "profile": "HiFi",
+                "active_codec": None,
+                "pairing_required": None,
+                "connection_state": None,
+                "controllable": None,
+                "metadata_capable": None,
+                "member_sinks": list(members),
+                "group_card": card,
+            })
+        # Grouped siblings never appear as separate Device selector entries.
+        member_keys = {key for members in hifi_groups.values() for key in members}
+        for item in explicit_outputs:
+            if str(item.get("key") or "") in member_keys:
+                item["selectable"] = False
+                item["is_default"] = False
+                item["is_current"] = False
+                item["is_selected"] = False
+                for card, members in hifi_groups.items():
+                    if str(item.get("key") or "") in members:
+                        item["group_key"] = combined_by_card.get(card)
+                        item["group_card"] = card
+                        break
+        # Migrate stale/member selections to the grouped device: a saved
+        # single-sink name for the same card (legacy analog-surround or one
+        # Line sibling) addresses the same physical device as the group.
+        if selected_key:
+            normalized_selected = str(selected_key).strip()
+            if normalized_selected in member_keys:
+                for card, members in hifi_groups.items():
+                    if normalized_selected in members:
+                        selected_key = combined_by_card.get(card) or selected_key
+                        break
+            elif normalized_selected not in {str(item.get("key") or "") for item in explicit_outputs}:
+                card = card_name_for_sink_key(normalized_selected)
+                if card and card in combined_by_card:
+                    selected_key = combined_by_card[card]
+            for item in explicit_outputs:
+                item["is_selected"] = str(item.get("key") or "") == str(selected_key or "")
+
     if selected_key and not any(item.get("key") == selected_key for item in explicit_outputs):
         notes.append(f"Saved output selection {selected_key} is not currently available.")
         selected_key = None
@@ -631,19 +781,36 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
     effective_output_key = str((effective_output or {}).get("key") or "")
     from audio.output_routing import routing_payload
     output_routing = routing_payload(effective_output_key, (effective_output or {}).get("channels"))
-    hardware_playback_ports = list(
-        resolve_hardware_playback_ports(port_listing, effective_output_key)
-    )
+    member_sinks = list((effective_output or {}).get("member_sinks") or [])
+    if member_sinks and is_hifi_combined_key(effective_output_key):
+        hardware_playback_ports = list(
+            resolve_group_hardware_playback_ports(port_listing, member_sinks, sink_details)
+        )
+    else:
+        hardware_playback_ports = list(
+            resolve_hardware_playback_ports(port_listing, effective_output_key)
+        )
     # A suspended sink publishes no ports, so ``pw-link -io`` cannot describe
     # it.  Its ``Channel Map:`` is still known from ``pactl list sinks``, and
     # PipeWire names the ports after exactly those designations — deriving the
     # list here keeps the fallback topology the device's own
     # (``playback_AUX0…``) instead of the semantic names that can never link
     # on a raw-channel interface.
-    channel_map_playback_ports = list(playback_ports_from_channel_map(
-        (sink_details.get(effective_output_key) or {}).get("channel_map"),
-        (effective_output or {}).get("channels"),
-    ))
+    if member_sinks and is_hifi_combined_key(effective_output_key):
+        channel_map_playback_ports: list[str] = []
+        for member in member_sinks:
+            for bare in playback_ports_from_channel_map(
+                (sink_details.get(member) or {}).get("channel_map"),
+                2,
+            ):
+                qualified = f"{member}:{bare}"
+                if qualified not in channel_map_playback_ports:
+                    channel_map_playback_ports.append(qualified)
+    else:
+        channel_map_playback_ports = list(playback_ports_from_channel_map(
+            (sink_details.get(effective_output_key) or {}).get("channel_map"),
+            (effective_output or {}).get("channels"),
+        ))
     output_mode_available = bool((effective_output or {}).get("channels") and (effective_output or {}).get("channels") >= 4)
     if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and not output_mode_available:
         label = (
@@ -955,6 +1122,14 @@ def prepare_audio_output_selection(key: str) -> dict[str, Any]:
 
     selected_output = next((item for item in outputs if item.get("key") == normalized_key), None)
     if not selected_output:
+        # Legacy single-sink or split-member names address the same physical
+        # device as the grouped entry; resolve to the group instead of
+        # rejecting a saved selection from before the HiFi split.
+        live_names = [str(item.get("key") or "") for item in outputs]
+        grouped = combined_key_for_selected_key(normalized_key, live_names)
+        if grouped:
+            selected_output = next((item for item in outputs if item.get("key") == grouped), None)
+    if not selected_output:
         raise ValueError(f"Unknown output: {normalized_key}")
     if not selected_output.get("selectable", True):
         raise ValueError(f"Output is not selectable: {normalized_key}")
@@ -1038,13 +1213,30 @@ def apply_persisted_audio_output_selection() -> dict[str, Any] | None:
         sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
     except Exception:
         return None
-    live = successor_sink_key(selected_key, [sink.get("name") for sink in sinks])
+    live_names = [sink.get("name") for sink in sinks]
+    grouped = combined_key_for_selected_key(selected_key, live_names)
+    if grouped and grouped != selected_key:
+        try:
+            return set_audio_output_selection(grouped)
+        except Exception:
+            return None
+    live = successor_sink_key(selected_key, live_names)
     if not live or live == selected_key:
         return None
     try:
         return set_audio_output_selection(live)
     except Exception:
         return None
+
+def _primary_sink_for_combined(combined_key: str | None, live_names: list[str]) -> str | None:
+    """First live split member behind a virtual group key (None when absent)."""
+    normalized = (combined_key or "").strip()
+    if not is_hifi_combined_key(normalized):
+        return None
+    card = card_name_for_sink_key(normalized)
+    groups = group_hifi_split_sinks(live_names)
+    members = groups.get(card or "")
+    return members[0] if members else None
 
 def reconcile_selected_output_default() -> str | None:
     """Restore the saved sink's default without changing selection or mode.
@@ -1055,22 +1247,38 @@ def reconcile_selected_output_default() -> str | None:
     through its stable ALSA card identity: when exactly one live sink
     shares the saved sink's card, the persisted selection migrates to that
     sink and it becomes the default. Zero or several card-mates keep the
-    saved identity untouched.
+    saved identity untouched.  A HiFi split pair migrates to its virtual
+    group key instead, and the PipeWire default tracks its primary member.
     """
     selected = _load_audio_output_selection().get("selected_key")
     if not selected:
         return None
     sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
-    live = successor_sink_key(selected, [sink.get("name") for sink in sinks])
-    if live is None:
-        return None
-    if live != selected:
-        _save_audio_output_selection(live)
-        logger.info("Saved output %s reappeared as %s; migrated selection to the same device", selected, live)
-        selected = live
+    live_names = [str(sink.get("name") or "") for sink in sinks]
+    grouped = combined_key_for_selected_key(selected, live_names)
+    if grouped and grouped != selected:
+        _save_audio_output_selection(grouped)
+        logger.info("Saved output %s reappeared as %s; migrated selection to the same device", selected, grouped)
+        selected = grouped
+    elif not grouped:
+        live = successor_sink_key(selected, live_names)
+        if live is None:
+            return None
+        if live != selected:
+            _save_audio_output_selection(live)
+            logger.info("Saved output %s reappeared as %s; migrated selection to the same device", selected, live)
+            selected = live
+    # The PipeWire default is always a real sink; a grouped device tracks its
+    # primary member while the selection stays virtual.
+    default_target = selected
+    if is_hifi_combined_key(selected):
+        primary = _primary_sink_for_combined(selected, live_names)
+        if primary is None:
+            return None
+        default_target = primary
     current = _run_command(["pactl", "get-default-sink"]).strip()
-    if current != selected:
-        _set_default_sink(selected)
+    if current != default_target:
+        _set_default_sink(default_target)
         logger.info("Restored selected output default: previous=%s selected=%s", current, selected)
     return selected
 
@@ -1093,16 +1301,29 @@ def selected_output_default_state() -> tuple[str | None, bool]:
         sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
     except Exception:
         return selected, False
-    live = successor_sink_key(selected, [sink.get("name") for sink in sinks])
-    if live is None:
-        return selected, False
-    if live != selected:
+    live_names = [str(sink.get("name") or "") for sink in sinks]
+    grouped = combined_key_for_selected_key(selected, live_names)
+    if grouped and grouped != selected:
         return selected, True
+    if grouped:
+        selected = grouped
+    else:
+        live = successor_sink_key(selected, live_names)
+        if live is None:
+            return selected, False
+        if live != selected:
+            return selected, True
+    default_target = selected
+    if is_hifi_combined_key(selected):
+        primary = _primary_sink_for_combined(selected, live_names)
+        if primary is None:
+            return selected, False
+        default_target = primary
     try:
         current = _run_command(["pactl", "get-default-sink"]).strip()
     except Exception:
         return selected, False
-    return selected, bool(current) and current != selected
+    return selected, bool(current) and current != default_target
 
 
 def _select_relevant_sink(default_sink: dict[str, Any], sinks: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1114,7 +1335,17 @@ def _select_relevant_sink(default_sink: dict[str, Any], sinks: list[dict[str, An
         for sink in sinks:
             if sink.get("name") == selected:
                 return sink
-        live = successor_sink_key(selected, [sink.get("name") for sink in sinks])
+        live_names = [str(sink.get("name") or "") for sink in sinks]
+        grouped = combined_key_for_selected_key(selected, live_names)
+        if grouped:
+            # Rate decisions need a real sink; the primary member shares the
+            # group's hardware clock.
+            primary = _primary_sink_for_combined(grouped, live_names)
+            if primary is not None:
+                for sink in sinks:
+                    if sink.get("name") == primary:
+                        return sink
+        live = successor_sink_key(selected, live_names)
         if live is not None:
             for sink in sinks:
                 if sink.get("name") == live:

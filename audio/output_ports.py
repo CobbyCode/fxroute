@@ -218,6 +218,53 @@ def resolve_hardware_playback_ports(io_text: str, output_key: str) -> tuple[str,
     return order_hardware_playback_ports(playback_port_names(io_text, str(output_key or "").strip()))
 
 
+def hardware_link_target(output_key: str, port: str) -> str:
+    """PipeWire link target for one hardware port.
+
+    Split-group ports are already fully qualified (``sink:port``) so they
+    pass through unchanged; bare ports keep the historic ``sink:port`` form.
+    Every DSP link build, diagnosis and repair must use this helper so one
+    device is never described by two topologies.
+    """
+    candidate = str(port or "").strip()
+    if ":" in candidate:
+        return candidate
+    return f"{str(output_key or '').strip()}:{candidate}"
+
+
+def resolve_group_hardware_playback_ports(
+    io_text: str,
+    member_keys: Iterable[str],
+    sink_details: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Ordered fully qualified playback ports across HiFi split members.
+
+    Members resolve in the given order (Line A before Line B): live
+    ``pw-link -io`` ports first, then each member's own channel map while it
+    is suspended.  Targets are ``member:port`` so two stereo siblings expose
+    four distinct hardware channels for routing.
+    """
+    details = sink_details if isinstance(sink_details, Mapping) else {}
+    qualified: list[str] = []
+    for member in member_keys:
+        node = str(member or "").strip()
+        if not node:
+            continue
+        bare = playback_port_names(io_text, node)
+        if not bare:
+            bare = playback_ports_from_channel_map(
+                (details.get(node) or {}).get("channel_map") if isinstance(details.get(node), Mapping) else None,
+                (details.get(node) or {}).get("channels") if isinstance(details.get(node), Mapping) else None,
+            )
+            # Channel-map ports are bare names; order them like live ports.
+            bare = order_hardware_playback_ports(bare)
+        for port in bare:
+            target = f"{node}:{port}"
+            if target not in qualified:
+                qualified.append(target)
+    return tuple(qualified)
+
+
 def hardware_playback_ports_from_mode(
     output_mode: Mapping[str, Any] | None,
     fallback: Iterable[str],

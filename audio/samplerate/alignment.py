@@ -60,18 +60,25 @@ def pulse_suspend_sink_for_samplerate(output_key: str, reason: str) -> None:
     """Suspend and immediately resume a pactl sink to force rate re-negotiation."""
     if not output_key:
         return
+    from .parsing import is_hifi_combined_key, real_sinks_for_output_key
+
+    targets = real_sinks_for_output_key(output_key) if is_hifi_combined_key(output_key) else [output_key]
+    targets = [str(target or "").strip() for target in targets if str(target or "").strip()]
+    if not targets:
+        return
     for suspend in ("1", "0"):
-        completed = subprocess.run(
-            ["pactl", "suspend-sink", output_key, suspend],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=1.5,
-            env=c_locale_env(),
-        )
-        if completed.returncode != 0:
-            stderr = (completed.stderr or "").strip()
-            raise RuntimeError(stderr or f"pactl suspend-sink {output_key} {suspend} failed")
+        for target in targets:
+            completed = subprocess.run(
+                ["pactl", "suspend-sink", target, suspend],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=1.5,
+                env=c_locale_env(),
+            )
+            if completed.returncode != 0:
+                stderr = (completed.stderr or "").strip()
+                raise RuntimeError(stderr or f"pactl suspend-sink {target} {suspend} failed")
         if suspend == "1":
             time.sleep(0.3)
     logger.info("Measurement samplerate sink pulse completed: output=%s reason=%s", output_key, reason)

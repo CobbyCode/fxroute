@@ -20,6 +20,7 @@ from audio.samplerate import OUTPUT_MODE_STEREO, get_audio_output_overview
 from audio.system_volume import get_output_volume
 from audio.output_routing import output_route_pairs
 from audio.output_ports import (
+    hardware_link_target,
     hardware_playback_port_fallback_from_mode,
     hardware_playback_ports_from_mode,
     warn_semantic_playback_fallback,
@@ -96,7 +97,7 @@ class SilentActiveRecovery:
         if not (isinstance(discovered, (list, tuple)) and discovered) and not channel_map_ports:
             warn_semantic_playback_fallback(output_key)
         return all(
-            _contains_link(links_text, f"fxroute_dsp:output_{signal}", f"{output_key}:{port}")
+            _contains_link(links_text, f"fxroute_dsp:output_{signal}", hardware_link_target(output_key, port))
             for signal, port in output_route_pairs(output_mode, ports) if signal <= 2
         )
 
