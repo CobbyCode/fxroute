@@ -18,7 +18,7 @@ Surround is an output mode in the existing Output System. The mode is remembered
 
 The selected capture pair feeds `fxroute_surround_input` before stereo ingress, gain, remix or SRC. Its realtime callback only exchanges bounded PCM/carrier buffers; a separate worker recognizes IEC-61937, validates/deframes AC-3 and DTS Core, decodes with libavcodec and projects actual decoder positions onto the shared bus.
 
-Stereo PCM and AC-3 stereo remain stereo. AC-3 or DTS identity alone never implies 5.1. Null/pause, unsupported carriers and decoder errors must not pass as PCM. DTS-HD Master Audio is not a supported full-resolution S/PDIF transport; the TV may deliver DTS Core or PCM instead.
+Stereo PCM and AC-3 stereo remain stereo. AC-3 or DTS identity alone never implies 5.1. Null/pause, unsupported carriers and decoder errors must not pass as PCM. A mute latch ends with digital silence, a valid burst, or 12288 frames without any IEC preamble or confirmed raw-DTS sync; raw DTS needs its sync to recur at a constant frame spacing, since single sync patterns occur in ordinary PCM. DTS-HD Master Audio is not a supported full-resolution S/PDIF transport; the TV may deliver DTS Core or PCM instead.
 
 The initial carrier adapter supports the measured 48 kHz carrier. Selecting external Surround temporarily borrows that graph rate through the existing transition coordinator without overwriting the user's Auto/Fixed playback policy. Leaving it restores the playback policy. Hardware clock-source selection is device-specific and is not guessed or changed by FXRoute; configure the interface to follow the digital source when required. A lock indication alone does not prove bit-exact reception.
 

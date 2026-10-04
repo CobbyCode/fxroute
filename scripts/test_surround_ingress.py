@@ -85,12 +85,33 @@ class NativeIngressTests(unittest.TestCase):
         self.assertTrue(all(v == 0 for v in output[12000 * 8:]))
 
     def test_raw_dts_big_little_and_14bit_syncs_are_muted(self):
+        # Raw DTS repeats its sync every frame; it stays muted past the sync timeout.
         for sync in ("7ffe8001", "fe7f0180", "1fffe800", "ff1f00e8"):
             with self.subTest(sync=sync):
-                payload = words_to_carrier(bytes.fromhex(sync) + b"\x55\xaa" * 20000)
-                output, status = self.run_carrier(payload, 1)
+                frame = (bytes.fromhex(sync) + b"\x55\xaa" * 1023)
+                output, status = self.run_carrier(words_to_carrier(frame * 32), 1)
                 self.assertTrue(all(v == 0 for v in output))
                 self.assertGreater(status["errors"], 0)
+                self.assertEqual(status["mute_reason"], "raw-dts")
+
+    def test_isolated_raw_dts_patterns_in_pcm_never_drop_audio(self):
+        # Captured TV PCM hit 0xff1f00e8 (-225/+232) once a minute; it is not DTS.
+        words = [1000 + i % 509 for i in range(2 * 24000)]
+        for frame, (left, right) in ((3000, (0xff1f, 0x00e8)), (7001, (0xfe7f, 0x0180)),
+                                     (12345, (0xff1f, 0x00e8)), (20000, (0x1fff, 0xe800))):
+            words[2 * frame], words[2 * frame + 1] = left, right
+        data = struct.pack(f"<{len(words)}H", *words)
+        output, status = self.run_carrier(words_to_carrier(data), 7)
+        expected = [struct.unpack("<h", struct.pack("<H", word))[0] / 32768 for word in words]
+        self.assertEqual([output[i * 8 + c] for i in range(24000) for c in (0, 1)], expected)
+        self.assertEqual((status["codec"], status["state"], status["errors"]), ("pcm", "pcm", 0))
+
+    def test_encoded_stream_ending_without_silence_returns_to_pcm(self):
+        output, status = self.run_carrier(burst(4) * 3 + pcm(20000), 5)
+        last_burst = 2 * 1536
+        self.assertTrue(all(v == 0 for v in output[:(last_burst + 12288) * 8]))
+        self.assertEqual(list(output[-8:]), [0.125, -0.25, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(status["state"], "pcm")
 
     def encoded_fixture(self, codec, layout):
         if not shutil.which("ffmpeg"):

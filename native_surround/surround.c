@@ -14,6 +14,9 @@
 #define PENDING 16384
 #define PAYLOAD 16384
 #define DECODE_SAMPLES 4096
+/* Raw DTS core frames span 96..16384 bytes; spacing counts 16-bit words. */
+#define RAW_DTS_MIN_SPACING 48
+#define RAW_DTS_MAX_SPACING 16384
 
 const char *const surround_positions[8] = {"FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR"};
 enum carrier_mode { MODE_PCM, MODE_ENCODED, MODE_UNKNOWN };
@@ -23,6 +26,9 @@ struct surround {
     void *data;
     struct pending_frame pending[PENDING];
     uint64_t input, emitted, burst_frame, previous_frame, errors, decoded;
+    uint64_t words, last_sync, raw_last, raw_spacing;
+    uint32_t raw_pattern;
+    unsigned raw_repeats;
     enum carrier_mode mode;
     unsigned silence, phase, swapped, kind, bits, payload_words, payload_have, header_error;
     uint16_t previous;
@@ -90,6 +96,7 @@ static void unknown(surround *d, const char *reason) {
     flush_decoders(d);
     d->mode = MODE_UNKNOWN;
     d->silence = 0;
+    d->last_sync = d->input;
     metadata(d, reason);
     snprintf(d->mute_reason, sizeof d->mute_reason, "%s", reason);
     d->errors++;
@@ -208,6 +215,44 @@ static int decode(surround *d) {
     return 0;
 }
 
+static int raw_dts_sync(uint32_t sync) {
+    return sync == 0x7ffe8001 || sync == 0xfe7f0180 || sync == 0x1fffe800 || sync == 0xff1f00e8;
+}
+
+/* A lone raw-DTS pattern is ordinary PCM (e.g. -225/+232): raw DTS counts
+ * only when its sync recurs three times at one constant frame spacing. */
+static void raw_dts_candidate(surround *d) {
+    uint64_t spacing = d->words - d->raw_last;
+    if (d->raw_last && d->raw_pattern == d->raw_sync &&
+        spacing >= RAW_DTS_MIN_SPACING && spacing <= RAW_DTS_MAX_SPACING) {
+        if (spacing == d->raw_spacing) d->raw_repeats++;
+        else { d->raw_spacing = spacing; d->raw_repeats = 1; }
+    } else {
+        d->raw_pattern = d->raw_sync;
+        d->raw_spacing = 0;
+        d->raw_repeats = 0;
+    }
+    d->raw_last = d->words;
+    if (d->raw_repeats < 2) return;
+    /* Raw DTS decoding is deliberately unsupported, including 14-bit packing. */
+    if (d->mode != MODE_UNKNOWN) unknown(d, "raw-dts");
+    d->last_sync = d->input;
+}
+
+static void reset_raw_dts(surround *d) {
+    d->raw_last = d->raw_spacing = 0;
+    d->raw_pattern = 0;
+    d->raw_repeats = 0;
+}
+
+static void return_to_pcm(surround *d) {
+    flush_decoders(d);
+    d->mode = MODE_PCM;
+    d->previous = d->raw_sync = 0;
+    reset_raw_dts(d);
+    pcm_metadata(d);
+}
+
 static uint16_t swap_word(uint16_t word) { return (uint16_t)((word << 8) | (word >> 8)); }
 
 static void discard_payload(surround *d) {
@@ -222,6 +267,7 @@ static void discard_payload(surround *d) {
 }
 
 static void word(surround *d, uint16_t value) {
+    d->words++;
     if (d->phase == 1) {
         if (d->swapped) value = swap_word(value);
         d->kind = value & 0x1f;
@@ -281,6 +327,7 @@ static void word(surround *d, uint16_t value) {
         if (d->mode == MODE_PCM) mute_pending(d);
         d->mode = MODE_ENCODED;
         d->silence = 0;
+        d->last_sync = d->input;
         d->swapped = d->previous == 0x72f8;
         /* The preceding word may be the right port of the preceding frame. */
         d->burst_frame = d->previous_frame;
@@ -290,11 +337,7 @@ static void word(surround *d, uint16_t value) {
         return;
     }
     d->raw_sync = (d->raw_sync << 16) | value;
-    /* Raw DTS decoding is deliberately unsupported, including 14-bit packing. */
-    if (d->mode != MODE_UNKNOWN && (d->raw_sync == 0x7ffe8001 || d->raw_sync == 0xfe7f0180 ||
-        d->raw_sync == 0x1fffe800 || d->raw_sync == 0xff1f00e8)) {
-        unknown(d, "raw-dts");
-    }
+    if (raw_dts_sync(d->raw_sync)) raw_dts_candidate(d);
     d->previous = value;
     d->previous_frame = d->input;
 }
@@ -326,6 +369,8 @@ void surround_reset(surround *d) {
     for (unsigned i = 0; i < PENDING; i++) d->pending[i].tag = UINT64_MAX;
     d->input = d->emitted = 0;
     d->previous = d->phase = d->silence = d->raw_sync = 0;
+    d->last_sync = 0;
+    reset_raw_dts(d);
     d->mode = MODE_UNKNOWN;
     metadata(d, "discontinuity");
     d->errors++;
@@ -348,14 +393,13 @@ void surround_push(surround *d, const float *stereo, size_t frames) {
         }
         if (d->mode == MODE_PCM) { p->pcm[0] = l; p->pcm[1] = r; }
         if (l == 0 && r == 0 && !d->phase) {
-            if (++d->silence >= SURROUND_SILENCE_RESET && d->mode != MODE_PCM) {
-                flush_decoders(d);
-                d->mode = MODE_PCM;
-                d->previous = d->raw_sync = 0;
-                pcm_metadata(d);
-            }
+            if (++d->silence >= SURROUND_SILENCE_RESET && d->mode != MODE_PCM) return_to_pcm(d);
             if (d->silence > SURROUND_SILENCE_RESET) d->silence = SURROUND_SILENCE_RESET;
         } else d->silence = 0;
+        /* Every IEC stream repeats its preamble each burst; without one the
+         * carrier is PCM again, so no latch outlives the stream it guarded. */
+        if (d->mode != MODE_PCM && !d->phase && d->input - d->last_sync > SURROUND_SYNC_TIMEOUT)
+            return_to_pcm(d);
         word(d, carrier_word(l));
         word(d, carrier_word(r));
         d->input++;

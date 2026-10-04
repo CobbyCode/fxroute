@@ -33,9 +33,14 @@ Uncompressed PCM occupies FL/FR only. AC-3 and DTS Core IEC 61937 types 1 and
 11/12/13 decode automatically, including same-codec layout changes. Null,
 pause, unsupported and corrupt bursts are muted. Payloads of rejected bursts
 are not scanned as nested IEC streams. Unknown/raw-DTS input stays muted until
-a valid supported burst or 8192 consecutive exact-zero stereo frames. Short
-encoded gaps never become PCM. Raw DTS, including 14-bit forms, is recognized
-for suppression only; it is not decoded.
+a valid supported burst, 8192 consecutive exact-zero stereo frames, or 12288
+frames without any IEC preamble or confirmed raw-DTS sync. Every IEC stream
+repeats its preamble at least every 6144 frames, so a running compressed stream
+never becomes PCM, while a latch never outlives it (including after
+discontinuities). Raw DTS, including 14-bit forms, is recognized for
+suppression only, once its sync recurs three times at one constant frame
+spacing; a lone sync pattern is ordinary PCM (TV PCM hits -225/+232 about once
+a minute). It is not decoded.
 
 Channel positions come from the decoded frame, not its channel count. For
 example, `5.1(side)` occupies SL/SR while a true back layout occupies BL/BR.
@@ -95,4 +100,4 @@ hardware, product service or graph rate.
 Limitations: only 48 kHz decoded audio is accepted, raw DTS is suppressed rather
 than decoded, and arbitrary compressed data lacking any recognizable sync
 cannot be distinguished reliably from PCM. After a detected unknown stream,
-silence or a valid supported burst is required to leave the mute latch.
+silence, a valid supported burst or the sync timeout leaves the mute latch.
