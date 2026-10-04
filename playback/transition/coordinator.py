@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
@@ -661,7 +662,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                 and (
                     request.should_play
                     or (
-                        request.operation == "measurement-restore"
+                        request.operation in {"measurement-restore", "sample-rate-policy"}
                         and source_policy.is_mpv_source(request.source)
                     )
                 )
@@ -748,7 +749,8 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
     async def execute(self, request: TransitionRequest) -> TransitionResult:
         """Run one transition and commit only after complete readback."""
         transition_id = f"tr-{uuid4().hex}"
-        async with self.lock:
+        configuration = getattr(self.runtime, "transition_configuration", None)
+        async with self.lock, configuration(request) if callable(configuration) else nullcontext():
             stages = _TransitionStages(transition_id)
             active_request = request
             snapshot: Mapping[str, Any] = {}
@@ -812,7 +814,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                 if (
                     active_request.operation == "sample-rate-policy"
                     and active_request.reload_source
-                    and active_request.source == "local"
+                    and source_policy.restores_position(active_request.source)
                     and active_request.restore_position is None
                 ):
                     previous_position = (snapshot.get("player") or {}).get("position")
@@ -847,6 +849,14 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     )
 
                 await self._stage(stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(active_request))
+
+                if active_request.src_mode is not None:
+                    overview = await self._stage(
+                        stages, "src-policy-apply",
+                        lambda: self.runtime.apply_src_policy(active_request, snapshot),
+                        gate_check="after-src-policy-apply",
+                    )
+                    active_request = replace(active_request, audio_overview=dict(overview), output_mode_target=dict(overview))
 
                 if (
                     active_request.operation == "measurement-restore"
@@ -1010,6 +1020,9 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     failure=exc,
                 )
             except Exception as exc:
+                if active_request.src_mode is not None and not snapshot:
+                    # SRC preflight rejection has not touched transport or gates.
+                    raise
                 raise await self._fail_transition(
                     stages,
                     active_request,

@@ -57,10 +57,10 @@ def list_sink_inputs() -> list[dict]:
     return sink_inputs.list_sink_inputs()
 
 
-def list_mpv_sink_inputs() -> list[dict]:
+def list_mpv_sink_inputs(*, strict: bool = False) -> list[dict]:
     return [
         entry
-        for entry in list_sink_inputs()
+        for entry in (sink_inputs.list_sink_inputs(strict=True) if strict else list_sink_inputs())
         if (entry.get("properties") or {}).get("application.name") == "mpv"
         or (entry.get("properties") or {}).get("application.id") == "mpv"
         or (entry.get("properties") or {}).get("node.name") == "mpv"
@@ -197,27 +197,30 @@ def active_unmuted_sink_inputs(entries: list[dict]) -> list[dict]:
 
 async def wait_for_sink_input_release(list_fn, timeout_ms: int) -> bool:
     deadline = time.monotonic() + max(timeout_ms, 0) / 1000
-    while time.monotonic() <= deadline:
-        # The listing spawns pactl; keep that subprocess off the event loop.
-        if not await asyncio.to_thread(list_fn):
-            return True
-        await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
-    return not await asyncio.to_thread(list_fn)
+    try:
+        while time.monotonic() <= deadline:
+            # The listing spawns pactl; keep that subprocess off the event loop.
+            if not await asyncio.to_thread(list_fn):
+                return True
+            await asyncio.sleep(PIPEWIRE_HANDOFF_POLL_INTERVAL_MS / 1000)
+        return not await asyncio.to_thread(list_fn)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Sink-input release inspection failed: %s", exc)
+        return False
 
 
 async def wait_for_pipewire_mpv_release(timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS) -> bool:
-    return await wait_for_sink_input_release(list_mpv_sink_inputs, timeout_ms)
+    return await wait_for_sink_input_release(lambda: list_mpv_sink_inputs(strict=True), timeout_ms)
 
 
 async def wait_for_pipewire_spotify_release(
     timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
-    *, strict: bool = False,
 ) -> bool:
     # A paused Spotify client may retain a corked historical sink-input.  That
     # input is not producing audio and must not block a source handoff.  Only
     # active, audible Spotify inputs are relevant to the quiescence contract.
     def active_spotify_inputs() -> list[dict]:
-        entries = list_spotify_sink_inputs(strict=True) if strict else list_spotify_sink_inputs()
+        entries = list_spotify_sink_inputs(strict=True)
         return active_unmuted_sink_inputs(entries)
 
     return await wait_for_sink_input_release(active_spotify_inputs, timeout_ms)
@@ -279,11 +282,10 @@ async def wait_for_spotify_sink_input_samplerate(
 
 async def wait_for_pipewire_qobuz_release(
     timeout_ms: int = PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS,
-    *, strict: bool = False,
 ) -> bool:
     """Quiesce an active qbzd sink input before a guarded graph transition."""
     def active_qobuz_inputs() -> list[dict]:
-        entries = list_qobuz_sink_inputs(strict=True) if strict else list_qobuz_sink_inputs()
+        entries = list_qobuz_sink_inputs(strict=True)
         return active_unmuted_sink_inputs(entries)
 
     return await wait_for_sink_input_release(active_qobuz_inputs, timeout_ms)

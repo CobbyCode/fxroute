@@ -70,7 +70,15 @@ class _RuntimeSourceMixin:
     _quieted_external_source: str | None
 
     async def refresh_transition_request(self, request: TransitionRequest) -> TransitionRequest | str:
-        """Refresh generic Qobuz UI intent after acquiring transition ownership."""
+        """Refresh retained policy/transport intent after acquiring ownership."""
+        if request.operation == "sample-rate-policy" and self._deps.sample_rate_policy_request:
+            policy = (samplerate.load_sample_rate_policy() if request.src_mode is not None
+                      else request.sample_rate_policy)
+            current = await self._deps.sample_rate_policy_request(
+                policy, detail=request.detail, src_mode=request.src_mode,
+            )
+            return replace(current, attempt_epoch=request.attempt_epoch,
+                           source_generation=request.source_generation)
         if request.source != "qobuz" or request.operation not in {
             "qobuz-play", "qobuz-toggle", "qobuz-next", "qobuz-previous",
         }:
@@ -112,6 +120,8 @@ class _RuntimeSourceMixin:
                 spotify_state = await self._deps.get_spotify_ui_state()
                 if self._deps.is_spotify_playback_active(spotify_state):
                     await self._deps.spotify_pause()
+                    if request.src_mode is not None:
+                        self._quieted_external_source = "spotify"
                     if not await self._deps.wait_for_pipewire_spotify_release():
                         raise RuntimeError(
                             "active Spotify sink input did not quiesce before guarded graph transition"
@@ -120,6 +130,8 @@ class _RuntimeSourceMixin:
                 qobuz_state = await self._deps.get_qobuz_ui_state()
                 if self._deps.is_qobuz_playback_active(qobuz_state):
                     await self._deps.qobuz_pause()
+                    if request.src_mode is not None:
+                        self._quieted_external_source = "qobuz"
                     if not await self._deps.wait_for_pipewire_qobuz_release():
                         raise RuntimeError(
                             "active qbzd sink input did not quiesce before guarded graph transition"
@@ -202,7 +214,7 @@ class _RuntimeSourceMixin:
         # old stream before the target-rate negotiation begins.
         await self._deps.drain_worker(self._player.set_pause, True)
         should_release = bool(
-            request.rate_change
+            (request.rate_change or request.src_mode is not None)
             and request.operation not in {"measurement-entry", "output-mode-switch"}
             and (
                 request.operation != "sample-rate-policy"
@@ -367,6 +379,7 @@ class _RuntimeSourceMixin:
             aligned = await self._deps.recover_stale_samplerate_helper(
                 request.target_rate,
                 reason=f"coordinator:{request.operation}:{request.source}",
+                _rate_lock_held=self._configuration_locks_held,
             )
         if not aligned:
             status = await asyncio.to_thread(self._deps.get_samplerate_status)
@@ -383,7 +396,8 @@ class _RuntimeSourceMixin:
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
         if not isinstance(request.target_rate, int) or request.target_rate <= 0:
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
-        return await self._deps.coordinator_establish_effects_and_helper(request)
+        kwargs = {"_configuration_locks_held": True} if self._configuration_locks_held else {}
+        return await self._deps.coordinator_establish_effects_and_helper(request, **kwargs)
 
     async def prepare_target_source(self, request: TransitionRequest) -> None:
         if request.graph_only:
@@ -394,6 +408,15 @@ class _RuntimeSourceMixin:
             raise RuntimeError("MPV player is not available")
 
         if not request.reload_source and not request.should_play:
+            if not request.target_url:
+                player_state = dict(self._player.state if self._player else {})
+                if player_state.get("current_file"):
+                    await self._deps.drain_worker(self._player.set_pause, True)
+                else:
+                    stop_playback = getattr(self._player, "stop_playback", None)
+                    if callable(stop_playback):
+                        await self._deps.drain_worker(stop_playback)
+                return
             await self._deps.drain_worker(self._player.set_pause, True)
             return
 
@@ -634,6 +657,8 @@ class _RuntimeSourceMixin:
             return
         if not self._deps.player_is_running():
             raise RuntimeError("MPV player is not available")
+        if not request.should_play and not request.target_url:
+            return
         await self._deps.drain_worker(
             self._player.set_pause, not request.should_play
         )

@@ -98,7 +98,7 @@ class SrcPolicyTests(unittest.TestCase):
         self.assertEqual(nodes[0]["input_rate"], 44100)
         self.assertFalse(nodes[0]["nominal_bypass"])
 
-    def test_disk_readiness_does_not_claim_effective_activation(self):
+    def test_unbound_hardware_reports_a_binding_error(self):
         from types import SimpleNamespace
         dump = [{"id":42,"type":"PipeWire:Interface:Node","info":{"state":"suspended","props":{
             "node.name":"alsa_output.hw_test", "device.api":"alsa", "media.class":"Audio/Sink"}}}]
@@ -106,15 +106,13 @@ class SrcPolicyTests(unittest.TestCase):
               patch.object(self.policy, "runtime_error", return_value=None)):
             status = self.policy.status()
         self.assertFalse(status["available"])
-        self.assertTrue(status["restart_required"])
-        self.assertIn("activation is pending", status["error"])
+        self.assertIn("alsa_output.hw_test", status["error"])
 
-    def test_nothing_to_bind_is_not_pending_activation(self):
+    def test_no_observed_adapters_is_not_an_error(self):
         with (patch.object(self.policy, "runtime_error", return_value=None),
               patch.object(self.policy, "nodes", return_value=[])):
             status = self.policy.status()
         self.assertTrue(status["available"])
-        self.assertFalse(status["restart_required"])
         self.assertIsNone(status["error"])
         self.assertEqual(status["effective_nodes"], [])
 
@@ -125,7 +123,7 @@ class SrcPolicyTests(unittest.TestCase):
                 self.policy.persist_policy("low")
         self.assertEqual(self.policy.load_policy(), {"mode": "high"})
 
-    def test_running_unconfigured_or_unbound_stream_requires_activation(self):
+    def test_running_unconfigured_or_unbound_stream_reports_a_binding_error(self):
         from types import SimpleNamespace
         for bound in (True, False):
             props = {"node.name":"mpv", "media.class":"Stream/Output/Audio"}
@@ -137,7 +135,7 @@ class SrcPolicyTests(unittest.TestCase):
                   patch.object(self.policy,"runtime_error",return_value=None)):
                 status = self.policy.status()
             self.assertFalse(status["available"])
-            self.assertTrue(status["restart_required"])
+            self.assertIn("mpv", status["error"])
 
     def test_plugin_is_discoverable_without_client_environment_injection(self):
         runtime = self.root / "native_src/build"

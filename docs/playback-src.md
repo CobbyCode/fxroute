@@ -63,9 +63,12 @@ silently selecting a different engine.
   `{"mode":"high"}` applies the selection automatically during App playback,
   including playing and paused tracks. Measurement and selected or active input
   sessions prevent a change.
-- Application stops app transports internally, then restarts PipeWire, Pulse,
-  WirePlumber and the owned player/DSP graph. Playback is left stopped and ready
-  to start again; no manual stop or separate restart button is needed.
+- Application uses the existing Sample Rate playback transaction: quiet the
+  source, rebuild the PipeWire/Pulse/WirePlumber adapters and owned player/DSP
+  graph, then restore and verify playback before opening the output gate.
+  Playing tracks resume automatically, paused tracks stay paused, and stopped
+  playback stays stopped. The queue and selected track are retained; Local and
+  TIDAL restore their position, while Radio reconnects to the live stream.
   The independent graph-rate pin is preserved. Existing
   unrelated audio clients can be disconnected by this restart.
 - Failed application restores the previous policy and attempts to rebuild the
@@ -105,22 +108,21 @@ receive it explicitly. Common rules are installed under PipeWire client,
 daemon and Pulse drop-ins and WirePlumber ALSA/BlueZ rules. Existing provider
 ingress-target routing is unchanged.
 
-Readiness distinguishes installed runtime from effective activation. Observed
-unbound adapters, missing parameters on running adapters, and an older runtime
-generation require activation. Idle, configured-but-not-started adapters can
+Readback reports unbound adapters, missing parameters on running adapters and
+an older runtime generation as adapter errors. Idle, configured-but-not-started adapters can
 remain `unconfigured`; passive graph-only split loopbacks and MIDI nodes are not
 native audio boundaries. With no device or stream observed there is nothing to
-bind, which is not pending activation. After a runtime update, selecting an SRC
-quality also activates the installed runtime, including when the same quality
+bind. Selecting an SRC quality reconstructs the adapters with the installed
+runtime, including when the same quality
 is submitted through the API. Updating an older installation without the standard-path plugin or
 the SRC build dependencies still completes: the update logs the skipped SRC
 reconciliation, stock PipeWire conversion stays in use, and the configuration
 helper refuses to publish client rules until the installer has been rerun.
 
-SRC never waits for a busy graph lock while holding other graph locks, including
-asyncio's released-but-reserved waiter handoff. The selection request retries
-pre-apply contention for up to three seconds with all graph locks released;
-measurement and input ownership conflicts are not retried. Application snapshots
+SRC is serialized by the existing playback coordinator, with the same source
+handoff and restore stages as Sample Rate. Adapter replacement refuses busy
+DSP or measurement locks rather than waiting while owning the coordinator.
+Application snapshots
 the graph-rate pin and hardware identity once for both apply and rollback. The
 original hardware, or its unambiguous stable-device successor, must return before
 DSP rebuild. Child failure invalidates cached Props through a non-realtime event.
@@ -201,8 +203,7 @@ filters can extend a short stream's captured tail; those captures are not a
 byte-exact nominal-conversion oracle. The independent SPA suite provides that
 check. Effective mode and native/graph rates were checked during playback:
 Library/TIDAL/Radio used 44.1 → 48 kHz and 32-channel STDIN used 96 → 48 kHz.
-Plain native/ALSA checks omit `SPA_PLUGIN_DIR`. Active Library/TIDAL/Radio
-mode-change requests were rejected with 409.
+Plain native/ALSA checks omit `SPA_PLUGIN_DIR`.
 After the reserve-accounting correction, a fresh full rerun passed both complete
 Low/Standard matrices and High Library/TIDAL/Radio/STDIN/short STDIN before
 failing at High 32-channel STDIN. The earlier 27 passes are not final acceptance
@@ -248,8 +249,7 @@ corrected 126-case oracle passes on both hosts with zero compiler warnings; the
 10-test native suite covers clock handoffs, reserve conservation, nonzero PCM
 parity, race-free error snapshots and the startup readiness wait.
 Browser Settings were checked on the real product at desktop/mobile sizes;
-the demo snapshot parity check passes. Served versions are `app.js?v=0.9.273`
-and `src_settings.js?v=0.1.2`.
+the demo snapshot parity check passes.
 
 ### Qobuz handoff correction
 

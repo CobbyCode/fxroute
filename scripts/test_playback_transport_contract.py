@@ -353,7 +353,10 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
                 "volume_percent": 100,
             }],
         ))
-        with patch.object(media_readiness, "list_spotify_sink_inputs", side_effect=lambda: next(entries)), patch.object(
+        def inspect(*, strict=False):
+            self.assertTrue(strict)
+            return next(entries)
+        with patch.object(media_readiness, "list_spotify_sink_inputs", side_effect=inspect), patch.object(
             main.asyncio, "sleep", new=AsyncMock()
         ):
             released = await media_readiness.wait_for_pipewire_spotify_release(timeout_ms=100)

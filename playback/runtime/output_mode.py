@@ -8,11 +8,14 @@ adapter instance and reads the attributes declared on the class below.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from dataclasses import replace
 from typing import Any, Mapping
 
 import audio.samplerate as samplerate
+from audio import src_policy
 from streaming.spotify.provider import play as spotify_play
 import playback.source_policy as source_policy
 from playback.transition import TransitionRequest, stable_graph_readbacks
@@ -26,6 +29,29 @@ class _RuntimeOutputModeMixin:
     """Attributes provided by the composing adapter instance."""
     _deps: PlaybackRuntimeDependencies
     _dsp_runtime: Any
+
+    @asynccontextmanager
+    async def transition_configuration(self, request: TransitionRequest):
+        """Reserve configuration through policy handoff and failure cleanup."""
+        if request.src_mode is None:
+            yield
+            return
+        await self._deps.guard_src_change()
+        async with AsyncExitStack() as stack:
+            factories = (self._deps.canonical_volume_write_lock,
+                         self._deps.dsp_mutation_lock, self._deps.audio_configuration_lock)
+            for factory in factories:
+                lock = factory() if factory else None
+                if lock is None:
+                    continue
+                if lock.locked() or any(not waiter.cancelled() for waiter in (lock._waiters or ())):
+                    raise RuntimeError("DSP audio configuration is busy")
+                await stack.enter_async_context(lock)
+            self._configuration_locks_held = True
+            try:
+                yield
+            finally:
+                self._configuration_locks_held = False
 
     def _output_state_service(self):
         """Return the bound output service for v2 transitions."""
@@ -57,10 +83,33 @@ class _RuntimeOutputModeMixin:
             "output_fingerprint": v2.get("fingerprint"),
         }
 
+    async def apply_src_policy(self, request: TransitionRequest, snapshot: dict) -> dict:
+        """Replace converter adapters inside the existing policy transaction."""
+        return await self._replace_src_adapters(request.src_mode, snapshot)
+
+    async def _replace_src_adapters(self, mode: str, snapshot: dict) -> dict:
+        if not self._configuration_locks_held:
+            raise RuntimeError("SRC adapter replacement requires configuration ownership")
+        await asyncio.to_thread(src_policy.persist_policy, mode)
+        snapshot["src_applied"] = True
+        try:
+            return await self._deps.restart_src_graph(snapshot["src_graph"])
+        finally:
+            self.invalidate_gate_sink_resolution()
+
     async def commit_sample_rate_policy(self, request: TransitionRequest) -> dict[str, Any]:
-        if not request.sample_rate_policy:
-            raise RuntimeError("sample-rate transition has no durable policy")
-        policy = samplerate.persist_sample_rate_policy(request.sample_rate_policy)
+        result = {}
+        if request.src_mode is not None:
+            status = await asyncio.to_thread(src_policy.status)
+            if not status["available"]:
+                raise RuntimeError(status["error"])
+            result["src"] = status
+            policy = samplerate.load_sample_rate_policy()
+        else:
+            if not request.sample_rate_policy:
+                raise RuntimeError("sample-rate transition has no durable policy")
+            policy = samplerate.persist_sample_rate_policy(request.sample_rate_policy)
+            result["sample_rate_policy"] = policy
         if policy.get("mode") == "auto":
             # The guarded readback already verified the graph is stable at the
             # target.  A leftover force-rate pin at the graph default (written
@@ -71,9 +120,10 @@ class _RuntimeOutputModeMixin:
             # the DSP helper may still be rebuilding at the old rate and would
             # pull the sink away from the freshly cleared pin.
             samplerate.clear_auto_policy_force_rate(
-                request.target_rate, app_policy=policy
+                request.target_rate, app_policy=policy,
+                idle=not request.target_url and not request.should_play,
             )
-        return {"sample_rate_policy": policy}
+        return result
 
     async def rollback_sample_rate_policy(
         self,
@@ -89,6 +139,14 @@ class _RuntimeOutputModeMixin:
         policy write comes first so a pin restore failure still leaves the
         configuration consistent with the policy.
         """
+        if request is not None and request.src_mode is not None:
+            if (snapshot or {}).get("src_applied"):
+                await self._replace_src_adapters(snapshot["src_policy"]["mode"], snapshot)
+                snapshot["src_applied"] = False
+            previous_force = (snapshot or {}).get("force_rate")
+            if isinstance(previous_force, int) and previous_force >= 0:
+                await asyncio.to_thread(samplerate.set_pipewire_force_rate, previous_force)
+            return
         previous_policy = (snapshot or {}).get("sample_rate_policy")
         if not isinstance(previous_policy, Mapping):
             raise RuntimeError("sample-rate rollback has no previous policy")
@@ -197,12 +255,13 @@ class _RuntimeOutputModeMixin:
                 and not previous_player.get("ended")
             )
             await self._deps.drain_worker(
-                self._player.set_pause, not should_play
+                self._player.set_pause,
+                not should_play if previous_player.get("current_file") else bool(previous_player.get("paused")),
             )
             state = dict(self._player.state if self._player else {})
             if should_play and (state.get("paused") or not state.get("playing")):
                 raise RuntimeError("local transport did not resume after output-mode commit")
-            if not should_play and not state.get("paused"):
+            if previous_player.get("current_file") and not should_play and not state.get("paused"):
                 raise RuntimeError("local pause state did not survive output-mode commit")
         elif request.source == "spotify":
             should_play = previous_spotify.get("status") == "Playing"

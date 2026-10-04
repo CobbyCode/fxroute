@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dsp.orchestration import DspOrchestrator
 from playback.orchestration import PlaybackOrchestrator
+from playback.transition import TransitionResult
 
 RADIO_URL = "https://ice4.somafm.com/suburbsofgoa-128-aac"
 
@@ -71,7 +72,8 @@ class PolicyTransitionTrackRefreshTests(unittest.IsolatedAsyncioTestCase):
     async def test_auto_commit_refreshes_stale_radio_track_rate(self):
         live_track = {"source": "radio", "url": RADIO_URL, "sample_rate_hz": 88200}
         playback_state = SimpleNamespace(current_track_info=live_track)
-        run = AsyncMock(return_value=SimpleNamespace(committed=True, target_rate=44100))
+        run = AsyncMock(return_value=TransitionResult(transition_id="auto", committed=True,
+                                                     source="radio", target_rate=44100, state={}))
         deps = SimpleNamespace(
             get_audio_output_overview=_overview,
             get_player_audio_samplerate=lambda: 44100,
@@ -100,7 +102,8 @@ class PolicyTransitionTrackRefreshTests(unittest.IsolatedAsyncioTestCase):
     async def test_fixed_commit_leaves_track_untouched(self):
         live_track = {"source": "radio", "url": RADIO_URL, "sample_rate_hz": 44100}
         playback_state = SimpleNamespace(current_track_info=live_track)
-        run = AsyncMock(return_value=SimpleNamespace(committed=True, target_rate=88200))
+        run = AsyncMock(return_value=TransitionResult(transition_id="fixed", committed=True,
+                                                     source="radio", target_rate=88200, state={}))
         deps = SimpleNamespace(
             get_audio_output_overview=_overview,
             get_player_audio_samplerate=lambda: 44100,

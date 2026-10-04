@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class _RuntimeChannelTierMixin:
     async def _change_tier_hardware(self, change, *, rollback=False):
         lock_factory = self._deps.audio_configuration_lock
-        async with lock_factory() if lock_factory else nullcontext():
+        async with lock_factory() if lock_factory and not self._configuration_locks_held else nullcontext():
             if not rollback and self._deps.measurement_audio_graph_owned():
                 raise RuntimeError("Measurement is active; channel-tier switch is locked")
             if self._dsp_runtime is not None:
@@ -136,7 +136,7 @@ class _RuntimeChannelTierMixin:
         samplerate.persist_sample_rate_policy(policy)
         old_player = snapshot.get("player") or {}
         old_graph = replace(
-            request, channel_tier={}, target_rate=change.old_rate,
+            request, channel_tier={}, src_mode=None, target_rate=change.old_rate,
             audio_overview=overview, output_mode_target=overview,
             sample_rate_policy=policy, rate_change=True,
         )

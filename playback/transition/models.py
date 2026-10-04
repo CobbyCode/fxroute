@@ -105,6 +105,8 @@ class TransitionRequest:
     output_state_transition: Mapping[str, Any] = field(default_factory=dict)
     channel_tier: Mapping[str, Any] = field(default_factory=dict)
     sample_rate_policy: Mapping[str, Any] = field(default_factory=dict)
+    # SRC adapter replacement uses the same policy handoff and restore stages.
+    src_mode: str | None = None
     # Runtime-captured output overview, frozen at transition start and reused
     # by every graph-diagnosis stage so the expensive pactl/pw-cli enumeration
     # runs once per transition instead of once per readback.

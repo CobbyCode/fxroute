@@ -105,6 +105,10 @@ class TransitionRuntime(Protocol):
         self, request: TransitionRequest
     ) -> Mapping[str, Any]: ...
 
+    async def apply_src_policy(
+        self, request: TransitionRequest, snapshot: dict
+    ) -> Mapping[str, Any]: ...
+
     async def rollback_sample_rate_policy(
         self, request: TransitionRequest, snapshot: Mapping[str, Any] | None
     ) -> None: ...

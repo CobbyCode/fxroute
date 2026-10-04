@@ -24,6 +24,7 @@ import playback.media_readiness as media_readiness
 import measurement.session as measurement_session
 import audio.samplerate as samplerate
 import playback.orchestration as playback_orchestration
+from playback.transition import TransitionResult
 
 
 class SampleRatePolicyTests(unittest.TestCase):
@@ -428,7 +429,8 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
 
         async def run(request):
             captured.append(request)
-            return SimpleNamespace(committed=True)
+            return TransitionResult(transition_id="test-policy", committed=True,
+                                    source=request.source, target_rate=request.target_rate, state={})
 
         context = {
             "source": source,

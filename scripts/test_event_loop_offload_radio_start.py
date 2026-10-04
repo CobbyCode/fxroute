@@ -251,8 +251,8 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
                 self._player = None
                 self._staged_target_url = None
 
-        request = SimpleNamespace(
-            operation="play", source="radio", target_url="http://x", audio_overview=None
+        request = TransitionRequest(
+            operation="play", source="radio", target_url="http://x"
         )
         await _Adapter().read_transition_snapshot(request)
         kinds = {kind for kind, _ in seen}

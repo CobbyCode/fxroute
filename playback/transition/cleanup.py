@@ -256,6 +256,8 @@ class _TransitionCleanupMixin:
                 if not restored:
                     raise RuntimeError("Previous channel-tier graph could not be restored")
                 if not external_target:
+                    if request.src_mode is not None:
+                        await self.runtime.rollback_sample_rate_policy(request, snapshot)
                     if self.gate.closed:
                         await self.ensure_output_gate_closed(transition_id, stage="channel-tier-rollback")
                         await self._hold_gate_after_verification()
@@ -291,6 +293,9 @@ class _TransitionCleanupMixin:
                         "Sample-rate policy rollback failed; keeping the failure gate latched",
                         exc_info=True,
                     )
+                    if request.src_mode is not None:
+                        await self._latch_failure(transition_id)
+                        return True
         if source_policy.is_mpv_source(request.source):
             # The source was attenuated to 0 during the quiet stage.
             # A failed transition must not leave it muted forever:
@@ -342,6 +347,12 @@ class _TransitionCleanupMixin:
                 transition_id=transition_id,
                 gate_required=gate_required,
             )
+            if abort_recovered_source and request.src_mode is not None:
+                try:
+                    await self.runtime.rollback_sample_rate_policy(request, snapshot)
+                except Exception:
+                    logger.warning("SRC rollback force-rate restore failed", exc_info=True)
+                    abort_recovered_source = False
             restored_track = dict(restore_request.target_track or {})
             if abort_recovered_source:
                 try:
@@ -394,7 +405,7 @@ class _TransitionCleanupMixin:
                 stage="before-recovered-gate-restore",
             )
             await self._hold_gate_after_verification()
-            await self._restore_gate(transition_id, audible_output=True)
+            await self._restore_gate(transition_id, audible_output=bool(restore_request.should_play))
             return False
         except Exception:
             logger.warning(

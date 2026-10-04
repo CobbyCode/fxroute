@@ -32,8 +32,6 @@ for (const [rate, label] of [[44100, '44.1 kHz'], [48000, '48 kHz'], [96000, '96
     settings.renderSettingsPanel();
     assert.equal(samplerateHint.textContent, `Playback graph and hardware output are fixed at ${label}.`);
 }
-const html = fs.readFileSync(path.join(__dirname, '../static/index.html'), 'utf8');
-assert.doesNotMatch(html, /<button[^>]*id="settings-src-restart"/);
 
 (async () => {
     const select = { value: '', disabled: false };
@@ -73,10 +71,6 @@ assert.doesNotMatch(html, /<button[^>]*id="settings-src-restart"/);
     await src.refresh();
     assert.equal(hint.textContent, guidance);
     assert.equal(select.disabled, true);
-    response = { ok: true, json: async () => ({ mode: 'high', available: false, runtime_ready: true, restart_required: true }) };
-    await src.refresh();
-    assert.equal(select.disabled, false);
-    assert.equal(hint.textContent, guidance);
     for (const mode of ['low', 'standard', 'high']) {
         response = { ok: true, json: async () => ({ mode, available: true }) };
         await src.save(mode);
@@ -112,7 +106,14 @@ assert.doesNotMatch(html, /<button[^>]*id="settings-src-restart"/);
     })).json();
     assert.equal(demoHigh.mode, 'high');
     assert.equal(demoHigh.simulated, true);
-    assert.equal(demoHigh.apply_requires_stopped_playback, false);
-    assert.equal((await (await context.fetch('/api/status')).json()).playing, false);
+    assert.equal((await (await context.fetch('/api/status')).json()).playing, true);
+    await context.fetch('/api/playback/toggle', { method: 'POST', body: '{}' });
+    const paused = await (await context.fetch('/api/status')).json();
+    assert.equal(paused.paused, true);
+    await context.fetch('/api/audio/src', { method: 'POST', body: JSON.stringify({ mode: 'low' }) });
+    const restored = await (await context.fetch('/api/status')).json();
+    assert.equal(restored.paused, true);
+    assert.equal(restored.position, paused.position);
+    assert.deepEqual(restored.current_track, paused.current_track);
     console.log('common SRC Settings: ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

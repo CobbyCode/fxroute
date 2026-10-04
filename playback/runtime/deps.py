@@ -97,3 +97,7 @@ class PlaybackRuntimeDependencies:
     # Authoritative output-state service for v2 transitions (main.py).
     get_output_service: Callable[[], Any] | None = None
     qobuz_navigate: Callable[[str], Awaitable[dict]] | None = None
+    guard_src_change: Callable[[], Awaitable[None]] | None = None
+    restart_src_graph: Callable[[dict], Awaitable[dict]] | None = None
+    sample_rate_policy_request: Callable[..., Awaitable[Any]] | None = None
+    canonical_volume_write_lock: Callable[[], Any] | None = None

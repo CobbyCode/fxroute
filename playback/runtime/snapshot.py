@@ -14,6 +14,7 @@ import logging
 from typing import Any, Mapping
 
 import audio.samplerate as samplerate
+from audio import src_policy
 from audio.samplerate import OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_MODES
 import playback.source_policy as source_policy
 from playback.transition import TransitionRequest
@@ -64,11 +65,22 @@ class _RuntimeSnapshotMixin:
             )
 
     async def read_transition_snapshot(self, request: TransitionRequest) -> dict[str, Any]:
+        if request.src_mode is not None:
+            error = await asyncio.to_thread(src_policy.runtime_error)
+            if error:
+                raise RuntimeError(error)
         self._staged_target_url = None
         self._quieted_external_source = None
         self._staged_qobuz_track_id = None
         self._qobuz_stream_rate = None
         state = dict(self._player.state if self._player else {})
+        if (request.operation == "sample-rate-policy" and source_policy.restores_position(request.source)
+                and state.get("current_file")):
+            get_property = getattr(self._player, "get_property", None)
+            if callable(get_property):
+                position = await self._deps.drain_worker(get_property, "time-pos")
+                if isinstance(position, (int, float)) and position >= 0:
+                    state["position"] = float(position)
         # Both builders run bounded PipeWire/BlueZ subprocess pipelines; keep
         # them off the event loop.  The status is read first so the overview
         # build can reuse it instead of repeating that pipeline a second time.
@@ -106,6 +118,14 @@ class _RuntimeSnapshotMixin:
                     self._deps.get_audio_output_overview, overview_status
                 )
             )
+        if request.src_mode is not None:
+            output = (snapshot.get("audio_overview") or {}).get("selected_output") or {}
+            if rate.get("force_rate") is None:
+                raise RuntimeError("Cannot snapshot graph rate before SRC change")
+            if not output.get("key") or not output.get("target_name") or output["target_name"] == "fxroute_dsp_sink":
+                raise RuntimeError("Cannot snapshot the selected hardware output before SRC change")
+            snapshot["src_policy"] = await asyncio.to_thread(src_policy.load_policy)
+            snapshot["src_graph"] = {"force_rate": rate["force_rate"], "output_key": output["key"]}
         channel_tier = getattr(request, "channel_tier", None) or {}
         if channel_tier:
             from audio.channel_tiers import prepare_change
@@ -210,6 +230,14 @@ class _RuntimeSnapshotMixin:
 
         current_state = dict(self._player.state if self._player else {})
         previous_file = previous_state.get("current_file")
+        if request.src_mode is not None and not previous_file and not snapshot_track:
+            previous_rate = (snapshot or {}).get("active_rate")
+            if isinstance(previous_rate, int) and previous_rate > 0:
+                return {"restore": TransitionRequest(
+                    operation="replay", source="local", target_rate=previous_rate,
+                    should_play=False, reload_source=False, rate_change=True,
+                    detail="failed-transition-idle-restore",
+                )}
         current_file = current_state.get("current_file")
         previous_context_unchanged = (
             not target_staged
@@ -311,7 +339,7 @@ class _RuntimeSnapshotMixin:
         )
         if not (mpv or external) or (mpv and not target_url):
             return None
-        if external and self._quieted_external_source != source:
+        if external and self._quieted_external_source != source and request.src_mode is None:
             return None
         native_fields = self._deps.queue().native_request_fields() if mpv else {}
         native_committed = bool(native_fields)
@@ -349,11 +377,11 @@ class _RuntimeSnapshotMixin:
         live_active = int(live_status.get("active_rate") or 0)
         live_aligned = bool(live_active > 0 and live_active == restore_target_rate)
         restore_rate_change = bool(request.rate_change or not live_aligned)
-        was_playing = external or bool(
-            previous_state.get("playing")
-            and not previous_state.get("paused")
-            and not previous_state.get("ended")
-        )
+        if external:
+            was_playing = request.should_play if request.src_mode is not None else True
+        else:
+            was_playing = bool(previous_state.get("playing") and not previous_state.get("paused")
+                               and not previous_state.get("ended"))
         previous_position = previous_state.get("position")
         restore_position = (
             max(0.0, float(previous_position))

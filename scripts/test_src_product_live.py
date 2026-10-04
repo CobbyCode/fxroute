@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -46,6 +47,38 @@ def wait_for(predicate, timeout=15):
             return value
         time.sleep(0.1)
     raise AssertionError("Product path did not become ready")
+
+
+def player_property(name):
+    """Read paused-position truth independently of delayed status observers."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(5)
+        connection.connect(os.environ.get("FXROUTE_MPV_SOCKET", "/tmp/mpv.sock"))
+        connection.sendall((json.dumps({"command": ["get_property", name], "request_id": 1}) + "\n").encode())
+        with connection.makefile("r") as responses:
+            for line in responses:
+                response = json.loads(line)
+                if response.get("request_id") == 1:
+                    assert response.get("error") == "success", response
+                    return response.get("data")
+    raise AssertionError("MPV property read returned no response")
+
+
+def paused_position(timeout=5):
+    """Wait for queued audio timing to freeze after the pause acknowledgement."""
+    deadline = time.monotonic() + timeout
+    previous = None
+    stable = 0
+    while time.monotonic() < deadline:
+        assert player_property("pause") is True
+        position = player_property("time-pos")
+        if isinstance(position, (int, float)):
+            stable = stable + 1 if previous is not None and abs(position - previous) < 0.001 else 0
+            if stable >= 3:
+                return position
+            previous = position
+        time.sleep(0.1)
+    raise AssertionError("Paused MPV position did not freeze")
 
 
 def graph(mode):
@@ -187,21 +220,38 @@ def main():
                     record = {"mode": mode, "path": label, "nodes": observed["effective_nodes"]}
                     record.update(capture_finish(capture, log, pcm))
                     other_mode = {"low": "standard", "standard": "high", "high": "low"}[mode]
+                    before = http("/api/status")
                     applied = http("/api/audio/src", {"mode": other_mode})
                     assert applied["mode"] == other_mode and applied["available"], applied
-                    stopped = http("/api/status")
-                    assert not stopped["playing"] and not stopped["paused"] and not stopped["current_file"], stopped
-                    graph(other_mode)
-                    http("/api/play", {"source": source, "track_id": track})
-                    wait_for(lambda: http("/api/status").get("playing"), 45)
+                    resumed = wait_for(lambda: (state if (state := http("/api/status")).get("playing") else None), 45)
+                    assert not resumed["paused"] and resumed["current_file"] == before["current_file"], resumed
+                    assert resumed["current_track"]["id"] == before["current_track"]["id"], resumed
+                    assert resumed["queue"] == before["queue"], (before["queue"], resumed["queue"])
+                    if source != "radio":
+                        assert abs(resumed["position"] - before["position"]) < 3, (before, resumed)
+                    _, sink = graph(other_mode)
+                    capture, log, pcm = capture_start(directory, mode + "-" + label + "-resumed", sink)
+                    time.sleep(3)
+                    record["resumed_pcm"] = capture_finish(capture, log, pcm)
                     http("/api/playback/toggle", {})
-                    assert http("/api/status")["paused"], "Paused SRC test did not pause the owned track"
+                    paused = http("/api/status")
+                    assert paused["paused"], "Paused SRC test did not pause the owned track"
+                    assert player_property("pause") is True
+                    paused["position"] = paused_position()
                     restored = http("/api/audio/src", {"mode": mode})
                     assert restored["mode"] == mode and restored["available"], restored
-                    stopped = http("/api/status")
-                    assert not stopped["playing"] and not stopped["paused"] and not stopped["current_file"], stopped
-                    graph(mode)
-                    record["live_apply"] = {"playing_to": other_mode, "paused_to": mode, "automatic_stop": True}
+                    after = http("/api/status")
+                    assert not after["playing"] and after["paused"] and after["current_file"] == paused["current_file"], after
+                    assert player_property("pause") is True
+                    assert after["queue"] == paused["queue"], (paused["queue"], after["queue"])
+                    if source != "radio":
+                        restored_position = player_property("time-pos")
+                        assert abs(restored_position - paused["position"]) < 0.5, (paused["position"], restored_position)
+                    _, sink = graph(mode)
+                    record["live_apply"] = {"playing_to": other_mode, "paused_to": mode, "automatic_resume": True,
+                                            "before_position": before["position"], "resumed_position": resumed["position"],
+                                            "paused_position": paused["position"],
+                                            "restored_position": player_property("time-pos"), "queue_preserved": True}
                     records.append(record)
                     print("PASS", mode, label, flush=True)
                 finally:

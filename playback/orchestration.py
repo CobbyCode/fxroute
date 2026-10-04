@@ -428,7 +428,26 @@ class PlaybackOrchestrator:
             signature=signature, commit_context_id=commit_context, validate=validate, execute=execute,
         )
 
-    async def transition_sample_rate_policy(self, policy: Mapping[str, Any], *, detail: str) -> None:
+    async def transition_sample_rate_policy(self, policy: Mapping[str, Any], *, detail: str,
+                                          src_mode: str | None = None):
+        request = await self.sample_rate_policy_request(policy, detail=detail, src_mode=src_mode)
+        result = await self._deps.run_transition(request)
+        if (
+            getattr(result, "committed", False)
+            and self._deps.sample_rate_policy_is_auto()
+            and source_policy.is_mpv_source(result.source)
+            and isinstance(getattr(result, "target_rate", None), int)
+            and result.target_rate > 0
+        ):
+            state = self._deps.get_playback_state()
+            current = state.current_track_info
+            if current and current.get("source") == result.source:
+                current["sample_rate_hz"] = result.target_rate
+        return result
+
+    async def sample_rate_policy_request(self, policy: Mapping[str, Any], *, detail: str,
+                                       src_mode: str | None = None) -> TransitionRequest:
+        """Build a policy handoff from the current playback and hardware context."""
         overview = await asyncio.to_thread(self._deps.get_audio_output_overview)
         selected = overview.get("selected_output") or overview.get("current_output") or {}
         if policy.get("mode") == "fixed" and policy.get("rate") not in (selected.get("supported_rates") or []):
@@ -452,35 +471,14 @@ class PlaybackOrchestrator:
         if not isinstance(target_rate, int) or target_rate <= 0:
             raise RuntimeError("current hardware sample rate is unavailable")
         rate_change = await asyncio.to_thread(self.coordinator_rate_change, target_rate)
-        request = TransitionRequest(
+        return TransitionRequest(
             operation="sample-rate-policy", source=source, target_rate=target_rate,
             target_url=context.get("target_url"), target_track=dict(context.get("target_track") or {}),
             should_play=bool(context.get("should_play")), rate_change=rate_change,
-            reload_source=bool(rate_change and source_policy.is_known_source(source) and context.get("target_url")),
-            detail=detail, output_mode_target=dict(overview), sample_rate_policy=dict(policy),
+            reload_source=bool((rate_change or src_mode is not None) and source_policy.is_known_source(source) and context.get("target_url")),
+            detail=detail, output_mode_target=dict(overview), sample_rate_policy=dict(policy), src_mode=src_mode,
             **(self._deps.get_player_queue_fields() if source == "local" else {}),
         )
-        result = await self._deps.run_transition(request)
-        if (
-            getattr(result, "committed", False)
-            and self._deps.sample_rate_policy_is_auto()
-            and source_policy.is_mpv_source(source)
-            and isinstance(getattr(result, "target_rate", None), int)
-            and result.target_rate > 0
-        ):
-            # The committed hardware/helper rate is live-derived (MPV truth
-            # under auto). Refresh the committed track metadata so later
-            # watcher decisions derive their target from the new rate instead
-            # of a stale fixed-rate value (e.g. radio still carrying 88200
-            # after a fixed -> auto restore). Mirrors the recovery/play paths.
-            state = self._deps.get_playback_state()
-            current = state.current_track_info
-            if (
-                current
-                and current.get("source") == source
-                and current.get("url") == context.get("target_url")
-            ):
-                current["sample_rate_hz"] = result.target_rate
 
     async def _dsp_output_ports_present(self) -> bool:
         try:
@@ -894,7 +892,8 @@ class PlaybackOrchestrator:
             raise RuntimeError("post-start production graph did not reach two stable canonical readbacks")
         return {"graph_complete": True, "post_start_graph_reconciled": True, "post_start_graph_links_relinked": relinked, "graph_signature": signatures[-1]}
 
-    async def establish_effects_and_helper(self, request: TransitionRequest, *, dsp_port_timeout_ms: int | None = None) -> dict[str, Any]:
+    async def establish_effects_and_helper(self, request: TransitionRequest, *, dsp_port_timeout_ms: int | None = None,
+                                         _configuration_locks_held: bool = False) -> dict[str, Any]:
         target_rate = request.target_rate
         empty = {"dsp_reinitialized": False, "preset_reloaded": False, "helper_rebuilt": False, "links_reconciled": False}
         if not isinstance(target_rate, int) or target_rate <= 0:
@@ -936,7 +935,8 @@ class PlaybackOrchestrator:
                     # for its whole transition; the nested preset reload must
                     # not re-enter it (same contract as the direct helper
                     # syncs below).
-                    _rate_lock_held=request.operation in {"measurement-entry", "measurement-restore"},
+                    _rate_lock_held=_configuration_locks_held or request.operation in {"measurement-entry", "measurement-restore"},
+                    **({"_locks_held": True} if _configuration_locks_held else {}),
                 )
                 preset_reloaded = True
             v2_pending = (request.operation == "output-mode-switch"
@@ -991,6 +991,8 @@ class PlaybackOrchestrator:
                 helper_needs_sync = bool(request.rate_change or not snapshot.get("active") or self._deps.helper_argument_sample_rate(snapshot) != target_rate or not diagnosis.get("helper_ports") or not all(diagnosis.get("links", {}).values()))
                 if helper_needs_sync:
                     kwargs = {"reason": f"coordinator-{request.operation}"}
+                    if _configuration_locks_held:
+                        kwargs["_rate_lock_held"] = True
                     if request.operation in {"measurement-entry", "measurement-restore"}:
                         # The measurement-entry establishes its target rate inside
                         # this same transition (force pin + sink alignment), but

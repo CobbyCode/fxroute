@@ -7,27 +7,26 @@
     'use strict';
     let deps = { fetchFn: (...args) => fetch(...args), onError: () => {}, onApplied: () => {} };
     let status = {};
-    let pending = false;
+    let saving = false;
     const guidance = 'Low: ~70% / 0.45× CPU · Standard: ~81,9% / 1.0× CPU · High: ~99.6% / 1.5× CPU';
 
     function init(overrides) { deps = { ...deps, ...overrides }; }
     function render() {
-        const unavailable = status.runtime_ready === false || (status.runtime_ready == null && status.available !== true);
         if (deps.select) {
             deps.select.value = status.mode || 'standard';
-            deps.select.disabled = pending || unavailable;
+            deps.select.disabled = saving || status.available !== true;
         }
         if (deps.hint) {
             deps.hint.textContent = guidance;
         }
     }
     function update(data) {
-        if (pending) return;
+        if (saving) return;
         status = data || {};
         render();
     }
     async function refresh() {
-        if (pending) return;
+        if (saving) return;
         try {
             const response = await deps.fetchFn('/api/audio/src');
             const data = await response.json().catch(() => ({}));
@@ -37,8 +36,8 @@
         render();
     }
     async function save(mode) {
-        if (pending) return;
-        pending = true;
+        if (saving) return;
+        saving = true;
         render();
         try {
             const response = await deps.fetchFn('/api/audio/src', {
@@ -49,7 +48,7 @@
             status = data;
             await deps.onApplied();
         } catch (error) { deps.onError(error.message); }
-        finally { pending = false; render(); }
+        finally { saving = false; render(); }
     }
     return { init, refresh, save, render, update };
 });

@@ -18,7 +18,7 @@ import inspect
 import subprocess
 import playback.queue as playback_queue
 import playback.media_readiness as media_readiness
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -454,7 +454,6 @@ from playback.state import PlaybackState
 import playback.source_policy as source_policy
 import audio.samplerate as samplerate
 from audio import src_policy
-from audio.src_api import SrcController
 from library.core import (
     LibraryScanner,
 )
@@ -1165,6 +1164,10 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         coordinator_reconcile_post_start_graph=lambda *a, **k: playback_orchestration.configured().reconcile_post_start_graph(*a, **k),
         audio_configuration_lock=lambda: measurement_sr_session.lock,
         get_output_service=lambda: get_output_service(),
+        guard_src_change=lambda: _guard_src_change(),
+        restart_src_graph=lambda state: _restart_src_graph(state),
+        sample_rate_policy_request=lambda policy, **kwargs: playback_orchestration.configured().sample_rate_policy_request(policy, **kwargs),
+        canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
     )
 
 
@@ -4530,34 +4533,13 @@ async def save_audio_samplerate_policy(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to save sample-rate policy: {exc}") from exc
 
 
-_SRC_GRAPH_BUSY_DETAIL = "Audio configuration is busy; retry SRC after it finishes"
-
-
-@asynccontextmanager
-async def _src_graph_lock():
-    coordinator_lock = _coordinator_lock_for_source_pause()
-    if coordinator_lock is None:
-        raise HTTPException(status_code=503, detail="Playback coordinator is not ready")
-    locks = [(_source_transition_lock(), 409), (coordinator_lock, 409), (_dsp_mutation_lock(), 409)]
-    if measurement_sr_session is not None:
-        locks.append((measurement_sr_session.lock, 423))
-    async with AsyncExitStack() as stack:
-        for lock, code in locks:
-            # asyncio reserves a released lock for its woken waiter. Treat
-            # that handoff as busy too; never await acquisition with locks held.
-            if lock.locked() or any(not waiter.cancelled() for waiter in (lock._waiters or ())):
-                raise HTTPException(status_code=code, detail=_SRC_GRAPH_BUSY_DETAIL)
-            await stack.enter_async_context(lock)
-        _begin_playback_transition_attempt()
-        try:
-            yield
-        finally:
-            _end_playback_transition_attempt()
-
-
 async def _guard_src_change():
     if _measurement_session_owns_live_rate() or (measurement_sr_session is not None and measurement_sr_session.has_active_jobs):
         raise HTTPException(status_code=423, detail="Measurement is active; SRC mode is locked")
+    if measurement_sr_session is not None:
+        lock = measurement_sr_session.lock
+        if lock.locked() or any(not waiter.cancelled() for waiter in (lock._waiters or ())):
+            raise HTTPException(status_code=423, detail="Measurement audio configuration is busy")
     source = await asyncio.to_thread(samplerate._load_audio_source_selection)
     stdin = runtime.stdin_input.snapshot() if runtime.stdin_input else {}
     if stdin.get("session_id") or source.get("mode") != SOURCE_MODE_APP_PLAYBACK:
@@ -4566,48 +4548,9 @@ async def _guard_src_change():
         raise HTTPException(status_code=503, detail="DSP runtime is not ready")
 
 
-async def _snapshot_src_graph():
-    force_rate = await asyncio.to_thread(samplerate.get_current_pipewire_force_rate)
-    if force_rate is None:
-        raise RuntimeError("Cannot snapshot graph rate before SRC change")
-    overview = await asyncio.to_thread(get_audio_output_overview)
-    output = overview.get("selected_output") or {}
-    if not output.get("key") or not output.get("target_name") or output["target_name"] == "fxroute_dsp_sink":
-        raise RuntimeError("Cannot snapshot the selected hardware output before SRC change")
-    return {"force_rate": force_rate, "output_key": output["key"]}
-
-
-async def _stop_app_playback_for_src():
-    """Quiesce app transports under SRC graph ownership without changing rate policy."""
-    _mark_playback_intent_changed()
-    spotify = await get_spotify_ui_state()
-    if _is_spotify_playback_active(spotify):
-        _commit_spotify_state_direct(await spotify_pause())
-    if not await media_readiness.wait_for_pipewire_spotify_release(strict=True):
-        raise RuntimeError("Spotify did not quiesce before SRC change")
-    qobuz = await get_qobuz_ui_state()
-    if _is_qobuz_playback_active(qobuz):
-        await qobuz_pause()
-    if not await media_readiness.wait_for_pipewire_qobuz_release(strict=True):
-        raise RuntimeError("Qobuz did not quiesce before SRC change")
-    if _player_is_running():
-        await _drain_worker(runtime.player_instance.stop_playback)
-        _mark_player_state_authoritative(runtime.player_instance.state)
-    track = playback_state.current_track_info or {}
-    if track.get("source") == "radio":
-        playback_state.last_radio_track_info = dict(track)
-    playback_state.current_track_info = None
-    playback_state.current_playback_owner = None
-    await radio_reconnect.reset()
-    await _drain_worker(playback_queue.queue.reset)
-    await _drain_worker(playback_queue.queue.reset_mpv_loop_state)
-    await manager.broadcast({"type": "playback", "data": build_playback_payload()})
-
-
-async def _restart_src_graph(state=None):
-    state = state if state is not None else await _snapshot_src_graph()
+async def _restart_src_graph(state):
+    """Reconstruct adapters after the coordinator has quieted playback."""
     await asyncio.to_thread(src_policy.activate_environment)
-    await _stop_app_playback_for_src()
     await runtime.dsp_runtime.stop()
     if runtime.player_instance:
         await _drain_worker(runtime.player_instance.stop)
@@ -4649,6 +4592,7 @@ async def _restart_src_graph(state=None):
     if runtime.player_instance:
         await _drain_worker(runtime.player_instance.start)
         _mark_player_state_authoritative(runtime.player_instance.state)
+    return restored
 
 
 @app.get("/api/audio/src")
@@ -4664,19 +4608,19 @@ async def save_audio_src_policy(request: Request):
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
-        for attempt in range(31):
-            try:
-                result = await SrcController(_guard_src_change, _restart_src_graph, _src_graph_lock(), snapshot=_snapshot_src_graph).apply(mode)
-                break
-            except HTTPException as exc:
-                # Retry only pre-apply contention, with every graph lock released.
-                if exc.status_code != 409 or exc.detail != _SRC_GRAPH_BUSY_DETAIL or attempt == 30:
-                    raise
-                await asyncio.sleep(0.1)
+        async with _source_transition_lock():
+            await _guard_src_change()
+            transition = await finish_then_cancel(
+                _transition_sample_rate_policy(
+                    samplerate.load_sample_rate_policy(), detail="api-audio-src-policy", src_mode=mode),
+                what="SRC selection")
+        result = transition.state["src"]
         await manager.broadcast({"type": "src", "data": result})
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PlaybackTransitionFailure as exc:
+        raise _transition_error_http(exc) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
