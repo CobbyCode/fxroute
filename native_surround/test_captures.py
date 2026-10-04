@@ -82,7 +82,7 @@ class SavedCaptureTests(unittest.TestCase):
                   f"state={status['state']}, errors={status['errors']}")
 
     def test_ac3_51(self):
-        self.check_capture("surround-fixed-pcm-20261004-113059", "spdif-pair", "ac3", BUS[:6])
+        self.check_capture("surround-ac3-51-source-20261004-160242", "pair", "ac3", BUS[:6])
 
     def test_ac3_stereo(self):
         self.check_capture("surround-dd20-source-20261004-114328", "pair", "ac3", BUS[:2])
