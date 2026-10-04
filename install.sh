@@ -637,6 +637,8 @@ reject_managed_user_symlinks() {
     "$INSTALL_ROOT/.venv"
     "$INSTALL_ROOT/native_dsp"
     "$INSTALL_ROOT/native_dsp/build"
+    "$INSTALL_ROOT/native_surround"
+    "$INSTALL_ROOT/native_surround/build"
     "$INSTALL_ROOT/scripts"
     "$INSTALL_ROOT/scripts/update_fxroute.sh"
     "$INSTALL_ROOT/scripts/system-package-update.sh"
@@ -5297,6 +5299,28 @@ build_native_dsp_engine() {
   pass "FXRoute native DSP engine built"
 }
 
+build_native_surround_input() {
+  local build_script="$INSTALL_ROOT/native_surround/build.sh"
+  local binary="$INSTALL_ROOT/native_surround/build/fxroute-surround-input"
+  local packages=() ffmpeg_major
+  case "$PACKAGE_MANAGER" in
+    apt) packages=(libavcodec-dev libavutil-dev libswresample-dev) ;;
+    dnf) packages=('pkgconfig(libavcodec)' 'pkgconfig(libavutil)' 'pkgconfig(libswresample)') ;;
+    zypper)
+      ffmpeg_major="$(ffmpeg -version | sed -n '1s/^ffmpeg version \([0-9][0-9]*\).*/\1/p')"
+      [[ "$ffmpeg_major" =~ ^[0-9]+$ && "$ffmpeg_major" -ge 5 ]] || die "Surround needs FFmpeg 5 or newer"
+      packages=("ffmpeg-${ffmpeg_major}-libavcodec-devel" "ffmpeg-${ffmpeg_major}-libavutil-devel" "ffmpeg-${ffmpeg_major}-libswresample-devel")
+      ;;
+    pacman) packages=(ffmpeg) ;;
+  esac
+  [[ -f "$build_script" ]] || die "Missing Surround input build script: $build_script"
+  prepare_target_user_directory "$INSTALL_ROOT/native_surround/build"
+  pkg_install "${packages[@]}"
+  run_as_target_user_in_install "bash $(shell_quote "$build_script")" || die "Surround input build failed"
+  [[ -x "$binary" ]] || die "Surround input binary missing after build: $binary"
+  pass "FXRoute Surround input built"
+}
+
 install_calf_lv2_from_source() {
   local version="0.90.9"
   local checksum="2d304eed88e87438b2b8857a2f4480046bf4003bce2e17a042abdbbf7d59122f"
@@ -7617,6 +7641,7 @@ main() {
   install_provider_privileged_helper
   setup_python_env
   build_native_dsp_engine
+  build_native_surround_input
   log "Building the common playback SRC converter"
   run_as_target_user python3 "$INSTALL_ROOT/native_src/build.py"
   "${SUDO_CMD[@]}" python3 "$INSTALL_ROOT/scripts/install_src_plugin.py"

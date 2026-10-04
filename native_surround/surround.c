@@ -1,0 +1,407 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+#define _POSIX_C_SOURCE 200809L
+#include "surround.h"
+#include <libavcodec/avcodec.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/opt.h>
+#include <libswresample/swresample.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#define PENDING 16384
+#define PAYLOAD 16384
+#define DECODE_SAMPLES 4096
+
+const char *const surround_positions[8] = {"FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR"};
+enum carrier_mode { MODE_PCM, MODE_ENCODED, MODE_UNKNOWN };
+struct pending_frame { uint64_t tag; float pcm[8]; };
+struct surround {
+    surround_emit emit;
+    void *data;
+    struct pending_frame pending[PENDING];
+    uint64_t input, emitted, burst_frame, previous_frame, errors, decoded;
+    enum carrier_mode mode;
+    unsigned silence, phase, swapped, kind, bits, payload_words, payload_have, header_error;
+    uint16_t previous;
+    uint32_t raw_sync;
+    uint8_t payload[PAYLOAD + AV_INPUT_BUFFER_PADDING_SIZE];
+    AVCodecContext *ac3, *dts, *active;
+    AVFrame *frame;
+    AVPacket *packet;
+    float converted[DECODE_SAMPLES * 8];
+    char codec[32], layout[128], mute_reason[32];
+    unsigned rate, position_count, position_index[8];
+};
+
+static struct pending_frame *slot(surround *d, uint64_t index) {
+    struct pending_frame *p = &d->pending[index % PENDING];
+    if (p->tag != index) {
+        p->tag = index;
+        memset(p->pcm, 0, sizeof p->pcm);
+    }
+    return p;
+}
+
+static void metadata(surround *d, const char *codec) {
+    snprintf(d->codec, sizeof d->codec, "%s", codec);
+    d->rate = SURROUND_RATE;
+    d->position_count = 0;
+    d->layout[0] = '\0';
+    d->mute_reason[0] = '\0';
+}
+
+static void pcm_metadata(surround *d) {
+    metadata(d, "pcm");
+    snprintf(d->layout, sizeof d->layout, "stereo");
+    d->position_count = 2;
+    d->position_index[0] = 0;
+    d->position_index[1] = 1;
+}
+
+static void flush_decoders(surround *d) {
+    if (d->ac3) {
+        /* FFmpeg 8 AC-3 flush also clears fields backing these AVOptions. */
+        double drc = 1;
+        int64_t target = 0, heavy = 0, noise = 0;
+        av_opt_get_double(d->ac3->priv_data, "drc_scale", 0, &drc);
+        av_opt_get_int(d->ac3->priv_data, "target_level", 0, &target);
+        av_opt_get_int(d->ac3->priv_data, "heavy_compr", 0, &heavy);
+        av_opt_get_int(d->ac3->priv_data, "cons_noisegen", 0, &noise);
+        avcodec_flush_buffers(d->ac3);
+        av_opt_set_double(d->ac3->priv_data, "drc_scale", drc, 0);
+        av_opt_set_int(d->ac3->priv_data, "target_level", target, 0);
+        av_opt_set_int(d->ac3->priv_data, "heavy_compr", heavy, 0);
+        av_opt_set_int(d->ac3->priv_data, "cons_noisegen", noise, 0);
+    }
+    if (d->dts) avcodec_flush_buffers(d->dts);
+    d->active = NULL;
+}
+
+static void mute_pending(surround *d) {
+    for (uint64_t i = d->emitted; i <= d->input + DECODE_SAMPLES; i++)
+        memset(slot(d, i)->pcm, 0, sizeof slot(d, i)->pcm);
+}
+
+static void unknown(surround *d, const char *reason) {
+    mute_pending(d);
+    flush_decoders(d);
+    d->mode = MODE_UNKNOWN;
+    d->silence = 0;
+    metadata(d, reason);
+    snprintf(d->mute_reason, sizeof d->mute_reason, "%s", reason);
+    d->errors++;
+}
+
+static unsigned duration(unsigned kind) {
+    switch (kind) {
+    case 1: return 1536;
+    case 0x0b: return 512;
+    case 0x0c: return 1024;
+    case 0x0d: return 2048;
+    default: return 4096;
+    }
+}
+
+static void bad_burst(surround *d, const char *reason) {
+    uint64_t start = d->burst_frame < d->emitted ? d->emitted : d->burst_frame;
+    uint64_t end = d->burst_frame + duration(d->kind);
+    if (end <= d->input) end = d->input + 1;
+    for (uint64_t i = start; i < end; i++)
+        memset(slot(d, i)->pcm, 0, sizeof slot(d, i)->pcm);
+    flush_decoders(d);
+    d->mode = MODE_UNKNOWN;
+    d->silence = 0;
+    if (!d->decoded) metadata(d, reason);
+    snprintf(d->mute_reason, sizeof d->mute_reason, "%s", reason);
+    d->errors++;
+}
+
+static int channel_index(enum AVChannel channel) {
+    switch (channel) {
+    case AV_CHAN_FRONT_LEFT: return 0;
+    case AV_CHAN_FRONT_RIGHT: return 1;
+    case AV_CHAN_FRONT_CENTER: return 2;
+    case AV_CHAN_LOW_FREQUENCY: return 3;
+    case AV_CHAN_SIDE_LEFT: return 4;
+    case AV_CHAN_SIDE_RIGHT: return 5;
+    case AV_CHAN_BACK_LEFT: return 6;
+    case AV_CHAN_BACK_RIGHT: return 7;
+    default: return -1;
+    }
+}
+
+static AVCodecContext *open_decoder(enum AVCodecID id) {
+    const AVCodec *codec = avcodec_find_decoder(id);
+    AVCodecContext *context = codec ? avcodec_alloc_context3(codec) : NULL;
+    if (!context) return NULL;
+    context->err_recognition = AV_EF_CRCCHECK | AV_EF_BITSTREAM | AV_EF_BUFFER | AV_EF_EXPLODE;
+    context->thread_count = 1;
+    if (avcodec_open2(context, codec, NULL) < 0) avcodec_free_context(&context);
+    return context;
+}
+
+static int receive_packet(surround *d, AVCodecContext *context) {
+    av_frame_unref(d->frame);
+    if (avcodec_send_packet(context, d->packet) < 0) return -1;
+    return avcodec_receive_frame(context, d->frame);
+}
+
+static int decode(surround *d) {
+    AVCodecContext **owner = d->kind == 1 ? &d->ac3 : &d->dts;
+    if (!*owner) *owner = open_decoder(d->kind == 1 ? AV_CODEC_ID_AC3 : AV_CODEC_ID_DTS);
+    AVCodecContext *context = *owner;
+    if (!context) return -1;
+    int continuing = d->active == context && d->position_count;
+    if (d->active != context) {
+        flush_decoders(d);
+        d->active = context;
+    }
+    av_packet_unref(d->packet);
+    if (av_new_packet(d->packet, (int)(d->bits / 8)) < 0) return -1;
+    memcpy(d->packet->data, d->payload, d->bits / 8);
+    if (receive_packet(d, context) < 0) return -1;
+    char received_layout[128];
+    if (av_channel_layout_describe(&d->frame->ch_layout, received_layout, sizeof received_layout) < 0) return -1;
+    if (continuing && strcmp(received_layout, d->layout)) {
+        /* A new layout must not inherit transform history from other positions. */
+        flush_decoders(d);
+        d->active = context;
+        if (receive_packet(d, context) < 0) return -1;
+    }
+    AVFrame *f = d->frame;
+    int channels = f->ch_layout.nb_channels;
+    if (f->sample_rate != SURROUND_RATE || channels < 1 || channels > 8 ||
+        f->nb_samples < 1 || (unsigned)f->nb_samples != duration(d->kind) ||
+        (f->flags & AV_FRAME_FLAG_CORRUPT) || !av_channel_layout_check(&f->ch_layout)) return -1;
+    unsigned mapping[8];
+    for (int c = 0; c < channels; c++) {
+        int position = channel_index(av_channel_layout_channel_from_index(&f->ch_layout, c));
+        if (position < 0) return -1;
+        mapping[c] = (unsigned)position;
+    }
+    /* Format conversion only: same rate/layout, no rematrix, SRC or LFE gain. */
+    SwrContext *swr = NULL;
+    if (swr_alloc_set_opts2(&swr, &f->ch_layout, AV_SAMPLE_FMT_FLT, f->sample_rate,
+                           &f->ch_layout, f->format, f->sample_rate, 0, NULL) < 0) return -1;
+    uint8_t *output = (uint8_t *)d->converted;
+    int count = swr_init(swr) < 0 ? -1 : swr_convert(swr, &output, DECODE_SAMPLES,
+                               (const uint8_t **)f->extended_data, f->nb_samples);
+    swr_free(&swr);
+    if (count != f->nb_samples) return -1;
+    for (int i = 0; i < count * channels; i++)
+        if (!isfinite(d->converted[i])) return -1;
+    metadata(d, d->kind == 1 ? "ac3" : "dts");
+    av_channel_layout_describe(&f->ch_layout, d->layout, sizeof d->layout);
+    d->position_count = (unsigned)channels;
+    memcpy(d->position_index, mapping, (size_t)channels * sizeof mapping[0]);
+    for (int i = 0; i < count; i++) {
+        uint64_t index = d->burst_frame + (unsigned)i;
+        if (index < d->emitted) return -1;
+        struct pending_frame *p = slot(d, index);
+        memset(p->pcm, 0, sizeof p->pcm);
+        for (int c = 0; c < channels; c++) p->pcm[mapping[c]] = d->converted[i * channels + c];
+    }
+    d->decoded++;
+    return 0;
+}
+
+static uint16_t swap_word(uint16_t word) { return (uint16_t)((word << 8) | (word >> 8)); }
+
+static void discard_payload(surround *d) {
+    unsigned words = (d->bits + 15) / 16;
+    unsigned limit = (duration(d->kind) * 4 - 8) / 2;
+    if (words > limit) words = limit;
+    if (words) {
+        d->payload_words = words;
+        d->payload_have = 0;
+        d->phase = 4;
+    }
+}
+
+static void word(surround *d, uint16_t value) {
+    if (d->phase == 1) {
+        if (d->swapped) value = swap_word(value);
+        d->kind = value & 0x1f;
+        d->header_error = value & 0x80;
+        d->phase = 2;
+        return;
+    }
+    if (d->phase == 2) {
+        if (d->swapped) value = swap_word(value);
+        d->bits = value;
+        d->phase = 0;
+        if (d->header_error) { bad_burst(d, "carrier-error"); discard_payload(d); return; }
+        if (d->kind == 0 || d->kind == 3) {
+            flush_decoders(d);
+            metadata(d, d->kind == 0 ? "null" : "pause");
+            discard_payload(d);
+            return;
+        }
+        if (d->kind != 1 && d->kind != 0x0b && d->kind != 0x0c && d->kind != 0x0d) {
+            bad_burst(d, "unsupported");
+            discard_payload(d);
+            return;
+        }
+        unsigned max_bytes = duration(d->kind) * 4 - 8;
+        if (!d->bits || d->bits % 8 || d->bits / 8 > max_bytes || d->bits / 8 > PAYLOAD) {
+            bad_burst(d, "corrupt");
+            discard_payload(d);
+            return;
+        }
+        d->payload_words = (d->bits + 15) / 16;
+        d->payload_have = 0;
+        d->phase = 3;
+        return;
+    }
+    if (d->phase == 4) {
+        if (++d->payload_have == d->payload_words) {
+            d->phase = 0;
+            d->previous = 0;
+            d->raw_sync = 0;
+        }
+        return;
+    }
+    if (d->phase == 3) {
+        if (d->swapped) value = swap_word(value);
+        d->payload[d->payload_have * 2] = (uint8_t)(value >> 8);
+        d->payload[d->payload_have * 2 + 1] = (uint8_t)value;
+        if (++d->payload_have == d->payload_words) {
+            d->phase = 0;
+            d->previous = 0;
+            d->raw_sync = 0;
+            if (decode(d) < 0) bad_burst(d, "corrupt");
+        }
+        return;
+    }
+    if ((d->previous == 0xf872 && value == 0x4e1f) ||
+        (d->previous == 0x72f8 && value == 0x1f4e)) {
+        if (d->mode == MODE_PCM) mute_pending(d);
+        d->mode = MODE_ENCODED;
+        d->silence = 0;
+        d->swapped = d->previous == 0x72f8;
+        /* The preceding word may be the right port of the preceding frame. */
+        d->burst_frame = d->previous_frame;
+        d->phase = 1;
+        d->previous = 0;
+        d->raw_sync = 0;
+        return;
+    }
+    d->raw_sync = (d->raw_sync << 16) | value;
+    /* Raw DTS decoding is deliberately unsupported, including 14-bit packing. */
+    if (d->mode != MODE_UNKNOWN && (d->raw_sync == 0x7ffe8001 || d->raw_sync == 0xfe7f0180 ||
+        d->raw_sync == 0x1fffe800 || d->raw_sync == 0xff1f00e8)) {
+        unknown(d, "raw-dts");
+    }
+    d->previous = value;
+    d->previous_frame = d->input;
+}
+
+surround *surround_create(surround_emit emit, void *data) {
+    surround *d = calloc(1, sizeof *d);
+    if (!d) return NULL;
+    d->emit = emit;
+    d->data = data;
+    for (unsigned i = 0; i < PENDING; i++) d->pending[i].tag = UINT64_MAX;
+    d->frame = av_frame_alloc();
+    d->packet = av_packet_alloc();
+    if (!d->frame || !d->packet) { surround_destroy(d); return NULL; }
+    pcm_metadata(d);
+    return d;
+}
+
+void surround_destroy(surround *d) {
+    if (!d) return;
+    avcodec_free_context(&d->ac3);
+    avcodec_free_context(&d->dts);
+    av_frame_free(&d->frame);
+    av_packet_free(&d->packet);
+    free(d);
+}
+
+void surround_reset(surround *d) {
+    flush_decoders(d);
+    for (unsigned i = 0; i < PENDING; i++) d->pending[i].tag = UINT64_MAX;
+    d->input = d->emitted = 0;
+    d->previous = d->phase = d->silence = d->raw_sync = 0;
+    d->mode = MODE_UNKNOWN;
+    metadata(d, "discontinuity");
+    d->errors++;
+}
+
+static uint16_t carrier_word(float value) {
+    long integer = lroundf(value * 32768.0f);
+    if (integer > 32767) integer = 32767;
+    if (integer < -32768) integer = -32768;
+    return (uint16_t)(int16_t)integer;
+}
+
+void surround_push(surround *d, const float *stereo, size_t frames) {
+    for (size_t i = 0; i < frames; i++) {
+        float l = stereo[i * 2], r = stereo[i * 2 + 1];
+        struct pending_frame *p = slot(d, d->input);
+        if (!isfinite(l) || !isfinite(r) || fabsf(l) > 1 || fabsf(r) > 1) {
+            unknown(d, "corrupt");
+            l = r = 0;
+        }
+        if (d->mode == MODE_PCM) { p->pcm[0] = l; p->pcm[1] = r; }
+        if (l == 0 && r == 0 && !d->phase) {
+            if (++d->silence >= SURROUND_SILENCE_RESET && d->mode != MODE_PCM) {
+                flush_decoders(d);
+                d->mode = MODE_PCM;
+                d->previous = d->raw_sync = 0;
+                pcm_metadata(d);
+            }
+            if (d->silence > SURROUND_SILENCE_RESET) d->silence = SURROUND_SILENCE_RESET;
+        } else d->silence = 0;
+        word(d, carrier_word(l));
+        word(d, carrier_word(r));
+        d->input++;
+        if (d->input > SURROUND_LOOKAHEAD) {
+            d->emit(d->data, d->emitted, slot(d, d->emitted)->pcm);
+            d->emitted++;
+        }
+    }
+}
+
+void surround_finish(surround *d) {
+    if (d->phase) bad_burst(d, "corrupt");
+    while (d->emitted < d->input) {
+        d->emit(d->data, d->emitted, slot(d, d->emitted)->pcm);
+        d->emitted++;
+    }
+}
+
+int surround_status_json(const surround *d, char *buffer, size_t size) {
+    char positions[96] = "";
+    size_t offset = 0;
+    for (unsigned i = 0; i < d->position_count; i++)
+        offset += (size_t)snprintf(positions + offset, sizeof positions - offset,
+                                  "%s\"%s\"", i ? "," : "", surround_positions[d->position_index[i]]);
+    int n = snprintf(buffer, size,
+        "{\"codec\":\"%s\",\"sample_rate\":%u,\"layout\":\"%s\",\"positions\":[%s],"
+        "\"bus_positions\":[\"FL\",\"FR\",\"FC\",\"LFE\",\"SL\",\"SR\",\"BL\",\"BR\"],"
+        "\"errors\":%llu,\"decoded_bursts\":%llu,\"lookahead_frames\":%u,"
+        "\"state\":\"%s\",\"mute_reason\":\"%s\"}\n",
+        d->codec, d->rate, d->layout, positions, (unsigned long long)d->errors,
+        (unsigned long long)d->decoded, SURROUND_LOOKAHEAD,
+        d->mode == MODE_PCM ? "pcm" : d->mode == MODE_UNKNOWN || !d->position_count ? "muted" : "encoded",
+        d->mute_reason);
+    return n >= 0 && (size_t)n < size ? n : -1;
+}
+
+int surround_write_status(const surround *d, const char *path) {
+    if (!path) return 0;
+    char buffer[1024], temporary[4096];
+    int n = surround_status_json(d, buffer, sizeof buffer);
+    if (n < 0 || snprintf(temporary, sizeof temporary, "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof temporary) return -1;
+    FILE *file = fopen(temporary, "w");
+    if (!file) return -1;
+    int error = fwrite(buffer, 1, (size_t)n, file) != (size_t)n;
+    if (fclose(file)) error = 1;
+    if (!error && rename(temporary, path)) error = 1;
+    if (error) unlink(temporary);
+    return error ? -1 : 0;
+}

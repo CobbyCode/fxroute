@@ -186,7 +186,10 @@ def test_pipewire_process_callback_tolerates_unlinked_output_ports():
     source = (NATIVE / "pipewire_engine.c").read_text()
     start = source.index("static void on_process")
     body = source[start:source.index("\n}", start)]
-    assert "if (!input[i]) complete = 0;" in body
+    assert "if (!input[i] && i < 2U) complete = 0;" in body
+    kernel = (NATIVE / "dsp.c").read_text()
+    assert "if (input[channel]) memcpy" in kernel
+    assert "else memset(d->scratch[0][channel],0,count*sizeof(float));" in kernel
     assert "if (!output[i]) complete = 0;" not in body
     assert "memset(output[i], 0, frames * sizeof *output[i])" in body
 

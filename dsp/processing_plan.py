@@ -14,7 +14,7 @@ from audio.output_routing import device_key
 from audio.output_state import (bass_crossover_for_side, effective_crossover_enabled,
                                 routing_for_device,
                                 shared_bass_crossover, validate_output_state)
-from audio.output_topology import SUB_ROLES, derive_topology, side_for_role
+from audio.output_topology import SUB_ROLES, SURROUND_POSITIONS, derive_topology, side_for_role
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 from dsp.banks import BankState
 
@@ -36,7 +36,17 @@ def _bank_plan(bank_id: str, payload: dict, preset_loader: Callable[[str], dict]
             "bypass": bypass, "chain": [] if bypass else chain}
 
 
-def _input_routes(role: str, sub_mode: str) -> list[dict]:
+def _input_routes(role: str, sub_mode: str, *, surround: bool = False, has_subs: bool = False) -> list[dict]:
+    if surround:
+        if role in SUB_ROLES:
+            return [{"input": channel, "gain": 0.5} for channel in (0, 1, 2, 4, 5, 6, 7)]
+        positions = {"main_l": 0, "main_r": 1, "center": 2,
+                     "side_l": 4, "side_r": 5, "rear_l": 6, "rear_r": 7}
+        channel = 0 if role.startswith("left_") else 1 if role.startswith("right_") else positions[role]
+        routes = [{"input": channel, "gain": 1.0}]
+        if channel in (0, 1) and not has_subs:
+            routes.append({"input": 3, "gain": 0.5})
+        return routes
     if role in SUB_ROLES and sub_mode != "stereo":
         return [{"input": 0, "gain": 0.5}, {"input": 1, "gain": 0.5}]
     left = role in {"main_l", "sub_l"} or role.startswith("left_")
@@ -133,7 +143,8 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
         if any(item["frequency_hz"] >= sample_rate_hz / 2 for item in filters):
             raise ValueError(f"Crossover frequency for {role} must be below Nyquist")
         outputs.append({
-            "role": role, "routes": _input_routes(role, topology.sub_mode),
+            "role": role, "routes": _input_routes(role, topology.sub_mode, surround=mode == "surround",
+                                                   has_subs=bool(topology.sub_roles)),
             "crossover": filters,
             "bank": _bank_plan(role, config["banks"][role], preset_loader,
                                neutralized=neutralize_banks),
@@ -141,10 +152,12 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
             "delay_ms": settings["alignment_ms"] + delay_offset,
             "invert": settings["polarity"] == "invert",
         })
+        if mode == "surround" and role in SUB_ROLES:
+            outputs[-1]["lfe_routes"] = [{"input": 3, "gain": 1.0}]
     indices = {role: index for index, role in enumerate(topology.roles)}
     edges = [{"output": indices[role], "channel": index}
              for index, role in enumerate(assignments[:channels]) if role != "off"]
-    return {
+    plan = {
         "schema": "fxroute.dsp.processing-plan", "version": 1,
         "mode": mode, "device_key": device_key(output_key), "sample_rate_hz": sample_rate_hz,
         "sub_mode": topology.sub_mode, "way_count": topology.way_count,
@@ -152,3 +165,6 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
         "order": ["global", "matrix", "crossover", "area-bank", "output-trim", "guard-mute"],
         "global": global_bank, "outputs": outputs, "physical_routes": edges,
     }
+    if mode == "surround":
+        plan["input_positions"] = list(SURROUND_POSITIONS)
+    return plan

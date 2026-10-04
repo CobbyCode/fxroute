@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
 
 from audio.output_routing import output_route_pairs
+from audio.output_topology import SURROUND_POSITIONS
 from audio.output_ports import (
     HARDWARE_CHANNEL_ORDER,
     hardware_link_target,
@@ -265,6 +266,10 @@ class DSPRuntimeConfig:
     plan_fingerprint: str | None = None
 
     @property
+    def input_count(self) -> int:
+        return 8 if self.output_mode == "surround" else 2
+
+    @property
     def route_pairs(self) -> tuple[tuple[int, str], ...]:
         if self.output_routes is not None:
             return self.output_routes
@@ -461,6 +466,8 @@ class DSPRuntime:
         self._output_mask = 0
         self._stderr_drain_task: asyncio.Task | None = None
         self._stderr_tail = b""
+        self._surround_input = False
+        self._measurement_surround_input = False
 
     @property
     def sync_in_progress(self) -> bool:
@@ -565,7 +572,8 @@ class DSPRuntime:
                             "plan_fingerprint": getattr(self._config, "plan_fingerprint", None),
                             "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
                 "last_error": self._error, "last_started_at": self._started_at,
-                "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
+                 "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
+                 "surround_input": self._surround_input,
                 "output_mask": None if self._control_poisoned else self._output_mask,
                 "control_state": "unknown" if self._control_poisoned else "ready",
                 "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
@@ -677,6 +685,11 @@ class DSPRuntime:
 
     async def enter_raw_measurement(self) -> bool:
         await self._measurement_scope_lock.acquire()
+        try:
+            await self._suspend_surround_input()
+        except BaseException:
+            self._measurement_scope_lock.release()
+            raise
         transition = asyncio.create_task(self.set_effect_bypass(True))
         try:
             return await asyncio.shield(transition)
@@ -685,6 +698,7 @@ class DSPRuntime:
                 previous = await transition
                 await asyncio.shield(self.set_effect_bypass(previous))
             finally:
+                await self._resume_surround_input()
                 self._measurement_scope_lock.release()
             raise
 
@@ -701,14 +715,35 @@ class DSPRuntime:
         try:
             await run_to_completion(restoration)
         finally:
-            self._measurement_scope_lock.release()
+            try:
+                await run_to_completion(self._resume_surround_input())
+            finally:
+                self._measurement_scope_lock.release()
 
     async def enter_active_measurement(self) -> bool:
         await self._measurement_scope_lock.acquire()
+        try:
+            await self._suspend_surround_input()
+        except BaseException:
+            self._measurement_scope_lock.release()
+            raise
         return self._effect_bypass
 
     async def exit_active_measurement(self, _previous: bool) -> None:
-        self._measurement_scope_lock.release()
+        try:
+            await run_to_completion(self._resume_surround_input())
+        finally:
+            self._measurement_scope_lock.release()
+
+    async def _suspend_surround_input(self) -> None:
+        self._measurement_surround_input = self._surround_input
+        if self._surround_input:
+            await self.set_surround_input(False)
+
+    async def _resume_surround_input(self) -> None:
+        if self._measurement_surround_input:
+            await self.set_surround_input(True)
+            self._measurement_surround_input = False
 
     async def set_output_gain_db(self, gain_db: float) -> float:
         value = max(-80.0, min(0.0, float(gain_db)))
@@ -1099,15 +1134,7 @@ class DSPRuntime:
             self._effect_bypass = bool(int(
                 (await self._control("effects bypass get", reply=True)).strip()))
             await self._remove_direct_source_links()
-            links = [
-                PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[0]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[0]}"),
-                PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{DSP_INGRESS_PORTS[1]}", f"{DSP_NODE_NAME}:{DSP_INPUT_PORTS[1]}"),
-            ]
-            self._links = links
-            for link in links:
-                result = await self._run(("pw-link", link.source, link.target))
-                if result.returncode and "exists" not in (result.stderr or "").lower():
-                    raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
+            await self._reconcile_ingress_links()
             await self._reconcile_output_links(config)
             self._error = None
         except Exception as exc:
@@ -1118,7 +1145,7 @@ class DSPRuntime:
             raise
 
     async def _wait_for_ports(self, config: DSPRuntimeConfig) -> None:
-        expected = [f"{DSP_NODE_NAME}:input_1", f"{DSP_NODE_NAME}:input_2"]
+        expected = [f"{DSP_NODE_NAME}:input_{index + 1}" for index in range(config.input_count)]
         expected.extend(f"{DSP_NODE_NAME}:output_{index + 1}" for index in range(len(config.layout)))
         expected.extend(f"{DSP_NODE_NAME}:{port}" for port in DSP_POST_EFFECT_PORTS)
         for _ in range(50):
@@ -1145,6 +1172,7 @@ class DSPRuntime:
             and self._config.output_key == config.output_key
             and self._config.sample_rate == config.sample_rate
             and len(self._config.layout) == len(config.layout)
+            and self._config.input_count == config.input_count
         )
 
     @staticmethod
@@ -1187,7 +1215,7 @@ class DSPRuntime:
             elif kind == "output" and len(parts) == 5:
                 shape.append((kind, parts[1]))
                 values.append((kind, int(parts[1]), float(parts[2]), float(parts[3]), parts[4]))
-            elif kind in {"sos", "oconv"} and len(parts) >= 2:
+            elif kind in {"sos", "oconv", "xsos", "postmatrix", "inputs", "surround"} and len(parts) >= 2:
                 # Output-bank lines join the shape with full content: any
                 # bank change forces a rebuild, while identical banks allow
                 # live updates of unrelated parameters. Live updates *for*
@@ -1276,6 +1304,45 @@ class DSPRuntime:
                 if result.returncode and "exists" not in (result.stderr or "").lower():
                     raise RuntimeError(result.stderr or f"Failed to link {link.source} -> {link.target}")
         self._links = [link for link in self._links if not link.source.startswith(f"{DSP_NODE_NAME}:output_")] + desired
+
+    async def set_surround_input(self, enabled: bool) -> None:
+        """Select decoded ingress while retaining app/measurement stereo taps."""
+        self._surround_input = bool(enabled)
+        if self._engine_running():
+            async with self._lock:
+                await self._reconcile_ingress_links()
+
+    async def _reconcile_ingress_links(self) -> None:
+        desired = [PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{port}", f"{DSP_NODE_NAME}:input_{index + 1}")
+                   for index, port in enumerate(DSP_INGRESS_PORTS)]
+        if self._surround_input:
+            count = self._config.input_count if self._config else 2
+            desired.extend(PipeWireLink(f"fxroute_surround_input:output_{position}",
+                                       f"{DSP_NODE_NAME}:input_{index + 1}")
+                           for index, position in enumerate(SURROUND_POSITIONS[:count]))
+        result = await self._run(("pw-link", "-l"))
+        if result.returncode:
+            raise RuntimeError(result.stderr or "Cannot inspect DSP ingress links")
+        live = {PipeWireLink(source, target) for source, target in iter_pw_links(result.stdout)
+                if source.startswith("fxroute_surround_input:") and target.startswith(f"{DSP_NODE_NAME}:input_")}
+        for link in live - set(desired):
+            disconnected = await self._run(("pw-link", "-d", link.source, link.target))
+            if disconnected.returncode:
+                readback = await self._run(("pw-link", "-l"))
+                if readback.returncode or _contains_link(readback.stdout, link.source, link.target):
+                    raise RuntimeError(disconnected.stderr or "Cannot disconnect decoded ingress")
+        for link in desired:
+            if not _contains_link(result.stdout, link.source, link.target):
+                connected = await self._run(("pw-link", link.source, link.target))
+                if connected.returncode and "exists" not in connected.stderr.lower():
+                    raise RuntimeError(connected.stderr or "Cannot connect DSP ingress")
+        if self._surround_input or live:
+            readback = await self._run(("pw-link", "-l"))
+            if (readback.returncode
+                    or any(not _contains_link(readback.stdout, link.source, link.target) for link in desired)
+                    or any(_contains_link(readback.stdout, link.source, link.target) for link in live - set(desired))):
+                raise RuntimeError("Decoded ingress links could not be verified")
+        self._links = [link for link in self._links if not link.target.startswith(f"{DSP_NODE_NAME}:input_")] + desired
 
     async def stop(self) -> None:
         for link in self._links:

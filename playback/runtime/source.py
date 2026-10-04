@@ -77,6 +77,11 @@ class _RuntimeSourceMixin:
             current = await self._deps.sample_rate_policy_request(
                 policy, detail=request.detail, src_mode=request.src_mode,
             )
+            if request.input_rate_hz is not None:
+                if type(request.input_rate_hz) is not int or request.input_rate_hz != 48000:
+                    raise ValueError("Digital carrier ingress currently requires 48000 Hz")
+                current = replace(current, target_rate=request.input_rate_hz, input_rate_hz=request.input_rate_hz,
+                                  rate_change=True, reload_source=False, should_play=False)
             return replace(current, attempt_epoch=request.attempt_epoch,
                            source_generation=request.source_generation)
         if request.source != "qobuz" or request.operation not in {

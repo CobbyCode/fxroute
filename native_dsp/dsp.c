@@ -38,7 +38,7 @@
 #define PEQ_STAGE_DELAY_MAX_MS 10000.0f
 #define OUTPUT_DELAY_MAX_MS 500.0f
 
-typedef struct { unsigned in, out; float gain; } route;
+typedef struct { unsigned in, out; float gain; int post_crossover; } route;
 typedef struct { float b0, b1, b2, a1, a2, z1, z2; } biquad;
 typedef struct { float re, im; } complex_value;
 typedef struct {
@@ -52,6 +52,8 @@ typedef struct {
     float *delay_line;
     biquad filters[MAX_BIQUADS];
     unsigned filter_count;
+    biquad crossover_filters[MAX_BIQUADS];
+    unsigned crossover_filter_count;
     /* Per-output correction bank: raw SOS biquads share filters[] in file
      * order (live_peq addresses array positions); at most one convolver. */
     int has_conv;
@@ -100,6 +102,7 @@ typedef struct {
 
 struct fxdsp {
     unsigned rate, inputs, outputs;
+    unsigned surround;
     route routes[MAX_ROUTES];
     unsigned route_count;
     /* Routes grouped by output channel (CSR) so the mixing loop skips the
@@ -130,6 +133,19 @@ struct fxdsp {
     fx_timing timing[FXDSP_TIMING_COUNT];
     _Atomic int timing_reset;
 };
+
+static unsigned effect_pairs(const fxdsp *d) { return d->surround ? 5U : d->inputs / 2U; }
+static unsigned pair_left(const fxdsp *d, unsigned pair) {
+    static const unsigned positions[] = {0U, 2U, 3U, 4U, 6U};
+    return d->surround ? positions[pair] : pair * 2U;
+}
+static unsigned pair_right(const fxdsp *d, unsigned pair) {
+    static const unsigned positions[] = {1U, 2U, 3U, 5U, 7U};
+    return d->surround ? positions[pair] : pair * 2U + 1U;
+}
+static unsigned channel_side(const fxdsp *d, unsigned channel) {
+    return d->surround && (channel == 2U || channel == 3U) ? 0U : channel & 1U;
+}
 
 static uint32_t float_bits(float value) { uint32_t bits; memcpy(&bits,&value,sizeof bits); return bits; }
 static float bits_float(uint32_t bits) { float value; memcpy(&value,&bits,sizeof value); return value; }
@@ -453,7 +469,7 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
         if (!stage->argument[0]) { fail(error, error_size, "convolver stage requires path"); return -1; }
         for (channel = 0; channel < d->inputs; channel++) {
             float *taps = NULL; size_t count = 0;
-            if (load_wav(stage->argument, channel & 1U, &taps, &count, d->rate) &&
+            if (load_wav(stage->argument, channel_side(d, channel), &taps, &count, d->rate) &&
                 load_wav(stage->argument, 0, &taps, &count, d->rate)) {
                 fail(error, error_size, "cannot load convolver path"); return -1;
             }
@@ -465,7 +481,7 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
     } else if (stage->kind == STAGE_DELAY) {
         float capacity_ms = stage_delay_limit(stage);
         for (channel = 0; channel < d->inputs; channel++) {
-            float milliseconds = channel & 1U ? stage->right_ms : stage->left_ms;
+            float milliseconds = channel_side(d, channel) ? stage->right_ms : stage->left_ms;
             stage->delay[channel] = (size_t)llround(milliseconds * d->rate / 1000.0f);
             stage->delay_size[channel] = (size_t)llround(capacity_ms * d->rate / 1000.0f) + 1U;
             stage->delay_line[channel] = calloc(stage->delay_size[channel], sizeof(float));
@@ -477,7 +493,7 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
         config.silence_threshold_lufs = stage->silence_db;
         config.maximum_history_seconds = stage->history_seconds;
         if (d->inputs & 1U) { fail(error, error_size, "autogain requires an even stereo input count"); return -1; }
-        for (channel = 0; channel < d->inputs / 2U; channel++) {
+        for (channel = 0; channel < effect_pairs(d); channel++) {
             stage->autogain[channel] = fx_autogain_init(d->rate, PROCESS_BLOCK, &config);
             if (!stage->autogain[channel]) { fail(error, error_size, "cannot initialize autogain"); return -1; }
         }
@@ -490,7 +506,7 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
         }
     } else if (stage->kind == STAGE_LV2) {
         if (d->inputs & 1U) { fail(error, error_size, "LV2 stages require an even stereo input count"); return -1; }
-        for (channel = 0; channel < d->inputs / 2U; channel++) {
+        for (channel = 0; channel < effect_pairs(d); channel++) {
             stage->lv2[channel] = fx_lv2_host_new(stage->argument, d->rate, PROCESS_BLOCK, error, error_size);
             if (!stage->lv2[channel]) return -1;
             for (unsigned control = 0; control < stage->control_count; control++) {
@@ -578,8 +594,11 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
         } else { float x,y,z,route_gain; int enabled; float b0,b1,b2,a1,a2; int consumed;
             if (!stage_section && !post_section && sscanf(p,"rate %u %c",&d->rate,&extra)==1) {}
             else if (!stage_section && !post_section && sscanf(p,"inputs %u %c",&d->inputs,&extra)==1) {}
+            else if (!stage_section && !post_section && sscanf(p,"surround %u %c",&d->surround,&extra)==1 && d->surround==1U) {}
             else if (!stage_section && !post_section && sscanf(p,"outputs %u %c",&d->outputs,&extra)==1) {}
             else if (!stage_section && !post_section && sscanf(p,"matrix %u %u %f %c",&out,&in,&route_gain,&extra)==3 && d->route_count<MAX_ROUTES) { d->routes[d->route_count].out=out; d->routes[d->route_count].in=in; d->routes[d->route_count++].gain=route_gain; }
+            else if (!stage_section && !post_section && sscanf(p,"postmatrix %u %u %f %c",&out,&in,&route_gain,&extra)==3 && d->route_count<MAX_ROUTES && isfinite(route_gain)) { route *r=&d->routes[d->route_count++]; r->out=out; r->in=in; r->gain=route_gain; r->post_crossover=1; }
+            else if (!stage_section && !post_section && sscanf(p,"xsos %u %f %f %f %f %f %c",&out,&b0,&b1,&b2,&a1,&a2,&extra)==6 && out<FXDSP_MAX_CHANNELS && d->out[out].crossover_filter_count<MAX_BIQUADS && isfinite(b0) && isfinite(b1) && isfinite(b2) && isfinite(a1) && isfinite(a2) && sos_stable(a1,a2)) { biquad *target=&d->out[out].crossover_filters[d->out[out].crossover_filter_count++]; target->b0=b0; target->b1=b1; target->b2=b2; target->a1=a1; target->a2=a2; }
             else if (!stage_section && !post_section && sscanf(p,"peq %u %31s %f %f %f %c",&out,type,&x,&y,&z,&extra)==5 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && !design(&d->out[out].filters[d->out[out].filter_count],type,d->rate,x,y,z)) d->out[out].filter_count++;
             else if (!stage_section && !post_section && sscanf(p,"sos %u %f %f %f %f %f %c",&out,&b0,&b1,&b2,&a1,&a2,&extra)==6 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && isfinite(b0) && isfinite(b1) && isfinite(b2) && isfinite(a1) && isfinite(a2) && sos_stable(a1,a2)) { biquad *target=&d->out[out].filters[d->out[out].filter_count++]; target->b0=b0; target->b1=b1; target->b2=b2; target->a1=a1; target->a2=a2; target->z1=target->z2=0.0f; }
             else if (!stage_section && !post_section && sscanf(p,"oconv %u %u %f %f %f %f %n",&out,&in,&x,&y,&z,&route_gain,&consumed)==6 && out<FXDSP_MAX_CHANNELS && !d->out[out].has_conv) {
@@ -600,6 +619,8 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     if (current) goto invalid;
     fclose(file); file=NULL;
     if (!d->rate || d->inputs<1 || d->inputs>32 || d->outputs<1 || d->outputs>32) { fail(error,error_size,"inputs/outputs must be 1..32"); goto bad; }
+    if (d->surround && d->inputs != 8U) { fail(error,error_size,"Surround requires eight positioned inputs"); goto bad; }
+    for (unsigned o=0;o<d->outputs;o++) if(d->out[o].filter_count+d->out[o].crossover_filter_count>MAX_BIQUADS) { fail(error,error_size,"output exceeds biquad budget"); goto bad; }
     for(unsigned r=0;r<d->route_count;r++) if(d->routes[r].in>=d->inputs||d->routes[r].out>=d->outputs){fail(error,error_size,"matrix index out of range");goto bad;}
     {
         unsigned tally[FXDSP_MAX_CHANNELS] = {0};
@@ -930,7 +951,7 @@ static void apply_live_updates(fxdsp *d) {
             dsp_stage *stage = find_stage(d, update->stage_id);
             if (!stage) continue;
             if (update->kind == LIVE_CONTROL) {
-                for (unsigned pair = 0; pair < d->inputs / 2U; pair++)
+                for (unsigned pair = 0; pair < effect_pairs(d); pair++)
                     fx_lv2_host_set_control(stage->lv2[pair], update->symbol, update->values[0]);
             } else if (stage->kind == STAGE_LV2) {
                 float gain = update->values[1];
@@ -957,8 +978,8 @@ static void apply_live_updates(fxdsp *d) {
                 float *milliseconds = !strcmp(update->symbol, "left_ms") ? &stage->left_ms : &stage->right_ms;
                 *milliseconds = update->values[0];
                 for (unsigned channel = 0; channel < d->inputs; channel++)
-                    if ((!strcmp(update->symbol, "left_ms") && !(channel & 1U)) ||
-                        (!strcmp(update->symbol, "right_ms") && (channel & 1U))) {
+                    if ((!strcmp(update->symbol, "left_ms") && !channel_side(d, channel)) ||
+                        (!strcmp(update->symbol, "right_ms") && channel_side(d, channel))) {
                         stage->delay[channel] = (size_t)update->values[1];
                         if (stage->delay[channel] >= stage->delay_size[channel]) stage->delay[channel] = stage->delay_size[channel] - 1U;
                     }
@@ -969,10 +990,10 @@ static void apply_live_updates(fxdsp *d) {
             } else if (stage->kind == STAGE_AUTOGAIN) {
                 if (!strcmp(update->symbol, "target_db")) {
                     stage->target_db = update->values[0];
-                    for (unsigned pair = 0; pair < d->inputs / 2U; pair++) fx_autogain_set_target(stage->autogain[pair], update->values[0]);
+                    for (unsigned pair = 0; pair < effect_pairs(d); pair++) fx_autogain_set_target(stage->autogain[pair], update->values[0]);
                 } else {
                     stage->silence_db = update->values[0];
-                    for (unsigned pair = 0; pair < d->inputs / 2U; pair++) fx_autogain_set_silence_threshold(stage->autogain[pair], update->values[0]);
+                    for (unsigned pair = 0; pair < effect_pairs(d); pair++) fx_autogain_set_silence_threshold(stage->autogain[pair], update->values[0]);
                 }
             }
         }
@@ -1020,24 +1041,26 @@ static void process_channel(void *context, unsigned channel) {
 static void process_pair(void *context, unsigned pair) {
     process_job *j = context;
     fxdsp *d = j->d; dsp_stage *stage = j->stage;
-    unsigned left = pair * 2U, right = left + 1U;
+    unsigned left = pair_left(d, pair), right = pair_right(d, pair);
+    float ignored[PROCESS_BLOCK];
+    float *right_output = left == right ? ignored : d->scratch[j->target][right];
     if (stage->kind == STAGE_AUTOGAIN) {
         (void)fx_autogain_process(stage->autogain[pair], d->scratch[j->source][left], d->scratch[j->source][right],
-                                 d->scratch[j->target][left], d->scratch[j->target][right], j->count);
+                                 d->scratch[j->target][left], right_output, j->count);
     } else {
         (void)fx_lv2_host_run(stage->lv2[pair], d->scratch[j->source][left], d->scratch[j->source][right],
-                            d->scratch[j->target][left], d->scratch[j->target][right], (uint32_t)j->count, NULL, 0);
+                            d->scratch[j->target][left], right_output, (uint32_t)j->count, NULL, 0);
         /* Shared compensation timing is read-only until the stage barrier. */
         if (stage->lv2_comp_transition) {
             for (size_t n = 0; n < j->count; n++) {
                 size_t s = stage->lv2_frames_fed + n;
                 d->scratch[j->target][left][n] *= lv2_comp_gain(stage, s, 0U);
-                d->scratch[j->target][right][n] *= lv2_comp_gain(stage, s, 1U);
+                right_output[n] *= lv2_comp_gain(stage, s, 1U);
             }
         } else if (stage->output_gain != 1.0f) {
             for (size_t n = 0; n < j->count; n++) {
                 d->scratch[j->target][left][n] *= stage->output_gain;
-                d->scratch[j->target][right][n] *= stage->output_gain;
+                right_output[n] *= stage->output_gain;
             }
         }
     }
@@ -1050,7 +1073,12 @@ static void process_output_bank(void *context, unsigned channel) {
         float value = 0.0f;
         for (unsigned order = d->route_start[channel]; order < d->route_start[channel + 1]; order++) {
             const route *r = &d->routes[d->route_order[order]];
-            value += d->scratch[j->source][r->in][n] * r->gain;
+            if (!r->post_crossover) value += d->scratch[j->source][r->in][n] * r->gain;
+        }
+        for (unsigned filter = 0; filter < state->crossover_filter_count; filter++) value = run_biquad(&state->crossover_filters[filter], value);
+        for (unsigned order = d->route_start[channel]; order < d->route_start[channel + 1]; order++) {
+            const route *r = &d->routes[d->route_order[order]];
+            if (r->post_crossover) value += d->scratch[j->source][r->in][n] * r->gain;
         }
         for (unsigned filter = 0; filter < state->filter_count; filter++) value = run_biquad(&state->filters[filter], value);
         if (state->has_conv) {
@@ -1080,8 +1108,10 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
         size_t count=frames-offset<PROCESS_BLOCK?frames-offset:PROCESS_BLOCK;
         apply_live_updates(d);
         uint32_t mute_mask=atomic_load_explicit(&d->mute_mask,memory_order_relaxed);
-        for(unsigned channel=0;channel<d->inputs;channel++)
-            memcpy(d->scratch[0][channel],input[channel]+offset,count*sizeof(float));
+        for(unsigned channel=0;channel<d->inputs;channel++) {
+            if (input[channel]) memcpy(d->scratch[0][channel],input[channel]+offset,count*sizeof(float));
+            else memset(d->scratch[0][channel],0,count*sizeof(float));
+        }
         unsigned source=0;
         if(!atomic_load_explicit(&d->effect_bypass,memory_order_relaxed)) {
             for(unsigned index=0;index<d->stage_count;index++) {
@@ -1092,7 +1122,7 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                 } else if(stage->kind==STAGE_AUTOGAIN || stage->kind==STAGE_LV2) {
                     /* Stereo instances stay indivisible on the callback;
                      * this pool only moves native channel/bank kernels. */
-                    run_jobs(d, NULL, d->inputs/2U, process_pair, &job);
+                    run_jobs(d, NULL, effect_pairs(d), process_pair, &job);
                     if(stage->kind==STAGE_LV2) {
                         stage->lv2_frames_fed += count;
                         if(stage->lv2_comp_transition) {
@@ -1143,4 +1173,4 @@ void fxdsp_set_output_gain_db(fxdsp*d,float gain_db){float gain=isfinite(gain_db
 float fxdsp_output_gain_db(const fxdsp*d){float gain=bits_float(atomic_load_explicit(&d->output_gain_bits,memory_order_relaxed));return gain>0.0f?20.0f*log10f(gain):-INFINITY;}
 unsigned fxdsp_peaks(const fxdsp*d,float*peaks,unsigned count){unsigned total=d->outputs,limit=count<total?count:total;for(unsigned o=0;o<limit;o++)peaks[o]=bits_float(atomic_load_explicit(&d->peak_bits[o],memory_order_relaxed));return total;}
 void fxdsp_reset_peaks(fxdsp*d){for(unsigned o=0;o<d->outputs;o++)atomic_store_explicit(&d->peak_bits[o],0,memory_order_relaxed);}
-int fxdsp_compatible(const fxdsp *a, const fxdsp *b){return a&&b&&a->rate==b->rate&&a->inputs==b->inputs&&a->outputs==b->outputs;}
+int fxdsp_compatible(const fxdsp *a, const fxdsp *b){return a&&b&&a->rate==b->rate&&a->inputs==b->inputs&&a->outputs==b->outputs&&a->surround==b->surround;}

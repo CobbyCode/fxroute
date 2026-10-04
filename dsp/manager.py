@@ -849,7 +849,26 @@ class DSPManager:
                              "sos": self._validate_output_sos(
                                  channel.get("sos", []), index, validated_filters),
                              "oconv": self._validate_output_oconv(
-                                 channel.get("oconv"), index)})
+                                  channel.get("oconv"), index)})
+            if "post_crossover_routes" in channel:
+                post_routes = channel["post_crossover_routes"]
+                if (not isinstance(post_routes, list) or not post_routes
+                        or any(not isinstance(route, dict) or type(route.get("input")) is not int
+                               or not 0 <= route["input"] < 32
+                               or type(route.get("gain")) not in (int, float)
+                               or not math.isfinite(route["gain"]) for route in post_routes)):
+                    raise ValueError("Post-crossover routes require finite gains and input indices 0..31")
+                outputs[-1]["post_crossover_routes"] = copy.deepcopy(post_routes)
+                outputs[-1]["crossover_sos"] = self._validate_output_sos(channel.get("crossover_sos", []), index, [])
+                budget = (len(outputs[-1]["sos"]) + len(outputs[-1]["crossover_sos"])
+                          + sum(item["stages"] for item in validated_filters))
+                if budget > self.OUTPUT_FILTER_MAX_BIQUADS:
+                    raise ValueError("Output crossover and bank exceed the shared biquad budget")
+            if "input_positions" in channel:
+                from audio.output_topology import SURROUND_POSITIONS
+                if channel["input_positions"] != list(SURROUND_POSITIONS):
+                    raise ValueError("Surround requires the canonical eight input positions")
+                outputs[-1]["input_positions"] = list(SURROUND_POSITIONS)
         active = clean_name(preset_name or self.get_active_preset())
         payload = self.preset_store.read(active)
         chain = copy.deepcopy(payload["chain"])
@@ -870,11 +889,20 @@ class DSPManager:
         config = self.compile_engine_config(
             output_layout, preset_name=preset_name, sample_rate_hz=sample_rate_hz,
             extras_override=extras_override)
-        max_input = max(route["input"] for output in config["outputs"] for route in output["routes"])
-        lines = [f"rate {sample_rate_hz}", f"inputs {max_input + 1}", f"outputs {len(config['outputs'])}"]
+        max_input = max(route["input"] for output in config["outputs"]
+                        for route in output["routes"] + output.get("post_crossover_routes", []))
+        surround = any("input_positions" in output for output in config["outputs"])
+        lines = [f"rate {sample_rate_hz}", f"inputs {8 if surround else max_input + 1}"]
+        if surround:
+            lines.append("surround 1")
+        lines.append(f"outputs {len(config['outputs'])}")
         for output_index, output in enumerate(config["outputs"]):
             for route in output["routes"]:
                 lines.append(f"matrix {output_index} {route['input']} {route['gain']:.9g}")
+            for route in output.get("post_crossover_routes", []):
+                lines.append(f"postmatrix {output_index} {route['input']} {route['gain']:.9g}")
+            for section in output.get("crossover_sos", []):
+                lines.append("xsos %d %.9g %.9g %.9g %.9g %.9g" % (output_index, *section))
             for filter_def in output.get("filters", []):
                 for _ in range(int(filter_def["stages"])):
                     lines.append("peq %d %s %.9g %.9g %.9g" % (

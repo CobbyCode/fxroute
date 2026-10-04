@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import (default_bass_management, default_output_state,
                                 routing_for_device, set_crossover, set_mode_routing,
-                                validate_output_state)
+                                validate_output_state, VERSION)
 from audio.output_state_migration import (drop_foreign_bank_presets, migrate_legacy_output_state,
                                           upgrade_output_state)
 from audio.output_topology import derive_topology
@@ -167,18 +167,20 @@ class VersionTwoUpgradeTests(unittest.TestCase):
     def stored(self):
         state = default_output_state()
         state["version"] = 2
+        state.pop("input_modes")
+        state["modes"].pop("surround")
         for config in state["modes"].values():
             config["bass_management"] = {"frequency_hz": 95, "main_highpass_enabled": False}
         return state
 
     def test_every_mode_gains_the_shared_defaults(self):
         upgraded = upgrade_output_state(self.stored())
-        self.assertEqual(upgraded["version"], 3)
+        self.assertEqual(upgraded["version"], VERSION)
         for mode, config in upgraded["modes"].items():
             with self.subTest(mode=mode):
                 self.assertEqual(config["bass_management"],
-                                 {**default_bass_management(), "frequency_hz": 95,
-                                  "main_highpass_enabled": False})
+                                 default_bass_management() if mode == "surround" else
+                                 {**default_bass_management(), "frequency_hz": 95, "main_highpass_enabled": False})
 
     def test_unknown_fields_still_fail_closed(self):
         state = self.stored()

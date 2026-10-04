@@ -197,7 +197,7 @@ class OutputStateTests(unittest.TestCase):
     def test_malformed_state_never_silently_discards_settings(self):
         base = crossover_state(default_output_state(), "A", WAYS)
         for path, value in (
-            (("version",), 4), (("revision",), True), (("active_mode",), "surround"),
+            (("version",), 999), (("revision",), True), (("active_mode",), "unsupported-mode"),
             (("modes", "stereo", "selected_bank"), "missing"),
             (("modes", "stereo", "banks", "global", "typo"), 1),
             (("modes", "stereo-sub", "processing", "left_low", "level_db"), float("inf")),

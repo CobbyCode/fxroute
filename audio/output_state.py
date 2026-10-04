@@ -13,7 +13,7 @@ from audio.output_topology import MAIN_ROLES, MODES, derive_topology, roles_for_
 from dsp.banks import BankState
 
 SCHEMA = "fxroute.output-state"
-VERSION = 3
+VERSION = 4
 FILTER_SLOPES = {
     "linkwitz-riley": tuple(range(12, 73, 12)),
     "butterworth": tuple(range(6, 73, 6)),
@@ -60,7 +60,7 @@ def default_output_state() -> dict:
             "extras": {},
         }
     return {"schema": SCHEMA, "version": VERSION, "revision": 0,
-            "active_mode": "stereo", "modes": modes, "legacy": {}}
+            "active_mode": "stereo", "modes": modes, "legacy": {}, "input_modes": {}}
 
 
 def _object_fields(payload: object, fields: set[str], label: str) -> None:
@@ -156,13 +156,17 @@ def _device_identity(key: object) -> str:
 def validate_output_state(payload: object) -> dict:
     """Validate inactive modes too; never discard unknown or invalid settings."""
     _validate_json(payload)
-    _object_fields(payload, {"schema", "version", "revision", "active_mode", "modes", "legacy"}, "Output state")
+    _object_fields(payload, {"schema", "version", "revision", "active_mode", "modes", "legacy", "input_modes"}, "Output state")
     if payload["schema"] != SCHEMA or type(payload["version"]) is not int or payload["version"] != VERSION:
         raise ValueError("Unsupported output state schema or version")
     if type(payload["revision"]) is not int or payload["revision"] < 0:
         raise ValueError("State revision must be a non-negative integer")
     if payload["active_mode"] not in MODES:
         raise ValueError("Unsupported active output mode")
+    if (not isinstance(payload["input_modes"], dict)
+            or any(not isinstance(key, str) or not key.strip() or mode not in MODES
+                   for key, mode in payload["input_modes"].items())):
+        raise ValueError("Input output modes require source identities and supported modes")
     _object_fields(payload["modes"], set(MODES), "Output modes")
     if not isinstance(payload["legacy"], dict):
         raise ValueError("Legacy snapshot must be an object")

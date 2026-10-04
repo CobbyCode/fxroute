@@ -75,7 +75,7 @@ class OutputTopologyTests(unittest.TestCase):
 
     def test_invalid_roles_and_capacity_are_not_silently_coerced(self):
         for mode, assignments, channels, crossover in (
-            ("surround", [], None, False), ("stereo-sub", ["left_low"], None, False),
+            ("unsupported-mode", [], None, False), ("stereo-sub", ["left_low"], None, False),
             ("stereo", ["main_l"], None, True), ("stereo-sub", [True], None, False),
             ("stereo-sub", "main_l", None, False), ("stereo-sub", ["sub3"], None, False),
             ("stereo", ["sub1"], None, False),

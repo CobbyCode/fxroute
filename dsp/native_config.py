@@ -34,14 +34,14 @@ _BAND_TYPES = {
     "low_pass": "lowpass", "high_pass": "highpass",
 }
 
-_LEFT_SIDED = {"main_l", "sub_l"}
+_LEFT_SIDED = {"main_l", "sub_l", "side_l", "rear_l"}
 
 
 def role_side(role: str) -> str:
     """Return the stereo side a logical role belongs to, or "mono"."""
     if role in _LEFT_SIDED or role.startswith("left_"):
         return "left"
-    if role in {"main_r", "sub_r"} or role.startswith("right_"):
+    if role in {"main_r", "sub_r", "side_r", "rear_r"} or role.startswith("right_"):
         return "right"
     return "mono"
 
@@ -156,7 +156,12 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
         if not isinstance(role, str) or not role:
             raise ValueError("Plan output requires a role name")
         sos: list[list[float]] = []
-        for crossover in output.get("crossover", []):
+        crossover_filters = list(output.get("crossover", []))
+        bass_sos = []
+        if output.get("lfe_routes"):
+            bass_filter = crossover_filters.pop()
+            bass_sos = [[b0, b1, b2, a1, a2] for b0, b1, b2, _, a1, a2 in design_crossover(bass_filter, rate)]
+        for crossover in crossover_filters:
             sos.extend(
                 [b0, b1, b2, a1, a2]
                 for b0, b1, b2, _, a1, a2 in design_crossover(dict(crossover), rate)
@@ -196,4 +201,9 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
                        "gain_db": gain_db, "delay_ms": delay_ms,
                        "invert": bool(output.get("invert", False)),
                        "filters": filters, "sos": sos, "oconv": oconv})
+        if output.get("lfe_routes"):
+            layout[-1]["crossover_sos"] = bass_sos
+            layout[-1]["post_crossover_routes"] = output["lfe_routes"]
+        if plan.get("mode") == "surround":
+            layout[-1]["input_positions"] = list(plan["input_positions"])
     return layout

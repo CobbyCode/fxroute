@@ -12,7 +12,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, function (root) {
     'use strict';
 
-const OUTPUT_MODES = ['stereo', 'stereo-sub'];
+const OUTPUT_MODES = ['stereo', 'stereo-sub', 'surround'];
 const MUTATION_KINDS = ['set_routing', 'switch_mode', 'select_bank', 'set_bank_preset',
     'switch_all_banks', 'set_crossover', 'set_subwoofers', 'set_processing', 'set_extras'];
 const FAMILY_LABELS = { 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' };
@@ -49,7 +49,10 @@ function esc(value) {
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function roleLabel(roleId) {
+function roleLabel(roleId, mode) {
+    if (mode === 'surround' && roleId === 'main') return 'Front L/R';
+    if (mode === 'surround' && roleId === 'main_l') return 'Front L';
+    if (mode === 'surround' && roleId === 'main_r') return 'Front R';
     if (roleId === 'global') return 'Global';
     if (roleId === 'all') return 'All Banks';
     if (['main', 'low', 'low_mid', 'mid', 'high', 'sub'].includes(roleId)) {
@@ -109,6 +112,9 @@ function modeHint(mode, topology, channelCount) {
     if (mode === 'stereo-sub' && !subs.length) {
         return 'No subwoofer configured — assign a Sub output below.';
     }
+    if (mode === 'surround') {
+        return `Surround · ${Number(channelCount) || 0} hardware outputs · LFE → ${subs.length ? 'Sub 1' + (subs.includes('sub2') ? ' / Sub 2' : '') : 'Front L/R'}`;
+    }
     return `${modeLabel(mode)} · ${Number(channelCount) || 0} hardware outputs`;
 }
 
@@ -164,7 +170,7 @@ function topologySummary(topology) {
     if (typeof topo.way_count === 'number' && topo.way_count > 0) {
         bits.push(`${topo.way_count}-Way`);
     } else {
-        bits.push('Stereo');
+        bits.push(topo.mode === 'surround' ? 'Surround' : 'Stereo');
     }
     const sub = subModeLabel(topo.sub_mode);
     if (sub) bits.push(sub);
@@ -355,7 +361,7 @@ function renderRoutingGrid(grid, catalog, mode, assignments, channelCount, disab
     for (let index = 0; index < channelCount; index += 1) {
         const current = assignments[index] || 'off';
         const options = roles.map((role) =>
-            `<option value="${esc(role)}"${role === current ? ' selected' : ''}>${esc(roleLabel(role))}</option>`).join('');
+            `<option value="${esc(role)}"${role === current ? ' selected' : ''}>${esc(roleLabel(role, mode))}</option>`).join('');
         cells.push(`<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">Out ${index + 1}</label>`
             + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="Output ${index + 1} role"${disabled ? ' disabled' : ''}>${options}</select></div>`);
     }

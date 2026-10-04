@@ -135,7 +135,7 @@ def _upgrade_v2_bass_management(payload: dict) -> dict:
         if not isinstance(config, dict):
             raise ValueError("Invalid version-two output state")
         config["bass_management"] = _defaulted_bass_management(config.get("bass_management"))
-    return validate_output_state(result)
+    return upgrade_output_state(result)
 
 
 def upgrade_output_state(payload: dict) -> dict:
@@ -146,6 +146,16 @@ def upgrade_output_state(payload: dict) -> dict:
     routing or DSP. Loading does not write; the next revision-checked commit
     atomically persists the upgraded document.
     """
+    if isinstance(payload, dict) and payload.get("version") == 3:
+        if (set(payload) != {"schema", "version", "revision", "active_mode", "modes", "legacy"}
+                or not isinstance(payload.get("modes"), dict)
+                or set(payload["modes"]) != {"stereo", "stereo-sub"}):
+            raise ValueError("Invalid version-three output state")
+        result = copy.deepcopy(payload)
+        result["version"] = 4
+        result["input_modes"] = {}
+        result["modes"]["surround"] = default_output_state()["modes"]["surround"]
+        return validate_output_state(result)
     if isinstance(payload, dict) and payload.get("version") == 2:
         return _upgrade_v2_bass_management(payload)
     if not isinstance(payload, dict) or payload.get("version") != 1:

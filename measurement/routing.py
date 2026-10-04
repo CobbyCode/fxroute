@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from dsp.runtime import DSPRuntimeConfig
-from audio.output_topology import MODES
+from audio.output_topology import MODES, SUB_ROLES
 from audio.tool_env import c_locale_env
 from measurement.constants import (
     MEASUREMENT_SCOPE_ACTIVE_CHAIN,
@@ -164,6 +164,8 @@ class MeasurementRouting:
         preferred_suffixes = [":monitor_FR", ":output_FR", ":capture_FR", ":capture_MONO", ":output_MONO"] if monitor_channel == "right" else [":monitor_FL", ":output_FL", ":capture_FL", ":capture_MONO", ":output_MONO"]
         if not self._pick_port(monitor_ports, preferred_suffixes):
             raise RuntimeError(f"Active sink monitor for {requested_channel} is not available on {sink_node_name}")
+        # Keep the sweep side on this capture's target, not shared routing state.
+        playback_target["measurement_channel"] = requested_channel
         return {
             "source_node_name": monitor_source_node_name,
             "sink_node_name": sink_node_name,
@@ -437,7 +439,7 @@ class MeasurementRouting:
             expected_plan_fingerprint=expected_plan_fingerprint,
         )
         if expected:
-            return {
+            route = {
                 "route": "direct-sink",
                 "measurement_scope": measurement_scope,
                 "output_mode": expected["expected_native_output_mode"],
@@ -446,17 +448,45 @@ class MeasurementRouting:
                 "expected_native_layout": expected["expected_native_layout"],
                 "expected_plan_fingerprint": expected["expected_plan_fingerprint"],
             }
-        overview = overview or self._get_output_overview()
-        output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
-        mode = str(output_mode.get("mode") or "")
-        return {
-            "route": "direct-sink",
-            "measurement_scope": measurement_scope,
-            "output_mode": mode or "stereo",
-            "play_node_name": play_node_name,
-            "playback_target_name": str(playback_target.get("target_name") or ""),
-            "expected_native_layout": [dict(channel) for channel in DSPRuntimeConfig.from_overview(overview).layout],
-        }
+        else:
+            overview = overview or self._get_output_overview()
+            output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
+            mode = str(output_mode.get("mode") or "")
+            route = {
+                "route": "direct-sink",
+                "measurement_scope": measurement_scope,
+                "output_mode": mode or "stereo",
+                "play_node_name": play_node_name,
+                "playback_target_name": str(playback_target.get("target_name") or ""),
+                "expected_native_layout": [dict(channel) for channel in DSPRuntimeConfig.from_overview(overview).layout],
+            }
+        if route["output_mode"] == "surround":
+            route["surround_playback_inputs"] = self._surround_measurement_inputs(route, playback_target)
+        return route
+
+    def _surround_measurement_inputs(
+        self, playback_route: dict[str, Any], playback_target: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Freeze position excitation from the staged layout and active output mask."""
+        mask = 0
+        raw_helper = playback_route["measurement_scope"] == MEASUREMENT_SCOPE_RAW_HELPER
+        provider = getattr(self._store, "runtime_snapshot_provider", None)
+        if not raw_helper and callable(provider):
+            mask = int(provider().get("output_mask") or 0)
+        inputs: set[int] = set()
+        for index, row in enumerate(playback_route["expected_native_layout"]):
+            if mask & (1 << index) or row["name"] in SUB_ROLES:
+                continue
+            routes = row.get("routes") or [{"input": row.get("source"), "gain": 1.0}]
+            inputs.update(route["input"] for route in routes if route.get("gain", 1.0) != 0)
+        # Full-plan AutoSub uses only the shared L/R bass bus. Bank-only
+        # speaker plans have no front inputs and retain their position routes.
+        if raw_helper and inputs & {0, 1}:
+            return []
+        center_side = "right" if playback_target.get("measurement_channel") == "right" else "left"
+        sides = {2: center_side, 4: "left", 5: "right", 6: "left", 7: "right"}
+        # Fronts still enter via the stereo sink; LFE is never sweep-excited.
+        return [{"input": channel, "side": sides[channel]} for channel in sorted(inputs & sides.keys())]
 
     @staticmethod
     def _build_measurement_play_command(
@@ -531,17 +561,7 @@ class MeasurementRouting:
         playback_target: dict[str, Any],
         playback_route: dict[str, Any],
     ) -> dict[str, Any]:
-        """Deterministically link the sweep playback to the resolved sink.
-
-        The direct-sink route previously relied on pw-play --target
-        autoconnect, which PipeWire resolves non-deterministically (observed
-        live: the sweep node linked output_FL to the sink FR input and
-        output_FR to a DSP internal output port).  Mirror the
-        subwoofer routes: disable autoconnect, wait for the play node ports
-        and link explicitly to the resolved playback target.  With
-        ACTIVE_CHAIN that target is fxroute_dsp_sink, so the sweep passes
-        through the full FXRoute DSP gain chain.
-        """
+        """Link and verify the stereo reference tap and selected DSP positions."""
         diagnostics = self._new_measurement_playback_route_diagnostics(playback_route)
         play_ports = self._wait_for_measurement_play_ports(play_node_name)
         sink_name = str(playback_route.get("playback_target_name") or playback_target.get("target_name") or "").strip()
@@ -558,11 +578,28 @@ class MeasurementRouting:
             {"source_port": play_ports["left"], "target_port": input_left, "role": "measurement-play-left-to-direct-sink"},
             {"source_port": play_ports["right"], "target_port": input_right, "role": "measurement-play-right-to-direct-sink"},
         ]
+        surround_inputs = playback_route.get("surround_playback_inputs") or []
+        if surround_inputs:
+            dsp_ports = self._store._list_pw_ports("fxroute_dsp")
+            for entry in surround_inputs:
+                target = f"fxroute_dsp:input_{entry['input'] + 1}"
+                if target not in dsp_ports:
+                    raise RuntimeError(f"Surround measurement playback input port missing: {target}")
+                temporary_links.append({
+                    "source_port": play_ports[entry["side"]], "target_port": target,
+                    "role": f"measurement-play-{entry['side']}-to-{entry['input'] + 1}",
+                })
         created_links: list[dict[str, str]] = []
         try:
             for link in temporary_links:
                 self._store._create_pipewire_link(str(link["source_port"]), str(link["target_port"]))
                 created_links.append(link)
+            verified = self._verify_record_links([
+                (link["source_port"], link["target_port"], link["role"]) for link in temporary_links
+            ])
+            missing = [label for label, seen in verified.items() if seen is None]
+            if missing:
+                raise RuntimeError("Measurement playback links never appeared: " + ", ".join(missing))
         except Exception:
             self._cleanup_measurement_playback_links(
                 play_node_name=play_node_name,
@@ -571,8 +608,9 @@ class MeasurementRouting:
             raise
 
         diagnostics["temporary_playback_links"] = temporary_links
+        diagnostics["link_verified"] = verified
         diagnostics["active_chain_input_links"] = list(temporary_links)
-        diagnostics["play_node_links_after_manual_link"] = self._list_relevant_pw_links([play_node_name, sink_name])
+        diagnostics["play_node_links_after_manual_link"] = self._list_relevant_pw_links([play_node_name, sink_name, "fxroute_dsp"])
         logger.info(
             "Direct-sink measurement playback manually linked: play_node=%s input_links=%s",
             play_node_name,
@@ -601,16 +639,8 @@ class MeasurementRouting:
             return removed
         if completed.returncode != 0:
             return removed
-        for line in (completed.stdout or "").splitlines():
-            line = line.strip()
-            if "->" not in line or play_node_name not in line:
-                continue
-            left, right = line.split("->", 1)
-            source_port = left.strip()
-            target_port = right.strip()
-            if "(id:" in target_port:
-                target_port = target_port.partition("(id:")[0].strip()
-            if not source_port or not target_port:
+        for source_port, target_port in iter_pw_link_pairs(completed.stdout):
+            if source_port.rsplit(":", 1)[0] != play_node_name:
                 continue
             if self._store._disconnect_link(source_port, target_port):
                 removed.append(f"{source_port} -> {target_port}")

@@ -98,6 +98,8 @@ class _RuntimeOutputModeMixin:
             self.invalidate_gate_sink_resolution()
 
     async def commit_sample_rate_policy(self, request: TransitionRequest) -> dict[str, Any]:
+        if request.input_rate_hz is not None:
+            return {"input_rate_hz": request.input_rate_hz}
         result = {}
         if request.src_mode is not None:
             status = await asyncio.to_thread(src_policy.status)
@@ -250,7 +252,7 @@ class _RuntimeOutputModeMixin:
             if isinstance(previous_volume, (int, float)):
                 await self.set_source_volume(int(round(previous_volume)), transition_id)
             should_play = bool(
-                previous_player.get("playing")
+                request.input_rate_hz is None and previous_player.get("playing")
                 and not previous_player.get("paused")
                 and not previous_player.get("ended")
             )
@@ -264,7 +266,7 @@ class _RuntimeOutputModeMixin:
             if previous_player.get("current_file") and not should_play and not state.get("paused"):
                 raise RuntimeError("local pause state did not survive output-mode commit")
         elif request.source == "spotify":
-            should_play = previous_spotify.get("status") == "Playing"
+            should_play = request.input_rate_hz is None and previous_spotify.get("status") == "Playing"
             if should_play:
                 data = await spotify_play()
                 if data.get("status") not in {"Playing", "playing"}:
@@ -272,7 +274,7 @@ class _RuntimeOutputModeMixin:
             else:
                 await self._deps.spotify_pause()
         elif request.source == "qobuz":
-            should_play = (snapshot.get("qobuz") or {}).get("status") == "Playing"
+            should_play = request.input_rate_hz is None and (snapshot.get("qobuz") or {}).get("status") == "Playing"
             if should_play:
                 await self.start_target_source(replace(request, should_play=True))
             else:

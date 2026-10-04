@@ -58,6 +58,9 @@ class SourceTransitionDependencies:
     # Deferred bluetoothctl actions recorded by the Bluetooth sync; run
     # after the source-transition lock is released.
     finish_bluetoothctl_actions: Callable[[], Awaitable[None]] | None = None
+    sync_output_mode: Callable[[dict, dict], Awaitable[dict]] | None = None
+    capture_output_mode_state: Callable[[], dict] | None = None
+    restore_output_mode_state: Callable[[dict, dict, dict], Awaitable[dict]] | None = None
 
 
 class SourceTransitions:
@@ -187,12 +190,17 @@ class SourceTransitions:
         if stdin is not None:
             await stdin.set_selected(selected)
 
-    async def _restore_selection(self, previous: dict) -> dict:
+    async def _restore_selection(self, previous: dict, output_state: dict | None = None) -> dict:
+        failed = self._deps.load_selection()
         restored = await asyncio.to_thread(
             self._deps.save_selection,
             str(previous.get("mode") or SOURCE_MODE_APP_PLAYBACK),
             previous.get("selected_input_key"),
         )
+        if output_state is not None and self._deps.restore_output_mode_state is not None:
+            restored = await self._deps.restore_output_mode_state(failed, restored, output_state)
+        elif self._deps.sync_output_mode is not None:
+            restored = await self._deps.sync_output_mode(failed, restored)
         restored = await self._deps.sync_external_input(restored)
         restored = await self._deps.sync_bluetooth_input(restored)
         try:
@@ -213,17 +221,20 @@ class SourceTransitions:
         pause never stops a newer commit.
         """
         previous = self._deps.load_selection()
+        output_state = self._deps.capture_output_mode_state() if self._deps.capture_output_mode_state else None
         previous_mode = str(previous.get("mode") or SOURCE_MODE_APP_PLAYBACK)
         generation_bumped = False
         try:
             result = await asyncio.to_thread(self._deps.save_selection, mode, input_key)
+            if self._deps.sync_output_mode is not None:
+                result = await self._deps.sync_output_mode(previous, result)
             if previous_mode == SOURCE_MODE_STDIN_INPUT and result.get("mode") != SOURCE_MODE_STDIN_INPUT:
                 await self._set_selected_stdin(False)
             result = await self._deps.sync_external_input(result)
             result = await self._deps.sync_bluetooth_input(result)
         except BaseException:
             try:
-                await self._restore_selection(previous)
+                await self._restore_selection(previous, output_state)
             except BaseException:
                 logger.exception("Failed to restore previous source selection after routing failure")
             raise
@@ -244,7 +255,7 @@ class SourceTransitions:
             await self._deps.sync_peak_monitor(result)
         except BaseException:
             try:
-                restored = await self._restore_selection(previous)
+                restored = await self._restore_selection(previous, output_state)
                 if generation_bumped:
                     self._deps.note_source_selection(str(restored.get("mode") or SOURCE_MODE_APP_PLAYBACK))
             except BaseException:

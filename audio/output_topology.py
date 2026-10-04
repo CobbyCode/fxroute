@@ -7,8 +7,10 @@ from dataclasses import dataclass
 
 from audio.filter_banks import bank_definitions
 
-MODES = ("stereo", "stereo-sub")
+MODES = ("stereo", "stereo-sub", "surround")
 MAIN_ROLES = ("main_l", "main_r")
+SURROUND_SPEAKERS = ("center", "side_l", "side_r", "rear_l", "rear_r")
+SURROUND_POSITIONS = ("FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR")
 SUB_ROLES = ("sub_l", "sub_r", "sub1", "sub2")
 WAYS = ("low", "low_mid", "mid", "high")
 SPEAKER_ROLES = tuple(f"{side}_{way}" for side in ("left", "right") for way in WAYS)
@@ -21,7 +23,10 @@ def roles_for_mode(mode: str, *, crossover_enabled: bool = False) -> tuple[str, 
         raise ValueError(f"Unsupported output mode: {mode}")
     if type(crossover_enabled) is not bool:
         raise ValueError("Crossover enabled must be a boolean")
-    return (SPEAKER_ROLES if crossover_enabled else MAIN_ROLES) + (SUB_ROLES if mode == "stereo-sub" else ())
+    fronts = SPEAKER_ROLES if crossover_enabled else MAIN_ROLES
+    if mode == "surround":
+        return fronts + SURROUND_SPEAKERS + ("sub1", "sub2")
+    return fronts + (SUB_ROLES if mode == "stereo-sub" else ())
 
 
 def side_for_role(role: str) -> str:
@@ -75,6 +80,8 @@ def derive_topology(mode: str, assignments: object, *, channels: int | None = No
     sub_mode = ("none" if not subs else "mono" if len(subs) == 1 else
                 "stereo" if subs == ("sub_l", "sub_r") else "dual-mono" if len(subs) == 2 else "unsupported")
     issues = []
+    if mode == "surround" and "sub2" in subs and "sub1" not in subs:
+        issues.append("Surround Sub 2 requires Sub 1")
     if len(subs) > 2:
         issues.append("At most two distinct sub roles are supported")
     left = tuple(role for role in roles if role.startswith("left_"))

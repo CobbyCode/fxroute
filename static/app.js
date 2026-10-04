@@ -1727,6 +1727,9 @@ function handleWebSocketMessage(msg) {
             // drop would otherwise leave tabs, the footer switcher and VU
             // gating stale.
             if (applySourceOverview(data)) renderSourceState();
+            if (data?.output_system_mode && data.output_system_mode !== state.outputSystem?.catalog?.active_mode) {
+                void fetchOutputSystemCatalog(true);
+            }
             break;
         case 'src':
             window.FXRouteSrcSettings.update(data);

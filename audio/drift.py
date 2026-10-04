@@ -33,6 +33,7 @@ class SamplerateDriftDependencies:
     measurement_session_active: Callable[[], bool]
     measurement_audio_graph_owned: Callable[[], bool]
     request_coordinated_recovery: Callable[..., Any]
+    get_source_mode: Callable[[], str] | None = None
 
 
 class SamplerateDriftObserver:
@@ -59,6 +60,9 @@ class SamplerateDriftObserver:
         """Observe a stable source/MPV/hardware-rate mismatch without mutating playback."""
 
         deps = self._deps
+        if deps.get_source_mode is not None and deps.get_source_mode() != "app-playback":
+            self.reset()
+            return
         # The Coordinator and the measurement session own all rate mutations.
         # A readback captured during either operation is not evidence of a
         # settled playback drift and must not start a competing repair.

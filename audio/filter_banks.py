@@ -17,6 +17,8 @@ STEREO_PAIRS = {
     "mid": ("left_mid", "right_mid"),
     "high": ("left_high", "right_high"),
     "sub": ("sub_l", "sub_r"),
+    "side": ("side_l", "side_r"),
+    "rear": ("rear_l", "rear_r"),
 }
 
 

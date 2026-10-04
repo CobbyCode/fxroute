@@ -19,7 +19,7 @@ from dsp.processing_plan import compile_processing_plan
 class UnifiedOutputTests(unittest.TestCase):
     def test_modes_have_independent_crossover_role_domains(self):
         state = model.default_output_state()
-        self.assertEqual(set(state['modes']), {'stereo', 'stereo-sub'})
+        self.assertEqual(set(state['modes']), {'stereo', 'stereo-sub', 'surround'})
         self.assertEqual(roles_for_mode('stereo'), ('main_l', 'main_r'))
         self.assertEqual(set(roles_for_mode('stereo-sub')),
                          {'main_l', 'main_r', 'sub1', 'sub2', 'sub_l', 'sub_r'})
@@ -87,14 +87,14 @@ class UnifiedOutputTests(unittest.TestCase):
             path.write_text(json.dumps(old))
             store = OutputStateStore(path)
             upgraded = store.load()
-            self.assertEqual(upgraded['version'], 3)
+            self.assertEqual(upgraded['version'], model.VERSION)
             self.assertEqual(upgraded['revision'], 12)
             self.assertEqual(upgraded['active_mode'], 'stereo-sub')
             self.assertNotIn('crossover', upgraded['modes'])
             self.assertTrue(upgraded['modes']['stereo-sub']['crossover_enabled'])
             self.assertEqual(upgraded['modes']['stereo-sub']['processing']['sub1']['alignment_ms'], 3)
             self.assertEqual(store.commit(upgraded, expected_revision=12)['revision'], 13)
-            self.assertEqual(store.load()['version'], 3)
+            self.assertEqual(store.load()['version'], model.VERSION)
 
     def test_crossover_compiles_and_measurement_targets_follow_active_roles(self):
         from measurement.target import freeze_measurement_target
@@ -131,7 +131,7 @@ class UnifiedOutputTests(unittest.TestCase):
                     main, 'get_audio_output_overview', return_value={
                         'selected_output': {'key': 'A', 'channels': 4}}):
                 catalog = asyncio.run(main.get_audio_output_state())
-            self.assertEqual(catalog['capabilities']['modes'], ['stereo', 'stereo-sub'])
+            self.assertEqual(catalog['capabilities']['modes'], ['stereo', 'stereo-sub', 'surround'])
             self.assertFalse(catalog['modes']['stereo-sub']['crossover_enabled'])
             self.assertEqual(catalog['modes']['stereo-sub']['topology']['sub_mode'], 'stereo')
             mutation = main._build_output_state_mutation({'kind': 'set_subwoofers', 'mode': 'stereo-sub',

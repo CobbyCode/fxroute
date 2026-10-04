@@ -10,6 +10,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DspPackagingTests(unittest.TestCase):
+    def test_installer_and_updater_build_the_surround_decoder(self):
+        installer = (ROOT / "install.sh").read_text()
+        updater = (ROOT / "scripts/update_fxroute.sh").read_text()
+        self.assertIn('native_surround/build.sh', installer)
+        self.assertIn('native_surround/build/fxroute-surround-input', installer)
+        self.assertIn('"$INSTALL_ROOT/native_surround"', installer)
+        self.assertIn('"$INSTALL_ROOT/native_surround/build"', installer)
+        for dependency in ('libavcodec-dev', 'libavutil-dev', 'libswresample-dev',
+                           'pkgconfig(libavcodec)', 'ffmpeg-${ffmpeg_major}-libavcodec-devel'):
+            self.assertIn(dependency, installer)
+        self.assertIn('build_native_surround_if_needed()', updater)
+        self.assertIn('native_surround/build/fxroute-surround-input', updater)
     def test_fxroute_service_leaves_realtime_policy_to_pipewire(self):
         service = (ROOT / "fxroute.service").read_text()
         installer = (ROOT / "install.sh").read_text()

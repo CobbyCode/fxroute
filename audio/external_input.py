@@ -45,6 +45,9 @@ class ExternalInputRoutingDependencies:
     get_persisted_source_mode: Callable[[], str] | None = None
     get_source_transition_lock: Callable[[], asyncio.Lock] | None = None
     sync_peak_monitor_for_source_mode_state: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+    get_output_mode: Callable[[], str] | None = None
+    sync_digital_input: Callable[[str, str, str], Awaitable[None]] | None = None
+    stop_digital_input: Callable[[], Awaitable[None]] | None = None
 
 
 class ExternalInputRouting:
@@ -54,6 +57,7 @@ class ExternalInputRouting:
         self._deps = deps
         self.loopback_source_name: str | None = None
         self.loopback_selection_key: str | None = None
+        self.digital_source_name: str | None = None
         self._active_channels: tuple[str, str] = _LEGACY_CHANNELS
         self._pending_channels: tuple[str, str] | None = None
         self._sync_lock = asyncio.Lock()
@@ -102,6 +106,9 @@ class ExternalInputRouting:
             )
 
     async def disable(self) -> None:
+        if self.digital_source_name is not None and self._deps.stop_digital_input is not None:
+            await self._deps.stop_digital_input()
+        self.digital_source_name = None
         previous_source = self.loopback_source_name
         previous_channels = self._active_channels
         self.loopback_source_name = None
@@ -188,6 +195,25 @@ class ExternalInputRouting:
             await self.disable()
             return overview
         left, right = _pair_channels(current_input)
+        if self._deps.get_output_mode is not None and self._deps.get_output_mode() == "surround":
+            if self._deps.sync_digital_input is None:
+                await self.disable()
+                raise RuntimeError("Surround digital ingress is unavailable")
+            if self.loopback_source_name is not None:
+                await self.disable()
+            try:
+                await self._deps.sync_digital_input(str(source_name), left, right)
+            except BaseException:
+                if self._deps.stop_digital_input is not None:
+                    await self._deps.stop_digital_input()
+                self.digital_source_name = None
+                raise
+            self.digital_source_name = str(source_name)
+            self._active_channels = (left, right)
+            self._remembered_input = dict(current_input)
+            return overview
+        if self.digital_source_name is not None:
+            await self.disable()
         await self._ensure_loopback(
             str(source_name),
             left,
@@ -209,7 +235,7 @@ class ExternalInputRouting:
                 # probe confirms the loss or reports the input again.
                 return
             overview = await self.sync(overview)
-        elif self.loopback_source_name is not None:
+        elif self.loopback_source_name is not None or self.digital_source_name is not None:
             await self.sync(overview)
         elif not self._external_persisted():
             return
@@ -248,6 +274,7 @@ class ExternalInputRouting:
             mode_provider is not None
             and mode_provider() != SOURCE_MODE_EXTERNAL_INPUT
             and self.loopback_source_name is None
+            and self.digital_source_name is None
         )
 
     async def stop(self) -> None:

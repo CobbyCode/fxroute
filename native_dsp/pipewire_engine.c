@@ -299,7 +299,7 @@ static void on_process(void *data, struct spa_io_position *position) {
     int complete = 1;
     for (unsigned i = 0; i < fxdsp_inputs(dsp); i++) {
         input[i] = pw_filter_get_dsp_buffer(engine->input[i], frames);
-        if (!input[i]) complete = 0;
+        if (!input[i] && i < 2U) complete = 0;
     }
     for (unsigned i = 0; i < fxdsp_outputs(dsp); i++) {
         /* A hardware output with fewer channels than the engine layout

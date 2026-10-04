@@ -493,6 +493,7 @@ from audio.output_state import switch_all_banks
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
+from audio.input_output_mode import input_identity, remember_mode, restore_mode
 from audio.input_auto_select import InputAutoSelect, InputAutoSelectDependencies
 from audio.stdin_input import StdinInputDependencies, StdinInputService
 from audio.stdin_pipewire import PipeWirePcmSink, pcm_adapter_error
@@ -556,6 +557,7 @@ from audio.samplerate import (
     OUTPUT_MODE_STEREO,
     OUTPUT_MODE_SUBWOOFER_MODES,
     SOURCE_MODE_APP_PLAYBACK,
+    SOURCE_MODE_EXTERNAL_INPUT,
     apply_persisted_audio_output_selection,
     configure_source_availability,
     configure_stdin_input_status,
@@ -904,6 +906,9 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     get_source_transition_lock=lambda: _source_transition_lock(),
     # Also pushes the overview to clients (SourceTransitions.sync_source_mode_state).
     sync_peak_monitor_for_source_mode_state=lambda overview: source_transitions.sync_source_mode_state(overview),
+    get_output_mode=lambda: get_output_service().ensure_state()["active_mode"],
+    sync_digital_input=lambda source, left, right: _sync_surround_input(source, left, right),
+    stop_digital_input=lambda: _stop_surround_input(),
 ))
 
 bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
@@ -934,6 +939,7 @@ samplerate_drift = SamplerateDriftObserver(SamplerateDriftDependencies(
     measurement_session_active=lambda: measurement_sr_session is not None and measurement_sr_session.active,
     measurement_audio_graph_owned=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
     request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
+    get_source_mode=lambda: samplerate._load_audio_source_selection().get("mode") or SOURCE_MODE_APP_PLAYBACK,
 ))
 
 spotify_playerctl_watch = SpotifyPlayerctlWatch(SpotifyWatchDependencies(
@@ -1302,7 +1308,7 @@ async def _publish_committed_playback_owner(owner: str, transition_id: str | Non
 
 source_overview_feed = SourceOverviewFeed(
     broadcast=lambda message: manager.broadcast(message),
-    decorate=lambda overview: input_auto_select.decorate_overview(overview),
+    decorate=lambda overview: _decorate_source_output_mode(input_auto_select.decorate_overview(overview)),
 )
 
 source_transitions = SourceTransitions(SourceTransitionDependencies(
@@ -1320,6 +1326,9 @@ source_transitions = SourceTransitions(SourceTransitionDependencies(
     pause_app_playback=lambda: _pause_all_app_playback_for_external_input(),
     sync_peak_monitor=lambda overview: peak_monitor_coordinator.sync_source_mode_state(overview),
     sync_peak_monitor_for_stdin=lambda overview: peak_monitor_coordinator.sync_stdin_state(overview),
+    sync_output_mode=lambda previous, overview: _restore_input_output_mode(previous, overview),
+    capture_output_mode_state=lambda: get_output_service().ensure_state(),
+    restore_output_mode_state=lambda previous, overview, state: _restore_input_output_mode(previous, overview, saved_state=state),
 ))
 
 input_auto_select = InputAutoSelect(InputAutoSelectDependencies(
@@ -3154,6 +3163,7 @@ async def lifespan(app: FastAPI):
 
 async def _shutdown_lifespan_resources() -> None:
     global settings, downloader, dsp_manager, measurement_store, measurement_sr_session, hardware_controller, playback_transition_coordinator
+    global _surround_input, _surround_carrier_owned
 
     async def cleanup(label: str, operation) -> None:
         nonlocal cleanup_cancelled
@@ -3257,6 +3267,10 @@ async def _shutdown_lifespan_resources() -> None:
     await cleanup("bluetooth-input", bluetooth_input.stop)
     await cleanup("bluetooth-receiver", lambda: asyncio.to_thread(set_bluetooth_receiver_enabled, False))
     await cleanup("external-input", external_input.stop)
+    if _surround_input is not None:
+        await cleanup("digital-input", _surround_input.stop)
+    _surround_input = None
+    _surround_carrier_owned = False
     if runtime.peak_monitor is not None:
         await cleanup("peak-monitor", runtime.peak_monitor.stop)
     if hardware_controller is not None:
@@ -4512,6 +4526,8 @@ async def audio_samplerate_status():
 
 @app.post("/api/audio/samplerate")
 async def save_audio_samplerate_policy(request: Request):
+    if _surround_carrier_owned:
+        raise HTTPException(status_code=409, detail="Digital Surround owns the 48000 Hz carrier clock; switch input first")
     if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
         raise HTTPException(status_code=423, detail="Measurement is active; sample-rate policy is locked")
     try:
@@ -4523,8 +4539,14 @@ async def save_audio_samplerate_policy(request: Request):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": "auto"|"fixed", "rate": <number?>}')
 
     try:
-        await _transition_sample_rate_policy(policy, detail="api-audio-samplerate-policy")
-        return get_samplerate_status()
+        async with _source_transition_lock():
+            if _surround_carrier_owned:
+                raise HTTPException(status_code=409, detail="Digital Surround owns the 48000 Hz carrier clock; switch input first")
+            if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
+                raise HTTPException(status_code=423, detail="Measurement is active; sample-rate policy is locked")
+            await finish_then_cancel(_transition_sample_rate_policy(policy, detail="api-audio-samplerate-policy"),
+                                    what="Sample-rate policy transition")
+            return get_samplerate_status()
     except ValueError as exc:
         raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
@@ -5400,6 +5422,8 @@ async def get_audio_output_state():
     for mode, config in state["modes"].items():
         topology = _output_state_topology(state, mode, output_key, channels)
         banks = bank_catalog(config, topology["roles"])
+        if mode == "surround" and "main" in banks:
+            banks["main"]["label"] = "Front L/R"
         modes[mode] = {
             "crossover_enabled": config["crossover_enabled"],
             "selected_bank": selected_bank(config, topology["roles"]),
@@ -5438,10 +5462,140 @@ async def apply_audio_output_state(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"expected_revision": <int>, "mutation": {...}}')
+    if isinstance(body, dict) and (body.get("mutation") or {}).get("kind") == "switch_mode":
+        async with _source_transition_lock():
+            return await finish_then_cancel(_apply_audio_output_state_body(body), what="Output-mode transition")
     return await _apply_audio_output_state_body(body)
 
 
-async def _apply_audio_output_state_body(body: dict):
+_surround_input = None
+_surround_carrier_owned = False
+
+
+async def _set_surround_carrier_owned(enabled: bool) -> None:
+    """Borrow the carrier rate through the coordinator, without changing policy."""
+    global _surround_carrier_owned
+    if not enabled and not _surround_carrier_owned:
+        return
+    status = await asyncio.to_thread(get_samplerate_status)
+    if enabled:
+        if status.get("active_rate") != 48000 or status.get("force_rate") != 48000:
+            from dataclasses import replace
+            policy = samplerate.load_sample_rate_policy()
+            request = await playback_orchestration.configured().sample_rate_policy_request(
+                policy, detail="digital-input-carrier-rate")
+            request = replace(request, target_rate=48000, input_rate_hz=48000,
+                              rate_change=True, reload_source=False, should_play=False)
+            await _run_coordinated_transition(request)
+            confirmed = await asyncio.to_thread(get_samplerate_status)
+            if confirmed.get("active_rate") != 48000:
+                raise RuntimeError("Digital carrier clock did not settle at 48000 Hz")
+        _surround_carrier_owned = True
+    elif _surround_carrier_owned:
+        await _transition_sample_rate_policy(samplerate.load_sample_rate_policy(), detail="digital-input-clock-release")
+        _surround_carrier_owned = False
+
+
+async def _sync_surround_input(source: str, left: str, right: str) -> None:
+    global _surround_input
+    if _measurement_session_owns_live_rate():
+        if runtime.dsp_runtime is not None:
+            await runtime.dsp_runtime.set_surround_input(False)
+        return
+    await _set_surround_carrier_owned(True)
+    if _surround_input is None:
+        from audio.digital_input import DigitalInput
+        _surround_input = DigitalInput()
+    if runtime.dsp_runtime is None:
+        raise RuntimeError("Surround needs an active native DSP runtime")
+    try:
+        await _surround_input.start(source, left, right, rate=48000)
+        await runtime.dsp_runtime.set_surround_input(True)
+        if not await runtime.dsp_runtime.verify():
+            raise RuntimeError("Surround DSP links could not be verified")
+    except BaseException:
+        await _stop_surround_input()
+        raise
+
+
+async def _stop_surround_input() -> None:
+    if runtime.dsp_runtime is not None:
+        await runtime.dsp_runtime.set_surround_input(False)
+    if _surround_input is not None:
+        await _surround_input.stop()
+
+
+@app.get("/api/audio/surround")
+async def get_surround_input_status():
+    return {"carrier_rate_hz": 48000, "carrier_owned": _surround_carrier_owned,
+            "input": _surround_input.snapshot() if _surround_input is not None else {"active": False}}
+
+
+async def _restore_input_output_mode(previous: dict, overview: dict, *, saved_state: dict | None = None) -> dict:
+    if saved_state is None and input_identity(previous) == input_identity(overview):
+        return overview
+    state = get_output_service().ensure_state()
+    if saved_state is not None:
+        candidate = {**state, "active_mode": saved_state["active_mode"], "input_modes": saved_state["input_modes"]}
+    else:
+        candidate = restore_mode(state, previous, overview)
+    if candidate["active_mode"] == state["active_mode"]:
+        get_output_service().commit_unowned(candidate, expected_revision=state["revision"])
+        if _surround_carrier_owned and overview.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
+            await external_input.disable()
+            await _set_surround_carrier_owned(False)
+        return overview
+    await _apply_audio_output_state_body({"expected_revision": state["revision"],
+        "mutation": {"kind": "switch_mode", "mode": candidate["active_mode"]}},
+        previous_input=previous, sync_ingress=False,
+        input_modes_override=saved_state["input_modes"] if saved_state is not None else None)
+    return overview
+
+
+def _decorate_source_output_mode(overview: dict) -> dict:
+    try:
+        return {**overview, "output_system_mode": get_output_service().load()["active_mode"]}
+    except ValueError:
+        return overview
+
+
+async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | None = None,
+                                         sync_ingress: bool = True, input_modes_override: dict | None = None):
+    mutation = body.get("mutation") if isinstance(body, dict) else None
+    if not isinstance(mutation, dict) or mutation.get("kind") != "switch_mode":
+        return await _apply_audio_output_state_candidate(body, previous_input=previous_input)
+    mode = _require_state_mode(mutation.get("mode"))
+    selection = samplerate._load_audio_source_selection()
+    external = selection.get("mode") == SOURCE_MODE_EXTERNAL_INPUT
+    previous_owned = _surround_carrier_owned
+    previous_state = get_output_service().ensure_state()
+    _build_output_state_mutation(mutation, output_key="", channels=None)(previous_state)
+    if (type(body.get("expected_revision")) is not int
+            or body["expected_revision"] != previous_state["revision"]
+            or (measurement_sr_session is not None and measurement_sr_session.has_active_jobs)):
+        return await _apply_audio_output_state_candidate(body, previous_input=previous_input)
+    try:
+        await external_input.disable()
+        await _set_surround_carrier_owned(external and mode == "surround")
+        result = await _apply_audio_output_state_candidate(body, previous_input=previous_input,
+                                                           input_modes_override=input_modes_override)
+        if sync_ingress:
+            await external_input.sync()
+        return result
+    except BaseException:
+        service = get_output_service()
+        head = service.load()
+        if head["active_mode"] == mode and head["revision"] == previous_state["revision"] + 1:
+            service.revert(previous_state, expected_revision=head["revision"])
+            await _sync_v2_head_after_bank_assign()
+        await _set_surround_carrier_owned(previous_owned)
+        if sync_ingress:
+            await external_input.sync()
+        raise
+
+
+async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dict | None = None,
+                                              input_modes_override: dict | None = None):
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"expected_revision": <int>, "mutation": {...}}')
     expected_revision = body.get("expected_revision")
@@ -5465,6 +5619,14 @@ async def _apply_audio_output_state_body(body: dict):
         body.get("mutation"), output_key=output_key, channels=channels)
     try:
         candidate = mutate(state)
+        if (body.get("mutation") or {}).get("kind") == "switch_mode":
+            selection = samplerate._load_audio_source_selection()
+            if input_modes_override is not None:
+                candidate["input_modes"] = dict(input_modes_override)
+            elif previous_input is not None:
+                candidate["input_modes"] = restore_mode(state, previous_input, selection)["input_modes"]
+            if input_modes_override is None:
+                candidate = remember_mode(candidate, selection)
     except ValueError as exc:
         raise bad_request(exc)
 

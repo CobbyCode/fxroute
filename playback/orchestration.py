@@ -568,6 +568,11 @@ class PlaybackOrchestrator:
         result["output_targets"] = output_targets
         ingress_sources = ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp_sink:monitor_FR")
         ingress_targets = ("fxroute_dsp:input_1", "fxroute_dsp:input_2")
+        if snapshot.get("surround_input"):
+            from audio.output_topology import SURROUND_POSITIONS
+            count = 8 if (snapshot.get("config") or {}).get("output_mode") == "surround" else 2
+            ingress_sources += tuple(f"fxroute_surround_input:output_{position}" for position in SURROUND_POSITIONS[:count])
+            ingress_targets += tuple(f"fxroute_dsp:input_{i + 1}" for i in range(count))
         result["dsp_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
         result["helper_ports"] = result["dsp_ports"]
         result["helper_active"] = bool(snapshot.get("active"))

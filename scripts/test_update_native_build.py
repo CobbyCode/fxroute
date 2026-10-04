@@ -27,7 +27,8 @@ def update_request():
 
 
 def make_update_harness(root: Path, work: Path, *, build_succeeds: bool, src_configuration_succeeds: bool = True,
-                        src_build_succeeds: bool = True) -> Path:
+                         src_build_succeeds: bool = True, surround_build_succeeds: bool = True,
+                         surround_dependencies: bool = True) -> Path:
     source = work / "native_dsp"
     source.mkdir()
     if build_succeeds:
@@ -35,6 +36,11 @@ def make_update_harness(root: Path, work: Path, *, build_succeeds: bool, src_con
     else:
         build = "#!/bin/bash\nexit 17\n"
     (source / "build.sh").write_text(build)
+    surround = work / "native_surround"
+    surround.mkdir()
+    (surround / "build.sh").write_text(
+        '#!/bin/bash\nmkdir -p native_surround/build\nprintf "#!/bin/sh\\n" > native_surround/build/fxroute-surround-input\nchmod +x native_surround/build/fxroute-surround-input\n'
+        if surround_build_succeeds else '#!/bin/bash\nexit 18\n')
     src = work / "native_src"
     src.mkdir()
     (src / "build.py").write_text('from pathlib import Path\np=Path("native_src/build");p.mkdir(exist_ok=True)\n(p/"libspa-fxroute-src.so").touch()\n'
@@ -45,7 +51,7 @@ def make_update_harness(root: Path, work: Path, *, build_succeeds: bool, src_con
         'raise RuntimeError("Common SRC plugin is not installed in the standard SPA path; rerun the installer")\n')
     (scripts / "configure_src.py").write_text(configuration)
     with (work / ".gitignore").open("a") as ignore:
-        ignore.write(".venv/\nnative_dsp/build/\nnative_src/build/\n")
+        ignore.write(".venv/\nnative_dsp/build/\nnative_src/build/\nnative_surround/build/\n")
     subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(work), "commit", "-qm", "native fixture"], check=True)
     subprocess.run(["git", "-C", str(work), "push", "-q", "origin", "HEAD:main"], check=True)
@@ -53,7 +59,7 @@ def make_update_harness(root: Path, work: Path, *, build_succeeds: bool, src_con
     helpers = "\n".join(extract_function(SCRIPT_TEXT, name) for name in (
         "setup_repo", "version_at", "git_short", "git_remote_ref",
         "reconciliation_marker_matches_head", "mark_reconciliation_complete",
-        "build_native_dsp_if_needed", "build_common_src_if_needed", "reconcile_checkout", "main",
+        "build_native_dsp_if_needed", "build_native_surround_if_needed", "build_common_src_if_needed", "reconcile_checkout", "main",
     ))
     harness = root / "update-test.sh"
     harness.write_text(f'''#!/bin/bash
@@ -68,6 +74,7 @@ install_dependencies_if_needed() {{ :; }}
 run_production_build() {{ :; }}
 cleanup_obsolete_root_modules() {{ :; }}
 install_stdin_cli_helper() {{ :; }}
+pkg-config() {{ return {0 if surround_dependencies else 1}; }}
 restart_service_if_needed() {{ printf 'restart\\n' > "$REPO_PATH/restart-called"; }}
 {helpers}
 main
@@ -84,6 +91,27 @@ def run_update(script: Path, work: Path) -> subprocess.CompletedProcess:
 
 
 class NativeBuildUpdateTests(unittest.TestCase):
+    def test_failed_surround_build_blocks_restart(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            work = make_repo(root)
+            script = make_update_harness(root, work, build_succeeds=True, surround_build_succeeds=False)
+            result = run_update(script, work)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Surround build failed", result.stdout)
+            self.assertFalse((work / "restart-called").exists())
+
+    def test_missing_optional_surround_headers_preserves_existing_stereo_update(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            work = make_repo(root)
+            script = make_update_harness(root, work, build_succeeds=True, surround_dependencies=False)
+            result = run_update(script, work)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("rerun the installer", result.stdout)
+            self.assertFalse((work / "native_surround/build/fxroute-surround-input").exists())
+            self.assertTrue((work / "restart-called").exists())
+
     def test_pre_src_install_completes_update_with_stock_conversion(self):
         # Pre-SRC installs lack the privileged plugin link and may lack SRC build dependencies.
         for name, options, cause in (
@@ -128,6 +156,7 @@ class NativeBuildUpdateTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue((work / "native_dsp/build/fxroute-dsp").stat().st_mode & 0o111)
+            self.assertTrue((work / "native_surround/build/fxroute-surround-input").stat().st_mode & 0o111)
             self.assertTrue((work / "native_src/build/libspa-fxroute-src.so").is_file())
             self.assertTrue((work / "src-configured").is_file())
             self.assertEqual((work / "restart-called").read_text(), "restart\n")

@@ -214,6 +214,21 @@ cleanup_obsolete_root_modules() {
   fi
 }
 
+build_native_surround_if_needed() {
+  local source_dir="$REPO_PATH/native_surround"
+  local binary="$REPO_PATH/native_surround/build/fxroute-surround-input"
+  [[ -f "$source_dir/build.sh" ]] || return 1
+  if [[ -x "$binary" ]] && ! find "$source_dir" -type f -newer "$binary" \
+      ! -path "$source_dir/build/*" -print -quit | grep -q .; then
+    return 0
+  fi
+  if ! pkg-config --exists libpipewire-0.3 libavcodec libavutil libswresample; then
+    log "Surround build dependencies are missing; rerun the installer to enable digital Surround."
+    return 0
+  fi
+  bash "$source_dir/build.sh" && [[ -x "$binary" ]]
+}
+
 build_common_src_if_needed() {
   local source_dir="$REPO_PATH/native_src"
   local binary="$source_dir/build/libspa-fxroute-src.so"
@@ -285,6 +300,10 @@ reconcile_checkout() {
   cleanup_obsolete_root_modules
   if ! build_native_dsp_if_needed; then
     log "Reconciliation remains incomplete because a native build failed."
+    return 1
+  fi
+  if ! build_native_surround_if_needed; then
+    log "Reconciliation remains incomplete because the Surround build failed."
     return 1
   fi
   # SRC needs installer-provided build dependencies and a privileged plugin
