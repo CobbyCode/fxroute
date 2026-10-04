@@ -2672,12 +2672,13 @@
         if (p === '/api/audio/src') {
             if (post) {
                 if (!['low', 'standard', 'high'].includes(body.mode)) return err('SRC mode must be low, standard or high', 400);
+                S.stop();
                 srcMode = body.mode;
             }
             return j({ mode: srcMode, modes: ['low', 'standard', 'high'], available: true,
                 error: null, effective_nodes: [], simulated: true, startup_reserve_ms: 750,
                 startup_timeout_ms: 3750,
-                fifo_frames: 65536, sizing_provisional: true, apply_requires_stopped_playback: true });
+                fifo_frames: 65536, sizing_provisional: true, apply_requires_stopped_playback: false });
         }
         if (p === '/api/audio/samplerate') {
             if (post) {

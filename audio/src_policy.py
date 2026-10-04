@@ -225,7 +225,7 @@ def status() -> dict:
     if generation and any(n["generation"] != generation for n in observed if n.get("bound")):
         restart_required = True
     if restart_required:
-        error = error or "Common SRC activation is pending; restart audio while playback is stopped"
+        error = error or "Common SRC activation is pending; select an SRC quality to apply it"
     failures = [n["name"] for n in observed if n["error"]]
     if failures:
         error = f"SRC adapter failed: {', '.join(failures)}"
@@ -234,4 +234,4 @@ def status() -> dict:
             "factory": FACTORY, "startup_reserve_ms": 750, "startup_timeout_ms": 3750, "fifo_frames": 65536,
             "generation": generation,
             "sizing_provisional": True, "clock_matching": "native PipeWire",
-            "apply_requires_stopped_playback": True}
+            "apply_requires_stopped_playback": False}

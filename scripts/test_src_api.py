@@ -9,6 +9,8 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audio import src_policy
@@ -37,6 +39,268 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(p.stop)
         src_policy.install_plugin(runtime)
         src_policy.configure()
+        import main
+        self.real_provider_release = {name: getattr(main.media_readiness, f"wait_for_pipewire_{name}_release")
+                                      for name in ("spotify", "qobuz")}
+        for p in (patch.object(main, "get_spotify_ui_state", AsyncMock(return_value={"status": "Stopped"})),
+                  patch.object(main, "get_qobuz_ui_state", AsyncMock(return_value={"status": "Paused"})),
+                  patch.object(main, "_measurement_session_owns_live_rate", return_value=False),
+                  patch.object(main, "measurement_sr_session", None),
+                  patch.object(main.runtime, "stdin_input", None),
+                  patch.object(main.playback_state, "current_track_info", None),
+                  patch.object(main.playback_state, "current_playback_owner", None),
+                  patch.object(main.radio_reconnect, "reset", AsyncMock()),
+                  patch.object(main.media_readiness, "wait_for_pipewire_spotify_release", AsyncMock(return_value=True)),
+                  patch.object(main.media_readiness, "wait_for_pipewire_qobuz_release", AsyncMock(return_value=True)),
+                  patch.object(main.playback_queue.queue, "reset"),
+                  patch.object(main.playback_queue.queue, "reset_mpv_loop_state")):
+            p.start()
+            self.addCleanup(p.stop)
+
+    async def test_settings_selection_applies_each_mode_from_playing_and_paused_playback(self):
+        import main
+        from fastapi.testclient import TestClient
+        for mode in ("low", "standard", "high"):
+            for paused in (False, True):
+                with self.subTest(mode=mode, paused=paused):
+                    events = []
+                    player_state = {"playing": not paused, "paused": paused,
+                                    "current_file": "/music/current.flac", "file_loaded": True}
+                    def stop_playback():
+                        events.append("stop-playback")
+                        player_state.update(playing=False, paused=False, current_file=None, file_loaded=False)
+                    def stop_player():
+                        events.append("stop-player")
+                    def start_player():
+                        self.assertIsNone(player_state["current_file"])
+                        events.append("start-player")
+                    async def stop_dsp():
+                        self.assertFalse(player_state["playing"])
+                        self.assertFalse(player_state["paused"])
+                        self.assertIsNone(player_state["current_file"])
+                        events.append("stop-dsp")
+                    async def restart_services(*args, **kwargs):
+                        self.assertEqual(events[:3], ["stop-playback", "stop-dsp", "stop-player"])
+                        self.assertEqual(src_policy.load_policy()["mode"], mode)
+                        events.append("restart-services")
+                        return SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(b"", b"")))
+                    player = SimpleNamespace(state=player_state, is_running=lambda: True,
+                        stop_playback=stop_playback, stop=stop_player, start=start_player)
+                    dsp = SimpleNamespace(stop=stop_dsp, verify=AsyncMock(return_value=True))
+                    overview = {"selected_output": {"key": "test", "target_name": "test"},
+                                "outputs": [{"key": "test"}]}
+                    with (patch.object(main.runtime, "player_instance", player),
+                          patch.object(main.runtime, "dsp_runtime", dsp),
+                          patch.object(main.playback_state, "current_track_info", {"source": "local", "url": "/music/current.flac"}),
+                          patch.object(main.playback_state, "current_playback_owner", "local"),
+                          patch.object(main, "_src_graph_lock", asyncio.Lock),
+                          patch.object(src_policy, "activate_environment"),
+                          patch.object(main.asyncio, "create_subprocess_exec", side_effect=restart_services),
+                          patch.object(main, "get_audio_output_overview", return_value=overview),
+                          patch.object(main.samplerate, "get_current_pipewire_force_rate", return_value=48000),
+                          patch.object(main.samplerate, "set_pipewire_force_rate") as pin,
+                          patch.object(main.samplerate, "prepare_audio_output_selection", return_value=overview["selected_output"]),
+                          patch.object(main.samplerate, "set_audio_output_selection", return_value=overview),
+                          patch.object(main.dsp_orchestrator, "sync_runtime", AsyncMock()),
+                          patch.object(main, "_mark_player_state_authoritative")):
+                        response = await asyncio.to_thread(TestClient(main.app).post,
+                            "/api/audio/src", json={"mode": mode}, headers={"Accept-Encoding": "identity"})
+                        self.assertEqual(response.status_code, 200, response.text)
+                        self.assertEqual(response.json()["mode"], mode)
+                        self.assertTrue(response.json()["available"])
+                        self.assertFalse(response.json()["apply_requires_stopped_playback"])
+                        self.assertIsNone(main.playback_state.current_track_info)
+                        self.assertIsNone(main.playback_state.current_playback_owner)
+                        self.assertEqual(events[-1], "start-player")
+                        pin.assert_called_once_with(48000)
+
+    async def test_src_guard_allows_ordinary_external_renderers(self):
+        import main
+        with (patch.object(main.runtime, "dsp_runtime", object()),
+              patch.object(main, "get_spotify_ui_state", AsyncMock(return_value={"available": True, "status": "Playing"})),
+              patch.object(main, "get_qobuz_ui_state", AsyncMock(return_value={"available": True, "status": "Playing"}))):
+            await main._guard_src_change()
+
+    async def test_src_guard_retains_measurement_and_input_session_protection(self):
+        import main
+        with patch.object(main.runtime, "dsp_runtime", object()):
+            with patch.object(main, "_measurement_session_owns_live_rate", return_value=True):
+                with self.assertRaises(main.HTTPException) as error:
+                    await main._guard_src_change()
+                self.assertEqual(error.exception.status_code, 423)
+            for mode, session in (("external-input", None), ("bluetooth-input", None),
+                                  ("stdin-input", None), ("app-playback", "active-stdin")):
+                with (patch.object(main.samplerate, "_load_audio_source_selection", return_value={"mode": mode}),
+                      patch.object(main.runtime, "stdin_input", SimpleNamespace(snapshot=lambda: {"session_id": session}))):
+                    with self.assertRaises(main.HTTPException) as error:
+                        await main._guard_src_change()
+                    self.assertEqual(error.exception.status_code, 409)
+
+    async def test_unreleased_provider_prevents_audio_graph_teardown(self):
+        import main
+        for provider in ("spotify", "qobuz"):
+            with self.subTest(provider=provider):
+                dsp = SimpleNamespace(stop=AsyncMock(), verify=AsyncMock(return_value=True))
+                process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(b"", b"")))
+                overview = {"selected_output": {"key": "test", "target_name": "test"}, "outputs": [{"key": "test"}]}
+                with (patch.object(main.runtime, "dsp_runtime", dsp),
+                      patch.object(main.runtime, "player_instance", None),
+                      patch.object(main, f"get_{provider}_ui_state", AsyncMock(return_value={"available": True, "status": "Playing"})),
+                      patch.object(main, f"{provider}_pause", AsyncMock(return_value={"available": True, "status": "Paused"})),
+                      patch.object(main.media_readiness, f"wait_for_pipewire_{provider}_release", AsyncMock(return_value=False)),
+                      patch.object(main, "_commit_spotify_state_direct"),
+                      patch.object(src_policy, "activate_environment"),
+                      patch.object(main.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)) as restart,
+                      patch.object(main, "get_audio_output_overview", return_value=overview),
+                      patch.object(main.samplerate, "set_pipewire_force_rate"),
+                      patch.object(main.samplerate, "prepare_audio_output_selection", return_value=overview["selected_output"]),
+                      patch.object(main.samplerate, "set_audio_output_selection", return_value=overview),
+                      patch.object(main.dsp_orchestrator, "sync_runtime", AsyncMock())):
+                    with self.assertRaisesRegex(RuntimeError, "did not quiesce"):
+                        await main._restart_src_graph({"force_rate": 48000, "output_key": "test"})
+                    dsp.stop.assert_not_awaited()
+                    restart.assert_not_awaited()
+
+    async def test_src_holds_playback_attempt_ownership_until_graph_lock_exits(self):
+        import main
+        with (patch.object(main, "_source_transition_lock", return_value=asyncio.Lock()),
+              patch.object(main, "_coordinator_lock_for_source_pause", return_value=asyncio.Lock()),
+              patch.object(main, "_dsp_mutation_lock", return_value=asyncio.Lock())):
+            self.assertFalse(main._playback_transition_is_active())
+            async with main._src_graph_lock():
+                self.assertTrue(main._playback_transition_is_active())
+            self.assertFalse(main._playback_transition_is_active())
+
+    async def test_failed_provider_release_is_checked_again_on_rollback(self):
+        import main
+        for provider in ("spotify", "qobuz"):
+            with self.subTest(provider=provider):
+                transport = {"available": True, "status": "Playing"}
+                async def pause():
+                    transport["status"] = "Paused"
+                    return dict(transport)
+                dsp = SimpleNamespace(stop=AsyncMock(), verify=AsyncMock(return_value=True))
+                process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(b"", b"")))
+                overview = {"selected_output": {"key": "test", "target_name": "test"}, "outputs": [{"key": "test"}]}
+                with (patch.object(main.runtime, "dsp_runtime", dsp),
+                      patch.object(main.runtime, "player_instance", None),
+                      patch.object(main, f"get_{provider}_ui_state", AsyncMock(side_effect=lambda: dict(transport))),
+                      patch.object(main, f"{provider}_pause", side_effect=pause),
+                      patch.object(main.media_readiness, f"wait_for_pipewire_{provider}_release", AsyncMock(return_value=False)) as release,
+                      patch.object(main, "_commit_spotify_state_direct"),
+                      patch.object(src_policy, "activate_environment"),
+                      patch.object(main.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)) as restart,
+                      patch.object(main, "get_audio_output_overview", return_value=overview),
+                      patch.object(main.samplerate, "set_pipewire_force_rate"),
+                      patch.object(main.samplerate, "prepare_audio_output_selection", return_value=overview["selected_output"]),
+                      patch.object(main.samplerate, "set_audio_output_selection", return_value=overview),
+                      patch.object(main.dsp_orchestrator, "sync_runtime", AsyncMock())):
+                    controller = self.Controller(AsyncMock(), main._restart_src_graph, asyncio.Lock(),
+                        snapshot=AsyncMock(return_value={"force_rate": 48000, "output_key": "test"}))
+                    with self.assertRaises(RuntimeError):
+                        await controller.apply("high")
+                    dsp.stop.assert_not_awaited()
+                    restart.assert_not_awaited()
+                    self.assertEqual(release.await_count, 2)
+                    self.assertEqual(src_policy.load_policy()["mode"], "standard")
+
+    async def test_src_does_not_treat_failed_stream_inspection_as_quiescence(self):
+        import main
+        import subprocess
+        from audio import sink_inputs
+        for provider in ("spotify", "qobuz"):
+            for probe in (subprocess.TimeoutExpired("pactl", 1.5),
+                          SimpleNamespace(returncode=1, stdout="", stderr="Connection failure")):
+                with self.subTest(provider=provider, probe=probe):
+                    observations = [SimpleNamespace(returncode=0, stdout="")] if provider == "qobuz" else []
+                    observations.append(probe)
+                    with (patch.object(main.runtime, "player_instance", None),
+                          patch.object(main.media_readiness, "wait_for_pipewire_spotify_release", self.real_provider_release["spotify"]),
+                          patch.object(main.media_readiness, "wait_for_pipewire_qobuz_release", self.real_provider_release["qobuz"]),
+                          patch.object(sink_inputs.subprocess, "run", side_effect=observations)):
+                        with self.assertRaisesRegex(RuntimeError, "Cannot inspect"):
+                            await main._stop_app_playback_for_src()
+
+
+    async def test_native_queue_cleanup_runs_off_the_event_loop(self):
+        import main
+        import threading
+        from playback.queue import PlaybackQueue
+        loop_thread = threading.get_ident()
+        commands = []
+        def ipc(*args):
+            commands.append((args, threading.get_ident()))
+        player = SimpleNamespace(state={"playing": True, "paused": False}, _running=True,
+            is_running=lambda: True, stop_playback=lambda: None, clear_playlist=lambda: ipc("clear"),
+            set_loop_playlist=lambda value: ipc("loop-playlist", value),
+            set_loop_file=lambda value: ipc("loop-file", value),
+            set_shuffle=lambda value: ipc("shuffle", value))
+        queue = PlaybackQueue(SimpleNamespace(player=lambda: player, player_is_running=lambda: True))
+        queue.mode = "native_mpv"
+        queue.tracks = [{"id": "one"}, {"id": "two"}]
+        with (patch.object(main.runtime, "player_instance", player),
+              patch.object(main.playback_queue, "queue", queue),
+              patch.object(main, "_mark_player_state_authoritative"),
+              patch.object(main.manager, "broadcast", AsyncMock())):
+            await main._stop_app_playback_for_src()
+        self.assertEqual(queue.tracks, [])
+        self.assertEqual(queue.mode, "app_replace")
+        self.assertTrue(commands)
+        self.assertTrue(all(thread != loop_thread for _, thread in commands), commands)
+
+    async def test_settings_request_waits_for_transient_graph_contention_before_applying(self):
+        import main
+        from contextlib import asynccontextmanager
+        from fastapi.testclient import TestClient
+        attempts = []
+        @asynccontextmanager
+        async def graph_lock():
+            attempts.append(src_policy.load_policy()["mode"])
+            if len(attempts) == 1:
+                raise main.HTTPException(409, "Audio configuration is busy; retry SRC after it finishes")
+            yield
+        with (patch.object(main, "_src_graph_lock", graph_lock),
+              patch.object(main, "_guard_src_change", AsyncMock()),
+              patch.object(main, "_snapshot_src_graph", AsyncMock(return_value={"force_rate": 48000})),
+              patch.object(main, "_restart_src_graph", AsyncMock()) as restart):
+            response = await asyncio.to_thread(TestClient(main.app).post, "/api/audio/src", json={"mode": "high"},
+                                              headers={"Accept-Encoding": "identity"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["mode"], "high")
+        self.assertEqual(src_policy.load_policy()["mode"], "high")
+        self.assertEqual(attempts, ["standard", "standard"])
+        restart.assert_awaited_once()
+
+    async def test_persistent_graph_contention_is_bounded_without_policy_mutation(self):
+        import main
+        from contextlib import asynccontextmanager
+        from fastapi.testclient import TestClient
+        @asynccontextmanager
+        async def graph_lock():
+            raise main.HTTPException(409, "Audio configuration is busy; retry SRC after it finishes")
+            yield
+        with (patch.object(main, "_src_graph_lock", graph_lock),
+              patch.object(main.asyncio, "sleep", AsyncMock()) as wait,
+              patch.object(main, "_restart_src_graph", AsyncMock()) as restart):
+            response = await asyncio.to_thread(TestClient(main.app).post, "/api/audio/src", json={"mode": "high"},
+                                              headers={"Accept-Encoding": "identity"})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(src_policy.load_policy()["mode"], "standard")
+        self.assertEqual(wait.await_count, 30)
+        restart.assert_not_awaited()
+
+    async def test_input_ownership_conflict_is_not_retried(self):
+        import main
+        from fastapi.testclient import TestClient
+        with (patch.object(main, "_src_graph_lock", asyncio.Lock),
+              patch.object(main, "_guard_src_change", AsyncMock(side_effect=main.HTTPException(409, "Input is active"))) as guard,
+              patch.object(main, "_restart_src_graph", AsyncMock()) as restart):
+            response = await asyncio.to_thread(TestClient(main.app).post, "/api/audio/src", json={"mode": "high"},
+                                              headers={"Accept-Encoding": "identity"})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(src_policy.load_policy()["mode"], "standard")
+        guard.assert_awaited_once()
+        restart.assert_not_awaited()
 
     async def test_rejection_does_not_persist_or_restart(self):
         async def busy():

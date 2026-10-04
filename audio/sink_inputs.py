@@ -11,13 +11,17 @@ import subprocess
 from audio.tool_env import c_locale_env
 
 
-def list_sink_inputs() -> list[dict]:
-    """Query pactl and parse all sink-input entries (REFACTOR-011-Extrakt)."""
+def list_sink_inputs(*, strict: bool = False) -> list[dict]:
+    """Parse pactl sink inputs; strict callers require a successful probe."""
     try:
         completed = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True, check=False, timeout=1.5, env=c_locale_env())
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        if strict:
+            raise RuntimeError(f"Cannot inspect PipeWire sink inputs: {exc}") from exc
         return []
     if completed.returncode != 0:
+        if strict:
+            raise RuntimeError(f"Cannot inspect PipeWire sink inputs: pactl exited {completed.returncode}")
         return []
 
     entries: list[dict] = []

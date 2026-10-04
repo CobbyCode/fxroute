@@ -60,10 +60,13 @@ silently selecting a different engine.
 - `GET /api/audio/src` reports the selected policy, binding readiness, observed
   adapter mode/rates/bypass/error, and provisional buffer limits.
 - `POST /api/audio/src` with `{"mode":"low"}`, `{"mode":"standard"}` or
-  `{"mode":"high"}` applies a change while playback is stopped and App playback
-  is selected. Measurement and active input sessions prevent a change.
-- Application restarts PipeWire, Pulse, WirePlumber and the owned idle
-  player/DSP graph. The independent graph-rate pin is preserved. Existing
+  `{"mode":"high"}` applies the selection automatically during App playback,
+  including playing and paused tracks. Measurement and selected or active input
+  sessions prevent a change.
+- Application stops app transports internally, then restarts PipeWire, Pulse,
+  WirePlumber and the owned player/DSP graph. Playback is left stopped and ready
+  to start again; no manual stop or separate restart button is needed.
+  The independent graph-rate pin is preserved. Existing
   unrelated audio clients can be disconnected by this restart.
 - Failed application restores the previous policy and attempts to rebuild the
   previous graph. Failure to restore is reported separately. Request
@@ -107,15 +110,17 @@ unbound adapters, missing parameters on running adapters, and an older runtime
 generation require activation. Idle, configured-but-not-started adapters can
 remain `unconfigured`; passive graph-only split loopbacks and MIDI nodes are not
 native audio boundaries. With no device or stream observed there is nothing to
-bind, which is not pending activation. After a runtime update, stop playback,
-select App playback and use **Restart audio to apply SRC** if activation is
-pending. Updating an older installation without the standard-path plugin or
+bind, which is not pending activation. After a runtime update, selecting an SRC
+quality also activates the installed runtime, including when the same quality
+is submitted through the API. Updating an older installation without the standard-path plugin or
 the SRC build dependencies still completes: the update logs the skipped SRC
 reconciliation, stock PipeWire conversion stays in use, and the configuration
 helper refuses to publish client rules until the installer has been rerun.
 
-SRC rejects busy graph locks, including asyncio's released-but-reserved waiter
-handoff, rather than blocking with other graph locks held. Application snapshots
+SRC never waits for a busy graph lock while holding other graph locks, including
+asyncio's released-but-reserved waiter handoff. The selection request retries
+pre-apply contention for up to three seconds with all graph locks released;
+measurement and input ownership conflicts are not retried. Application snapshots
 the graph-rate pin and hardware identity once for both apply and rollback. The
 original hardware, or its unambiguous stable-device successor, must return before
 DSP rebuild. Child failure invalidates cached Props through a non-realtime event.

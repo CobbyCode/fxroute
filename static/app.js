@@ -1913,15 +1913,11 @@ function setupSettingsActions() {
     window.FXRouteSrcSettings.init({
         select: document.getElementById('settings-src-select'),
         hint: document.getElementById('settings-src-hint'),
-        restart: document.getElementById('settings-src-restart'),
         onError: message => showToast(message, 'error'),
         onApplied: async () => { await fetchAudioOutputOverview(); PlaybackCore.triggerSamplerateBurstPolling(); },
     });
     document.getElementById('settings-src-select')?.addEventListener('change', event => {
         void window.FXRouteSrcSettings.save(event.target.value);
-    });
-    document.getElementById('settings-src-restart')?.addEventListener('click', () => {
-        void window.FXRouteSrcSettings.restart();
     });
     if (elements.settingsCrossoverSelect) {
         elements.settingsCrossoverSelect.addEventListener('change', (event) => {
@@ -2629,9 +2625,8 @@ function renderSettingsPanel() {
         elements.settingsSamplerateSelect.disabled = !!state.samplerate?.pending || !overview.available;
     }
     if (elements.settingsSamplerateHint) {
-        const tierNote = activeTier ? ` · ${activeTier.channels} channels active` : '';
         elements.settingsSamplerateHint.textContent = sampleRatePolicy.mode === 'fixed'
-            ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}${tierNote}.`
+            ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}.`
             : `Follows playback sample rate${activeTier ? '; channel count adjusts automatically' : ''}.`;
     }
 

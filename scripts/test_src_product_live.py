@@ -185,14 +185,23 @@ def main():
                     assert any(n["name"] == "mpv" and n["mode"] == mode and n["input_rate"] > 0
                                and n["output_rate"] == 48000 for n in observed["effective_nodes"]), "MPV effective SRC state missing"
                     record = {"mode": mode, "path": label, "nodes": observed["effective_nodes"]}
-                    try:
-                        http("/api/audio/src", {"mode": "standard"})
-                    except urllib.error.HTTPError as conflict:
-                        assert conflict.code == 409
-                    else:
-                        raise AssertionError("Active playback permitted SRC restart")
-                    http("/api/stop", {})
                     record.update(capture_finish(capture, log, pcm))
+                    other_mode = {"low": "standard", "standard": "high", "high": "low"}[mode]
+                    applied = http("/api/audio/src", {"mode": other_mode})
+                    assert applied["mode"] == other_mode and applied["available"], applied
+                    stopped = http("/api/status")
+                    assert not stopped["playing"] and not stopped["paused"] and not stopped["current_file"], stopped
+                    graph(other_mode)
+                    http("/api/play", {"source": source, "track_id": track})
+                    wait_for(lambda: http("/api/status").get("playing"), 45)
+                    http("/api/playback/toggle", {})
+                    assert http("/api/status")["paused"], "Paused SRC test did not pause the owned track"
+                    restored = http("/api/audio/src", {"mode": mode})
+                    assert restored["mode"] == mode and restored["available"], restored
+                    stopped = http("/api/status")
+                    assert not stopped["playing"] and not stopped["paused"] and not stopped["current_file"], stopped
+                    graph(mode)
+                    record["live_apply"] = {"playing_to": other_mode, "paused_to": mode, "automatic_stop": True}
                     records.append(record)
                     print("PASS", mode, label, flush=True)
                 finally:

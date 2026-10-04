@@ -8,6 +8,7 @@
     let deps = { fetchFn: (...args) => fetch(...args), onError: () => {}, onApplied: () => {} };
     let status = {};
     let pending = false;
+    const guidance = 'Low: ~70% / 0.45× CPU · Standard: ~82% / 1.0× CPU · High: ~99.6% / 1.5× CPU';
 
     function init(overrides) { deps = { ...deps, ...overrides }; }
     function render() {
@@ -16,14 +17,8 @@
             deps.select.value = status.mode || 'standard';
             deps.select.disabled = pending || unavailable;
         }
-        if (deps.restart) {
-            deps.restart.hidden = !status.restart_required;
-            deps.restart.classList?.toggle('hidden', !status.restart_required);
-            deps.restart.disabled = pending || unavailable;
-        }
         if (deps.hint) {
-            deps.hint.textContent = pending ? 'Restarting audio…'
-                : status.error || 'Stop playback before changing. Restarts audio; unequal rates buffer at least 750 ms at startup.';
+            deps.hint.textContent = guidance;
         }
     }
     function update(data) {
@@ -56,5 +51,5 @@
         } catch (error) { deps.onError(error.message); }
         finally { pending = false; render(); }
     }
-    return { init, refresh, save, render, update, restart: () => save(status.mode || 'standard') };
+    return { init, refresh, save, render, update };
 });

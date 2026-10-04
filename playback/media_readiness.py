@@ -67,7 +67,7 @@ def list_mpv_sink_inputs() -> list[dict]:
     ]
 
 
-def list_spotify_sink_inputs() -> list[dict]:
+def list_spotify_sink_inputs(*, strict: bool = False) -> list[dict]:
     def matches(value: str) -> bool:
         if value == "spotify":
             return True
@@ -77,7 +77,7 @@ def list_spotify_sink_inputs() -> list[dict]:
 
     return [
         entry
-        for entry in list_sink_inputs()
+        for entry in (sink_inputs.list_sink_inputs(strict=True) if strict else list_sink_inputs())
         if matches(str((entry.get("properties") or {}).get("application.name") or "").lower())
         or matches(str((entry.get("properties") or {}).get("application.id") or "").lower())
         or matches(str((entry.get("properties") or {}).get("node.name") or "").lower())
@@ -86,10 +86,10 @@ def list_spotify_sink_inputs() -> list[dict]:
     ]
 
 
-def list_qobuz_sink_inputs() -> list[dict]:
+def list_qobuz_sink_inputs(*, strict: bool = False) -> list[dict]:
     """Return PipeWire sink inputs produced by the qbzd renderer."""
     result: list[dict] = []
-    for entry in list_sink_inputs():
+    for entry in (sink_inputs.list_sink_inputs(strict=True) if strict else list_sink_inputs()):
         properties = entry.get("properties") or {}
         haystack = " ".join(
             str(properties.get(key) or "")
@@ -211,12 +211,14 @@ async def wait_for_pipewire_mpv_release(timeout_ms: int = PIPEWIRE_HANDOFF_RELEA
 
 async def wait_for_pipewire_spotify_release(
     timeout_ms: int = PIPEWIRE_HANDOFF_RELEASE_TIMEOUT_MS,
+    *, strict: bool = False,
 ) -> bool:
     # A paused Spotify client may retain a corked historical sink-input.  That
     # input is not producing audio and must not block a source handoff.  Only
     # active, audible Spotify inputs are relevant to the quiescence contract.
     def active_spotify_inputs() -> list[dict]:
-        return active_unmuted_sink_inputs(list_spotify_sink_inputs())
+        entries = list_spotify_sink_inputs(strict=True) if strict else list_spotify_sink_inputs()
+        return active_unmuted_sink_inputs(entries)
 
     return await wait_for_sink_input_release(active_spotify_inputs, timeout_ms)
 
@@ -277,10 +279,12 @@ async def wait_for_spotify_sink_input_samplerate(
 
 async def wait_for_pipewire_qobuz_release(
     timeout_ms: int = PIPEWIRE_QOBUZ_RELEASE_TIMEOUT_MS,
+    *, strict: bool = False,
 ) -> bool:
     """Quiesce an active qbzd sink input before a guarded graph transition."""
     def active_qobuz_inputs() -> list[dict]:
-        return active_unmuted_sink_inputs(list_qobuz_sink_inputs())
+        entries = list_qobuz_sink_inputs(strict=True) if strict else list_qobuz_sink_inputs()
+        return active_unmuted_sink_inputs(entries)
 
     return await wait_for_sink_input_release(active_qobuz_inputs, timeout_ms)
 
