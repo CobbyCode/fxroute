@@ -692,13 +692,15 @@
             ctx.fillText(`${hz} Hz`, xForHz(hz), height - 8);
         });
         ctx.textAlign = 'start';
+        // Filter shapes only: the sub trim is a separate control and must not
+        // shift the low-pass, or the curves stop crossing at the marker.
         const drawCurve = (shape, highpass, color, alpha) => {
             ctx.globalAlpha = alpha;
             ctx.beginPath();
             for (let i = 0; i <= 160; i += 1) {
                 const t = i / 160;
                 const hz = Math.pow(10, Math.log10(minHz) + t * (Math.log10(maxHz) - Math.log10(minHz)));
-                const db = responseDb(shape, hz, highpass) + (highpass ? 0 : settings.sub_level_db || 0);
+                const db = responseDb(shape, hz, highpass);
                 const x = xForHz(hz);
                 const y = yForDb(Math.max(minDb, Math.min(maxDb, db)));
                 if (i === 0) ctx.moveTo(x, y);

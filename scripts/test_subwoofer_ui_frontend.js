@@ -139,6 +139,40 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         assert.equal(SubwooferUI.routedSubwooferView().mode, 'stereo');
     }
 
+    // Preview curves: LR24 / 80 Hz low-pass and high-pass cross at the 80 Hz
+    // marker at -6 dB; a sub trim must not shift the drawn low-pass.
+    {
+        require('../static/crossover.js');
+        const strokes = [];
+        let path = [];
+        const ctx = {
+            setTransform() {}, clearRect() {}, fillRect() {}, strokeRect() {}, fillText() {},
+            measureText: () => ({ width: 30 }),
+            beginPath() { path = []; }, moveTo(x, y) { path.push([x, y]); }, lineTo(x, y) { path.push([x, y]); },
+            stroke() { strokes.push({ color: this.strokeStyle, points: path.slice() }); },
+        };
+        const canvas = { clientWidth: 560, clientHeight: 132, width: 0, height: 0, getContext: () => ctx };
+        initSubUI({ outputSystem: {} }, { effectsSubwooferPreview: canvas });
+        SubwooferUI.drawSubwooferPreview({ crossover_frequency_hz: 80, family: 'linkwitz-riley',
+            slope_db_oct: 24, main_highpass_enabled: true, sub_level_db: 2.3 });
+        const { pad, plotW, plotH } = SubwooferUI.getSubwooferPreviewLayout(560, 132);
+        const xFor = (hz) => pad.left + (Math.log10(hz / 20) / Math.log10(300 / 20)) * plotW;
+        const dbAt = (points, hz) => {
+            const x = xFor(hz);
+            const index = points.findIndex(([px]) => px >= x);
+            const [x0, y0] = points[index - 1];
+            const [x1, y1] = points[index];
+            const y = y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+            return -((y - pad.top) / plotH) * 18;
+        };
+        const lowpass = strokes.find((stroke) => stroke.color === '#6ee7b7');
+        const highpass = strokes.find((stroke) => stroke.color === '#93c5fd');
+        assert.ok(lowpass && highpass, 'preview draws the sub low-pass and the main high-pass');
+        assert.ok(Math.abs(dbAt(lowpass.points, 80) + 6.02) < 0.05, 'low-pass is -6 dB at the marker');
+        assert.ok(Math.abs(dbAt(highpass.points, 80) + 6.02) < 0.05, 'high-pass is -6 dB at the marker');
+        assert.ok(Math.abs(dbAt(lowpass.points, 40) + 0.53) < 0.05, 'sub trim does not lift the low-pass');
+    }
+
     // Panel visibility follows the routed mode, never the settings dialog.
     {
         const card = stubEl();
