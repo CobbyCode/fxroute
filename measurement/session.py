@@ -142,8 +142,8 @@ def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,
                            channel: str = "") -> dict:
     """Stage the committed v2 plan context for one manual measurement.
 
-    Returns kwargs for ``MeasurementStore.start_measurement`` (possibly
-    empty, preserving the legacy overview route).  Never raises: an
+    Returns kwargs for single/repeat store starts (possibly empty,
+    preserving the legacy overview route). Never raises: an
     unresolvable bank or unrenderable head falls back to legacy, where the
     store's own bank validation and the pre-sweep check still fail closed.
 
@@ -1729,6 +1729,8 @@ async def start_lr_repeat_measurement(
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
                 measurement_bank=measurement_bank,
+                **_stage_bank_v2_context(measurement_bank=measurement_bank,
+                                         measurement_rate_hz=measurement_rate, channel="stereo"),
             ),
             entry_epoch=entry_epoch,
         )

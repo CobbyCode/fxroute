@@ -23,6 +23,7 @@ from measurement.constants import (
     IR_DIRECT_CANDIDATE_FLOOR_RELATIVE,
     IR_DIRECT_CANDIDATE_LIMIT,
     IR_DIRECT_NEARBY_WINDOW_SECONDS,
+    IR_DIRECT_NOISE_SIGMA_MULTIPLIER,
     IR_DIRECT_PROMINENCE_REFERENCE,
     IR_DIRECT_PROMOTION_ENERGY_RATIO,
     IR_DIRECT_PROMOTION_SCORE_RATIO,
@@ -597,6 +598,9 @@ class MeasurementAnalyzer:
                 "direct_seconds": round(float(direct_timing_meta["direct_seconds"]), 6),
                 "direct_relative_to_peak_db": direct_timing_meta["direct_relative_to_peak_db"],
                 "direct_threshold_relative": round(float(direct_timing_meta["direct_threshold_relative"]), 4),
+                "direct_noise_relative": round(float(direct_timing_meta["direct_noise_relative"]), 6),
+                "direct_arrival_detected": bool(direct_timing_meta["direct_arrival_detected"]),
+                "reference_arrival_detected": bool(direct_timing_meta["reference_arrival_detected"]),
                 "direct_selection_rule": direct_timing_meta["selection_rule"],
                 "direct_selected_score": round(float(direct_timing_meta["selected_score"]), 6),
                 "direct_selected_support_score": round(float(direct_timing_meta["selected_support_score"]), 6),
@@ -1616,7 +1620,8 @@ class MeasurementAnalyzer:
         that rise, it is measured against the reference's own arrival, picked
         by the same candidate selection, instead of reading as an arrival
         before the reference.  A take the peak already times keeps exactly
-        its previous values.
+        its previous values unless noise requires a common relative threshold
+        and first-crossing comparison for both signals.
         """
         ir_abs = np.abs(impulse_response.astype(np.float64))
         ref_abs = np.abs(reference_impulse_response.astype(np.float64))
@@ -1625,16 +1630,33 @@ class MeasurementAnalyzer:
         reference_peak_index = int(np.argmax(ref_abs)) if ref_abs.size else 0
         reference_arrival_index = reference_peak_index
         reference_arrival_rule = "reference_peak"
-        if band_limited and ref_abs.size and direct_arrival_index < reference_peak_index:
+        reference_detected = True
+        if band_limited and ref_abs.size:
             reference_selection = self._select_direct_arrival(ref_abs, sample_rate)
-            if direct_arrival_index >= int(reference_selection["direct_arrival_index"]):
+            shared_threshold = max(
+                IR_DIRECT_RELATIVE_THRESHOLD,
+                selection["noise_relative"] * IR_DIRECT_NOISE_SIGMA_MULTIPLIER,
+                reference_selection["noise_relative"] * IR_DIRECT_NOISE_SIGMA_MULTIPLIER,
+            )
+            if shared_threshold > IR_DIRECT_RELATIVE_THRESHOLD:
+                # Unequal noise floors cannot time comparable rise points.
+                # Use the same normalized threshold without peak promotion.
+                selection = self._select_direct_arrival(
+                    ir_abs, sample_rate, threshold_relative=shared_threshold, first_crossing_only=True)
+                reference_selection = self._select_direct_arrival(
+                    ref_abs, sample_rate, threshold_relative=shared_threshold, first_crossing_only=True)
+                direct_arrival_index = int(selection["direct_arrival_index"])
+                reference_arrival_index = int(reference_selection["direct_arrival_index"])
+                reference_arrival_rule = str(reference_selection["selection_rule"])
+                reference_detected = reference_selection["arrival_detected"]
+            elif direct_arrival_index < reference_peak_index and direct_arrival_index >= int(reference_selection["direct_arrival_index"]):
                 reference_arrival_index = int(reference_selection["direct_arrival_index"])
                 reference_arrival_rule = str(reference_selection["selection_rule"])
         peak_index = int(selection["peak_index"])
         peak = float(ir_abs[peak_index]) if ir_abs.size else 0.0
         selected_score = float(selection["selected_score"])
         relative_samples = int(direct_arrival_index - reference_arrival_index)
-        timing_valid = relative_samples >= 0
+        timing_valid = relative_samples >= 0 and selection["arrival_detected"] and reference_detected
         return {
             "direct_arrival_index": int(direct_arrival_index),
             "direct_seconds": float(direct_arrival_index) / float(sample_rate),
@@ -1642,7 +1664,10 @@ class MeasurementAnalyzer:
                 20.0 * math.log10(max(float(ir_abs[direct_arrival_index]) / max(peak, 1e-12), 1e-12)),
                 2,
             ),
-            "direct_threshold_relative": float(IR_DIRECT_RELATIVE_THRESHOLD),
+            "direct_threshold_relative": selection["threshold_relative"],
+            "direct_noise_relative": selection["noise_relative"],
+            "direct_arrival_detected": selection["arrival_detected"],
+            "reference_arrival_detected": reference_detected,
             "selection_rule": selection["selection_rule"],
             "selected_score": selected_score,
             "selected_support_score": selection["selected_support_score"],
@@ -1679,19 +1704,32 @@ class MeasurementAnalyzer:
             "promotion_applied": bool(selection["promotion_applied"]),
         }
 
-    def _select_direct_arrival(self, ir_abs: np.ndarray, sample_rate: int) -> dict[str, Any]:
+    def _select_direct_arrival(
+        self, ir_abs: np.ndarray, sample_rate: int, *,
+        threshold_relative: float = IR_DIRECT_RELATIVE_THRESHOLD,
+        first_crossing_only: bool = False,
+    ) -> dict[str, Any]:
         """Pick the direct arrival of one absolute impulse response.
 
         The first local peak above the relative threshold before the global
-        peak, with weak threshold edges skipped for a clearly stronger impulse
-        region and a promotion to the best score in a short window.
+        peak, above both the relative threshold and the pre-search noise floor.
+        Weak threshold edges can yield to a stronger nearby impulse region.
         """
         peak_index = int(np.argmax(ir_abs)) if ir_abs.size else 0
         peak = float(ir_abs[peak_index]) if ir_abs.size else 0.0
-        threshold = peak * IR_DIRECT_RELATIVE_THRESHOLD
         search_pre_samples = max(1, int(round(sample_rate * IR_DIRECT_SEARCH_PRE_SECONDS)))
         search_start = max(0, peak_index - search_pre_samples)
         search_end = min(ir_abs.size, peak_index + 1)
+        # Estimate noise before the entire arrival search, independently of
+        # the reference instant. Gaussian absolute median is 0.67449 sigma.
+        noise_values = ir_abs[max(0, search_start - search_pre_samples):search_start]
+        if not noise_values.size:
+            # A truncated IR has no isolated pre-search region. Its robust
+            # whole-trace floor is conservative when response occupies it.
+            noise_values = ir_abs
+        noise_sigma = float(np.median(noise_values)) / 0.6744897501960817 if noise_values.size else 0.0
+        noise_floor = noise_sigma * IR_DIRECT_NOISE_SIGMA_MULTIPLIER
+        threshold = max(peak * threshold_relative, noise_floor)
         search_values = ir_abs[search_start:search_end]
         first_threshold_index: int | None = None
         if threshold > 0:
@@ -1699,7 +1737,7 @@ class MeasurementAnalyzer:
             if threshold_crossings.size:
                 first_threshold_index = search_start + int(threshold_crossings[0])
 
-        candidate_floor = peak * IR_DIRECT_CANDIDATE_FLOOR_RELATIVE
+        candidate_floor = max(peak * IR_DIRECT_CANDIDATE_FLOOR_RELATIVE, noise_floor)
         candidates: list[dict[str, Any]] = []
         support_radius = max(4, int(round(sample_rate * IR_DIRECT_SUPPORT_WINDOW_SECONDS)))
         nearby_radius = max(support_radius + 4, int(round(sample_rate * IR_DIRECT_NEARBY_WINDOW_SECONDS)))
@@ -1781,9 +1819,12 @@ class MeasurementAnalyzer:
         eligible_candidates = [
             item
             for item in candidates
-            if float(item["_score"]) >= IR_DIRECT_RELATIVE_THRESHOLD
+            if float(item["_score"]) * peak >= threshold
         ]
-        if eligible_candidates:
+        if first_crossing_only and first_threshold_index is not None:
+            direct_arrival_index = int(first_threshold_index)
+            selection_rule = "shared_noise_floor_threshold_crossing"
+        elif eligible_candidates:
             selected_candidate = eligible_candidates[0]
             skipped_early_candidate = None
             promotion_window_samples = max(
@@ -1869,6 +1910,9 @@ class MeasurementAnalyzer:
             "selection_rule": selection_rule,
             "selected_score": selected_score,
             "selected_support_score": selected_support,
+            "threshold_relative": threshold / peak if peak > 0 else 0.0,
+            "noise_relative": noise_sigma / peak if peak > 0 else 0.0,
+            "arrival_detected": first_threshold_index is not None,
             "strongest_score": strongest_score,
             "first_threshold_index": first_threshold_index,
             "candidate_count": len(candidates),

@@ -827,9 +827,15 @@ class MeasurementRepeatRunner:
         else:
             pair_count = min(left_len, right_len, repeat_count)
         pair_deltas: list[tuple[int, float]] = []
+        reference_mismatch_pairs: list[int] = []
         for idx in range(pair_count):
             l_item = left_measurements[0] if left_is_effective_single else left_measurements[idx]
             r_item = right_measurements[0] if right_is_effective_single else right_measurements[idx]
+            l_reference = (l_item.get("analysis") or {}).get("reference_path") or {}
+            r_reference = (r_item.get("analysis") or {}).get("reference_path") or {}
+            if bool(l_reference.get("electrical_reference_used")) != bool(r_reference.get("electrical_reference_used")):
+                reference_mismatch_pairs.append(idx + 1)
+                continue
             l_timing = self._extract_measurement_timing_ms(l_item)
             r_timing = self._extract_measurement_timing_ms(r_item)
             if l_timing is not None and r_timing is not None:
@@ -848,11 +854,12 @@ class MeasurementRepeatRunner:
         )
         min_cluster_size = LR_REPEAT_PAIRED_MIN_CLUSTER_SIZE
 
-        accepted_pair_indices, delta_center, delta_spread = self._select_paired_delta_cluster(
+        accepted_delta_indices, delta_center, delta_spread = self._select_paired_delta_cluster(
             [d for _, d in pair_deltas],
             cluster_limit_ms=delta_cluster_limit,
             min_cluster_size=min_cluster_size,
         )
+        accepted_pair_indices = [pair_deltas[index][0] for index in accepted_delta_indices]
 
         if not accepted_pair_indices:
             # Fallback: accept all pairs, mark unstable
@@ -918,6 +925,12 @@ class MeasurementRepeatRunner:
             paired_timing_stable=delta_center is not None,
             pair_count=len(pair_deltas),
         )
+        if reference_mismatch_pairs:
+            for summary in (l_summary, r_summary):
+                summary["analysis"]["lr_repeat"]["reference_mismatch_pairs"] = reference_mismatch_pairs
+                summary["notes"].append(
+                    "L/R timing pairs with different electrical/host references were excluded; their time bases are not comparable."
+                )
         return l_summary, r_summary
 
     def _build_pre_averaged_lr_summary(
@@ -1084,7 +1097,7 @@ class MeasurementRepeatRunner:
         summary_name = f"{str(base_name or 'L/R Repeat').strip()} · {side_label}"
         timestamp = datetime.now(timezone.utc).replace(microsecond=0)
         measurement_id = f"lr-repeat-{channel}-{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
-        payload = deepcopy(normalized[0])
+        payload = deepcopy(normalized[accepted_indices[0] if accepted_indices else 0])
         payload.update({
             "id": measurement_id,
             "name": summary_name,

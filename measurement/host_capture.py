@@ -597,9 +597,11 @@ class HostCaptureRunner:
                 "stability": "host-reference",
             })
         if analysis.get("direct_arrival_timing_available") is False:
+            impulse = analysis.get("impulse_response") or {}
+            noise_limited = impulse.get("direct_arrival_detected") is False or impulse.get("reference_arrival_detected") is False
             reference_path.update({
                 "timing_status": "ambiguous",
-                "timing_label": "Acoustic arrival before reference",
+                "timing_label": "Acoustic or reference arrival not distinguishable from noise" if noise_limited else "Acoustic arrival before reference",
                 "stability": "ambiguous",
                 "confidence": 0.0,
             })

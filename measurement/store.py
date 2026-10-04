@@ -724,8 +724,17 @@ class MeasurementStore:
         calibration_ref: str | None = None,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
         measurement_bank: str = "",
+        expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        expected_native_output_mode: str | None = None,
+        expected_plan_fingerprint: str | None = None,
     ) -> dict[str, Any]:
         normalized_repeat_count = 3
+        expected = freeze_expected_native_context(
+            measurement_scope=self._normalize_measurement_scope(measurement_scope),
+            expected_native_layout=expected_native_layout,
+            expected_native_output_mode=expected_native_output_mode,
+            expected_plan_fingerprint=expected_plan_fingerprint,
+        )
         setup = await self._prepare_measurement_job_setup(
             input_id=input_id,
             input_key=input_key,
@@ -750,6 +759,7 @@ class MeasurementStore:
                 "message": "L/R repeat queued.",
             })
             job.update(self._freeze_repeat_job_target(job, measurement_bank))
+            job.update({f"_{key}": value for key, value in expected.items()})
             return self._register_measurement_job(job, self._execute_lr_repeat_job)
         except BaseException:
             self._release_measurement_start_slot()
@@ -1502,6 +1512,9 @@ class MeasurementStore:
 
     def _evaluate_electrical_reference_status(self, analysis: dict[str, Any]) -> dict[str, Any]:
         if analysis.get("direct_arrival_timing_available") is False:
+            impulse = analysis.get("impulse_response") or {}
+            if impulse.get("direct_arrival_detected") is False or impulse.get("reference_arrival_detected") is False:
+                return {"usable": False, "warning": "Acoustic or reference arrival was not distinguishable from noise; used host monitor timing fallback."}
             return {"usable": False, "warning": "Acoustic arrival preceded the reference; used host monitor timing fallback."}
         reference_path = analysis.get("reference_path") if isinstance(analysis.get("reference_path"), dict) else {}
         clock = analysis.get("clock") if isinstance(analysis.get("clock"), dict) else {}

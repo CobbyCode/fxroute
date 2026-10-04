@@ -230,6 +230,66 @@ class MixedErPreaverageSummaryTests(unittest.TestCase):
             self.assertNotIn("acoustic_arrival_corrected_ms", analysis["reference_path"])
             self.assertNotIn("arrival_ms", analysis["impulse_response"])
 
+    def test_electrical_and_host_sides_do_not_form_a_valid_timing_pair(self):
+        with tempfile.TemporaryDirectory() as tempdir, mock.patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            left = [_payload("left-effective", "left", 45.0, 0.0, electrical=True)]
+            right = [_payload(f"right-{i}", "right", 66.0, float(i), electrical=False)
+                     for i in (1, 2, 3)]
+            summaries = store._repeat_runner.summarize_lr_repeat_paired(
+                left, right, base_name="Mixed references", repeat_count=3)
+            for summary in summaries:
+                analysis = summary["analysis"]
+                self.assertFalse(analysis["lr_repeat"]["timing_stable"])
+                self.assertEqual(analysis["lr_repeat"]["pair_count"], 0)
+                self.assertIsNone(analysis["lr_repeat"]["delta_center_ms"])
+                self.assertFalse(analysis["direct_arrival_timing_available"])
+                self.assertIsNone(store._repeat_runner._extract_measurement_timing_ms(summary))
+            self.assertTrue(summaries[0]["analysis"]["reference_path"]["electrical_reference_used"])
+            self.assertFalse(summaries[1]["analysis"]["reference_path"]["electrical_reference_used"])
+            self.assertEqual(summaries[1]["traces"][0]["points"][0], [20.0, 2.0])
+
+    def test_skipping_a_mixed_first_pair_keeps_the_real_run_indices(self):
+        with tempfile.TemporaryDirectory() as tempdir, mock.patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            left = [_payload("l1", "left", 1.0, 20.0, electrical=True),
+                    _payload("l2", "left", 1.1, 2.0, electrical=True),
+                    _payload("l3", "left", 1.2, 4.0, electrical=True)]
+            right = [_payload("r1", "right", 1.1, 20.0, electrical=False),
+                     _payload("r2", "right", 1.2, 3.0, electrical=True),
+                     _payload("r3", "right", 1.3, 5.0, electrical=True)]
+            summaries = store._repeat_runner.summarize_lr_repeat_paired(
+                left, right, base_name="Skipped mixed pair", repeat_count=3)
+            for summary, level in zip(summaries, (3.0, 4.0)):
+                repeat = summary["analysis"]["lr_repeat"]
+                self.assertTrue(repeat["timing_stable"])
+                self.assertEqual(repeat["accepted_run_numbers"], [2, 3])
+                self.assertEqual(repeat["delta_center_ms"], 0.1)
+                self.assertEqual(summary["traces"][0]["points"][0], [20.0, level])
+                reference = summary["analysis"]["reference_path"]
+                self.assertTrue(reference["electrical_reference_used"])
+                self.assertEqual(reference["capture_mode"], "electrical-input")
+                self.assertEqual(reference["electrical_reference_input_channel"], 2)
+
+    def test_two_host_references_keep_the_existing_paired_timing_policy(self):
+        with tempfile.TemporaryDirectory() as tempdir, mock.patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}
+        ):
+            store = self._store(tempdir)
+            left = [_payload(f"l{i}", "left", 20.0, 0.0, electrical=False) for i in (1, 2, 3)]
+            right = [_payload(f"r{i}", "right", 20.5, 1.0, electrical=False) for i in (1, 2, 3)]
+            summaries = store._repeat_runner.summarize_lr_repeat_paired(
+                left, right, base_name="Host references", repeat_count=3)
+            for summary in summaries:
+                repeat = summary["analysis"]["lr_repeat"]
+                self.assertTrue(repeat["timing_stable"])
+                self.assertFalse(repeat["electrical_reference_used"])
+                self.assertEqual(repeat["delta_center_ms"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
