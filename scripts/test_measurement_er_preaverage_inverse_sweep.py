@@ -145,6 +145,7 @@ class ErPreaverageInverseSweepTests(unittest.TestCase):
                 calibration_curve,
                 reference_sweep,
                 inverse_sweep,
+                band_limited_reference=False,
             ):
                 received["inverse_sweep"] = inverse_sweep
                 received["reference_sweep"] = reference_sweep

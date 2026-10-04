@@ -52,6 +52,7 @@ class MeasurementRepeatRunner:
         calibration_curve: tuple[np.ndarray, np.ndarray] | None,
         reference_sweep: np.ndarray,
         inverse_sweep: np.ndarray,
+        band_limited_reference: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Pre-average ER-aligned captures before deconvolution.
 
@@ -87,6 +88,7 @@ class MeasurementRepeatRunner:
                     coarse_start,
                     sample_rate,
                     allow_drift_compensation=False,
+                    band_limited=band_limited_reference,
                 )
             )
 
@@ -220,6 +222,7 @@ class MeasurementRepeatRunner:
             ])),
             "start_score": min(per_capture_start_scores),
             "end_score": min(per_capture_end_scores),
+            "region_anchor_sources": deepcopy(er_timings[0].get("region_anchor_sources") or {}),
             "anchor_strategy": "ER pre-average central constant-delay override",
             "drift_compensation_policy": "constant-delay-er-reference",
             "anchor_matches": [],
@@ -249,6 +252,7 @@ class MeasurementRepeatRunner:
                     analysis_channel_index=0,
                     reference_channel_label="reference",
                     timing_override=timing_override,
+                    band_limited_reference=band_limited_reference,
                 )
             except Exception as exc:
                 raise RuntimeError(
@@ -427,6 +431,9 @@ class MeasurementRepeatRunner:
                     "mic_input_channel_index": result.get("_mic_input_channel_index"),
                     "electrical_reference_channel_index": result.get("_electrical_reference_channel_index"),
                     "use_electrical_reference": result.get("_use_electrical_reference"),
+                    "band_limited_reference": bool(
+                        ((result.get("analysis") or {}).get("clock") or {}).get("band_limited_reference")
+                    ),
                     "calibration_curve": result.get("_calibration_curve"),
                     "sweep_seconds": result.get("_sweep_seconds"),
                     "lead_in_seconds": result.get("_lead_in_seconds"),
@@ -451,6 +458,8 @@ class MeasurementRepeatRunner:
                 continue
             try:
                 er_idx = side_meta[0]["electrical_reference_channel_index"]
+                if any(m["electrical_reference_channel_index"] != er_idx for m in side_meta):
+                    raise RuntimeError("Electrical reference channel changed between repeats")
                 mic_idx = side_meta[0]["mic_input_channel_index"]
                 sr = side_meta[0]["sample_rate"]
                 cal = side_meta[0].get("calibration_curve")
@@ -485,6 +494,7 @@ class MeasurementRepeatRunner:
                     calibration_curve=cal,
                     reference_sweep=reference_sweep,
                     inverse_sweep=inverse_sweep,
+                    band_limited_reference=side_meta[0]["band_limited_reference"],
                 )
                 source_traces = [
                     self._store._persistence._select_merge_trace(item, "traces", preferred_role="trusted")
@@ -514,6 +524,17 @@ class MeasurementRepeatRunner:
                 # Use the averaged analysis traces (not the first capture's)
                 effective = deepcopy(captures[side_channel][0])
                 effective_analysis = effective.get("analysis") or {}
+                # The averaged WAV repacks mic/ER as channels 0/1. Preserve
+                # physical capture provenance without copying stale timing.
+                for section, keys in (
+                    ("reference_path", ("channel", "capture_mode", "mic_input_channel",
+                                        "electrical_reference_input_channel", "electrical_reference_used",
+                                        "timing_applied_to_mic")),
+                    ("clock", ("timing_channel", "reference_capture_mode", "reference_channel")),
+                ):
+                    original = effective_analysis.get(section) or {}
+                    averaged = avg_analysis.setdefault(section, {})
+                    averaged.update({key: original[key] for key in keys if key in original})
                 effective_analysis.update(avg_analysis)
                 effective["analysis"] = effective_analysis
                 # Replace traces with those from the averaged analysis so the

@@ -31,7 +31,7 @@ from measurement.persistence import MeasurementPersistence
 from measurement.routing import MeasurementRouting, freeze_expected_native_context
 from measurement.signal import _write_wav, write_sweep_file
 from measurement.job_runner import MeasurementJobRunner
-from measurement.target import sweep_output_masks, target_output_mask
+from measurement.target import GLOBAL_BANK_ID, sweep_output_masks, target_output_mask
 from measurement.repeat_runner import MeasurementRepeatRunner
 from measurement.analyzer import MeasurementAnalyzer
 from measurement.constants import (
@@ -1096,10 +1096,16 @@ class MeasurementStore:
             mic_source_node_name=source_node_name,
             requested_channel=playback_channel,
         )
-        # A bank measurement plays one deliberately band-limited way, so its
-        # reference timing has to be judged on the registers that way actually
-        # plays; a single sweep plays the whole band and stays unchanged.
-        band_limited_reference = bool(str(job.get("measurement_bank") or "").strip())
+        # Isolated areas use their reproduced sweep registers. Global is not
+        # an isolated area, and the frozen target takes precedence over the
+        # legacy job field.
+        target = job.get("measurement_target")
+        measurement_bank = (
+            target.get("bank_id") if isinstance(target, dict) and not target.get("legacy")
+            else job.get("measurement_bank")
+        )
+        measurement_bank = str(measurement_bank or "").strip()
+        band_limited_reference = bool(measurement_bank and measurement_bank != GLOBAL_BANK_ID)
         electrical_reference = None
         if use_electrical_reference:
             electrical_reference = {
@@ -1199,6 +1205,8 @@ class MeasurementStore:
             raise RuntimeError("Host-local capture did not produce an analysis result")
         if reference_warning and not self._analysis_has_warning_code(analysis, "electrical-reference-fallback"):
             self._append_reference_fallback_warning(analysis, reference_warning)
+        admitted_reference_channel = capture_info.get("electrical_reference_input_channel")
+        electrical_reference_used = bool((analysis.get("reference_path") or {}).get("electrical_reference_used"))
 
         measurement = self._persistence._build_measurement_from_analysis(
             analysis,
@@ -1300,8 +1308,10 @@ class MeasurementStore:
             "_playback_path": str(playback_path),
             "_sample_rate": sample_rate,
             "_mic_input_channel_index": mic_input_channel_index,
-            "_electrical_reference_channel_index": electrical_reference_channel_index,
-            "_use_electrical_reference": use_electrical_reference,
+            "_electrical_reference_channel_index": (
+                int(admitted_reference_channel) - 1 if electrical_reference_used and admitted_reference_channel is not None else None
+            ),
+            "_use_electrical_reference": electrical_reference_used,
             "_calibration_curve": calibration_curve,
             "_sweep_seconds": sweep_seconds,
             "_lead_in_seconds": lead_in_seconds,
