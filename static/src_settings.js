@@ -8,7 +8,7 @@
     let deps = { fetchFn: (...args) => fetch(...args), onError: () => {}, onApplied: () => {} };
     let status = {};
     let pending = false;
-    const guidance = 'Low: ~70% / 0.45× CPU · Standard: ~82% / 1.0× CPU · High: ~99.6% / 1.5× CPU';
+    const guidance = 'Low: ~70% / 0.45× CPU · Standard: ~81,9% / 1.0× CPU · High: ~99.6% / 1.5× CPU';
 
     function init(overrides) { deps = { ...deps, ...overrides }; }
     function render() {

@@ -38,7 +38,7 @@ assert.doesNotMatch(html, /<button[^>]*id="settings-src-restart"/);
 (async () => {
     const select = { value: '', disabled: false };
     const hint = { textContent: '' };
-    const guidance = 'Low: ~70% / 0.45× CPU · Standard: ~82% / 1.0× CPU · High: ~99.6% / 1.5× CPU';
+    const guidance = 'Low: ~70% / 0.45× CPU · Standard: ~81,9% / 1.0× CPU · High: ~99.6% / 1.5× CPU';
     let response = { ok: true, json: async () => ({ mode: 'standard', available: true }) };
     const errors = [];
     const requests = [];
