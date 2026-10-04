@@ -11,7 +11,8 @@ import copy
 from collections.abc import Callable
 
 from audio.output_routing import device_key
-from audio.output_state import (bass_crossover_for_side, routing_for_device,
+from audio.output_state import (bass_crossover_for_side, effective_crossover_enabled,
+                                routing_for_device,
                                 shared_bass_crossover, validate_output_state)
 from audio.output_topology import SUB_ROLES, derive_topology, side_for_role
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
@@ -89,8 +90,9 @@ def rendered_crossover_filters(state: dict, *, output_key: str, channels: int) -
     state = validate_output_state(state)
     mode = state["active_mode"]
     config = state["modes"][mode]
-    topology = derive_topology(mode, routing_for_device(state, mode, output_key), channels=channels,
-                               crossover_enabled=config["crossover_enabled"])
+    xo_enabled = effective_crossover_enabled(state, mode, channels)
+    topology = derive_topology(mode, routing_for_device(state, mode, output_key, channels), channels=channels,
+                               crossover_enabled=xo_enabled)
     topology.require_activatable()
     return copy.deepcopy(_rendered_crossover(config, topology))
 
@@ -114,8 +116,9 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
         raise ValueError("neutralize_banks must be a boolean")
     mode = state["active_mode"]
     config = state["modes"][mode]
-    assignments = routing_for_device(state, mode, output_key)
-    topology = derive_topology(mode, assignments, channels=channels, crossover_enabled=config["crossover_enabled"])
+    xo_enabled = effective_crossover_enabled(state, mode, channels)
+    assignments = routing_for_device(state, mode, output_key, channels)
+    topology = derive_topology(mode, assignments, channels=channels, crossover_enabled=xo_enabled)
     topology.require_activatable()
     processing = config["processing"]
     delay_offset = max(0.0, -min(processing[role]["alignment_ms"] for role in topology.roles))
@@ -145,7 +148,7 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
         "schema": "fxroute.dsp.processing-plan", "version": 1,
         "mode": mode, "device_key": device_key(output_key), "sample_rate_hz": sample_rate_hz,
         "sub_mode": topology.sub_mode, "way_count": topology.way_count,
-        "crossover_enabled": config["crossover_enabled"],
+        "crossover_enabled": xo_enabled,
         "order": ["global", "matrix", "crossover", "area-bank", "output-trim", "guard-mute"],
         "global": global_bank, "outputs": outputs, "physical_routes": edges,
     }

@@ -3269,6 +3269,7 @@ function renderOutputSystemSection() {
         if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = true;
         if (elements.settingsModeGroup) elements.settingsModeGroup.classList.add('hidden');
         if (elements.settingsCrossoverGroup) elements.settingsCrossoverGroup.classList.add('hidden');
+        if (elements.settingsRoutingGroup) elements.settingsRoutingGroup.classList.add('hidden');
         if (elements.settingsCrossoverSelect) elements.settingsCrossoverSelect.disabled = true;
         if (elements.settingsRoutingGrid) elements.settingsRoutingGrid.innerHTML = '';
         if (elements.osTopology) elements.osTopology.textContent = '';
@@ -3279,11 +3280,18 @@ function renderOutputSystemSection() {
     const mode = catalog.active_mode || 'stereo';
     const modeConfig = catalog.modes[mode] || {};
     const busy = state.outputSystem.busy;
+    const channelCount = device.channels || 0;
+    const showRouting = typeof mod.routingVisible === 'function'
+        ? mod.routingVisible(channelCount)
+        : mod.modeSelectorVisible(channelCount);
     if (elements.settingsModeGroup) {
-        elements.settingsModeGroup.classList.toggle('hidden', !mod.modeSelectorVisible(device.channels || 0));
+        elements.settingsModeGroup.classList.toggle('hidden', !mod.modeSelectorVisible(channelCount));
     }
     if (elements.settingsCrossoverGroup) {
-        elements.settingsCrossoverGroup.classList.toggle('hidden', !mod.modeSelectorVisible(device.channels || 0));
+        elements.settingsCrossoverGroup.classList.toggle('hidden', !mod.modeSelectorVisible(channelCount));
+    }
+    if (elements.settingsRoutingGroup) {
+        elements.settingsRoutingGroup.classList.toggle('hidden', !showRouting);
     }
     mod.renderModeSelect(elements.settingsOutputModeSelect, catalog, mode);
     if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = busy;
@@ -3292,13 +3300,13 @@ function renderOutputSystemSection() {
         elements.settingsCrossoverSelect.disabled = busy;
     }
     const assignments = (device.routing && device.routing[mode]) || [];
-    mod.renderRoutingGrid(elements.settingsRoutingGrid, catalog, mode, assignments, device.channels || 0, busy);
+    mod.renderRoutingGrid(elements.settingsRoutingGrid, catalog, mode, assignments, channelCount, busy);
     const topology = modeConfig.topology || {};
     if (elements.osTopology) {
         elements.osTopology.textContent = mod.topologySummary(topology);
     }
     if (elements.settingsOutputModeHint) {
-        elements.settingsOutputModeHint.textContent = mod.modeHint(mode, topology, device.channels || 0);
+        elements.settingsOutputModeHint.textContent = mod.modeHint(mode, topology, channelCount);
     }
     if (elements.settingsRoutingHint) {
         elements.settingsRoutingHint.textContent = 'Assign a role to each hardware output. Off leaves an output silent.';

@@ -95,6 +95,13 @@ function modeSelectorVisible(channelCount) {
     return Number(channelCount) >= 3;
 }
 
+// Output Routing assigns roles to hardware outputs. With only two outputs
+// the mapping is fixed (Out 1 = Main L, Out 2 = Main R), so the whole
+// section stays hidden; it is only meaningful with more than two outputs.
+function routingVisible(channelCount) {
+    return Number(channelCount) > 2;
+}
+
 // Status line under the Mode selector. Stereo + Sub without a routed sub
 // role plays mains only, so the line points to the routing instead.
 function modeHint(mode, topology, channelCount) {
@@ -387,6 +394,7 @@ function renderBankSelector(select, catalog, mode) {
         rolesForMode,
         modeLabel,
         modeSelectorVisible,
+        routingVisible,
         modeHint,
         subModeLabel,
         FAMILY_LABELS,

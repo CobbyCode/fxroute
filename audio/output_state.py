@@ -215,10 +215,41 @@ def validate_output_state(payload: object) -> dict:
     return copy.deepcopy(payload)
 
 
-def routing_for_device(state: dict, mode: str, output_key: str) -> list[str]:
+def routing_for_device(state: dict, mode: str, output_key: str, channels: int | None = None) -> list[str]:
+    """Stored routing, or the fixed stereo mapping on two-output devices.
+
+    A device with exactly two hardware outputs always plays Out 1 = Main L
+    and Out 2 = Main R; custom routing is only meaningful with more outputs.
+    Passing the effective channel count returns that fixed mapping so every
+    caller renders the same topology instead of slicing a stale stored list.
+    """
     roles_for_mode(mode)
+    if channels is not None:
+        try:
+            count = int(channels)
+        except (TypeError, ValueError):
+            count = None
+        if count == 2:
+            return list(MAIN_ROLES)
     fallback = [] if state["modes"][mode]["crossover_enabled"] else list(MAIN_ROLES)
     return list(state["modes"][mode]["routing"].get(_device_identity(output_key), fallback))
+
+
+def effective_crossover_enabled(state: dict, mode: str, channels: int | None = None) -> bool:
+    """Stored crossover flag, forced off on two-output devices.
+
+    Two outputs can only carry Main L/R, so the effective system is Stereo
+    without crossover even when the stored mode still enables it (e.g. after
+    switching back from a multichannel interface).
+    """
+    if channels is not None:
+        try:
+            count = int(channels)
+        except (TypeError, ValueError):
+            count = None
+        if count == 2:
+            return False
+    return bool(state["modes"][mode]["crossover_enabled"])
 
 
 def set_mode_routing(state: dict, mode: str, output_key: str, assignments: object) -> dict:
@@ -327,8 +358,8 @@ def switch_all_banks(state: dict, mode: str, output_key: str, channels: int, act
     """
     result = validate_output_state(state)
     config = result["modes"][mode]
-    topology = derive_topology(mode, routing_for_device(result, mode, output_key), channels=channels,
-                               crossover_enabled=config["crossover_enabled"])
+    topology = derive_topology(mode, routing_for_device(result, mode, output_key, channels), channels=channels,
+                               crossover_enabled=effective_crossover_enabled(result, mode, channels))
     if not topology.roles:
         raise ValueError("No configured area banks")
     if active_side not in {"A", "B"}:
@@ -412,8 +443,8 @@ def set_mode_extras(state: dict, mode: str, extras: dict) -> dict:
 
 def select_bank(state: dict, mode: str, output_key: str, channels: int, bank_id: str) -> dict:
     result = validate_output_state(state)
-    active = derive_topology(mode, routing_for_device(result, mode, output_key), channels=channels,
-                             crossover_enabled=result["modes"][mode]["crossover_enabled"])
+    active = derive_topology(mode, routing_for_device(result, mode, output_key, channels), channels=channels,
+                             crossover_enabled=effective_crossover_enabled(result, mode, channels))
     if set(active.roles) == {"main_l", "main_r"} and bank_id != "global":
         raise ValueError("Pure stereo uses the Global bank; no bank selection is shown")
     if bank_id == "all":

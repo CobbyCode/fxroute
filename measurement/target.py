@@ -24,7 +24,7 @@ from collections.abc import Sequence
 
 from audio.output_routing import device_key
 from audio.filter_banks import resolve_bank, summarize_banks
-from audio.output_state import routing_for_device, validate_output_state
+from audio.output_state import effective_crossover_enabled, routing_for_device, validate_output_state
 from audio.output_topology import MAX_CHANNELS, SUB_ROLES, derive_topology
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 from dsp.native_config import role_side
@@ -130,8 +130,8 @@ def freeze_measurement_target(
     _bounded_int(channels, "Measurement channel count", MAX_CHANNELS)
     _bounded_int(sample_rate_hz, "Measurement sample rate", FXROUTE_MAX_PROCESSING_RATE)
     fingerprint = _fingerprint_token(fingerprint)
-    topology = derive_topology(mode, routing_for_device(validated, mode, output_key), channels=channels,
-                               crossover_enabled=validated["modes"][mode]["crossover_enabled"])
+    topology = derive_topology(mode, routing_for_device(validated, mode, output_key, channels), channels=channels,
+                               crossover_enabled=effective_crossover_enabled(validated, mode, channels))
     topology.require_activatable()
     # Internal Speaker Align captures can still address one physical way.
     measured = ([bank_id] if bank_id in topology.roles else definition["roles"])

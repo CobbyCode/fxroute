@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from audio.output_service import OutputService
-from audio.output_state import routing_for_device, validate_output_state
+from audio.output_state import effective_crossover_enabled, routing_for_device, validate_output_state
 from audio.output_state_store import StateConflictError
 from audio.output_topology import derive_topology
 from common.run_to_completion import restore_after, run_to_completion
@@ -109,9 +109,9 @@ def require_speaker_candidate(start_state: dict, candidate_state: dict, *,
     if changed:
         topology = derive_topology(
             candidate["active_mode"],
-            routing_for_device(candidate, candidate["active_mode"], output_key),
+            routing_for_device(candidate, candidate["active_mode"], output_key, channels),
             channels=channels,
-            crossover_enabled=candidate["modes"][candidate["active_mode"]]["crossover_enabled"])
+            crossover_enabled=effective_crossover_enabled(candidate, candidate["active_mode"], channels))
         topology.require_activatable()
         # The common delay-rebase offset is the smallest routed alignment
         # change (0 without a rebase): the reference way and every unmeasured

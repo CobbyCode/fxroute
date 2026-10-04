@@ -541,8 +541,10 @@
         ['main_l', 'main_r', ...Array(16).fill(DEMO_ROUTING_TAIL)];
     outputStateStore.modes['stereo-sub'].routing[SCARLETT_KEY] =
         ['left_low', 'right_low', 'sub1', 'sub2', 'left_high', 'right_high', ...Array(12).fill(DEMO_ROUTING_TAIL)];
-    function outputStateTopology(mode, assignments) {
-        const enabled = outputStateStore.modes[mode].crossover_enabled;
+    function outputStateTopology(mode, assignments, crossoverOverride) {
+        const enabled = crossoverOverride !== undefined
+            ? !!crossoverOverride
+            : outputStateStore.modes[mode].crossover_enabled;
         const roles = outputStateRoles(mode).filter(role => assignments.includes(role));
         const subs = roles.filter(r => ['sub_l', 'sub_r', 'sub1', 'sub2'].includes(r));
         const subMode = !subs.length ? 'none' : subs.length === 1 ? 'mono'
@@ -575,18 +577,21 @@
         const out = outputEntry(selectedOutput());
         const key = out.key;
         const channels = Number(out.channels || 0);
+        const fixedStereo = channels === 2;
         const modes = {};
         for (const mode of ['stereo', 'stereo-sub']) {
             const config = outputStateStore.modes[mode];
-            const routing = (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
-            const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length));
+            const routing = fixedStereo ? ['main_l', 'main_r']
+                : (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+            const effectiveCrossover = fixedStereo ? false : config.crossover_enabled;
+            const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length), effectiveCrossover);
             const banks = {};
             for (const [id, definition] of Object.entries(demoBankDefinitions(topology.roles))) {
                 banks[id] = { ...definition, ...demoBankSummary(definition.roles.map(role => config.banks[role])) };
             }
             const pureStereo = topology.roles.length === 2 && topology.roles.includes('main_l') && topology.roles.includes('main_r');
             modes[mode] = {
-                crossover_enabled: config.crossover_enabled,
+                crossover_enabled: effectiveCrossover,
                 selected_bank: pureStereo ? 'global' : (config.selected_bank === 'all' || banks[config.selected_bank] ? config.selected_bank : 'global'),
                 banks,
                 all_banks: demoAllBanksSummary(topology.roles.map(role => config.banks[role])),
@@ -598,7 +603,8 @@
         }
         const deviceRouting = {};
         for (const mode of ['stereo', 'stereo-sub']) {
-            deviceRouting[mode] = (outputStateStore.modes[mode].routing[key]
+            deviceRouting[mode] = fixedStereo ? ['main_l', 'main_r']
+                : (outputStateStore.modes[mode].routing[key]
                 || (outputStateStore.modes[mode].crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
         }
         return {
@@ -2544,6 +2550,8 @@
                     && !allowed.includes(config.selected_bank)
                     && !Object.values(demoBankDefinitions(allowed)).some(definition => definition.id === config.selected_bank)) config.selected_bank = 'global';
             } else if (mutation.kind === 'set_routing') {
+                const currentChannels = Number(outputEntry(selectedOutput()).channels || 0);
+                if (currentChannels === 2) return fail('Output routing is fixed to Out 1 Main L / Out 2 Main R on two-output devices');
                 const assignments = mutation.assignments;
                 if (!Array.isArray(assignments)) return fail('Routing assignments must be an array');
                 const allowed = new Set([...outputStateRoles(mode), 'off']);

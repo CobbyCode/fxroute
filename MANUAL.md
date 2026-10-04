@@ -181,7 +181,7 @@ Autogain and Loudness can run together; the limiter stays the final stage.
 
 ### 5.3 Output mode, crossover switch and output routing
 
-**Technical settings → Audio Output** holds the device, the sample-rate policy, and three routing controls. On a two-output device the **Mode** and **Crossover** rows are hidden and the system is internally fixed to Stereo; three or more outputs expose them.
+**Technical settings → Audio Output** holds the device, the sample-rate policy, and three routing controls. On a two-output device the **Mode**, **Crossover** and **Output Routing** rows are hidden and the system is internally fixed to Stereo (Out 1 = Main L, Out 2 = Main R); three or more outputs expose them.
 
 **Mode** offers exactly two values:
 

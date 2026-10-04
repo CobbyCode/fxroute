@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 
-from audio.output_state import routing_for_device, validate_output_state
+from audio.output_state import effective_crossover_enabled, routing_for_device, validate_output_state
 from audio.output_topology import OutputTopology, derive_topology
 
 from .candidates import _auto_sub_22_sub, _auto_sub_clamped_delay
@@ -113,8 +113,8 @@ def autosub_topology_from_state(state: dict, *, output_key: str,
     validated = validate_output_state(state)
     mode = validated["active_mode"]
     return derive_topology(
-        mode, routing_for_device(validated, mode, output_key), channels=channels,
-        crossover_enabled=validated["modes"][mode]["crossover_enabled"],
+        mode, routing_for_device(validated, mode, output_key, channels), channels=channels,
+        crossover_enabled=effective_crossover_enabled(validated, mode, channels),
     )
 
 

@@ -75,6 +75,14 @@ assert.equal(OutputState.modeSelectorVisible(2), false);
 assert.equal(OutputState.modeSelectorVisible(3), true);
 assert.equal(OutputState.modeSelectorVisible(18), true);
 
+// Output Routing is only meaningful with more than two hardware outputs:
+// two outputs are fixed to Out 1 Main L / Out 2 Main R.
+assert.equal(OutputState.routingVisible(0), false);
+assert.equal(OutputState.routingVisible(1), false);
+assert.equal(OutputState.routingVisible(2), false);
+assert.equal(OutputState.routingVisible(3), true);
+assert.equal(OutputState.routingVisible(18), true);
+
 // Mode status line: Stereo + Sub without a routed sub points to the routing;
 // the hint disappears as soon as a sub role is routed.
 const noSubHint = 'No subwoofer configured — assign a Sub output below.';

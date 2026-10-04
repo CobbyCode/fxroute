@@ -473,6 +473,7 @@ from audio.output_service import MeasurementActiveError, OutputService, OutputSe
 from audio.output_state import (
     FILTER_SLOPES,
     bass_crossover_for_side,
+    effective_crossover_enabled,
     roles_for_mode,
     shared_bass_crossover,
     routing_for_device,
@@ -4988,6 +4989,9 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
         args = strict({"mode", "assignments"})
         mode = _require_state_mode(args.get("mode"))
         assignments = args.get("assignments")
+        if channels is not None and int(channels) == 2:
+            raise HTTPException(status_code=400,
+                                detail="Output routing is fixed to Out 1 Main L / Out 2 Main R on two-output devices")
         return lambda state: set_mode_routing(state, mode, output_key, assignments)
     if kind == "switch_mode":
         args = strict({"mode"})
@@ -5076,8 +5080,9 @@ def _live_topology_key(state: dict, *, output_key: str, channels: int | None,
     wiring, channel count, rate) needs the coordinator path.
     """
     mode = state.get("active_mode") if isinstance(state, dict) else None
-    assignments = routing_for_device(state, mode, output_key) if mode else []
-    return (mode, state["modes"][mode]["crossover_enabled"], tuple(assignments[:channels or 0]), channels, rate)
+    assignments = routing_for_device(state, mode, output_key, channels) if mode else []
+    crossover = effective_crossover_enabled(state, mode, channels) if mode else False
+    return (mode, crossover, tuple(assignments[:channels or 0]), channels, rate)
 
 
 def _plan_transition_guard(old_layout, new_layout, previous_gain: float) -> float:
@@ -5430,8 +5435,8 @@ async def _sync_plan_runtime(target, *, reason: str = "output-state-transition")
 
 
 def _output_state_topology(state: dict, mode: str, output_key: str, channels: int | None) -> dict:
-    topology = derive_topology(mode, routing_for_device(state, mode, output_key), channels=channels,
-                               crossover_enabled=state["modes"][mode]["crossover_enabled"])
+    topology = derive_topology(mode, routing_for_device(state, mode, output_key, channels), channels=channels,
+                               crossover_enabled=effective_crossover_enabled(state, mode, channels))
     return {"mode": topology.mode, "crossover_enabled": topology.crossover_enabled, "roles": list(topology.roles),
             "sub_roles": list(topology.sub_roles), "sub_mode": topology.sub_mode,
             "left_ways": list(topology.left_ways), "right_ways": list(topology.right_ways),
@@ -5468,7 +5473,7 @@ async def get_audio_output_state():
         "device": {
             "key": output_key,
             "channels": channels,
-            "routing": {mode: routing_for_device(state, mode, output_key)
+            "routing": {mode: routing_for_device(state, mode, output_key, channels)
                         for mode in MODES},
         },
         "modes": modes,
