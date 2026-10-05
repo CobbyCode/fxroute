@@ -39,11 +39,18 @@
 
     // Pure model ----------------------------------------------------------
 
-    /** Options of one position: "Off" (not for required positions) and every capture channel. */
+    /**
+     * Options of one position: "Off" (not for required positions) and every capture channel.
+     *
+     * Labels name the input number only.  The PipeWire channel suffix (``AUX0``,
+     * ``FL``, …) is a profile detail that does not fit the narrow select and is
+     * not what the user picks; it stays in the API payload and in the stored
+     * mapping and is never rendered.
+     */
     function channelOptions(capture, position) {
         const options = REQUIRED_POSITIONS.includes(position) ? [] : [{ value: OFF, label: 'Off' }];
         for (const channel of capture?.channels || []) {
-            options.push({ value: String(channel.index), label: `Input ${channel.index} · ${channel.suffix}` });
+            options.push({ value: String(channel.index), label: `Input ${channel.index}` });
         }
         return options;
     }

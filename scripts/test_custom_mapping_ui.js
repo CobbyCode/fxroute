@@ -82,8 +82,14 @@ function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}
     check('required positions have no Off option', fixedOptions.length === 8 && fixedOptions[0].value === '1');
     const optionalOptions = CustomMapping.channelOptions(CAPTURE, 'FC');
     check('optional positions start with Off', optionalOptions[0].label === 'Off' && optionalOptions.length === 9);
-    check('option labels name the input and its channel', optionalOptions[3].label === 'Input 3 · AUX2');
+    check('option labels name the input only', optionalOptions[3].label === 'Input 3');
     check('no capture yields only Off', CustomMapping.channelOptions(null, 'FC').length === 1);
+    check('every option label is Off or "Input <number>"',
+        optionalOptions.every((option) => /^(Off|Input \d+)$/.test(option.label)));
+    check('option labels hide the PipeWire channel suffix',
+        !optionalOptions.some((option) => /AUX\d|FL|FR|RL|RR/.test(option.label)));
+    check('option values still carry the capture channel index',
+        optionalOptions.map((option) => option.value).join(',') === ',1,2,3,4,5,6,7,8');
 
     check('a new mapping starts on the first two inputs',
         JSON.stringify(CustomMapping.initialSelection(context())) === JSON.stringify({ FL: '1', FR: '2' }));
@@ -108,7 +114,8 @@ function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}
 
     const grid = CustomMapping.renderGridHtml(POSITIONS, CAPTURE, { FL: '3', FR: '4' });
     check('one cell per program channel', (grid.match(/settings-routing-cell/g) || []).length === 8);
-    check('the selection is marked', /<option value="3" selected>Input 3 · AUX2<\/option>/.test(grid));
+    check('the selection is marked', /<option value="3" selected>Input 3<\/option>/.test(grid));
+    check('the rendered grid never shows a channel suffix', !/AUX\d/.test(grid));
     check('unmapped optional channels show Off', /<option value="" selected>Off<\/option>/.test(grid));
     check('cells carry their position for the change handler', /data-custom-mapping-position="BR"/.test(grid));
     check('labels are escaped', !/<script/.test(CustomMapping.renderGridHtml(
