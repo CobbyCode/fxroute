@@ -69,14 +69,21 @@ class PipeWireLink:
     target: str
 
 
-def mapped_ingress_edges(source: str, suffixes: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
+def mapped_ingress_edges(
+    source: str,
+    suffixes: Mapping[str, str],
+    sources: Mapping[str, str] | None = None,
+) -> tuple[tuple[str, str], ...]:
     """Direct capture-port -> engine-input edges of a custom input mapping.
 
     ``suffixes`` maps program positions to capture channel suffixes; the
     engine input of a position is its place in ``SURROUND_POSITIONS``.
+    ``sources`` names the capture node of a position, ``source`` is the
+    node of every position it does not list.
     """
+    nodes = sources or {}
     return tuple(
-        (f"{source}:capture_{suffixes[position]}", f"{DSP_NODE_NAME}:input_{index + 1}")
+        (f"{nodes.get(position) or source}:capture_{suffixes[position]}", f"{DSP_NODE_NAME}:input_{index + 1}")
         for index, position in enumerate(SURROUND_POSITIONS)
         if position in suffixes
     )

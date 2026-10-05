@@ -360,6 +360,46 @@ def _parse_default_sink_name(output: str) -> str | None:
     return None
 
 
+def _natural_sort_key(name: str | None) -> list[Any]:
+    """Sort key that orders digit runs numerically (``Mic2`` before ``Mic10``)."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", str(name or ""))]
+
+
+def _card_capture_channels(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The physical inputs of one card, numbered across all its capture nodes.
+
+    A card may expose its inputs as one multichannel node or as several
+    (e.g. one mono node per input). Nodes are ordered by name, naturally,
+    so a single-node card keeps the channel order of its node.
+    """
+    channels: list[dict[str, Any]] = []
+    for candidate in sorted(candidates, key=lambda item: _natural_sort_key(item["payload"].get("name"))):
+        for suffix in candidate["suffixes"]:
+            channels.append({
+                "index": len(channels) + 1,
+                "suffix": suffix,
+                "source": candidate["payload"].get("name"),
+                "payload": candidate["payload"],
+            })
+    return channels
+
+
+def _card_label(candidates: list[dict[str, Any]]) -> str | None:
+    """Device name for the dialog: the node's own name, or the card's when it has several.
+
+    One node's description names the whole device. With several nodes each
+    description names a single input, so the ALSA card name is used.
+    """
+    ordered = sorted(candidates, key=lambda item: _natural_sort_key(item["payload"].get("name")))
+    if not ordered:
+        return None
+    if len(ordered) > 1:
+        card_name = next((item.get("card_name") for item in ordered if item.get("card_name")), None)
+        if card_name:
+            return card_name
+    return ordered[0]["payload"].get("device_label")
+
+
 def _custom_mapping_entry(
     mapping: dict[str, Any],
     base: str,
@@ -367,45 +407,51 @@ def _custom_mapping_entry(
     selected_input_key: str | None,
     notes: list[str],
 ) -> dict[str, Any] | None:
-    """The stored mapping as an ``inputs[]`` entry of its device's capture node.
+    """The stored mapping as an ``inputs[]`` entry of its device.
 
-    The widest capture node of the card carries it. The entry has no port
-    and no pair label: selection must not switch a source port, and the
-    user's name is only ever the label.
+    ``source_key`` is the capture node of Front L. ``right_source`` names the
+    node of Front R when it differs, and ``custom_mapping.sources`` the node of
+    every mapped channel. The entry has no port and no pair label: selection
+    must not switch a source port, and the user's name is only ever the label.
     """
-    best = max(candidates, key=lambda candidate: len(candidate["suffixes"]))
-    suffixes = best["suffixes"]
+    capture = _card_capture_channels(candidates)
     indices = mapping["channels"]
-    if max(indices.values()) > len(suffixes):
+    if max(indices.values()) > len(capture):
         notes.append(
             f"Custom mapping needs {max(indices.values())} input channels; "
-            f"the device offers {len(suffixes)}."
+            f"the device offers {len(capture)}."
         )
         return None
     key = custom_input_mapping.input_key(base)
-    payload = best["payload"]
-    return {
+    left, right = capture[indices["FL"] - 1], capture[indices["FR"] - 1]
+    payload = left["payload"]
+    entry = {
         **payload,
         "is_default": False,
         "key": key,
-        "source_key": payload.get("name"),
+        "source_key": left["source"],
         "port_key": None,
         "port_label": None,
         "label": custom_input_mapping.label_for(mapping),
+        "device_label": _card_label(candidates) or payload.get("device_label"),
         "is_active_port": True,
         "is_selected": key == selected_input_key,
         "pair_index": 0,
         "pair_count": 1,
         "pair_label": None,
         "pair_channels": [indices["FL"], indices["FR"]],
-        "left_channel": suffixes[indices["FL"] - 1],
-        "right_channel": suffixes[indices["FR"] - 1],
+        "left_channel": left["suffix"],
+        "right_channel": right["suffix"],
         "custom_mapping": {
             "name": mapping["name"],
             "channels": dict(indices),
-            "suffixes": {position: suffixes[index - 1] for position, index in indices.items()},
+            "suffixes": {position: capture[index - 1]["suffix"] for position, index in indices.items()},
+            "sources": {position: capture[index - 1]["source"] for position, index in indices.items()},
         },
     }
+    if right["source"] != left["source"]:
+        entry["right_source"] = right["source"]
+    return entry
 
 
 def _custom_mapping_context(
@@ -414,21 +460,20 @@ def _custom_mapping_context(
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Selected device, its capture channels and its mapping, for the dialog."""
-    best = max(candidates, key=lambda candidate: len(candidate["suffixes"])) if candidates else None
+    capture = _card_capture_channels(candidates)
     return {
         "device": (
-            {"card_base": base, "label": (best["payload"].get("device_label") if best else None) or base}
+            {"card_base": base, "label": _card_label(candidates) or base}
             if base else None
         ),
         "capture": (
             {
-                "source": best["payload"].get("name"),
                 "channels": [
-                    {"index": index + 1, "suffix": suffix}
-                    for index, suffix in enumerate(best["suffixes"])
+                    {"index": item["index"], "suffix": item["suffix"], "source": item["source"]}
+                    for item in capture
                 ],
             }
-            if best else None
+            if capture else None
         ),
         "mapping": (
             {"name": mapping["name"], "channels": dict(mapping["channels"])} if mapping else None
@@ -1025,13 +1070,6 @@ def get_audio_source_overview() -> dict[str, Any]:
         suffixes = _ordered_capture_channel_suffixes(details.get("channel_map"), channels)
 
         pairs = _stereo_pairs_for_suffixes(suffixes)
-        if not pairs:
-            # A lone mono channel is never a complete stereo input: offering
-            # it would duplicate one channel onto both sides.  Measurement
-            # keeps its own per-channel selection, so nothing else loses
-            # access to this source.
-            skipped_single_channel.append(device_label or name or "Unknown input")
-            continue
         resolved_channels = len(suffixes) if suffixes else channels
         channel_positions = parse_channel_map_positions(details.get("channel_map")) or None
         ports = [port for port in (details.get("ports") or []) if port.get("available", True)]
@@ -1050,11 +1088,20 @@ def get_audio_source_overview() -> dict[str, Any]:
             # Input auto-select reads the digital-input lock of this card.
             "alsa_card": details.get("alsa_card"),
         }
+        # Every capture node counts as a physical input of its card, also a
+        # mono one that is no stereo input on its own.
         node_card_base = custom_input_mapping.card_base(name)
         if node_card_base:
             capture_candidates.setdefault(node_card_base, []).append(
-                {"payload": base_payload, "suffixes": suffixes}
+                {"payload": base_payload, "suffixes": suffixes, "card_name": details.get("alsa_card_name")}
             )
+        if not pairs:
+            # A lone mono channel is never a complete stereo input: offering
+            # it would duplicate one channel onto both sides.  Measurement
+            # keeps its own per-channel selection, and a custom mapping can
+            # combine such channels, so nothing else loses access to it.
+            skipped_single_channel.append(device_label or name or "Unknown input")
+            continue
 
         def _pair_entry(
             pair: dict[str, Any],

@@ -116,6 +116,8 @@ class ProbeSpec:
     rate: int
     card: int | None
     digital: bool
+    # Capture node of the right channel when it is not ``source_name``.
+    right_source: str | None = None
 
 
 class InputProbe:
@@ -199,8 +201,10 @@ class InputProbe:
 
     async def _link(self, proc: asyncio.subprocess.Process, node_name: str) -> None:
         deadline = self._monotonic() + PROBE_LINK_TIMEOUT_SECONDS
-        source = self.spec.source_name
-        for channel, side in ((self.spec.left_channel, "FL"), (self.spec.right_channel, "FR")):
+        for source, channel, side in (
+            (self.spec.source_name, self.spec.left_channel, "FL"),
+            (self.spec.right_source or self.spec.source_name, self.spec.right_channel, "FR"),
+        ):
             source_ports = (f"{source}:capture_{channel}", f"{source}:output_{channel}")
             while True:
                 if proc.returncode is not None:
@@ -455,7 +459,9 @@ class InputAutoSelect:
         source = str(entry.get("source_key") or entry.get("name") or "").strip()
         left = str(entry.get("left_channel") or "FL").strip()
         right = str(entry.get("right_channel") or "FR").strip()
-        if not source or left == right:
+        right_source = str(entry.get("right_source") or "").strip()
+        right_source = right_source if right_source != source else ""
+        if not source or (left == right and not right_source):
             return None
         card = entry.get("alsa_card")
         return ProbeSpec(
@@ -465,6 +471,7 @@ class InputAutoSelect:
             rate=int(self._capture_rate),
             card=card if isinstance(card, int) else None,
             digital=_is_digital_entry(entry),
+            right_source=right_source or None,
         )
 
     def _stdin_present(self) -> bool:

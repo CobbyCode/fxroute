@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -24,7 +24,7 @@ import audio.samplerate.overview as overview_mod
 from audio import custom_input_mapping as store
 from audio.custom_mapping_api import CustomMappingApiDeps, register_custom_mapping_routes
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
-from audio.input_auto_select import _is_digital_entry
+from audio.input_auto_select import InputAutoSelect, InputProbe, ProbeSpec, _is_digital_entry
 from audio.source_feed import SourceOverviewFeed, SourceTransitionLock
 from audio.source_transitions import SourceTransitionDependencies, SourceTransitions
 from dsp.runtime import CommandResult, DSPRuntime, DSPRuntimeConfig, _contains_link, mapped_ingress_edges
@@ -56,9 +56,13 @@ def _detailed(number, name, spec, channel_map):
 def _overview(*, source=PRO_SOURCE, channel_map=AUX_MAP, channels=8, mappings=None,
               output_selection=PRO_SINK, default_sink=PRO_SINK, selected_key=None, mode="app-playback"):
     spec = f"s32le {channels}ch 48000Hz"
-    short = _short(100, source, spec)
-    detailed = _detailed(100, source, spec, channel_map)
+    return _overview_of(
+        _short(100, source, spec), _detailed(100, source, spec, channel_map),
+        source=source, mappings={CARD: MAPPING} if mappings is None else mappings,
+        output_selection=output_selection, default_sink=default_sink, selected_key=selected_key, mode=mode)
 
+
+def _overview_of(short, detailed, *, source, mappings, output_selection, default_sink, selected_key, mode):
     def run(args):
         if args[:2] == ["pactl", "info"]:
             return f"Default Source: {source}\nDefault Sink: {default_sink}\n"
@@ -68,7 +72,7 @@ def _overview(*, source=PRO_SOURCE, channel_map=AUX_MAP, channels=8, mappings=No
             return detailed
         raise AssertionError(f"unexpected command: {args}")
 
-    stored = {CARD: MAPPING} if mappings is None else mappings
+    stored = mappings
     with patch.object(overview_mod, "_run_command", side_effect=run), patch.object(
         overview_mod, "get_bluetooth_audio_overview", return_value={"roles": {}, "receiver_session": {}}
     ), patch.object(
@@ -181,7 +185,9 @@ class OverviewEntryTests(unittest.TestCase):
         self.assertIsNone(entry["pair_label"])
         self.assertEqual((entry["left_channel"], entry["right_channel"]), ("AUX2", "AUX3"))
         self.assertEqual(entry["pair_channels"], [3, 4])
+        self.assertNotIn("right_source", entry)
         self.assertEqual(entry["custom_mapping"]["suffixes"]["BL"], "AUX0")
+        self.assertEqual(set(entry["custom_mapping"]["sources"].values()), {PRO_SOURCE})
         self.assertEqual(entry["custom_mapping"]["channels"], MAPPING["channels"])
         self.assertTrue(entry["selectable"])
         self.assertTrue(entry["is_active_port"])
@@ -238,8 +244,7 @@ class OverviewEntryTests(unittest.TestCase):
     def test_context_describes_device_capture_and_mapping(self):
         context = _overview()["custom_mapping_context"]
         self.assertEqual(context["device"], {"card_base": CARD, "label": "Scarlett 18i20"})
-        self.assertEqual(context["capture"]["source"], PRO_SOURCE)
-        self.assertEqual(context["capture"]["channels"][2], {"index": 3, "suffix": "AUX2"})
+        self.assertEqual(context["capture"]["channels"][2], {"index": 3, "suffix": "AUX2", "source": PRO_SOURCE})
         self.assertEqual(context["input_key"], f"custom-mapping::{CARD}")
 
     def test_user_name_never_feeds_digital_detection(self):
@@ -256,6 +261,97 @@ class OverviewEntryTests(unittest.TestCase):
         self.assertEqual((selected["key"], selected["label"], selected["available"]),
                          (key, "External Upmixer", False))
         self.assertIn(overview["external_input_state"], {"unconfirmed", "unavailable"})
+
+
+UMC = "usb-BEHRINGER_UMC204HD_192k-00"
+UMC_COMBINED = f"alsa_output.{UMC}.HiFi__combined"
+UMC_MAPPING = {"name": "Line in", "channels": {"FL": 1, "FR": 2}}
+
+
+def _umc_mic(number):
+    return f"alsa_input.{UMC}.HiFi__Mic{number}__source"
+
+
+def _mono_detailed(source_id, name, description, card_name='"UMC204HD 192k"'):
+    lines = [
+        f"Source #{source_id}", f"\tName: {name}", f"\tDescription: {description}", "\tState: SUSPENDED",
+        "\tSample Specification: float32le 1ch 44100Hz", "\tChannel Map: mono", '\t\talsa.card = "1"',
+    ]
+    if card_name:
+        lines.append(f"\t\talsa.card_name = {card_name}")
+    return "\n".join(lines + ["\tFormats:", "\t\tpcm"])
+
+
+def _umc_overview(*, numbers=(1, 2), mappings=None, selected_key=None, mode="app-playback", card_name=True,
+                  extra_short=(), extra_detailed=()):
+    """An interface whose inputs are separate mono nodes (UCM HiFi style)."""
+    short, detailed = list(extra_short), list(extra_detailed)
+    for offset, number in enumerate(numbers):
+        name = _umc_mic(number)
+        short.append(_short(200 + offset, name, "float32le 1ch 44100Hz"))
+        detailed.append(_mono_detailed(
+            200 + offset, name, f"UMC204HD 192k Input {number}", '"UMC204HD 192k"' if card_name else None))
+    return _overview_of(
+        "\n".join(short), "\n\n".join(detailed), source=_umc_mic(numbers[0]),
+        mappings={UMC: UMC_MAPPING} if mappings is None else mappings,
+        output_selection=UMC_COMBINED, default_sink=UMC_COMBINED, selected_key=selected_key, mode=mode)
+
+
+class MonoNodeCaptureTests(unittest.TestCase):
+    """One card whose physical inputs are spread over several mono capture nodes."""
+
+    def test_mono_nodes_of_one_card_are_its_numbered_physical_inputs(self):
+        overview = _umc_overview(mappings={})
+        context = overview["custom_mapping_context"]
+        self.assertEqual(context["device"], {"card_base": UMC, "label": "UMC204HD 192k"})
+        self.assertEqual(context["capture"]["channels"], [
+            {"index": 1, "suffix": "MONO", "source": _umc_mic(1)},
+            {"index": 2, "suffix": "MONO", "source": _umc_mic(2)}])
+        # A mono node is still no stereo input of its own.
+        self.assertEqual(overview["inputs"], [])
+        self.assertTrue(any("Mono capture without a stereo pair" in note for note in overview["notes"]))
+
+    def test_mapping_across_nodes_is_one_input_whose_right_side_has_its_own_node(self):
+        entry = _custom_entry(_umc_overview())
+        self.assertEqual(entry["key"], f"custom-mapping::{UMC}")
+        self.assertEqual(entry["source_key"], _umc_mic(1))
+        self.assertEqual(entry["right_source"], _umc_mic(2))
+        self.assertEqual((entry["left_channel"], entry["right_channel"]), ("MONO", "MONO"))
+        self.assertEqual(entry["pair_channels"], [1, 2])
+        self.assertEqual(entry["custom_mapping"]["sources"], {"FL": _umc_mic(1), "FR": _umc_mic(2)})
+        self.assertEqual(entry["device_label"], "UMC204HD 192k")
+        self.assertFalse(_is_digital_entry(entry))
+
+    def test_swapped_mapping_follows_the_inputs(self):
+        entry = _custom_entry(_umc_overview(mappings={UMC: {"name": "", "channels": {"FL": 2, "FR": 1}}}))
+        self.assertEqual((entry["source_key"], entry["right_source"]), (_umc_mic(2), _umc_mic(1)))
+
+    def test_inputs_are_numbered_in_natural_node_order_not_listing_order(self):
+        overview = _umc_overview(numbers=(10, 2, 1), mappings={})
+        sources = [item["source"] for item in overview["custom_mapping_context"]["capture"]["channels"]]
+        self.assertEqual(sources, [_umc_mic(1), _umc_mic(2), _umc_mic(10)])
+
+    def test_a_missing_node_hides_the_mapping_with_a_note(self):
+        overview = _umc_overview(numbers=(1,))
+        self.assertIsNone(_custom_entry(overview))
+        self.assertTrue(any("needs 2 input channels" in note for note in overview["notes"]))
+        self.assertEqual(len(overview["custom_mapping_context"]["capture"]["channels"]), 1)
+
+    def test_nodes_of_other_cards_are_not_mixed_in(self):
+        other = "alsa_input.usb-Other_Device-00.analog-stereo"
+        overview = _umc_overview(
+            mappings={}, extra_short=(_short(300, other, "s16le 2ch 48000Hz"),),
+            extra_detailed=(_detailed(300, other, "s16le 2ch 48000Hz", "front-left,front-right"),))
+        self.assertEqual({item["source"] for item in overview["custom_mapping_context"]["capture"]["channels"]},
+                         {_umc_mic(1), _umc_mic(2)})
+        self.assertEqual([item["source_key"] for item in overview["inputs"]], [other])
+
+    def test_label_falls_back_to_the_first_node_without_a_card_name(self):
+        context = _umc_overview(mappings={}, card_name=False)["custom_mapping_context"]
+        self.assertEqual(context["device"]["label"], "UMC204HD 192k Input 1")
+
+    def test_a_single_node_card_keeps_its_node_description_as_label(self):
+        self.assertEqual(_overview()["custom_mapping_context"]["device"]["label"], "Scarlett 18i20")
 
 
 def _routing(overview, mode, **deps):
@@ -372,6 +468,135 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
             await routing.sync()
 
 
+def _umc_selected(**kwargs):
+    return _umc_overview(selected_key=f"custom-mapping::{UMC}", mode="external-input", **kwargs)
+
+
+class SplitNodeRoutingTests(unittest.IsolatedAsyncioTestCase):
+    """Front L and Front R on different capture nodes (one mono node per input)."""
+
+    FL_LINK = (f"{_umc_mic(1)}:capture_MONO", "fxroute_dsp_sink:playback_FL")
+    FR_LINK = (f"{_umc_mic(2)}:capture_MONO", "fxroute_dsp_sink:playback_FR")
+
+    async def test_stereo_loopback_links_each_side_from_its_own_node(self):
+        for mode in ("stereo", "stereo-sub"):
+            with self.subTest(mode=mode):
+                routing = _routing(_umc_selected(), mode)
+                connect, disconnect = AsyncMock(), AsyncMock()
+                present = AsyncMock(return_value=True)
+                with patch("audio.pw_link.connect_ports", connect), patch(
+                        "audio.pw_link.disconnect_ports", disconnect), patch(
+                        "audio.external_input.input_links_present", present):
+                    await routing.sync()
+                    await routing.sync()
+                    self.assertEqual(
+                        [(c.args[0][0], c.args[1]) for c in connect.await_args_list], [self.FL_LINK, self.FR_LINK],
+                        "the second sync finds both links and does not reconnect")
+                    self.assertIn(call(_umc_mic(1), (("MONO", "FL"),)), present.await_args_list)
+                    self.assertIn(call(_umc_mic(2), (("MONO", "FR"),)), present.await_args_list)
+                    self.assertEqual(routing.loopback_source_name, _umc_mic(1))
+                    self.assertEqual(routing.active_right_source, _umc_mic(2))
+                    self.assertEqual(routing.active_channels, ("MONO", "MONO"))
+                    await routing.disable()
+                self.assertEqual(
+                    [(c.args[0][0], c.args[1]) for c in disconnect.await_args_list], [self.FL_LINK, self.FR_LINK])
+                self.assertIsNone(routing.active_right_source)
+
+    async def test_a_missing_right_link_is_relinked(self):
+        routing = _routing(_umc_selected(), "stereo")
+        connect = AsyncMock()
+        present = AsyncMock(return_value=True)
+        with patch("audio.pw_link.connect_ports", connect), patch("audio.pw_link.disconnect_ports", AsyncMock()), \
+                patch("audio.external_input.input_links_present", present):
+            await routing.sync()
+            present.side_effect = lambda source, channels: source != _umc_mic(2)
+            with self.assertRaisesRegex(RuntimeError, "links missing"):
+                await routing.sync()
+        self.assertGreater(len(connect.await_args_list), 2, "the lost link triggered a reconnect")
+
+    async def test_a_failed_right_link_unlinks_both_legs(self):
+        routing = _routing(_umc_selected(), "stereo")
+        connect = AsyncMock(side_effect=[None, RuntimeError("no right node")])
+        disconnect = AsyncMock()
+        with patch("audio.pw_link.connect_ports", connect), patch("audio.pw_link.disconnect_ports", disconnect):
+            with self.assertRaisesRegex(RuntimeError, "no right node"):
+                await routing.sync()
+        self.assertEqual(
+            [(c.args[0][0], c.args[1]) for c in disconnect.await_args_list], [self.FL_LINK, self.FR_LINK])
+        self.assertIsNone(routing.loopback_source_name)
+        self.assertIsNone(routing.active_right_source)
+
+    async def test_changing_to_a_single_node_input_drops_the_right_source(self):
+        routing = _routing(_umc_selected(), "stereo")
+        with patch("audio.pw_link.connect_ports", AsyncMock()), patch(
+                "audio.pw_link.disconnect_ports", AsyncMock()), patch(
+                "audio.external_input.input_links_present", AsyncMock(return_value=True)):
+            await routing.sync()
+            await routing.sync(_selected_overview())
+        self.assertEqual(routing.loopback_source_name, PRO_SOURCE)
+        self.assertIsNone(routing.active_right_source)
+        self.assertEqual(routing.active_channels, ("AUX2", "AUX3"))
+
+    async def test_surround_links_every_mapped_channel_from_its_node(self):
+        sync_mapped = AsyncMock()
+        routing = _routing(_umc_selected(), "surround", sync_mapped_input=sync_mapped,
+                           stop_mapped_input=AsyncMock())
+        await routing.sync()
+        self.assertEqual(sync_mapped.await_args.args[0], (
+            (f"{_umc_mic(1)}:capture_MONO", "fxroute_dsp:input_1"),
+            (f"{_umc_mic(2)}:capture_MONO", "fxroute_dsp:input_2")))
+        self.assertEqual(routing.mapped_source_name, _umc_mic(1))
+
+    def test_one_channel_on_both_sides_of_one_node_still_collapses(self):
+        from audio.external_input import _pair_channels
+        mono = {"left_channel": "MONO", "right_channel": "MONO"}
+        self.assertEqual(_pair_channels(mono), ("FL", "FR"))
+        self.assertEqual(_pair_channels(mono, right_source="other"), ("MONO", "MONO"))
+
+    async def test_loopback_rejects_one_channel_of_one_node_on_both_sides(self):
+        routing = _routing(_umc_selected(), "stereo")
+        with self.assertRaisesRegex(RuntimeError, "two distinct"):
+            await routing._ensure_loopback(_umc_mic(1), "MONO", "MONO", right_source=_umc_mic(1))
+
+
+class SplitNodeProbeTests(unittest.IsolatedAsyncioTestCase):
+    def _spec(self, entry):
+        return InputAutoSelect._probe_spec(SimpleNamespace(_capture_rate=48000), entry)
+
+    def _entry(self, **extra):
+        return {"source_key": _umc_mic(1), "left_channel": "MONO", "right_channel": "MONO",
+                "is_active_port": True, **extra}
+
+    def test_spec_names_the_right_node_when_it_differs(self):
+        spec = self._spec(self._entry(right_source=_umc_mic(2)))
+        self.assertEqual((spec.source_name, spec.right_source), (_umc_mic(1), _umc_mic(2)))
+
+    def test_one_channel_of_one_node_has_no_probe(self):
+        self.assertIsNone(self._spec(self._entry()))
+        self.assertIsNone(self._spec(self._entry(right_source=_umc_mic(1))))
+
+    def test_single_node_pair_is_unchanged(self):
+        spec = self._spec({"source_key": PRO_SOURCE, "left_channel": "AUX2", "right_channel": "AUX3"})
+        self.assertEqual((spec.left_channel, spec.right_channel, spec.right_source), ("AUX2", "AUX3", None))
+
+    async def test_probe_links_each_side_from_its_own_node(self):
+        spec = ProbeSpec(_umc_mic(1), "MONO", "MONO", 48000, None, False, right_source=_umc_mic(2))
+        connect = AsyncMock()
+        with patch("audio.pw_link.connect_ports", connect):
+            await InputProbe(spec, SimpleNamespace())._link(SimpleNamespace(returncode=None), "probe_1")
+        self.assertEqual([(c.args[0][0], c.args[1]) for c in connect.await_args_list], [
+            (f"{_umc_mic(1)}:capture_MONO", "probe_1:input_FL"),
+            (f"{_umc_mic(2)}:capture_MONO", "probe_1:input_FR")])
+
+    async def test_probe_of_a_single_node_pair_links_both_sides_from_that_node(self):
+        spec = ProbeSpec(PRO_SOURCE, "AUX2", "AUX3", 48000, None, False)
+        connect = AsyncMock()
+        with patch("audio.pw_link.connect_ports", connect):
+            await InputProbe(spec, SimpleNamespace())._link(SimpleNamespace(returncode=None), "probe_1")
+        self.assertEqual([c.args[0][0] for c in connect.await_args_list],
+                         [f"{PRO_SOURCE}:capture_AUX2", f"{PRO_SOURCE}:capture_AUX3"])
+
+
 class _Graph:
     """Fake pw-link graph for the runtime."""
 
@@ -411,6 +636,12 @@ class RuntimeIngressTests(unittest.IsolatedAsyncioTestCase):
     def test_edges_follow_the_program_position_order(self):
         self.assertEqual(mapped_ingress_edges("src", {"FR": "AUX1", "BR": "AUX7"}), (
             ("src:capture_AUX1", "fxroute_dsp:input_2"), ("src:capture_AUX7", "fxroute_dsp:input_8")))
+
+    def test_edges_take_each_positions_node_from_sources(self):
+        self.assertEqual(
+            mapped_ingress_edges("a", {"FL": "MONO", "FR": "MONO", "FC": "AUX3"}, {"FR": "b", "FC": "c"}),
+            (("a:capture_MONO", "fxroute_dsp:input_1"), ("b:capture_MONO", "fxroute_dsp:input_2"),
+             ("c:capture_AUX3", "fxroute_dsp:input_3")))
 
     async def test_mapped_links_are_set_replaced_and_cleared(self):
         graph = _Graph()
@@ -638,8 +869,8 @@ class _ApiHarness(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.context = {
             "device": {"card_base": CARD, "label": "Scarlett 18i20"},
-            "capture": {"source": PRO_SOURCE,
-                        "channels": [{"index": i + 1, "suffix": f"AUX{i}"} for i in range(8)]},
+            "capture": {"channels": [
+                {"index": i + 1, "suffix": f"AUX{i}", "source": PRO_SOURCE} for i in range(8)]},
             "mapping": None, "input_key": None,
         }
         self.change_calls = []

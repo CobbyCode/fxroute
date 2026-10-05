@@ -121,6 +121,44 @@ class MappedIngressLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["reason"], "idle")
 
 
+SPLIT_EXTRA = {"active_channels": ("MONO", "MONO"), "active_right_source": "alsa_input.mic2"}
+
+
+class SplitLoopbackLivenessTests(unittest.IsolatedAsyncioTestCase):
+    """A loopback whose right side comes from another capture node."""
+
+    async def _state(self, present):
+        patches = _base_patches(ext_source="alsa_input.mic1", external_extra=SPLIT_EXTRA)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+             mock.patch.object(main, "is_bluetooth_audio_streaming", return_value=False), \
+             mock.patch.object(main, "input_links_present", new=present) as links:
+            return await main.get_power_state(), links
+
+    async def test_both_sides_present_keeps_amp_hint_on(self):
+        payload, links = await self._state(mock.AsyncMock(return_value=True))
+        self.assertEqual(payload["reason"], "external-input")
+        self.assertEqual(links.await_args_list, [
+            mock.call("alsa_input.mic1", (("MONO", "FL"),)),
+            mock.call("alsa_input.mic2", (("MONO", "FR"),))])
+
+    async def test_missing_right_side_keeps_amp_hint_off(self):
+        payload, _ = await self._state(mock.AsyncMock(side_effect=lambda source, channels: source != "alsa_input.mic2"))
+        self.assertEqual(payload["reason"], "idle")
+
+    async def test_missing_left_side_does_not_probe_the_right_one(self):
+        payload, links = await self._state(mock.AsyncMock(return_value=False))
+        self.assertEqual(payload["reason"], "idle")
+        links.assert_awaited_once_with("alsa_input.mic1", (("MONO", "FL"),))
+
+    async def test_same_channel_on_both_sides_of_one_node_still_falls_back_to_fl_fr(self):
+        patches = _base_patches(ext_source="alsa_input.mic1", external_extra={"active_channels": ("MONO", "MONO")})
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+             mock.patch.object(main, "is_bluetooth_audio_streaming", return_value=False), \
+             mock.patch.object(main, "input_links_present", new=mock.AsyncMock(return_value=True)) as links:
+            await main.get_power_state()
+        links.assert_awaited_once_with("alsa_input.mic1", (("FL", "FL"), ("FR", "FR")))
+
+
 class ExternalLinkLivenessTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_link_keeps_amp_hint_off(self):
         patches = _base_patches(ext_source="alsa_input.scarlett")

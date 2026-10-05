@@ -1132,8 +1132,7 @@
         return {
             device: base ? { card_base: base, label: pair ? pair.device_label : selectedOutput().label } : null,
             capture: pair ? {
-                source: pair.source_key,
-                channels: suffixes.map((suffix, index) => ({ index: index + 1, suffix })),
+                channels: suffixes.map((suffix, index) => ({ index: index + 1, suffix, source: pair.source_key })),
             } : null,
             mapping: mapping ? { name: mapping.name, channels: { ...mapping.channels } } : null,
             input_key: mapping ? customMappingKey(base) : null,

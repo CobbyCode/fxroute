@@ -30,12 +30,19 @@ OverviewReader = Callable[[], dict[str, Any]]
 _LEGACY_CHANNELS = ("FL", "FR")
 
 
-def _pair_channels(current_input: dict[str, Any]) -> tuple[str, str]:
+def _pair_channels(current_input: dict[str, Any], right_source: str | None = None) -> tuple[str, str]:
     left = str(current_input.get("left_channel") or "").strip() or _LEGACY_CHANNELS[0]
     right = str(current_input.get("right_channel") or "").strip() or _LEGACY_CHANNELS[1]
-    if left == right:
+    if left == right and right_source is None:
+        # One node cannot feed both sides from one channel; two nodes can.
         left, right = _LEGACY_CHANNELS
     return left, right
+
+
+def _right_source(current_input: dict[str, Any], source_name: str) -> str | None:
+    """Capture node of the right channel when it is not the node of the left one."""
+    right_source = str(current_input.get("right_source") or "").strip()
+    return right_source if right_source and right_source != source_name else None
 
 
 @dataclass
@@ -69,6 +76,9 @@ class ExternalInputRouting:
         self.mapped_ingress_links: tuple[tuple[str, str], ...] = ()
         self._active_channels: tuple[str, str] = _LEGACY_CHANNELS
         self._pending_channels: tuple[str, str] | None = None
+        # Capture node of the right channel when it differs from the left one.
+        self._active_right_source: str | None = None
+        self._pending_right_source: str | None = None
         self._sync_lock = asyncio.Lock()
         self.monitor_task: asyncio.Task | None = None
         # Observed once per monitor tick; the source overview reads
@@ -92,11 +102,17 @@ class ExternalInputRouting:
         """Return the stereo channels of the established loopback link."""
         return (self._active_channels[0], self._active_channels[1])
 
+    @property
+    def active_right_source(self) -> str | None:
+        """Capture node of the established right link when it is not the left node."""
+        return self._active_right_source
+
     async def _disconnect_source(
         self,
         source_name: str | None,
         left_channel: str | None = None,
         right_channel: str | None = None,
+        right_source: str | None = None,
     ) -> None:
         normalized = (source_name or "").strip()
         if not normalized:
@@ -105,12 +121,17 @@ class ExternalInputRouting:
             pending = self._pending_channels
             if pending is not None:
                 left_channel, right_channel = pending
+                right_source = self._pending_right_source
             else:
                 left_channel, right_channel = self._active_channels
-        for channel, sink_side in ((left_channel, "FL"), (right_channel, "FR")):
+                right_source = self._active_right_source
+        for source, channel, sink_side in (
+            (normalized, left_channel, "FL"),
+            (right_source or normalized, right_channel, "FR"),
+        ):
             sink_port = f"fxroute_dsp_sink:playback_{sink_side}"
             await pw_link.disconnect_ports(
-                self._candidate_source_ports(normalized, str(channel or "").strip() or sink_side),
+                self._candidate_source_ports(source, str(channel or "").strip() or sink_side),
                 sink_port,
             )
 
@@ -124,15 +145,19 @@ class ExternalInputRouting:
         self.mapped_ingress_links = ()
         previous_source = self.loopback_source_name
         previous_channels = self._active_channels
+        previous_right_source = self._active_right_source
         self.loopback_source_name = None
         self.loopback_selection_key = None
         self._active_channels = _LEGACY_CHANNELS
+        self._active_right_source = None
         self._pending_channels = None
+        self._pending_right_source = None
         if previous_source:
             await self._disconnect_source(
                 previous_source,
                 left_channel=previous_channels[0],
                 right_channel=previous_channels[1],
+                right_source=previous_right_source,
             )
 
     async def _ensure_loopback(
@@ -141,46 +166,66 @@ class ExternalInputRouting:
         left_channel: str = _LEGACY_CHANNELS[0],
         right_channel: str = _LEGACY_CHANNELS[1],
         selection_key: str | None = None,
+        right_source: str | None = None,
     ) -> None:
         normalized = (source_name or "").strip()
         if not normalized:
             raise RuntimeError("Missing source name for external-input monitoring")
         left = (left_channel or "").strip() or _LEGACY_CHANNELS[0]
         right = (right_channel or "").strip() or _LEGACY_CHANNELS[1]
-        if left == right:
+        right_node = (right_source or "").strip() or None
+        if right_node == normalized:
+            right_node = None
+        if left == right and right_node is None:
             raise RuntimeError("External input requires two distinct stereo channels")
         identity = (selection_key or "").strip() or normalized
-        channels = ((left, "FL"), (right, "FR"))
+        legs = ((normalized, left, "FL"), (right_node or normalized, right, "FR"))
         if (
             self.loopback_selection_key == identity
             and self.loopback_source_name == normalized
             and self._active_channels == (left, right)
-            and await input_links_present(normalized, channels)
+            and self._active_right_source == right_node
+            and await self._loopback_links_present(legs)
         ):
             return
         await self.disable()
         self._pending_channels = (left, right)
+        self._pending_right_source = right_node
         try:
-            for channel, sink_side in ((left, "FL"), (right, "FR")):
-                source_ports = self._candidate_source_ports(normalized, channel)
+            for source, channel, sink_side in legs:
+                source_ports = self._candidate_source_ports(source, channel)
                 sink_port = f"fxroute_dsp_sink:playback_{sink_side}"
                 await pw_link.connect_ports(source_ports, sink_port)
-            if not await input_links_present(normalized, channels):
+            if not await self._loopback_links_present(legs):
                 raise RuntimeError("External input links missing after reconnect")
         except BaseException:
             try:
                 await self._disconnect_source(normalized)
             finally:
                 self._pending_channels = None
+                self._pending_right_source = None
             raise
         self._pending_channels = None
+        self._pending_right_source = None
         self.loopback_source_name = normalized
         self.loopback_selection_key = identity
         self._active_channels = (left, right)
+        self._active_right_source = right_node
         logger.info(
-            "Enabled direct external-input monitoring from %s (%s->L, %s->R) to fxroute_dsp_sink",
-            normalized, left, right,
+            "Enabled direct external-input monitoring from %s (%s->L) and %s (%s->R) to fxroute_dsp_sink",
+            normalized, left, right_node or normalized, right,
         )
+
+    @staticmethod
+    async def _loopback_links_present(legs: tuple[tuple[str, str, str], ...]) -> bool:
+        """Check every (source, channel, sink side) leg, one live-graph read per source."""
+        channels_by_source: dict[str, list[tuple[str, str]]] = {}
+        for source, channel, sink_side in legs:
+            channels_by_source.setdefault(source, []).append((channel, sink_side))
+        for source, channels in channels_by_source.items():
+            if not await input_links_present(source, tuple(channels)):
+                return False
+        return True
 
     async def sync(self, source_overview: dict[str, Any] | None = None) -> dict[str, Any]:
         async with self._sync_lock:
@@ -207,7 +252,8 @@ class ExternalInputRouting:
         if not source_name:
             await self.disable()
             return overview
-        left, right = _pair_channels(current_input)
+        right_source = _right_source(current_input, str(source_name))
+        left, right = _pair_channels(current_input, right_source)
         surround = self._deps.get_output_mode is not None and self._deps.get_output_mode() == "surround"
         custom_mapping = current_input.get("custom_mapping")
         if surround and isinstance(custom_mapping, dict):
@@ -240,13 +286,15 @@ class ExternalInputRouting:
             left,
             right,
             selection_key=str(current_input.get("key") or ""),
+            right_source=right_source,
         )
         self._remembered_input = dict(current_input)
         return overview
 
     async def _sync_mapped(self, source_name: str, custom_mapping: dict[str, Any]) -> None:
         """Link the mapped capture channels straight to the engine inputs."""
-        edges = mapped_ingress_edges(source_name, custom_mapping.get("suffixes") or {})
+        edges = mapped_ingress_edges(
+            source_name, custom_mapping.get("suffixes") or {}, custom_mapping.get("sources"))
         if self._deps.sync_mapped_input is None or not edges:
             await self.disable()
             raise RuntimeError("Mapped surround ingress is unavailable")

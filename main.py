@@ -268,7 +268,16 @@ def _active_line_source_for_power() -> str | None:
     return None
 
 
-def _external_input_link_channels() -> tuple[str, str]:
+def _external_input_right_source() -> str | None:
+    """Capture node of the established right link when it is not the left node."""
+    try:
+        raw = getattr(external_input, "active_right_source", None)
+    except Exception:
+        raw = None
+    return raw.strip() or None if isinstance(raw, str) else None
+
+
+def _external_input_link_channels(right_source: str | None = None) -> tuple[str, str]:
     """Return the stereo channels of the established external-input link."""
     try:
         raw = getattr(external_input, "active_channels", None)
@@ -279,7 +288,7 @@ def _external_input_link_channels() -> tuple[str, str]:
         right = str(raw[1] or "").strip() or "FR"
     else:
         left, right = "FL", "FR"
-    if left == right:
+    if left == right and right_source is None:
         left, right = "FL", "FR"
     return left, right
 
@@ -309,9 +318,17 @@ async def _active_line_source_for_power_async() -> str | None:
     except Exception:
         external_source = ""
     if external_source:
-        left, right = _external_input_link_channels()
+        right_source = _external_input_right_source()
+        left, right = _external_input_link_channels(right_source)
         try:
-            if await input_links_present(external_source, ((left, "FL"), (right, "FR"))):
+            if right_source is None:
+                present = await input_links_present(external_source, ((left, "FL"), (right, "FR")))
+            else:
+                present = (
+                    await input_links_present(external_source, ((left, "FL"),))
+                    and await input_links_present(right_source, ((right, "FR"),))
+                )
+            if present:
                 return "external-input"
         except Exception:
             return None

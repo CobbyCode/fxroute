@@ -638,6 +638,7 @@ def _parse_pactl_sources_detailed(output: str) -> dict[str, dict[str, Any]]:
                 'ports': [],
                 'active_port': None,
                 'alsa_card': None,
+                'alsa_card_name': None,
             }
             in_ports = False
             continue
@@ -662,6 +663,8 @@ def _parse_pactl_sources_detailed(output: str) -> dict[str, dict[str, Any]]:
             in_ports = False
         elif stripped.startswith('device.description = '):
             current['device_description'] = _strip_quoted_value(stripped)
+        elif stripped.startswith('alsa.card_name = ') and current['alsa_card_name'] is None:
+            current['alsa_card_name'] = _strip_quoted_value(stripped) or None
         elif stripped.startswith(('api.alsa.pcm.card = ', 'alsa.card = ')) and current['alsa_card'] is None:
             current['alsa_card'] = _safe_int(_strip_quoted_value(stripped))
         elif stripped == 'Ports:':
