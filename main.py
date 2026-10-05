@@ -6229,7 +6229,10 @@ async def save_audio_source_selection_route(request: Request):
     try:
         body = await request.json()
         mode = str(body.get("mode", "")).strip()
-        input_key = str(body.get("inputKey", body.get("input_key", ""))).strip() or None
+        # Clients send a JSON null to leave the input (App playback).  Null is
+        # "no input", never the literal string "None".
+        raw_key = body.get("inputKey", body.get("input_key", ""))
+        input_key = ("" if raw_key is None else str(raw_key)).strip() or None
     except Exception:
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"mode": <string>, "inputKey": <string?>}')
 
