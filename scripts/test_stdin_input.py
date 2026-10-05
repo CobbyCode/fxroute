@@ -19,6 +19,7 @@ class MemorySink:
         self.frames = bytearray()
         self.finished = self.aborted = False
         self.linked = True
+        self.repairs = 0
         self.repair_error = False
         self.allow_write = asyncio.Event()
         self.allow_write.set()
@@ -48,6 +49,7 @@ class MemorySink:
     async def repair_links(self):
         if self.repair_error:
             raise RuntimeError("Missing DSP ingress")
+        self.repairs += 1
         self.linked = True
 
 
@@ -318,6 +320,50 @@ time.sleep(60)
         self.assertEqual((await self.event(reader))["code"], "routing-lost")
         await asyncio.wait_for(reader.read(), 2)
         self.assertTrue(self.sinks[0].aborted)
+
+    async def test_snapshot_reports_the_channel_map_of_a_layout_stream(self):
+        self.assertIsNone(self.service.snapshot()["channel_map"])
+        await self.start_writer(channels=6)
+        self.assertEqual(self.service.snapshot()["channel_map"], ["FL", "FR", "FC", "LFE", "BL", "BR"])
+        self.assertEqual((self.service.snapshot()["left"], self.service.snapshot()["right"]), (1, 2))
+
+    async def test_snapshot_of_a_plain_pair_has_no_channel_map(self):
+        await self.start_writer(channels=8, left=5, right=6)
+        snapshot = self.service.snapshot()
+        self.assertIsNone(snapshot["channel_map"])
+        self.assertEqual((snapshot["left"], snapshot["right"], snapshot["channels"]), (5, 6, 8))
+
+    async def test_explicit_channel_map_reaches_the_sink_spec(self):
+        await self.start_writer(channels=10, channel_map=["FL", "FR", "-", "-", "BL", "BR"])
+        self.assertEqual(dict(self.sinks[0].spec.routes), {"FL": 1, "FR": 2, "BL": 5, "BR": 6})
+        self.assertEqual(self.service.snapshot()["channel_map"][:6], ["FL", "FR", "-", "-", "BL", "BR"])
+
+    async def test_resync_repairs_a_routed_stream_at_once(self):
+        reader, writer = await self.start_writer(channels=6)
+        self.sinks[0].linked = False
+        await self.service.resync_routing()
+        self.assertEqual((self.sinks[0].repairs, self.sinks[0].linked), (1, True))
+        self.assertTrue(self.service.snapshot()["routed"])
+
+    async def test_resync_leaves_a_healthy_stream_alone(self):
+        await self.start_writer(channels=6)
+        await self.service.resync_routing()
+        self.assertEqual(self.sinks[0].repairs, 0)
+
+    async def test_resync_without_a_stream_does_nothing(self):
+        await self.service.resync_routing()
+        reader, _ = await self.connect(channels=6)
+        self.assertEqual((await self.event(reader))["event"], "accepted")
+        await self.service.resync_routing()
+        self.assertEqual(self.sinks, [])
+
+    async def test_failed_resync_is_left_to_the_link_watch(self):
+        reader, _ = await self.start_writer(channels=6)
+        self.sinks[0].linked = False
+        self.sinks[0].repair_error = True
+        await self.service.resync_routing()
+        self.assertFalse(self.service.snapshot()["routed"])
+        self.assertEqual((await self.event(reader))["code"], "routing-lost")
 
     async def test_oversized_header_does_not_reserve_writer(self):
         reader, writer = await asyncio.open_unix_connection(self.path)

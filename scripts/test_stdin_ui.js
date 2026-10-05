@@ -32,6 +32,7 @@ vm.runInContext([
     extractFunction('nonAppSourceModeActive'),
     extractFunction('isFooterSignalActive'),
     extractFunction('activateSourceSwitcherEntry'),
+    extractFunction('formatStdinRouting'),
 ].join('\n'), sandbox);
 sandbox.PlaybackCore = { isStreamingFooterSource: () => false, streamingFooterData: () => null };
 
@@ -54,6 +55,17 @@ assert.equal(sandbox.isFooterSignalActive(), false);
 sandbox.state.settings.sourceMode = { ...overview,
     stdin: { ...overview.stdin, state: 'streaming', routed: true } };
 assert.equal(sandbox.isFooterSignalActive(), true);
+
+// The status line names the routed pair, or every mapped channel of a layout.
+assert.equal(sandbox.formatStdinRouting({ channels: 2, left: 1, right: 2, channel_map: null }), '1 → L / 2 → R');
+assert.equal(sandbox.formatStdinRouting({ channels: 8, left: 5, right: 6 }), '5 → L / 6 → R');
+assert.equal(sandbox.formatStdinRouting({
+    channels: 8, left: 1, right: 2, channel_map: ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR'],
+}), '1 → FL, 2 → FR, 3 → FC, 4 → LFE, 5 → RL, 6 → RR, 7 → SL, 8 → SR');
+assert.equal(sandbox.formatStdinRouting({
+    channels: 10, left: 2, right: 1, channel_map: ['FR', 'FL', '-', '-', 'SL', 'SR', '-', '-', '-', '-'],
+}), '1 → FR, 2 → FL, 5 → SL, 6 → SR');
+assert.match(appSource, /\$\{formatStdinRouting\(stdin\)\}/, 'the status line uses the routing summary');
 
 // An unconfirmed Bluetooth loss keeps the mode; its switcher entry stays too.
 const bluetoothBlip = { mode: 'bluetooth-input', inputs: [], stdin: {},

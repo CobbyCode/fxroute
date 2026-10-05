@@ -73,17 +73,19 @@ def mapped_ingress_edges(
     source: str,
     suffixes: Mapping[str, str],
     sources: Mapping[str, str] | None = None,
+    port_kind: str = "capture",
 ) -> tuple[tuple[str, str], ...]:
-    """Direct capture-port -> engine-input edges of a custom input mapping.
+    """Direct source-port -> engine-input edges of a multichannel ingress.
 
-    ``suffixes`` maps program positions to capture channel suffixes; the
-    engine input of a position is its place in ``SURROUND_POSITIONS``.
-    ``sources`` names the capture node of a position, ``source`` is the
-    node of every position it does not list.
+    ``suffixes`` maps program positions to channel suffixes; the engine
+    input of a position is its place in ``SURROUND_POSITIONS``. ``sources``
+    names the node of a position, ``source`` is the node of every position
+    it does not list. ``port_kind`` is ``capture`` for a capture node and
+    ``output`` for a playback stream such as the STDIN adapter.
     """
     nodes = sources or {}
     return tuple(
-        (f"{nodes.get(position) or source}:capture_{suffixes[position]}", f"{DSP_NODE_NAME}:input_{index + 1}")
+        (f"{nodes.get(position) or source}:{port_kind}_{suffixes[position]}", f"{DSP_NODE_NAME}:input_{index + 1}")
         for index, position in enumerate(SURROUND_POSITIONS)
         if position in suffixes
     )
@@ -497,6 +499,12 @@ class DSPRuntime:
 
     def _engine_running(self) -> bool:
         return self._process is not None and getattr(self._process, "returncode", None) is None
+
+    @property
+    def surround_engine(self) -> bool:
+        """Whether the running engine exposes the eight Surround program inputs."""
+        return bool(self._config and self._engine_running()
+                    and self._config.input_count == len(SURROUND_POSITIONS))
 
     def read_loudness_runtime(self,
                               extras: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -1351,6 +1359,18 @@ class DSPRuntime:
         if self._engine_running():
             async with self._lock:
                 await self._reconcile_ingress_links(strict_mapped=True)
+
+    async def release_mapped_ingress(self, edges: Sequence[tuple[str, str]]) -> None:
+        """Clear the mapped ingress only while it is still ``edges``.
+
+        A multichannel stream that ends must not drop the ingress a newer
+        owner (another input or a measurement resume) has installed since.
+        """
+        released = tuple((str(source), str(target)) for source, target in edges)
+        if self._measurement_mapped_ingress == released:
+            self._measurement_mapped_ingress = ()
+        if self._mapped_ingress == released:
+            await self.set_mapped_ingress(())
 
     async def _reconcile_ingress_links(self, *, strict_mapped: bool = False) -> None:
         count = self._config.input_count if self._config else 2

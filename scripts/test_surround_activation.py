@@ -83,6 +83,23 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(head["input_modes"], {})
         self.assertEqual(head["modes"], self.state["modes"])
 
+    async def test_live_stdin_stream_is_resynced_after_the_mode_switch(self):
+        stdin = SimpleNamespace(resync_routing=AsyncMock())
+        order = []
+        self.input.sync.side_effect = lambda: order.append("external")
+        stdin.resync_routing.side_effect = lambda: order.append("stdin")
+        with patch.object(main.runtime, "stdin_input", stdin):
+            await self.switch()
+        self.assertEqual(order, ["external", "stdin"])
+
+    async def test_stdin_stream_is_resynced_after_a_reverted_switch_too(self):
+        stdin = SimpleNamespace(resync_routing=AsyncMock())
+        self.input.sync.side_effect = [RuntimeError("decoder did not start"), None]
+        with patch.object(main.runtime, "stdin_input", stdin):
+            with self.assertRaisesRegex(RuntimeError, "decoder did not start"):
+                await self.switch()
+        stdin.resync_routing.assert_awaited_once_with()
+
     async def test_invalid_mutation_has_no_ingress_or_clock_side_effects(self):
         with self.assertRaises(main.HTTPException) as raised:
             await main._apply_audio_output_state_body({"expected_revision": self.state["revision"],

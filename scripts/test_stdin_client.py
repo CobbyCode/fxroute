@@ -75,6 +75,71 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(headers[0]["left"], 5)
         self.assertEqual(stdout, b"")
 
+    def serve_header(self):
+        headers = []
+
+        def receive():
+            with self.listener.accept()[0] as peer:
+                peer.settimeout(3)
+                stream = peer.makefile("rb")
+                headers.append(json.loads(stream.readline()))
+                peer.sendall(b'{"event":"accepted","session_id":"abc"}\n{"event":"ready"}\n')
+                stream.read()
+                peer.sendall(b'{"event":"done"}\n')
+                stream.close()
+
+        thread = threading.Thread(target=receive)
+        thread.start()
+        return headers, thread
+
+    def run_cli(self, *args, payload=b""):
+        child = subprocess.Popen(
+            [sys.executable, str(ROOT / "scripts/fxroute_stdin.py"), "stdin", "--socket", self.path,
+             "--format", "s16le", "--rate", "48000", *args],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.children.append(child)
+        stdout, stderr = child.communicate(payload, timeout=5)
+        return child.returncode, stdout, stderr.decode()
+
+    def test_channel_map_option_is_sent_as_normalized_positions(self):
+        headers, thread = self.serve_header()
+        code, stdout, stderr = self.run_cli("--channels", "8", "--channel-map", "fl,fr,fc,lfe,RL,RR,sl,sr",
+                                            payload=b"\0" * 32)
+        thread.join(timeout=4)
+        self.assertEqual((code, stdout), (0, b""), stderr)
+        self.assertEqual(headers[0]["channel_map"], ["FL", "FR", "FC", "LFE", "BL", "BR", "SL", "SR"])
+        self.assertNotIn("left", headers[0])
+        self.assertNotIn("right", headers[0])
+
+    def test_common_channel_count_sends_its_default_layout(self):
+        headers, thread = self.serve_header()
+        code, _, stderr = self.run_cli("--channels", "6", payload=b"\0" * 12)
+        thread.join(timeout=4)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(headers[0]["channel_map"], ["FL", "FR", "FC", "LFE", "BL", "BR"])
+
+    def test_stereo_still_sends_the_plain_pair(self):
+        headers, thread = self.serve_header()
+        code, _, stderr = self.run_cli("--channels", "2", payload=b"\0" * 8)
+        thread.join(timeout=4)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual((headers[0]["left"], headers[0]["right"]), (1, 2))
+        self.assertNotIn("channel_map", headers[0])
+
+    def test_invalid_selection_exits_2_before_connecting(self):
+        self.listener.settimeout(0.2)
+        for args, message in ((("--channels", "8", "--channel-map", "FL,FR,FL"), "more than once"),
+                              (("--channels", "8", "--channel-map", "FL,FC"), "include FL and FR"),
+                              (("--channels", "8", "--channel-map", "FL,FR", "--left", "1", "--right", "2"),
+                               "either --channel-map or --left/--right"),
+                              (("--channels", "5"), "--channel-map")):
+            with self.subTest(args=args):
+                code, stdout, stderr = self.run_cli(*args)
+                self.assertEqual((code, stdout), (2, b""))
+                self.assertIn(message, stderr)
+                with self.assertRaises(socket.timeout):
+                    self.listener.accept()
+
     def test_server_error_interrupts_idle_stdin_before_and_after_ready(self):
         for ready in (False, True):
             with self.subTest(ready=ready):

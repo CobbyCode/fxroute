@@ -100,10 +100,14 @@ def main(argv: list[str] | None = None) -> int:
     stdin.add_argument("--channels", required=True, type=int)
     stdin.add_argument("--left", type=int, help="1-based channel for the left program input")
     stdin.add_argument("--right", type=int, help="1-based channel for the right program input")
+    stdin.add_argument(
+        "--channel-map", metavar="POSITIONS",
+        help="program position of each PCM channel in order, e.g. FL,FR,FC,LFE,RL,RR,SL,SR; "
+             "positions: FL FR FC LFE RL RR SL SR, '-' skips a channel (excludes --left/--right)")
     stdin.add_argument("--socket", help="Override the local FXRoute socket path")
     args = parser.parse_args(argv)
     metadata = dict(version=1, format=args.format, rate=args.rate, channels=args.channels)
-    for name in ("left", "right"):
+    for name in ("left", "right", "channel_map"):
         if getattr(args, name) is not None:
             metadata[name] = getattr(args, name)
     try:

@@ -527,7 +527,7 @@ from audio.input_auto_select import (
 )
 from audio.input_presence import InputPresenceFeed
 from audio.stdin_input import StdinInputDependencies, StdinInputService
-from audio.stdin_pipewire import PipeWirePcmSink, pcm_adapter_error
+from audio.stdin_pipewire import PipeWirePcmSink, StdinIngress, pcm_adapter_error
 from audio.stdin_protocol import socket_path
 from audio.source_feed import SourceOverviewFeed, SourceTransitionLock
 from audio.source_transitions import SourceTransitionDependencies, SourceTransitions
@@ -3131,7 +3131,7 @@ async def lifespan(app: FastAPI):
 
         try:
             runtime.stdin_input = StdinInputService(StdinInputDependencies(
-                sink_factory=PipeWirePcmSink,
+                sink_factory=_build_stdin_sink,
                 on_state_changed=lambda: source_transitions.publish_stdin_state(),
                 adapter_error=pcm_adapter_error,
             ))
@@ -5605,6 +5605,36 @@ async def _stop_mapped_input() -> None:
         await runtime.dsp_runtime.set_mapped_ingress(())
 
 
+async def _set_stdin_ingress(edges: tuple[tuple[str, str], ...]) -> None:
+    """Link a multichannel STDIN stream straight to the Surround engine inputs."""
+    if runtime.dsp_runtime is None:
+        raise RuntimeError("Surround needs an active native DSP runtime")
+    if _measurement_session_owns_live_rate():
+        raise RuntimeError("A measurement session owns the audio path")
+    await runtime.dsp_runtime.set_mapped_ingress(edges)
+    if not await runtime.dsp_runtime.verify():
+        raise RuntimeError("STDIN DSP links could not be verified")
+
+
+async def _release_stdin_ingress(edges: tuple[tuple[str, str], ...]) -> None:
+    if runtime.dsp_runtime is not None:
+        await runtime.dsp_runtime.release_mapped_ingress(edges)
+
+
+def _build_stdin_sink(spec, session_id: str) -> PipeWirePcmSink:
+    return PipeWirePcmSink(spec, session_id, ingress=StdinIngress(
+        surround_active=lambda: runtime.dsp_runtime is not None and runtime.dsp_runtime.surround_engine,
+        set_edges=_set_stdin_ingress,
+        release_edges=_release_stdin_ingress,
+    ))
+
+
+async def _resync_stdin_routing() -> None:
+    """Move a live multichannel STDIN stream to the route of the new output mode."""
+    if runtime.stdin_input is not None:
+        await runtime.stdin_input.resync_routing()
+
+
 @app.get("/api/audio/surround")
 async def get_surround_input_status():
     return {"carrier_rate_hz": 48000, "carrier_owned": _surround_carrier_owned,
@@ -5661,7 +5691,6 @@ async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | N
                                                            input_modes_override=input_modes_override)
         if sync_ingress:
             await external_input.sync()
-        return result
     except BaseException:
         service = get_output_service()
         head = service.load()
@@ -5671,7 +5700,10 @@ async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | N
         await _set_surround_carrier_owned(previous_owned)
         if sync_ingress:
             await external_input.sync()
+        await _resync_stdin_routing()
         raise
+    await _resync_stdin_routing()
+    return result
 
 
 async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dict | None = None,

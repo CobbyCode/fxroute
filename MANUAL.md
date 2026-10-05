@@ -118,7 +118,7 @@ Disconnect in **Technical settings → Providers**; playback stops until you sig
 
 ### 4.7 STDIN pipe input
 
-Select **STDIN** under **Source → Input**, then run the pipeline as the FXRoute audio user. The CLI accepts raw interleaved PCM; format, sample rate and channel count are required. For more than two channels, choose the channel feeding the left and right program inputs with `--left` and `--right`. The transport retains all input channels, while the current DSP program bus processes the selected pair. Mono is copied to both program inputs. Output continues through the configured FXRoute DSP and hardware routing. This mode uses the running FXRoute/PipeWire service and does not write processed PCM to stdout.
+Select **STDIN** under **Source → Input**, then run the pipeline as the FXRoute audio user. The CLI accepts raw interleaved PCM and sends it to the running FXRoute/PipeWire service; nothing is written to stdout and diagnostics go to stderr. Output continues through the configured FXRoute DSP and hardware routing.
 
 ```bash
 ffmpeg -v error -i album.flac -f s32le -acodec pcm_s32le -ar 48000 -ac 2 - \
@@ -127,11 +127,59 @@ ffmpeg -v error -i album.flac -f s32le -acodec pcm_s32le -ar 48000 -ac 2 - \
 sox input.wav -t raw -e signed-integer -b 16 -L -r 44100 -c 2 - \
   | fxroute stdin --format s16le --rate 44100 --channels 2
 
+ffmpeg -v error -i movie.mkv -f f32le -acodec pcm_f32le -ar 48000 -ac 6 - \
+  | fxroute stdin --format f32le --rate 48000 --channels 6
+
 ffmpeg -v error -i multichannel.wav -f f32le -acodec pcm_f32le -ar 48000 -ac 8 - \
   | fxroute stdin --format f32le --rate 48000 --channels 8 --left 5 --right 6
 ```
 
-Supported formats are `s16le`, packed 3-byte `s24le`, `s32le` and `f32le` with 1–32 channels at 8000–384000 Hz. The client may connect before STDIN is selected and then waits for selection; stdout stays empty and diagnostics go to stderr. Exit code is 0 after `done`, 2 for CLI/metadata errors, 1 for runtime errors, 130 for SIGINT and 143 for SIGTERM. A fixed sample-rate policy resamples the pipe stream to the graph rate; STDIN never changes the graph clock itself. An active measurement session stops a running STDIN stream and blocks new writers until it is released.
+**Options** (`fxroute stdin …`):
+
+| Option | Meaning |
+| --- | --- |
+| `--format` | Required. `s16le`, packed 3-byte `s24le`, `s32le` or `f32le`. |
+| `--rate` | Required. Sample rate of the pipe, 8000–384000 Hz. |
+| `--channels` | Required. Channels per frame, 1–32. |
+| `--left`, `--right` | Optional pair. 1-based pipe channels that feed the left and right program inputs; only the front pair is used. Give both. |
+| `--channel-map` | Optional. The program channel of every pipe channel, in order (see below). Cannot be combined with `--left` / `--right`. |
+| `--socket` | Optional. Overrides the path of the local FXRoute socket (default `$XDG_RUNTIME_DIR/fxroute/stdin.sock`). |
+
+**Program channels.** A channel map names the eight FXRoute program channels: `FL` Front L, `FR` Front R, `FC` Center, `LFE`, `RL` Rear L, `RR` Rear R, `SL` Side L and `SR` Side R (`BL` and `BR` are accepted for `RL` and `RR`; names are not case-sensitive). `-` leaves a pipe channel unused.
+
+**Default layouts.** Without `--left`, `--right` or `--channel-map`, the channel count picks the layout. The channel order is the one of WAV, ALSA and PipeWire, so a pipe from `ffmpeg`, `sox` or `pw-cat` usually fits as it is:
+
+| `--channels` | Pipe channels 1, 2, 3 … |
+| --- | --- |
+| 1 | Mono, copied to Front L and Front R |
+| 2 | `FL`, `FR` |
+| 4 | `FL`, `FR`, `RL`, `RR` |
+| 6 | `FL`, `FR`, `FC`, `LFE`, `RL`, `RR` |
+| 8 | `FL`, `FR`, `FC`, `LFE`, `RL`, `RR`, `SL`, `SR` |
+
+Every other channel count (3, 5, 7 and above 8) has no default and needs `--channel-map`, or `--left` and `--right`.
+
+**Explicit channel map.** For any other layout, list the program channel of pipe channel 1, 2, 3 … separated by commas:
+
+- Front L and Front R are required, every program channel may appear once, and the map may stop before `--channels`; the pipe channels after the last entry stay unused.
+- A 5.1 pipe whose surround pair belongs on the side speakers: `--channels 6 --channel-map FL,FR,FC,LFE,SL,SR`.
+- A 7.1 pipe whose channels 5 and 6 are the side pair (the default expects the rear pair there): `--channels 8 --channel-map FL,FR,FC,LFE,SL,SR,RL,RR`.
+- 10 pipe channels of which only the first eight are speakers: `--channels 10 --channel-map FL,FR,FC,LFE,RL,RR,SL,SR`.
+- A stream with a gap, Center on channel 4 and nothing on channel 3: `--channels 4 --channel-map FL,FR,-,FC`.
+- Left and right swapped: `--channels 2 --channel-map FR,FL`.
+
+`--left` and `--right` remain the short form for picking a stereo pair out of a wider stream (`--left 5 --right 6` equals `--channel-map -,-,-,-,FL,FR`). The CLI refuses an invalid selection (a program channel named twice, an unknown name, a missing Front L or Front R, a map longer than `--channels`, or a map together with `--left` / `--right`) with exit code 2 before it connects.
+
+**Output modes.** The map decides where the channels go in each output mode (section 5.3):
+
+- **Stereo** and **Stereo + Sub** use the front pair only, exactly as before: `FL` and `FR` feed the left and right program inputs, and the other channels are read but not played. There is no downmix; use `--left` / `--right` or a map to choose which two pipe channels are the front pair.
+- **Surround** feeds every mapped channel directly to its program channel: Center, LFE, Side and Rear reach their speakers, the Surround fold-down and bass management apply as for any Surround source, and an unmapped program channel stays silent. The front pair then takes the same direct path as the other channels, so all channels stay time-aligned.
+- A stream that maps only the front pair (every mono and stereo stream and every `--left` / `--right` stream) behaves the same in every output mode.
+- Changing the output mode while a stream is playing moves it to the route of the new mode; the front pair never plays twice. A change of output device or routing and an engine restart relink the stream by themselves.
+
+Under **Technical settings → Source** the STDIN status line shows the format, rate, channel count and routing, for example `f32le · 48 kHz · 6 ch · 1 → FL, 2 → FR, 3 → FC, 4 → LFE, 5 → RL, 6 → RR` (`5 → L / 6 → R` for a `--left` / `--right` pair).
+
+The client may connect before STDIN is selected and then waits for selection. Exit code is 0 after `done`, 2 for CLI/metadata errors, 1 for runtime errors, 130 for SIGINT and 143 for SIGTERM. A fixed sample-rate policy resamples the pipe stream to the graph rate; STDIN never changes the graph clock itself. An active measurement session stops a running STDIN stream and blocks new writers until it is released; the stream does not resume, so start the pipeline again afterwards. The amplifier power hint (section 10) reports `stdin` for a playing multichannel stream as for any other.
 
 ### 4.8 Input auto-select
 

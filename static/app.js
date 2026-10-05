@@ -2194,6 +2194,17 @@ function normalizeOutputModeName(mode) {
     return isSubwooferModeName(mode) ? mode : 'stereo';
 }
 
+function formatStdinRouting(stdin) {
+    // The engine calls the rear pair BL/BR; the CLI and PipeWire call it RL/RR.
+    const labels = { BL: 'RL', BR: 'RR' };
+    const map = Array.isArray(stdin.channel_map) ? stdin.channel_map : [];
+    if (!map.length) return `${stdin.left} → L / ${stdin.right} → R`;
+    return map
+        .map((position, index) => (position === '-' ? '' : `${index + 1} → ${labels[position] || position}`))
+        .filter(Boolean)
+        .join(', ');
+}
+
 function formatSampleRateKhz(rate) {
     const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
     return mod.formatSampleRateKhz(rate);
@@ -2741,7 +2752,7 @@ function renderSourceSection() {
     }
     if (elements.settingsStdinStatus) {
         const details = stdin.channels
-            ? `${stdin.format} · ${formatSampleRateKhz(stdin.rate)} · ${stdin.channels} ch · ${stdin.left} → L / ${stdin.right} → R`
+            ? `${stdin.format} · ${formatSampleRateKhz(stdin.rate)} · ${stdin.channels} ch · ${formatStdinRouting(stdin)}`
             : '';
         const labels = {
             unavailable: 'Unavailable', waiting: 'Waiting for PCM',

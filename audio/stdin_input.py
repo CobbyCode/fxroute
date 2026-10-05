@@ -86,6 +86,7 @@ class StdinInputService:
             "available": available, "selectable": available, "state": state,
             "selected": self._selected, "session_id": session.id if session else None,
             **{key: getattr(spec, key) if spec else None for key in ("format", "rate", "channels", "left", "right")},
+            "channel_map": list(spec.channel_map) if spec and spec.channel_map else None,
             "routed": bool(session and session.routed and self._selected),
             "frames_received": session.frames_received if session else 0,
             "error": dict(self._error) if self._error else None,
@@ -296,21 +297,42 @@ class StdinInputService:
                 continue
             try:
                 async with asyncio.timeout(2):
-                    if not await session.sink.links_present():
-                        async with self._lock:
-                            session.routed = False
-                            self._notify()
-                            if self._session is not session or not self._selected or self._measurement_active:
-                                raise RuntimeError("STDIN no longer owns the route")
-                            await session.sink.repair_links()
-                            session.routed = True
-                            self._notify()
+                    await self._ensure_routed(session)
             except (OSError, RuntimeError, TimeoutError) as exc:
                 raise _StreamError("routing-lost", "STDIN links could not be restored") from exc
             current = self.snapshot()["state"]
             if current != previous:
                 self._notify()
                 previous = current
+
+    async def _ensure_routed(self, session: _Session) -> None:
+        """Repair the session's links when the live graph no longer matches."""
+        if await session.sink.links_present():
+            return
+        async with self._lock:
+            session.routed = False
+            self._notify()
+            if self._session is not session or not self._selected or self._measurement_active:
+                raise RuntimeError("STDIN no longer owns the route")
+            await session.sink.repair_links()
+            session.routed = True
+            self._notify()
+
+    async def resync_routing(self) -> None:
+        """Re-link the current stream now, e.g. after the output mode changed.
+
+        The link watch converges on its own within a tick; this only closes
+        the gap right after an engine rebuild. A failure is left to the watch,
+        which owns the routing-lost verdict.
+        """
+        session = self._session
+        if session is None or session.sink is None or session.state not in {"ready", "streaming"}:
+            return
+        try:
+            async with asyncio.timeout(5):
+                await self._ensure_routed(session)
+        except (OSError, RuntimeError, TimeoutError):
+            logger.warning("STDIN routing could not be re-synced after an output change")
 
     async def _cleanup(self, session: _Session | None, writer: asyncio.StreamWriter) -> None:
         try:

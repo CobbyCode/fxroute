@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.stdin_protocol import parse_spec
-from audio.stdin_pipewire import PipeWirePcmSink, pw_cat_argv
+from audio.stdin_pipewire import PipeWirePcmSink, StdinIngress, pw_cat_argv
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -146,6 +146,210 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_timed_out_buffered_finish_does_not_cancel_pipe_close_callback(self):
         await self._interrupt_buffered_finish(timeout=True)
+
+
+class FakeIngress:
+    """Engine side of the direct route; records every call in graph order."""
+
+    def __init__(self, log, surround=True):
+        self.log = log
+        self.surround = surround
+        self.edges = ()
+        self.set_error = None
+        self.surround_checks = 0
+
+    def hooks(self):
+        return StdinIngress(self.surround_active, self.set_edges, self.release_edges, self.edges_present)
+
+    def surround_active(self):
+        self.surround_checks += 1
+        return self.surround
+
+    async def set_edges(self, edges):
+        self.log.append(("set", edges))
+        if self.set_error:
+            self.edges = edges
+            raise self.set_error
+        self.edges = edges
+
+    async def release_edges(self, edges):
+        self.log.append(("release", edges))
+        if self.edges == edges:
+            self.edges = ()
+
+    async def edges_present(self, edges):
+        return bool(edges) and self.edges == edges
+
+
+class DirectRouteTests(unittest.IsolatedAsyncioTestCase):
+    NODE = "fxroute_stdin_test"
+
+    async def asyncSetUp(self):
+        self.log = []
+        self.ingress = FakeIngress(self.log)
+        self.sink = None
+        create = asyncio.create_subprocess_exec
+
+        async def spawn(*argv, **kwargs):
+            return await create(sys.executable, "-c", "import sys; sys.stdin.buffer.read()", **kwargs)
+
+        async def connect(sources, target):
+            self.log.append(("connect", sources[0], target))
+
+        async def disconnect(sources, target):
+            self.log.append(("disconnect", sources[0], target))
+
+        self.patches = [
+            patch("audio.stdin_pipewire.pcm_adapter_error", return_value=None),
+            patch("audio.stdin_pipewire.asyncio.create_subprocess_exec", side_effect=spawn),
+            patch("audio.stdin_pipewire.pw_link.run_pw_link_command", AsyncMock(side_effect=self.ports)),
+            patch("audio.stdin_pipewire.pw_link.connect_ports", side_effect=connect),
+            patch("audio.stdin_pipewire.pw_link.disconnect_ports", side_effect=disconnect),
+            patch("audio.stdin_pipewire.input_links_present", AsyncMock(return_value=True)),
+        ]
+        for patcher in self.patches:
+            patcher.start()
+
+    async def asyncTearDown(self):
+        if self.sink is not None:
+            await self.sink.abort()
+        for patcher in reversed(self.patches):
+            patcher.stop()
+
+    async def ports(self, *_args):
+        return "\n".join(f"{self.NODE}:output_AUX{i}" for i in range(32))
+
+    def make(self, channels=8, ingress=True, **extra):
+        spec = parse_spec(dict(version=1, format="s16le", rate=48000, channels=channels, **extra))
+        self.sink = PipeWirePcmSink(spec, "test", self.ingress.hooks() if ingress else None)
+        return self.sink
+
+    def expected_edges(self, positions):
+        engine = {"FL": 1, "FR": 2, "FC": 3, "LFE": 4, "SL": 5, "SR": 6, "BL": 7, "BR": 8}
+        return tuple((f"{self.NODE}:output_AUX{channel - 1}", f"fxroute_dsp:input_{engine[position]}")
+                     for position, channel in positions)
+
+    def sink_links(self, kind):
+        return [entry for entry in self.log if entry[0] == kind and "fxroute_dsp_sink" in entry[2]]
+
+    async def test_surround_links_every_mapped_channel_straight_to_its_engine_input(self):
+        sink = self.make(8)
+        await sink.start()
+        self.assertEqual(self.log, [("set", self.expected_edges((
+            ("FL", 1), ("FR", 2), ("FC", 3), ("LFE", 4), ("SL", 7), ("SR", 8), ("BL", 5), ("BR", 6))))])
+        self.assertEqual(sink.edges, self.ingress.edges)
+        self.assertTrue(await sink.links_present())
+
+    async def test_special_layout_links_only_its_positions(self):
+        sink = self.make(10, channel_map="FR,FL,-,-,SL,SR")
+        await sink.start()
+        self.assertEqual(self.ingress.edges, self.expected_edges(
+            (("FL", 2), ("FR", 1), ("SL", 5), ("SR", 6))))
+
+    async def test_stereo_outputs_keep_the_sink_route_untouched(self):
+        self.ingress.surround = False
+        sink = self.make(8)
+        await sink.start()
+        self.assertEqual(self.log, [
+            ("connect", f"{self.NODE}:output_AUX0", "fxroute_dsp_sink:playback_FL"),
+            ("connect", f"{self.NODE}:output_AUX1", "fxroute_dsp_sink:playback_FR")])
+        self.assertTrue(await sink.links_present())
+
+    async def test_front_pair_streams_never_leave_the_sink_route(self):
+        for kwargs in ({"channels": 1}, {"channels": 2}, {"channels": 8, "left": 5, "right": 6},
+                       {"channels": 8, "channel_map": "FL,FR"}):
+            with self.subTest(kwargs=kwargs):
+                self.log.clear()
+                self.ingress.surround_checks = 0
+                sink = self.make(**kwargs)
+                await sink.start()
+                self.assertEqual([entry[0] for entry in self.log], ["connect", "connect"])
+                self.assertTrue(await sink.links_present())
+                self.assertEqual(self.ingress.surround_checks, 0)
+                await sink.abort()
+                self.assertNotIn("release", [entry[0] for entry in self.log])
+
+    async def test_a_sink_without_engine_hooks_uses_the_sink_route(self):
+        sink = self.make(8, ingress=False)
+        await sink.start()
+        self.assertEqual([entry[0] for entry in self.log], ["connect", "connect"])
+
+    async def test_entering_surround_drops_the_sink_links_before_linking_directly(self):
+        self.ingress.surround = False
+        sink = self.make(8)
+        await sink.start()
+        self.log.clear()
+        self.ingress.surround = True
+        self.assertFalse(await sink.links_present())
+        await sink.repair_links()
+        self.assertEqual([entry[0] for entry in self.log], ["disconnect", "disconnect", "set"])
+        self.assertTrue(await sink.links_present())
+
+    async def test_leaving_surround_releases_the_edges_before_relinking_the_sink(self):
+        sink = self.make(6)
+        await sink.start()
+        self.log.clear()
+        self.ingress.surround = False
+        self.assertFalse(await sink.links_present())
+        await sink.repair_links()
+        self.assertEqual([entry[0] for entry in self.log], ["release", "connect", "connect"])
+        self.assertEqual(self.ingress.edges, ())
+        self.assertTrue(await sink.links_present())
+
+    async def test_missing_edges_are_not_present_and_are_repaired_in_place(self):
+        sink = self.make(8)
+        await sink.start()
+        self.ingress.edges = ()
+        self.assertFalse(await sink.links_present())
+        self.log.clear()
+        await sink.repair_links()
+        self.assertEqual([entry[0] for entry in self.log], ["set"])
+        self.assertTrue(await sink.links_present())
+
+    async def test_failed_direct_link_reaps_the_child_and_releases(self):
+        self.ingress.set_error = RuntimeError("Cannot connect DSP ingress")
+        sink = self.make(8)
+        with self.assertRaisesRegex(RuntimeError, "Cannot connect DSP ingress"):
+            await sink.start()
+        self.assertIsNotNone(sink.process.returncode)
+        self.assertEqual(self.ingress.edges, ())
+        self.assertEqual(self.log[-3][0], "release")
+
+    async def test_abort_releases_the_edges_before_the_node_goes(self):
+        sink = self.make(8)
+        await sink.start()
+        process = sink.process
+        self.log.clear()
+        await sink.abort()
+        self.assertEqual(self.log[0][0], "release")
+        self.assertEqual(self.ingress.edges, ())
+        self.assertIsNotNone(process.returncode)
+        await sink.abort()
+        self.assertEqual([entry[0] for entry in self.log].count("release"), 1)
+
+    async def test_a_hung_release_does_not_block_abort(self):
+        sink = self.make(8)
+        await sink.start()
+
+        async def hang(_edges):
+            await asyncio.sleep(30)
+
+        sink._ingress.release_edges = hang
+        with patch("audio.stdin_pipewire.RELEASE_TIMEOUT_SECONDS", 0.05):
+            await asyncio.wait_for(sink.abort(), 3)
+        self.assertIsNotNone(sink.process.returncode)
+
+    async def test_finish_releases_the_edges_after_a_clean_end(self):
+        sink = self.make(6)
+        await sink.start()
+        await sink.write(b"\0" * 12 * 10)
+        await sink.finish()
+        self.assertEqual(self.ingress.edges, ())
+        self.assertEqual(sink.process.returncode, 0)
+
+    async def test_the_node_ports_stay_discrete_aux_channels(self):
+        argv = pw_cat_argv(self.make(8).spec, self.NODE)
+        self.assertEqual(argv[argv.index("--channel-map") + 1], "AUX0,AUX1,AUX2,AUX3,AUX4,AUX5,AUX6,AUX7")
 
 
 if __name__ == "__main__":

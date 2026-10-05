@@ -7,17 +7,34 @@ import asyncio
 import logging
 import shutil
 import sys
+from dataclasses import dataclass
+from typing import Awaitable, Callable
 
 import numpy
 
 from audio import pw_link
-from audio.input_links import input_links_present
+from audio.input_links import ingress_links_present, input_links_present
 from audio.stdin_protocol import CHUNK_BYTES, PcmSpec
 from audio.tool_env import c_locale_env
 from audio.src_policy import client_env
 from common.process_stop import run_stop_shielded
+from dsp.runtime import mapped_ingress_edges
 
 logger = logging.getLogger(__name__)
+
+Edges = tuple[tuple[str, str], ...]
+# A release waits for the DSP runtime lock, which an engine rebuild can hold.
+RELEASE_TIMEOUT_SECONDS = 10
+
+
+@dataclass
+class StdinIngress:
+    """Engine-side hooks of the direct multichannel route."""
+
+    surround_active: Callable[[], bool]
+    set_edges: Callable[[Edges], Awaitable[None]]
+    release_edges: Callable[[Edges], Awaitable[None]]
+    edges_present: Callable[[Edges], Awaitable[bool]] = ingress_links_present
 
 
 def pcm_adapter_error() -> str | None:
@@ -57,10 +74,23 @@ def pw_cat_argv(spec: PcmSpec, node_name: str) -> list[str]:
 
 
 class PipeWirePcmSink:
-    def __init__(self, spec: PcmSpec, session_id: str):
+    """Clock one PCM stream and link its channels to the DSP ingress.
+
+    The front pair normally reaches the engine through ``fxroute_dsp_sink``.
+    A multichannel layout in Surround output instead links every mapped
+    channel straight to its engine input (the mapped-ingress slot of the DSP
+    runtime), so the sink path and the direct path never carry the same pair.
+    """
+
+    def __init__(self, spec: PcmSpec, session_id: str, ingress: StdinIngress | None = None):
         self.spec = spec
         self.node_name = f"fxroute_stdin_{session_id}"
         self.channels = ((f"AUX{spec.left - 1}", "FL"), (f"AUX{spec.right - 1}", "FR"))
+        self._ingress = ingress
+        self.edges: Edges = mapped_ingress_edges(
+            self.node_name, {position: f"AUX{channel - 1}" for position, channel in spec.routes},
+            port_kind="output")
+        self._route: str | None = None
         self.process: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task | None = None
         self._stderr_tail = b""
@@ -106,18 +136,44 @@ class PipeWirePcmSink:
     def _error(self) -> str:
         return self._stderr_tail.decode(errors="replace").strip()[-1024:] or "STDIN PCM adapter exited"
 
+    def _wanted_route(self) -> str:
+        direct = (self._ingress is not None and self.spec.multichannel
+                  and self._ingress.surround_active())
+        return "direct" if direct else "sink"
+
+    async def _disconnect_sink_links(self) -> None:
+        for channel, side in self.channels:
+            await pw_link.disconnect_ports((f"{self.node_name}:output_{channel}",),
+                                           f"fxroute_dsp_sink:playback_{side}")
+
     async def repair_links(self) -> None:
         if self._aborted or self.process is None or self.process.returncode is not None:
             raise RuntimeError("STDIN PCM adapter is not running")
-        for channel, side in self.channels:
-            await pw_link.connect_ports((f"{self.node_name}:output_{channel}",),
-                                        f"fxroute_dsp_sink:playback_{side}")
+        route = self._wanted_route()
+        # Break before make: the front pair must never reach the engine twice.
+        if route == "direct":
+            if self._route == "sink":
+                await self._disconnect_sink_links()
+            await self._ingress.set_edges(self.edges)
+        else:
+            if self._route == "direct":
+                await self._ingress.release_edges(self.edges)
+            for channel, side in self.channels:
+                await pw_link.connect_ports((f"{self.node_name}:output_{channel}",),
+                                            f"fxroute_dsp_sink:playback_{side}")
+        self._route = route
         if not await self.links_present():
             raise RuntimeError("STDIN DSP links are missing")
 
     async def links_present(self) -> bool:
-        return bool(self.process and self.process.returncode is None
-                    and await input_links_present(self.node_name, self.channels))
+        if not (self.process and self.process.returncode is None):
+            return False
+        route = self._wanted_route()
+        if route != self._route:
+            return False
+        if route == "direct":
+            return await self._ingress.edges_present(self.edges)
+        return await input_links_present(self.node_name, self.channels)
 
     async def write(self, frames: bytes) -> None:
         if len(frames) % self.spec.frame_bytes:
@@ -153,10 +209,16 @@ class PipeWirePcmSink:
             return
         self._aborted = True
         try:
+            if self._ingress is not None and self.spec.multichannel:
+                # Release before the node disappears so the runtime never
+                # holds links of a stream that no longer exists.
+                try:
+                    async with asyncio.timeout(RELEASE_TIMEOUT_SECONDS):
+                        await self._ingress.release_edges(self.edges)
+                except (OSError, RuntimeError, TimeoutError):
+                    logger.warning("STDIN multichannel ingress could not be released")
             async with asyncio.timeout(1):
-                for channel, side in self.channels:
-                    await pw_link.disconnect_ports((f"{self.node_name}:output_{channel}",),
-                                                   f"fxroute_dsp_sink:playback_{side}")
+                await self._disconnect_sink_links()
         except (OSError, RuntimeError, TimeoutError):
             logger.debug("STDIN link cleanup deferred to node removal")
         finally:
