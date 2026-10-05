@@ -200,7 +200,7 @@
 
 #measurement-sweep-toggle,
 #measurement-auto-sub-start,
-#measurement-spl-calibration-open {
+#measurement-calibration-toggle {
     width: 190px;
     min-width: 190px;
     min-height: 44px;

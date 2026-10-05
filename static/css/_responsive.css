@@ -1032,7 +1032,7 @@
         #measurement-repeat-start,
         #measurement-hybrid-open,
     #measurement-auto-sub-start,
-    #measurement-spl-calibration-open {
+    #measurement-calibration-toggle {
         width: 100%;
         min-width: 0;
     }
