@@ -6607,20 +6607,16 @@ select.url-input::-webkit-scrollbar-thumb:hover {
        column. The mode field still takes all the space on one row. */
     display: flex;
     flex-wrap: wrap;
-    justify-content: space-between;
+    justify-content: flex-start;
     align-items: end;
-    gap: 1rem;
+    gap: 0.75rem;
     margin-bottom: 0.35rem;
 }
 
 .effects-peq-mode-field {
-    flex: 1 1 12rem;
-    min-width: 0;
-}
-
-.effects-peq-mode-field {
+    flex: 0 1 12rem;
     width: 100%;
-    max-width: 220px;
+    min-width: 0;
     margin: 0;
 }
 
@@ -6918,28 +6914,43 @@ input[type="number"]::-webkit-outer-spin-button {
     padding-top: 1.45rem;
 }
 
-/* Collapsed PEQ card: read-only draft preview plus hint. Both hide while
-   the editor is expanded; the summary text is filled from the draft. */
+/* Collapsed PEQ card: read-only draft preview as one L/R row per side.
+   Hidden while the editor is expanded; filled from the draft. */
 .effects-peq-summary {
-    margin-top: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.9rem;
+}
+
+.effects-peq-summary-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.02);
+}
+
+.effects-peq-summary-side {
+    flex: 0 0 auto;
+    min-width: 1rem;
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.effects-peq-summary-text {
+    min-width: 0;
     font-size: 0.8rem;
-    line-height: 1.55;
-    color: var(--text-muted);
+    line-height: 1.5;
+    color: var(--text-secondary);
     font-family: var(--font-mono);
-    white-space: pre-line;
     overflow-wrap: anywhere;
 }
 
-.effects-peq-summary-hint {
-    display: block;
-    margin-top: 0.35rem;
-    font-size: 0.76rem;
-    letter-spacing: 0.01em;
-    color: var(--text-muted);
-}
-
-.effects-disclosure[open] .effects-peq-summary,
-.effects-disclosure[open] .effects-peq-summary-hint {
+.effects-disclosure[open] .effects-peq-summary {
     display: none;
 }
 
@@ -6960,6 +6971,10 @@ input[type="number"]::-webkit-outer-spin-button {
     display: none;
 }
 
+.effects-disclosure-summary {
+    align-items: flex-start;
+}
+
 .effects-disclosure-summary h3 {
     margin: 0 0 0.4rem;
 }
@@ -6973,6 +6988,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-disclosure-meta {
     flex: 0 0 auto;
+    align-self: flex-start;
     padding: 0.35rem 0.7rem;
     border-radius: 999px;
     border: 1px solid var(--border);

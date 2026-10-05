@@ -44,10 +44,7 @@ const EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS = 2000;
 
 function updateEffectsPeqDisclosureLabel() {
     if (!deps.getElements().effectsPeqDisclosureMeta || !deps.getElements().effectsPeqDisclosure) return;
-    const leftCount = deps.getState().dsp?.peqDraft?.leftBands?.length || 0;
-    const rightCount = deps.getState().dsp?.peqDraft?.rightBands?.length || 0;
-    const actionLabel = deps.getElements().effectsPeqDisclosure.open ? 'Collapse' : 'Expand';
-    deps.getElements().effectsPeqDisclosureMeta.textContent = `L${leftCount} · R${rightCount} · ${actionLabel}`;
+    deps.getElements().effectsPeqDisclosureMeta.textContent = deps.getElements().effectsPeqDisclosure.open ? 'Collapse' : 'Expand';
     updateEffectsPeqSummary();
 }
 
@@ -76,18 +73,25 @@ function updateEffectsPeqSummary() {
         const shown = items.slice(0, 3).join(' · ');
         return items.length > 3 ? `${shown} · +${items.length - 3}` : shown;
     };
-    const left = formatSide(deps.getState().dsp?.peqDraft?.leftBands);
-    const right = formatSide(deps.getState().dsp?.peqDraft?.rightBands);
-    const lines = [];
-    if (left) lines.push(`L  ${left}`);
-    if (right) lines.push(`R  ${right}`);
-    if (!lines.length) {
-        deps.getElements().effectsPeqSummary.textContent = '';
-        deps.getElements().effectsPeqSummary.hidden = true;
-        return;
-    }
-    deps.getElements().effectsPeqSummary.textContent = lines.join('\n');
-    deps.getElements().effectsPeqSummary.hidden = false;
+    const summaryEl = deps.getElements().effectsPeqSummary;
+    const rows = [
+        ['L', formatSide(deps.getState().dsp?.peqDraft?.leftBands)],
+        ['R', formatSide(deps.getState().dsp?.peqDraft?.rightBands)],
+    ].filter(([, text]) => text);
+    summaryEl.textContent = '';
+    summaryEl.hidden = !rows.length;
+    rows.forEach(([side, text]) => {
+        const row = document.createElement('div');
+        row.className = 'effects-peq-summary-row';
+        const tag = document.createElement('span');
+        tag.className = 'effects-peq-summary-side';
+        tag.textContent = side;
+        const value = document.createElement('span');
+        value.className = 'effects-peq-summary-text';
+        value.textContent = text;
+        row.append(tag, value);
+        summaryEl.appendChild(row);
+    });
 }
 
 function clearEffectsPeqStatusOnCollapse() {
