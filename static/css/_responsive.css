@@ -1632,16 +1632,6 @@
         flex: 0 0 auto;
     }
 
-    /* The row wraps on its own once the card is too narrow; on a phone the
-       Add button drops to its own line and starts at the leading edge. */
-    .effects-peq-add-row .btn-inline {
-        margin-right: auto;
-    }
-
-    .effects-peq-mode-field {
-        max-width: none;
-    }
-
     .effects-loudness-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr);
