@@ -5621,11 +5621,34 @@ async def _release_stdin_ingress(edges: tuple[tuple[str, str], ...]) -> None:
         await runtime.dsp_runtime.release_mapped_ingress(edges)
 
 
+def _dsp_graph_in_flux() -> bool:
+    """Whether an engine rebuild or a coordinated transition owns the engine links."""
+    dsp = runtime.dsp_runtime
+    return bool(dsp is not None and dsp.sync_in_progress) or _playback_transition_is_active()
+
+
+def _stdin_surround_active() -> bool | None:
+    """Surround engine state for a STDIN stream; None while the graph is in flux."""
+    dsp = runtime.dsp_runtime
+    if dsp is None:
+        return False
+    return None if _dsp_graph_in_flux() else dsp.surround_engine
+
+
+async def _stdin_edges_present(edges: tuple[tuple[str, str], ...]) -> bool:
+    # A rebuild or transition relinks the stream itself; its readback must not
+    # race a repair, so the links are not judged meanwhile.
+    if _dsp_graph_in_flux():
+        return True
+    return await ingress_links_present(edges)
+
+
 def _build_stdin_sink(spec, session_id: str) -> PipeWirePcmSink:
     return PipeWirePcmSink(spec, session_id, ingress=StdinIngress(
-        surround_active=lambda: runtime.dsp_runtime is not None and runtime.dsp_runtime.surround_engine,
+        surround_active=_stdin_surround_active,
         set_edges=_set_stdin_ingress,
         release_edges=_release_stdin_ingress,
+        edges_present=_stdin_edges_present,
     ))
 
 

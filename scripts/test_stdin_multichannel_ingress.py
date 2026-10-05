@@ -142,7 +142,7 @@ class MainWiringTests(unittest.IsolatedAsyncioTestCase):
         self.main = main
         self.dsp = SimpleNamespace(
             set_mapped_ingress=AsyncMock(), release_mapped_ingress=AsyncMock(),
-            verify=AsyncMock(return_value=True), surround_engine=True)
+            verify=AsyncMock(return_value=True), surround_engine=True, sync_in_progress=False)
         patcher = patch.object(main.runtime, "dsp_runtime", self.dsp)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -164,6 +164,38 @@ class MainWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sink._ingress.surround_active())
         with patch.object(self.main.runtime, "dsp_runtime", None):
             self.assertFalse(sink._ingress.surround_active())
+
+    def test_surround_is_unknown_while_the_engine_is_rebuilt(self):
+        hook = self.sink()._ingress.surround_active
+        self.dsp.sync_in_progress = True
+        self.assertIsNone(hook())
+        self.dsp.surround_engine = False
+        self.assertIsNone(hook())
+        self.dsp.sync_in_progress = False
+        self.assertIs(hook(), False)
+
+    def test_surround_is_unknown_during_a_coordinated_transition(self):
+        hook = self.sink()._ingress.surround_active
+        with patch.object(self.main, "_playback_transition_is_active", return_value=True):
+            self.assertIsNone(hook())
+        self.assertIs(hook(), True)
+
+    async def test_links_are_not_judged_while_the_engine_is_rebuilt(self):
+        hook = self.sink()._ingress.edges_present
+        with patch.object(self.main, "ingress_links_present", AsyncMock(return_value=False)) as live:
+            self.dsp.sync_in_progress = True
+            self.assertTrue(await hook(EDGES))
+            live.assert_not_awaited()
+            self.dsp.sync_in_progress = False
+            self.assertFalse(await hook(EDGES))
+            live.assert_awaited_once_with(EDGES)
+
+    async def test_links_are_not_judged_during_a_coordinated_transition(self):
+        hook = self.sink()._ingress.edges_present
+        with patch.object(self.main, "ingress_links_present", AsyncMock(return_value=False)) as live, \
+                patch.object(self.main, "_playback_transition_is_active", return_value=True):
+            self.assertTrue(await hook(EDGES))
+            live.assert_not_awaited()
 
     async def test_linking_verifies_the_graph(self):
         with patch.object(self.main, "_measurement_session_owns_live_rate", return_value=False):
@@ -310,6 +342,17 @@ class OutputModeFollowTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.05)
         self.assertEqual(self.edges, ())
         self.assertTrue(self.service.snapshot()["routed"])
+
+    async def test_a_rebuild_in_flight_neither_moves_nor_kills_the_stream(self):
+        await self.writer()
+        self.surround = None
+        await asyncio.sleep(1.3)  # more than two link-watch ticks
+        self.assertEqual((self.edges != (), self.sink_links), (True, set()))
+        snapshot = self.service.snapshot()
+        self.assertEqual((snapshot["routed"], snapshot["error"]), (True, None))
+        self.surround = False
+        await self.service.resync_routing()
+        self.assertEqual((self.edges, len(self.sink_links)), ((), 2))
 
     async def test_the_front_pair_never_reaches_the_engine_on_both_routes(self):
         await self.writer()

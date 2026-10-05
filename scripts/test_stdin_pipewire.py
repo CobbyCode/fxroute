@@ -285,6 +285,32 @@ class DirectRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([entry[0] for entry in self.log], ["disconnect", "disconnect", "set"])
         self.assertTrue(await sink.links_present())
 
+    async def test_a_rebuilding_engine_keeps_the_current_route(self):
+        for start, kept in ((True, "direct"), (False, "sink")):
+            with self.subTest(surround=start):
+                self.log.clear()
+                self.ingress.surround = start
+                sink = self.make(8)
+                await sink.start()
+                self.log.clear()
+                self.ingress.surround = None
+                self.assertEqual(sink._wanted_route(), kept)
+                self.assertTrue(await sink.links_present())
+                await sink.repair_links()
+                self.assertEqual(sink._route, kept)
+                self.assertEqual([entry[0] for entry in self.log], ["set"] if kept == "direct" else ["connect", "connect"])
+                await sink.abort()
+
+    async def test_a_stream_starting_during_a_rebuild_takes_the_sink_route_and_follows_afterwards(self):
+        self.ingress.surround = None
+        sink = self.make(8)
+        await sink.start()
+        self.assertEqual([entry[0] for entry in self.log], ["connect", "connect"])
+        self.ingress.surround = True
+        self.assertFalse(await sink.links_present())
+        await sink.repair_links()
+        self.assertEqual(self.ingress.edges, sink.edges)
+
     async def test_leaving_surround_releases_the_edges_before_relinking_the_sink(self):
         sink = self.make(6)
         await sink.start()

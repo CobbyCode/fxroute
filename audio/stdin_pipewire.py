@@ -29,9 +29,13 @@ RELEASE_TIMEOUT_SECONDS = 10
 
 @dataclass
 class StdinIngress:
-    """Engine-side hooks of the direct multichannel route."""
+    """Engine-side hooks of the direct multichannel route.
 
-    surround_active: Callable[[], bool]
+    ``surround_active`` is None while the engine is being rebuilt; the stream
+    then keeps its route instead of racing the rebuild for the engine links.
+    """
+
+    surround_active: Callable[[], bool | None]
     set_edges: Callable[[Edges], Awaitable[None]]
     release_edges: Callable[[Edges], Awaitable[None]]
     edges_present: Callable[[Edges], Awaitable[bool]] = ingress_links_present
@@ -137,9 +141,12 @@ class PipeWirePcmSink:
         return self._stderr_tail.decode(errors="replace").strip()[-1024:] or "STDIN PCM adapter exited"
 
     def _wanted_route(self) -> str:
-        direct = (self._ingress is not None and self.spec.multichannel
-                  and self._ingress.surround_active())
-        return "direct" if direct else "sink"
+        if self._ingress is None or not self.spec.multichannel:
+            return "sink"
+        surround = self._ingress.surround_active()
+        if surround is None:
+            return self._route or "sink"
+        return "direct" if surround else "sink"
 
     async def _disconnect_sink_links(self) -> None:
         for channel, side in self.channels:
