@@ -454,32 +454,101 @@ def _custom_mapping_entry(
     return entry
 
 
-def _custom_mapping_context(
-    base: str | None,
-    mapping: dict[str, Any] | None,
+def _split_node_pair_entries(
+    base: str,
     candidates: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Selected device, its capture channels and its mapping, for the dialog."""
+    selected_source_name: str | None,
+    selected_port_key: str | None,
+    selected_pair: tuple[int, int] | None,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Stereo inputs of a card whose capture is split into lone mono nodes.
+
+    A card such as the UMC204HD exposes each physical input as its own mono
+    node, so no node forms a stereo pair. Its numbered card-level channels are
+    paired like those of a multichannel node: (1, 2), (3, 4), ... The left node
+    is ``source_key`` and the right one ``right_source``. A card with a node
+    that pairs on its own is left to the normal path. Returns the entries and
+    the names of the nodes they consume.
+    """
+    if any(item["paired"] for item in candidates):
+        return [], set()
     capture = _card_capture_channels(candidates)
-    return {
-        "device": (
-            {"card_base": base, "label": _card_label(candidates) or base}
-            if base else None
-        ),
-        "capture": (
-            {
+    pairs = _stereo_pairs_for_suffixes([item["suffix"] for item in capture])
+    card_label = _card_label(candidates)
+    entries: list[dict[str, Any]] = []
+    consumed: set[str] = set()
+    for pair_index, pair in enumerate(pairs):
+        left, right = (capture[index - 1] for index in pair["channels"])
+        if left["source"] == right["source"]:
+            continue
+        label = card_label or left["payload"].get("device_label")
+        key_pair = pair["channels"] if len(pairs) > 1 else None
+        entries.append({
+            **left["payload"],
+            "key": _build_source_selection_key(left["source"] or "", None, key_pair),
+            "source_key": left["source"],
+            "right_source": right["source"],
+            "port_key": None,
+            "port_label": None,
+            "label": label if len(pairs) == 1 else f"{label} \u2014 {pair['label']}",
+            "device_label": label,
+            "is_active_port": True,
+            "is_selected": (
+                left["source"] == selected_source_name
+                and selected_port_key is None
+                and (
+                    tuple(pair["channels"]) == selected_pair
+                    or (selected_pair is None and pair_index == 0)
+                )
+            ),
+            "pair_index": pair_index,
+            "pair_count": len(pairs),
+            "pair_label": pair["label"],
+            "pair_channels": list(pair["channels"]),
+            "left_channel": left["suffix"],
+            "right_channel": right["suffix"],
+        })
+        consumed.update((left["source"], right["source"]))
+    return entries, consumed
+
+
+def _custom_mapping_context(
+    mappings: Mapping[str, dict[str, Any]],
+    capture_candidates: Mapping[str, list[dict[str, Any]]],
+    selected_output_base: str | None,
+    selected_input_key: str | None,
+) -> dict[str, Any]:
+    """Every device the dialog can map (two or more capture channels), and its default.
+
+    Each device lists its capture channels and stored mapping. The default is
+    the device of the selected custom-mapping input, then the selected output's
+    device, then the first by label; only a device that is listed can be one.
+    """
+    devices: list[dict[str, Any]] = []
+    for base, candidates in capture_candidates.items():
+        capture = _card_capture_channels(candidates)
+        if len(capture) < 2:
+            continue
+        mapping = mappings.get(base)
+        devices.append({
+            "device": {"card_base": base, "label": _card_label(candidates) or base},
+            "capture": {
                 "channels": [
                     {"index": item["index"], "suffix": item["suffix"], "source": item["source"]}
                     for item in capture
                 ],
-            }
-            if capture else None
-        ),
-        "mapping": (
-            {"name": mapping["name"], "channels": dict(mapping["channels"])} if mapping else None
-        ),
-        "input_key": custom_input_mapping.input_key(base) if base and mapping else None,
-    }
+            },
+            "mapping": {"name": mapping["name"], "channels": dict(mapping["channels"])} if mapping else None,
+            "input_key": custom_input_mapping.input_key(base) if mapping else None,
+        })
+    devices.sort(key=lambda item: (item["device"]["label"].casefold(), item["device"]["card_base"]))
+    listed = {item["device"]["card_base"] for item in devices}
+    preferred = (custom_input_mapping.card_base_from_key(selected_input_key), selected_output_base)
+    default_device = next(
+        (base for base in preferred if base in listed),
+        devices[0]["device"]["card_base"] if devices else None,
+    )
+    return {"default_device": default_device, "devices": devices}
 
 def _build_source_selection_key(
     source_name: str,
@@ -1052,8 +1121,9 @@ def get_audio_source_overview() -> dict[str, Any]:
     selected_input_key = selection_state.get("selected_input_key")
     selected_source_name, selected_port_key, selected_pair = _split_source_selection_key(selected_input_key)
     inputs = []
-    skipped_single_channel: list[str] = []
-    # Capture nodes by ALSA card, for the custom mapping of the selected device.
+    skipped_single_channel: list[tuple[str | None, str]] = []
+    # Capture nodes by ALSA card: the custom mapping of every device and the
+    # stereo pairs of a card whose inputs are lone mono nodes.
     capture_candidates: dict[str, list[dict[str, Any]]] = {}
     for source in sources:
         name = source.get("name")
@@ -1093,14 +1163,19 @@ def get_audio_source_overview() -> dict[str, Any]:
         node_card_base = custom_input_mapping.card_base(name)
         if node_card_base:
             capture_candidates.setdefault(node_card_base, []).append(
-                {"payload": base_payload, "suffixes": suffixes, "card_name": details.get("alsa_card_name")}
+                {
+                    "payload": base_payload,
+                    "suffixes": suffixes,
+                    "card_name": details.get("alsa_card_name"),
+                    "paired": bool(pairs),
+                }
             )
         if not pairs:
             # A lone mono channel is never a complete stereo input: offering
             # it would duplicate one channel onto both sides.  Measurement
             # keeps its own per-channel selection, and a custom mapping can
             # combine such channels, so nothing else loses access to it.
-            skipped_single_channel.append(device_label or name or "Unknown input")
+            skipped_single_channel.append((name, device_label or name or "Unknown input"))
             continue
 
         def _pair_entry(
@@ -1163,13 +1238,24 @@ def get_audio_source_overview() -> dict[str, Any]:
     selected_card_base = custom_input_mapping.card_base(
         _load_audio_output_selection().get("selected_key") or default_sink_name
     )
-    custom_mapping = (
-        _load_custom_input_mappings().get(selected_card_base) if selected_card_base else None
-    )
-    selected_candidates = capture_candidates.get(selected_card_base or "", [])
-    if custom_mapping is not None and selected_candidates:
+    # The two mono nodes of a card such as the UMC204HD form one stereo input.
+    paired_nodes: set[str] = set()
+    for base, candidates in capture_candidates.items():
+        pair_entries, consumed = _split_node_pair_entries(
+            base, candidates, selected_source_name, selected_port_key, selected_pair)
+        inputs.extend(pair_entries)
+        paired_nodes |= consumed
+    skipped_single_channel = [
+        label for node, label in skipped_single_channel if node not in paired_nodes
+    ]
+    # A mapping is an input of its own device, whichever output is selected.
+    custom_mappings = _load_custom_input_mappings()
+    for base in sorted(custom_mappings):
+        candidates = capture_candidates.get(base)
+        if not candidates:
+            continue
         custom_entry = _custom_mapping_entry(
-            custom_mapping, selected_card_base, selected_candidates, selected_input_key, notes
+            custom_mappings[base], base, candidates, selected_input_key, notes
         )
         if custom_entry is not None:
             inputs.append(custom_entry)
@@ -1253,7 +1339,7 @@ def get_audio_source_overview() -> dict[str, Any]:
         "external_input_state": external_input_state,
         "inputs": inputs,
         "custom_mapping_context": _custom_mapping_context(
-            selected_card_base, custom_mapping, selected_candidates),
+            custom_mappings, capture_candidates, selected_card_base, saved_input_key),
         "bluetooth": {
             "available": bluetooth_overview.get("available", False),
             "selectable": bool(((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("selectable")),

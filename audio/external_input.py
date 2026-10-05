@@ -256,6 +256,13 @@ class ExternalInputRouting:
         left, right = _pair_channels(current_input, right_source)
         surround = self._deps.get_output_mode is not None and self._deps.get_output_mode() == "surround"
         custom_mapping = current_input.get("custom_mapping")
+        if surround and not isinstance(custom_mapping, dict) and right_source is not None:
+            # A pair split over two capture nodes has no decoder path (the
+            # decoder reads one node): link Front L/R straight to the engine.
+            custom_mapping = {
+                "suffixes": {"FL": left, "FR": right},
+                "sources": {"FL": str(source_name), "FR": right_source},
+            }
         if surround and isinstance(custom_mapping, dict):
             await self._sync_mapped(str(source_name), custom_mapping)
             self._active_channels = (left, right)

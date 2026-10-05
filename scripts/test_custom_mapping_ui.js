@@ -21,8 +21,19 @@ const CAPTURE = {
     channels: Array.from({ length: 8 }, (_, index) => ({ index: index + 1, suffix: `AUX${index}` })),
 };
 const device = { card_base: 'usb-Scarlett-00', label: 'Scarlett 18i20' };
+const UMC_BASE = 'usb-Behringer-00';
+const DEVICES = [
+    { card_base: 'usb-Scarlett-00', label: 'Scarlett 18i20', channel_count: 8, has_mapping: false },
+    { card_base: UMC_BASE, label: 'UMC204HD 192k', channel_count: 2, has_mapping: true },
+];
 const context = (overrides = {}) => ({
-    device, capture: CAPTURE, mapping: null, input_key: null, positions: POSITIONS, ...overrides,
+    device, capture: CAPTURE, mapping: null, input_key: null, positions: POSITIONS, devices: DEVICES, ...overrides,
+});
+const UMC_MAPPING = { name: 'Line in', channels: { FL: 2, FR: 1 } };
+const UMC_CONTEXT = context({
+    device: { card_base: UMC_BASE, label: 'UMC204HD 192k' },
+    capture: { channels: [{ index: 1, suffix: 'MONO' }, { index: 2, suffix: 'MONO' }] },
+    mapping: UMC_MAPPING, input_key: `custom-mapping::${UMC_BASE}`,
 });
 const MAPPING = { name: 'External Upmixer', channels: { FL: 3, FR: 4, FC: 5, BR: 1 } };
 
@@ -49,10 +60,10 @@ function fakeElement() {
     };
 }
 
-function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}) {
+function harness({ ctx = context(), contexts = { [UMC_BASE]: UMC_CONTEXT }, confirmAnswer = true, failWith = null } = {}) {
     const elements = {};
-    for (const key of ['customMappingPanel', 'customMappingClose', 'customMappingSubtitle', 'customMappingName',
-        'customMappingGrid', 'customMappingSave', 'customMappingDelete', 'customMappingStatus']) {
+    for (const key of ['customMappingPanel', 'customMappingClose', 'customMappingSubtitle', 'customMappingDevice',
+        'customMappingName', 'customMappingGrid', 'customMappingSave', 'customMappingDelete', 'customMappingStatus']) {
         elements[key] = fakeElement();
     }
     elements.customMappingPanel.classList.add('hidden');
@@ -65,7 +76,11 @@ function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}
             if (failWith && options.method !== 'GET') {
                 return { ok: false, status: 400, json: async () => ({ detail: failWith }) };
             }
-            return { ok: true, status: 200, json: async () => ctx };
+            const named = (/[?&]device=([^&]*)/.exec(url) || [])[1];
+            const base = named ? decodeURIComponent(named) : (options.body ? JSON.parse(options.body).device : null);
+            const answer = base && base !== device.card_base ? contexts[base] : ctx;
+            if (!answer) return { ok: false, status: 400, json: async () => ({ detail: `Unknown audio device: ${base}` }) };
+            return { ok: true, status: 200, json: async () => answer };
         },
         openModal: (panel, options) => log.modal.push(['open', panel, options]),
         closeModal: (panel) => log.modal.push(['close', panel]),
@@ -121,6 +136,14 @@ function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}
     check('labels are escaped', !/<script/.test(CustomMapping.renderGridHtml(
         [{ id: 'FL', label: '<script>' }], CAPTURE, {})));
 
+    const deviceChoice = CustomMapping.deviceOptions(context());
+    check('every device is a select option',
+        deviceChoice.length === 2 && deviceChoice[0].value === 'usb-Scarlett-00' && deviceChoice[1].value === UMC_BASE);
+    check('a device with a mapping is marked as saved',
+        deviceChoice[0].label === 'Scarlett 18i20' && deviceChoice[1].label === 'UMC204HD 192k \u00b7 saved');
+    check('no devices yields no options', CustomMapping.deviceOptions(context({ devices: [] })).length === 0
+        && CustomMapping.deviceOptions(null).length === 0);
+
     // ---- open
     {
         const { elements, log } = harness({ ctx: context({ mapping: MAPPING, input_key: 'custom-mapping::usb' }) });
@@ -130,6 +153,10 @@ function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}
             !elements.customMappingPanel.classList.contains('hidden') && log.modal[0][0] === 'open'
             && log.modal[0][2].initialFocus === elements.customMappingName);
         check('open fills the name', elements.customMappingName.value === 'External Upmixer');
+        check('open fills the device select and marks the default device',
+            (elements.customMappingDevice.innerHTML.match(/<option/g) || []).length === 2
+            && /<option value="usb-Scarlett-00" selected>Scarlett 18i20<\/option>/.test(elements.customMappingDevice.innerHTML)
+            && elements.customMappingDevice.disabled === false);
         check('open names the device', /Scarlett 18i20/.test(elements.customMappingSubtitle.textContent));
         check('open renders the grid', (elements.customMappingGrid.innerHTML.match(/<select/g) || []).length === 8);
         check('Delete is offered for a saved mapping', !elements.customMappingDelete.classList.contains('hidden'));
@@ -153,7 +180,81 @@ function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}
     {
         const { elements } = harness({ ctx: context({ device: null, capture: null }) });
         await CustomMapping.open();
-        check('no selected device is reported', /No audio output device/.test(elements.customMappingStatus.textContent));
+        check('no device is reported', /No audio device with input channels/.test(elements.customMappingStatus.textContent));
+    }
+    {
+        const { elements } = harness({ ctx: context({ device: null, capture: null, devices: [] }) });
+        await CustomMapping.open();
+        check('without devices the select is empty and disabled',
+            elements.customMappingDevice.innerHTML === '' && elements.customMappingDevice.disabled === true
+            && elements.customMappingSave.disabled === true);
+    }
+
+    // ---- device choice
+    {
+        const { elements, log } = harness();
+        await CustomMapping.open();
+        CustomMapping.bind();
+        elements.customMappingDevice.trigger('change', { target: { value: UMC_BASE } });
+        await new Promise((resolve) => setImmediate(resolve));
+        const switched = log.fetches.at(-1);
+        check('choosing a device loads that device', switched.method === 'GET'
+            && switched.url === `/api/audio/custom-mapping?device=${encodeURIComponent(UMC_BASE)}`);
+        check('the dialog shows the chosen device',
+            /UMC204HD 192k/.test(elements.customMappingSubtitle.textContent)
+            && (elements.customMappingGrid.innerHTML.match(/<select/g) || []).length === 8
+            && /<option value="usb-Behringer-00" selected>/.test(elements.customMappingDevice.innerHTML)
+            && elements.customMappingName.value === 'Line in');
+        check('the chosen device offers its own inputs only',
+            !/Input 3/.test(elements.customMappingGrid.innerHTML)
+            && /<option value="2" selected>Input 2<\/option>/.test(elements.customMappingGrid.innerHTML));
+        check('the chosen devices saved mapping offers Delete', !elements.customMappingDelete.classList.contains('hidden'));
+        await CustomMapping.save();
+        const put = log.fetches.find((call) => call.method === 'PUT');
+        check('save names the chosen device', put.body.device === UMC_BASE
+            && put.body.name === 'Line in' && JSON.stringify(put.body.channels) === JSON.stringify({ FL: 2, FR: 1 }));
+    }
+    {
+        const { elements, log } = harness();
+        await CustomMapping.open();
+        CustomMapping.bind();
+        elements.customMappingDevice.trigger('change', { target: { value: UMC_BASE } });
+        await new Promise((resolve) => setImmediate(resolve));
+        await CustomMapping.remove();
+        const removal = log.fetches.find((call) => call.method === 'DELETE');
+        check('delete names the chosen device', removal.url === `/api/audio/custom-mapping?device=${encodeURIComponent(UMC_BASE)}`);
+    }
+    {
+        const { elements, log } = harness({ contexts: {} });
+        await CustomMapping.open();
+        CustomMapping.bind();
+        elements.customMappingDevice.trigger('change', { target: { value: 'usb-Gone-00' } });
+        await new Promise((resolve) => setImmediate(resolve));
+        check('a device that vanished keeps the shown device and says why',
+            /Unknown audio device/.test(elements.customMappingStatus.textContent)
+            && /<option value="usb-Scarlett-00" selected>/.test(elements.customMappingDevice.innerHTML)
+            && (elements.customMappingGrid.innerHTML.match(/<select/g) || []).length === 8);
+        check('the dialog stays usable after a failed device switch', elements.customMappingDevice.disabled === false);
+        void log;
+    }
+    {
+        // An older device response arriving after a newer choice must not win.
+        const { elements } = harness();
+        const resolvers = [];
+        CustomMapping.init({
+            fetch: (url, options = {}) => (options.method === 'GET' && /device=/.test(url)
+                ? new Promise((resolve) => resolvers.push((answer) => resolve({ ok: true, status: 200, json: async () => answer })))
+                : Promise.resolve({ ok: true, status: 200, json: async () => context() })),
+        });
+        await CustomMapping.open();
+        CustomMapping.bind();
+        elements.customMappingDevice.trigger('change', { target: { value: UMC_BASE } });
+        await CustomMapping.open();
+        resolvers[0](UMC_CONTEXT);
+        await new Promise((resolve) => setImmediate(resolve));
+        check('a late device response of a closed session is ignored',
+            /<option value="usb-Scarlett-00" selected>/.test(elements.customMappingDevice.innerHTML)
+            && elements.customMappingName.value === '');
     }
 
     // ---- save
@@ -163,8 +264,8 @@ function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}
         elements.customMappingName.value = ' Upmixer ';
         await CustomMapping.save();
         const put = log.fetches.find((call) => call.method === 'PUT');
-        check('save sends the whole mapping', JSON.stringify(put.body)
-            === JSON.stringify({ name: 'Upmixer', channels: { FL: 3, FR: 4, FC: 5, BR: 1 } }));
+        check('save sends the device and the whole mapping', JSON.stringify(put.body)
+            === JSON.stringify({ device: 'usb-Scarlett-00', name: 'Upmixer', channels: { FL: 3, FR: 4, FC: 5, BR: 1 } }));
         check('save confirms, closes and refreshes the inputs', log.toasts.at(-1)[0] === 'Custom mapping saved'
             && elements.customMappingPanel.classList.contains('hidden') && log.refreshes === 1);
     }
@@ -210,8 +311,9 @@ function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}
         const { elements, log } = harness({ ctx: context({ mapping: MAPPING }) });
         await CustomMapping.open();
         await CustomMapping.remove();
-        check('Delete removes the mapping, closes and refreshes',
-            log.fetches.some((call) => call.method === 'DELETE') && log.toasts.at(-1)[0] === 'Custom mapping deleted'
+        check('Delete removes the mapping of the shown device, closes and refreshes',
+            log.fetches.some((call) => call.method === 'DELETE'
+                && call.url === '/api/audio/custom-mapping?device=usb-Scarlett-00') && log.toasts.at(-1)[0] === 'Custom mapping deleted'
             && elements.customMappingPanel.classList.contains('hidden') && log.refreshes === 1);
     }
     {
@@ -224,7 +326,8 @@ function harness({ ctx = context(), confirmAnswer = true, failWith = null } = {}
     // ---- page contracts
     check('the dialog uses the shared overlay skeleton',
         /<div id="custom-mapping-panel" class="manage-overlay custom-mapping-overlay hidden">\s*<div class="manage-overlay-backdrop"><\/div>\s*<section class="manage-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-mapping-title">/.test(html));
-    for (const id of ['custom-mapping-close', 'custom-mapping-subtitle', 'custom-mapping-name', 'custom-mapping-grid',
+    check('the device select is labelled', /<label for="custom-mapping-device">Device<\/label>\s*<select id="custom-mapping-device" class="url-input">/.test(html));
+    for (const id of ['custom-mapping-close', 'custom-mapping-subtitle', 'custom-mapping-device', 'custom-mapping-name', 'custom-mapping-grid',
         'custom-mapping-save', 'custom-mapping-delete', 'custom-mapping-status']) {
         check(`page has #${id}`, html.includes(`id="${id}"`));
         const camel = id.replace(/-([a-z])/g, (_, char) => char.toUpperCase());

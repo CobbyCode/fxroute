@@ -3,7 +3,9 @@
 """Custom input mapping: store, overview entry, routing, runtime links, API.
 
 One mapping per audio device maps physical capture channels to program
-positions and appears as a normal external input of the selected device.
+positions and appears as a normal external input of its device, whichever
+output is selected. A card whose inputs are lone mono nodes offers them as
+one stereo input.
 """
 
 import asyncio
@@ -86,6 +88,12 @@ def _overview_of(short, detailed, *, source, mappings, output_selection, default
 
 def _custom_entry(overview):
     return next((entry for entry in overview["inputs"] if entry["key"].startswith(store.INPUT_KEY_PREFIX)), None)
+
+
+def _device_context(overview, base=CARD):
+    """The dialog context of one device."""
+    return next(item for item in overview["custom_mapping_context"]["devices"]
+                if item["device"]["card_base"] == base)
 
 
 class CardBaseTests(unittest.TestCase):
@@ -175,7 +183,7 @@ class StoreTests(unittest.TestCase):
 
 
 class OverviewEntryTests(unittest.TestCase):
-    def test_mapping_appears_as_normal_external_input_of_the_selected_device(self):
+    def test_mapping_appears_as_normal_external_input_of_its_device(self):
         overview = _overview()
         entry = _custom_entry(overview)
         self.assertEqual(entry["key"], f"custom-mapping::{CARD}")
@@ -216,33 +224,33 @@ class OverviewEntryTests(unittest.TestCase):
         self.assertEqual((acp["left_channel"], acp["right_channel"]), ("FC", "LFE"))
         self.assertEqual(acp["custom_mapping"]["suffixes"]["FC"], "RL")
 
-    def test_no_entry_while_another_device_is_selected(self):
-        overview = _overview(output_selection=OTHER_SINK, default_sink=PRO_SINK)
-        self.assertIsNone(_custom_entry(overview))
-        self.assertEqual(overview["custom_mapping_context"]["device"]["card_base"], "usb-Other_Device-00")
-        self.assertIsNone(overview["custom_mapping_context"]["mapping"])
-
-    def test_default_sink_selects_the_device_without_a_saved_output(self):
-        self.assertIsNotNone(_custom_entry(_overview(output_selection=None, default_sink=PRO_SINK)))
-        self.assertIsNone(_custom_entry(_overview(output_selection=None, default_sink=OTHER_SINK)))
+    def test_mapping_is_offered_whichever_output_is_selected(self):
+        for output in (PRO_SINK, OTHER_SINK, None):
+            with self.subTest(output=output):
+                overview = _overview(output_selection=output, default_sink=OTHER_SINK)
+                entry = _custom_entry(overview)
+                self.assertEqual(entry["key"], f"custom-mapping::{CARD}")
+                self.assertFalse(entry["is_selected"])
+                self.assertEqual(overview["custom_mapping_context"]["default_device"], CARD)
 
     def test_no_mapping_means_no_input(self):
         overview = _overview(mappings={})
         self.assertIsNone(_custom_entry(overview))
-        self.assertIsNone(overview["custom_mapping_context"]["mapping"])
-        self.assertIsNone(overview["custom_mapping_context"]["input_key"])
+        context = _device_context(overview)
+        self.assertIsNone(context["mapping"])
+        self.assertIsNone(context["input_key"])
 
     def test_mapping_beyond_live_channel_count_is_hidden_with_a_note(self):
         overview = _overview(source=PRO_SOURCE, channel_map="aux0,aux1,aux2,aux3", channels=4)
         self.assertIsNone(_custom_entry(overview))
         self.assertTrue(any("needs 8 input channels" in note for note in overview["notes"]))
         # The dialog still sees the stored mapping and the live channels.
-        context = overview["custom_mapping_context"]
+        context = _device_context(overview)
         self.assertEqual(len(context["capture"]["channels"]), 4)
         self.assertEqual(context["mapping"]["name"], "External Upmixer")
 
     def test_context_describes_device_capture_and_mapping(self):
-        context = _overview()["custom_mapping_context"]
+        context = _device_context(_overview())
         self.assertEqual(context["device"], {"card_base": CARD, "label": "Scarlett 18i20"})
         self.assertEqual(context["capture"]["channels"][2], {"index": 3, "suffix": "AUX2", "source": PRO_SOURCE})
         self.assertEqual(context["input_key"], f"custom-mapping::{CARD}")
@@ -255,8 +263,7 @@ class OverviewEntryTests(unittest.TestCase):
 
     def test_saved_but_absent_mapping_keeps_its_label_as_a_missing_input(self):
         key = f"custom-mapping::{CARD}"
-        overview = _overview(output_selection=OTHER_SINK, default_sink=OTHER_SINK,
-                             selected_key=key, mode="external-input")
+        overview = _cards_overview(scarlett=False, umc_numbers=(), selected_key=key, mode="external-input")
         selected = overview["selected_input"]
         self.assertEqual((selected["key"], selected["label"], selected["available"]),
                          (key, "External Upmixer", False))
@@ -302,14 +309,14 @@ class MonoNodeCaptureTests(unittest.TestCase):
 
     def test_mono_nodes_of_one_card_are_its_numbered_physical_inputs(self):
         overview = _umc_overview(mappings={})
-        context = overview["custom_mapping_context"]
+        context = _device_context(overview, UMC)
         self.assertEqual(context["device"], {"card_base": UMC, "label": "UMC204HD 192k"})
         self.assertEqual(context["capture"]["channels"], [
             {"index": 1, "suffix": "MONO", "source": _umc_mic(1)},
             {"index": 2, "suffix": "MONO", "source": _umc_mic(2)}])
-        # A mono node is still no stereo input of its own.
-        self.assertEqual(overview["inputs"], [])
-        self.assertTrue(any("Mono capture without a stereo pair" in note for note in overview["notes"]))
+        # A mono node is no stereo input of its own: the two nodes form one.
+        self.assertEqual([item["source_key"] for item in overview["inputs"]], [_umc_mic(1)])
+        self.assertFalse(any("Mono capture without a stereo pair" in note for note in overview["notes"]))
 
     def test_mapping_across_nodes_is_one_input_whose_right_side_has_its_own_node(self):
         entry = _custom_entry(_umc_overview())
@@ -328,30 +335,220 @@ class MonoNodeCaptureTests(unittest.TestCase):
 
     def test_inputs_are_numbered_in_natural_node_order_not_listing_order(self):
         overview = _umc_overview(numbers=(10, 2, 1), mappings={})
-        sources = [item["source"] for item in overview["custom_mapping_context"]["capture"]["channels"]]
+        sources = [item["source"] for item in _device_context(overview, UMC)["capture"]["channels"]]
         self.assertEqual(sources, [_umc_mic(1), _umc_mic(2), _umc_mic(10)])
 
     def test_a_missing_node_hides_the_mapping_with_a_note(self):
         overview = _umc_overview(numbers=(1,))
         self.assertIsNone(_custom_entry(overview))
         self.assertTrue(any("needs 2 input channels" in note for note in overview["notes"]))
-        self.assertEqual(len(overview["custom_mapping_context"]["capture"]["channels"]), 1)
+        # One input cannot hold a mapping (Front L and R are required): not offered.
+        self.assertEqual(overview["custom_mapping_context"]["devices"], [])
 
     def test_nodes_of_other_cards_are_not_mixed_in(self):
         other = "alsa_input.usb-Other_Device-00.analog-stereo"
         overview = _umc_overview(
             mappings={}, extra_short=(_short(300, other, "s16le 2ch 48000Hz"),),
             extra_detailed=(_detailed(300, other, "s16le 2ch 48000Hz", "front-left,front-right"),))
-        self.assertEqual({item["source"] for item in overview["custom_mapping_context"]["capture"]["channels"]},
+        self.assertEqual({item["source"] for item in _device_context(overview, UMC)["capture"]["channels"]},
                          {_umc_mic(1), _umc_mic(2)})
-        self.assertEqual([item["source_key"] for item in overview["inputs"]], [other])
+        self.assertEqual([item["source_key"] for item in overview["inputs"]], [other, _umc_mic(1)])
 
     def test_label_falls_back_to_the_first_node_without_a_card_name(self):
-        context = _umc_overview(mappings={}, card_name=False)["custom_mapping_context"]
-        self.assertEqual(context["device"]["label"], "UMC204HD 192k Input 1")
+        overview = _umc_overview(mappings={}, card_name=False)
+        self.assertEqual(_device_context(overview, UMC)["device"]["label"], "UMC204HD 192k Input 1")
 
     def test_a_single_node_card_keeps_its_node_description_as_label(self):
-        self.assertEqual(_overview()["custom_mapping_context"]["device"]["label"], "Scarlett 18i20")
+        self.assertEqual(_device_context(_overview())["device"]["label"], "Scarlett 18i20")
+
+
+OTHER = "usb-Other_Device-00"
+OTHER_STEREO = f"alsa_input.{OTHER}.analog-stereo"
+MIXED = "usb-Mixed_Card-00"
+MIXED_STEREO = f"alsa_input.{MIXED}.analog-stereo"
+MIXED_MONO = f"alsa_input.{MIXED}.mono-fallback"
+
+
+def _cards_overview(*, scarlett=True, umc_numbers=(1, 2), other=False, output=PRO_SINK, mappings=None,
+                    selected_key=None, mode="app-playback"):
+    """Scarlett (one 8-channel node), UMC204HD (mono nodes) and optionally a stereo card at once."""
+    short, detailed = [], []
+    if scarlett:
+        spec = "s32le 8ch 48000Hz"
+        short.append(_short(100, PRO_SOURCE, spec))
+        detailed.append(_detailed(100, PRO_SOURCE, spec, AUX_MAP))
+    for offset, number in enumerate(umc_numbers):
+        name = _umc_mic(number)
+        short.append(_short(200 + offset, name, "float32le 1ch 44100Hz"))
+        detailed.append(_mono_detailed(200 + offset, name, f"UMC204HD 192k Input {number}"))
+    if other:
+        short.append(_short(300, OTHER_STEREO, "s16le 2ch 48000Hz"))
+        detailed.append(_detailed(300, OTHER_STEREO, "s16le 2ch 48000Hz", "front-left,front-right"))
+    return _overview_of(
+        "\n".join(short), "\n\n".join(detailed), source=PRO_SOURCE,
+        mappings={CARD: MAPPING, UMC: UMC_MAPPING} if mappings is None else mappings,
+        output_selection=output, default_sink=output, selected_key=selected_key, mode=mode)
+
+
+def _default_device(overview):
+    context = overview["custom_mapping_context"]
+    listed = [item["device"]["card_base"] for item in context["devices"]]
+    # A default is always a listed device, or nothing when none is listed.
+    assert context["default_device"] in listed or (context["default_device"] is None and not listed), context
+    return context["default_device"]
+
+
+class DeviceChoiceTests(unittest.TestCase):
+    """The dialog offers every device with capture channels, not only the selected output."""
+
+    def test_every_device_with_two_or_more_capture_channels_is_listed_by_label(self):
+        overview = _cards_overview(other=True)
+        listed = [(item["device"]["card_base"], item["device"]["label"], len(item["capture"]["channels"]))
+                  for item in overview["custom_mapping_context"]["devices"]]
+        self.assertEqual(listed, [(CARD, "Scarlett 18i20", 8), (OTHER, "Scarlett 18i20", 2),
+                                  (UMC, "UMC204HD 192k", 2)])
+
+    def test_a_card_with_one_capture_channel_is_not_listed(self):
+        overview = _cards_overview(scarlett=False, umc_numbers=(1,))
+        self.assertEqual(overview["custom_mapping_context"]["devices"], [])
+        self.assertIsNone(overview["custom_mapping_context"]["default_device"])
+
+    def test_no_capture_at_all_lists_nothing(self):
+        overview = _cards_overview(scarlett=False, umc_numbers=())
+        self.assertEqual(overview["custom_mapping_context"], {"default_device": None, "devices": []})
+
+    def test_each_device_carries_its_own_mapping(self):
+        overview = _cards_overview()
+        self.assertEqual(_device_context(overview, CARD)["mapping"]["name"], "External Upmixer")
+        self.assertEqual(_device_context(overview, UMC)["mapping"]["name"], "Line in")
+        self.assertEqual(_device_context(_cards_overview(mappings={CARD: MAPPING}), UMC)["mapping"], None)
+
+    def test_mappings_of_all_devices_are_inputs_whichever_output_is_selected(self):
+        for output in (PRO_SINK, UMC_COMBINED, OTHER_SINK):
+            with self.subTest(output=output):
+                keys = [e["key"] for e in _cards_overview(output=output)["inputs"]
+                        if e["key"].startswith(store.INPUT_KEY_PREFIX)]
+                self.assertEqual(keys, sorted([f"custom-mapping::{CARD}", f"custom-mapping::{UMC}"]),
+                                 "ordered by card base")
+
+    def test_all_capture_inputs_of_all_devices_stay_offered(self):
+        overview = _cards_overview(other=True, mappings={}, output=UMC_COMBINED)
+        self.assertEqual(
+            [e["key"] for e in overview["inputs"]],
+            [f"{PRO_SOURCE}::pair:1-2", f"{PRO_SOURCE}::pair:3-4", f"{PRO_SOURCE}::pair:5-6",
+             f"{PRO_SOURCE}::pair:7-8", OTHER_STEREO, _umc_mic(1)])
+
+    def test_default_follows_the_selected_output_device(self):
+        self.assertEqual(_default_device(_cards_overview(output=PRO_SINK)), CARD)
+        self.assertEqual(_default_device(_cards_overview(output=UMC_COMBINED)), UMC)
+
+    def test_default_is_the_first_device_by_label_when_the_output_has_no_capture(self):
+        self.assertEqual(_default_device(_cards_overview(output=OTHER_SINK)), CARD)
+        self.assertEqual(_default_device(_cards_overview(output=None, umc_numbers=(1, 2), scarlett=False)), UMC)
+
+    def test_selected_custom_mapping_input_wins_over_the_selected_output(self):
+        overview = _cards_overview(output=PRO_SINK, selected_key=f"custom-mapping::{UMC}", mode="external-input")
+        self.assertEqual(_default_device(overview), UMC)
+
+    def test_selected_mapping_of_a_disconnected_device_falls_back_to_the_selected_output(self):
+        key = f"custom-mapping::{UMC}"
+        for output, expected in ((PRO_SINK, CARD), (UMC_COMBINED, CARD)):
+            with self.subTest(output=output):
+                overview = _cards_overview(umc_numbers=(), output=output, selected_key=key, mode="external-input")
+                self.assertEqual(overview["selected_input"]["key"], key)
+                self.assertFalse(overview["selected_input"]["available"])
+                self.assertEqual(_default_device(overview), expected)
+
+    def test_selected_mapping_of_a_device_that_is_no_longer_listed_falls_back_to_the_output_device(self):
+        # One of the UMC's two inputs is gone: the card is no longer mappable.
+        overview = _cards_overview(umc_numbers=(1,), output=PRO_SINK, selected_key=f"custom-mapping::{UMC}",
+                                   mode="external-input")
+        self.assertEqual(_default_device(overview), CARD)
+        overview = _cards_overview(umc_numbers=(1,), output=OTHER_SINK, selected_key=f"custom-mapping::{UMC}",
+                                   mode="external-input", other=True)
+        self.assertEqual(_default_device(overview), OTHER, "first device by label when the output is not listed")
+
+    def test_stale_selected_mapping_key_is_ignored(self):
+        for key in (f"custom-mapping::{OTHER}-gone", "custom-mapping::", "custom-mapping::   "):
+            with self.subTest(key=key):
+                overview = _cards_overview(output=UMC_COMBINED, selected_key=key, mode="external-input")
+                self.assertEqual(_default_device(overview), UMC)
+
+    def test_a_selected_ordinary_input_does_not_decide_the_default(self):
+        overview = _cards_overview(output=UMC_COMBINED, selected_key=f"{PRO_SOURCE}::pair:3-4",
+                                   mode="external-input")
+        self.assertEqual(_default_device(overview), UMC)
+
+
+class SplitPairInputTests(unittest.TestCase):
+    """A card whose inputs are lone mono nodes (UMC204HD HiFi) offers them as stereo inputs."""
+
+    def test_two_mono_nodes_are_one_stereo_input_without_a_mapping(self):
+        overview = _umc_overview(mappings={})
+        self.assertEqual(len(overview["inputs"]), 1)
+        entry = overview["inputs"][0]
+        self.assertEqual(entry["key"], _umc_mic(1))
+        self.assertEqual((entry["source_key"], entry["right_source"]), (_umc_mic(1), _umc_mic(2)))
+        self.assertEqual((entry["left_channel"], entry["right_channel"]), ("MONO", "MONO"))
+        self.assertEqual((entry["label"], entry["device_label"]), ("UMC204HD 192k", "UMC204HD 192k"))
+        self.assertEqual((entry["pair_label"], entry["pair_channels"]), ("Input 1\u20132", [1, 2]))
+        self.assertEqual((entry["pair_index"], entry["pair_count"]), (0, 1))
+        self.assertIsNone(entry["port_key"])
+        self.assertTrue(entry["selectable"] and entry["is_active_port"])
+        self.assertFalse(entry["is_selected"])
+        self.assertNotIn("custom_mapping", entry)
+        self.assertFalse(_is_digital_entry(entry))
+        self.assertFalse(any("Mono capture without a stereo pair" in note for note in overview["notes"]))
+
+    def test_the_input_can_be_selected_and_stays_selected(self):
+        overview = _umc_overview(mappings={}, selected_key=_umc_mic(1), mode="external-input")
+        self.assertEqual(overview["selected_input"]["key"], _umc_mic(1))
+        self.assertTrue(overview["selected_input"]["is_selected"])
+        self.assertEqual(overview["external_input_state"], "available")
+
+    def test_four_mono_nodes_are_two_numbered_pairs(self):
+        overview = _umc_overview(numbers=(1, 2, 3, 4), mappings={})
+        entries = overview["inputs"]
+        self.assertEqual([e["key"] for e in entries], [f"{_umc_mic(1)}::pair:1-2", f"{_umc_mic(3)}::pair:3-4"])
+        self.assertEqual([e["right_source"] for e in entries], [_umc_mic(2), _umc_mic(4)])
+        self.assertEqual([e["label"] for e in entries],
+                         ["UMC204HD 192k \u2014 Input 1\u20132", "UMC204HD 192k \u2014 Input 3\u20134"])
+        selected = _umc_overview(numbers=(1, 2, 3, 4), mappings={}, selected_key=f"{_umc_mic(3)}::pair:3-4",
+                                 mode="external-input")
+        self.assertEqual([e["is_selected"] for e in selected["inputs"]], [False, True])
+
+    def test_an_odd_trailing_node_stays_unpaired_and_noted(self):
+        overview = _umc_overview(numbers=(1, 2, 3), mappings={})
+        self.assertEqual([e["key"] for e in overview["inputs"]], [_umc_mic(1)])
+        note = next(note for note in overview["notes"] if "Mono capture without a stereo pair" in note)
+        self.assertIn("UMC204HD 192k Input 3", note)
+        self.assertNotIn("Input 1", note)
+
+    def test_a_single_mono_node_is_still_not_an_input(self):
+        overview = _umc_overview(numbers=(1,), mappings={})
+        self.assertEqual(overview["inputs"], [])
+        self.assertTrue(any("Mono capture without a stereo pair" in note for note in overview["notes"]))
+
+    def test_a_card_with_a_pairing_node_is_left_to_the_normal_path(self):
+        short = [_short(400, MIXED_STEREO, "s16le 2ch 48000Hz"), _short(401, MIXED_MONO, "float32le 1ch 44100Hz")]
+        detailed = [_detailed(400, MIXED_STEREO, "s16le 2ch 48000Hz", "front-left,front-right"),
+                    _mono_detailed(401, MIXED_MONO, "Mixed mono")]
+        overview = _overview_of("\n".join(short), "\n\n".join(detailed), source=MIXED_STEREO, mappings={},
+                                output_selection=PRO_SINK, default_sink=PRO_SINK, selected_key=None,
+                                mode="app-playback")
+        self.assertEqual([e["key"] for e in overview["inputs"]], [MIXED_STEREO])
+        self.assertNotIn("right_source", overview["inputs"][0])
+        self.assertTrue(any("Mixed mono" in note for note in overview["notes"]))
+
+    def test_the_pair_does_not_depend_on_the_selected_output(self):
+        for output in (PRO_SINK, UMC_COMBINED, OTHER_SINK):
+            with self.subTest(output=output):
+                keys = [e["key"] for e in _cards_overview(output=output, mappings={})["inputs"]]
+                self.assertIn(_umc_mic(1), keys)
+
+    def test_pair_and_mapping_of_one_card_are_both_offered(self):
+        keys = [e["key"] for e in _umc_overview()["inputs"]]
+        self.assertEqual(keys, [_umc_mic(1), f"custom-mapping::{UMC}"])
 
 
 def _routing(overview, mode, **deps):
@@ -557,6 +754,77 @@ class SplitNodeRoutingTests(unittest.IsolatedAsyncioTestCase):
         routing = _routing(_umc_selected(), "stereo")
         with self.assertRaisesRegex(RuntimeError, "two distinct"):
             await routing._ensure_loopback(_umc_mic(1), "MONO", "MONO", right_source=_umc_mic(1))
+
+
+def _umc_pair_selected():
+    return _umc_overview(mappings={}, selected_key=_umc_mic(1), mode="external-input")
+
+
+class SplitPairRoutingTests(unittest.IsolatedAsyncioTestCase):
+    """The offered pair routes like a mapping of Front L/R, in every output mode."""
+
+    async def test_stereo_modes_link_each_node_to_its_side(self):
+        for mode in ("stereo", "stereo-sub"):
+            with self.subTest(mode=mode):
+                routing = _routing(_umc_pair_selected(), mode)
+                connect = AsyncMock()
+                with patch("audio.pw_link.connect_ports", connect), patch(
+                        "audio.pw_link.disconnect_ports", AsyncMock()), patch(
+                        "audio.external_input.input_links_present", AsyncMock(return_value=True)):
+                    await routing.sync()
+                self.assertEqual(
+                    [(c.args[0][0], c.args[1]) for c in connect.await_args_list],
+                    [(f"{_umc_mic(1)}:capture_MONO", "fxroute_dsp_sink:playback_FL"),
+                     (f"{_umc_mic(2)}:capture_MONO", "fxroute_dsp_sink:playback_FR")])
+                self.assertEqual(routing.active_right_source, _umc_mic(2))
+
+    async def test_surround_links_front_l_and_r_directly_and_skips_the_decoder(self):
+        sync_mapped, stop_mapped, digital = AsyncMock(), AsyncMock(), AsyncMock()
+        routing = _routing(_umc_pair_selected(), "surround", sync_mapped_input=sync_mapped,
+                           stop_mapped_input=stop_mapped, sync_digital_input=digital,
+                           stop_digital_input=AsyncMock())
+        with patch("audio.pw_link.connect_ports", AsyncMock(side_effect=AssertionError("sink loopback used"))):
+            await routing.sync()
+        digital.assert_not_awaited()
+        expected = ((f"{_umc_mic(1)}:capture_MONO", "fxroute_dsp:input_1"),
+                    (f"{_umc_mic(2)}:capture_MONO", "fxroute_dsp:input_2"))
+        self.assertEqual(sync_mapped.await_args.args[0], expected)
+        self.assertEqual((routing.mapped_source_name, routing.mapped_ingress_links), (_umc_mic(1), expected))
+        self.assertIsNone(routing.loopback_source_name)
+        await routing.disable()
+        stop_mapped.assert_awaited_once()
+
+    async def test_leaving_surround_returns_to_the_loopback(self):
+        mode = {"value": "surround"}
+        overview = _umc_pair_selected()
+        routing = ExternalInputRouting(ExternalInputRoutingDependencies(
+            get_audio_source_overview=lambda: overview, get_output_mode=lambda: mode["value"],
+            sync_mapped_input=AsyncMock(), stop_mapped_input=AsyncMock()))
+        await routing.sync()
+        mode["value"] = "stereo"
+        with patch("audio.pw_link.connect_ports", AsyncMock()), patch(
+                "audio.pw_link.disconnect_ports", AsyncMock()), patch(
+                "audio.external_input.input_links_present", AsyncMock(return_value=True)):
+            await routing.sync()
+        self.assertIsNone(routing.mapped_source_name)
+        self.assertEqual((routing.loopback_source_name, routing.active_right_source), (_umc_mic(1), _umc_mic(2)))
+
+    async def test_a_single_node_pair_still_uses_the_decoder_in_surround(self):
+        digital, sync_mapped = AsyncMock(), AsyncMock()
+        pair = {"key": "scarlett::pair:9-10", "source_key": "scarlett", "alsa_card": 3,
+                "left_channel": "AUX8", "right_channel": "AUX9"}
+        overview = {"mode": "external-input", "external_input_state": "available", "selected_input": pair}
+        routing = _routing(overview, "surround", sync_mapped_input=sync_mapped, stop_mapped_input=AsyncMock(),
+                           sync_digital_input=digital, stop_digital_input=AsyncMock())
+        await routing.sync()
+        digital.assert_awaited_once()
+        sync_mapped.assert_not_awaited()
+
+    def test_the_auto_input_probe_reads_both_nodes(self):
+        entry = _umc_pair_selected()["selected_input"]
+        spec = InputAutoSelect._probe_spec(SimpleNamespace(_capture_rate=48000), entry)
+        self.assertEqual((spec.source_name, spec.right_source), (_umc_mic(1), _umc_mic(2)))
+        self.assertFalse(spec.digital)
 
 
 class SplitNodeProbeTests(unittest.IsolatedAsyncioTestCase):
@@ -867,25 +1135,39 @@ class _ApiHarness(unittest.TestCase):
         patcher = patch.dict(os.environ, {"XDG_CONFIG_HOME": self._tmp.name})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.context = {
+        self.scarlett = {
             "device": {"card_base": CARD, "label": "Scarlett 18i20"},
             "capture": {"channels": [
                 {"index": i + 1, "suffix": f"AUX{i}", "source": PRO_SOURCE} for i in range(8)]},
             "mapping": None, "input_key": None,
         }
+        self.umc = {
+            "device": {"card_base": UMC, "label": "UMC204HD 192k"},
+            "capture": {"channels": [
+                {"index": 1, "suffix": "MONO", "source": _umc_mic(1)},
+                {"index": 2, "suffix": "MONO", "source": _umc_mic(2)}]},
+            "mapping": None, "input_key": None,
+        }
+        self.devices = [self.scarlett, self.umc]
+        self.default_device = CARD
         self.change_calls = []
         self.disarmed = []
 
+        def overview():
+            return {"custom_mapping_context": {"default_device": self.default_device, "devices": self.devices}}
+
         async def read_overview():
-            return {"custom_mapping_context": self.context}
+            return overview()
 
         async def change(mutate, restore, **kwargs):
             self.change_calls.append(kwargs)
             mutate()
-            mapping = store.load_mappings().get(CARD)
-            self.context = {**self.context, "mapping": mapping,
-                            "input_key": store.input_key(CARD) if mapping else None}
-            return {"custom_mapping_context": self.context}
+            stored = store.load_mappings()
+            for item in self.devices:
+                base = item["device"]["card_base"]
+                item["mapping"] = stored.get(base)
+                item["input_key"] = store.input_key(base) if base in stored else None
+            return overview()
 
         async def disarm(key):
             self.disarmed.append(key)
@@ -941,17 +1223,15 @@ class ApiTests(_ApiHarness):
             self.assertIn("Invalid JSON body", response.json()["detail"])
 
     def test_put_needs_a_device_with_input_channels(self):
-        self.context["capture"] = None
+        self.devices, self.default_device = [], None
         response = self.client.put("/api/audio/custom-mapping", json={"channels": {"FL": 1, "FR": 2}})
         self.assertEqual(response.status_code, 400)
-        self.assertIn("no input channels", response.json()["detail"])
-        self.context["device"] = None
-        response = self.client.put("/api/audio/custom-mapping", json={"channels": {"FL": 1, "FR": 2}})
-        self.assertIn("No audio output device", response.json()["detail"])
+        self.assertIn("No audio device with input channels", response.json()["detail"])
+        self.assertEqual(store.load_mappings(), {})
 
     def test_delete_removes_the_mapping_deselects_it_and_clears_auto(self):
         store.save_mapping(CARD, MAPPING)
-        self.context = {**self.context, "mapping": MAPPING, "input_key": store.input_key(CARD)}
+        self.scarlett.update(mapping=MAPPING, input_key=store.input_key(CARD))
         response = self.client.delete("/api/audio/custom-mapping")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIsNone(response.json()["mapping"])
@@ -963,6 +1243,92 @@ class ApiTests(_ApiHarness):
         response = self.client.delete("/api/audio/custom-mapping")
         self.assertEqual(response.status_code, 404)
         self.assertEqual(self.disarmed, [])
+
+
+class ApiDeviceChoiceTests(_ApiHarness):
+    URL = "/api/audio/custom-mapping"
+
+    def test_get_without_a_device_describes_the_default_and_lists_all_devices(self):
+        body = self.client.get(self.URL).json()
+        self.assertEqual(body["device"]["card_base"], CARD)
+        self.assertEqual(body["devices"], [
+            {"card_base": CARD, "label": "Scarlett 18i20", "channel_count": 8, "has_mapping": False},
+            {"card_base": UMC, "label": "UMC204HD 192k", "channel_count": 2, "has_mapping": False}])
+        self.default_device = UMC
+        self.assertEqual(self.client.get(self.URL).json()["device"]["card_base"], UMC)
+
+    def test_get_names_a_device_with_its_own_channels_and_mapping(self):
+        store.save_mapping(UMC, UMC_MAPPING)
+        self.umc.update(mapping=UMC_MAPPING, input_key=store.input_key(UMC))
+        body = self.client.get(self.URL, params={"device": UMC}).json()
+        self.assertEqual(body["device"]["card_base"], UMC)
+        self.assertEqual(len(body["capture"]["channels"]), 2)
+        self.assertEqual(body["mapping"]["name"], "Line in")
+        self.assertEqual([d["has_mapping"] for d in body["devices"]], [False, True])
+
+    def test_put_saves_for_the_named_device_only(self):
+        response = self.client.put(self.URL, json={"device": UMC, "name": "Line in",
+                                                   "channels": {"FL": 2, "FR": 1}})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["device"]["card_base"], UMC)
+        self.assertEqual(response.json()["input_key"], store.input_key(UMC))
+        self.assertEqual(store.load_mappings(), {UMC: {"name": "Line in", "channels": {"FL": 2, "FR": 1}}})
+        self.assertEqual([d["has_mapping"] for d in response.json()["devices"]], [False, True])
+
+    def test_put_validates_against_the_named_devices_channel_count(self):
+        response = self.client.put(self.URL, json={"device": UMC, "channels": {"FL": 1, "FR": 3}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("the device has 2 input channels", response.json()["detail"])
+        self.assertEqual(store.load_mappings(), {})
+        # The same body is fine for the 8-channel default device.
+        self.assertEqual(self.client.put(self.URL, json={"channels": {"FL": 1, "FR": 3}}).status_code, 200)
+
+    def test_each_device_keeps_its_own_mapping(self):
+        self.client.put(self.URL, json={"channels": {"FL": 1, "FR": 2}})
+        self.client.put(self.URL, json={"device": UMC, "channels": {"FL": 2, "FR": 1}})
+        self.assertEqual(set(store.load_mappings()), {CARD, UMC})
+
+    def test_delete_removes_only_the_named_device_and_disarms_its_key(self):
+        for base, mapping in ((CARD, MAPPING), (UMC, UMC_MAPPING)):
+            store.save_mapping(base, mapping)
+        self.scarlett.update(mapping=MAPPING, input_key=store.input_key(CARD))
+        self.umc.update(mapping=UMC_MAPPING, input_key=store.input_key(UMC))
+        response = self.client.delete(self.URL, params={"device": UMC})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["device"]["card_base"], UMC)
+        self.assertEqual(set(store.load_mappings()), {CARD})
+        self.assertEqual(self.change_calls, [{"deselect_key": store.input_key(UMC)}])
+        self.assertEqual(self.disarmed, [store.input_key(UMC)])
+
+    def test_delete_of_a_device_without_a_mapping_is_a_404(self):
+        store.save_mapping(CARD, MAPPING)
+        self.scarlett.update(mapping=MAPPING, input_key=store.input_key(CARD))
+        response = self.client.delete(self.URL, params={"device": UMC})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(set(store.load_mappings()), {CARD})
+
+    def test_unknown_or_malformed_devices_are_a_400_and_change_nothing(self):
+        gone = "usb-Gone-00"
+        for method, kwargs in (
+                ("get", {"params": {"device": gone}}),
+                ("get", {"params": {"device": ""}}),
+                ("delete", {"params": {"device": gone}}),
+                ("put", {"json": {"device": gone, "channels": {"FL": 1, "FR": 2}}}),
+                ("put", {"json": {"device": "", "channels": {"FL": 1, "FR": 2}}}),
+                ("put", {"json": {"device": 5, "channels": {"FL": 1, "FR": 2}}})):
+            with self.subTest(method=method, kwargs=kwargs):
+                response = getattr(self.client, method)(self.URL, **kwargs)
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertTrue(response.json()["detail"])
+        self.assertEqual(store.load_mappings(), {})
+        self.assertEqual(self.change_calls, [])
+        self.assertEqual(self.disarmed, [])
+
+    def test_a_device_that_is_not_listed_cannot_be_written(self):
+        self.devices = [self.scarlett]
+        response = self.client.put(self.URL, json={"device": UMC, "channels": {"FL": 1, "FR": 2}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no input channels", response.json()["detail"])
 
 
 if __name__ == "__main__":

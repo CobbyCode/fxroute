@@ -2,9 +2,10 @@
 
 """HTTP surface of the per-device custom input mapping.
 
-The selected device, its capture channels and its mapping come from the
-source overview (``custom_mapping_context``), so the dialog and the input
-list always describe the same device. Writes run through
+The devices, their capture channels and their mappings come from the source
+overview (``custom_mapping_context``), so the dialog and the input list always
+describe the same devices. Every call may name a device by its card base;
+without one the overview's default device is used. Writes run through
 ``SourceTransitions.change_input_config`` under the source-transition lock.
 """
 
@@ -52,21 +53,41 @@ def _deps() -> CustomMappingApiDeps:
     return _runtime.deps
 
 
-def _payload(overview: dict[str, Any]) -> dict[str, Any]:
-    context = dict(overview.get("custom_mapping_context") or {})
-    return {**context, "positions": custom_input_mapping.positions_payload()}
-
-
-def _device_base(context: dict[str, Any]) -> str:
-    base = (context.get("device") or {}).get("card_base")
+def _resolve_device(overview: dict[str, Any], requested: Any) -> dict[str, Any]:
+    """The overview's context of the requested device, else of the default one."""
+    context = overview.get("custom_mapping_context") or {}
+    devices = context.get("devices") or []
+    base = str(requested).strip() if isinstance(requested, str) else ""
+    if requested is not None and not base:
+        raise bad_request(ValueError("device must be an audio device name"))
+    base = base or context.get("default_device")
     if not base:
-        raise bad_request(ValueError("No audio output device is selected"))
-    return base
+        raise bad_request(ValueError("No audio device with input channels is available"))
+    device = next((item for item in devices if item["device"]["card_base"] == base), None)
+    if device is None:
+        raise bad_request(ValueError(f"Unknown audio device or it has no input channels: {base}"))
+    return device
+
+
+def _payload(overview: dict[str, Any], device: dict[str, Any]) -> dict[str, Any]:
+    """The device's context, the choice of devices and the program positions."""
+    context = overview.get("custom_mapping_context") or {}
+    devices = [
+        {
+            "card_base": item["device"]["card_base"],
+            "label": item["device"]["label"],
+            "channel_count": len(item["capture"]["channels"]),
+            "has_mapping": item["mapping"] is not None,
+        }
+        for item in context.get("devices") or []
+    ]
+    return {**device, "devices": devices, "positions": custom_input_mapping.positions_payload()}
 
 
 @router.get("/api/audio/custom-mapping")
-async def get_custom_mapping():
-    return _payload(await _deps().read_overview())
+async def get_custom_mapping(device: str | None = None):
+    overview = await _deps().read_overview()
+    return _payload(overview, _resolve_device(overview, device))
 
 
 @router.put("/api/audio/custom-mapping")
@@ -80,13 +101,12 @@ async def put_custom_mapping(request: Request):
             status_code=400,
             detail='Invalid JSON body, expected {"name": <string?>, "channels": {<channel>: <input number>}}',
         )
-    context = (await _deps().read_overview()).get("custom_mapping_context") or {}
-    base = _device_base(context)
-    capture = context.get("capture")
-    if not capture:
-        raise bad_request(ValueError("The selected audio device has no input channels"))
+    overview = await _deps().read_overview()
+    device = _resolve_device(overview, body.get("device"))
+    base = device["device"]["card_base"]
     try:
-        mapping = custom_input_mapping.validate(body.get("name"), body.get("channels"), len(capture["channels"]))
+        mapping = custom_input_mapping.validate(
+            body.get("name"), body.get("channels"), len(device["capture"]["channels"]))
     except ValueError as exc:
         raise bad_request(exc)
     previous = custom_input_mapping.load_mappings().get(base)
@@ -105,16 +125,15 @@ async def put_custom_mapping(request: Request):
     except (OSError, RuntimeError) as exc:
         logger.warning("Custom mapping save failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Failed to save custom mapping: {exc}")
-    return _payload(overview)
+    return _payload(overview, _resolve_device(overview, base))
 
 
 @router.delete("/api/audio/custom-mapping")
-async def delete_custom_mapping():
-    context = (await _deps().read_overview()).get("custom_mapping_context") or {}
-    base = _device_base(context)
+async def delete_custom_mapping(device: str | None = None):
+    base = _resolve_device(await _deps().read_overview(), device)["device"]["card_base"]
     previous = custom_input_mapping.load_mappings().get(base)
     if previous is None:
-        raise HTTPException(status_code=404, detail="No custom mapping is saved for the selected audio device")
+        raise HTTPException(status_code=404, detail="No custom mapping is saved for this audio device")
     key = custom_input_mapping.input_key(base)
 
     def restore() -> None:
@@ -128,4 +147,4 @@ async def delete_custom_mapping():
         raise HTTPException(status_code=500, detail=f"Failed to delete custom mapping: {exc}")
     # Outside the source-transition lock: disarming republishes the state.
     await _deps().disarm_auto_select(key)
-    return _payload(overview)
+    return _payload(overview, _resolve_device(overview, base))

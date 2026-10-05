@@ -1373,6 +1373,7 @@ const elements = {
     customMappingPanel: document.getElementById('custom-mapping-panel'),
     customMappingClose: document.getElementById('custom-mapping-close'),
     customMappingSubtitle: document.getElementById('custom-mapping-subtitle'),
+    customMappingDevice: document.getElementById('custom-mapping-device'),
     customMappingName: document.getElementById('custom-mapping-name'),
     customMappingGrid: document.getElementById('custom-mapping-grid'),
     customMappingSave: document.getElementById('custom-mapping-save'),

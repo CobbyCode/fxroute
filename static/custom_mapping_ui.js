@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-/** Custom input mapping dialog: physical capture channels of the selected device -> program channels. */
+/** Custom input mapping dialog: physical capture channels of a chosen device -> program channels. */
 (function (root, factory) {
     const api = factory(root);
     root.FXRouteCustomMapping = api;
@@ -23,6 +23,8 @@
     let context = null;
     let selection = {};
     let busy = false;
+    // Guards the dialog against an older device response arriving late.
+    let loadToken = 0;
 
     function init(overrides) {
         deps = Object.assign(deps, overrides || {});
@@ -53,6 +55,14 @@
             options.push({ value: String(channel.index), label: `Input ${channel.index}` });
         }
         return options;
+    }
+
+    /** Select options of the device choice: every mappable device, marked when it has a mapping. */
+    function deviceOptions(data) {
+        return (data?.devices || []).map((device) => ({
+            value: device.card_base,
+            label: device.has_mapping ? `${device.label} · saved` : device.label,
+        }));
     }
 
     /** Stored mapping within the live channel count, else the first two inputs on Front L/R. */
@@ -92,6 +102,13 @@
         return { name: String(name || '').trim(), channels };
     }
 
+    function renderDeviceHtml(data) {
+        const current = data?.device?.card_base;
+        return deviceOptions(data).map((option) => (
+            `<option value="${escapeHtml(option.value)}"${option.value === current ? ' selected' : ''}>${escapeHtml(option.label)}</option>`
+        )).join('');
+    }
+
     function renderGridHtml(positions, capture, current) {
         return (positions || []).map((position) => {
             const options = channelOptions(capture, position.id).map((option) => (
@@ -119,6 +136,9 @@
         const elements = deps.getElements();
         const usable = !!context?.capture && !busy;
         const problem = context ? validateSelection(selection, context.positions) : '';
+        if (elements.customMappingDevice) {
+            elements.customMappingDevice.disabled = busy || !(context?.devices || []).length;
+        }
         if (elements.customMappingSave) elements.customMappingSave.disabled = !usable || !!problem;
         if (elements.customMappingDelete) {
             elements.customMappingDelete.classList.toggle('hidden', !context?.mapping);
@@ -132,28 +152,31 @@
     function render() {
         const elements = deps.getElements();
         if (!context) return;
-        const device = context.device?.label || context.device?.card_base || 'the selected audio device';
+        const device = context.device?.label || context.device?.card_base || 'an audio device';
         if (elements.customMappingSubtitle) {
             elements.customMappingSubtitle.textContent = `Route the input channels of ${device} to FXRoute channels.`;
         }
+        if (elements.customMappingDevice) elements.customMappingDevice.innerHTML = renderDeviceHtml(context);
         if (elements.customMappingName) elements.customMappingName.value = context.mapping?.name || '';
         if (elements.customMappingGrid) {
             elements.customMappingGrid.innerHTML = context.capture
                 ? renderGridHtml(context.positions, context.capture, selection) : '';
         }
         const problem = updateControls();
-        if (!context.device) setStatus('No audio output device is selected.');
-        else if (!context.capture) setStatus('The selected audio device has no input channels.');
+        if (!context.device) setStatus('No audio device with input channels found.');
+        else if (!context.capture) setStatus('This audio device has no input channels.');
         else setStatus(problem);
     }
 
-    async function request(method, body) {
+    /** GET and DELETE name the device in the query, PUT in its body. */
+    async function request(method, body, device) {
         const options = { method };
         if (body !== undefined) {
             options.headers = { 'Content-Type': 'application/json' };
             options.body = JSON.stringify(body);
         }
-        const response = await deps.fetch(ENDPOINT, options);
+        const query = device && method !== 'PUT' ? `?device=${encodeURIComponent(device)}` : '';
+        const response = await deps.fetch(ENDPOINT + query, options);
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
             const detail = typeof data.detail === 'string' ? data.detail : '';
@@ -167,6 +190,11 @@
         if (!elements.customMappingPanel) return;
         context = null;
         selection = {};
+        loadToken += 1;
+        const token = loadToken;
+        if (elements.customMappingGrid) elements.customMappingGrid.innerHTML = '';
+        if (elements.customMappingDevice) elements.customMappingDevice.innerHTML = '';
+        updateControls();
         setStatus('Loading…');
         elements.customMappingPanel.classList.remove('hidden');
         deps.openModal(elements.customMappingPanel, {
@@ -174,10 +202,32 @@
             onEscape: () => close(),
         });
         try {
-            context = await request('GET');
+            const loaded = await request('GET');
+            if (token !== loadToken) return;
+            context = loaded;
             selection = initialSelection(context);
             render();
         } catch (error) {
+            if (token === loadToken) setStatus(error.message);
+        }
+    }
+
+    /** Switch the dialog to another device: its channels and its stored mapping. */
+    async function selectDevice(base) {
+        if (busy || !context || !base || base === context.device?.card_base) return;
+        loadToken += 1;
+        const token = loadToken;
+        setStatus('Loading…');
+        try {
+            const loaded = await request('GET', undefined, base);
+            if (token !== loadToken) return;
+            context = loaded;
+            selection = initialSelection(context);
+            render();
+        } catch (error) {
+            if (token !== loadToken) return;
+            // Keep the shown device and put the select back on it.
+            render();
             setStatus(error.message);
         }
     }
@@ -204,7 +254,10 @@
         }
         setBusy(true);
         try {
-            context = await request('PUT', selectionPayload(deps.getElements().customMappingName?.value, selection));
+            context = await request('PUT', {
+                device: context.device?.card_base,
+                ...selectionPayload(deps.getElements().customMappingName?.value, selection),
+            });
             await finish('Custom mapping saved');
         } catch (error) {
             setStatus(error.message);
@@ -218,7 +271,7 @@
         if (!deps.confirm('Delete the custom mapping? Its input disappears from the Input list.')) return;
         setBusy(true);
         try {
-            context = await request('DELETE');
+            context = await request('DELETE', undefined, context.device?.card_base);
             await finish('Custom mapping deleted');
         } catch (error) {
             setStatus(error.message);
@@ -232,6 +285,9 @@
         elements.customMappingClose?.addEventListener('click', () => close());
         elements.customMappingPanel?.querySelector('.manage-overlay-backdrop')
             ?.addEventListener('click', () => close());
+        elements.customMappingDevice?.addEventListener('change', (event) => {
+            void selectDevice(event.target.value);
+        });
         elements.customMappingSave?.addEventListener('click', () => { void save(); });
         elements.customMappingDelete?.addEventListener('click', () => { void remove(); });
         elements.customMappingGrid?.addEventListener('change', (event) => {
@@ -243,7 +299,7 @@
     }
 
     return {
-        init, bind, open, close, save, remove,
-        channelOptions, initialSelection, validateSelection, selectionPayload, renderGridHtml,
+        init, bind, open, close, save, remove, selectDevice,
+        channelOptions, deviceOptions, initialSelection, validateSelection, selectionPayload, renderGridHtml,
     };
 });

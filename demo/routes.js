@@ -1085,8 +1085,9 @@
     // Input auto-select: armed keys only; the demo has no signal to detect.
     let sourceAutoArmed = [];
     // ── Custom input mapping (mirrors audio/custom_input_mapping.py) ─────
-    // One mapping per device, keyed by the card base; it is offered while its
-    // device is the selected output and has capture channels in the demo.
+    // One mapping per device, keyed by the card base. Its input is offered
+    // whichever output is selected; the dialog can map any device with at
+    // least two capture channels in the demo.
     const CUSTOM_MAPPING_POSITIONS = [['FL', 'Front L'], ['FR', 'Front R'], ['FC', 'Center'],
         ['LFE', 'LFE'], ['SL', 'Side L'], ['SR', 'Side R'], ['BL', 'Rear L'], ['BR', 'Rear R']];
     const customMappings = {};
@@ -1095,22 +1096,40 @@
         const match = String(name || '').match(/^alsa_(?:input|output)\.(.+)\.[^.]+$/);
         return match ? match[1] : null;
     }
-    // Capture channels of the selected output's card, from the demo's source pairs.
-    function customMappingDevice() {
-        const base = demoCardBase(selectedOutput().key);
-        const pairs = SOURCE_INPUTS.filter((item) => demoCardBase(item.source_key) === base)
-            .sort((a, b) => a.pair_index - b.pair_index);
-        return { base, pair: pairs[0] || null, suffixes: pairs.flatMap((item) => [item.left_channel, item.right_channel]) };
+    // Devices with capture channels, from the demo's source pairs, by label.
+    function customMappingDevices() {
+        const byBase = {};
+        for (const item of SOURCE_INPUTS) {
+            const base = demoCardBase(item.source_key);
+            if (base) (byBase[base] = byBase[base] || []).push(item);
+        }
+        return Object.entries(byBase).map(([base, items]) => {
+            items.sort((a, b) => a.pair_index - b.pair_index);
+            return {
+                base, pair: items[0], label: items[0].device_label,
+                suffixes: items.flatMap((item) => [item.left_channel, item.right_channel]),
+            };
+        }).filter((device) => device.suffixes.length >= 2)
+            .sort((a, b) => a.label.localeCompare(b.label) || a.base.localeCompare(b.base));
     }
-    function customMappingEntry() {
-        const { base, pair, suffixes } = customMappingDevice();
-        const mapping = base ? customMappings[base] : null;
-        if (!mapping || !pair) return null;
+    // The device of the selected custom-mapping input, else of the selected
+    // output, else the first one; only a listed device can be the default.
+    function customMappingDefault(devices) {
+        const listed = devices.map((device) => device.base);
+        const selectedKey = String(selectedSourceInputKey || '');
+        const fromInput = selectedKey.startsWith('custom-mapping::') ? selectedKey.slice('custom-mapping::'.length) : null;
+        return [fromInput, demoCardBase(selectedOutput().key)].find((base) => base && listed.includes(base))
+            || listed[0] || null;
+    }
+    function customMappingEntry(device) {
+        const mapping = customMappings[device.base];
+        if (!mapping) return null;
+        const { suffixes } = device;
         const channels = mapping.channels;
         return {
-            ...pair,
-            id: 900,
-            key: customMappingKey(base),
+            ...device.pair,
+            id: 900 + Object.keys(customMappings).sort().indexOf(device.base),
+            key: customMappingKey(device.base),
             label: mapping.name || 'Custom mapping',
             is_default: false,
             pair_index: 0,
@@ -1126,16 +1145,43 @@
             },
         };
     }
-    function customMappingPayload() {
-        const { base, pair, suffixes } = customMappingDevice();
-        const mapping = base ? customMappings[base] : null;
+    function customMappingEntries() {
+        return customMappingDevices().map(customMappingEntry).filter(Boolean)
+            .sort((a, b) => a.key.localeCompare(b.key));
+    }
+    function customMappingDeviceContext(device) {
+        const mapping = customMappings[device.base];
         return {
-            device: base ? { card_base: base, label: pair ? pair.device_label : selectedOutput().label } : null,
-            capture: pair ? {
-                channels: suffixes.map((suffix, index) => ({ index: index + 1, suffix, source: pair.source_key })),
-            } : null,
+            device: { card_base: device.base, label: device.label },
+            capture: {
+                channels: device.suffixes.map((suffix, index) => ({ index: index + 1, suffix, source: device.pair.source_key })),
+            },
             mapping: mapping ? { name: mapping.name, channels: { ...mapping.channels } } : null,
-            input_key: mapping ? customMappingKey(base) : null,
+            input_key: mapping ? customMappingKey(device.base) : null,
+        };
+    }
+    function customMappingContext() {
+        const devices = customMappingDevices();
+        return { default_device: customMappingDefault(devices), devices: devices.map(customMappingDeviceContext) };
+    }
+    // The device a request names (query or body), else the default; the same errors as the API.
+    function resolveCustomMappingDevice(requested) {
+        const devices = customMappingDevices();
+        const named = typeof requested === 'string' ? requested.trim() : '';
+        if (requested != null && !named) return { error: 'device must be an audio device name' };
+        const base = named || customMappingDefault(devices);
+        if (!base) return { error: 'No audio device with input channels is available' };
+        const device = devices.find((item) => item.base === base);
+        if (!device) return { error: 'Unknown audio device or it has no input channels: ' + base };
+        return { device };
+    }
+    function customMappingPayload(device) {
+        return {
+            ...customMappingDeviceContext(device),
+            devices: customMappingDevices().map((item) => ({
+                card_base: item.base, label: item.label, channel_count: item.suffixes.length,
+                has_mapping: !!customMappings[item.base],
+            })),
             positions: CUSTOM_MAPPING_POSITIONS.map(([id, label]) => ({ id, label })),
         };
     }
@@ -1170,13 +1216,13 @@
     }
     function sourceInputByKey(key) {
         const wanted = String(key || '');
-        const custom = customMappingEntry();
         return SOURCE_INPUTS.find((item) => item.key === wanted)
-            || (custom && custom.key === wanted ? custom : null);
+            || customMappingEntries().find((item) => item.key === wanted)
+            || null;
     }
     function sourceOverview() {
         const selected = sourceInputByKey(selectedSourceInputKey) || SOURCE_INPUTS[0];
-        const custom = customMappingEntry();
+        const customs = customMappingEntries();
         const withSelected = (item) => ({ ...item, is_selected: item.key === selected.key });
         return {
             mode: sourceMode,
@@ -1189,8 +1235,8 @@
             default_input: withSelected(SOURCE_INPUTS[0]),
             selected_input: withSelected(selected),
             current_input: withSelected(selected),
-            inputs: (custom ? [...SOURCE_INPUTS, custom] : SOURCE_INPUTS).map(withSelected),
-            custom_mapping_context: (({ positions, ...context }) => context)(customMappingPayload()),
+            inputs: [...SOURCE_INPUTS, ...customs].map(withSelected),
+            custom_mapping_context: customMappingContext(),
             bluetooth: { ...BLUETOOTH_SOURCE },
             stdin: {
                 available: true, selectable: true, state: 'waiting',
@@ -2802,21 +2848,22 @@
             return j(samplerate);
         }
         if (p === '/api/audio/custom-mapping') {
-            const device = customMappingDevice();
-            if (method === 'GET') return j(customMappingPayload());
-            if (!device.base) return err('No audio output device is selected', 400);
+            if (method === 'PUT' && (!body || typeof body !== 'object' || Array.isArray(body))) {
+                return err('Invalid JSON body, expected {"name": <string?>, "channels": {<channel>: <input number>}}', 400);
+            }
+            const resolved = resolveCustomMappingDevice(
+                method === 'PUT' ? body.device : (query.has('device') ? query.get('device') : undefined));
+            if (resolved.error) return err(resolved.error, 400);
+            const { device } = resolved;
+            if (method === 'GET') return j(customMappingPayload(device));
             if (method === 'PUT') {
-                if (!device.pair) return err('The selected audio device has no input channels', 400);
-                if (!body || typeof body !== 'object' || Array.isArray(body)) {
-                    return err('Invalid JSON body, expected {"name": <string?>, "channels": {<channel>: <input number>}}', 400);
-                }
                 const result = validateCustomMapping(body.name, body.channels, device.suffixes.length);
                 if (result.error) return err(result.error, 400);
                 customMappings[device.base] = result.mapping;
-                return j(customMappingPayload());
+                return j(customMappingPayload(device));
             }
             if (method === 'DELETE') {
-                if (!customMappings[device.base]) return err('No custom mapping is saved for the selected audio device', 404);
+                if (!customMappings[device.base]) return err('No custom mapping is saved for this audio device', 404);
                 const key = customMappingKey(device.base);
                 delete customMappings[device.base];
                 sourceAutoArmed = sourceAutoArmed.filter((item) => item !== key);
@@ -2824,7 +2871,7 @@
                     sourceMode = 'app-playback';
                     selectedSourceInputKey = SOURCE_INPUTS[0].key;
                 }
-                return j(customMappingPayload());
+                return j(customMappingPayload(device));
             }
         }
         if (p === '/api/audio/source-auto' && post) {

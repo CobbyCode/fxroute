@@ -357,16 +357,24 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     assert.equal(freshSource.mode, 'app-playback');
 
     // ── Custom input mapping ─────────────────────────────────────────
-    // One mapping per device, offered as an ordinary external input of the
-    // selected output; Delete falls back to App playback when it was active.
-    const mappingCall = (method, payload) => demoFetch('/api/audio/custom-mapping',
+    // One mapping per device, offered as an ordinary external input whichever
+    // output is selected; the dialog picks the device. Delete falls back to
+    // App playback when it was active.
+    const mappingCallFor = (method, device, payload) => demoFetch(
+        '/api/audio/custom-mapping' + (device ? '?device=' + encodeURIComponent(device) : ''),
         { method, body: payload ? JSON.stringify(payload) : undefined })
         .then((r) => r.json().then((d) => ({ status: r.status, data: d })));
+    const mappingCall = (method, payload) => mappingCallFor(method, null, payload);
+    const scarlettBase = 'usb-Focusrite_Scarlett_16i16_4th_Gen-00';
+    const motuBase = 'usb-MOTU_M4-00';
     const mapCaps = (await mappingCall('GET')).data;
     const mapSuffix = (index) => mapCaps.capture.channels[index - 1].suffix;
     assert.equal(mapCaps.device.card_base, 'usb-Focusrite_Scarlett_16i16_4th_Gen-00');
     assert.equal(mapCaps.capture.channels.length, 18);
     assert.equal(mapCaps.mapping, null);
+    assert.equal(JSON.stringify(mapCaps.devices.map((d) => [d.card_base, d.channel_count, d.has_mapping])),
+        JSON.stringify([[scarlettBase, 18, false], [motuBase, 4, false], ['usb-DemoSPDIF-00', 2, false]]),
+        'every device with capture channels is offered, by label');
     assert.equal(JSON.stringify(mapCaps.positions.map((p) => p.id)),
         JSON.stringify(['FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'BL', 'BR']));
     assert.ok(!freshSource.inputs.some((i) => String(i.key).startsWith('custom-mapping::')),
@@ -392,7 +400,9 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     assert.equal(mappedEntry.left_channel, mapSuffix(5));
     assert.equal(mappedEntry.right_channel, mapSuffix(6));
     assert.equal(mappedEntry.custom_mapping.suffixes.BR, mapSuffix(1));
-    assert.equal(withMapping.custom_mapping_context.mapping.name, 'External Upmixer');
+    const scarlettContext = withMapping.custom_mapping_context.devices.find((d) => d.device.card_base === scarlettBase);
+    assert.equal(scarlettContext.mapping.name, 'External Upmixer');
+    assert.equal(withMapping.custom_mapping_context.default_device, scarlettBase);
     const mappedSelected = await sourcePost({ mode: 'external-input', inputKey: mappedKey });
     assert.equal(mappedSelected.status, 200);
     assert.equal(mappedSelected.data.selected_input.key, mappedKey);
@@ -409,6 +419,40 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     assert.equal(afterRemoval.mode, 'app-playback', 'deleting the active mapping falls back to App playback');
     assert.equal(afterRemoval.inputs.length, initialSource.inputs.length);
     assert.ok(!afterRemoval.auto_select.armed.includes(mappedKey));
+
+    // A second device: chosen in the dialog, not bound to the selected output.
+    const motuKey = 'custom-mapping::' + motuBase;
+    const motuCaps = await mappingCallFor('GET', motuBase);
+    assert.equal(motuCaps.data.device.card_base, motuBase);
+    assert.equal(motuCaps.data.capture.channels.length, 4);
+    assert.equal((await mappingCallFor('GET', 'usb-Gone-00')).status, 400, 'an unknown device is rejected');
+    assert.equal((await mappingCall('PUT', { device: motuBase, channels: { FL: 1, FR: 5 } })).status, 400,
+        'validated against the chosen device channel count');
+    assert.equal((await mappingCall('PUT', { device: '', channels: { FL: 1, FR: 2 } })).status, 400);
+    assert.equal((await mappingCallFor('DELETE', motuBase)).status, 404);
+    const motuSaved = await mappingCall('PUT',
+        { device: motuBase, name: 'Quad', channels: { FL: 1, FR: 2, BL: 3, BR: 4 } });
+    assert.equal(motuSaved.status, 200);
+    assert.equal(motuSaved.data.input_key, motuKey);
+    assert.equal(JSON.stringify(motuSaved.data.devices.map((d) => d.has_mapping)), JSON.stringify([false, true, false]));
+    assert.equal((await mappingCall('PUT', { channels: { FL: 5, FR: 6 } })).status, 200, 'default device: the selected output');
+    const twoMappings = await sourceGet();
+    const customKeys = twoMappings.inputs.map((i) => i.key).filter((k) => k.startsWith('custom-mapping::'));
+    assert.equal(JSON.stringify(customKeys), JSON.stringify([mappedKey, motuKey]),
+        'the mappings of all devices are inputs, whichever output is selected');
+    assert.equal(twoMappings.inputs.length, initialSource.inputs.length + 2);
+    const motuSelected = await sourcePost({ mode: 'external-input', inputKey: motuKey });
+    assert.equal(motuSelected.status, 200);
+    assert.equal(motuSelected.data.custom_mapping_context.default_device, motuBase,
+        'the device of the selected mapping is the dialog default');
+    assert.equal((await mappingCallFor('GET')).data.device.card_base, motuBase);
+    assert.equal((await mappingCallFor('DELETE', motuBase)).status, 200);
+    const afterMotu = await sourceGet();
+    assert.equal(afterMotu.mode, 'app-playback', 'deleting the selected mapping of another device falls back');
+    assert.equal(afterMotu.custom_mapping_context.default_device, scarlettBase,
+        'a deleted selection no longer decides the default device');
+    assert.equal((await mappingCallFor('DELETE', scarlettBase)).status, 200);
+    assert.equal((await sourceGet()).inputs.length, initialSource.inputs.length);
     await sourcePost({ mode: 'app-playback', inputKey: 'alsa_input.usb-MOTU_M4-00.analog-surround-40::pair:3-4' });
 
     // ── Device selection: Focusrite Scarlett 16i16 ───────────────────
