@@ -69,6 +69,19 @@ class PipeWireLink:
     target: str
 
 
+def mapped_ingress_edges(source: str, suffixes: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
+    """Direct capture-port -> engine-input edges of a custom input mapping.
+
+    ``suffixes`` maps program positions to capture channel suffixes; the
+    engine input of a position is its place in ``SURROUND_POSITIONS``.
+    """
+    return tuple(
+        (f"{source}:capture_{suffixes[position]}", f"{DSP_NODE_NAME}:input_{index + 1}")
+        for index, position in enumerate(SURROUND_POSITIONS)
+        if position in suffixes
+    )
+
+
 def _contains_link(text: str, source: str, target: str) -> bool:
     """Return whether ``source`` is linked to ``target`` in ``pw-link -l`` text.
 
@@ -468,6 +481,8 @@ class DSPRuntime:
         self._stderr_tail = b""
         self._surround_input = False
         self._measurement_surround_input = False
+        self._mapped_ingress: tuple[tuple[str, str], ...] = ()
+        self._measurement_mapped_ingress: tuple[tuple[str, str], ...] = ()
 
     @property
     def sync_in_progress(self) -> bool:
@@ -574,6 +589,7 @@ class DSPRuntime:
                 "last_error": self._error, "last_started_at": self._started_at,
                  "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
                  "surround_input": self._surround_input,
+                 "mapped_ingress": [list(edge) for edge in self._mapped_ingress],
                 "output_mask": None if self._control_poisoned else self._output_mask,
                 "control_state": "unknown" if self._control_poisoned else "ready",
                 "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
@@ -737,13 +753,19 @@ class DSPRuntime:
 
     async def _suspend_surround_input(self) -> None:
         self._measurement_surround_input = self._surround_input
+        self._measurement_mapped_ingress = self._mapped_ingress
         if self._surround_input:
             await self.set_surround_input(False)
+        if self._mapped_ingress:
+            await self.set_mapped_ingress(())
 
     async def _resume_surround_input(self) -> None:
         if self._measurement_surround_input:
             await self.set_surround_input(True)
             self._measurement_surround_input = False
+        if self._measurement_mapped_ingress:
+            mapped, self._measurement_mapped_ingress = self._measurement_mapped_ingress, ()
+            await self.set_mapped_ingress(mapped)
 
     async def set_output_gain_db(self, gain_db: float) -> float:
         value = max(-80.0, min(0.0, float(gain_db)))
@@ -1312,37 +1334,67 @@ class DSPRuntime:
             async with self._lock:
                 await self._reconcile_ingress_links()
 
-    async def _reconcile_ingress_links(self) -> None:
+    async def set_mapped_ingress(self, edges: Sequence[tuple[str, str]]) -> None:
+        """Select analog multichannel ingress (custom input mapping); empty clears it.
+
+        ``edges`` are (capture port, engine input port) pairs from
+        ``mapped_ingress_edges``. The sink monitor stays linked to inputs 1/2.
+        """
+        self._mapped_ingress = tuple((str(source), str(target)) for source, target in edges)
+        if self._engine_running():
+            async with self._lock:
+                await self._reconcile_ingress_links(strict_mapped=True)
+
+    async def _reconcile_ingress_links(self, *, strict_mapped: bool = False) -> None:
+        count = self._config.input_count if self._config else 2
         desired = [PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{port}", f"{DSP_NODE_NAME}:input_{index + 1}")
                    for index, port in enumerate(DSP_INGRESS_PORTS)]
         if self._surround_input:
-            count = self._config.input_count if self._config else 2
             desired.extend(PipeWireLink(f"fxroute_surround_input:output_{position}",
                                        f"{DSP_NODE_NAME}:input_{index + 1}")
                            for index, position in enumerate(SURROUND_POSITIONS[:count]))
+        engine_inputs = {f"{DSP_NODE_NAME}:input_{index + 1}" for index in range(count)}
+        mapped = {PipeWireLink(source, target) for source, target in self._mapped_ingress
+                  if target in engine_inputs}
+        desired.extend(sorted(mapped, key=lambda link: link.target))
+        previously_mapped = {link for link in self._links
+                             if link.target.startswith(f"{DSP_NODE_NAME}:input_")
+                             and not link.source.startswith(f"{DSP_INGRESS_MONITOR_NODE}:")
+                             and not link.source.startswith("fxroute_surround_input:")}
         result = await self._run(("pw-link", "-l"))
         if result.returncode:
             raise RuntimeError(result.stderr or "Cannot inspect DSP ingress links")
         live = {PipeWireLink(source, target) for source, target in iter_pw_links(result.stdout)
-                if source.startswith("fxroute_surround_input:") and target.startswith(f"{DSP_NODE_NAME}:input_")}
+                if target.startswith(f"{DSP_NODE_NAME}:input_")
+                and (source.startswith("fxroute_surround_input:")
+                     or PipeWireLink(source, target) in previously_mapped)}
         for link in live - set(desired):
             disconnected = await self._run(("pw-link", "-d", link.source, link.target))
             if disconnected.returncode:
                 readback = await self._run(("pw-link", "-l"))
                 if readback.returncode or _contains_link(readback.stdout, link.source, link.target):
                     raise RuntimeError(disconnected.stderr or "Cannot disconnect decoded ingress")
+        unlinked: set[PipeWireLink] = set()
         for link in desired:
             if not _contains_link(result.stdout, link.source, link.target):
                 connected = await self._run(("pw-link", link.source, link.target))
                 if connected.returncode and "exists" not in connected.stderr.lower():
+                    if link in mapped and not strict_mapped:
+                        # A missing capture node must not fail an engine rebuild;
+                        # the external-input monitor re-links it once it returns.
+                        logger.warning("Mapped ingress link %s -> %s not established: %s",
+                                       link.source, link.target, (connected.stderr or "").strip())
+                        unlinked.add(link)
+                        continue
                     raise RuntimeError(connected.stderr or "Cannot connect DSP ingress")
-        if self._surround_input or live:
+        established = [link for link in desired if link not in unlinked]
+        if self._surround_input or mapped or live:
             readback = await self._run(("pw-link", "-l"))
             if (readback.returncode
-                    or any(not _contains_link(readback.stdout, link.source, link.target) for link in desired)
+                    or any(not _contains_link(readback.stdout, link.source, link.target) for link in established)
                     or any(_contains_link(readback.stdout, link.source, link.target) for link in live - set(desired))):
                 raise RuntimeError("Decoded ingress links could not be verified")
-        self._links = [link for link in self._links if not link.target.startswith(f"{DSP_NODE_NAME}:input_")] + desired
+        self._links = [link for link in self._links if not link.target.startswith(f"{DSP_NODE_NAME}:input_")] + established
 
     async def stop(self) -> None:
         for link in self._links:

@@ -356,6 +356,61 @@ assert.match(htmlSource, /id="settings-device-name-apply"/);
     const freshSource = await sourceGet();
     assert.equal(freshSource.mode, 'app-playback');
 
+    // ── Custom input mapping ─────────────────────────────────────────
+    // One mapping per device, offered as an ordinary external input of the
+    // selected output; Delete falls back to App playback when it was active.
+    const mappingCall = (method, payload) => demoFetch('/api/audio/custom-mapping',
+        { method, body: payload ? JSON.stringify(payload) : undefined })
+        .then((r) => r.json().then((d) => ({ status: r.status, data: d })));
+    const mapCaps = (await mappingCall('GET')).data;
+    const mapSuffix = (index) => mapCaps.capture.channels[index - 1].suffix;
+    assert.equal(mapCaps.device.card_base, 'usb-Focusrite_Scarlett_16i16_4th_Gen-00');
+    assert.equal(mapCaps.capture.channels.length, 18);
+    assert.equal(mapCaps.mapping, null);
+    assert.equal(JSON.stringify(mapCaps.positions.map((p) => p.id)),
+        JSON.stringify(['FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'BL', 'BR']));
+    assert.ok(!freshSource.inputs.some((i) => String(i.key).startsWith('custom-mapping::')),
+        'no mapping, no custom input');
+    for (const rejected of [{ channels: { FL: 1 } }, { channels: { FL: 1, FR: 1 } },
+        { channels: { FL: 1, FR: 19 } }, { channels: { FL: 1, FR: 2, XX: 3 } },
+        { name: 'x'.repeat(41), channels: { FL: 1, FR: 2 } }, { channels: [] }]) {
+        assert.equal((await mappingCall('PUT', rejected)).status, 400, JSON.stringify(rejected));
+    }
+    assert.equal((await mappingCall('DELETE')).status, 404);
+    const savedMapping = await mappingCall('PUT',
+        { name: ' External Upmixer ', channels: { FL: 5, FR: 6, FC: 7, BR: 1 } });
+    assert.equal(savedMapping.status, 200);
+    assert.equal(savedMapping.data.mapping.name, 'External Upmixer');
+    const mappedKey = 'custom-mapping::usb-Focusrite_Scarlett_16i16_4th_Gen-00';
+    assert.equal(savedMapping.data.input_key, mappedKey);
+    const withMapping = await sourceGet();
+    const mappedEntry = withMapping.inputs[withMapping.inputs.length - 1];
+    assert.equal(withMapping.inputs.length, initialSource.inputs.length + 1);
+    assert.equal(mappedEntry.key, mappedKey);
+    assert.equal(mappedEntry.label, 'External Upmixer');
+    assert.equal(mappedEntry.pair_label, null);
+    assert.equal(mappedEntry.left_channel, mapSuffix(5));
+    assert.equal(mappedEntry.right_channel, mapSuffix(6));
+    assert.equal(mappedEntry.custom_mapping.suffixes.BR, mapSuffix(1));
+    assert.equal(withMapping.custom_mapping_context.mapping.name, 'External Upmixer');
+    const mappedSelected = await sourcePost({ mode: 'external-input', inputKey: mappedKey });
+    assert.equal(mappedSelected.status, 200);
+    assert.equal(mappedSelected.data.selected_input.key, mappedKey);
+    const mappedArmed = await demoFetch('/api/audio/source-auto',
+        { method: 'POST', body: JSON.stringify({ inputKey: mappedKey, enabled: true }) }).then((r) => r.json());
+    assert.ok(mappedArmed.auto_select.armed.includes(mappedKey), 'the mapped input takes part in Auto');
+    const edited = await mappingCall('PUT', { channels: { FL: 1, FR: 2 } });
+    assert.equal(edited.status, 200);
+    assert.equal((await sourceGet()).selected_input.label, 'Custom mapping', 'edit keeps the selection');
+    const removed = await mappingCall('DELETE');
+    assert.equal(removed.status, 200);
+    assert.equal(removed.data.mapping, null);
+    const afterRemoval = await sourceGet();
+    assert.equal(afterRemoval.mode, 'app-playback', 'deleting the active mapping falls back to App playback');
+    assert.equal(afterRemoval.inputs.length, initialSource.inputs.length);
+    assert.ok(!afterRemoval.auto_select.armed.includes(mappedKey));
+    await sourcePost({ mode: 'app-playback', inputKey: 'alsa_input.usb-MOTU_M4-00.analog-surround-40::pair:3-4' });
+
     // ── Device selection: Focusrite Scarlett 16i16 ───────────────────
     // The demo opens on the .104 system: the Scarlett 16i16 4th Gen Pro with
     // 18 outputs, a 2-way crossover and two subs. Selecting the MOTU M4

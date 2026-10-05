@@ -1114,13 +1114,15 @@ select.url-input {
     flex-wrap: wrap;
     margin-top: 0.85rem;
 }
-/* Qobuz/qbzd and TIDAL logins stack above the settings dialog they are launched from. */
+/* Qobuz/qbzd and TIDAL logins and the custom input mapping stack above the settings dialog they are launched from. */
 .qobuz-login-overlay,
-.tidal-login-overlay {
+.tidal-login-overlay,
+.custom-mapping-overlay {
     z-index: calc(var(--z-overlay) + 10);
 }
 .qobuz-login-overlay .url-input,
-.tidal-login-overlay .url-input {
+.tidal-login-overlay .url-input,
+.custom-mapping-overlay .url-input {
     width: 100%;
 }
 .qobuz-login-overlay a.btn-primary,

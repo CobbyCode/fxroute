@@ -10,6 +10,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Mapping
 
+from audio import custom_input_mapping
+from audio.custom_input_mapping import load_mappings as _load_custom_input_mappings
 from audio.output_ports import (
     channel_suffix_for_position,
     parse_channel_map_positions,
@@ -77,8 +79,15 @@ def _missing_selected_input(key: str, availability: str) -> dict[str, Any]:
             remembered = _remembered_external_input(key)
         except Exception:
             remembered = None
+    custom_base = custom_input_mapping.card_base_from_key(key)
     if remembered is not None and remembered.get("key") == key:
         entry = dict(remembered)
+    elif custom_base is not None:
+        entry = {
+            "key": key, "name": None, "source_key": None, "port_key": None,
+            "device_label": None, "pair_label": None,
+            "label": custom_input_mapping.label_for(_load_custom_input_mappings().get(custom_base)),
+        }
     else:
         source_name, port_key, pair = _split_source_selection_key(key)
         device_label = _humanize_source_name(source_name)
@@ -340,6 +349,92 @@ def _parse_default_source_name(output: str) -> str | None:
             value = stripped.split(":", 1)[1].strip()
             return value or None
     return None
+
+
+def _parse_default_sink_name(output: str) -> str | None:
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Default Sink:"):
+            value = stripped.split(":", 1)[1].strip()
+            return value or None
+    return None
+
+
+def _custom_mapping_entry(
+    mapping: dict[str, Any],
+    base: str,
+    candidates: list[dict[str, Any]],
+    selected_input_key: str | None,
+    notes: list[str],
+) -> dict[str, Any] | None:
+    """The stored mapping as an ``inputs[]`` entry of its device's capture node.
+
+    The widest capture node of the card carries it. The entry has no port
+    and no pair label: selection must not switch a source port, and the
+    user's name is only ever the label.
+    """
+    best = max(candidates, key=lambda candidate: len(candidate["suffixes"]))
+    suffixes = best["suffixes"]
+    indices = mapping["channels"]
+    if max(indices.values()) > len(suffixes):
+        notes.append(
+            f"Custom mapping needs {max(indices.values())} input channels; "
+            f"the device offers {len(suffixes)}."
+        )
+        return None
+    key = custom_input_mapping.input_key(base)
+    payload = best["payload"]
+    return {
+        **payload,
+        "is_default": False,
+        "key": key,
+        "source_key": payload.get("name"),
+        "port_key": None,
+        "port_label": None,
+        "label": custom_input_mapping.label_for(mapping),
+        "is_active_port": True,
+        "is_selected": key == selected_input_key,
+        "pair_index": 0,
+        "pair_count": 1,
+        "pair_label": None,
+        "pair_channels": [indices["FL"], indices["FR"]],
+        "left_channel": suffixes[indices["FL"] - 1],
+        "right_channel": suffixes[indices["FR"] - 1],
+        "custom_mapping": {
+            "name": mapping["name"],
+            "channels": dict(indices),
+            "suffixes": {position: suffixes[index - 1] for position, index in indices.items()},
+        },
+    }
+
+
+def _custom_mapping_context(
+    base: str | None,
+    mapping: dict[str, Any] | None,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Selected device, its capture channels and its mapping, for the dialog."""
+    best = max(candidates, key=lambda candidate: len(candidate["suffixes"])) if candidates else None
+    return {
+        "device": (
+            {"card_base": base, "label": (best["payload"].get("device_label") if best else None) or base}
+            if base else None
+        ),
+        "capture": (
+            {
+                "source": best["payload"].get("name"),
+                "channels": [
+                    {"index": index + 1, "suffix": suffix}
+                    for index, suffix in enumerate(best["suffixes"])
+                ],
+            }
+            if best else None
+        ),
+        "mapping": (
+            {"name": mapping["name"], "channels": dict(mapping["channels"])} if mapping else None
+        ),
+        "input_key": custom_input_mapping.input_key(base) if base and mapping else None,
+    }
 
 def _build_source_selection_key(
     source_name: str,
@@ -888,8 +983,11 @@ def get_audio_source_overview() -> dict[str, Any]:
     bluetooth_overview = get_bluetooth_audio_overview()
     notes: list[str] = []
 
+    default_sink_name = None
     try:
-        default_source_name = _parse_default_source_name(_run_command(["pactl", "info"]))
+        pactl_info = _run_command(["pactl", "info"])
+        default_source_name = _parse_default_source_name(pactl_info)
+        default_sink_name = _parse_default_sink_name(pactl_info)
     except Exception as exc:
         default_source_name = None
         notes.append(f"Default input unavailable: {exc}")
@@ -910,6 +1008,8 @@ def get_audio_source_overview() -> dict[str, Any]:
     selected_source_name, selected_port_key, selected_pair = _split_source_selection_key(selected_input_key)
     inputs = []
     skipped_single_channel: list[str] = []
+    # Capture nodes by ALSA card, for the custom mapping of the selected device.
+    capture_candidates: dict[str, list[dict[str, Any]]] = {}
     for source in sources:
         name = source.get("name")
         details = source_details.get(name or "", {})
@@ -950,6 +1050,11 @@ def get_audio_source_overview() -> dict[str, Any]:
             # Input auto-select reads the digital-input lock of this card.
             "alsa_card": details.get("alsa_card"),
         }
+        node_card_base = custom_input_mapping.card_base(name)
+        if node_card_base:
+            capture_candidates.setdefault(node_card_base, []).append(
+                {"payload": base_payload, "suffixes": suffixes}
+            )
 
         def _pair_entry(
             pair: dict[str, Any],
@@ -1007,6 +1112,20 @@ def get_audio_source_overview() -> dict[str, Any]:
                     label=device_label,
                     is_active_port=True,
                 ))
+
+    selected_card_base = custom_input_mapping.card_base(
+        _load_audio_output_selection().get("selected_key") or default_sink_name
+    )
+    custom_mapping = (
+        _load_custom_input_mappings().get(selected_card_base) if selected_card_base else None
+    )
+    selected_candidates = capture_candidates.get(selected_card_base or "", [])
+    if custom_mapping is not None and selected_candidates:
+        custom_entry = _custom_mapping_entry(
+            custom_mapping, selected_card_base, selected_candidates, selected_input_key, notes
+        )
+        if custom_entry is not None:
+            inputs.append(custom_entry)
 
     if skipped_single_channel:
         skipped_names = ", ".join(skipped_single_channel[:3])
@@ -1086,6 +1205,8 @@ def get_audio_source_overview() -> dict[str, Any]:
         "current_input": current_input,
         "external_input_state": external_input_state,
         "inputs": inputs,
+        "custom_mapping_context": _custom_mapping_context(
+            selected_card_base, custom_mapping, selected_candidates),
         "bluetooth": {
             "available": bluetooth_overview.get("available", False),
             "selectable": bool(((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("selectable")),

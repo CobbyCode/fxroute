@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from audio import pw_link
 from audio.input_links import input_links_present
+from dsp.runtime import mapped_ingress_edges
 from audio.samplerate import SOURCE_MODE_EXTERNAL_INPUT
 from audio.source_monitor import UnavailabilityConfirmation, run_source_monitor_loop
 
@@ -49,6 +50,10 @@ class ExternalInputRoutingDependencies:
     # (source, left, right, ALSA card of the source or None)
     sync_digital_input: Callable[[str, str, str, int | None], Awaitable[None]] | None = None
     stop_digital_input: Callable[[], Awaitable[None]] | None = None
+    # Surround ingress of a custom input mapping: (capture port, engine input
+    # port) edges, linked directly to the engine.
+    sync_mapped_input: Callable[[tuple[tuple[str, str], ...]], Awaitable[None]] | None = None
+    stop_mapped_input: Callable[[], Awaitable[None]] | None = None
 
 
 class ExternalInputRouting:
@@ -59,6 +64,9 @@ class ExternalInputRouting:
         self.loopback_source_name: str | None = None
         self.loopback_selection_key: str | None = None
         self.digital_source_name: str | None = None
+        self.mapped_source_name: str | None = None
+        # Links of the established mapped ingress, for the power-hint probe.
+        self.mapped_ingress_links: tuple[tuple[str, str], ...] = ()
         self._active_channels: tuple[str, str] = _LEGACY_CHANNELS
         self._pending_channels: tuple[str, str] | None = None
         self._sync_lock = asyncio.Lock()
@@ -110,6 +118,10 @@ class ExternalInputRouting:
         if self.digital_source_name is not None and self._deps.stop_digital_input is not None:
             await self._deps.stop_digital_input()
         self.digital_source_name = None
+        if self.mapped_source_name is not None and self._deps.stop_mapped_input is not None:
+            await self._deps.stop_mapped_input()
+        self.mapped_source_name = None
+        self.mapped_ingress_links = ()
         previous_source = self.loopback_source_name
         previous_channels = self._active_channels
         self.loopback_source_name = None
@@ -196,11 +208,18 @@ class ExternalInputRouting:
             await self.disable()
             return overview
         left, right = _pair_channels(current_input)
-        if self._deps.get_output_mode is not None and self._deps.get_output_mode() == "surround":
+        surround = self._deps.get_output_mode is not None and self._deps.get_output_mode() == "surround"
+        custom_mapping = current_input.get("custom_mapping")
+        if surround and isinstance(custom_mapping, dict):
+            await self._sync_mapped(str(source_name), custom_mapping)
+            self._active_channels = (left, right)
+            self._remembered_input = dict(current_input)
+            return overview
+        if surround:
             if self._deps.sync_digital_input is None:
                 await self.disable()
                 raise RuntimeError("Surround digital ingress is unavailable")
-            if self.loopback_source_name is not None:
+            if self.loopback_source_name is not None or self.mapped_source_name is not None:
                 await self.disable()
             try:
                 await self._deps.sync_digital_input(str(source_name), left, right,
@@ -214,7 +233,7 @@ class ExternalInputRouting:
             self._active_channels = (left, right)
             self._remembered_input = dict(current_input)
             return overview
-        if self.digital_source_name is not None:
+        if self.digital_source_name is not None or self.mapped_source_name is not None:
             await self.disable()
         await self._ensure_loopback(
             str(source_name),
@@ -224,6 +243,25 @@ class ExternalInputRouting:
         )
         self._remembered_input = dict(current_input)
         return overview
+
+    async def _sync_mapped(self, source_name: str, custom_mapping: dict[str, Any]) -> None:
+        """Link the mapped capture channels straight to the engine inputs."""
+        edges = mapped_ingress_edges(source_name, custom_mapping.get("suffixes") or {})
+        if self._deps.sync_mapped_input is None or not edges:
+            await self.disable()
+            raise RuntimeError("Mapped surround ingress is unavailable")
+        if self.loopback_source_name is not None or self.digital_source_name is not None:
+            await self.disable()
+        try:
+            await self._deps.sync_mapped_input(edges)
+        except BaseException:
+            if self._deps.stop_mapped_input is not None:
+                await self._deps.stop_mapped_input()
+            self.mapped_source_name = None
+            self.mapped_ingress_links = ()
+            raise
+        self.mapped_source_name = source_name
+        self.mapped_ingress_links = edges
 
     async def _monitor_once(self) -> None:
         """One tick outside the loop: build, then act without lock handling."""
@@ -237,7 +275,8 @@ class ExternalInputRouting:
                 # probe confirms the loss or reports the input again.
                 return
             overview = await self.sync(overview)
-        elif self.loopback_source_name is not None or self.digital_source_name is not None:
+        elif (self.loopback_source_name is not None or self.digital_source_name is not None
+              or self.mapped_source_name is not None):
             await self.sync(overview)
         elif not self._external_persisted():
             return
@@ -277,6 +316,7 @@ class ExternalInputRouting:
             and mode_provider() != SOURCE_MODE_EXTERNAL_INPUT
             and self.loopback_source_name is None
             and self.digital_source_name is None
+            and self.mapped_source_name is None
         )
 
     async def stop(self) -> None:

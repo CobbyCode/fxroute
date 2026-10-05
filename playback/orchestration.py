@@ -573,6 +573,12 @@ class PlaybackOrchestrator:
             count = 8 if (snapshot.get("config") or {}).get("output_mode") == "surround" else 2
             ingress_sources += tuple(f"fxroute_surround_input:output_{position}" for position in SURROUND_POSITIONS[:count])
             ingress_targets += tuple(f"fxroute_dsp:input_{i + 1}" for i in range(count))
+        engine_input_count = 8 if (snapshot.get("config") or {}).get("output_mode") == "surround" else 2
+        engine_inputs = {f"fxroute_dsp:input_{i + 1}" for i in range(engine_input_count)}
+        for mapped_source, mapped_target in snapshot.get("mapped_ingress") or ():
+            if mapped_target in engine_inputs:
+                ingress_sources += (mapped_source,)
+                ingress_targets += (mapped_target,)
         result["dsp_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
         result["helper_ports"] = result["dsp_ports"]
         result["helper_active"] = bool(snapshot.get("active"))

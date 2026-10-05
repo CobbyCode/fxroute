@@ -256,7 +256,7 @@ def _active_line_source_for_power() -> str | None:
         external_source = (external_input.loopback_source_name or "").strip()
     except Exception:
         external_source = ""
-    if external_source:
+    if external_source or getattr(external_input, "mapped_source_name", None):
         return "external-input"
     try:
         stdin_service = runtime.stdin_input
@@ -312,6 +312,14 @@ async def _active_line_source_for_power_async() -> str | None:
         left, right = _external_input_link_channels()
         try:
             if await input_links_present(external_source, ((left, "FL"), (right, "FR"))):
+                return "external-input"
+        except Exception:
+            return None
+        return None
+    mapped_links = getattr(external_input, "mapped_ingress_links", ())
+    if getattr(external_input, "mapped_source_name", None) and mapped_links:
+        try:
+            if await ingress_links_present(mapped_links):
                 return "external-input"
         except Exception:
             return None
@@ -466,7 +474,7 @@ import dsp.orchestration as dsp_orchestration
 import dsp.preset_loading as preset_loading
 import playback.orchestration as playback_orchestration
 from audio import pw_link
-from audio.input_links import input_links_present
+from audio.input_links import ingress_links_present, input_links_present
 from audio.output_ports import hardware_link_target, hardware_playback_port_fallback_from_mode
 from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
 from audio.output_state import (
@@ -604,6 +612,7 @@ logger = logging.getLogger(__name__)
 
 import install_info
 import audio.power_api as power_api
+import audio.custom_mapping_api as custom_mapping_api
 import audio.canonical_volume as canonical_volume
 import measurement.spl_calibration as spl_calibration
 import measurement.speaker_api as speaker_api
@@ -915,6 +924,8 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     get_output_mode=lambda: get_output_service().ensure_state()["active_mode"],
     sync_digital_input=lambda source, left, right, card: _sync_surround_input(source, left, right, card),
     stop_digital_input=lambda: _stop_surround_input(),
+    sync_mapped_input=lambda edges: _sync_mapped_input(edges),
+    stop_mapped_input=lambda: _stop_mapped_input(),
 ))
 
 bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
@@ -5560,6 +5571,23 @@ async def _stop_surround_input() -> None:
         await _surround_input.stop()
 
 
+async def _sync_mapped_input(edges: tuple[tuple[str, str], ...]) -> None:
+    """Link a custom input mapping's capture channels straight to the engine."""
+    if runtime.dsp_runtime is None:
+        raise RuntimeError("Surround needs an active native DSP runtime")
+    if _measurement_session_owns_live_rate():
+        await runtime.dsp_runtime.set_mapped_ingress(())
+        return
+    await runtime.dsp_runtime.set_mapped_ingress(edges)
+    if not await runtime.dsp_runtime.verify():
+        raise RuntimeError("Mapped input DSP links could not be verified")
+
+
+async def _stop_mapped_input() -> None:
+    if runtime.dsp_runtime is not None:
+        await runtime.dsp_runtime.set_mapped_ingress(())
+
+
 @app.get("/api/audio/surround")
 async def get_surround_input_status():
     return {"carrier_rate_hz": 48000, "carrier_owned": _surround_carrier_owned,
@@ -6826,6 +6854,11 @@ preset_loading.configure_preset_loading(_make_preset_load_deps())
 canonical_volume.configure_canonical_volume(_make_canonical_volume_deps())
 power_api.register_power_routes(app, power_api.PowerApiDeps(
     is_origin_trusted=is_request_origin_trusted,
+))
+custom_mapping_api.register_custom_mapping_routes(app, custom_mapping_api.CustomMappingApiDeps(
+    read_overview=lambda: source_transitions.read_overview(),
+    change_input_config=lambda *args, **kwargs: source_transitions.change_input_config(*args, **kwargs),
+    disarm_auto_select=lambda key: input_auto_select.set_armed(key, False),
 ))
 dsp_orchestrator = DspOrchestrator(_make_dsp_orchestration_deps())
 

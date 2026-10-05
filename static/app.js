@@ -1370,6 +1370,14 @@ const elements = {
     splCalibrationAutoStatus: document.getElementById('spl-calibration-auto-status'),
     splCalibrationSave: document.getElementById('spl-calibration-save'),
     splCalibrationStatus: document.getElementById('spl-calibration-status'),
+    customMappingPanel: document.getElementById('custom-mapping-panel'),
+    customMappingClose: document.getElementById('custom-mapping-close'),
+    customMappingSubtitle: document.getElementById('custom-mapping-subtitle'),
+    customMappingName: document.getElementById('custom-mapping-name'),
+    customMappingGrid: document.getElementById('custom-mapping-grid'),
+    customMappingSave: document.getElementById('custom-mapping-save'),
+    customMappingDelete: document.getElementById('custom-mapping-delete'),
+    customMappingStatus: document.getElementById('custom-mapping-status'),
     toastContainer: document.getElementById('toast-container'),
     powerMenuRoot: document.getElementById('power-menu-root'),
     powerMenuToggle: document.getElementById('power-menu-toggle'),
@@ -1917,6 +1925,16 @@ function setupSettingsActions() {
             void saveSampleRatePolicy(event.target.value || 'auto');
         });
     }
+    window.FXRouteCustomMapping.init({
+        getElements: () => elements,
+        fetch: (...args) => fetch(...args),
+        openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+        closeModal: (panel) => window.FXRouteModal?.close(panel),
+        confirm: (message) => window.confirm(message),
+        showToast,
+        refreshSources: () => fetchAudioSourceOverview(),
+    });
+    window.FXRouteCustomMapping.bind();
     window.FXRouteSrcSettings.init({
         select: document.getElementById('settings-src-select'),
         hint: document.getElementById('settings-src-hint'),
@@ -1971,6 +1989,10 @@ function setupSettingsActions() {
                 void saveAudioSourceSelection('stdin-input');
             } else if (value.startsWith('external-input::')) {
                 void saveAudioSourceSelection('external-input', value.slice('external-input::'.length));
+            } else if (value === 'custom-mapping') {
+                // Configuration entry, not a source: restore the shown selection first.
+                renderSourceSection();
+                void window.FXRouteCustomMapping.open();
             }
         });
     }
@@ -2692,6 +2714,7 @@ function renderSourceSection() {
             ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
             `<option value="bluetooth-input"${bluetoothSelectable || currentMode === 'bluetooth-input' ? '' : ' disabled'}>Bluetooth input</option>`,
             `<option value="stdin-input"${stdinSelectable || currentMode === 'stdin-input' ? '' : ' disabled'}>STDIN</option>`,
+            '<option value="custom-mapping">Custom Mapping…</option>',
         ];
         elements.settingsSourceSelect.innerHTML = inputOptions.join('');
         if (currentMode === 'external-input') {

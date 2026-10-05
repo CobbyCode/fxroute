@@ -1084,11 +1084,100 @@
     let selectedSourceInputKey = SOURCE_INPUTS[0].key;
     // Input auto-select: armed keys only; the demo has no signal to detect.
     let sourceAutoArmed = [];
+    // ── Custom input mapping (mirrors audio/custom_input_mapping.py) ─────
+    // One mapping per device, keyed by the card base; it is offered while its
+    // device is the selected output and has capture channels in the demo.
+    const CUSTOM_MAPPING_POSITIONS = [['FL', 'Front L'], ['FR', 'Front R'], ['FC', 'Center'],
+        ['LFE', 'LFE'], ['SL', 'Side L'], ['SR', 'Side R'], ['BL', 'Rear L'], ['BR', 'Rear R']];
+    const customMappings = {};
+    const customMappingKey = (base) => 'custom-mapping::' + base;
+    function demoCardBase(name) {
+        const match = String(name || '').match(/^alsa_(?:input|output)\.(.+)\.[^.]+$/);
+        return match ? match[1] : null;
+    }
+    // Capture channels of the selected output's card, from the demo's source pairs.
+    function customMappingDevice() {
+        const base = demoCardBase(selectedOutput().key);
+        const pairs = SOURCE_INPUTS.filter((item) => demoCardBase(item.source_key) === base)
+            .sort((a, b) => a.pair_index - b.pair_index);
+        return { base, pair: pairs[0] || null, suffixes: pairs.flatMap((item) => [item.left_channel, item.right_channel]) };
+    }
+    function customMappingEntry() {
+        const { base, pair, suffixes } = customMappingDevice();
+        const mapping = base ? customMappings[base] : null;
+        if (!mapping || !pair) return null;
+        const channels = mapping.channels;
+        return {
+            ...pair,
+            id: 900,
+            key: customMappingKey(base),
+            label: mapping.name || 'Custom mapping',
+            is_default: false,
+            pair_index: 0,
+            pair_count: 1,
+            pair_label: null,
+            pair_channels: [channels.FL, channels.FR],
+            left_channel: suffixes[channels.FL - 1],
+            right_channel: suffixes[channels.FR - 1],
+            custom_mapping: {
+                name: mapping.name,
+                channels: { ...channels },
+                suffixes: Object.fromEntries(Object.entries(channels).map(([position, index]) => [position, suffixes[index - 1]])),
+            },
+        };
+    }
+    function customMappingPayload() {
+        const { base, pair, suffixes } = customMappingDevice();
+        const mapping = base ? customMappings[base] : null;
+        return {
+            device: base ? { card_base: base, label: pair ? pair.device_label : selectedOutput().label } : null,
+            capture: pair ? {
+                source: pair.source_key,
+                channels: suffixes.map((suffix, index) => ({ index: index + 1, suffix })),
+            } : null,
+            mapping: mapping ? { name: mapping.name, channels: { ...mapping.channels } } : null,
+            input_key: mapping ? customMappingKey(base) : null,
+            positions: CUSTOM_MAPPING_POSITIONS.map(([id, label]) => ({ id, label })),
+        };
+    }
+    // Same rules and messages as custom_input_mapping.validate.
+    function validateCustomMapping(rawName, rawChannels, count) {
+        const name = rawName == null ? '' : rawName;
+        if (typeof name !== 'string') return { error: 'Name must be a string' };
+        if (name.trim().length > 40) return { error: 'Name must be at most 40 characters' };
+        if (!rawChannels || typeof rawChannels !== 'object' || Array.isArray(rawChannels)) {
+            return { error: 'channels must be an object mapping channel to input number' };
+        }
+        const labels = Object.fromEntries(CUSTOM_MAPPING_POSITIONS);
+        for (const position of Object.keys(rawChannels)) {
+            if (!(position in labels)) return { error: 'Unknown channel: ' + position };
+        }
+        const channels = {};
+        const owner = {};
+        for (const [position] of CUSTOM_MAPPING_POSITIONS) {
+            const value = rawChannels[position];
+            if (value == null) continue;
+            if (!Number.isInteger(value)) return { error: `Input for ${labels[position]} must be a whole number` };
+            if (value < 1 || value > count) {
+                return { error: `Input ${value} is not available: the device has ${count} input channels` };
+            }
+            if (owner[value]) return { error: `Input ${value} is assigned to both ${labels[owner[value]]} and ${labels[position]}` };
+            owner[value] = position;
+            channels[position] = value;
+        }
+        const missing = ['FL', 'FR'].filter((position) => !(position in channels)).map((position) => labels[position]);
+        if (missing.length) return { error: missing.join(' and ') + ' must be mapped' };
+        return { mapping: { name: name.trim(), channels } };
+    }
     function sourceInputByKey(key) {
-        return SOURCE_INPUTS.find((item) => item.key === String(key || '')) || null;
+        const wanted = String(key || '');
+        const custom = customMappingEntry();
+        return SOURCE_INPUTS.find((item) => item.key === wanted)
+            || (custom && custom.key === wanted ? custom : null);
     }
     function sourceOverview() {
         const selected = sourceInputByKey(selectedSourceInputKey) || SOURCE_INPUTS[0];
+        const custom = customMappingEntry();
         const withSelected = (item) => ({ ...item, is_selected: item.key === selected.key });
         return {
             mode: sourceMode,
@@ -1101,7 +1190,8 @@
             default_input: withSelected(SOURCE_INPUTS[0]),
             selected_input: withSelected(selected),
             current_input: withSelected(selected),
-            inputs: SOURCE_INPUTS.map(withSelected),
+            inputs: (custom ? [...SOURCE_INPUTS, custom] : SOURCE_INPUTS).map(withSelected),
+            custom_mapping_context: (({ positions, ...context }) => context)(customMappingPayload()),
             bluetooth: { ...BLUETOOTH_SOURCE },
             stdin: {
                 available: true, selectable: true, state: 'waiting',
@@ -2711,6 +2801,32 @@
                 return j(samplerate);
             }
             return j(samplerate);
+        }
+        if (p === '/api/audio/custom-mapping') {
+            const device = customMappingDevice();
+            if (method === 'GET') return j(customMappingPayload());
+            if (!device.base) return err('No audio output device is selected', 400);
+            if (method === 'PUT') {
+                if (!device.pair) return err('The selected audio device has no input channels', 400);
+                if (!body || typeof body !== 'object' || Array.isArray(body)) {
+                    return err('Invalid JSON body, expected {"name": <string?>, "channels": {<channel>: <input number>}}', 400);
+                }
+                const result = validateCustomMapping(body.name, body.channels, device.suffixes.length);
+                if (result.error) return err(result.error, 400);
+                customMappings[device.base] = result.mapping;
+                return j(customMappingPayload());
+            }
+            if (method === 'DELETE') {
+                if (!customMappings[device.base]) return err('No custom mapping is saved for the selected audio device', 404);
+                const key = customMappingKey(device.base);
+                delete customMappings[device.base];
+                sourceAutoArmed = sourceAutoArmed.filter((item) => item !== key);
+                if (sourceMode === 'external-input' && selectedSourceInputKey === key) {
+                    sourceMode = 'app-playback';
+                    selectedSourceInputKey = SOURCE_INPUTS[0].key;
+                }
+                return j(customMappingPayload());
+            }
         }
         if (p === '/api/audio/source-auto' && post) {
             const key = String(body.inputKey || body.input_key || '');

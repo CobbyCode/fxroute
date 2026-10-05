@@ -86,14 +86,15 @@ class BluetoothStreamingProbeTests(unittest.TestCase):
             self.assertFalse(is_bluetooth_audio_streaming("bluez_input.11_22_33_44_55_66.1"))
 
 
-def _payload(*, bt_source=None, bt_streaming=False, ext_source=None, heartbeat=0.0):
+def _payload(*, bt_source=None, bt_streaming=False, ext_source=None, heartbeat=0.0, mapped_source=None):
     with (
         patch.object(main.runtime, "player_instance", None),
         patch.object(main.playback_state, "latest_spotify_state", {}),
         patch.object(main.playback_state, "latest_qobuz_state", {}),
         patch.object(main, "last_measurement_window_seen_at", heartbeat),
         patch.object(main, "bluetooth_input", SimpleNamespace(input_source_name=bt_source)),
-        patch.object(main, "external_input", SimpleNamespace(loopback_source_name=ext_source)),
+        patch.object(main, "external_input", SimpleNamespace(
+            loopback_source_name=ext_source, mapped_source_name=mapped_source)),
         patch.object(main, "is_bluetooth_audio_streaming", return_value=bt_streaming),
     ):
         return main._build_power_state_payload()
@@ -123,6 +124,11 @@ class PowerPayloadLineSourceTests(unittest.TestCase):
 
     def test_external_input_switches_on(self):
         payload = _payload(ext_source="alsa_input.scarlett")
+        self.assertTrue(payload["amp_should_be_on"])
+        self.assertEqual(payload["reason"], "external-input")
+
+    def test_mapped_surround_input_switches_on(self):
+        payload = _payload(mapped_source="alsa_input.scarlett")
         self.assertTrue(payload["amp_should_be_on"])
         self.assertEqual(payload["reason"], "external-input")
 

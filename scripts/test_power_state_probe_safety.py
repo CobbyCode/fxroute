@@ -19,14 +19,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main  # noqa: E402
 
 
-def _base_patches(*, bt_source=None, ext_source=None, heartbeat=0.0):
+def _base_patches(*, bt_source=None, ext_source=None, heartbeat=0.0, external_extra=None):
     return (
         mock.patch.object(main.runtime, "player_instance", None),
         mock.patch.object(main.playback_state, "latest_spotify_state", {}),
         mock.patch.object(main.playback_state, "latest_qobuz_state", {}),
         mock.patch.object(main, "last_measurement_window_seen_at", heartbeat),
         mock.patch.object(main, "bluetooth_input", SimpleNamespace(input_source_name=bt_source)),
-        mock.patch.object(main, "external_input", SimpleNamespace(loopback_source_name=ext_source)),
+        mock.patch.object(main, "external_input", SimpleNamespace(
+            loopback_source_name=ext_source, **(external_extra or {}))),
     )
 
 
@@ -71,6 +72,53 @@ class PowerProbeOffloadTests(unittest.IsolatedAsyncioTestCase):
             payload = await main.get_power_state()
             self.assertFalse(payload["amp_should_be_on"])
             self.assertEqual(payload["reason"], "idle")
+
+
+MAPPED_LINKS = (
+    ("alsa_input.scarlett:capture_AUX2", "fxroute_dsp:input_1"),
+    ("alsa_input.scarlett:capture_AUX3", "fxroute_dsp:input_2"),
+    ("alsa_input.scarlett:capture_AUX4", "fxroute_dsp:input_3"),
+)
+MAPPED_EXTRA = {"mapped_source_name": "alsa_input.scarlett", "mapped_ingress_links": MAPPED_LINKS}
+
+
+class MappedIngressLivenessTests(unittest.IsolatedAsyncioTestCase):
+    """Mapped Surround ingress has no sink links: the hint follows its own edges."""
+
+    async def _state(self, links_present):
+        patches = _base_patches(external_extra=MAPPED_EXTRA)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+             mock.patch.object(main, "is_bluetooth_audio_streaming", return_value=False), \
+             mock.patch.object(main, "ingress_links_present", new=links_present) as links, \
+             mock.patch.object(main, "input_links_present", new=mock.AsyncMock(
+                 side_effect=AssertionError("sink links are not part of the mapped ingress"))):
+            payload = await main.get_power_state()
+            return payload, links
+
+    async def test_present_links_keep_amp_hint_on(self):
+        payload, links = await self._state(mock.AsyncMock(return_value=True))
+        self.assertTrue(payload["amp_should_be_on"])
+        self.assertEqual(payload["reason"], "external-input")
+        links.assert_awaited_once_with(MAPPED_LINKS)
+
+    async def test_missing_links_keep_amp_hint_off(self):
+        payload, _ = await self._state(mock.AsyncMock(return_value=False))
+        self.assertFalse(payload["amp_should_be_on"])
+        self.assertEqual(payload["reason"], "idle")
+
+    async def test_link_check_error_stays_fail_closed(self):
+        payload, _ = await self._state(mock.AsyncMock(side_effect=RuntimeError("pw-link down")))
+        self.assertFalse(payload["amp_should_be_on"])
+        self.assertEqual(payload["reason"], "idle")
+
+    async def test_no_mapped_ingress_state_leaves_other_sources_to_decide(self):
+        patches = _base_patches(external_extra={"mapped_source_name": None, "mapped_ingress_links": ()})
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+             mock.patch.object(main, "is_bluetooth_audio_streaming", return_value=False), \
+             mock.patch.object(main, "ingress_links_present", new=mock.AsyncMock(
+                 side_effect=AssertionError("no mapped links to check"))):
+            payload = await main.get_power_state()
+        self.assertEqual(payload["reason"], "idle")
 
 
 class ExternalLinkLivenessTests(unittest.IsolatedAsyncioTestCase):

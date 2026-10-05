@@ -173,6 +173,51 @@ class SourceTransitions:
         finally:
             await self._finish_bluetoothctl_actions()
 
+    async def change_input_config(
+        self,
+        mutate: Callable[[], Any],
+        restore: Callable[[], Any],
+        *,
+        deselect_key: str | None = None,
+    ) -> dict:
+        """Commit one input-configuration change under the lock.
+
+        ``mutate`` writes the configuration (blocking; a ValueError leaves
+        everything untouched), then the selected input is re-routed and the
+        fresh overview is pushed. A selection equal to ``deselect_key`` falls
+        back to App playback instead. On a routing failure ``restore`` puts
+        the previous configuration back and the routing follows it.
+        """
+        try:
+            async with self._deps.get_lock():
+                return await finish_then_cancel(
+                    self._apply_input_config(mutate, restore, deselect_key), what="Input configuration change")
+        finally:
+            await self._finish_bluetoothctl_actions()
+
+    async def _apply_input_config(
+        self,
+        mutate: Callable[[], Any],
+        restore: Callable[[], Any],
+        deselect_key: str | None,
+    ) -> dict:
+        previous = self._deps.load_selection()
+        await asyncio.to_thread(mutate)
+        try:
+            if (deselect_key is not None
+                    and previous.get("mode") == SOURCE_MODE_EXTERNAL_INPUT
+                    and previous.get("selected_input_key") == deselect_key):
+                return await self.apply_selection(SOURCE_MODE_APP_PLAYBACK, None)
+            overview = await self._deps.sync_external_input(await self._build())
+            return await self.sync_source_mode_state(overview)
+        except BaseException:
+            try:
+                await asyncio.to_thread(restore)
+                await self._deps.sync_external_input(await self._build())
+            except BaseException:
+                logger.exception("Failed to restore the input configuration after a routing failure")
+            raise
+
     async def republish_latest(self) -> dict | None:
         """Re-push the newest overview, e.g. after decorated state changed.
 
