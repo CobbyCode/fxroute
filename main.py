@@ -622,7 +622,7 @@ from streaming.spotify.provider import (
     loop_cycle as spotify_loop_cycle,
     seek_to as spotify_seek_to,
 )
-from audio.system_volume import SystemVolumeError, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor, volume_percent_to_db
+from audio.system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor, volume_percent_to_db
 import audio.volume_contract as volume_contract
 
 logger = logging.getLogger(__name__)
@@ -631,6 +631,8 @@ import install_info
 import audio.power_api as power_api
 import audio.custom_mapping_api as custom_mapping_api
 import audio.canonical_volume as canonical_volume
+import measurement.level_match_api as level_match_api
+from measurement.level_match import LevelMatchStore
 import measurement.spl_calibration as spl_calibration
 import measurement.speaker_api as speaker_api
 import measurement.autosub as autosub
@@ -1110,6 +1112,16 @@ def _make_measurement_services() -> MeasurementServices:
 
 measurement_session.configure_services(_make_measurement_services())
 speaker_api.configure_speaker_align(lambda: get_speaker_align_service())
+level_match_api.configure_level_match(level_match_api.LevelMatchDeps(
+    get_table=lambda: LevelMatchStore(_level_match_store_path()),
+    get_store=lambda: measurement_store,
+    get_session=lambda: measurement_sr_session,
+    auto_sub_active=lambda: autosub.is_optimization_active() or (
+        _speaker_align_service_instance is not None and _speaker_align_service_instance.active),
+    get_output_state=lambda: get_output_service().ensure_state(),
+    get_output_volume=lambda: get_output_volume(),
+    get_node_volume=lambda node: get_node_volume(node),
+))
 autosub.configure_dependencies(autosub.AutoSubDependencies(
     get_dsp_runtime=lambda: runtime.dsp_runtime,
     get_measurement_store=lambda: measurement_store,
@@ -3265,6 +3277,7 @@ async def _shutdown_lifespan_resources() -> None:
             await cleanup("speaker-align", _speaker_align_service_instance.shutdown)
         await cleanup("measurement-store", measurement_store.shutdown)
     await cleanup("spl-calibration", spl_calibration.shutdown)
+    await cleanup("level-match", level_match_api.shutdown)
     if runtime.stdin_input is not None:
         await cleanup("stdin-input", runtime.stdin_input.stop)
         configure_stdin_input_status(None)
@@ -3555,6 +3568,7 @@ app = FastAPI(
 app.include_router(radio_api_router)
 app.include_router(spl_calibration.router)
 app.include_router(speaker_api.router)
+app.include_router(level_match_api.router)
 app.include_router(library_api_router)
 app.include_router(autosub.router)
 app.include_router(measurement_session.router)
@@ -4837,6 +4851,10 @@ def _output_state_store_path() -> Path:
     return config_root / "fxroute" / "output-state.json"
 
 
+def _level_match_store_path() -> Path:
+    return _output_state_store_path().with_name("level-match.json")
+
+
 def _resolve_state_ir(kernel):
     """Resolve a bank convolver kernel to its file and channel count."""
     manager = _require_dsp_manager()
@@ -5064,13 +5082,26 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
         return lambda state: switch_all_banks(state, mode, output_key, channels, args.get("active_side"))
     if kind == "set_processing":
         args = strict({"mode", "role", "highpass", "lowpass", "level_db",
-                       "alignment_ms", "polarity"})
+                       "alignment_ms", "polarity", "level_cal_db"})
         mode = _require_state_mode(args.get("mode"))
         role = _require_role(args.get("role"))
         options = {name: args[name] for name in ("highpass", "lowpass") if name in args}
-        options.update({name: args[name] for name in ("level_db", "alignment_ms", "polarity")
+        options.update({name: args[name] for name in ("level_db", "alignment_ms", "polarity", "level_cal_db")
                         if args.get(name) is not None})
         return lambda state: set_output_processing(state, mode, role, **options)
+    if kind == "set_level_calibration":
+        args = strict({"mode", "values"})
+        mode = _require_state_mode(args.get("mode"))
+        values = args.get("values")
+        if not isinstance(values, dict) or not values:
+            raise HTTPException(status_code=400, detail="values must map roles to level calibration slots")
+
+        def update_level_calibration(state):
+            result = state
+            for role, slots in values.items():
+                result = set_output_processing(result, mode, _require_role(role), level_cal_db=slots)
+            return result
+        return update_level_calibration
     if kind == "set_extras":
         args = strict({"mode", "extras"})
         mode = _require_state_mode(args.get("mode"))

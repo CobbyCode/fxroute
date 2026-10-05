@@ -517,6 +517,50 @@
     justify-content: flex-start;
 }
 
+.level-match-dialog {
+    position: relative;
+    width: min(560px, 100%);
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+}
+
+#level-match-panel {
+    align-items: center;
+}
+
+.level-match-dialog .effects-stack {
+    gap: 0.85rem;
+}
+
+.level-match-dialog #level-match-status {
+    margin-top: 0.35rem;
+}
+
+.level-match-dialog .level-match-action-row {
+    justify-content: flex-start;
+}
+
+.level-match-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.level-match-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+}
+
+.level-match-outdated {
+    margin-left: 0.4rem;
+    color: var(--text-muted);
+    font-size: 0.8em;
+}
+
 .hybrid-measurement-overlay {
     z-index: var(--z-measurement-hybrid);
     align-items: center;

@@ -602,6 +602,20 @@ window.FXRouteMeasurementSplCalibration?.init({
     openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
     closeModal: (panel) => window.FXRouteModal?.close(panel),
 });
+window.FXRouteMeasurementLevelMatch?.init({
+    getElements: () => elements,
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+    closeModal: (panel) => window.FXRouteModal?.close(panel),
+    measurementArea: () => measurementAreaFromCatalog(),
+    ensureAreaCatalog: () => ensureMeasurementAreaCatalog(),
+    normalizeMeasurementInputChannelSelections: (...args) => window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections(...args),
+    applyMutation: (kind, fields, message, options) => applyOutputSystemMutation(kind, fields, message, options),
+    hasActiveMeasurementJob: () => !!state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob(),
+    escapeHtml,
+    roleLabel: (role, mode) => window.FXRouteOutputState?.roleLabel(role, mode) ?? role,
+});
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
 // call sites stay unchanged.
@@ -1363,6 +1377,16 @@ const elements = {
     volumeSlider: document.getElementById('volume-slider'),
     volumeDisplay: document.getElementById('volume-display'),
     splCalibrationOpen: document.getElementById('measurement-spl-calibration-open'),
+    measurementCalibrationToggleBtn: document.getElementById('measurement-calibration-toggle'),
+    measurementCalibrationMenu: document.getElementById('measurement-calibration-menu'),
+    levelMatchOpen: document.getElementById('measurement-level-match-open'),
+    levelMatchPanel: document.getElementById('level-match-panel'),
+    levelMatchClose: document.getElementById('level-match-close'),
+    levelMatchArea: document.getElementById('level-match-area'),
+    levelMatchStart: document.getElementById('level-match-start'),
+    levelMatchActionStatus: document.getElementById('level-match-action-status'),
+    levelMatchResults: document.getElementById('level-match-results'),
+    levelMatchStatus: document.getElementById('level-match-status'),
     splCalibrationPanel: document.getElementById('spl-calibration-panel'),
     splCalibrationClose: document.getElementById('spl-calibration-close'),
     splCalibrationNoise: document.getElementById('spl-calibration-noise'),
@@ -1459,7 +1483,20 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
+function setMeasurementCalibrationMenuOpen(shouldOpen) {
+    if (!elements.measurementCalibrationMenu || !elements.measurementCalibrationToggleBtn) return;
+    elements.measurementCalibrationMenu.classList.toggle('hidden', !shouldOpen);
+    elements.measurementCalibrationToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    if (shouldOpen) {
+        elements.measurementCalibrationMenu.focus({ preventScroll: true });
+    } else if (elements.measurementCalibrationMenu.contains(document.activeElement)) {
+        elements.measurementCalibrationToggleBtn.focus({ preventScroll: true });
+    }
+}
+
 function setMeasurementSweepMenuOpen(shouldOpen) {
+    // One popover at a time: every sweep menu change also closes the calibration menu.
+    setMeasurementCalibrationMenuOpen(false);
     if (!elements.measurementSweepMenu || !elements.measurementSweepToggleBtn) return;
     elements.measurementSweepMenu.classList.toggle('hidden', !shouldOpen);
     elements.measurementSweepToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
@@ -4541,6 +4578,10 @@ function toggleMeasurementPanel(forceOpen = null) {
         window.FXRouteModal?.open(elements.measurementPanel, {
             initialFocus: elements.measurementCloseBtn,
             onEscape: () => {
+                if (elements.measurementCalibrationMenu && !elements.measurementCalibrationMenu.classList.contains('hidden')) {
+                    setMeasurementCalibrationMenuOpen(false);
+                    return;
+                }
                 if (elements.measurementSweepMenu && !elements.measurementSweepMenu.classList.contains('hidden')) {
                     setMeasurementSweepMenuOpen(false);
                     return;
@@ -4723,6 +4764,25 @@ function setupMeasurementActions() {
             }
         });
     }
+    if (elements.measurementCalibrationToggleBtn) {
+        elements.measurementCalibrationToggleBtn.addEventListener('click', () => {
+            const shouldOpen = elements.measurementCalibrationMenu?.classList.contains('hidden');
+            setMeasurementSweepMenuOpen(false);
+            setMeasurementCalibrationMenuOpen(!!shouldOpen);
+        });
+    }
+    if (elements.measurementCalibrationMenu) {
+        elements.measurementCalibrationMenu.addEventListener('click', (event) => {
+            if (event.target.closest('#measurement-spl-calibration-open, #measurement-level-match-open')) setMeasurementCalibrationMenuOpen(false);
+        });
+        document.addEventListener('click', (event) => {
+            if (!elements.measurementCalibrationMenu.classList.contains('hidden')
+                    && !event.target.closest('.measurement-workflow-menu')) {
+                setMeasurementCalibrationMenuOpen(false);
+            }
+        });
+    }
+    window.FXRouteMeasurementLevelMatch?.bindEvents();
     const smoothingChipsRow = document.getElementById('measurement-smoothing-chips');
     if (smoothingChipsRow) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(smoothingChipsRow, '[data-measurement-smoothing]');
     const measurementViewToggle = document.querySelector('.measurement-view-toggle');

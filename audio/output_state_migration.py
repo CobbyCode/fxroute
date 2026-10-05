@@ -8,9 +8,9 @@ from collections.abc import Callable
 
 from audio.filter_banks import owning_bank_ids
 from audio.output_routing import device_key
-from audio.output_state import (BASS_FIELDS, SUB_SIDES, default_bass_management, default_output_state,
-                                default_processing, release_bank_presets, set_mode_routing,
-                                validate_output_state)
+from audio.output_state import (BASS_FIELDS, SUB_SIDES, default_bass_management, default_level_cal,
+                                default_output_state, default_processing, release_bank_presets,
+                                set_mode_routing, validate_output_state)
 from audio.output_topology import MAX_CHANNELS, SUB_ROLES, roles_for_mode
 from audio.samplerate.persistence import _normalize_subwoofer_config, _normalize_subwoofer_22_config
 from dsp.banks import BankState
@@ -158,6 +158,26 @@ def _upgrade_v2_bass_management(payload: dict) -> dict:
     return upgrade_output_state(result)
 
 
+def _upgrade_v4_level_calibration(payload: dict) -> dict:
+    """Give a version-four document neutral Level Calibration slots.
+
+    A mode that already carries slots (the Surround block a v3 upgrade
+    creates) keeps them; ``validate_output_state`` still checks every value.
+    """
+    result = copy.deepcopy(payload)
+    result["version"] = 5
+    modes = result.get("modes")
+    if not isinstance(modes, dict):
+        raise ValueError("Invalid version-four output state")
+    for config in modes.values():
+        processing = config.get("processing") if isinstance(config, dict) else None
+        if not isinstance(processing, dict) or any(not isinstance(item, dict) for item in processing.values()):
+            raise ValueError("Invalid version-four output state")
+        for settings in processing.values():
+            settings.setdefault("level_cal_db", default_level_cal())
+    return validate_output_state(result)
+
+
 def upgrade_output_state(payload: dict) -> dict:
     """Upgrade the old Stereo/Crossover document without an alternate live model.
 
@@ -175,7 +195,9 @@ def upgrade_output_state(payload: dict) -> dict:
         result["version"] = 4
         result["input_modes"] = {}
         result["modes"]["surround"] = default_output_state()["modes"]["surround"]
-        return validate_output_state(result)
+        return _upgrade_v4_level_calibration(result)
+    if isinstance(payload, dict) and payload.get("version") == 4:
+        return _upgrade_v4_level_calibration(payload)
     if isinstance(payload, dict) and payload.get("version") == 2:
         return _upgrade_v2_bass_management(payload)
     if not isinstance(payload, dict) or payload.get("version") != 1:

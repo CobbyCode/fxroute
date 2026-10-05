@@ -14,7 +14,11 @@ from audio.output_topology import (MAIN_ROLES, MODES, SURROUND_GROUPS, derive_to
 from dsp.banks import BankState
 
 SCHEMA = "fxroute.output-state"
-VERSION = 4
+VERSION = 5
+# Level Calibration slots per role: "global" holds the whole-speaker match
+# (Global measurement; Surround Front), "bank" the match of the role's own bank.
+LEVEL_CAL_SLOTS = ("global", "bank")
+LEVEL_CAL_MIN_DB = -80
 FILTER_SLOPES = {
     "linkwitz-riley": tuple(range(12, 73, 12)),
     "butterworth": tuple(range(6, 73, 6)),
@@ -37,9 +41,14 @@ def filter_label(family: str, slope_db_oct: object) -> str:
     return f"{FILTER_LABELS.get(family, str(family))}{slope_db_oct}"
 
 
+def default_level_cal() -> dict:
+    return {slot: 0.0 for slot in LEVEL_CAL_SLOTS}
+
+
 def default_processing() -> dict:
     return {"highpass": None, "lowpass": None, "level_db": 0.0,
-            "alignment_ms": 0.0, "polarity": "normal"}
+            "alignment_ms": 0.0, "polarity": "normal",
+            "level_cal_db": default_level_cal()}
 
 
 def default_bass_management() -> dict:
@@ -164,8 +173,16 @@ def bass_crossover_for_group(bass: dict, group: str) -> tuple[dict, bool]:
             bool(override["highpass_enabled"]))
 
 
+def validate_level_cal(payload: object) -> None:
+    """Level Calibration is cut-only: the per-output gain sits behind the protection limiter."""
+    _object_fields(payload, set(LEVEL_CAL_SLOTS), "Level calibration")
+    for slot in LEVEL_CAL_SLOTS:
+        _finite_range(payload[slot], LEVEL_CAL_MIN_DB, 0, f"Level calibration {slot}")
+
+
 def _validate_processing(payload: object) -> None:
-    _object_fields(payload, {"highpass", "lowpass", "level_db", "alignment_ms", "polarity"}, "Output processing")
+    _object_fields(payload, {"highpass", "lowpass", "level_db", "alignment_ms", "polarity",
+                             "level_cal_db"}, "Output processing")
     for key in ("highpass", "lowpass"):
         validate_filter(payload[key])
     if payload["highpass"] and payload["lowpass"]:
@@ -175,6 +192,7 @@ def _validate_processing(payload: object) -> None:
     _finite_range(payload["alignment_ms"], -40, 40, "Output alignment")
     if payload["polarity"] not in ("normal", "invert"):
         raise ValueError("Output polarity must be normal or invert")
+    validate_level_cal(payload["level_cal_db"])
 
 
 def _device_identity(key: object) -> str:
@@ -428,8 +446,12 @@ def switch_all_banks(state: dict, mode: str, output_key: str, channels: int, act
 def set_output_processing(state: dict, mode: str, role: str, *, highpass: object = _UNCHANGED,
                           lowpass: object = _UNCHANGED, level_db: float | None = None,
                           alignment_ms: float | None = None,
-                          polarity: str | None = None) -> dict:
-    """Edit one area's output processing; filters accept None to clear."""
+                          polarity: str | None = None,
+                          level_cal_db: dict | None = None) -> dict:
+    """Edit one area's output processing; filters accept None to clear.
+
+    ``level_cal_db`` merges the given slots and leaves the others untouched.
+    """
     result = validate_output_state(state)
     roles_for_mode(mode)
     processing = result["modes"][mode]["processing"]
@@ -448,6 +470,10 @@ def set_output_processing(state: dict, mode: str, role: str, *, highpass: object
         settings["alignment_ms"] = alignment_ms
     if polarity is not None:
         settings["polarity"] = polarity
+    if level_cal_db is not None:
+        if not isinstance(level_cal_db, dict) or not set(level_cal_db) <= set(LEVEL_CAL_SLOTS):
+            raise ValueError(f"Level calibration accepts only the slots: {', '.join(LEVEL_CAL_SLOTS)}")
+        settings["level_cal_db"] = {**settings["level_cal_db"], **level_cal_db}
     return validate_output_state(result)
 
 

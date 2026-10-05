@@ -229,7 +229,7 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
             "crossover": filters,
             "bank": _bank_plan(role, config["banks"][role], preset_loader,
                                neutralized=neutralize_banks),
-            "gain_db": settings["level_db"],
+            "gain_db": settings["level_db"] + sum(settings["level_cal_db"].values()),
             "delay_ms": settings["alignment_ms"] + delay_offset,
             "invert": settings["polarity"] == "invert",
         })
