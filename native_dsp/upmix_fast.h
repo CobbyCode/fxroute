@@ -2,6 +2,8 @@
 #ifndef FXROUTE_UPMIX_FAST_H
 #define FXROUTE_UPMIX_FAST_H
 
+#include "upmix_common.h"
+
 #include <stddef.h>
 
 /* Stereo to Surround upmixer, low-latency adaptive matrix ("Fast").
@@ -33,8 +35,8 @@
  * All state is allocated at creation; process performs no allocation,
  * locking or I/O. */
 #define FX_UPMIX_FAST_CHANNELS 8U
-#define FX_UPMIX_FAST_STRENGTH_MIN 0.0F
-#define FX_UPMIX_FAST_STRENGTH_MAX 10.0F
+#define FX_UPMIX_FAST_STRENGTH_MIN FX_UPMIX_STRENGTH_MIN
+#define FX_UPMIX_FAST_STRENGTH_MAX FX_UPMIX_STRENGTH_MAX
 
 typedef struct fx_upmix_fast fx_upmix_fast;
 
