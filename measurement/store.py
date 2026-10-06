@@ -1302,6 +1302,7 @@ class MeasurementStore:
                 "reference_path": analysis["reference_path"],
                 "impulse_response": analysis["impulse_response"],
                 "variable_window": analysis.get("variable_window"),
+                "polarity": analysis.get("polarity"),
                 "direct_response": analysis.get("direct_response"),
                 "complex_response": analysis.get("complex_response"),
             },

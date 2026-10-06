@@ -17,6 +17,7 @@ from audio.output_state import (default_output_state, set_crossover, set_mode_ro
                                 set_output_processing, switch_mode)
 from measurement import level_match as lm
 from measurement import level_match_api as api
+from measurement import speaker_sweep
 from measurement.target import freeze_measurement_target
 
 SURROUND_ROLES = ["main_l", "main_r", "center", "side_l", "side_r", "rear_l", "rear_r"]
@@ -231,9 +232,9 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
             return await start_job()
 
         patches = [
-            patch.object(api.measurement_session, "_resolve_measurement_start_sample_rate", lambda: 48000),
-            patch.object(api.measurement_session, "_start_registered_manual_measurement", start_registered),
-            patch.object(api.measurement_session, "_stage_bank_v2_context", lambda **kwargs: {}),
+            patch.object(speaker_sweep.measurement_session, "_resolve_measurement_start_sample_rate", lambda: 48000),
+            patch.object(speaker_sweep.measurement_session, "_start_registered_manual_measurement", start_registered),
+            patch.object(speaker_sweep.measurement_session, "_stage_bank_v2_context", lambda **kwargs: {}),
         ]
         for item in patches:
             item.start()
@@ -247,8 +248,8 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
     async def run_job(self, bank_id):
         response = await api.start_level_match(input_id="mic", input_key="", mic_input_channel="1",
                                                calibration_ref="", bank_id=bank_id)
-        await api._task
-        return api._job
+        await api._slot.task
+        return api._slot.job
 
     async def test_stereo_pair_cuts_the_louder_side_and_sweeps_each_side(self):
         self.configure(mode_state("stereo", ["main_l", "main_r"]),
@@ -344,7 +345,7 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
                                         calibration_ref="", bank_id="main")
         self.assertEqual(caught.exception.status_code, 409)
         gate.set()
-        await api._task
+        await api._slot.task
 
     async def test_status_lists_the_stored_levels_with_their_trims(self):
         self.configure(mode_state("stereo", ["main_l", "main_r"]), {("main_l",): -18.0, ("main_r",): -20.0})

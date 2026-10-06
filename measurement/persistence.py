@@ -486,6 +486,7 @@ class MeasurementPersistence:
                 "reference_path": analysis.get("reference_path"),
                 "impulse_response": analysis["impulse_response"],
                 "variable_window": analysis.get("variable_window"),
+                "polarity": analysis.get("polarity"),
             },
         }
         if measurement_role:

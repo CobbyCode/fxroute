@@ -12,6 +12,7 @@ from typing import Any, Callable
 import numpy as np
 
 from measurement.hybrid import analyze_direct_window, build_complex_response, build_gated_response
+from measurement.polarity import analyze_ir_polarity
 from measurement.constants import (
     CAPTURE_CLIP_FAIL_DBFS,
     DISPLAY_POINT_COUNT,
@@ -627,6 +628,9 @@ class MeasurementAnalyzer:
                 "preview": self._build_ir_preview(timing_impulse_response, sample_rate, direct_timing_meta, ir_meta),
             },
             "variable_window": variable_window_meta,
+            "polarity": analyze_ir_polarity(
+                timing_impulse_response, sample_rate,
+                int(direct_timing_meta["direct_arrival_index"]) if direct_timing_meta["timing_valid"] else None),
             "_impulse_response_debug_segment": impulse_response_debug_segment,
         }
         if direct_timing_meta["timing_valid"]:

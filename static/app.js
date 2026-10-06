@@ -616,6 +616,19 @@ window.FXRouteMeasurementLevelMatch?.init({
     escapeHtml,
     roleLabel: (role, mode) => window.FXRouteOutputState?.roleLabel(role, mode) ?? role,
 });
+window.FXRouteMeasurementPolarityCheck?.init({
+    getElements: () => elements,
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+    closeModal: (panel) => window.FXRouteModal?.close(panel),
+    measurementArea: () => measurementAreaFromCatalog(),
+    ensureAreaCatalog: () => ensureMeasurementAreaCatalog(),
+    normalizeMeasurementInputChannelSelections: (...args) => window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections(...args),
+    hasActiveMeasurementJob: () => !!state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob(),
+    escapeHtml,
+    roleLabel: (role, mode) => window.FXRouteOutputState?.roleLabel(role, mode) ?? role,
+});
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
 // call sites stay unchanged.
@@ -1387,6 +1400,14 @@ const elements = {
     levelMatchActionStatus: document.getElementById('level-match-action-status'),
     levelMatchResults: document.getElementById('level-match-results'),
     levelMatchStatus: document.getElementById('level-match-status'),
+    polarityCheckOpen: document.getElementById('measurement-polarity-check-open'),
+    polarityCheckPanel: document.getElementById('polarity-check-panel'),
+    polarityCheckClose: document.getElementById('polarity-check-close'),
+    polarityCheckArea: document.getElementById('polarity-check-area'),
+    polarityCheckStart: document.getElementById('polarity-check-start'),
+    polarityCheckActionStatus: document.getElementById('polarity-check-action-status'),
+    polarityCheckResults: document.getElementById('polarity-check-results'),
+    polarityCheckStatus: document.getElementById('polarity-check-status'),
     splCalibrationPanel: document.getElementById('spl-calibration-panel'),
     splCalibrationClose: document.getElementById('spl-calibration-close'),
     splCalibrationNoise: document.getElementById('spl-calibration-noise'),
@@ -4773,7 +4794,7 @@ function setupMeasurementActions() {
     }
     if (elements.measurementCalibrationMenu) {
         elements.measurementCalibrationMenu.addEventListener('click', (event) => {
-            if (event.target.closest('#measurement-spl-calibration-open, #measurement-level-match-open')) setMeasurementCalibrationMenuOpen(false);
+            if (event.target.closest('#measurement-spl-calibration-open, #measurement-level-match-open, #measurement-polarity-check-open')) setMeasurementCalibrationMenuOpen(false);
         });
         document.addEventListener('click', (event) => {
             if (!elements.measurementCalibrationMenu.classList.contains('hidden')
@@ -4783,6 +4804,7 @@ function setupMeasurementActions() {
         });
     }
     window.FXRouteMeasurementLevelMatch?.bindEvents();
+    window.FXRouteMeasurementPolarityCheck?.bindEvents();
     const smoothingChipsRow = document.getElementById('measurement-smoothing-chips');
     if (smoothingChipsRow) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(smoothingChipsRow, '[data-measurement-smoothing]');
     const measurementViewToggle = document.querySelector('.measurement-view-toggle');

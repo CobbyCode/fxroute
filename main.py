@@ -632,6 +632,7 @@ import audio.power_api as power_api
 import audio.custom_mapping_api as custom_mapping_api
 import audio.canonical_volume as canonical_volume
 import measurement.level_match_api as level_match_api
+import measurement.polarity_check_api as polarity_check_api
 from measurement.level_match import LevelMatchStore
 import measurement.spl_calibration as spl_calibration
 import measurement.speaker_api as speaker_api
@@ -1121,6 +1122,13 @@ level_match_api.configure_level_match(level_match_api.LevelMatchDeps(
     get_output_state=lambda: get_output_service().ensure_state(),
     get_output_volume=lambda: get_output_volume(),
     get_node_volume=lambda node: get_node_volume(node),
+))
+polarity_check_api.configure_polarity_check(polarity_check_api.PolarityCheckDeps(
+    get_store=lambda: measurement_store,
+    get_session=lambda: measurement_sr_session,
+    auto_sub_active=lambda: autosub.is_optimization_active() or (
+        _speaker_align_service_instance is not None and _speaker_align_service_instance.active),
+    get_output_state=lambda: get_output_service().ensure_state(),
 ))
 autosub.configure_dependencies(autosub.AutoSubDependencies(
     get_dsp_runtime=lambda: runtime.dsp_runtime,
@@ -3278,6 +3286,7 @@ async def _shutdown_lifespan_resources() -> None:
         await cleanup("measurement-store", measurement_store.shutdown)
     await cleanup("spl-calibration", spl_calibration.shutdown)
     await cleanup("level-match", level_match_api.shutdown)
+    await cleanup("polarity-check", polarity_check_api.shutdown)
     if runtime.stdin_input is not None:
         await cleanup("stdin-input", runtime.stdin_input.stop)
         configure_stdin_input_status(None)
@@ -3569,6 +3578,7 @@ app.include_router(radio_api_router)
 app.include_router(spl_calibration.router)
 app.include_router(speaker_api.router)
 app.include_router(level_match_api.router)
+app.include_router(polarity_check_api.router)
 app.include_router(library_api_router)
 app.include_router(autosub.router)
 app.include_router(measurement_session.router)
