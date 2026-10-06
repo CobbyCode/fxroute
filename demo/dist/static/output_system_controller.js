@@ -27,6 +27,7 @@
         syncSpeakerAlign: () => {},
         renderSubwoofer: () => {},
         syncAutoSub: () => {},
+        updateEffectsExtras: () => {},
         reportMutationError: () => {},
         syncCompareBusy: () => {},
     };
@@ -55,6 +56,8 @@
         deps.syncSpeakerAlign();
         deps.renderSubwoofer();
         deps.syncAutoSub();
+        // Mode-dependent global extras (the Surround upmixer) follow the catalog.
+        deps.updateEffectsExtras();
         return deps.getState().outputSystem.catalog;
     }
 

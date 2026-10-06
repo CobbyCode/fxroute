@@ -161,6 +161,63 @@
             det.holdUntil = 0;
         }
     }
+    // Multichannel footer meter: speaker positions of the routed output
+    // layout, mirroring dsp/output_meter.py (crossover ways meter as their
+    // side, the subs share one bass meter). routes.js supplies the layout.
+    let meterLayoutProvider = () => null;
+    function setMeterLayoutProvider(provider) {
+        meterLayoutProvider = typeof provider === 'function' ? provider : () => null;
+    }
+    const SURROUND_METER_ORDER = ['fl', 'fr', 'c', 'lfe', 'sl', 'sr', 'rl', 'rr'];
+    const STEREO_METER_ORDER = ['l', 'r', 'sub_l', 'sub_r', 'sub'];
+    const SURROUND_METER_KEYS = {
+        main_l: 'fl', main_r: 'fr', center: 'c', side_l: 'sl', side_r: 'sr',
+        rear_l: 'rl', rear_r: 'rr', sub1: 'lfe', sub2: 'lfe',
+    };
+    const STEREO_METER_KEYS = { main_l: 'l', main_r: 'r', sub_l: 'sub_l', sub_r: 'sub_r', sub1: 'sub', sub2: 'sub' };
+    function meterPositionKeys(mode, roles) {
+        const surround = mode === 'surround';
+        const found = new Set();
+        for (const role of roles || []) {
+            const key = role.startsWith('left_') ? (surround ? 'fl' : 'l')
+                : role.startsWith('right_') ? (surround ? 'fr' : 'r')
+                : (surround ? SURROUND_METER_KEYS : STEREO_METER_KEYS)[role];
+            if (!key) return [];
+            found.add(key);
+        }
+        return (surround ? SURROUND_METER_ORDER : STEREO_METER_ORDER).filter(key => found.has(key));
+    }
+    // Level of each position relative to the program: surrounds and bass sit
+    // below the fronts, with a slow per-position drift so the bars live.
+    const METER_POSITION_OFFSET_DB = {
+        l: 0, r: 0, fl: 0, fr: 0, c: -4, lfe: -8, sub: -8, sub_l: -8, sub_r: -8,
+        sl: -11, sr: -11, rl: -12, rr: -12,
+    };
+    const meterChannelEnv = {};
+    function channelsSnapshot(nowTs, active, capDb) {
+        const layout = meterLayoutProvider();
+        const keys = layout ? meterPositionKeys(layout.mode, layout.roles) : [];
+        if (keys.length < 3) return null;
+        const leftSide = new Set(['l', 'fl', 'sl', 'rl', 'sub_l']);
+        const vu = [];
+        const detected = [];
+        keys.forEach((key, index) => {
+            const program = leftSide.has(key) ? meterEnv.l : meterEnv.r;
+            const drift = Math.sin(nowTs / 1900 + index * 1.7) * 2.2;
+            const target = active
+                ? Math.min(program + (METER_POSITION_OFFSET_DB[key] ?? -10) + drift + dspMeterOffsetDb, capDb)
+                : -60;
+            const previous = meterChannelEnv[key] ?? -60;
+            const level = previous + (target - previous) * (target >= previous ? 0.5 : 0.25);
+            meterChannelEnv[key] = level;
+            vu.push(Math.round(level * 10) / 10);
+            const front = key === 'l' || key === 'fl' ? 'l' : (key === 'r' || key === 'fr' ? 'r' : null);
+            detected.push(!!front && peakTickNow < peakDet[front].holdUntil);
+        });
+        return { keys, vu_db: vu, detected };
+    }
+    let lastChannels = null;
+
     function peakSnapshot() {
         const activeL = peakTickNow < peakDet.l.holdUntil;
         const activeR = peakTickNow < peakDet.r.holdUntil;
@@ -189,6 +246,7 @@
             last_over_at_l: peakDet.l.lastOverAt,
             last_over_at_r: peakDet.r.lastOverAt,
             last_error: null,
+            channels: lastChannels,
         };
     }
 
@@ -272,6 +330,7 @@
             lastAudioSampleAt = nowTs;
             meter.vu_age_ms = 0;
             meter.vu_fresh = true;
+            lastChannels = channelsSnapshot(nowTs, true, capDb);
         } else {
             // No audio this tick: floor the VU, but keep it fresh through the
             // live monitor's no-data window before the sample age goes stale.
@@ -285,6 +344,7 @@
             meterEnv.tL = -30; meterEnv.tR = -30;
             meterEnv.transientTs = 0;
             meterEnv.nextPickTs = 0;
+            lastChannels = channelsSnapshot(nowTs, false, -60);
         }
     }
     setInterval(() => {
@@ -1629,6 +1689,7 @@
         // this in the browser; tests drive it directly.
         demoMeterTick: meterTick,
         setDspSnapshot,
+        setMeterLayoutProvider,
         // measurement helpers (consumed by routes.js)
         startMeasurement,
         startLrRepeatMeasurement,

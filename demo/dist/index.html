@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.289">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.297">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -23,12 +23,12 @@
     <script src="./demo/data/radio.js?v=3"></script>
     <script src="./demo/data/measurements.js?v=1"></script>
     <script src="./demo/data/alignment.js?v=3"></script>
-    <script src="./demo/state.js?v=18"></script>
-    <script src="./demo/routes.js?v=25"></script>
+    <script src="./demo/state.js?v=19"></script>
+    <script src="./demo/routes.js?v=26"></script>
     <script src="./demo/streaming.js?v=1"></script>
     <script src="./demo/ws.js?v=1"></script>
     <script src="./demo/boot.js?v=8"></script>
-    <script src="./demo/tour.js?v=17"></script>
+    <script src="./demo/tour.js?v=18"></script>
 
     <h1 class="visually-hidden">FXRoute</h1>
     <a class="skip-link" href="#tab-content">Skip to content</a>
@@ -957,6 +957,46 @@
                                         <div class="effects-extras-group-header">
                                             <h4>Tone</h4>
                                         </div>
+                                        <div class="effects-extras-row effects-extras-row-helpers effects-loudness-row hidden" id="effects-upmixer-row">
+                                            <label class="checkbox-row"><input type="checkbox" id="effects-upmixer-enabled"> Upmixer</label>
+                                            <div class="effects-upmixer-controls">
+                                                <div class="effects-upmixer-line">
+                                                    <label for="effects-upmixer-mode" id="effects-upmixer-mode-wrap" class="effects-inline-control hidden">
+                                                        <span class="effects-inline-control-label">Mode</span>
+                                                        <select id="effects-upmixer-mode" class="url-input effects-compact-control">
+                                                            <option value="fast" selected>Fast</option>
+                                                            <option value="hq">HQ</option>
+                                                        </select>
+                                                    </label>
+                                                    <label for="effects-upmixer-fft-size" id="effects-upmixer-fft-wrap" class="effects-inline-control hidden">
+                                                        <span class="effects-inline-control-label">FFT</span>
+                                                        <select id="effects-upmixer-fft-size" class="url-input effects-compact-control">
+                                                            <option value="1024">1024</option>
+                                                            <option value="2048" selected>2048</option>
+                                                            <option value="4096">4096</option>
+                                                        </select>
+                                                    </label>
+                                                </div>
+                                                <div class="effects-upmixer-line">
+                                                    <label for="effects-upmixer-center" id="effects-upmixer-center-wrap" class="effects-inline-control hidden">
+                                                        <span class="effects-inline-control-label">Center</span>
+                                                        <div class="stepper-control">
+                                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease upmixer center">&minus;</button>
+                                                            <input type="number" id="effects-upmixer-center" class="url-input delay-number-input stepper-input" min="0" max="10" step="1" value="6" aria-label="Center">
+                                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase upmixer center">+</button>
+                                                        </div>
+                                                    </label>
+                                                    <label for="effects-upmixer-surround" id="effects-upmixer-surround-wrap" class="effects-inline-control hidden">
+                                                        <span class="effects-inline-control-label">Surround</span>
+                                                        <div class="stepper-control">
+                                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease upmixer surround">&minus;</button>
+                                                            <input type="number" id="effects-upmixer-surround" class="url-input delay-number-input stepper-input" min="0" max="10" step="1" value="6" aria-label="Surround">
+                                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase upmixer surround">+</button>
+                                                        </div>
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
                                         <div class="effects-extras-row effects-extras-row-helpers effects-loudness-row">
                                             <label class="checkbox-row"><input type="checkbox" id="effects-loudness-enabled"> Loudness</label>
                                             <div class="effects-loudness-controls">
@@ -964,7 +1004,7 @@
                                                     <span class="effects-inline-control-label">Strength</span>
                                                     <div class="stepper-control">
                                                         <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease loudness strength">&minus;</button>
-                                                        <input type="number" id="effects-loudness-strength" class="url-input delay-number-input stepper-input" min="1" max="10" step="1" value="10" aria-label="Strength">
+                                                        <input type="number" id="effects-loudness-strength" class="url-input delay-number-input stepper-input" min="0" max="10" step="1" value="10" aria-label="Strength">
                                                         <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase loudness strength">+</button>
                                                     </div>
                                                 </label>
@@ -1046,8 +1086,7 @@
                                     <div>
                                         <h3>Create PEQ preset</h3>
                                         <p>Build paired Left/Right PEQ bands.</p>
-                                        <p id="effects-peq-summary" class="effects-peq-summary" hidden></p>
-                                        <span class="effects-peq-summary-hint">Expand to edit bands</span>
+                                        <div id="effects-peq-summary" class="effects-peq-summary" hidden></div>
                                     </div>
                                     <span class="effects-disclosure-meta">Expand</span>
                                 </summary>
@@ -1184,9 +1223,24 @@
                                     </div>
                                     <div class="measurement-workflow-section">
                                         <h4 class="measurement-workflow-label">Calibration</h4>
-                                        <div class="measurement-workflow-group">
-                                            <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
-                                            <span class="measurement-repeat-help">Calibrate your loudness reference.</span>
+                                        <div class="measurement-workflow-group measurement-workflow-menu-group">
+                                            <div class="measurement-workflow-menu">
+                                                <button id="measurement-calibration-toggle" class="btn-secondary" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="measurement-calibration-menu">Calibration</button>
+                                                <div id="measurement-calibration-menu" class="measurement-workflow-menu-panel hidden" tabindex="-1" aria-labelledby="measurement-calibration-toggle">
+                                                    <div class="measurement-workflow-menu-choice">
+                                                        <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
+                                                        <span class="measurement-repeat-help">Calibrate your loudness reference.</span>
+                                                    </div>
+                                                    <div class="measurement-workflow-menu-choice">
+                                                        <button id="measurement-level-match-open" class="btn-secondary" type="button">Level Matching</button>
+                                                        <span class="measurement-repeat-help">Match speaker levels. Only reduces levels.</span>
+                                                    </div>
+                                                    <div class="measurement-workflow-menu-choice">
+                                                        <button id="measurement-polarity-check-open" class="btn-secondary" type="button">Polarity Check</button>
+                                                        <span class="measurement-repeat-help">Check each speaker's polarity. Changes nothing.</span>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -1487,6 +1541,58 @@
                 </div>
             </section>
         </div>
+        <div id="level-match-panel" class="manage-overlay measurement-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog level-match-dialog" role="dialog" aria-modal="true" aria-labelledby="level-match-title">
+                <div class="manage-dialog-header dialog-header-corner-close">
+                    <div>
+                        <h2 id="level-match-title" class="section-title">Level Matching</h2>
+                        <p class="section-subtitle">Relative speaker levels · reduces only, never boosts</p>
+                    </div>
+                    <button id="level-match-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close level matching">
+                        <span class="btn-ghost-icon">✕</span>
+                    </button>
+                </div>
+                <div class="effects-stack">
+                    <div class="measurement-area-row" role="group" aria-label="Selected measurement area">
+                        <span class="measurement-area-label">Measuring area</span>
+                        <span id="level-match-area" class="measurement-area-indicator" aria-live="polite">Global</span>
+                    </div>
+                    <div class="effects-actions-row level-match-action-row">
+                        <button id="level-match-start" class="btn-primary" type="button">Match levels</button>
+                        <span id="level-match-action-status" class="measurement-repeat-help" aria-live="polite"></span>
+                    </div>
+                    <div id="level-match-results" class="level-match-results" aria-live="polite"></div>
+                    <div id="level-match-status" class="effects-info"></div>
+                </div>
+            </section>
+        </div>
+        <div id="polarity-check-panel" class="manage-overlay measurement-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog polarity-check-dialog" role="dialog" aria-modal="true" aria-labelledby="polarity-check-title">
+                <div class="manage-dialog-header dialog-header-corner-close">
+                    <div>
+                        <h2 id="polarity-check-title" class="section-title">Polarity Check</h2>
+                        <p class="section-subtitle">Polarity of each speaker's direct sound · changes nothing</p>
+                    </div>
+                    <button id="polarity-check-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close polarity check">
+                        <span class="btn-ghost-icon">✕</span>
+                    </button>
+                </div>
+                <div class="effects-stack">
+                    <div class="measurement-area-row" role="group" aria-label="Selected measurement area">
+                        <span class="measurement-area-label">Measuring area</span>
+                        <span id="polarity-check-area" class="measurement-area-indicator" aria-live="polite">Global</span>
+                    </div>
+                    <div class="effects-actions-row polarity-check-action-row">
+                        <button id="polarity-check-start" class="btn-primary" type="button">Check polarity</button>
+                        <span id="polarity-check-action-status" class="measurement-repeat-help" aria-live="polite"></span>
+                    </div>
+                    <div id="polarity-check-results" class="polarity-check-results" aria-live="polite"></div>
+                    <div id="polarity-check-status" class="effects-info"></div>
+                </div>
+            </section>
+        </div>
         <div id="measurement-hybrid-panel" class="manage-overlay measurement-overlay hybrid-measurement-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
             <section class="manage-dialog hybrid-measurement-dialog" role="dialog" aria-modal="true" aria-labelledby="measurement-hybrid-title">
@@ -1610,6 +1716,7 @@
                     <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
                 </span>
             </div>
+            <div id="meter-multi" class="meter-multi" aria-hidden="true"></div>
         </div>
 
         <div class="controls">
@@ -1658,6 +1765,46 @@
         <section id="cover-detail-queue" class="cover-detail-section hidden">
             <h3 class="cover-detail-heading">Queue</h3>
             <ol id="cover-detail-queue-list" class="cover-detail-list"></ol>
+        </section>
+    </div>
+
+    <!-- Custom input mapping: stacked above the settings dialog it is opened from -->
+    <div id="custom-mapping-panel" class="manage-overlay custom-mapping-overlay hidden">
+        <div class="manage-overlay-backdrop"></div>
+        <section class="manage-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-mapping-title">
+            <div class="manage-dialog-header dialog-header-corner-close">
+                <div>
+                    <h2 id="custom-mapping-title" class="section-title">Custom Mapping</h2>
+                    <p id="custom-mapping-subtitle" class="section-subtitle">Route the input channels of an audio device to FXRoute channels.</p>
+                </div>
+                <button id="custom-mapping-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close custom mapping">
+                    <span class="btn-ghost-icon">✕</span>
+                    <span class="dialog-close-label">Close</span>
+                </button>
+            </div>
+
+            <div class="effects-stack">
+                <section class="radio-manage-section">
+                    <div class="field-group">
+                        <label for="custom-mapping-device">Device</label>
+                        <select id="custom-mapping-device" class="url-input"></select>
+                    </div>
+                    <div class="field-group">
+                        <label for="custom-mapping-name">Name (optional)</label>
+                        <input type="text" id="custom-mapping-name" class="url-input" placeholder="External Upmixer" maxlength="40" autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="field-group">
+                        <span class="settings-routing-label">Input for each channel</span>
+                        <div id="custom-mapping-grid" class="settings-routing-grid"></div>
+                        <p class="settings-inline-note">Channels beyond Front L/R are used in Surround output mode only.</p>
+                    </div>
+                    <div class="radio-manage-submit-row radio-manage-submit-row-station-manage">
+                        <button id="custom-mapping-save" class="btn-primary" type="button">Save</button>
+                        <button id="custom-mapping-delete" class="btn-danger hidden" type="button">Delete</button>
+                    </div>
+                    <p id="custom-mapping-status" class="settings-inline-note" role="status" aria-live="polite"></p>
+                </section>
+            </div>
         </section>
     </div>
 
@@ -1769,7 +1916,7 @@
     <script src="/static/measurement_flows.js?v=0.9.41"></script>
     <script src="/static/ui_helpers.js?v=0.9.1"></script>
     <script src="/static/tooltip.js?v=0.9.2"></script>
-    <script src="/static/output_state.js?v=0.9.18"></script>
+    <script src="/static/output_state.js?v=0.9.19"></script>
     <script src="/static/crossover.js?v=0.9.7"></script>
     <script src="/static/crossover_view.js?v=0.9.2"></script>
     <script src="/static/crossover_ui.js?v=0.9.4"></script>
@@ -1779,10 +1926,11 @@
     <script src="/static/provider_settings.js?v=0.9.2"></script>
     <script src="/static/settings_system.js?v=0.9.2"></script>
     <script src="/static/src_settings.js?v=0.1.6"></script>
+    <script src="/static/custom_mapping_ui.js?v=0.1.2"></script>
     <script src="/static/subwoofer_ui.js?v=0.9.7"></script>
-    <script src="/static/output_system_controller.js?v=0.9.1"></script>
+    <script src="/static/output_system_controller.js?v=0.9.2"></script>
     <script src="/static/output_bank_ui.js?v=0.9.7"></script>
-    <script src="/static/output_effects_ui.js?v=0.9.6"></script>
+    <script src="/static/output_effects_ui.js?v=0.9.10"></script>
     <script src="/static/measurement_panel_ui.js?v=0.9.10"></script>
     <script src="/static/measurement_saved_ui.js?v=0.9.6"></script>
     <script src="/static/measurement_editors_ui.js?v=0.9.2"></script>
@@ -1794,11 +1942,13 @@
     <script src="/static/measurement_job.js?v=0.9.4"></script>
     <script src="/static/measurement_saved_actions.js?v=0.9.3"></script>
     <script src="/static/measurement_spl_calibration.js?v=0.9.2"></script>
+    <script src="/static/measurement_level_match.js?v=0.9.1"></script>
+    <script src="/static/measurement_polarity_check.js?v=0.9.3"></script>
     <script src="/static/library_ui.js?v=0.9.9"></script>
     <script src="/static/playback_core.js?v=0.9.8"></script>
-    <script src="/static/playback_ui.js?v=0.9.6"></script>
+    <script src="/static/playback_ui.js?v=0.9.8"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.278"></script>
+    <script src="/static/app.js?v=0.9.286"></script>
     <script src="/static/streaming.js?v=0.9.79"></script>
 </body>
 </html>

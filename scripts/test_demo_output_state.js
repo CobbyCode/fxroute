@@ -45,10 +45,15 @@ async function request(url, body) {
     assert.equal(seeded.bass_management.frequency_hz, 80);
     assert.equal(seeded.bass_management.main_highpass_enabled, true);
     assert.ok(Array.isArray(current.device.routing['stereo-sub']));
-    assert.deepEqual(current.capabilities.modes, ['stereo', 'stereo-sub']);
+    assert.deepEqual(current.capabilities.modes, ['stereo', 'stereo-sub', 'surround']);
     // Capabilities follow each mode's own crossover switch.
     assert.ok(current.capabilities.roles['stereo-sub'].includes('left_high'));
     assert.ok(!current.capabilities.roles.stereo.includes('left_high'));
+    // Surround adds the surrounds and the LFE pair; the stereo-sub front end
+    // stays untouched.
+    assert.ok(current.capabilities.roles.surround.includes('center'));
+    assert.ok(current.capabilities.roles.surround.includes('sub1'));
+    assert.ok(!current.capabilities.roles['stereo-sub'].includes('center'));
 
     // Revisions are tracked relative to the seed, so the test does not hard
     // code the seeded number.
@@ -68,13 +73,19 @@ async function request(url, body) {
     assert.equal(JSON.stringify(await request('/api/audio/output-state')), beforeStale);
 
     // Unknown mode, unknown bank and an unknown kind are refused.
-    for (const mutation of [{ kind: 'switch_mode', mode: 'surround' },
-        { kind: 'select_bank', mode: 'stereo-sub', bank_id: 'left_low' },
+    for (const mutation of [{ kind: 'switch_mode', mode: 'atmos' },
+        { kind: 'select_bank', mode: 'stereo-sub', bank_id: 'no_such_bank' },
         { kind: 'teleport' }]) {
         const refused = await rawRequest('/api/audio/output-state/apply', { expected_revision: revision, mutation });
         assert.equal(refused.status, 400);
     }
     assert.equal((await request('/api/audio/output-state')).revision, revision);
+
+    // A role id resolves to its owning bank, mirroring the backend's
+    // resolve_bank; the catalog then reports the bank, not the role.
+    await apply({ kind: 'select_bank', mode: 'stereo-sub', bank_id: 'left_low' });
+    assert.equal(current.modes['stereo-sub'].selected_bank, 'low');
+    await apply({ kind: 'select_bank', mode: 'stereo-sub', bank_id: 'global' });
 
     // Bank selection persists on the seeded system.
     const selected = await apply({ kind: 'select_bank', mode: 'stereo-sub', bank_id: 'sub1' });

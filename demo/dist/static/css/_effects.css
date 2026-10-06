@@ -951,27 +951,20 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-peq-add-row {
-    /* Flex, not a fixed two-column grid: the mode select and the Add button
-       need a combined width that the PEQ card only offers on wide layouts
-       (it is one of several cards side by side), so the row now wraps when
-       the card is too narrow instead of letting the select overrun its
-       column. The mode field still takes all the space on one row. */
+    /* The mode select takes the free width and Add sits flush right as a
+       compact action. The row still wraps if a card gets too narrow for
+       both, so the select never overruns its column. */
     display: flex;
     flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: end;
-    gap: 1rem;
+    justify-content: flex-end;
+    align-items: flex-end;
+    gap: 0.75rem;
     margin-bottom: 0.35rem;
 }
 
 .effects-peq-mode-field {
-    flex: 1 1 12rem;
+    flex: 1 1 8rem;
     min-width: 0;
-}
-
-.effects-peq-mode-field {
-    width: 100%;
-    max-width: 220px;
     margin: 0;
 }
 
@@ -981,18 +974,21 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     margin-bottom: 0.3rem;
 }
 
-.effects-peq-mode-field .url-input {
-    min-height: 40px;
+#tab-effects .effects-peq-mode-field .url-input {
+    /* Drop the global .url-input 200px floor so the select shrinks with the field. */
+    min-width: 0;
+    min-height: 42px;
     padding-top: 0.45rem;
     padding-bottom: 0.45rem;
 }
 
 .effects-peq-add-row .btn-inline {
     flex: 0 0 auto;
-    justify-self: end;
-    min-width: 92px;
-    min-height: 44px;
-    padding: 0.45rem 1rem;
+    min-width: 4.75rem;
+    min-height: 42px;
+    padding: 0.45rem 1.2rem;
+    font-size: 0.86rem;
+    font-weight: 600;
 }
 
 .effects-peq-pane-header {
@@ -1195,6 +1191,50 @@ input[type="number"]::-webkit-outer-spin-button {
     max-width: 100%;
 }
 
+/* Upmixer: Mode (and the FFT size for HQ) on the first line, Center and
+   Surround on the second. In a card too narrow for both controls with the
+   label beside them (Center + Surround need about 23rem, so the switch is at 24rem), the labels move
+   above their controls so each pair still sits side by side; where
+   container queries are missing the lines simply wrap. */
+.effects-upmixer-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.55rem;
+    width: 100%;
+    max-width: 100%;
+    container-type: inline-size;
+}
+
+.effects-upmixer-line {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem 1rem;
+    flex-wrap: wrap;
+    max-width: 100%;
+}
+
+@container (max-width: 24rem) {
+    .effects-upmixer-line .effects-inline-control {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+    }
+}
+
+/* Phone cards: the strengths only hold 0..10, so a narrower value field
+   (still wider than "10") lets Center and Surround share the line. */
+@container (max-width: 18rem) {
+    .effects-upmixer-line {
+        column-gap: 0.5rem;
+    }
+
+    #tab-effects .effects-upmixer-line .stepper-control .stepper-input {
+        width: 3rem;
+        min-width: 3rem;
+    }
+}
+
 .effects-headroom-controls {
     display: inline-flex;
     align-items: center;
@@ -1269,28 +1309,43 @@ input[type="number"]::-webkit-outer-spin-button {
     padding-top: 1.45rem;
 }
 
-/* Collapsed PEQ card: read-only draft preview plus hint. Both hide while
-   the editor is expanded; the summary text is filled from the draft. */
+/* Collapsed PEQ card: read-only draft preview as one L/R row per side.
+   Hidden while the editor is expanded; filled from the draft. */
 .effects-peq-summary {
-    margin-top: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.9rem;
+}
+
+.effects-peq-summary-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.02);
+}
+
+.effects-peq-summary-side {
+    flex: 0 0 auto;
+    min-width: 1rem;
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.effects-peq-summary-text {
+    min-width: 0;
     font-size: 0.8rem;
-    line-height: 1.55;
-    color: var(--text-muted);
+    line-height: 1.5;
+    color: var(--text-secondary);
     font-family: var(--font-mono);
-    white-space: pre-line;
     overflow-wrap: anywhere;
 }
 
-.effects-peq-summary-hint {
-    display: block;
-    margin-top: 0.35rem;
-    font-size: 0.76rem;
-    letter-spacing: 0.01em;
-    color: var(--text-muted);
-}
-
-.effects-disclosure[open] .effects-peq-summary,
-.effects-disclosure[open] .effects-peq-summary-hint {
+.effects-disclosure[open] .effects-peq-summary {
     display: none;
 }
 
@@ -1311,6 +1366,10 @@ input[type="number"]::-webkit-outer-spin-button {
     display: none;
 }
 
+.effects-disclosure-summary {
+    align-items: flex-start;
+}
+
 .effects-disclosure-summary h3 {
     margin: 0 0 0.4rem;
 }
@@ -1324,6 +1383,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-disclosure-meta {
     flex: 0 0 auto;
+    align-self: flex-start;
     padding: 0.35rem 0.7rem;
     border-radius: 999px;
     border: 1px solid var(--border);

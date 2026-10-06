@@ -839,6 +839,135 @@ const radio = state.getPlayback();
             mutation: { kind: 'set_bass', mode: 'stereo-sub', frequency_hz: 100 } }) });
     assert.equal(bassApply.status, 400);
 
+    // ── Surround mode state ─────────────────────────────────────────────
+    // The third output mode is explorable from the same seed: the stereo-sub
+    // front end expanded to a fully routed 7.2 system, no Global bank, All
+    // Banks selected, and the LFE hint naming both subs. The mode switch is
+    // exercised and reverted, so the rest of the run stays on stereo-sub.
+    const surround0 = catalog0.modes.surround;
+    sameList(catalog0.capabilities.modes, ['stereo', 'stereo-sub', 'surround'], 'output modes');
+    sameList(catalog0.capabilities.roles.surround,
+        ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low', 'right_low_mid', 'right_mid', 'right_high',
+            'center', 'side_l', 'side_r', 'rear_l', 'rear_r', 'sub1', 'sub2'], 'surround routing roles');
+    assert.equal(surround0.crossover_enabled, true);
+    assert.equal(surround0.selected_bank, 'all');
+    assert.equal(surround0.topology.issues.length, 0);
+    assert.equal(surround0.topology.way_count, 2);
+    sameList(surround0.topology.roles,
+        ['left_low', 'left_high', 'right_low', 'right_high', 'center', 'side_l', 'side_r', 'rear_l', 'rear_r', 'sub1', 'sub2'],
+        'surround roles');
+    sameList(surround0.topology.sub_roles, ['sub1', 'sub2'], 'surround subs');
+    assert.equal(surround0.topology.sub_mode, 'dual-mono');
+    // Sub L / Sub R are not Surround roles; the LFE bus feeds Sub 1 / Sub 2.
+    assert.equal(catalog0.capabilities.roles.surround.includes('sub_l'), false);
+    // Surround offers no Global bank; the area banks are the way pairs plus
+    // Center, Side L/R, Rear L/R and Sub 1 / Sub 2.
+    sameList(Object.keys(surround0.banks), ['low', 'high', 'side', 'rear', 'center', 'sub1', 'sub2'], 'surround banks');
+    assert.equal(Object.prototype.hasOwnProperty.call(surround0.banks, 'global'), false);
+    assert.equal(surround0.banks.low.label, 'Low L/R');
+    assert.equal(surround0.banks.high.label, 'High L/R');
+    assert.equal(surround0.banks.side.label, 'Side L/R');
+    assert.equal(surround0.banks.rear.label, 'Rear L/R');
+    assert.equal(surround0.banks.center.label, 'Center');
+    assert.equal(surround0.banks.sub1.label, 'Sub 1');
+    assert.equal(surround0.banks.sub2.label, 'Sub 2');
+    assert.equal(surround0.all_banks.can_b, true);
+    // Bass management is keyed by speaker group in Surround, all four groups
+    // linked to the 80 Hz split.
+    sameList(Object.keys(surround0.bass_management.sub_filters), ['front', 'center', 'side', 'rear'], 'surround groups');
+    assert.equal(surround0.bass_management.sub_filters.front.frequency_hz, 80);
+    assert.equal(surround0.bass_management.sub_filters.front.highpass_enabled, true);
+    assert.equal(surround0.bass_management.sub_link, true);
+    assert.equal(surround0.processing.left_low.lowpass.frequency_hz, 3000);
+    assert.equal(surround0.processing.left_high.highpass.frequency_hz, 3000);
+    assert.equal(surround0.processing.sub1.level_db, -1.5);
+    assert.equal(surround0.processing.center.level_db, 0);
+    // Out 1-4 the 2-way front, 5 center, 6/7 side, 8/9 rear, 10/11 subs.
+    sameList(catalog0.device.routing.surround.slice(0, 11),
+        ['left_low', 'right_low', 'left_high', 'right_high', 'center', 'side_l', 'side_r', 'rear_l', 'rear_r', 'sub1', 'sub2'],
+        'surround routing');
+    // The real frontend helpers render that catalog: the Mode selector offers
+    // Surround, the hint names the LFE target, and the bank selector shows
+    // All Banks plus the area banks without a Global entry.
+    const outputStateUi = require(path.join(root, 'demo', 'dist', 'static', 'output_state.js'));
+    const modeSelect = { innerHTML: '', value: '' };
+    outputStateUi.renderModeSelect(modeSelect, catalog0, 'surround');
+    assert.match(modeSelect.innerHTML, /value="surround" selected>Surround</);
+    assert.equal(outputStateUi.modeHint('surround', surround0.topology, 18),
+        'Surround · 18 hardware outputs · LFE → Sub 1 / Sub 2');
+    sameList(outputStateUi.bankOptions(surround0).map(entry => entry.id),
+        ['all', 'low', 'high', 'side', 'rear', 'center', 'sub1', 'sub2'], 'surround bank selector');
+    assert.equal(outputStateUi.bankSelectorVisible(surround0), true);
+    // The Subwoofer card's groups follow the routed roles; Speaker Auto
+    // Alignment stays hidden because it needs the Global bank.
+    sameList(outputStateUi.surroundGroups(surround0.topology), ['front', 'center', 'side', 'rear'], 'surround groups');
+    assert.equal(require(path.join(root, 'demo', 'dist', 'static', 'speaker_align.js'))
+        .speakerAlignVisible({ ...catalog0, active_mode: 'surround' }), false);
+
+    const switchSurround = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: catalog0.revision,
+            mutation: { kind: 'switch_mode', mode: 'surround' } }) });
+    assert.equal(switchSurround.status, 200);
+    const surroundActive = await (await demoFetch('/api/audio/output-state')).json();
+    assert.equal(surroundActive.active_mode, 'surround');
+    // A half-routed Side pair is saved but not activated, with the Surround
+    // wording; the incomplete state is revertible from the same routing.
+    const partialRouting = surroundActive.device.routing.surround.slice();
+    partialRouting[6] = 'off';
+    const partialApply = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: surroundActive.revision,
+            mutation: { kind: 'set_routing', mode: 'surround', assignments: partialRouting } }) });
+    assert.equal(partialApply.status, 200);
+    const partial = await partialApply.json();
+    assert.equal(partial.live_applied, false);
+    assert.equal(partial.topology.issues[0], 'Surround Side requires Side L and Side R');
+    // Surround never selects Global; the rejection names the reason.
+    const afterPartial = await (await demoFetch('/api/audio/output-state')).json();
+    const globalBank = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: afterPartial.revision,
+            mutation: { kind: 'select_bank', mode: 'surround', bank_id: 'global' } }) });
+    assert.equal(globalBank.status, 400);
+    assert.match((await globalBank.json()).detail, /no Global bank/);
+    const restoreRouting = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: afterPartial.revision,
+            mutation: { kind: 'set_routing', mode: 'surround', assignments: surroundActive.device.routing.surround } }) });
+    assert.equal(restoreRouting.status, 200);
+    // Crossover Off maps the low ways back to Front L/R (the documented
+    // Surround area bank); turning it back On re-splits the front and needs
+    // the high ways routed again, exactly like the backend.
+    const afterRestore = await (await demoFetch('/api/audio/output-state')).json();
+    const crossoverOff = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: afterRestore.revision,
+            mutation: { kind: 'set_crossover', mode: 'surround', enabled: false } }) });
+    assert.equal(crossoverOff.status, 200);
+    const crossoverOffCatalog = await (await demoFetch('/api/audio/output-state')).json();
+    assert.equal(crossoverOffCatalog.modes.surround.crossover_enabled, false);
+    assert.equal(crossoverOffCatalog.modes.surround.topology.issues.length, 0);
+    assert.ok(crossoverOffCatalog.modes.surround.banks.main, 'Crossover Off must expose the Front L/R bank');
+    assert.equal(crossoverOffCatalog.modes.surround.banks.main.label, 'Front L/R');
+    assert.equal(crossoverOffCatalog.modes.surround.selected_bank, 'all');
+    const crossoverOn = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: crossoverOffCatalog.revision,
+            mutation: { kind: 'set_crossover', mode: 'surround', enabled: true } }) });
+    assert.equal(crossoverOn.status, 200);
+    const reSplit = await (await demoFetch('/api/audio/output-state')).json();
+    assert.equal(reSplit.modes.surround.topology.issues[0],
+        'Crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways');
+    const reRoute = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: reSplit.revision,
+            mutation: { kind: 'set_routing', mode: 'surround', assignments: catalog0.device.routing.surround } }) });
+    assert.equal(reRoute.status, 200);
+    const surroundRestored = await (await demoFetch('/api/audio/output-state')).json();
+    assert.equal(surroundRestored.modes.surround.topology.issues.length, 0);
+    const restoreMode = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: surroundRestored.revision,
+            mutation: { kind: 'switch_mode', mode: 'stereo-sub' } }) });
+    assert.equal(restoreMode.status, 200);
+    const backToStereoSub = await (await demoFetch('/api/audio/output-state')).json();
+    assert.equal(backToStereoSub.active_mode, 'stereo-sub');
+    sameList(backToStereoSub.modes.surround.topology.roles, surround0.topology.roles, 'surround roles restored');
+    assert.equal(backToStereoSub.modes.surround.topology.issues.length, 0);
+
     // ── Measurement simulation contract ─────────────────────────────────
     // Fixtures are the current .104 stock, assigned by name: plain Raw
     // sweeps per channel, Close-mic repeats as direct/L-R sources,

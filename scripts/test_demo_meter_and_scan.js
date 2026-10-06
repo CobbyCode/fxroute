@@ -286,6 +286,34 @@ function makeDemoContext(bootArmed) {
     assert.equal(state.demoScan, null,
         'selecting the active library again must not re-arm a scan');
 
+    // ── Multichannel meter ──────────────────────────────────────────────
+    // The footer meter follows the routed layout of the active output mode:
+    // the demo's seeded 2-way + 2 subs system meters as L / R / SUB, a full
+    // Surround layout as eight positions, a stereo layout stays stereo.
+    {
+        const mctx = makeDemoContext(false);
+        const mstate = mctx.window.FXROUTE_DEMO_STATE;
+        mstate.playLocal(mstate.localTracks[0].id);
+        mstate.demoMeterTick(0);
+        const seeded = mstate.getPeak().channels;
+        assert.deepEqual([...seeded.keys], ['l', 'r', 'sub'], 'seeded stereo+sub system meters as L / R / SUB');
+        const surround = ['main_l', 'main_r', 'center', 'side_l', 'side_r', 'rear_l', 'rear_r', 'sub1', 'sub2'];
+        mstate.setMeterLayoutProvider(() => ({ mode: 'surround', roles: surround }));
+        for (let i = 1; i <= 6; i += 1) mstate.demoMeterTick(i * 500);
+        const full = mstate.getPeak().channels;
+        assert.deepEqual([...full.keys], ['fl', 'fr', 'c', 'lfe', 'sl', 'sr', 'rl', 'rr']);
+        assert.equal(full.vu_db.length, 8);
+        assert.equal(full.detected.length, 8);
+        assert.ok(full.vu_db.every((v) => Number.isFinite(v) && v >= -60 && v <= 3), 'levels stay inside the display bounds');
+        assert.ok(full.vu_db[0] > full.vu_db[6], 'fronts sit above the rear channels');
+        mstate.setMeterLayoutProvider(() => ({ mode: 'stereo', roles: ['main_l', 'main_r'] }));
+        mstate.demoMeterTick(4000);
+        assert.equal(mstate.getPeak().channels, null, 'two positions keep the stereo meter');
+        mstate.setMeterLayoutProvider(() => ({ mode: 'surround', roles: ['main_l', 'mystery'] }));
+        mstate.demoMeterTick(4500);
+        assert.equal(mstate.getPeak().channels, null, 'an unknown role falls back to the stereo meter');
+    }
+
     // ── Boot-armed scan + share discovery ───────────────────────────────
     // boot.js arms the cycle before the frontend's first poll; the first
     // library-status call reports scanning and the first music-libraries

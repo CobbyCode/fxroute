@@ -356,6 +356,7 @@ window.FXRouteOutputSystemController?.init({
     syncSpeakerAlign: () => MeasurementFlows.syncSpeakerAlignButton(),
     renderSubwoofer: () => renderSubwooferPanel(),
     syncAutoSub: () => MeasurementFlows.syncAutoSubButton(),
+    updateEffectsExtras: () => window.FXRouteEffectsUI?.updateEffectsExtrasUi?.(),
     reportMutationError: (html) => {
         if (elements.osFeedback) elements.osFeedback.innerHTML = html;
     },
@@ -602,6 +603,33 @@ window.FXRouteMeasurementSplCalibration?.init({
     openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
     closeModal: (panel) => window.FXRouteModal?.close(panel),
 });
+window.FXRouteMeasurementLevelMatch?.init({
+    getElements: () => elements,
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+    closeModal: (panel) => window.FXRouteModal?.close(panel),
+    measurementArea: () => measurementAreaFromCatalog(),
+    ensureAreaCatalog: () => ensureMeasurementAreaCatalog(),
+    normalizeMeasurementInputChannelSelections: (...args) => window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections(...args),
+    applyMutation: (kind, fields, message, options) => applyOutputSystemMutation(kind, fields, message, options),
+    hasActiveMeasurementJob: () => !!state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob(),
+    escapeHtml,
+    roleLabel: (role, mode) => window.FXRouteOutputState?.roleLabel(role, mode) ?? role,
+});
+window.FXRouteMeasurementPolarityCheck?.init({
+    getElements: () => elements,
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+    closeModal: (panel) => window.FXRouteModal?.close(panel),
+    measurementArea: () => measurementAreaFromCatalog(),
+    ensureAreaCatalog: () => ensureMeasurementAreaCatalog(),
+    normalizeMeasurementInputChannelSelections: (...args) => window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections(...args),
+    hasActiveMeasurementJob: () => !!state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob(),
+    escapeHtml,
+    roleLabel: (role, mode) => window.FXRouteOutputState?.roleLabel(role, mode) ?? role,
+});
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
 // call sites stay unchanged.
@@ -650,6 +678,7 @@ let state = {
             target: null,
             last_over_at: null,
             last_error: null,
+            channels: null,
         },
     },
     library: {
@@ -1239,6 +1268,16 @@ const elements = {
     effectsBassEnabled: document.getElementById('effects-bass-enabled'),
     effectsBassAmount: document.getElementById('effects-bass-amount'),
     effectsBassControlsWrap: document.getElementById('effects-bass-controls-wrap'),
+    effectsUpmixerRow: document.getElementById('effects-upmixer-row'),
+    effectsUpmixerEnabled: document.getElementById('effects-upmixer-enabled'),
+    effectsUpmixerMode: document.getElementById('effects-upmixer-mode'),
+    effectsUpmixerModeWrap: document.getElementById('effects-upmixer-mode-wrap'),
+    effectsUpmixerCenter: document.getElementById('effects-upmixer-center'),
+    effectsUpmixerCenterWrap: document.getElementById('effects-upmixer-center-wrap'),
+    effectsUpmixerSurround: document.getElementById('effects-upmixer-surround'),
+    effectsUpmixerSurroundWrap: document.getElementById('effects-upmixer-surround-wrap'),
+    effectsUpmixerFftSize: document.getElementById('effects-upmixer-fft-size'),
+    effectsUpmixerFftWrap: document.getElementById('effects-upmixer-fft-wrap'),
     effectsToneEffectEnabled: document.getElementById('effects-tone-effect-enabled'),
     effectsToneEffectWrap: document.getElementById('effects-tone-effect-wrap'),
     effectsToneEffectMode: document.getElementById('effects-tone-effect-mode'),
@@ -1340,6 +1379,7 @@ const elements = {
     playbackMeter: document.getElementById('playback-meter'),
     meterLeft: document.getElementById('meter-l'),
     meterRight: document.getElementById('meter-r'),
+    meterMulti: document.getElementById('meter-multi'),
     footerShuffleBtn: document.getElementById('footer-shuffle'),
     btnPrevious: document.getElementById('btn-previous'),
     btnPlayPause: document.getElementById('btn-play-pause'),
@@ -1363,6 +1403,24 @@ const elements = {
     volumeSlider: document.getElementById('volume-slider'),
     volumeDisplay: document.getElementById('volume-display'),
     splCalibrationOpen: document.getElementById('measurement-spl-calibration-open'),
+    measurementCalibrationToggleBtn: document.getElementById('measurement-calibration-toggle'),
+    measurementCalibrationMenu: document.getElementById('measurement-calibration-menu'),
+    levelMatchOpen: document.getElementById('measurement-level-match-open'),
+    levelMatchPanel: document.getElementById('level-match-panel'),
+    levelMatchClose: document.getElementById('level-match-close'),
+    levelMatchArea: document.getElementById('level-match-area'),
+    levelMatchStart: document.getElementById('level-match-start'),
+    levelMatchActionStatus: document.getElementById('level-match-action-status'),
+    levelMatchResults: document.getElementById('level-match-results'),
+    levelMatchStatus: document.getElementById('level-match-status'),
+    polarityCheckOpen: document.getElementById('measurement-polarity-check-open'),
+    polarityCheckPanel: document.getElementById('polarity-check-panel'),
+    polarityCheckClose: document.getElementById('polarity-check-close'),
+    polarityCheckArea: document.getElementById('polarity-check-area'),
+    polarityCheckStart: document.getElementById('polarity-check-start'),
+    polarityCheckActionStatus: document.getElementById('polarity-check-action-status'),
+    polarityCheckResults: document.getElementById('polarity-check-results'),
+    polarityCheckStatus: document.getElementById('polarity-check-status'),
     splCalibrationPanel: document.getElementById('spl-calibration-panel'),
     splCalibrationClose: document.getElementById('spl-calibration-close'),
     splCalibrationNoise: document.getElementById('spl-calibration-noise'),
@@ -1370,6 +1428,15 @@ const elements = {
     splCalibrationAutoStatus: document.getElementById('spl-calibration-auto-status'),
     splCalibrationSave: document.getElementById('spl-calibration-save'),
     splCalibrationStatus: document.getElementById('spl-calibration-status'),
+    customMappingPanel: document.getElementById('custom-mapping-panel'),
+    customMappingClose: document.getElementById('custom-mapping-close'),
+    customMappingSubtitle: document.getElementById('custom-mapping-subtitle'),
+    customMappingDevice: document.getElementById('custom-mapping-device'),
+    customMappingName: document.getElementById('custom-mapping-name'),
+    customMappingGrid: document.getElementById('custom-mapping-grid'),
+    customMappingSave: document.getElementById('custom-mapping-save'),
+    customMappingDelete: document.getElementById('custom-mapping-delete'),
+    customMappingStatus: document.getElementById('custom-mapping-status'),
     toastContainer: document.getElementById('toast-container'),
     powerMenuRoot: document.getElementById('power-menu-root'),
     powerMenuToggle: document.getElementById('power-menu-toggle'),
@@ -1450,7 +1517,20 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
+function setMeasurementCalibrationMenuOpen(shouldOpen) {
+    if (!elements.measurementCalibrationMenu || !elements.measurementCalibrationToggleBtn) return;
+    elements.measurementCalibrationMenu.classList.toggle('hidden', !shouldOpen);
+    elements.measurementCalibrationToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    if (shouldOpen) {
+        elements.measurementCalibrationMenu.focus({ preventScroll: true });
+    } else if (elements.measurementCalibrationMenu.contains(document.activeElement)) {
+        elements.measurementCalibrationToggleBtn.focus({ preventScroll: true });
+    }
+}
+
 function setMeasurementSweepMenuOpen(shouldOpen) {
+    // One popover at a time: every sweep menu change also closes the calibration menu.
+    setMeasurementCalibrationMenuOpen(false);
     if (!elements.measurementSweepMenu || !elements.measurementSweepToggleBtn) return;
     elements.measurementSweepMenu.classList.toggle('hidden', !shouldOpen);
     elements.measurementSweepToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
@@ -1649,6 +1729,11 @@ function handleWebSocketMessage(msg) {
                         bassAmount: Number(state.dsp.global_extras?.bass_enhancer?.params?.amount || 0),
                         toneEffectEnabled: !!state.dsp.global_extras?.tone_effect?.enabled,
                         toneEffectMode: String(state.dsp.global_extras?.tone_effect?.mode || 'crystalizer'),
+                        upmixerEnabled: !!state.dsp.global_extras?.upmixer?.enabled,
+                        upmixerMode: String(state.dsp.global_extras?.upmixer?.params?.mode || 'fast'),
+                        upmixerCenter: state.dsp.global_extras?.upmixer?.params?.center ?? 6,
+                        upmixerSurround: state.dsp.global_extras?.upmixer?.params?.surround ?? 6,
+                        upmixerFftSize: Number(state.dsp.global_extras?.upmixer?.params?.fftSize ?? 2048),
                     });
                 }
                 EffectsUI.renderEffects();
@@ -1917,6 +2002,16 @@ function setupSettingsActions() {
             void saveSampleRatePolicy(event.target.value || 'auto');
         });
     }
+    window.FXRouteCustomMapping.init({
+        getElements: () => elements,
+        fetch: (...args) => fetch(...args),
+        openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+        closeModal: (panel) => window.FXRouteModal?.close(panel),
+        confirm: (message) => window.confirm(message),
+        showToast,
+        refreshSources: () => fetchAudioSourceOverview(),
+    });
+    window.FXRouteCustomMapping.bind();
     window.FXRouteSrcSettings.init({
         select: document.getElementById('settings-src-select'),
         hint: document.getElementById('settings-src-hint'),
@@ -1971,6 +2066,10 @@ function setupSettingsActions() {
                 void saveAudioSourceSelection('stdin-input');
             } else if (value.startsWith('external-input::')) {
                 void saveAudioSourceSelection('external-input', value.slice('external-input::'.length));
+            } else if (value === 'custom-mapping') {
+                // Configuration entry, not a source: restore the shown selection first.
+                renderSourceSection();
+                void window.FXRouteCustomMapping.open();
             }
         });
     }
@@ -2170,6 +2269,17 @@ function isSubwooferModeName(mode) {
 
 function normalizeOutputModeName(mode) {
     return isSubwooferModeName(mode) ? mode : 'stereo';
+}
+
+function formatStdinRouting(stdin) {
+    // The engine calls the rear pair BL/BR; the CLI and PipeWire call it RL/RR.
+    const labels = { BL: 'RL', BR: 'RR' };
+    const map = Array.isArray(stdin.channel_map) ? stdin.channel_map : [];
+    if (!map.length) return `${stdin.left} → L / ${stdin.right} → R`;
+    return map
+        .map((position, index) => (position === '-' ? '' : `${index + 1} → ${labels[position] || position}`))
+        .filter(Boolean)
+        .join(', ');
 }
 
 function formatSampleRateKhz(rate) {
@@ -2692,6 +2802,7 @@ function renderSourceSection() {
             ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
             `<option value="bluetooth-input"${bluetoothSelectable || currentMode === 'bluetooth-input' ? '' : ' disabled'}>Bluetooth input</option>`,
             `<option value="stdin-input"${stdinSelectable || currentMode === 'stdin-input' ? '' : ' disabled'}>STDIN</option>`,
+            '<option value="custom-mapping">Custom Mapping…</option>',
         ];
         elements.settingsSourceSelect.innerHTML = inputOptions.join('');
         if (currentMode === 'external-input') {
@@ -2718,7 +2829,7 @@ function renderSourceSection() {
     }
     if (elements.settingsStdinStatus) {
         const details = stdin.channels
-            ? `${stdin.format} · ${formatSampleRateKhz(stdin.rate)} · ${stdin.channels} ch · ${stdin.left} → L / ${stdin.right} → R`
+            ? `${stdin.format} · ${formatSampleRateKhz(stdin.rate)} · ${stdin.channels} ch · ${formatStdinRouting(stdin)}`
             : '';
         const labels = {
             unavailable: 'Unavailable', waiting: 'Waiting for PCM',
@@ -4506,6 +4617,10 @@ function toggleMeasurementPanel(forceOpen = null) {
         window.FXRouteModal?.open(elements.measurementPanel, {
             initialFocus: elements.measurementCloseBtn,
             onEscape: () => {
+                if (elements.measurementCalibrationMenu && !elements.measurementCalibrationMenu.classList.contains('hidden')) {
+                    setMeasurementCalibrationMenuOpen(false);
+                    return;
+                }
                 if (elements.measurementSweepMenu && !elements.measurementSweepMenu.classList.contains('hidden')) {
                     setMeasurementSweepMenuOpen(false);
                     return;
@@ -4688,6 +4803,26 @@ function setupMeasurementActions() {
             }
         });
     }
+    if (elements.measurementCalibrationToggleBtn) {
+        elements.measurementCalibrationToggleBtn.addEventListener('click', () => {
+            const shouldOpen = elements.measurementCalibrationMenu?.classList.contains('hidden');
+            setMeasurementSweepMenuOpen(false);
+            setMeasurementCalibrationMenuOpen(!!shouldOpen);
+        });
+    }
+    if (elements.measurementCalibrationMenu) {
+        elements.measurementCalibrationMenu.addEventListener('click', (event) => {
+            if (event.target.closest('#measurement-spl-calibration-open, #measurement-level-match-open, #measurement-polarity-check-open')) setMeasurementCalibrationMenuOpen(false);
+        });
+        document.addEventListener('click', (event) => {
+            if (!elements.measurementCalibrationMenu.classList.contains('hidden')
+                    && !event.target.closest('.measurement-workflow-menu')) {
+                setMeasurementCalibrationMenuOpen(false);
+            }
+        });
+    }
+    window.FXRouteMeasurementLevelMatch?.bindEvents();
+    window.FXRouteMeasurementPolarityCheck?.bindEvents();
     const smoothingChipsRow = document.getElementById('measurement-smoothing-chips');
     if (smoothingChipsRow) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(smoothingChipsRow, '[data-measurement-smoothing]');
     const measurementViewToggle = document.querySelector('.measurement-view-toggle');

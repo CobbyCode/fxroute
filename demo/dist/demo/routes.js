@@ -66,6 +66,7 @@
         autogain: { enabled: false, params: { targetDb: -18 } },
         loudness: { enabled: false, params: { strength: 2, fftSize: 16384, volumeDb: 0 } },
         tone_effect: { enabled: false, mode: 'crystalizer' },
+        upmixer: { enabled: false, params: { mode: 'fast', center: 6, surround: 6, fftSize: 2048 } },
     };
     // The A/B compare block mirrors the seeded Global bank slots, so the card
     // and the legacy compare payload never name different presets. The chain
@@ -83,6 +84,22 @@
         return 0;
     }
 
+    // Upmixer steering strength: whole number 0 (off) .. 10; empty or invalid keeps the fallback.
+    function demoUpmixerStrength(value, fallback) {
+        const numeric = value === '' || value === null ? NaN : Math.round(Number(value));
+        return Number.isFinite(numeric) ? Math.max(0, Math.min(10, numeric)) : fallback;
+    }
+
+    // Upmixer engine ("fast" or "hq") and the HQ transform size; anything else keeps the fallback.
+    function demoUpmixerMode(value, fallback) {
+        const mode = String(value === null || value === undefined ? '' : value).trim().toLowerCase();
+        return mode === 'fast' || mode === 'hq' ? mode : fallback;
+    }
+    function demoUpmixerFftSize(value, fallback) {
+        const numeric = Number(value);
+        return [1024, 2048, 4096].includes(numeric) ? numeric : fallback;
+    }
+
     function demoMeterOffsetDb() {
         let offset = presetMeterGainDb(dspActivePreset);
         const extras = dspExtras || {};
@@ -91,7 +108,7 @@
         }
         if (extras.autogain && extras.autogain.enabled) offset += 2;
         if (extras.loudness && extras.loudness.enabled) {
-            offset += 0.4 * Math.max(1, Math.min(10, Number(extras.loudness.params && extras.loudness.params.strength) || 0));
+            offset += 0.4 * Math.max(0, Math.min(10, Number(extras.loudness.params && extras.loudness.params.strength) || 0));
         }
         if (extras.bass_enhancer && extras.bass_enhancer.enabled) {
             offset += Math.max(0, Math.min(3, Number(extras.bass_enhancer.params && extras.bass_enhancer.params.amount) || 0) / 4);
@@ -376,25 +393,46 @@
     const speakerWays = ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low',
         'right_low_mid', 'right_mid', 'right_high'];
     const subRoles = ['sub_l', 'sub_r', 'sub1', 'sub2'];
+    // Surround roles beyond the front pair, in routing order (mirrors
+    // audio/output_topology.py SURROUND_SPEAKERS). Sub L / Sub R are not
+    // Surround roles: the LFE bus feeds Sub 1 / Sub 2.
+    const OUTPUT_STATE_MODES = ['stereo', 'stereo-sub', 'surround'];
+    const surroundSpeakers = ['center', 'side_l', 'side_r', 'rear_l', 'rear_r'];
+    // Surround bass-management speaker groups, in display order; the stored
+    // sub_filters overrides are keyed by them instead of left/right.
+    const SURROUND_GROUPS = ['front', 'center', 'side', 'rear'];
     function outputStateRoles(mode) {
-        return [...(outputStateStore.modes[mode].crossover_enabled ? speakerWays : ['main_l', 'main_r']),
-            ...(mode === 'stereo-sub' ? subRoles : [])];
+        const fronts = outputStateStore.modes[mode].crossover_enabled ? speakerWays : ['main_l', 'main_r'];
+        if (mode === 'surround') return [...fronts, ...surroundSpeakers, 'sub1', 'sub2'];
+        return [...fronts, ...(mode === 'stereo-sub' ? subRoles : [])];
     }
     const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
     const bankPairs = { main: ['main_l', 'main_r'], low: ['left_low', 'right_low'],
         low_mid: ['left_low_mid', 'right_low_mid'], mid: ['left_mid', 'right_mid'],
-        high: ['left_high', 'right_high'], sub: ['sub_l', 'sub_r'] };
-    function demoBankDefinitions(roles) {
+        high: ['left_high', 'right_high'], sub: ['sub_l', 'sub_r'],
+        side: ['side_l', 'side_r'], rear: ['rear_l', 'rear_r'] };
+    const BANK_PAIR_LABELS = { main: 'Main L/R', low: 'Low L/R', low_mid: 'Low-Mid L/R',
+        mid: 'Mid L/R', high: 'High L/R', sub: 'Sub L/R', side: 'Side L/R', rear: 'Rear L/R' };
+    function bankLabel(bankId) {
+        if (/^sub\d+$/.test(bankId)) return `Sub ${bankId.slice(3)}`;
+        return String(bankId).split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+    }
+    // Mirror of audio/filter_banks.bank_definitions plus main.py's Surround
+    // rename: complete pairs become one bank, remaining roles stay mono.
+    // Surround projects no Global bank; the stored Global binding simply has
+    // no whole-system surface there.
+    function demoBankDefinitions(roles, mode) {
         const pending = new Set(roles);
-        const definitions = { global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' } };
+        const definitions = mode === 'surround' ? {}
+            : { global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' } };
         for (const [id, pair] of Object.entries(bankPairs)) {
             if (!pair.every(role => pending.has(role))) continue;
-            definitions[id] = { id, label: `${id.split('_').map(word => word[0].toUpperCase() + word.slice(1)).join('-')} L/R`,
-                roles: pair, channel_mode: 'stereo' };
+            const label = id === 'main' && mode === 'surround' ? 'Front L/R' : BANK_PAIR_LABELS[id];
+            definitions[id] = { id, label, roles: pair, channel_mode: 'stereo' };
             pair.forEach(role => pending.delete(role));
         }
         for (const role of pending) definitions[role] = { id: role,
-            label: role.replace(/^sub(\d+)$/, 'Sub $1').replace(/^center$/, 'Center'), roles: [role], channel_mode: 'mono' };
+            label: bankLabel(role), roles: [role], channel_mode: 'mono' };
         return definitions;
     }
     function demoBankSummary(bindings) {
@@ -438,7 +476,22 @@
         }
         Object.assign(config.banks, updated);
     }
-    const defaultProcessing = () => ({ highpass: null, lowpass: null, level_db: 0.0, alignment_ms: 0.0, polarity: 'normal' });
+    const defaultProcessing = () => ({ highpass: null, lowpass: null, level_db: 0.0, alignment_ms: 0.0, polarity: 'normal',
+        level_cal_db: { global: 0.0, bank: 0.0 } });
+    // Level Calibration is cut-only (mirrors audio/output_state.py validate_level_cal).
+    const LEVEL_CAL_SLOTS = ['global', 'bank'];
+    function mergeLevelCal(current, update) {
+        if (!update || typeof update !== 'object' || !Object.keys(update).every(slot => LEVEL_CAL_SLOTS.includes(slot))) {
+            throw new Error('Level calibration accepts only the slots: global, bank');
+        }
+        const merged = { ...current, ...update };
+        for (const slot of LEVEL_CAL_SLOTS) {
+            if (!Number.isFinite(merged[slot]) || merged[slot] > 0 || merged[slot] < -80) {
+                throw new Error(`Level calibration ${slot} must be finite and between -80 and 0`);
+            }
+        }
+        return merged;
+    }
     const lr24 = (frequency_hz) => ({ family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz });
     const defaultBassManagement = () => ({ frequency_hz: 80, main_highpass_enabled: true,
         family: 'linkwitz-riley', slope_db_oct: 24, sub_link: true, sub_filters: {} });
@@ -509,6 +562,46 @@
         frequency_hz: DEMO_BASS_HZ,
         sub_filters: { left: lr24(DEMO_BASS_HZ), right: lr24(DEMO_BASS_HZ) },
     });
+    // The seeded Surround system: the stereo-sub front end expanded to a 7.2
+    // layout on the 18-channel Scarlett — a complete 2-way LR24 front at
+    // 3 kHz, Center, Side L/R, Rear L/R and both sub roles behind the 80 Hz
+    // bass-management split. It is the state a Surround switch lands on, so
+    // the mode is explorable without touching the stereo-sub configuration;
+    // turning Crossover Off maps the low ways back to Front L/R.
+    const surroundSpeakerBanks = () => ({
+        global: neutralBank(),
+        main_l: neutralBank(), main_r: neutralBank(),
+        left_low: demoWayBank(true), right_low: demoWayBank(true),
+        left_low_mid: neutralBank(), right_low_mid: neutralBank(),
+        left_mid: neutralBank(), right_mid: neutralBank(),
+        left_high: demoWayBank(true), right_high: demoWayBank(true),
+        center: neutralBank(), side_l: neutralBank(), side_r: neutralBank(),
+        rear_l: neutralBank(), rear_r: neutralBank(),
+        sub1: demoWayBank(true), sub2: demoWayBank(true),
+    });
+    const surroundProcessing = () => ({
+        main_l: defaultProcessing(), main_r: defaultProcessing(),
+        left_low: wayProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        left_low_mid: wayProcessing(800, 0.0, 0.0),
+        left_mid: wayProcessing(800, 0.0, 0.0),
+        left_high: wayBankProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        right_low: wayProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        right_low_mid: wayProcessing(800, 0.0, 0.0),
+        right_mid: wayProcessing(800, 0.0, 0.0),
+        right_high: wayBankProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        center: defaultProcessing(), side_l: defaultProcessing(), side_r: defaultProcessing(),
+        rear_l: defaultProcessing(), rear_r: defaultProcessing(),
+        sub1: { ...defaultProcessing(), level_db: -1.5, alignment_ms: 2.8 },
+        sub2: { ...defaultProcessing(), level_db: 0.5, alignment_ms: 0.0 },
+    });
+    // The groups start linked and carry the shared shape as their stored
+    // override, so unchecking "Link groups" opens on the audible values.
+    const surroundBassManagement = () => ({
+        ...defaultBassManagement(),
+        frequency_hz: DEMO_BASS_HZ,
+        sub_filters: Object.fromEntries(SURROUND_GROUPS.map(group =>
+            [group, { ...lr24(DEMO_BASS_HZ), highpass_enabled: true }])),
+    });
     const outputStateStore = {
         // Revision of the seeded .104 system. Every accepted mutation and the
         // Speaker Auto Alignment commit bump it, like the real output state.
@@ -533,6 +626,16 @@
                 extras: {},
                 routing: {},
             },
+            surround: {
+                crossover_enabled: true,
+                // Surround never selects Global; All Banks is the fallback.
+                selected_bank: 'all',
+                banks: surroundSpeakerBanks(),
+                processing: surroundProcessing(),
+                bass_management: surroundBassManagement(),
+                extras: {},
+                routing: {},
+            },
         },
     };
     // Out 1/2 mains, 3/4 subs, 5/6 tweeters, 7..18 silent — the .104 routing.
@@ -541,6 +644,11 @@
         ['main_l', 'main_r', ...Array(16).fill(DEMO_ROUTING_TAIL)];
     outputStateStore.modes['stereo-sub'].routing[SCARLETT_KEY] =
         ['left_low', 'right_low', 'sub1', 'sub2', 'left_high', 'right_high', ...Array(12).fill(DEMO_ROUTING_TAIL)];
+    // Out 1-4 the 2-way front, 5 center, 6/7 side, 8/9 rear, 10/11 subs,
+    // 12..18 silent — the seeded Surround system.
+    outputStateStore.modes.surround.routing[SCARLETT_KEY] =
+        ['left_low', 'right_low', 'left_high', 'right_high', 'center', 'side_l', 'side_r',
+            'rear_l', 'rear_r', 'sub1', 'sub2', ...Array(7).fill(DEMO_ROUTING_TAIL)];
     function outputStateTopology(mode, assignments, crossoverOverride) {
         const enabled = crossoverOverride !== undefined
             ? !!crossoverOverride
@@ -552,9 +660,21 @@
             : subs.length === 2 ? 'dual-mono' : 'unsupported';
         const issues = [];
         let wayCount = null;
+        // Surround checks first, like derive_topology: the summary line
+        // reports the first problem, so the order decides what the user reads.
+        if (mode === 'surround' && subs.includes('sub2') && !subs.includes('sub1')) {
+            issues.push('Surround Sub 2 requires Sub 1');
+        }
+        if (mode === 'surround') {
+            for (const [label, pair] of [['Side', ['side_l', 'side_r']], ['Rear', ['rear_l', 'rear_r']]]) {
+                if (pair.filter(role => roles.includes(role)).length === 1) {
+                    issues.push(`Surround ${label} requires ${label} L and ${label} R`);
+                }
+            }
+        }
+        if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
         if (!enabled) {
             if (!roles.includes('main_l') || !roles.includes('main_r')) issues.push('Stereo routing requires Main L and Main R');
-            if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
         } else {
             const ways = ['low', 'low_mid', 'mid', 'high'];
             const left = roles.filter(r => r.startsWith('left_')).map(r => r.slice(5));
@@ -562,37 +682,61 @@
             const complete = [['low', 'high'], ['low', 'mid', 'high'], ways];
             const leftOk = complete.some(set => JSON.stringify(set) === JSON.stringify(left));
             const rightOk = complete.some(set => JSON.stringify(set) === JSON.stringify(right));
-            if (!leftOk || !rightOk || JSON.stringify(left) !== JSON.stringify(right)) {
+            if (!leftOk || !rightOk) {
                 issues.push('Crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways');
+            } else if (JSON.stringify(left) !== JSON.stringify(right)) {
+                issues.push('Left and Right crossover ways must match');
             } else {
                 wayCount = left.length;
             }
-            if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
         }
         return { mode, crossover_enabled: enabled, roles, sub_roles: subs, sub_mode: subMode,
             left_ways: roles.filter(role => role.startsWith('left_')),
             right_ways: roles.filter(role => role.startsWith('right_')), way_count: wayCount, issues };
     }
+    // Routed layout of the active output mode on the selected device: what the
+    // footer's multichannel meter follows (roles in engine output order).
+    function demoMeterLayout() {
+        const out = outputEntry(selectedOutput());
+        const channels = Number(out.channels || 0);
+        const mode = outputStateStore.active_mode;
+        const config = outputStateStore.modes[mode];
+        const fixedStereo = channels === 2;
+        const routing = fixedStereo ? ['main_l', 'main_r']
+            : (config.routing[out.key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+        const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length),
+            fixedStereo ? false : config.crossover_enabled);
+        return { mode, roles: topology.roles };
+    }
+    S.setMeterLayoutProvider(demoMeterLayout);
     function outputStateCatalog() {
         const out = outputEntry(selectedOutput());
         const key = out.key;
         const channels = Number(out.channels || 0);
         const fixedStereo = channels === 2;
         const modes = {};
-        for (const mode of ['stereo', 'stereo-sub']) {
+        for (const mode of OUTPUT_STATE_MODES) {
             const config = outputStateStore.modes[mode];
+            const surround = mode === 'surround';
             const routing = fixedStereo ? ['main_l', 'main_r']
                 : (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
             const effectiveCrossover = fixedStereo ? false : config.crossover_enabled;
             const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length), effectiveCrossover);
             const banks = {};
-            for (const [id, definition] of Object.entries(demoBankDefinitions(topology.roles))) {
+            for (const [id, definition] of Object.entries(demoBankDefinitions(topology.roles, mode))) {
                 banks[id] = { ...definition, ...demoBankSummary(definition.roles.map(role => config.banks[role])) };
             }
-            const pureStereo = topology.roles.length === 2 && topology.roles.includes('main_l') && topology.roles.includes('main_r');
+            const pureStereo = !surround && topology.roles.length === 2
+                && topology.roles.includes('main_l') && topology.roles.includes('main_r');
+            const fallback = surround && topology.roles.length ? 'all' : 'global';
+            let selected = config.selected_bank;
+            if (pureStereo) selected = 'global';
+            else if (config.selected_bank === 'all' && (topology.roles.length || !surround)) selected = 'all';
+            else if (surround && config.selected_bank === 'global') selected = fallback;
+            else if (!banks[config.selected_bank]) selected = fallback;
             modes[mode] = {
                 crossover_enabled: effectiveCrossover,
-                selected_bank: pureStereo ? 'global' : (config.selected_bank === 'all' || banks[config.selected_bank] ? config.selected_bank : 'global'),
+                selected_bank: selected,
                 banks,
                 all_banks: demoAllBanksSummary(topology.roles.map(role => config.banks[role])),
                 processing: JSON.parse(JSON.stringify(config.processing)),
@@ -602,7 +746,7 @@
             };
         }
         const deviceRouting = {};
-        for (const mode of ['stereo', 'stereo-sub']) {
+        for (const mode of OUTPUT_STATE_MODES) {
             deviceRouting[mode] = fixedStereo ? ['main_l', 'main_r']
                 : (outputStateStore.modes[mode].routing[key]
                 || (outputStateStore.modes[mode].crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
@@ -612,8 +756,8 @@
             device: { key, channels, routing: deviceRouting },
             modes,
             capabilities: {
-                modes: ['stereo', 'stereo-sub'],
-                roles: { stereo: outputStateRoles('stereo'), 'stereo-sub': outputStateRoles('stereo-sub') },
+                modes: [...OUTPUT_STATE_MODES],
+                roles: Object.fromEntries(OUTPUT_STATE_MODES.map(mode => [mode, outputStateRoles(mode)])),
                 filter_families: { 'linkwitz-riley': [12, 24, 36, 48, 60, 72], butterworth: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72], bessel: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72] },
                 max_slope_db_oct: 72,
                 max_biquads_per_output: 32,
@@ -633,6 +777,9 @@
             return { error: 'expected_revision must be a non-negative integer', status: 400 };
         }
         const config = outputStateStore.modes[mode];
+        if (mode === 'surround' && bankId === 'global') {
+            return { error: 'Surround has no Global bank; select an area bank or All Banks', status: 400 };
+        }
         const bank = config && outputStateCatalog().modes[mode].banks[bankId];
         if (!bank) return { error: `Unknown bank ${bankId}`, status: 400 };
         if (revision !== outputStateStore.revision) {
@@ -1084,11 +1231,145 @@
     let selectedSourceInputKey = SOURCE_INPUTS[0].key;
     // Input auto-select: armed keys only; the demo has no signal to detect.
     let sourceAutoArmed = [];
+    // ── Custom input mapping (mirrors audio/custom_input_mapping.py) ─────
+    // One mapping per device, keyed by the card base. Its input is offered
+    // whichever output is selected; the dialog can map any device with at
+    // least two capture channels in the demo.
+    const CUSTOM_MAPPING_POSITIONS = [['FL', 'Front L'], ['FR', 'Front R'], ['FC', 'Center'],
+        ['LFE', 'LFE'], ['SL', 'Side L'], ['SR', 'Side R'], ['BL', 'Rear L'], ['BR', 'Rear R']];
+    const customMappings = {};
+    const customMappingKey = (base) => 'custom-mapping::' + base;
+    function demoCardBase(name) {
+        const match = String(name || '').match(/^alsa_(?:input|output)\.(.+)\.[^.]+$/);
+        return match ? match[1] : null;
+    }
+    // Devices with capture channels, from the demo's source pairs, by label.
+    function customMappingDevices() {
+        const byBase = {};
+        for (const item of SOURCE_INPUTS) {
+            const base = demoCardBase(item.source_key);
+            if (base) (byBase[base] = byBase[base] || []).push(item);
+        }
+        return Object.entries(byBase).map(([base, items]) => {
+            items.sort((a, b) => a.pair_index - b.pair_index);
+            return {
+                base, pair: items[0], label: items[0].device_label,
+                suffixes: items.flatMap((item) => [item.left_channel, item.right_channel]),
+            };
+        }).filter((device) => device.suffixes.length >= 2)
+            .sort((a, b) => a.label.localeCompare(b.label) || a.base.localeCompare(b.base));
+    }
+    // The device of the selected custom-mapping input, else of the selected
+    // output, else the first one; only a listed device can be the default.
+    function customMappingDefault(devices) {
+        const listed = devices.map((device) => device.base);
+        const selectedKey = String(selectedSourceInputKey || '');
+        const fromInput = selectedKey.startsWith('custom-mapping::') ? selectedKey.slice('custom-mapping::'.length) : null;
+        return [fromInput, demoCardBase(selectedOutput().key)].find((base) => base && listed.includes(base))
+            || listed[0] || null;
+    }
+    function customMappingEntry(device) {
+        const mapping = customMappings[device.base];
+        if (!mapping) return null;
+        const { suffixes } = device;
+        const channels = mapping.channels;
+        return {
+            ...device.pair,
+            id: 900 + Object.keys(customMappings).sort().indexOf(device.base),
+            key: customMappingKey(device.base),
+            label: mapping.name || 'Custom mapping',
+            is_default: false,
+            pair_index: 0,
+            pair_count: 1,
+            pair_label: null,
+            pair_channels: [channels.FL, channels.FR],
+            left_channel: suffixes[channels.FL - 1],
+            right_channel: suffixes[channels.FR - 1],
+            custom_mapping: {
+                name: mapping.name,
+                channels: { ...channels },
+                suffixes: Object.fromEntries(Object.entries(channels).map(([position, index]) => [position, suffixes[index - 1]])),
+            },
+        };
+    }
+    function customMappingEntries() {
+        return customMappingDevices().map(customMappingEntry).filter(Boolean)
+            .sort((a, b) => a.key.localeCompare(b.key));
+    }
+    function customMappingDeviceContext(device) {
+        const mapping = customMappings[device.base];
+        return {
+            device: { card_base: device.base, label: device.label },
+            capture: {
+                channels: device.suffixes.map((suffix, index) => ({ index: index + 1, suffix, source: device.pair.source_key })),
+            },
+            mapping: mapping ? { name: mapping.name, channels: { ...mapping.channels } } : null,
+            input_key: mapping ? customMappingKey(device.base) : null,
+        };
+    }
+    function customMappingContext() {
+        const devices = customMappingDevices();
+        return { default_device: customMappingDefault(devices), devices: devices.map(customMappingDeviceContext) };
+    }
+    // The device a request names (query or body), else the default; the same errors as the API.
+    function resolveCustomMappingDevice(requested) {
+        const devices = customMappingDevices();
+        const named = typeof requested === 'string' ? requested.trim() : '';
+        if (requested != null && !named) return { error: 'device must be an audio device name' };
+        const base = named || customMappingDefault(devices);
+        if (!base) return { error: 'No audio device with input channels is available' };
+        const device = devices.find((item) => item.base === base);
+        if (!device) return { error: 'Unknown audio device or it has no input channels: ' + base };
+        return { device };
+    }
+    function customMappingPayload(device) {
+        return {
+            ...customMappingDeviceContext(device),
+            devices: customMappingDevices().map((item) => ({
+                card_base: item.base, label: item.label, channel_count: item.suffixes.length,
+                has_mapping: !!customMappings[item.base],
+            })),
+            positions: CUSTOM_MAPPING_POSITIONS.map(([id, label]) => ({ id, label })),
+        };
+    }
+    // Same rules and messages as custom_input_mapping.validate.
+    function validateCustomMapping(rawName, rawChannels, count) {
+        const name = rawName == null ? '' : rawName;
+        if (typeof name !== 'string') return { error: 'Name must be a string' };
+        if (name.trim().length > 40) return { error: 'Name must be at most 40 characters' };
+        if (!rawChannels || typeof rawChannels !== 'object' || Array.isArray(rawChannels)) {
+            return { error: 'channels must be an object mapping channel to input number' };
+        }
+        const labels = Object.fromEntries(CUSTOM_MAPPING_POSITIONS);
+        for (const position of Object.keys(rawChannels)) {
+            if (!(position in labels)) return { error: 'Unknown channel: ' + position };
+        }
+        const channels = {};
+        const owner = {};
+        for (const [position] of CUSTOM_MAPPING_POSITIONS) {
+            const value = rawChannels[position];
+            if (value == null) continue;
+            if (!Number.isInteger(value)) return { error: `Input for ${labels[position]} must be a whole number` };
+            if (value < 1 || value > count) {
+                return { error: `Input ${value} is not available: the device has ${count} input channels` };
+            }
+            if (owner[value]) return { error: `Input ${value} is assigned to both ${labels[owner[value]]} and ${labels[position]}` };
+            owner[value] = position;
+            channels[position] = value;
+        }
+        const missing = ['FL', 'FR'].filter((position) => !(position in channels)).map((position) => labels[position]);
+        if (missing.length) return { error: missing.join(' and ') + ' must be mapped' };
+        return { mapping: { name: name.trim(), channels } };
+    }
     function sourceInputByKey(key) {
-        return SOURCE_INPUTS.find((item) => item.key === String(key || '')) || null;
+        const wanted = String(key || '');
+        return SOURCE_INPUTS.find((item) => item.key === wanted)
+            || customMappingEntries().find((item) => item.key === wanted)
+            || null;
     }
     function sourceOverview() {
         const selected = sourceInputByKey(selectedSourceInputKey) || SOURCE_INPUTS[0];
+        const customs = customMappingEntries();
         const withSelected = (item) => ({ ...item, is_selected: item.key === selected.key });
         return {
             mode: sourceMode,
@@ -1101,7 +1382,8 @@
             default_input: withSelected(SOURCE_INPUTS[0]),
             selected_input: withSelected(selected),
             current_input: withSelected(selected),
-            inputs: SOURCE_INPUTS.map(withSelected),
+            inputs: [...SOURCE_INPUTS, ...customs].map(withSelected),
+            custom_mapping_context: customMappingContext(),
             bluetooth: { ...BLUETOOTH_SOURCE },
             stdin: {
                 available: true, selectable: true, state: 'waiting',
@@ -1390,6 +1672,84 @@
     // instead of jumping straight to a finished job.
     const autoSubJobs = {};
     let autoSubSeq = 0;
+
+    // Level Matching: fixed raw levels per speaker stand in for the microphone;
+    // the trims follow the backend rule (cut-only, target = quietest raw level).
+    const levelMatchRaw = { main_l: -20.0, main_r: -21.8, center: -22.5, side_l: -23.1, side_r: -22.4,
+        rear_l: -24.0, rear_r: -23.2 };
+    const levelMatchEntries = {};
+    const levelMatchJobs = {};
+    let levelMatchSeq = 0;
+    const levelMatchRoleRaw = (role) => levelMatchRaw[role] ?? (role.startsWith('left_') ? -20.0 : -21.8);
+    function levelMatchScope(bankId) {
+        const catalog = outputStateCatalog();
+        const mode = catalog.active_mode;
+        const modeConfig = catalog.modes[mode];
+        const roles = modeConfig.topology.roles.filter(role => !role.startsWith('sub'));
+        const surround = mode === 'surround';
+        const front = (role) => role === 'main_l' || role === 'main_r' || /^(left|right)_/.test(role);
+        let members;
+        if (bankId === 'global' && !surround) members = roles;
+        else if (modeConfig.banks[bankId] && bankId !== 'global') members = modeConfig.banks[bankId].roles.filter(role => roles.includes(role));
+        else return { error: `Bank ${bankId} is not an active speaker bank` };
+        if (!members.length) return { error: 'Subwoofers are handled by Auto Sub Optimize' };
+        const isFront = members.every(front);
+        if (surround && isFront) members = roles.filter(front);
+        const slot = surround ? (isFront ? 'global' : 'bank') : (bankId === 'global' ? 'global' : 'bank');
+        return { mode, roles, members, slot, family: surround ? 'surround' : `scope:${bankId}`,
+            requiresReference: surround && !isFront, frontRoles: roles.filter(front),
+            units: members.some(role => !/_(l|r)$|^(left|right)_/.test(role)) ? ['center'] : ['left', 'right'] };
+    }
+    function levelMatchDerive(mode) {
+        const entries = Object.values(levelMatchEntries[mode] || {});
+        const targets = {};
+        for (const entry of entries) targets[entry.family] = Math.min(targets[entry.family] ?? Infinity, entry.raw_db);
+        const values = {};
+        for (const entry of entries) {
+            const trim = Math.min(0, Math.round((targets[entry.family] - entry.raw_db) * 10) / 10) + 0;
+            (values[entry.role] = values[entry.role] || {})[entry.slot] = trim;
+        }
+        return values;
+    }
+    function levelMatchStatus(bankId) {
+        const scope = levelMatchScope(bankId);
+        if (scope.error) return scope;
+        const entries = levelMatchEntries[scope.mode] || {};
+        const values = levelMatchDerive(scope.mode);
+        const frontSlot = 'global';
+        const referenceReady = !scope.requiresReference
+            || scope.frontRoles.every(role => entries[`${frontSlot}:${role}`]);
+        return { scope, referenceReady, payload: {
+            status: 'ok', mode: scope.mode, bank_id: bankId, slot: scope.slot, family: scope.family,
+            requires_reference: scope.requiresReference, reference_ready: referenceReady, units: scope.units,
+            entries: Object.entries(entries).filter(([, entry]) => entry.family === scope.family).map(([, entry]) => ({
+                role: entry.role, slot: entry.slot, raw_db: entry.raw_db, valid: true,
+                trim_db: values[entry.role]?.[entry.slot] ?? null, measured_at: entry.measured_at })),
+            job: null } };
+    }
+
+    // Polarity Check: a fixed verdict per speaker stands in for the microphone,
+    // one reversed speaker shows what a finding looks like. Like the product,
+    // only the newest job is kept and nothing is persisted.
+    const polarityCheckReversed = new Set(['rear_r']);
+    const polarityCheckJobs = {};
+    let polarityCheckLast = null;
+    let polarityCheckSeq = 0;
+    function polarityCheckUnits(members) {
+        const side = (role) => (/^left_|_l$/.test(role) ? 'left' : (/^right_|_r$/.test(role) ? 'right' : 'mono'));
+        const units = [];
+        for (const label of ['left', 'right']) {
+            const roles = members.filter(role => side(role) === label);
+            if (roles.length) units.push({ label, roles });
+        }
+        for (const role of members.filter(role => side(role) === 'mono')) units.push({ label: role, roles: [role] });
+        return units;
+    }
+    function polarityCheckStatus(bankId) {
+        const scope = levelMatchScope(bankId);
+        if (scope.error) return scope;
+        return { scope, units: polarityCheckUnits(scope.members) };
+    }
 
     // Job discovery after a reload. The backend keeps its jobs in a
     // process-wide map, so GET .../current answers with the newest live or
@@ -2548,7 +2908,9 @@
                 }
                 if (config.selected_bank !== 'global' && config.selected_bank !== 'all'
                     && !allowed.includes(config.selected_bank)
-                    && !Object.values(demoBankDefinitions(allowed)).some(definition => definition.id === config.selected_bank)) config.selected_bank = 'global';
+                    && !Object.values(demoBankDefinitions(allowed, mode)).some(definition => definition.id === config.selected_bank)) {
+                    config.selected_bank = mode === 'surround' ? 'all' : 'global';
+                }
             } else if (mutation.kind === 'set_routing') {
                 const currentChannels = Number(outputEntry(selectedOutput()).channels || 0);
                 if (currentChannels === 2) return fail('Output routing is fixed to Out 1 Main L / Out 2 Main R on two-output devices');
@@ -2565,21 +2927,36 @@
                     }
                 }
                 const routedRoles = assignments.filter(role => role !== 'off');
-                const routedBanks = demoBankDefinitions(routedRoles);
+                const routedBanks = demoBankDefinitions(routedRoles, mode);
                 let selected = config.selected_bank;
                 for (const definition of Object.values(routedBanks)) {
                     if (definition.id === selected || definition.roles.includes(selected)) { selected = definition.id; break; }
                 }
-                const pureStereo = routedRoles.length === 2 && routedRoles.includes('main_l') && routedRoles.includes('main_r');
-                if (pureStereo || (selected !== 'all' && !routedBanks[selected])) selected = 'global';
+                const fallback = mode === 'surround' && routedRoles.length ? 'all' : 'global';
+                const pureStereo = mode !== 'surround' && routedRoles.length === 2
+                    && routedRoles.includes('main_l') && routedRoles.includes('main_r');
+                if (pureStereo) selected = 'global';
+                else if (selected !== 'all' && !routedBanks[selected]) selected = fallback;
+                else if (mode === 'surround' && selected === 'global') selected = fallback;
                 config.selected_bank = selected;
             } else if (mutation.kind === 'select_bank') {
                 const active = outputStateCatalog().modes[mode].banks;
                 const roles = outputStateCatalog().modes[mode].topology.roles;
-                if (roles.length === 2 && roles.includes('main_l') && roles.includes('main_r') && mutation.bank_id !== 'global') return fail('Pure stereo uses the Global bank; no bank selection is shown');
-                if (mutation.bank_id !== 'all' && !active[mutation.bank_id]) return fail(`Unknown bank ${mutation.bank_id}`);
-                config.selected_bank = mutation.bank_id;
+                const bankId = String(mutation.bank_id);
+                const surround = mode === 'surround';
+                if (!surround && roles.length === 2 && roles.includes('main_l') && roles.includes('main_r') && bankId !== 'global') return fail('Pure stereo uses the Global bank; no bank selection is shown');
+                if (surround && bankId === 'global') return fail('Surround has no Global bank; select an area bank or All Banks');
+                let resolved = bankId;
+                if (bankId === 'all') {
+                    if (!roles.length) return fail('No configured area banks');
+                } else if (!active[bankId]) {
+                    const owning = Object.values(active).find(bank => bank.roles.includes(bankId));
+                    if (!owning) return fail(`Unknown bank ${bankId}`);
+                    resolved = owning.id;
+                }
+                config.selected_bank = resolved;
             } else if (mutation.kind === 'set_bank_preset') {
+                if (mode === 'surround' && mutation.bank_id === 'global') return fail('Surround has no Global bank; select an area bank or All Banks');
                 const bank = outputStateCatalog().modes[mode].banks[mutation.bank_id];
                 if (!bank) return fail(`Unknown bank ${mutation.bank_id}`);
                 try { updateDemoBanks(config, bank.roles, mutation); } catch (error) { return fail(error.message); }
@@ -2595,6 +2972,18 @@
                 for (const key of ['level_db', 'alignment_ms', 'polarity']) {
                     if (mutation[key] !== undefined && mutation[key] !== null) settings[key] = mutation[key];
                 }
+                if (mutation.level_cal_db) {
+                    try { settings.level_cal_db = mergeLevelCal(settings.level_cal_db, mutation.level_cal_db); } catch (error) { return fail(error.message); }
+                }
+            } else if (mutation.kind === 'set_level_calibration') {
+                if (!mutation.values || typeof mutation.values !== 'object' || !Object.keys(mutation.values).length) {
+                    return fail('values must map roles to level calibration slots');
+                }
+                for (const [role, slots] of Object.entries(mutation.values)) {
+                    const settings = config.processing[role];
+                    if (!settings) return fail(`Role ${role} has no output processing in output mode ${mode}`);
+                    try { settings.level_cal_db = mergeLevelCal(settings.level_cal_db, slots); } catch (error) { return fail(error.message); }
+                }
             } else if (mutation.kind === 'set_subwoofers') {
                 const roles = outputStateCatalog().modes[mode].topology.sub_roles;
                 if (!mutation.processing || JSON.stringify(Object.keys(mutation.processing).sort()) !== JSON.stringify(roles.slice().sort())) {
@@ -2608,10 +2997,13 @@
                 }
                 if (mutation.sub_filters !== undefined && mutation.sub_filters !== null) {
                     if (typeof mutation.sub_filters !== 'object') return fail('Sub crossover overrides must be an object keyed by side');
-                    for (const [side, definition] of Object.entries(mutation.sub_filters)) {
-                        if (side !== 'left' && side !== 'right') return fail('Sub crossover overrides must be keyed by left and right');
-                        if (definition === null) delete config.bass_management.sub_filters[side];
-                        else config.bass_management.sub_filters[side] = { ...definition };
+                    const overrideKeys = mode === 'surround' ? SURROUND_GROUPS : ['left', 'right'];
+                    for (const [key, definition] of Object.entries(mutation.sub_filters)) {
+                        if (!overrideKeys.includes(key)) return fail(mode === 'surround'
+                            ? 'Sub crossover overrides must be keyed by the Surround speaker groups'
+                            : 'Sub crossover overrides must be keyed by left and right');
+                        if (definition === null) delete config.bass_management.sub_filters[key];
+                        else config.bass_management.sub_filters[key] = { ...definition };
                     }
                 }
                 for (const role of roles) Object.assign(config.processing[role], mutation.processing[role]);
@@ -2711,6 +3103,33 @@
                 return j(samplerate);
             }
             return j(samplerate);
+        }
+        if (p === '/api/audio/custom-mapping') {
+            if (method === 'PUT' && (!body || typeof body !== 'object' || Array.isArray(body))) {
+                return err('Invalid JSON body, expected {"name": <string?>, "channels": {<channel>: <input number>}}', 400);
+            }
+            const resolved = resolveCustomMappingDevice(
+                method === 'PUT' ? body.device : (query.has('device') ? query.get('device') : undefined));
+            if (resolved.error) return err(resolved.error, 400);
+            const { device } = resolved;
+            if (method === 'GET') return j(customMappingPayload(device));
+            if (method === 'PUT') {
+                const result = validateCustomMapping(body.name, body.channels, device.suffixes.length);
+                if (result.error) return err(result.error, 400);
+                customMappings[device.base] = result.mapping;
+                return j(customMappingPayload(device));
+            }
+            if (method === 'DELETE') {
+                if (!customMappings[device.base]) return err('No custom mapping is saved for this audio device', 404);
+                const key = customMappingKey(device.base);
+                delete customMappings[device.base];
+                sourceAutoArmed = sourceAutoArmed.filter((item) => item !== key);
+                if (sourceMode === 'external-input' && selectedSourceInputKey === key) {
+                    sourceMode = 'app-playback';
+                    selectedSourceInputKey = SOURCE_INPUTS[0].key;
+                }
+                return j(customMappingPayload(device));
+            }
         }
         if (p === '/api/audio/source-auto' && post) {
             const key = String(body.inputKey || body.input_key || '');
@@ -2934,6 +3353,16 @@
             if (value !== undefined) section('tone_effect').enabled = toBool(value);
             value = pick('toneEffectMode', 'tone_effect_mode');
             if (value !== undefined) section('tone_effect').mode = String(value);
+            value = pick('upmixerEnabled', 'upmixer_enabled');
+            if (value !== undefined) section('upmixer').enabled = toBool(value);
+            value = pick('upmixerCenter', 'upmixer_center');
+            if (value !== undefined) params('upmixer').center = demoUpmixerStrength(value, 6);
+            value = pick('upmixerSurround', 'upmixer_surround');
+            if (value !== undefined) params('upmixer').surround = demoUpmixerStrength(value, 6);
+            value = pick('upmixerMode', 'upmixer_mode');
+            if (value !== undefined) params('upmixer').mode = demoUpmixerMode(value, 'fast');
+            value = pick('upmixerFftSize', 'upmixer_fft_size');
+            if (value !== undefined) params('upmixer').fftSize = demoUpmixerFftSize(value, 2048);
             syncDspToState();
             return j({ status: 'ok', ok: true, extras: dspExtras });
         }
@@ -3201,6 +3630,68 @@
             const result = S.splApplyCalibration(body.measured_spl_db);
             if (result.error) return err(result.error, 400);
             return j(result);
+        }
+        if (p === '/api/measurements/level-match') {
+            const status = levelMatchStatus(String(query.get('bank_id') || ''));
+            return status.error ? err(status.error, 400) : j(status.payload);
+        }
+        if (p === '/api/measurements/level-match/start' && post) {
+            const status = levelMatchStatus(String(body.bank_id || ''));
+            if (status.error) return err(status.error, 400);
+            if (!status.referenceReady) return err('Measure Front L/R first to set the level reference', 409);
+            const { scope } = status;
+            const bucket = (levelMatchEntries[scope.mode] = levelMatchEntries[scope.mode] || {});
+            for (const role of scope.members) {
+                bucket[`${scope.slot}:${role}`] = { role, slot: scope.slot, family: scope.family,
+                    raw_db: levelMatchRoleRaw(role), measured_at: new Date().toISOString() };
+            }
+            const id = 'demo_levelmatch_' + (++levelMatchSeq);
+            levelMatchJobs[id] = { id, status: 'completed', mode: scope.mode, bank_id: String(body.bank_id), slot: scope.slot,
+                progress: { step: scope.units.length, total: scope.units.length, label: scope.units[scope.units.length - 1] },
+                result: { mode: scope.mode, values: levelMatchDerive(scope.mode), measured_roles: scope.members.slice().sort(), state_revision: 0 },
+                error: null, cancel_requested: false };
+            return j({ status: 'ok', job: levelMatchJobs[id] });
+        }
+        const levelMatchJob = p.match(/^\/api\/measurements\/level-match\/jobs\/([^/]+)$/);
+        if (levelMatchJob) {
+            const job = levelMatchJobs[levelMatchJob[1]];
+            return job ? j({ status: 'ok', job }) : err('Level Matching job not found', 404);
+        }
+        const levelMatchCancel = p.match(/^\/api\/measurements\/level-match\/jobs\/([^/]+)\/cancel$/);
+        if (levelMatchCancel && post) {
+            const job = levelMatchJobs[levelMatchCancel[1]];
+            return job ? j({ status: 'ok', job }) : err('Level Matching job not found', 404);
+        }
+        if (p === '/api/measurements/polarity-check') {
+            const status = polarityCheckStatus(String(query.get('bank_id') || ''));
+            if (status.error) return err(status.error, 400);
+            return j({ status: 'ok', mode: status.scope.mode, bank_id: String(query.get('bank_id')),
+                units: status.units.map(unit => unit.label), job: polarityCheckLast });
+        }
+        if (p === '/api/measurements/polarity-check/start' && post) {
+            const status = polarityCheckStatus(String(body.bank_id || ''));
+            if (status.error) return err(status.error, 400);
+            const id = 'demo_polarity_' + (++polarityCheckSeq);
+            const rows = status.units.map(unit => ({
+                label: unit.label, roles: unit.roles.slice(),
+                verdict: unit.roles.some(role => polarityCheckReversed.has(role)) ? 'reversed' : 'correct',
+                reason: '', phase_cos: unit.roles.some(role => polarityCheckReversed.has(role)) ? -0.97 : 0.97, snr_db: 41.0, inverted: false }));
+            polarityCheckJobs[id] = { id, status: 'completed', mode: status.scope.mode, bank_id: String(body.bank_id),
+                progress: { step: rows.length, total: rows.length, label: rows[rows.length - 1].label },
+                result: { mode: status.scope.mode, rows, all_reversed: rows.length > 1 && rows.every(row => row.verdict === 'reversed') },
+                error: null, cancel_requested: false };
+            polarityCheckLast = polarityCheckJobs[id];
+            return j({ status: 'ok', job: polarityCheckJobs[id] });
+        }
+        const polarityCheckJob = p.match(/^\/api\/measurements\/polarity-check\/jobs\/([^/]+)$/);
+        if (polarityCheckJob) {
+            const job = polarityCheckJobs[polarityCheckJob[1]];
+            return job ? j({ status: 'ok', job }) : err('Polarity Check job not found', 404);
+        }
+        const polarityCheckCancel = p.match(/^\/api\/measurements\/polarity-check\/jobs\/([^/]+)\/cancel$/);
+        if (polarityCheckCancel && post) {
+            const job = polarityCheckJobs[polarityCheckCancel[1]];
+            return job ? j({ status: 'ok', job }) : err('Polarity Check job not found', 404);
         }
         if (p === '/api/measurements/auto-sub-optimize/start' && post) {
             const id = 'demo_autosub_' + (++autoSubSeq);

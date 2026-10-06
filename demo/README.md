@@ -29,6 +29,22 @@ crossover topology with the Global bank selected. Keep it consistent when
 changing the seed: the alignment run below is only offered under those
 conditions.
 
+The same seed carries the **Surround** mode, so the third output mode is
+explorable without a Surround source or a second machine: the stereo-sub
+front end expanded to a fully routed 7.2 system on the same 18-channel
+Scarlett — the 2-way LR24 front at 3 kHz, Center, Side L/R, Rear L/R and
+both sub roles behind the 80 Hz bass-management split. Switching **Mode**
+to Surround lands on that configured system: the routing grid offers the
+Surround roles, the bank selector drops Global and shows the way pairs
+(Front L/R once Crossover is off), Center, Side L/R, Rear L/R and Sub 1 /
+Sub 2 with **All Banks** selected, the mode hint names the LFE target, the
+Subwoofer card switches to the speaker groups behind the **Link groups**
+switch, and Speaker Auto Alignment stays hidden because it needs the
+Global bank. The mode state is held per mode, so exploring Surround never
+touches the stereo-sub configuration; a half-routed Side or Rear pair and
+Sub 2 without Sub 1 are saved but reported as inactive, exactly like the
+backend.
+
 `demo/data/alignment.js` holds the Speaker Auto Alignment fixture: the last
 real alignment run on the test machine, with its `Before (planning)` and
 `After (verification)` takes. 20 Hz to 1 kHz is the measurement verbatim,

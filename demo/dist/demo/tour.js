@@ -433,7 +433,11 @@
                                 // The auto-sub group only shows in subwoofer
                                 // output modes; skip it when hidden.
                                 if (sub && sub.offsetParent !== null) pulse(sub);
-                                if (spl) pulse(spl);
+                                // The calibration entries sit in the Calibration popover, so
+                                // pulse its toggle; the entry itself is hidden until opened.
+                                var cal = document.getElementById('measurement-calibration-toggle');
+                                if (cal) pulse(cal);
+                                if (spl && spl.offsetParent !== null) pulse(spl);
                             }, 900);
                         }, 800);
                     }, 700);

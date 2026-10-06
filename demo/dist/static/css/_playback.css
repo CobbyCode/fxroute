@@ -590,4 +590,56 @@
 
 /* Hidden meter segments (JS-driven via .meter-segment-hidden): must win
    over the base .meter-segments i { display: block } row rule. */
-.meter-segments .meter-segment-hidden { display: none; }
+.meter-segments .meter-segment-hidden,
+.meter-bar .meter-segment-hidden { display: none; }
+
+/* Multichannel output meter: with three or more speaker positions the two
+   stereo rows give way to one vertical bar per position (FL FR C LFE SL SR
+   RL RR). The level in dB is dropped here; the bars say enough. */
+.meter-multi { display: none; }
+.playback-meter.is-multichannel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+}
+.playback-meter.is-multichannel .meter-row,
+.playback-meter.is-multichannel .output-level-badge { display: none; }
+.playback-meter.is-multichannel .meter-multi {
+    display: flex;
+    align-items: flex-start;
+}
+.meter-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    width: 16px;
+}
+.meter-bar {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 1.5px;
+}
+.meter-bar i {
+    display: block;
+    width: 5px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.075);
+    transition: background .08s linear, box-shadow .08s linear, opacity .08s linear;
+}
+.meter-bar i.is-lit { background: #55d99f; }
+.meter-bar i.is-lit.is-warn { background: #e9b949; }
+.meter-bar i.is-lit.is-hot { background: #ef7b4f; }
+.meter-bar i.is-peak {
+    background: #ff5a5f;
+    box-shadow: 0 0 8px rgba(255,90,95,.72);
+}
+.meter-col-label {
+    font-size: .5rem;
+    line-height: 1;
+    font-weight: 760;
+    white-space: nowrap;
+    color: rgba(160,160,172,.68);
+}

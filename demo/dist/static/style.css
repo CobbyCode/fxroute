@@ -1114,13 +1114,15 @@ select.url-input {
     flex-wrap: wrap;
     margin-top: 0.85rem;
 }
-/* Qobuz/qbzd and TIDAL logins stack above the settings dialog they are launched from. */
+/* Qobuz/qbzd and TIDAL logins and the custom input mapping stack above the settings dialog they are launched from. */
 .qobuz-login-overlay,
-.tidal-login-overlay {
+.tidal-login-overlay,
+.custom-mapping-overlay {
     z-index: calc(var(--z-overlay) + 10);
 }
 .qobuz-login-overlay .url-input,
-.tidal-login-overlay .url-input {
+.tidal-login-overlay .url-input,
+.custom-mapping-overlay .url-input {
     width: 100%;
 }
 .qobuz-login-overlay a.btn-primary,
@@ -4601,7 +4603,7 @@ select.url-input {
 
 #measurement-sweep-toggle,
 #measurement-auto-sub-start,
-#measurement-spl-calibration-open {
+#measurement-calibration-toggle {
     width: 190px;
     min-width: 190px;
     min-height: 44px;
@@ -4916,6 +4918,70 @@ select.url-input {
    notes in the measurement panel. */
 .spl-calibration-dialog .spl-calibration-noise-row {
     justify-content: flex-start;
+}
+
+.level-match-dialog,
+.polarity-check-dialog {
+    position: relative;
+    width: min(560px, 100%);
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+}
+
+#level-match-panel,
+#polarity-check-panel {
+    align-items: center;
+}
+
+.level-match-dialog .effects-stack,
+.polarity-check-dialog .effects-stack {
+    gap: 0.85rem;
+}
+
+.level-match-dialog #level-match-status,
+.polarity-check-dialog #polarity-check-status {
+    margin-top: 0.35rem;
+}
+
+.level-match-dialog .level-match-action-row,
+.polarity-check-dialog .polarity-check-action-row {
+    justify-content: flex-start;
+}
+
+.level-match-results,
+.polarity-check-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.level-match-row,
+.polarity-check-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+}
+
+.level-match-outdated,
+.polarity-check-note {
+    margin-left: 0.4rem;
+    color: var(--text-muted);
+    font-size: 0.8em;
+}
+
+.polarity-check-verdict-correct {
+    color: var(--success);
+}
+
+.polarity-check-verdict-reversed {
+    color: var(--danger);
+}
+
+.polarity-check-verdict-inconclusive {
+    color: var(--text-muted);
 }
 
 .hybrid-measurement-overlay {
@@ -6600,27 +6666,20 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-peq-add-row {
-    /* Flex, not a fixed two-column grid: the mode select and the Add button
-       need a combined width that the PEQ card only offers on wide layouts
-       (it is one of several cards side by side), so the row now wraps when
-       the card is too narrow instead of letting the select overrun its
-       column. The mode field still takes all the space on one row. */
+    /* The mode select takes the free width and Add sits flush right as a
+       compact action. The row still wraps if a card gets too narrow for
+       both, so the select never overruns its column. */
     display: flex;
     flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: end;
-    gap: 1rem;
+    justify-content: flex-end;
+    align-items: flex-end;
+    gap: 0.75rem;
     margin-bottom: 0.35rem;
 }
 
 .effects-peq-mode-field {
-    flex: 1 1 12rem;
+    flex: 1 1 8rem;
     min-width: 0;
-}
-
-.effects-peq-mode-field {
-    width: 100%;
-    max-width: 220px;
     margin: 0;
 }
 
@@ -6630,18 +6689,21 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     margin-bottom: 0.3rem;
 }
 
-.effects-peq-mode-field .url-input {
-    min-height: 40px;
+#tab-effects .effects-peq-mode-field .url-input {
+    /* Drop the global .url-input 200px floor so the select shrinks with the field. */
+    min-width: 0;
+    min-height: 42px;
     padding-top: 0.45rem;
     padding-bottom: 0.45rem;
 }
 
 .effects-peq-add-row .btn-inline {
     flex: 0 0 auto;
-    justify-self: end;
-    min-width: 92px;
-    min-height: 44px;
-    padding: 0.45rem 1rem;
+    min-width: 4.75rem;
+    min-height: 42px;
+    padding: 0.45rem 1.2rem;
+    font-size: 0.86rem;
+    font-weight: 600;
 }
 
 .effects-peq-pane-header {
@@ -6844,6 +6906,50 @@ input[type="number"]::-webkit-outer-spin-button {
     max-width: 100%;
 }
 
+/* Upmixer: Mode (and the FFT size for HQ) on the first line, Center and
+   Surround on the second. In a card too narrow for both controls with the
+   label beside them (Center + Surround need about 23rem, so the switch is at 24rem), the labels move
+   above their controls so each pair still sits side by side; where
+   container queries are missing the lines simply wrap. */
+.effects-upmixer-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.55rem;
+    width: 100%;
+    max-width: 100%;
+    container-type: inline-size;
+}
+
+.effects-upmixer-line {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem 1rem;
+    flex-wrap: wrap;
+    max-width: 100%;
+}
+
+@container (max-width: 24rem) {
+    .effects-upmixer-line .effects-inline-control {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+    }
+}
+
+/* Phone cards: the strengths only hold 0..10, so a narrower value field
+   (still wider than "10") lets Center and Surround share the line. */
+@container (max-width: 18rem) {
+    .effects-upmixer-line {
+        column-gap: 0.5rem;
+    }
+
+    #tab-effects .effects-upmixer-line .stepper-control .stepper-input {
+        width: 3rem;
+        min-width: 3rem;
+    }
+}
+
 .effects-headroom-controls {
     display: inline-flex;
     align-items: center;
@@ -6918,28 +7024,43 @@ input[type="number"]::-webkit-outer-spin-button {
     padding-top: 1.45rem;
 }
 
-/* Collapsed PEQ card: read-only draft preview plus hint. Both hide while
-   the editor is expanded; the summary text is filled from the draft. */
+/* Collapsed PEQ card: read-only draft preview as one L/R row per side.
+   Hidden while the editor is expanded; filled from the draft. */
 .effects-peq-summary {
-    margin-top: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.9rem;
+}
+
+.effects-peq-summary-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.02);
+}
+
+.effects-peq-summary-side {
+    flex: 0 0 auto;
+    min-width: 1rem;
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.effects-peq-summary-text {
+    min-width: 0;
     font-size: 0.8rem;
-    line-height: 1.55;
-    color: var(--text-muted);
+    line-height: 1.5;
+    color: var(--text-secondary);
     font-family: var(--font-mono);
-    white-space: pre-line;
     overflow-wrap: anywhere;
 }
 
-.effects-peq-summary-hint {
-    display: block;
-    margin-top: 0.35rem;
-    font-size: 0.76rem;
-    letter-spacing: 0.01em;
-    color: var(--text-muted);
-}
-
-.effects-disclosure[open] .effects-peq-summary,
-.effects-disclosure[open] .effects-peq-summary-hint {
+.effects-disclosure[open] .effects-peq-summary {
     display: none;
 }
 
@@ -6960,6 +7081,10 @@ input[type="number"]::-webkit-outer-spin-button {
     display: none;
 }
 
+.effects-disclosure-summary {
+    align-items: flex-start;
+}
+
 .effects-disclosure-summary h3 {
     margin: 0 0 0.4rem;
 }
@@ -6973,6 +7098,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-disclosure-meta {
     flex: 0 0 auto;
+    align-self: flex-start;
     padding: 0.35rem 0.7rem;
     border-radius: 999px;
     border: 1px solid var(--border);
@@ -7969,7 +8095,59 @@ input[type="number"]::-webkit-outer-spin-button {
 
 /* Hidden meter segments (JS-driven via .meter-segment-hidden): must win
    over the base .meter-segments i { display: block } row rule. */
-.meter-segments .meter-segment-hidden { display: none; }
+.meter-segments .meter-segment-hidden,
+.meter-bar .meter-segment-hidden { display: none; }
+
+/* Multichannel output meter: with three or more speaker positions the two
+   stereo rows give way to one vertical bar per position (FL FR C LFE SL SR
+   RL RR). The level in dB is dropped here; the bars say enough. */
+.meter-multi { display: none; }
+.playback-meter.is-multichannel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+}
+.playback-meter.is-multichannel .meter-row,
+.playback-meter.is-multichannel .output-level-badge { display: none; }
+.playback-meter.is-multichannel .meter-multi {
+    display: flex;
+    align-items: flex-start;
+}
+.meter-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    width: 16px;
+}
+.meter-bar {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 1.5px;
+}
+.meter-bar i {
+    display: block;
+    width: 5px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.075);
+    transition: background .08s linear, box-shadow .08s linear, opacity .08s linear;
+}
+.meter-bar i.is-lit { background: #55d99f; }
+.meter-bar i.is-lit.is-warn { background: #e9b949; }
+.meter-bar i.is-lit.is-hot { background: #ef7b4f; }
+.meter-bar i.is-peak {
+    background: #ff5a5f;
+    box-shadow: 0 0 8px rgba(255,90,95,.72);
+}
+.meter-col-label {
+    font-size: .5rem;
+    line-height: 1;
+    font-weight: 760;
+    white-space: nowrap;
+    color: rgba(160,160,172,.68);
+}
 /* Shared detail track-row body (library album detail + Tidal album/playlist
    detail): track number, round play button, stacked title/sub, favorite,
    duration. One visual language for both providers; the row container chrome
@@ -8181,6 +8359,7 @@ input[type="number"]::-webkit-outer-spin-button {
         #playback-bar .samplerate-status,
         #playback-bar .queue-status { font-size: 0.67rem; }
         #playback-bar .meter-channel { font-size: 0.57rem; }
+        #playback-bar .meter-col-label { font-size: 0.54rem; }
         #playback-bar .output-level-badge { font-size: 0.65rem; }
         .tab-btn { font-size: 0.94rem; }
         .section-title { font-size: 1.12rem; }
@@ -8297,6 +8476,12 @@ input[type="number"]::-webkit-outer-spin-button {
         gap: 1.7px;
     }
     .meter-segments i { height: 4px; }
+    /* Multichannel bars sit centred in the meter row; the stereo rows'
+       bottom alignment would push the labels into the volume row. */
+    .playback-meter.is-multichannel {
+        align-self: center;
+        margin: 0;
+    }
     .playback-bar .controls {
         width: min(100%, 235px);
         max-width: 235px;
@@ -8500,6 +8685,16 @@ input[type="number"]::-webkit-outer-spin-button {
         height: 4px;
         border-radius: 999px;
     }
+    /* Multichannel on a phone: up to eight slim bars in the 84px meter slot,
+       positions told apart by order only (labels stay in the tooltips). */
+    .playback-meter.is-multichannel {
+        width: auto;
+        max-width: 84px;
+        min-height: 0;
+    }
+    .meter-col { width: 10px; }
+    .meter-col-label { display: none; }
+    .meter-bar { gap: 1.4px; }
     .output-level-badge { display: none; }
     /* Phone: volume percent shares the seek duration right value column. */
     .playback-bar .controls {
@@ -8594,6 +8789,11 @@ input[type="number"]::-webkit-outer-spin-button {
             max-width: 78px;
             grid-template-columns: .5rem 57px;
         }
+        .playback-meter.is-multichannel {
+            width: auto;
+            max-width: 78px;
+        }
+        .meter-col { width: 9px; }
         .meter-segments {
             width: 57px;
             min-width: 57px;
@@ -9004,7 +9204,7 @@ input[type="number"]::-webkit-outer-spin-button {
         #measurement-repeat-start,
         #measurement-hybrid-open,
     #measurement-auto-sub-start,
-    #measurement-spl-calibration-open {
+    #measurement-calibration-toggle {
         width: 100%;
         min-width: 0;
     }
@@ -9604,16 +9804,6 @@ input[type="number"]::-webkit-outer-spin-button {
         flex: 0 0 auto;
     }
 
-    /* The row wraps on its own once the card is too narrow; on a phone the
-       Add button drops to its own line and starts at the leading edge. */
-    .effects-peq-add-row .btn-inline {
-        margin-right: auto;
-    }
-
-    .effects-peq-mode-field {
-        max-width: none;
-    }
-
     .effects-loudness-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr);
@@ -9627,7 +9817,8 @@ input[type="number"]::-webkit-outer-spin-button {
         gap: 0.65rem;
     }
 
-    .effects-loudness-controls .effects-inline-control {
+    .effects-loudness-controls .effects-inline-control,
+    .effects-upmixer-controls .effects-inline-control {
         flex-wrap: nowrap;
     }
 
