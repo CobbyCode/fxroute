@@ -88,7 +88,7 @@ typedef struct {
     fx_autogain *autogain[FXDSP_MAX_CHANNELS / 2];
     fx_crystalizer *crystalizer[FXDSP_MAX_CHANNELS];
     fx_lv2_host *lv2[FXDSP_MAX_CHANNELS / 2];
-    /* Surround upmixer: steering strengths 1..10 and the destinations that exist. */
+    /* Surround upmixer: steering strengths 0..10 and the destinations that exist. */
     fx_upmix_fast *upmixer;
     float upmix_center, upmix_surround;
     unsigned upmix_center_out, upmix_side_out, upmix_rear_out;

@@ -102,6 +102,48 @@ class NativeUpmixerTests(unittest.TestCase):
         self.assertGreater(power(on["center"], 2 * RATE, RATE), 1.5 * power(mono, 2 * RATE, RATE))
         self.assertLess(power(on["main_l"], 2 * RATE, RATE), 0.01 * power(mono, 2 * RATE, RATE))
 
+    def test_zero_strength_is_accepted_and_silences_only_its_own_share(self):
+        frames = 3 * RATE
+        common = self.noise(frames, 5)
+        left = [c + n for c, n in zip(common, self.noise(frames, 6))]
+        right = [c + n for c, n in zip(common, self.noise(frames, 7))]
+        reference = power(left, 2 * RATE, RATE)
+
+        def render(center, surround):
+            extras = {"limiter": {"enabled": False}, "upmixer": {
+                "enabled": True, "params": {"mode": "fast", "center": center, "surround": surround}}}
+            return self.render(surround_support.ROLES, extras, left, right)
+
+        centre_only, surround_only, neither = render(10, 0), render(0, 10), render(0, 0)
+        # Center 10 / Surround 0: the centre is fed, every surround pair stays silent.
+        self.assertGreater(power(centre_only["center"], 2 * RATE, RATE), 0.3 * reference)
+        for name in ("side_l", "side_r", "rear_l", "rear_r"):
+            self.assertEqual(power(centre_only[name], 0, frames), 0.0, name)
+        # Center 0 / Surround 10: the centre stays silent, the surround pairs are fed.
+        self.assertEqual(power(surround_only["center"], 0, frames), 0.0)
+        for name in ("side_l", "rear_l"):
+            self.assertGreater(power(surround_only[name], 2 * RATE, RATE), 0.02 * reference, name)
+        # Both 0: the programme passes through the same fixed delay and nothing else.
+        for name in ("center", "side_l", "side_r", "rear_l", "rear_r"):
+            self.assertEqual(power(neither[name], 0, frames), 0.0, name)
+        off = self.render(surround_support.ROLES, OFF, left, right)
+        for name in ("main_l", "main_r"):
+            shifted = neither[name][LATENCY:LATENCY + frames - LATENCY - 4096]
+            self.assertLess(max(abs(a - b) for a, b in zip(shifted, off[name][:frames - LATENCY - 4096])), 1e-5, name)
+
+    def test_zero_surround_keeps_the_rear_pair_silent_without_a_center(self):
+        frames = 3 * RATE
+        left, right = self.noise(frames, 8), self.noise(frames, 9)
+        extras = {"limiter": {"enabled": False}, "upmixer": {
+            "enabled": True, "params": {"mode": "fast", "center": 10, "surround": 0}}}
+        result = self.render(surround_support.QUAD_SUBS, extras, left, right)
+        for name in ("rear_l", "rear_r"):
+            self.assertEqual(power(result[name], 0, frames), 0.0, name)
+        # Surround 10 with Center 0 on the same routing still works.
+        extras["upmixer"]["params"].update({"center": 0, "surround": 10})
+        result = self.render(surround_support.QUAD_SUBS, extras, left, right)
+        self.assertGreater(power(result["rear_l"], 2 * RATE, RATE), 0.2 * power(left, 2 * RATE, RATE))
+
     def test_stage_requires_surround_and_rejects_bad_parameters(self):
         frames = 4800
         silence = [0.0] * frames
@@ -112,7 +154,8 @@ class NativeUpmixerTests(unittest.TestCase):
             return raised.exception.stderr.decode() if isinstance(raised.exception.stderr, bytes) else raised.exception.stderr
 
         self.assertIn("requires Surround", failing(lambda text: text.replace("surround 1\n", "")))
-        self.assertIn("invalid config line", failing(lambda text: text.replace("param center 10", "param center 0")))
+        self.assertIn("invalid config line", failing(lambda text: text.replace("param center 10", "param center 11")))
+        self.assertIn("invalid config line", failing(lambda text: text.replace("param surround 10", "param surround -1")))
         self.assertIn("invalid config line", failing(lambda text: text.replace("param mode fast", "param mode hq")))
         self.assertIn("invalid config line", failing(lambda text: text.replace("param rear_out 1", "param rear_out 2")))
 

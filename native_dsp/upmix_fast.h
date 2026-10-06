@@ -30,7 +30,7 @@
  * All state is allocated at creation; process performs no allocation,
  * locking or I/O. */
 #define FX_UPMIX_FAST_CHANNELS 8U
-#define FX_UPMIX_FAST_STRENGTH_MIN 1.0F
+#define FX_UPMIX_FAST_STRENGTH_MIN 0.0F
 #define FX_UPMIX_FAST_STRENGTH_MAX 10.0F
 
 typedef struct fx_upmix_fast fx_upmix_fast;
@@ -42,7 +42,8 @@ void fx_upmix_fast_destroy(fx_upmix_fast *upmixer);
 void fx_upmix_fast_reset(fx_upmix_fast *upmixer);
 /* Range check shared by the setter, the engine config path and the live path. */
 int fx_upmix_fast_strength_valid(float strength);
-/* Steering strengths 1 (weak) .. 10 (strong); out-of-range values are clamped. */
+/* Steering strengths 0 (this share off) .. 10 (strong); out-of-range values are clamped.
+ * Center and Surround are independent: either may be 0 while the other steers. */
 void fx_upmix_fast_set_strength(fx_upmix_fast *upmixer, float center, float surround);
 /* Frames every channel is delayed by. */
 size_t fx_upmix_fast_latency(const fx_upmix_fast *upmixer);

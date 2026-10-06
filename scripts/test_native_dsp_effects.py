@@ -129,6 +129,19 @@ class NativeEffectsTests(unittest.TestCase):
         self.assertGreater(gains[80], gains[1000] * 1.5)
         self.assertGreater(gains[10000], gains[1000] * 1.1)
 
+    def test_lsp_loudness_work_point_zero_is_flat(self):
+        # Loudness Strength 0 relies on this: the plugin's 0 dB work point has no
+        # tonal effect at any FFT size, so the stage can stay in the chain.
+        for fft_index in (0, 4, 6):
+            stage = self.lv2("loudness", "http://lsp-plug.in/plugins/lv2/loud_comp_stereo",
+                             {"input": 1, "std": 4, "fft": fft_index,
+                              "volume": 0, "hclip": 0, "hcrange": 6})
+            for frequency in (25, 63, 250, 1000, 4000, 10000, 16000):
+                source = stereo_sine(frequency, seconds=3)
+                output = self.process(stage, source)
+                gain_db = 20 * math.log10(rms(output[96000::2]) / rms(source[96000::2]))
+                self.assertAlmostEqual(gain_db, 0.0, delta=0.05, msg=f"fft {fft_index} {frequency} Hz")
+
     def test_ebur128_autogain_is_stereo_linked_and_peak_safe(self):
         stage = "\n".join((
             "stage_begin 0 autogain native autogain", "param target_db -18",

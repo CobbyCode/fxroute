@@ -778,20 +778,23 @@ function normalizeEffectsLoudnessFftSize(value, fallback = 4096) {
     return EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE.has(numeric) ? numeric : fallback;
 }
 
+// Strength is a whole number 0 (no effect) .. 10 (maximum); an empty field is
+// not 0 and keeps the fallback.
 function normalizeEffectsLoudnessStrength(value, fallback = 10) {
     const legacy = EFFECTS_LOUDNESS_LEGACY_STRENGTHS.get(String(value).trim().toLowerCase());
     if (legacy !== undefined) return legacy;
+    if (value === '' || value == null) return fallback;
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return fallback;
-    return Math.max(1, Math.min(10, Math.round(numeric)));
+    return Math.max(0, Math.min(10, Math.round(numeric)));
 }
 
-// Steering strengths of the Surround upmixer: whole numbers 1 (weak) .. 10 (strong).
+// Steering strengths of the Surround upmixer: whole numbers 0 (this share off) .. 10 (strong).
 function normalizeEffectsUpmixerStrength(value, fallback = 6) {
     if (value === '' || value == null) return fallback;
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return fallback;
-    return Math.max(1, Math.min(10, Math.round(numeric)));
+    return Math.max(0, Math.min(10, Math.round(numeric)));
 }
 
 function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {

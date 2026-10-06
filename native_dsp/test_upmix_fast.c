@@ -224,6 +224,91 @@ static void test_surround_strength_controls_the_surround_level(void) {
     assert(level[0] < level[1] && level[1] < level[2]);
 }
 
+static void test_zero_strength_switches_one_share_off_and_leaves_the_other_working(void) {
+    /* {center, surround, expect centre, expect surround} */
+    float cases[3][2] = {{0.0F, 0.0F}, {0.0F, 10.0F}, {10.0F, 0.0F}};
+    for (unsigned variant = 0; variant < 3U; variant++) {
+        fx_upmix_fast *u = fx_upmix_fast_create(RATE, 1, 1, 1);
+        bus in = bus_new(FRAMES), out = bus_new(FRAMES);
+        size_t latency = fx_upmix_fast_latency(u);
+        double input_power;
+        int center_on = cases[variant][0] > 0.0F, surround_on = cases[variant][1] > 0.0F;
+        fx_upmix_fast_set_strength(u, cases[variant][0], cases[variant][1]);
+        rng = 21U;
+        /* A common part for the centre and two independent parts for the surround feeds. */
+        for (size_t n = 0; n < FRAMES; n++) {
+            float common = noise(0.1F);
+            in.c[0][n] = common + noise(0.1F); in.c[1][n] = common + noise(0.1F);
+        }
+        run(u, &in, &out, 509U);
+        input_power = mean_square(in.c[0], SETTLED, RATE);
+        if (center_on) assert(mean_square(out.c[2], SETTLED, RATE) > 0.3 * input_power);
+        else assert(mean_square(out.c[2], 0, FRAMES) == 0.0);
+        for (unsigned channel = 4U; channel < CH; channel++) {
+            if (surround_on) assert(mean_square(out.c[channel], SETTLED, RATE) > 0.05 * input_power);
+            else assert(mean_square(out.c[channel], 0, FRAMES) == 0.0);
+        }
+        if (!center_on && !surround_on) {
+            /* Both shares off: exactly the delayed input, nothing taken out of L/R. */
+            assert(max_abs_diff(out.c[0] + latency, in.c[0], FRAMES - latency) == 0.0);
+            assert(max_abs_diff(out.c[1] + latency, in.c[1], FRAMES - latency) == 0.0);
+        }
+        if (center_on && !surround_on) {
+            /* Only the centre rotation leaves L/R; the side component stays. */
+            assert(mean_square(out.c[0], SETTLED, RATE) < 0.9 * input_power);
+        }
+        fx_upmix_fast_destroy(u); bus_free(&in); bus_free(&out);
+    }
+}
+
+static void test_zero_strength_is_below_the_weakest_steering(void) {
+    double center[2], surround[2];
+    float strengths[2] = {0.0F, 1.0F};
+    for (unsigned variant = 0; variant < 2U; variant++) {
+        fx_upmix_fast *u = fx_upmix_fast_create(RATE, 1, 1, 1);
+        bus in = bus_new(FRAMES), out = bus_new(FRAMES);
+        fx_upmix_fast_set_strength(u, strengths[variant], strengths[variant]);
+        rng = 31U;
+        for (size_t n = 0; n < FRAMES; n++) {
+            float common = noise(0.1F);
+            in.c[0][n] = common + noise(0.1F); in.c[1][n] = common + noise(0.1F);
+        }
+        run(u, &in, &out, 509U);
+        center[variant] = mean_square(out.c[2], SETTLED, RATE);
+        surround[variant] = mean_square(out.c[6], SETTLED, RATE);
+        fx_upmix_fast_destroy(u); bus_free(&in); bus_free(&out);
+    }
+    assert(center[0] == 0.0 && surround[0] == 0.0);
+    assert(center[1] > 0.0 && surround[1] > 0.0);
+}
+
+static void test_strength_change_to_zero_while_running_is_smooth_and_settles_to_silence(void) {
+    fx_upmix_fast *u = fx_upmix_fast_create(RATE, 1, 1, 1);
+    /* The release takes about 17 s to fall below the flush threshold. */
+    size_t frames = 24U * RATE;
+    bus in = bus_new(frames), out = bus_new(frames);
+    double worst = 0.0;
+    for (size_t n = 0; n < frames; n++) in.c[0][n] = in.c[1][n] = 0.3F * sinf((float)(2.0 * PI * 1000.0 * n / RATE));
+    fx_upmix_fast_set_strength(u, 10.0F, 10.0F);
+    {
+        bus first = in, second = in; first.frames = 2U * RATE; second.frames = frames - 2U * RATE;
+        bus out_first = out, out_second = out; out_first.frames = 2U * RATE; out_second.frames = frames - 2U * RATE;
+        for (unsigned i = 0; i < CH; i++) { second.c[i] = in.c[i] + 2U * RATE; out_second.c[i] = out.c[i] + 2U * RATE; }
+        run(u, &first, &out_first, 509U);
+        fx_upmix_fast_set_strength(u, 0.0F, 0.0F);
+        run(u, &second, &out_second, 509U);
+    }
+    for (size_t n = 1; n < frames; n++) {
+        double step = fabs((double)out.c[2][n] - out.c[2][n - 1U]);
+        if (step > worst) worst = step;
+    }
+    assert(worst < 0.07);
+    /* The share released to nothing: the centre is silent and L/R are the input again. */
+    assert(mean_square(out.c[2], frames - RATE, RATE) == 0.0);
+    assert(max_abs_diff(out.c[0] + frames - RATE, in.c[0] + frames - RATE - fx_upmix_fast_latency(u), RATE) < 1e-6);
+    fx_upmix_fast_destroy(u); bus_free(&in); bus_free(&out);
+}
+
 static void test_real_multichannel_content_disengages_and_re_engages_late(void) {
     size_t frames = 40U * RATE;
     fx_upmix_fast *u = fx_upmix_fast_create(RATE, 1, 1, 1);
@@ -331,7 +416,8 @@ static void test_silence_stays_silent_and_reset_clears_the_state(void) {
 
 static void test_strength_validation(void) {
     assert(fx_upmix_fast_strength_valid(1.0F) && fx_upmix_fast_strength_valid(10.0F) && fx_upmix_fast_strength_valid(5.5F));
-    assert(!fx_upmix_fast_strength_valid(0.0F) && !fx_upmix_fast_strength_valid(10.5F) &&
+    assert(fx_upmix_fast_strength_valid(0.0F));
+    assert(!fx_upmix_fast_strength_valid(-0.5F) && !fx_upmix_fast_strength_valid(10.5F) &&
            !fx_upmix_fast_strength_valid(NAN) && !fx_upmix_fast_strength_valid(INFINITY));
 }
 
@@ -346,6 +432,9 @@ int main(void) {
     test_hard_panned_material_stays_in_its_front_channel();
     test_center_strength_controls_how_much_leaves_l_r();
     test_surround_strength_controls_the_surround_level();
+    test_zero_strength_switches_one_share_off_and_leaves_the_other_working();
+    test_zero_strength_is_below_the_weakest_steering();
+    test_strength_change_to_zero_while_running_is_smooth_and_settles_to_silence();
     test_real_multichannel_content_disengages_and_re_engages_late();
     test_lfe_is_never_synthesised();
     test_no_destination_means_pure_delayed_pass_through();

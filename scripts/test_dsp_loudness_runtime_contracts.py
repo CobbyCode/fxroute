@@ -59,6 +59,11 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
         self.runtime = DSPRuntime(self.manager, binary="fxroute-dsp")
         self.runtime._process = FakeProcess()
 
+    def compiled(self, extras_payload):
+        return self.manager.compile_engine_text(
+            [{"name": "left", "source": 0}, {"name": "right", "source": 1}],
+            preset_name="Neutral", extras_override=extras_payload)
+
     def running_readback(self, extras=None):
         return self.runtime.read_loudness_runtime(extras)
 
@@ -73,7 +78,7 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
         # engine output gain), so no strength transition changes the level
         # carried by the stage itself.
         for old, new in ((10, 9), (9, 8), (8, 7), (7, 6), (6, 5), (5, 4),
-                         (4, 3), (3, 2), (2, 1), (1, 2), (2, 3), (5, 6), (9, 10)):
+                         (4, 3), (3, 2), (2, 1), (1, 0), (0, 1), (1, 2), (2, 3), (5, 6), (9, 10)):
             self.assertTrue(math.isclose(
                 self.payload_level_db(extras(old)),
                 self.payload_level_db(extras(new)),
@@ -88,7 +93,7 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
         # The audible level during the guarded rebuild is the engine gain
         # (volume + guard) plus the stage net trim (0 dB); the guard must
         # keep the ramp start below the previous level by the guard margin.
-        for old, new in ((1, 2), (2, 3), (4, 5), (5, 6), (9, 10), (10, 9), (3, 1)):
+        for old, new in ((1, 2), (2, 3), (4, 5), (5, 6), (9, 10), (10, 9), (3, 1), (1, 0), (0, 1), (10, 0), (0, 10)):
             guard = self.manager.loudness_transition_guard_db(extras(old), extras(new))
             old_payload = self.manager._loudness_plugin_payload(
                 self.manager.normalize_effects_extras(extras(old))["loudness"],
@@ -107,6 +112,45 @@ class LoudnessRuntimeContractTests(unittest.TestCase):
             ramp_start = volume_db + guard + float(new_payload["volume"]) + float(new_payload["output-gain"])
             self.assertLessEqual(ramp_start, old_level - self.manager.LOUDNESS_STRENGTH_GUARD_DB + 1e-9,
                                  f"positive jump risk between strengths {old} -> {new}")
+
+    def test_strength_range_is_zero_to_ten_with_legacy_names_kept(self):
+        for value, expected in ((0, 0), ("0", 0), (10, 10), ("7", 7), ("min", 1), ("light", 4), ("med", 7), ("full", 10)):
+            with self.subTest(value=value):
+                normalized = self.manager.normalize_effects_extras(extras(value))
+                self.assertEqual(normalized["loudness"]["params"]["strength"], expected)
+        for value in (-1, 11, 2.5):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "between 0 and 10"):
+                self.manager.normalize_effects_extras(extras(value))
+        with self.assertRaises(ValueError):
+            self.manager.normalize_effects_extras(extras("x"))
+
+    def test_strength_zero_is_the_flat_work_point_whatever_the_volume(self):
+        # Strength 0 means no tonal effect: the plugin sits at its 0 dB reference
+        # point (flat contour) and the compensating trim is 0 dB too, for any
+        # volume, calibration and AutoGain target.
+        for volume_db, calibration_db in ((-25.2, 17.6), (-60.0, 0.0), (0.0, -30.0)):
+            for autogain in ({}, {"autogain": {"enabled": True, "params": {"targetDb": -12.0}}}):
+                with self.subTest(volume_db=volume_db, calibration_db=calibration_db, autogain=bool(autogain)):
+                    payload_extras = {**extras(0, volume_db=volume_db, calibration_db=calibration_db), **autogain}
+                    normalized = self.manager.normalize_effects_extras(payload_extras)
+                    self.assertEqual(normalized["loudness"]["params"]["strength"], 0)
+                    payload = self.manager._loudness_plugin_payload(normalized["loudness"], normalized["autogain"])
+                    self.assertEqual(payload["volume"], 0.0)
+                    self.assertEqual(payload["output-gain"], 0.0)
+        # Strength 1 is unchanged: it still shifts the work point by 30 dB.
+        weakest = self.manager.normalize_effects_extras(extras(1, volume_db=-60.0, calibration_db=0.0))
+        self.assertAlmostEqual(
+            self.manager._loudness_plugin_payload(weakest["loudness"], weakest["autogain"])["volume"], -30.0)
+
+    def test_strength_zero_keeps_the_stage_in_the_chain_with_the_same_shape(self):
+        text_one = self.compiled(extras(1))
+        text_zero = self.compiled(extras(0))
+        self.assertIn("lv2 http://lsp-plug.in/plugins/lv2/loud_comp_stereo", text_zero)
+        self.assertIn("control volume 0\n", text_zero)
+        self.assertIn("param output_gain_db 0\n", text_zero)
+        old_shape, _ = DSPRuntime._live_config(text_one)
+        new_shape, _ = DSPRuntime._live_config(text_zero)
+        self.assertEqual(old_shape, new_shape)
 
     def test_guard_stays_within_engine_floor(self):
         guard = self.manager.loudness_transition_guard_db(

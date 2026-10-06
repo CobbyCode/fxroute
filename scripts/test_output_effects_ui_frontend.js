@@ -132,6 +132,13 @@ assert.equal(Effects.normalizeEffectsLoudnessFftSize(3000), 4096);
 assert.equal(Effects.normalizeEffectsLoudnessStrength('med'), 7);
 assert.equal(Effects.normalizeEffectsLoudnessStrength('999'), 10);
 assert.equal(Effects.normalizeEffectsLoudnessStrength(3.6), 4);
+// Strength 0 is a real setting (no effect); an empty field is not 0.
+assert.equal(Effects.normalizeEffectsLoudnessStrength(0), 0);
+assert.equal(Effects.normalizeEffectsLoudnessStrength('0'), 0);
+assert.equal(Effects.normalizeEffectsLoudnessStrength(-4), 0);
+assert.equal(Effects.normalizeEffectsLoudnessStrength(''), 10);
+assert.equal(Effects.normalizeEffectsLoudnessStrength(null, 7), 7);
+assert.equal(Effects.normalizeEffectsLoudnessStrength('min'), 1);
 assert.equal(Effects.normalizeEffectsToneEffectMode('Maximizer'), 'maximizer');
 assert.equal(Effects.normalizeEffectsToneEffectMode('bogus'), 'crystalizer');
 assert.equal(Effects.normalizePeqEqMode('fir'), 'FIR');

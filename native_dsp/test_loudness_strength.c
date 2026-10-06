@@ -37,7 +37,8 @@
  * The work point follows the production formula
  *   p = volumeDb - calibration + (10 - strength) * 30/9 + AutoGain
  * with volumeDb=-40, no calibration and AutoGain off, which keeps every step
- * inside the -83..+7 dB LSP port range.
+ * inside the -83..+7 dB LSP port range. Strength 0 is the flat point of the
+ * contour (p = 0 dB) whatever the volume.
  */
 
 #define BLOCK 1024U
@@ -68,6 +69,7 @@ static double strength_db(int strength) {
 }
 
 static double work_point(int strength) {
+    if (strength == 0) return 0.0;
     const double volume_db = -40.0;
     const double calibration_db = 0.0;
     double p = volume_db - calibration_db + strength_db(strength);
@@ -216,8 +218,9 @@ static void run_config(double rate, int fft_index) {
         return;
     }
     /* Both directions and several steps: 1->5, 5->1, 5->4, 4->5 plus the
-     * full adjacent sweep, ending back at Strength 1. */
-    static const int steps[] = {5, 1, 5, 4, 5, 1, 2, 3, 4, 5, 4, 3, 2, 1};
+     * full adjacent sweep, then the jumps into and out of Strength 0 (flat
+     * contour), ending back at Strength 1. */
+    static const int steps[] = {5, 1, 5, 4, 5, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0, 1, 0, 5, 0, 1};
     float previous_settled_peak = reference_peak;
     float worst_excursion_db = -1000.0f;
     int worst_strength = 0;

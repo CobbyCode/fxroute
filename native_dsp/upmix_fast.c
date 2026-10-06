@@ -45,12 +45,14 @@
  * stronger settings extract more and also react to material that is only
  * partly correlated. Center may take the whole mid component; Surround stops
  * at 0.8 of the side component so the rears do not outweigh the fronts on
- * wide material. */
+ * wide material. Strength 0 switches that share off: scale 0 down to 1 is
+ * linear into the weakest steering. */
 #define SCALE_MIN 0.10
 #define CENTER_SCALE_MAX 1.00
 #define SURROUND_SCALE_MAX 0.80
 #define EXPONENT_WEAK 1.80
 #define EXPONENT_STRONG 0.70
+#define STEERING_STRENGTH_FIRST 1.0
 
 typedef struct { double b0, b1, b2, a1, a2, z1, z2; } biquad;
 
@@ -154,7 +156,12 @@ static void strength_response(float strength, double scale_max, double *scale, d
     double clamped = !isfinite(strength) ? FX_UPMIX_FAST_STRENGTH_MIN :
         strength < FX_UPMIX_FAST_STRENGTH_MIN ? FX_UPMIX_FAST_STRENGTH_MIN :
         strength > FX_UPMIX_FAST_STRENGTH_MAX ? FX_UPMIX_FAST_STRENGTH_MAX : strength;
-    double t = (clamped - FX_UPMIX_FAST_STRENGTH_MIN) / (FX_UPMIX_FAST_STRENGTH_MAX - FX_UPMIX_FAST_STRENGTH_MIN);
+    if (clamped < STEERING_STRENGTH_FIRST) {
+        *scale = SCALE_MIN * clamped;
+        *exponent = EXPONENT_WEAK;
+        return;
+    }
+    double t = (clamped - STEERING_STRENGTH_FIRST) / (FX_UPMIX_FAST_STRENGTH_MAX - STEERING_STRENGTH_FIRST);
     *scale = SCALE_MIN + (scale_max - SCALE_MIN) * t;
     *exponent = EXPONENT_WEAK + (EXPONENT_STRONG - EXPONENT_WEAK) * t;
 }
@@ -214,6 +221,7 @@ void fx_upmix_fast_process(fx_upmix_fast *u, const float *const *input, float *c
             u->control_phase = 0;
             update_targets(u);
             flush_tiny(&u->power_left); flush_tiny(&u->power_right); flush_tiny(&u->cross);
+            flush_tiny(&u->center_mix); flush_tiny(&u->surround_mix);
             for (unsigned channel = 0; channel < 2U; channel++)
                 for (unsigned stage = 0; stage < 2U; stage++) {
                     flush_tiny(&u->sidechain[channel][stage].z1); flush_tiny(&u->sidechain[channel][stage].z2);

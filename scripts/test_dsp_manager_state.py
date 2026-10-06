@@ -71,7 +71,7 @@ class DSPManagerStateTests(unittest.TestCase):
 
     def test_loudness_and_autogain_offsets_keep_plugin_net_zero(self):
         manager = DSPManager(home=self.home)
-        for strength in (1, 4, 7, 10):
+        for strength in (0, 1, 4, 7, 10):
             for target in (-12, -15, -18, -23):
                 extras = manager.normalize_effects_extras({
                     "autogain": {"enabled": True, "params": {"targetDb": target}},

@@ -202,7 +202,7 @@ class DSPManager:
     UPMIXER_DEFAULTS = {"enabled": False, "params": {"mode": "fast", "center": 6, "surround": 6, "fftSize": 2048}}
     UPMIXER_MODES = ("fast",)
     UPMIXER_FFT_SIZES = (1024, 2048, 4096)
-    UPMIXER_STRENGTH_MIN = 1
+    UPMIXER_STRENGTH_MIN = 0
     UPMIXER_STRENGTH_MAX = 10
 
     def normalize_effects_extras(self, extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -291,8 +291,8 @@ class DSPManager:
         if int(loudness["fftSize"]) not in {256, 512, 1024, 2048, 4096, 8192, 16384}:
             raise ValueError("loudness.params.fftSize is not supported")
         strength = {"full": 10, "med": 7, "light": 4, "min": 1}.get(str(loudness["strength"]).lower(), loudness["strength"])
-        if float(strength) != int(float(strength)) or not 1 <= int(float(strength)) <= 10:
-            raise ValueError("loudness.params.strength must be between 1 and 10")
+        if float(strength) != int(float(strength)) or not 0 <= int(float(strength)) <= 10:
+            raise ValueError("loudness.params.strength must be between 0 and 10")
         loudness["strength"] = int(float(strength))
         loudness["volumeDb"] = float(loudness["volumeDb"])
         if not -80 <= loudness["volumeDb"] <= 0:
@@ -422,15 +422,22 @@ class DSPManager:
         adjustment = calibration.get("requiredAdjustmentDb") if isinstance(calibration, dict) else 0.0
         calibration_db = float(adjustment) if isinstance(adjustment, (int, float)) else 0.0
         master_db = float(params.get("volumeDb", 0.0))
-        strength_db = (10 - int(params.get("strength", 10))) * (30.0 / 9.0)
+        strength = int(params.get("strength", 10))
+        strength_db = (10 - strength) * (30.0 / 9.0)
         autogain_db = (float(autogain.get("params", {}).get("targetDb", -23.0)) + 23.0
                        if autogain.get("enabled") else 0.0)
         raw_volume_db = master_db - calibration_db + strength_db + autogain_db
         plugin_volume_db = max(cls.LOUDNESS_PLUGIN_VOLUME_MIN_DB,
                                min(cls.LOUDNESS_PLUGIN_VOLUME_MAX_DB, raw_volume_db))
+        if strength == 0:
+            # 0 dB is the plugin's reference point: the contour is flat there
+            # (within 0.005 dB at every FFT size), so Strength 0 has no tonal
+            # effect while the stage, its latency and the transition path stay
+            # exactly the same as for every other strength.
+            plugin_volume_db = 0.0
         return {"bypass": not definition["enabled"], "fft": str(params.get("fftSize", 4096)),
                 "volume": plugin_volume_db,
-                "output-gain": -plugin_volume_db if definition["enabled"] else 0.0}
+                "output-gain": 0.0 - plugin_volume_db if definition["enabled"] else 0.0}
 
     def __init__(self, home: Optional[Path] = None,
                   apply_callback: Optional[Callable[[Dict[str, Any]], Any]] = None):

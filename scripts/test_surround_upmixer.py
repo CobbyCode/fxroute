@@ -53,15 +53,28 @@ class UpmixerExtrasTests(unittest.TestCase):
             "enabled": False,
             "params": {"mode": "fast", "center": 6, "surround": 6, "fftSize": 2048}})
 
-    def test_strengths_are_whole_numbers_from_one_to_ten(self):
-        for value in (1, 5, 10, "7", 7.0):
-            with self.subTest(value=value):
-                extras = self.manager.normalize_effects_extras({"upmixer": {"params": {"center": value}}})
-                self.assertEqual(extras["upmixer"]["params"]["center"], int(float(value)))
+    def test_strengths_are_whole_numbers_from_zero_to_ten(self):
         for name in ("center", "surround"):
-            for value in (0, -1, 11, 2.5, "x", None, float("nan"), float("inf")):
+            for value in (0, 1, 5, 10, "7", "0", 7.0, 0.0):
+                with self.subTest(name=name, value=value):
+                    extras = self.manager.normalize_effects_extras({"upmixer": {"params": {name: value}}})
+                    self.assertEqual(extras["upmixer"]["params"][name], int(float(value)))
+            for value in (-1, 11, 2.5, "x", None, float("nan"), float("inf")):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     self.manager.normalize_effects_extras({"upmixer": {"params": {name: value}}})
+
+    def test_zero_strength_survives_parse_merge_and_persistence(self):
+        body = {"upmixerEnabled": True, "upmixerCenter": 0, "upmixer_surround": "0"}
+        parsed = effects_extras.parse_effects_extras_from_json(body)
+        self.assertEqual((parsed["upmixer"]["params"]["center"], parsed["upmixer"]["params"]["surround"]), (0.0, 0.0))
+        merged = effects_extras.merge_effects_extras_from_json(self.manager.load_global_extras(), body)
+        saved = self.manager.save_global_extras(merged)
+        self.assertEqual(saved["upmixer"]["params"]["center"], 0)
+        self.assertEqual(saved["upmixer"]["params"]["surround"], 0)
+        # Missing, null and empty values keep the defaults; they are not 0.
+        for value in (None, ""):
+            fallback = effects_extras.parse_effects_extras_from_json({"upmixerCenter": value})
+            self.assertEqual(fallback["upmixer"]["params"]["center"], 6)
 
     def test_mode_and_fft_size_are_validated_and_unknown_params_dropped(self):
         for params in ({"mode": "hq"}, {"mode": "other"}, {"fftSize": 512}, {"fftSize": "x"}):
@@ -112,6 +125,20 @@ class UpmixerExtrasTests(unittest.TestCase):
         self.assertIn("param rear_out 1", lines)
         self.assertIn("param surround 4", lines)
 
+    def test_either_strength_may_be_zero_without_dropping_the_stage(self):
+        # Center and Surround are independent: 0 only silences that share. The stage
+        # (and with it the fixed latency) stays whichever of them is 0.
+        for center, surround in ((0, 6), (6, 0), (0, 0)):
+            for roles, center_out in ((ROLES, 1), (QUAD_SUBS, 0)):
+                with self.subTest(center=center, surround=surround, center_out=center_out):
+                    extras = {"upmixer": {"enabled": True, "params": {"center": center, "surround": surround}}}
+                    lines = stage_lines(self.compile(roles, extras))
+                    self.assertTrue(lines, "a zero strength must not drop the upmixer")
+                    self.assertIn(f"param center {center}", lines)
+                    self.assertIn(f"param surround {surround}", lines)
+                    self.assertIn("param rear_out 1", lines)
+                    self.assertIn(f"param center_out {center_out}", lines)
+
     def test_side_only_and_center_only_routings_name_their_destinations(self):
         side = stage_lines(self.compile(["main_l", "main_r", "side_l", "side_r"], ENABLED))
         self.assertIn("param center_out 0", side)
@@ -152,6 +179,19 @@ class UpmixerExtrasTests(unittest.TestCase):
         self.assertEqual(old_shape, new_shape)
         changed = {value[:3] for value in new_values if value not in old_values}
         self.assertEqual(changed, {("param", "global-upmixer", "surround")})
+
+    def test_zero_strength_is_a_live_value_change_with_the_same_shape(self):
+        before = self.compile(ROLES, ENABLED)
+        for params, changed_names in (({"center": 0, "surround": 4}, {"center"}),
+                                      ({"center": 8, "surround": 0}, {"surround"}),
+                                      ({"center": 0, "surround": 0}, {"center", "surround"})):
+            after = self.compile(ROLES, {"upmixer": {"enabled": True, "params": params}})
+            old_shape, old_values = DSPRuntime._live_config(before)
+            new_shape, new_values = DSPRuntime._live_config(after)
+            with self.subTest(params=params):
+                self.assertEqual(old_shape, new_shape)
+                changed = {value[:3] for value in new_values if value not in old_values}
+                self.assertEqual(changed, {("param", "global-upmixer", name) for name in changed_names})
 
     def test_enabling_the_upmixer_changes_the_stage_shape(self):
         old_shape, _ = DSPRuntime._live_config(self.compile(QUAD_SUBS, {}))
