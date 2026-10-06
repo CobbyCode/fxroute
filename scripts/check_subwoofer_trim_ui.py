@@ -15,7 +15,9 @@ def main():
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
         try:
-            page.goto("http://localhost:8765/", wait_until="networkidle")
+            # ?fast: this check drives the UI; the demo's response pace is
+            # irrelevant to it (see demo/state.js demoPace).
+            page.goto("http://localhost:8765/?fast", wait_until="networkidle")
             page.evaluate("toggleSettingsPanel(true)")
             page.locator("#settings-output-mode-select:not([disabled])").wait_for()
 

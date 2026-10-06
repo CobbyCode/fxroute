@@ -194,8 +194,35 @@
     // crossover plus two subs fits its 6 routed outputs, and its multichannel
     // capture input is the one that offers the split Electrical Ref L/R pair.
     let selectedOutputKeyCache = SCARLETT_KEY;
+
+    // ── Demo faults ─────────────────────────────────────────────────────
+    // The states a real box shows but a healthy demo never does. Unplugging
+    // the USB interface removes it from the device list and hands playback to
+    // the built-in output — and every consequence (mode fallback to Stereo on
+    // a 2-channel device, the capture switching with the output) then runs
+    // through the existing device-switch code path instead of a special case.
+    let demoInterfaceUnplugged = false;
+    function availableOutputs() {
+        return demoInterfaceUnplugged ? OUTPUTS.filter(o => o.key !== SCARLETT_KEY) : OUTPUTS;
+    }
     function selectedOutput() {
-        return OUTPUTS.find(o => o.key === selectedOutputKeyCache) || OUTPUTS[0];
+        const pool = availableOutputs();
+        return pool.find(o => o.key === selectedOutputKeyCache) || pool[0];
+    }
+    function setDemoInterfaceUnplugged(unplugged) {
+        demoInterfaceUnplugged = !!unplugged;
+        if (!demoInterfaceUnplugged || selectedOutputKeyCache !== SCARLETT_KEY) return null;
+        const fallback = availableOutputs()[0];
+        selectedOutputKeyCache = fallback.key;
+        setMeasurementCaptureInput(captureInputForOutputKey(fallback.key), true);
+        const adjustment = applyDeviceOutputModeForSwitch(fallback.key, Number(fallback.channels || 0));
+        outputStateStore.revision += 1;
+        return adjustment;
+    }
+    function captureInputsForDemo() {
+        return demoInterfaceUnplugged
+            ? CAPTURE_INPUTS.filter(input => input !== MULTICHANNEL_CAPTURE_INPUT)
+            : CAPTURE_INPUTS;
     }
 
     // ── Output-mode per-device memory (mirrors the real backend) ─────────
@@ -836,7 +863,7 @@
             default_output: { key: OUTPUTS[0].key, target_name: OUTPUTS[0].name, target_label: OUTPUTS[0].label },
             selected_output: { key: out.key, label: out.name, channels, active_rate: out.active_rate, supported_rates: out.supported_rates, device_profile: out.device_profile },
             current_output: { key: out.key, label: out.name, channels, active_rate: out.active_rate },
-            outputs: OUTPUTS.map(o => outputEntry(o)),
+            outputs: availableOutputs().map(o => outputEntry(o)),
             notes: [],
             output_mode: mode,
         };
@@ -1577,6 +1604,21 @@
         };
     }
 
+    // ── Response pace ───────────────────────────────────────────────────
+    // See demoPace in state.js: control endpoints stay snappy, browse reads
+    // take a moment and the surfaces that really do work on a box
+    // (measurements, scans) take the longest. The kind is picked per request
+    // by the interceptor and read back here while the handler runs.
+    const PACE_CONTROL_RE = /^\/api\/(?:status|play|pause|stop|volume|playback\/|hardware\/|power\/|debug\/|dsp\/(?:presets\/load|extras|compare))/;
+    const PACE_HEAVY_RE = /^\/api\/(?:measurements|library\/status|music-libraries|speaker-align)/;
+    let paceKind = 'read';
+    function paceKindFor(pathname, method) {
+        if (PACE_CONTROL_RE.test(pathname)) return 'control';
+        if (PACE_HEAVY_RE.test(pathname)) return 'heavy';
+        if (method === 'POST' || method === 'PATCH' || method === 'DELETE') return 'job';
+        return 'read';
+    }
+
     function j(data, status = 200, headers = {}) {
         // headers + blob(): the real frontend download paths read
         // Content-Disposition and consume resp.blob() (see
@@ -1598,18 +1640,34 @@
                 blob: () => Promise.resolve(makeDemoBlob('', mime)),
             });
         }
-        return Promise.resolve({
+        // Every handler answers through here, so this is also the one place a
+        // session snapshot is taken: the mutation has already happened by the
+        // time the response is built.
+        if (typeof S.saveSession === 'function') S.saveSession();
+        const response = {
             ok: status >= 200 && status < 300,
             status,
             headers: headerMap,
             json: () => Promise.resolve(data),
             text: () => Promise.resolve(bodyText),
             blob: () => Promise.resolve(makeDemoBlob(bodyText, mime)),
-        });
+        };
+        return (typeof S.pacedResolve === 'function' ? S.pacedResolve : (value) => Promise.resolve(value))(response, paceKind);
     }
 
     function err(detail, status = 404) {
         return j({ detail }, status);
+    }
+
+    // The live backend pushes the audio-source overview over the WebSocket
+    // whenever it changes; a mutation answers with the same push, so the
+    // Source Inputs surface and the footer switcher stay current without a
+    // poll (a plain GET stays silent — repeated pushes would re-render an open
+    // control for nothing).
+    function jSource() {
+        const payload = sourceOverview();
+        if (typeof window.__demoBroadcast === 'function') window.__demoBroadcast('source', payload);
+        return j(payload);
     }
 
     function readBody(opts) {
@@ -2256,6 +2314,94 @@
         };
     }
 
+    // ── Session snapshot / restore ──────────────────────────────────────
+    // The transport lives in state.js; this module contributes the DSP chain,
+    // the output system (device, mode, revision, banks and routing) and the
+    // measurement setup. Only the runs the user created in this session are
+    // stored — the fixture stock is always re-seeded from demo/data, so a
+    // session snapshot can never thin out the demo.
+    const seededMeasurementIds = new Set(S.getSavedMeasurements().map(m => String(m.id)));
+    function sessionCreatedMeasurements() {
+        return S.getSavedMeasurements()
+            .filter(m => !seededMeasurementIds.has(String(m.id)))
+            .map(m => JSON.parse(JSON.stringify(m)));
+    }
+    if (typeof S.registerSessionSlice === 'function') {
+        S.registerSessionSlice(() => ({
+            dsp: { active_preset: dspActivePreset, extras: dspExtras, compare: dspCompare },
+            output: {
+                device_key: selectedOutputKeyCache,
+                mode: outputMode,
+                device_modes: deviceOutputModes,
+                state: outputStateStore,
+                routing: routingStore,
+            },
+            measurement: {
+                settings: measurementSettings,
+                library_id: musicLibraries.active_id,
+                saved: sessionCreatedMeasurements(),
+                spl: S.spl,
+            },
+        }));
+    }
+
+    function restoreDemoSession() {
+        if (!S.session) return;
+        const saved = S.session.read();
+        if (saved.dsp) {
+            if (typeof saved.dsp.active_preset === 'string'
+                && dspPresets.some(preset => preset.name === saved.dsp.active_preset)) {
+                dspActivePreset = saved.dsp.active_preset;
+            }
+            if (saved.dsp.extras) dspExtras = { ...dspExtras, ...saved.dsp.extras };
+            if (saved.dsp.compare) dspCompare = { ...dspCompare, ...saved.dsp.compare };
+            syncDspToState();
+        }
+        if (saved.output) {
+            const output = saved.output;
+            if (output.device_key && OUTPUTS.some(entry => entry.key === output.device_key)) {
+                selectedOutputKeyCache = output.device_key;
+                // The capture interface follows the selected device, like the
+                // real /api/audio/outputs switch.
+                measurementCaptureInput = captureInputForOutputKey(selectedOutputKeyCache);
+            }
+            if (output.mode) Object.assign(outputMode, output.mode);
+            if (output.device_modes) Object.assign(deviceOutputModes, output.device_modes);
+            if (output.routing) Object.assign(routingStore, output.routing);
+            if (output.state && output.state.modes) {
+                if (Number.isFinite(Number(output.state.revision))) outputStateStore.revision = Number(output.state.revision);
+                if (OUTPUT_STATE_MODES.includes(output.state.active_mode)) outputStateStore.active_mode = output.state.active_mode;
+                outputStateStore.modes = output.state.modes;
+            }
+        }
+        if (saved.measurement) {
+            const measurement = saved.measurement;
+            if (measurement.library_id && musicLibraries.libraries.some(entry => entry.id === measurement.library_id)) {
+                const entry = musicLibraries.libraries.find(item => item.id === measurement.library_id);
+                musicLibraries.active_id = entry.id;
+                musicLibraries.active_type = entry.type;
+                if (typeof S.setActiveLibraryId === 'function') S.setActiveLibraryId(entry.id);
+            }
+            // Applied after the device, which has just reset the capture
+            // defaults for its own channel layout.
+            if (measurement.settings) measurementSettings = { ...measurementSettings, ...measurement.settings };
+            if (Array.isArray(measurement.saved)) {
+                for (const stored of measurement.saved) {
+                    if (!stored || !stored.id) continue;
+                    if (S.getSavedMeasurements().some(m => String(m.id) === String(stored.id))) continue;
+                    S.addSavedMeasurement(stored);
+                    if (!savedMeasurements.some(m => String(m.id) === String(stored.id))) savedMeasurements.unshift(stored);
+                }
+            }
+            if (measurement.spl && typeof measurement.spl === 'object') Object.assign(S.spl, measurement.spl);
+        }
+        // The reattached track may run at a different native rate than the
+        // seeded default; re-derive the graph rate it drives.
+        if (typeof S.onSourceChanged === 'function') S.onSourceChanged();
+        S.session.ready();
+    }
+    restoreDemoSession();
+
     // ── fetch interceptor ───────────────────────────────────────────────
     const origFetch = window.fetch;
     window.fetch = function (url, opts) {
@@ -2264,6 +2410,7 @@
         const p = parsed.split('?')[0];
         const method = (opts && opts.method) || 'GET';
         const query = new URLSearchParams((parsed.split('?')[1] || ''));
+        paceKind = paceKindFor(p, method);
         const body = readBody(opts);
         const post = method === 'POST' || method === 'PATCH';
 
@@ -3137,7 +3284,7 @@
             if (key !== 'stdin-input' && !sourceInputByKey(key)) return err('Unknown input: ' + key, 400);
             sourceAutoArmed = sourceAutoArmed.filter((item) => item !== key);
             if (body.enabled) sourceAutoArmed.push(key);
-            return j(sourceOverview());
+            return jSource();
         }
         if (p === '/api/audio/source-mode') {
             if (post) {
@@ -3150,7 +3297,7 @@
                     // backend pausing every app renderer for external input.
                     S.stop();
                     sourceMode = mode;
-                    return j(sourceOverview());
+                    return jSource();
                 }
                 if (mode === 'external-input') {
                     const input = (inputKey && sourceInputByKey(inputKey))
@@ -3160,16 +3307,16 @@
                     selectedSourceInputKey = input.key;
                     S.stop();
                     sourceMode = mode;
-                    return j(sourceOverview());
+                    return jSource();
                 }
                 if (mode === 'stdin-input') {
                     S.stop();
                     sourceMode = mode;
-                    return j(sourceOverview());
+                    return jSource();
                 }
                 sourceMode = 'app-playback';
                 if (inputKey && sourceInputByKey(inputKey)) selectedSourceInputKey = inputKey;
-                return j(sourceOverview());
+                return jSource();
             }
             return j(sourceOverview());
         }
@@ -3461,7 +3608,7 @@
                 scope_note: DEMO_MEASUREMENT_SCOPE_NOTE,
                 modes: [{ id: 'host-local', label: 'Host-local capture', primary: true,
                     available: true, note: 'FXRoute plays and records on the host via PipeWire.' }],
-                inputs: CAPTURE_INPUTS.map(input => ({ ...input, available: true, kind: 'pipewire-source' })),
+                inputs: captureInputsForDemo().map(input => ({ ...input, available: true, kind: 'pipewire-source' })),
                 selection: {
                     input_id: measurementSettings.selectedInputId,
                     persistent_id: measurementSettings.selectedInputKey,
@@ -3470,7 +3617,7 @@
                     legacy_input_id: '',
                 },
                 capture_available: true,
-                discovery: { method: 'wpctl status -n + pactl list short sources', source_count: CAPTURE_INPUTS.length },
+                discovery: { method: 'wpctl status -n + pactl list short sources', source_count: captureInputsForDemo().length },
             });
         }
         if (p === '/api/measurements/start' && post) {
@@ -3824,6 +3971,29 @@
         // ── fallthrough ─────────────────────────────────────────────────
         if (p.startsWith('/api/')) console.warn('[demo] unmapped API call:', method, p);
         return origFetch.apply(this, arguments);
+    };
+
+    // Fault switches for the demo banner (see demo/boot.js). Together with
+    // the response pace they are the only levers the demo UI itself pulls.
+    window.FXROUTE_DEMO_FAULTS = {
+        /** Unplug / replug the simulated USB interface. */
+        unplugInterface: () => setDemoInterfaceUnplugged(true),
+        plugInterface: () => setDemoInterfaceUnplugged(false),
+        interfaceUnplugged: () => demoInterfaceUnplugged,
+        /** Simulated backend restart: WS outage, then a clean reconnect. */
+        restartBackend: (outageMs) => (typeof window.__demoBackendRestart === 'function'
+            ? window.__demoBackendRestart(outageMs)
+            : null),
+        /** Drop the parked session so the next load opens on the stock. */
+        resetSession: () => {
+            if (S.session) S.session.clear();
+            if (typeof sessionStorage !== 'undefined') {
+                try { sessionStorage.removeItem('fxroute.demo.autosub.job'); } catch (e) { /* nothing parked */ }
+            }
+            return { ok: true };
+        },
+        /** Reattach the last session (or a fresh one) without a reload. */
+        reload: () => window.location.reload(),
     };
 
     window.FXROUTE_DEMO_API = {

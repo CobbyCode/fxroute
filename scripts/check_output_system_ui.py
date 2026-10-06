@@ -60,7 +60,10 @@ def main() -> int:
             page.on("pageerror", lambda error: problems.append(f"pageerror: {error}"))
             page.on("console", lambda message: problems.append(f"console.{message.type}: {message.text}")
                     if message.type == "error" else None)
-            page.goto(f"http://localhost:{PORT}/", wait_until="networkidle")
+            # ?fast runs the demo without its response pace: this check drives
+            # the UI, and the simulated latency is irrelevant to what it asserts
+            # (the fixed waits below would otherwise race the paced mutations).
+            page.goto(f"http://localhost:{PORT}/?fast", wait_until="networkidle")
             page.wait_for_selector("#playback-bar", state="visible", timeout=15000)
 
             def check(name: str, condition: bool) -> None:

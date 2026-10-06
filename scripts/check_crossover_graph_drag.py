@@ -72,7 +72,9 @@ def stored_sub_crossover(page):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default=f"http://localhost:{PORT}")
+    # ?fast runs the demo without its response pace: this check drives the UI
+    # geometry, and the simulated latency is irrelevant to what it asserts.
+    parser.add_argument("--url", default=f"http://localhost:{PORT}/?fast")
     args = parser.parse_args()
 
     try:

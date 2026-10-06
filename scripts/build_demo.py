@@ -41,7 +41,7 @@ DEFAULT_DIST = DEMO_ROOT / "demo" / "dist"
 
 DEMO_TITLE = "FXRoute Web-Demo (simulated)"
 
-DEMO_STYLES = """    <link rel="stylesheet" href="./demo/demo.css?v=8">
+DEMO_STYLES = """    <link rel="stylesheet" href="./demo/demo.css?v=9">
 """
 
 DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scripts -->
@@ -51,11 +51,11 @@ DEMO_PRE_SCRIPTS = """    <!-- Demo transport: must load before the real app scr
     <script src="./demo/data/radio.js?v=3"></script>
     <script src="./demo/data/measurements.js?v=1"></script>
     <script src="./demo/data/alignment.js?v=3"></script>
-    <script src="./demo/state.js?v=19"></script>
-    <script src="./demo/routes.js?v=26"></script>
+    <script src="./demo/state.js?v=20"></script>
+    <script src="./demo/routes.js?v=27"></script>
     <script src="./demo/streaming.js?v=1"></script>
-    <script src="./demo/ws.js?v=1"></script>
-    <script src="./demo/boot.js?v=8"></script>
+    <script src="./demo/ws.js?v=2"></script>
+    <script src="./demo/boot.js?v=9"></script>
     <script src="./demo/tour.js?v=18"></script>
 """
 

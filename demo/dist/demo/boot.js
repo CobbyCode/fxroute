@@ -57,6 +57,7 @@
         && /(?:^|[?&])notour(?:&|$)/.test(window.location.search || '');
     banner.innerHTML = '<strong>FXRoute Web-Demo</strong> — simulation, no real audio playback · '
         + (tourDisabled ? '' : '<a href="#" id="demo-tour-start" class="demo-banner-tour">Take the tour</a> · ')
+        + '<a href="#" id="demo-states-toggle" class="demo-banner-states">Demo states</a> · '
         + '<a href="https://github.com/' + (window.FXROUTE_DEMO_REPO || 'CobbyCode/fxroute') + '" target="_blank" rel="noopener">GitHub project</a>'
         + '<button type="button" class="demo-banner-close" aria-label="Hide demo notice" title="Hide demo notice">×</button>';
     banner.querySelector('.demo-banner-close').addEventListener('click', function () {
@@ -64,6 +65,64 @@
         try { sessionStorage.setItem(bannerStorageKey, '1'); } catch (e) {}
     });
     document.body.appendChild(banner);
+
+    // Demo states panel: the two failures a healthy demo never shows (a
+    // restarted backend and an unplugged USB interface) plus the session
+    // reset. Built lazily on first open so the banner stays one line, and
+    // guarded so non-DOM contexts (vm tests) stay inert.
+    function installStateMenu(bannerEl) {
+        if (typeof document.createElement !== 'function' || !bannerEl) return;
+        var toggle = bannerEl.querySelector('#demo-states-toggle');
+        if (!toggle || typeof toggle.addEventListener !== 'function') return;
+        var panel = document.createElement('div');
+        if (!panel || typeof panel.appendChild !== 'function') return;
+        panel.id = 'demo-states';
+        panel.className = 'demo-states is-hidden';
+        panel.setAttribute('role', 'group');
+        panel.setAttribute('aria-label', 'Demo states');
+        panel.innerHTML = '<div class="demo-states-title">Demo states</div>'
+            + '<button type="button" class="demo-states-btn" data-demo-state="restart">Restart the backend (≈9 s)</button>'
+            + '<button type="button" class="demo-states-btn" data-demo-state="unplug">Unplug the USB interface</button>'
+            + '<button type="button" class="demo-states-btn" data-demo-state="plug">Plug it back in</button>'
+            + '<button type="button" class="demo-states-btn" data-demo-state="reset">Reset the demo session</button>'
+            + '<div class="demo-states-note" id="demo-states-note"></div>';
+        bannerEl.appendChild(panel);
+        var note = panel.querySelector('#demo-states-note');
+        function say(text) { if (note) note.textContent = text || ''; }
+        toggle.addEventListener('click', function (event) {
+            event.preventDefault();
+            panel.classList.toggle('is-hidden');
+        });
+        panel.addEventListener('click', function (event) {
+            var button = event.target && event.target.closest
+                ? event.target.closest('[data-demo-state]') : null;
+            if (!button) return;
+            var faults = window.FXROUTE_DEMO_FAULTS;
+            if (!faults) { say('The simulation layer is still loading.'); return; }
+            var state = button.getAttribute('data-demo-state');
+            try {
+                if (state === 'restart') {
+                    faults.restartBackend(9000);
+                    say('Backend down — the app should show its offline indicator, then reconnect on its own.');
+                } else if (state === 'unplug') {
+                    var adjustment = faults.unplugInterface();
+                    say(adjustment && adjustment.message
+                        ? adjustment.message
+                        : 'USB interface removed from the device list.');
+                } else if (state === 'plug') {
+                    faults.plugInterface();
+                    say('USB interface is back — select it again under Settings › Audio output.');
+                } else if (state === 'reset') {
+                    faults.resetSession();
+                    say('Session dropped — reloading on the stock state…');
+                    window.setTimeout(function () { window.location.reload(); }, 600);
+                }
+            } catch (err) {
+                say('Demo state failed: ' + (err && err.message ? err.message : err));
+            }
+        });
+    }
+    installStateMenu(banner);
 
     // Park the banner just above the real playback footer instead of relying
     // on a hardcoded footer height: the footer is 112px+ tall (plus safe-area)

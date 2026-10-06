@@ -37,10 +37,36 @@
             broadcast({ type: 'qobuz', data });
         } else if (type === 'dsp') {
             broadcast({ type: 'dsp', data });
+        } else if (type === 'source') {
+            // The live backend pushes the audio-source overview whenever it
+            // changes, which is what keeps the Source Inputs surface and the
+            // footer switcher current (see the 'source' case in app.js).
+            broadcast({ type: 'source', data });
         } else if (type === 'measurement_done') {
             // No dedicated WS type in the app; the dsp push nudges reloads.
             broadcast({ type: 'dsp', data: api.easyeffectsStatus() });
         }
+    };
+
+    // Simulated backend restart: drop every live socket uncleanly (the app
+    // shows its offline indicator and retries) and keep new attempts failing
+    // until the outage window is over, so the reconnect is visible instead of
+    // instant. The frontend reconnects on its own and receives a fresh init.
+    let outageUntil = 0;
+    window.__demoBackendRestart = function (outageMs) {
+        const ms = Number.isFinite(Number(outageMs)) ? Number(outageMs) : 9000;
+        outageUntil = Date.now() + ms;
+        for (const socket of Array.from(sockets)) {
+            sockets.delete(socket);
+            socket.readyState = CLOSED;
+            if (typeof socket.onclose === 'function') {
+                socket.onclose({ wasClean: false, code: 1006, reason: 'simulated backend restart', target: socket });
+            }
+        }
+        return { outage_ms: ms };
+    };
+    window.__demoBackendOutageActive = function () {
+        return Date.now() < outageUntil;
     };
 
     function initMessage() {
@@ -80,6 +106,15 @@
             this.onmessage = null;
             setTimeout(() => {
                 if (this.readyState !== CONNECTING) return;
+                if (Date.now() < outageUntil) {
+                    // Backend down: the connection cannot even open, exactly
+                    // like a restarted service that is not listening yet.
+                    this.readyState = CLOSED;
+                    if (typeof this.onclose === 'function') {
+                        this.onclose({ wasClean: false, code: 1006, reason: 'simulated backend restart', target: this });
+                    }
+                    return;
+                }
                 this.readyState = OPEN;
                 sockets.add(this);
                 if (typeof this.onopen === 'function') this.onopen({ type: 'open', target: this });
