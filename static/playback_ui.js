@@ -661,7 +661,8 @@ function renderOutputMeter(warning, active) {
 function formatOutputLevelBadgeDb(level) {
     const rounded = Math.round(Number(level));
     if (!Number.isFinite(rounded)) return '';
-    const sign = rounded < 0 ? '-' : '';
+    // Keep the minus at 0 dB (and -0) so the text width stays constant.
+    const sign = Number(level) <= 0 ? '-' : '';
     const abs = Math.abs(rounded);
     const digits = abs < 10 ? `0${abs}` : String(abs);
     return `${sign}${digits} dB`;

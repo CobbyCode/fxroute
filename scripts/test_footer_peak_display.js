@@ -154,10 +154,31 @@ renderWarning({
     detected_l: false,
     detected_r: false,
 });
-assert.equal(badge.textContent, '00 dB', 'peak fallback must reuse the VU number format');
+assert.equal(badge.textContent, '-00 dB', 'peak fallback must reuse the VU number format');
 assert.equal(badge.classList.contains('hidden'), false, 'peak fallback must not be hidden');
 assert.equal(badge.classList.contains('is-peak'), true, 'peak fallback must use peak styling');
 assert.match(badge.title, /peak detected/i, 'peak fallback must explain the state');
+
+/* 0 dB keeps its minus sign so the text width never changes at full scale. */
+for (const level of [0, -0, 0.0, -0.2, -0.4]) {
+    assert.equal(sandbox.formatOutputLevelBadgeDb(level), '-00 dB', `${Object.is(level, -0) ? '-0' : level} dB keeps the minus`);
+}
+assert.equal(sandbox.formatOutputLevelBadgeDb(-0.6), '-01 dB', 'rounding to -1 dB is unchanged');
+assert.equal(sandbox.formatOutputLevelBadgeDb(-12), '-12 dB', 'two-digit negative is unchanged');
+assert.equal(sandbox.formatOutputLevelBadgeDb(-60), '-60 dB', 'floor is unchanged');
+assert.equal(sandbox.formatOutputLevelBadgeDb(3), '03 dB', 'real overs above 0 dB stay unsigned');
+assert.equal(sandbox.formatOutputLevelBadgeDb('x'), '', 'non-numeric input stays empty');
+assert.equal(sandbox.formatOutputLevelBadgeDb(NaN), '', 'NaN stays empty');
+
+renderWarning({
+    available: true,
+    detected: false,
+    vu_db: 0,
+    vu_fresh: true,
+    detected_l: false,
+    detected_r: false,
+});
+assert.equal(badge.textContent, '-00 dB', 'live 0.0 dB VU renders with the minus');
 
 /* Regression: the peak state must only recolor the badge. Switching to peak
    with a fresh VU value must keep the exact same text (format and width) as
