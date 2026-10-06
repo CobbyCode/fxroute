@@ -1667,7 +1667,8 @@
         gap: 0.65rem;
     }
 
-    .effects-loudness-controls .effects-inline-control {
+    .effects-loudness-controls .effects-inline-control,
+    .effects-upmixer-controls .effects-inline-control {
         flex-wrap: nowrap;
     }
 

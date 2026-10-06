@@ -75,9 +75,16 @@ assert.ok(indexSource.indexOf('effects-upmixer-row') < indexSource.indexOf('effe
     };
     assert.deepEqual(optionValues('effects-upmixer-mode'), [['fast', true], ['hq', false]]);
     assert.deepEqual(optionValues('effects-upmixer-fft-size'), [['1024', false], ['2048', true], ['4096', false]]);
-    const order = ['effects-upmixer-mode-wrap', 'effects-upmixer-center-wrap', 'effects-upmixer-surround-wrap', 'effects-upmixer-fft-wrap']
-        .map(id => indexSource.indexOf(`id="${id}"`));
-    assert.deepEqual(order, [...order].sort((a, b) => a - b), 'order: Mode, Center, Surround, FFT');
+    // Two lines: Mode and FFT first, Center and Surround second.
+    const row = indexSource.slice(indexSource.indexOf('id="effects-upmixer-row"'), indexSource.indexOf('id="effects-loudness-enabled"'));
+    const lines = row.split('class="effects-upmixer-line"').slice(1);
+    assert.equal(lines.length, 2, 'the upmixer controls form exactly two lines');
+    const idsIn = (text) => [...text.matchAll(/id="(effects-upmixer-[a-z-]+-wrap)"/g)].map(match => match[1]);
+    assert.deepEqual(idsIn(lines[0]), ['effects-upmixer-mode-wrap', 'effects-upmixer-fft-wrap']);
+    assert.deepEqual(idsIn(lines[1]), ['effects-upmixer-center-wrap', 'effects-upmixer-surround-wrap']);
+    const styleSource = fs.readFileSync(path.join(repoRoot, 'static', 'style.css'), 'utf8');
+    assert.match(styleSource, /\.effects-upmixer-controls\s*\{[^}]*flex-direction:\s*column/, 'lines stack');
+    assert.match(styleSource, /\.effects-upmixer-line\s*\{[^}]*display:\s*flex/, 'controls of a line sit side by side');
 }
 assert.match(indexSource, /id="effects-upmixer-row"[^>]*class="[^"]*\bhidden\b|class="[^"]*\bhidden\b[^"]*" id="effects-upmixer-row"/,
     'the row starts hidden until the catalog says Surround');

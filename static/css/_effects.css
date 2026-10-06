@@ -1191,6 +1191,50 @@ input[type="number"]::-webkit-outer-spin-button {
     max-width: 100%;
 }
 
+/* Upmixer: Mode (and the FFT size for HQ) on the first line, Center and
+   Surround on the second. In a card too narrow for both controls with the
+   label beside them (Center + Surround need about 23rem, so the switch is at 24rem), the labels move
+   above their controls so each pair still sits side by side; where
+   container queries are missing the lines simply wrap. */
+.effects-upmixer-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.55rem;
+    width: 100%;
+    max-width: 100%;
+    container-type: inline-size;
+}
+
+.effects-upmixer-line {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem 1rem;
+    flex-wrap: wrap;
+    max-width: 100%;
+}
+
+@container (max-width: 24rem) {
+    .effects-upmixer-line .effects-inline-control {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+    }
+}
+
+/* Phone cards: the strengths only hold 0..10, so a narrower value field
+   (still wider than "10") lets Center and Surround share the line. */
+@container (max-width: 18rem) {
+    .effects-upmixer-line {
+        column-gap: 0.5rem;
+    }
+
+    #tab-effects .effects-upmixer-line .stepper-control .stepper-input {
+        width: 3rem;
+        min-width: 3rem;
+    }
+}
+
 .effects-headroom-controls {
     display: inline-flex;
     align-items: center;
