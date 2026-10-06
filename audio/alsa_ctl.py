@@ -7,7 +7,7 @@ controls of a digital receiver are read: USB Audio Class 2 clock validity
 ("S/PDIF Validity") and driver lock flags ("IEC958 In Lock", "SPDIF In
 Status" and similar). The only control written is a USB Audio Class 2 clock
 selector ("... Clock Source"), switched between Internal and a locked
-digital input.
+digital input, or returned to Internal when nothing owns the digital clock.
 """
 
 from __future__ import annotations
@@ -17,6 +17,9 @@ import fcntl
 import logging
 import os
 import re
+import threading
+from collections.abc import Callable
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,10 @@ _PLAYBACK_WORDS = re.compile(r"playback|output|\bout\b", re.IGNORECASE)
 # is a clock source whose lock control is "<item> Validity".
 _CLOCK_SELECTOR = re.compile(r"clock source$", re.IGNORECASE)
 _INTERNAL_CLOCK = re.compile(r"internal", re.IGNORECASE)
+_CONTROL_NODE = re.compile(r"controlC(\d+)")
+# One clock write at a time: the stale-clock release re-checks its condition
+# while holding this, so it can never undo a selection made right after it.
+_CLOCK_LOCK = threading.Lock()
 
 
 class _ElemId(ctypes.Structure):
@@ -213,14 +220,51 @@ def clock_source_target(names: list[str], current: int, validity: dict[str, bool
                  if _DIGITAL_WORDS.search(name) and validity.get(f"{name} Validity")), None)
 
 
-def select_clock_source(card: int | None, *, digital: bool) -> str | None:
+def list_cards() -> list[int]:
+    """ALSA card numbers that currently have a control device."""
+    try:
+        names = [node.name for node in Path("/dev/snd").glob("controlC*")]
+    except OSError as exc:
+        logger.debug("ALSA card listing failed: %s", exc)
+        return []
+    matches = (_CONTROL_NODE.fullmatch(name) for name in names)
+    return sorted(int(match.group(1)) for match in matches if match)
+
+
+def select_clock_source(card: int | None, *, digital: bool, require_receiver: bool = False) -> str | None:
     """Apply ``clock_source_target`` to every clock selector of ``card``.
 
     Returns the last newly selected source name, or None when nothing
-    changed or the card cannot be read or written.
+    changed or the card cannot be read or written. With ``require_receiver``
+    a card without a digital receiver lock control is left alone.
     """
     if card is None:
         return None
+    with _CLOCK_LOCK:
+        return _select_clock_source(card, digital=digital, require_receiver=require_receiver)
+
+
+def release_stale_digital_clocks(still_unowned: Callable[[], bool]) -> list[tuple[int, str]]:
+    """Return every card clocked from a digital source to Internal.
+
+    Covers a clock left on S/PDIF by an earlier run or restored from the saved
+    ALSA state after the device re-enumerated. Only cards with a digital
+    receiver are touched. ``still_unowned`` is re-checked under the clock lock
+    before each card, so a clock the digital input holds right now stays.
+    Returns (card, new source) for each clock that moved.
+    """
+    released: list[tuple[int, str]] = []
+    for card in list_cards():
+        with _CLOCK_LOCK:
+            if not still_unowned():
+                break
+            selected = _select_clock_source(card, digital=False, require_receiver=True)
+        if selected:
+            released.append((card, selected))
+    return released
+
+
+def _select_clock_source(card: int, *, digital: bool, require_receiver: bool) -> str | None:
     try:
         fd = os.open(f"/dev/snd/controlC{int(card)}", os.O_RDWR | os.O_CLOEXEC)
     except OSError as exc:
@@ -229,6 +273,8 @@ def select_clock_source(card: int | None, *, digital: bool) -> str | None:
     try:
         elements = _readable_elements(fd)
         validity = _read_booleans(fd, elements)
+        if require_receiver and not any(is_digital_lock_control(name) for name in validity):
+            return None
         selected = None
         for elem_id, info in elements:
             name = elem_id.name.decode(errors="replace")

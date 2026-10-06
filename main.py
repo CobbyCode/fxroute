@@ -3200,6 +3200,7 @@ async def lifespan(app: FastAPI):
         input_auto_select.task = asyncio.create_task(
             input_auto_select.run(), name="input-auto-select",
         )
+        _create_lifecycle_background_task(_digital_clock_guard_loop(), name="digital-clock-guard")
         logger.info("Starting Spotify playerctl watch task")
         await spotify_playerctl_watch.rearm()
         logger.info("Starting Qobuz qbzd claim watch task")
@@ -3352,6 +3353,9 @@ async def _shutdown_lifespan_resources() -> None:
     await cleanup("external-input", external_input.stop)
     if _surround_input is not None:
         await cleanup("digital-input", _surround_input.stop)
+    if _surround_carrier_owned and _surround_clock_card is not None:
+        # The saved ALSA state would carry the digital clock into the next boot.
+        await cleanup("digital-clock", lambda: _select_surround_clock(_surround_clock_card, digital=False))
     _surround_input = None
     _surround_carrier_owned = False
     _surround_clock_card = None
@@ -5583,6 +5587,32 @@ async def _select_surround_clock(card: int | None, *, digital: bool) -> None:
     selected = await asyncio.to_thread(alsa_ctl.select_clock_source, card, digital=digital)
     if selected:
         logger.info("Digital carrier clock: ALSA card %s now runs on %s", card, selected)
+
+
+DIGITAL_CLOCK_GUARD_SECONDS = 5.0
+
+
+async def _release_stale_digital_clocks() -> None:
+    """Return a digital clock that the digital input does not hold to Internal."""
+    released = await asyncio.to_thread(
+        alsa_ctl.release_stale_digital_clocks, lambda: not _surround_carrier_owned)
+    for card, source in released:
+        logger.info("Stale digital clock released: ALSA card %s back on %s", card, source)
+
+
+async def _digital_clock_guard_loop() -> None:
+    """Undo a digital clock FXRoute does not own, also after a USB re-enumeration.
+
+    A device that re-enumerates gets its saved ALSA state back, which can name
+    S/PDIF as the clock. That silenced the analog outputs of the Scarlett, and
+    a clock left by an earlier run does the same, so both are released.
+    """
+    while True:
+        try:
+            await _release_stale_digital_clocks()
+        except Exception as exc:
+            logger.warning("Stale digital clock check failed: %s", exc)
+        await asyncio.sleep(DIGITAL_CLOCK_GUARD_SECONDS)
 
 
 async def _set_surround_carrier_owned(enabled: bool, card: int | None = None) -> None:

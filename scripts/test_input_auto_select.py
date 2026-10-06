@@ -10,6 +10,8 @@ import ctypes
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -258,6 +260,99 @@ class AlsaLockTests(unittest.TestCase):
         self.assertIsNone(select_clock_source(None, digital=True))
         with patch("audio.alsa_ctl.os.open", side_effect=FileNotFoundError("gone")):
             self.assertIsNone(select_clock_source(3, digital=False))
+
+    def fake_card(self, *, current, receiver=True):
+        """Control layer of one card: a clock selector and, optionally, a receiver lock."""
+        names = ["Internal", "S/PDIF", "ADAT"]
+        state = {"clock": current, "writes": []}
+        elements = []
+        selector = alsa_ctl._ElemId(numid=4, name=b"Clock Source Clock Source")
+        selector_info = alsa_ctl._ElemInfo(id=selector, type=3, access=3, count=1)
+        selector_info.value.enumerated.items = len(names)
+        elements.append((selector, selector_info))
+        for numid, name in ((1, b"Internal Validity"), (2, b"S/PDIF Validity")):
+            if name == b"S/PDIF Validity" and not receiver:
+                continue
+            valid = alsa_ctl._ElemId(numid=numid, name=name)
+            elements.append((valid, alsa_ctl._ElemInfo(id=valid, type=1, access=1, count=1)))
+
+        def ioctl(_fd, request, arg, _mutate):
+            if request == alsa_ctl._IOCTL_ELEM_INFO:
+                arg.value.enumerated.name = names[arg.value.enumerated.item].encode()
+            elif request == alsa_ctl._IOCTL_ELEM_READ:
+                if arg.id.name == b"Clock Source Clock Source":
+                    arg.value.enumerated[0] = state["clock"]
+                else:
+                    arg.value.integer[0] = 1
+            elif request == alsa_ctl._IOCTL_ELEM_WRITE:
+                state["clock"] = arg.value.enumerated[0]
+                state["writes"].append(names[state["clock"]])
+
+        patches = (patch("audio.alsa_ctl.os.open", return_value=99), patch("audio.alsa_ctl.os.close"),
+                   patch("audio.alsa_ctl._readable_elements", return_value=elements),
+                   patch("audio.alsa_ctl.fcntl.ioctl", ioctl))
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return state
+
+    def test_stale_clock_release_needs_a_digital_receiver(self):
+        state = self.fake_card(current=1, receiver=False)
+        self.assertIsNone(select_clock_source(3, digital=False, require_receiver=True))
+        self.assertEqual(state["writes"], [], "a card without a digital receiver keeps its clock")
+        self.assertEqual(select_clock_source(3, digital=False), "Internal", "the owner's release is unchanged")
+
+    def test_stale_clock_release_moves_a_digital_clock_to_internal_only(self):
+        state = self.fake_card(current=1)
+        self.assertEqual(select_clock_source(3, digital=False, require_receiver=True), "Internal")
+        self.assertEqual(state["writes"], ["Internal"])
+        self.assertIsNone(select_clock_source(3, digital=False, require_receiver=True))
+        state["clock"] = 2
+        self.assertIsNone(select_clock_source(3, digital=False, require_receiver=True), "ADAT stays")
+        self.assertEqual(state["writes"], ["Internal"])
+
+    def test_cards_are_listed_from_the_control_nodes(self):
+        nodes = [Path("/dev/snd/controlC10"), Path("/dev/snd/controlC3"), Path("/dev/snd/timer"),
+                 Path("/dev/snd/controlCx")]
+        with patch.object(alsa_ctl.Path, "glob", return_value=nodes):
+            self.assertEqual(alsa_ctl.list_cards(), [3, 10])
+        with patch.object(alsa_ctl.Path, "glob", side_effect=OSError("denied")):
+            self.assertEqual(alsa_ctl.list_cards(), [])
+
+    def test_release_all_stops_once_the_digital_input_owns_the_clock(self):
+        owned = []
+
+        def select(card, *, digital, require_receiver):
+            self.assertEqual((digital, require_receiver), (False, True))
+            owned.append(True)
+            return f"Internal{card}"
+
+        with patch.object(alsa_ctl, "list_cards", return_value=[2, 3, 4]), \
+                patch.object(alsa_ctl, "_select_clock_source", select):
+            self.assertEqual(alsa_ctl.release_stale_digital_clocks(lambda: len(owned) < 2),
+                             [(2, "Internal2"), (3, "Internal3")])
+
+    def test_release_rechecks_ownership_under_the_clock_lock(self):
+        """The digital input claims the clock while a release waits for the lock."""
+        claimed = threading.Event()
+        writes = []
+
+        def select(card, *, digital, require_receiver):
+            writes.append(card)
+            return "Internal"
+
+        with patch.object(alsa_ctl, "list_cards", return_value=[3]), \
+                patch.object(alsa_ctl, "_select_clock_source", select):
+            result = []
+            with alsa_ctl._CLOCK_LOCK:
+                worker = threading.Thread(target=lambda: result.append(
+                    alsa_ctl.release_stale_digital_clocks(lambda: not claimed.is_set())))
+                worker.start()
+                time.sleep(0.05)
+                claimed.set()
+            worker.join(2)
+        self.assertEqual(result, [[]])
+        self.assertEqual(writes, [])
 
     @unittest.skipUnless(ctypes.sizeof(ctypes.c_long) == 8, "LP64 kernel ABI sizes")
     def test_control_structs_match_the_kernel_abi(self):

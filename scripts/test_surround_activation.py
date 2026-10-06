@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Actual state/plan activation boundaries, input memory and ingress rollback."""
 
+import asyncio
+import inspect
 import sys
 import tempfile
 import unittest
@@ -177,6 +179,46 @@ class CarrierClockTests(unittest.IsolatedAsyncioTestCase):
         await main._set_surround_carrier_owned(True, 3)
         await main._set_surround_carrier_owned(True, 5)
         self.assertEqual(self.calls, [("clock", 3, True), ("clock", 3, False), ("clock", 5, True)])
+
+
+class DigitalClockGuardTests(unittest.IsolatedAsyncioTestCase):
+    """A digital clock the digital input does not hold goes back to Internal."""
+
+    async def test_release_runs_only_while_the_carrier_is_not_owned(self):
+        seen = []
+
+        def release(still_unowned):
+            seen.append(still_unowned())
+            return [(3, "Internal")] if seen[-1] else []
+
+        with patch.object(main.alsa_ctl, "release_stale_digital_clocks", release), \
+                patch.object(main, "_surround_carrier_owned", False):
+            await main._release_stale_digital_clocks()
+            with patch.object(main, "_surround_carrier_owned", True):
+                await main._release_stale_digital_clocks()
+        self.assertEqual(seen, [True, False], "the owner flag is read when the release runs")
+
+    async def test_guard_loop_survives_a_failing_check_and_repeats(self):
+        real_sleep = asyncio.sleep
+        delays = []
+
+        async def sleep(delay):
+            delays.append(delay)
+            if len(delays) == 3:
+                raise asyncio.CancelledError
+            await real_sleep(0)
+
+        check = AsyncMock(side_effect=[OSError("busy"), None, None])
+        with patch.object(main, "_release_stale_digital_clocks", check), \
+                patch.object(main.asyncio, "sleep", sleep), self.assertRaises(asyncio.CancelledError):
+            await main._digital_clock_guard_loop()
+        self.assertEqual(check.await_count, 3)
+        self.assertEqual(delays, [main.DIGITAL_CLOCK_GUARD_SECONDS] * 3)
+
+    def test_startup_runs_the_guard_as_a_lifecycle_task(self):
+        source = inspect.getsource(main.lifespan)
+        self.assertIn('_create_lifecycle_background_task(_digital_clock_guard_loop(), name="digital-clock-guard")',
+                      source)
 
 
 if __name__ == "__main__":

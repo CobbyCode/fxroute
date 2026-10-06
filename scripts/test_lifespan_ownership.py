@@ -229,6 +229,27 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(shutdown, 5)
         self.assertEqual(order, ["radio-finished", "dsp-stop"])
 
+    async def test_shutdown_returns_the_digital_clock_to_internal(self):
+        calls = []
+
+        def select(card, *, digital):
+            calls.append((card, digital))
+
+        with patch.object(main, "_surround_carrier_owned", True), \
+                patch.object(main, "_surround_clock_card", 3), \
+                patch.object(main.alsa_ctl, "select_clock_source", select):
+            await main._shutdown_lifespan_resources()
+            self.assertFalse(main._surround_carrier_owned)
+            self.assertIsNone(main._surround_clock_card)
+        self.assertEqual(calls, [(3, False)])
+
+    async def test_shutdown_leaves_the_clock_alone_when_the_carrier_is_not_owned(self):
+        calls = []
+        with patch.object(main, "_surround_carrier_owned", False), \
+                patch.object(main.alsa_ctl, "select_clock_source", lambda *a, **k: calls.append(a)):
+            await main._shutdown_lifespan_resources()
+        self.assertEqual(calls, [])
+
     def test_player_callback_unregister_and_killed_process_reap(self):
         player = MPVWrapper()
         callback = lambda _state: None
