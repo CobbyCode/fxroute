@@ -215,6 +215,87 @@ class MultichannelCaptureTests(_TapCaptureCase):
         self.assertEqual(self.monitor.snapshot()["channels"]["vu_db"], [-60.0] * 5)
 
 
+class _FastRecheckCase(_TapCaptureCase):
+    async def asyncSetUp(self):
+        patcher = patch.object(peak_monitor, "TAP_RECHECK_INTERVAL", 0.02)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        await super().asyncSetUp()
+
+
+class LayoutChangeTests(_FastRecheckCase):
+    """The capture's channel count is fixed at launch; a new layout needs a new capture."""
+
+    async def test_other_output_count_rearms_the_capture(self):
+        self.live_layout = ("stereo-sub", ("main_l", "main_r", "sub1", "sub2"))
+        with self.assertRaisesRegex(RuntimeError, "layout changed"):
+            await asyncio.wait_for(self.task, 2)
+
+    async def test_engine_gone_rearms_the_capture(self):
+        self.live_layout = None
+        with self.assertRaisesRegex(RuntimeError, "layout changed"):
+            await asyncio.wait_for(self.task, 2)
+
+    async def test_same_output_count_keeps_the_capture(self):
+        self.live_layout = ("stereo-sub", ("main_l", "main_r", "sub_l", "sub_r", "left_high", "right_high"))
+        await asyncio.sleep(0.3)
+        self.assertFalse(self.task.done())
+
+    async def test_unlinked_tap_is_linked_once_its_ports_exist(self):
+        tap = self.monitor._tap
+        self.assertFalse(tap.linked)
+        capture = self.monitor._capture_node_name
+        ports = [f"fxroute_dsp:output_{i}" for i in range(1, 7)]
+        ports += [f"{capture}:input_AUX{i}" for i in range(8)]
+        listing = _port_listing(TARGET.source_id, ports)
+        self.monitor._run_link = AsyncMock()
+        with patch("dsp.peak_monitor._run_bounded_command", new=AsyncMock(return_value=(0, listing, b""))):
+            await self._wait_for(lambda: tap.linked)
+        self.assertEqual(self.monitor._run_link.await_count, 6)
+
+    async def test_tap_stays_unlinked_while_the_engine_ports_are_missing(self):
+        capture = self.monitor._capture_node_name
+        listing = _port_listing(TARGET.source_id, [f"{capture}:input_AUX{i}" for i in range(8)])
+        self.monitor._run_link = AsyncMock()
+        with patch("dsp.peak_monitor._run_bounded_command", new=AsyncMock(return_value=(0, listing, b""))):
+            await asyncio.sleep(0.3)
+        self.monitor._run_link.assert_not_called()
+        self.assertFalse(self.monitor._tap.linked)
+        self.assertFalse(self.task.done())
+
+
+class StereoToMultichannelRearmTests(_FastRecheckCase):
+    layout = STEREO
+
+    async def test_layout_gaining_outputs_rearms_a_stereo_capture(self):
+        self.live_layout = ("stereo-sub", ("main_l", "main_r", "sub1", "sub2"))
+        with self.assertRaisesRegex(RuntimeError, "layout changed"):
+            await asyncio.wait_for(self.task, 2)
+
+
+class RelinkAfterLayoutChangeTests(unittest.IsolatedAsyncioTestCase):
+    def _monitor(self, layout):
+        from types import SimpleNamespace
+        monitor = DSPPeakMonitor(get_output_layout=lambda: layout)
+        monitor._running = True
+        monitor._proc = SimpleNamespace(returncode=None)
+        monitor._target = TARGET
+        monitor._capture_node_name = "cap_1"
+        monitor._tap = peak_monitor.OutputLevelTap(6)
+        monitor._link_capture_stream = AsyncMock()
+        return monitor
+
+    async def test_relink_defers_to_a_restart_when_the_engine_layout_changed(self):
+        monitor = self._monitor(("stereo-sub", ("main_l", "main_r", "sub1", "sub2")))
+        self.assertFalse(await monitor.relink())
+        monitor._link_capture_stream.assert_not_called()
+
+    async def test_relink_repairs_links_while_the_layout_still_fits(self):
+        monitor = self._monitor(SURROUND_6)
+        self.assertTrue(await monitor.relink())
+        monitor._link_capture_stream.assert_awaited_once()
+
+
 class StreamHeaderTests(_TapCaptureCase):
     """pw-record opens stdout with an AU header; it must not shift channels."""
 

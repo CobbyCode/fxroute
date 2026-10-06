@@ -69,6 +69,9 @@ STEREO_FRAME_BYTES = 8
 AU_HEADER_MAGIC = b"dns."
 # A tap capture carries the post-effect L/R pair first, then the engine outputs.
 TAP_FIRST_OUTPUT_CHANNEL = 2
+# How often a running capture re-reads the engine layout: a changed output
+# count needs a new capture, and an unlinked tap is linked again.
+TAP_RECHECK_INTERVAL = 0.5
 CAPTURE_NO_DATA_TIMEOUT = 3.0
 FALLBACK_CAPTURE_RATE = 48_000
 # After the DSP engine is recreated the graph needs a settle window before
@@ -262,6 +265,9 @@ class DSPPeakMonitor:
             logger.info("Peak monitor relink skipped: no target/capture (target=%s capture=%s)",
                         target is not None, capture_name)
             return False
+        if self._tap_is_stale():
+            logger.info("Peak monitor relink skipped: output layout changed since the capture started")
+            return False
         try:
             logger.info("Peak monitor relink: repairing links for %s -> %s",
                         capture_name, target.source_name)
@@ -393,17 +399,29 @@ class DSPPeakMonitor:
             logger.debug("Output layout unavailable for the multichannel meter: %s", exc)
             return None
 
-    def _plan_output_tap(self) -> Optional[OutputLevelTap]:
-        """Tap for the running engine layout, or None while it meters as stereo."""
+    def _planned_tap_outputs(self) -> int:
+        """Engine outputs the tap follows for the live layout; 0 meters stereo only."""
         layout = self._live_output_layout()
         if layout is None:
-            return None
+            return 0
         mode, roles = layout
         if not MIN_MULTICHANNEL_POSITIONS <= len(roles) <= MAX_TAP_OUTPUTS:
-            return None
-        if not meter_positions(mode, roles):
-            return None
-        return OutputLevelTap(len(roles))
+            return 0
+        return len(roles) if meter_positions(mode, roles) else 0
+
+    def _plan_output_tap(self) -> Optional[OutputLevelTap]:
+        """Tap for the running engine layout, or None while it meters as stereo."""
+        outputs = self._planned_tap_outputs()
+        return OutputLevelTap(outputs) if outputs else None
+
+    def _tap_is_stale(self) -> bool:
+        """True when the running capture no longer matches the engine's output count.
+
+        The capture's channel count is fixed at launch.  An engine rebuilt with
+        another layout (a mode switch, possibly while paused) leaves it with
+        too many or too few output channels.
+        """
+        return self._planned_tap_outputs() != (self._tap.output_count if self._tap else 0)
 
     def _channels_snapshot(self, now: float) -> Optional[dict]:
         """Per-position levels for the live layout; None keeps the stereo meter.
@@ -578,6 +596,7 @@ class DSPPeakMonitor:
             self._capture_armed_under_settle = self._settle_until > 0.0
             self._stable_target_checks = 0
             last_target_check_at = time.monotonic()
+            last_tap_check_at = last_target_check_at
             while self._running:
                 try:
                     chunk = await asyncio.wait_for(self._proc.stdout.read(read_size), timeout=0.25)
@@ -681,6 +700,12 @@ class DSPPeakMonitor:
                         self._update_vu_db(VU_FLOOR_DB, now, channel=channel)
                     if tap:
                         tap.floor(now)
+                if now - last_tap_check_at >= TAP_RECHECK_INTERVAL:
+                    last_tap_check_at = now
+                    if self._tap_is_stale():
+                        raise RuntimeError("Output layout changed; rearming capture")
+                    if tap is not None and not tap.linked:
+                        await self._retry_output_taps(target, capture_node_name)
                 if self._expire_holds(now):
                     await self._emit_if_changed(force=True, generation=generation)
                 elif now - self._last_vu_emit_at >= VU_EMIT_INTERVAL:
@@ -847,6 +872,19 @@ class DSPPeakMonitor:
             logger.warning("Output meter links failed for %s; keeping the stereo meter: %s", capture_node_name, exc)
             return
         tap.linked = True
+
+    async def _retry_output_taps(self, target: MonitorTarget, capture_node_name: str) -> None:
+        """Link taps that were not ready at launch (engine still starting)."""
+        try:
+            returncode, stdout, _ = await _run_bounded_command(["pw-cli", "ls", "Port"])
+        except Exception as exc:
+            logger.debug("Output meter port listing failed: %s", exc)
+            return
+        if returncode != 0:
+            return
+        ports = list(self._iter_ports(stdout.decode(errors="ignore")))
+        if self._tap is not None and self._tap_ports_present(target, capture_node_name, ports):
+            await self._link_output_taps(target, capture_node_name, True)
 
     @staticmethod
     def _target_output_ports(target: MonitorTarget, ports) -> tuple[str | None, str | None]:
