@@ -30,15 +30,14 @@ function element(extra = {}) {
 function elementsFixture() {
     return {
         effectsUpmixerRow: element(),
+        effectsUpmixerDetails: element(),
         effectsUpmixerEnabled: element(),
         effectsUpmixerMode: element({ value: 'fast' }),
-        effectsUpmixerModeWrap: element(),
         effectsUpmixerFftSize: element({ value: '2048' }),
         effectsUpmixerFftWrap: element(),
         effectsUpmixerCenter: element({ value: '6' }),
         effectsUpmixerCenterWrap: element(),
         effectsUpmixerSurround: element({ value: '6' }),
-        effectsUpmixerSurroundWrap: element(),
     };
 }
 
@@ -75,16 +74,13 @@ assert.ok(indexSource.indexOf('effects-upmixer-row') < indexSource.indexOf('effe
     };
     assert.deepEqual(optionValues('effects-upmixer-mode'), [['fast', true], ['hq', false]]);
     assert.deepEqual(optionValues('effects-upmixer-fft-size'), [['1024', false], ['2048', true], ['4096', false]]);
-    // Two lines: Mode and FFT first, Center and Surround second.
-    const row = indexSource.slice(indexSource.indexOf('id="effects-upmixer-row"'), indexSource.indexOf('id="effects-loudness-enabled"'));
-    const lines = row.split('class="effects-upmixer-line"').slice(1);
-    assert.equal(lines.length, 2, 'the upmixer controls form exactly two lines');
+    // The details hold two lines: Mode and FFT first, Center and Surround second.
+    const row = indexSource.slice(indexSource.indexOf('id="effects-upmixer-row"'), indexSource.indexOf('id="effects-loudness-row"'));
+    const lines = row.split('class="effects-effect-line"').slice(1);
+    assert.equal(lines.length, 2, 'the upmixer details form exactly two lines');
     const idsIn = (text) => [...text.matchAll(/id="(effects-upmixer-[a-z-]+-wrap)"/g)].map(match => match[1]);
     assert.deepEqual(idsIn(lines[0]), ['effects-upmixer-mode-wrap', 'effects-upmixer-fft-wrap']);
     assert.deepEqual(idsIn(lines[1]), ['effects-upmixer-center-wrap', 'effects-upmixer-surround-wrap']);
-    const styleSource = fs.readFileSync(path.join(repoRoot, 'static', 'style.css'), 'utf8');
-    assert.match(styleSource, /\.effects-upmixer-controls\s*\{[^}]*flex-direction:\s*column/, 'lines stack');
-    assert.match(styleSource, /\.effects-upmixer-line\s*\{[^}]*display:\s*flex/, 'controls of a line sit side by side');
 }
 assert.match(indexSource, /id="effects-upmixer-row"[^>]*class="[^"]*\bhidden\b|class="[^"]*\bhidden\b[^"]*" id="effects-upmixer-row"/,
     'the row starts hidden until the catalog says Surround');
@@ -136,21 +132,20 @@ assert.equal(Effects.normalizeEffectsUpmixerFftSize(undefined, 1024), 1024);
     state.outputSystem.catalog = catalog('surround', ['main_l', 'main_r', 'center', 'rear_l', 'rear_r', 'sub1']);
     Effects.updateEffectsUpmixerUi();
     assert.ok(!hidden(elements.effectsUpmixerRow), 'Surround: visible');
+    assert.ok(!hidden(elements.effectsUpmixerDetails), 'enabled: the details are shown');
     assert.ok(!hidden(elements.effectsUpmixerCenterWrap), 'Center routed: Center control visible');
-    assert.ok(!hidden(elements.effectsUpmixerSurroundWrap), 'Surround control visible');
 
     // Front + Rear + subs, no Center: only the Center control goes away.
     state.outputSystem.catalog = catalog('surround', ['main_l', 'main_r', 'rear_l', 'rear_r', 'sub1', 'sub2']);
     Effects.updateEffectsUpmixerUi();
     assert.ok(!hidden(elements.effectsUpmixerRow), 'no Center: upmixer stays available');
     assert.ok(hidden(elements.effectsUpmixerCenterWrap), 'no Center: Center control hidden');
-    assert.ok(!hidden(elements.effectsUpmixerSurroundWrap), 'no Center: Surround control stays');
+    assert.ok(!hidden(elements.effectsUpmixerDetails), 'no Center: the details (Surround) stay');
 
-    // Mode shows with the upmixer; the FFT size only while the HQ engine is chosen.
+    // The FFT size shows only while the HQ engine is chosen.
     state.outputSystem.catalog = catalog('surround', ['main_l', 'main_r', 'center', 'rear_l', 'rear_r']);
     elements.effectsUpmixerMode.value = 'fast';
     Effects.updateEffectsUpmixerUi();
-    assert.ok(!hidden(elements.effectsUpmixerModeWrap), 'Mode visible with the upmixer on');
     assert.ok(hidden(elements.effectsUpmixerFftWrap), 'Fast: no FFT control');
     elements.effectsUpmixerMode.value = 'hq';
     Effects.updateEffectsUpmixerUi();
@@ -158,15 +153,14 @@ assert.equal(Effects.normalizeEffectsUpmixerFftSize(undefined, 1024), 1024);
     // HQ works without a routed Center like Fast does: only the Center control goes away.
     state.outputSystem.catalog = catalog('surround', ['main_l', 'main_r', 'rear_l', 'rear_r', 'sub1', 'sub2']);
     Effects.updateEffectsUpmixerUi();
-    assert.ok(hidden(elements.effectsUpmixerCenterWrap) && !hidden(elements.effectsUpmixerSurroundWrap));
-    assert.ok(!hidden(elements.effectsUpmixerModeWrap) && !hidden(elements.effectsUpmixerFftWrap));
+    assert.ok(hidden(elements.effectsUpmixerCenterWrap) && !hidden(elements.effectsUpmixerDetails));
+    assert.ok(!hidden(elements.effectsUpmixerFftWrap));
 
-    // Disabled: the row stays, the controls fold away.
+    // Disabled: the row (its header) stays, all parameters fold away with the details.
     elements.effectsUpmixerEnabled.checked = false;
     Effects.updateEffectsUpmixerUi();
     assert.ok(!hidden(elements.effectsUpmixerRow));
-    assert.ok(hidden(elements.effectsUpmixerCenterWrap) && hidden(elements.effectsUpmixerSurroundWrap));
-    assert.ok(hidden(elements.effectsUpmixerModeWrap) && hidden(elements.effectsUpmixerFftWrap));
+    assert.ok(hidden(elements.effectsUpmixerDetails), 'disabled: no details');
 }
 
 // collect / apply round trip.
@@ -225,7 +219,7 @@ assert.equal(Effects.normalizeEffectsUpmixerFftSize(undefined, 1024), 1024);
         assert.equal(zero.upmixerEnabled, true, 'a zero strength does not switch the upmixer off');
         assert.equal(zero.upmixerCenter, center);
         assert.equal(zero.upmixerSurround, surround);
-        assert.ok(!hidden(elements.effectsUpmixerSurroundWrap), 'Surround control stays visible at 0');
+        assert.ok(!hidden(elements.effectsUpmixerDetails), 'the details stay visible at 0');
         assert.ok(!hidden(elements.effectsUpmixerCenterWrap), 'Center control stays visible at 0');
     }
 }

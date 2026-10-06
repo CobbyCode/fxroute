@@ -1654,32 +1654,6 @@
         flex: 0 0 auto;
     }
 
-    .effects-loudness-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        align-items: center;
-    }
-
-    .effects-loudness-controls {
-        display: inline-flex;
-        width: max-content;
-        max-width: 100%;
-        gap: 0.65rem;
-    }
-
-    .effects-loudness-controls .effects-inline-control,
-    .effects-upmixer-controls .effects-inline-control {
-        flex-wrap: nowrap;
-    }
-
-        .effects-bass-row,
-    .effects-bass-controls {
-        display: flex;
-        align-items: center;
-        gap: 0.65rem;
-        flex-wrap: wrap;
-    }
-
     .effects-extras-inner {
         width: 100%;
         padding: 0.95rem 0.9rem;

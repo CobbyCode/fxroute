@@ -6891,37 +6891,42 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 1rem;
 }
 
-/* Loudness row wraps when the narrow two-column card cannot fit checkbox
-   + Strength + FFT on one line. The old nowrap overflowed the card in the
-   768–~880px band where the two-column grid starts but cards are small. */
-.effects-loudness-row {
-    flex-wrap: wrap;
+/* Tone effects (Upmixer, Loudness, Bass enhancer, Tone effect) share one
+   pattern: a compact header (checkbox + name) and, below it, one details block
+   that holds every parameter. The block is hidden while the effect is off, so a
+   disabled effect leaves no gap. The lines inside sit side by side where there
+   is room and wrap where there is not. In a card too narrow for a label beside
+   its control (below 24rem; Center + Surround need about 23rem) the labels move
+   above their controls so each pair still sits side by side, and below 18rem
+   the 0..10 value fields shrink a little; where container queries are missing
+   the lines simply wrap. */
+.effects-effect {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
 }
 
-.effects-loudness-controls {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.55rem 1rem;
-    flex-wrap: wrap;
-    max-width: 100%;
+.effects-effect:not(.hidden) ~ .effects-effect {
+    padding-top: 0.45rem;
+    border-top: 1px solid var(--border);
 }
 
-/* Upmixer: Mode (and the FFT size for HQ) on the first line, Center and
-   Surround on the second. In a card too narrow for both controls with the
-   label beside them (Center + Surround need about 23rem, so the switch is at 24rem), the labels move
-   above their controls so each pair still sits side by side; where
-   container queries are missing the lines simply wrap. */
-.effects-upmixer-controls {
+.effects-effect-header {
+    align-self: flex-start;
+}
+
+.effects-effect-details {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     gap: 0.55rem;
     width: 100%;
     max-width: 100%;
+    padding-bottom: 0.35rem;
     container-type: inline-size;
 }
 
-.effects-upmixer-line {
+.effects-effect-line {
     display: flex;
     align-items: center;
     gap: 0.55rem 1rem;
@@ -6930,21 +6935,19 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 @container (max-width: 24rem) {
-    .effects-upmixer-line .effects-inline-control {
+    .effects-effect-line .effects-inline-control {
         flex-direction: column;
         align-items: flex-start;
         gap: 0.25rem;
     }
 }
 
-/* Phone cards: the strengths only hold 0..10, so a narrower value field
-   (still wider than "10") lets Center and Surround share the line. */
 @container (max-width: 18rem) {
-    .effects-upmixer-line {
+    .effects-effect-line {
         column-gap: 0.5rem;
     }
 
-    #tab-effects .effects-upmixer-line .stepper-control .stepper-input {
+    #tab-effects .effects-effect-line .stepper-control .stepper-input.effects-stepper-compact {
         width: 3rem;
         min-width: 3rem;
     }
@@ -6994,30 +6997,6 @@ input[type="number"]::-webkit-outer-spin-button {
     font-size: 0.8rem;
     line-height: 1.2;
     white-space: nowrap;
-}
-
-.effects-bass-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.65rem 0.95rem;
-    width: 100%;
-}
-
-.effects-bass-controls {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.55rem;
-    flex-wrap: wrap;
-    max-width: 100%;
-}
-
-.effects-bass-controls .effects-inline-control-label {
-    white-space: nowrap;
-}
-
-.effects-bass-controls .delay-input-wrap {
-    gap: 0.45rem;
 }
 
 .effects-card-peq-workshop {
@@ -7212,10 +7191,6 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 #tab-effects .delay-field-compact .delay-number-input {
     width: 4.6rem;
-}
-#tab-effects .effects-bass-controls .delay-number-input {
-    width: 4.6rem;
-    min-width: 4.6rem;
 }
 /* Compact − / value / + stepper for small-range DSP numbers. Replaces the
    native spinners where stepping is the primary interaction; the value
@@ -9802,32 +9777,6 @@ input[type="number"]::-webkit-outer-spin-button {
         width: auto;
         min-width: 96px;
         flex: 0 0 auto;
-    }
-
-    .effects-loudness-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        align-items: center;
-    }
-
-    .effects-loudness-controls {
-        display: inline-flex;
-        width: max-content;
-        max-width: 100%;
-        gap: 0.65rem;
-    }
-
-    .effects-loudness-controls .effects-inline-control,
-    .effects-upmixer-controls .effects-inline-control {
-        flex-wrap: nowrap;
-    }
-
-        .effects-bass-row,
-    .effects-bass-controls {
-        display: flex;
-        align-items: center;
-        gap: 0.65rem;
-        flex-wrap: wrap;
     }
 
     .effects-extras-inner {

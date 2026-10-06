@@ -869,24 +869,21 @@ function updateEffectsExtrasUi() {
     if (deps.getElements().effectsAutogainTargetWrap) {
         deps.getElements().effectsAutogainTargetWrap.classList.toggle('hidden', !deps.getElements().effectsAutogainEnabled?.checked);
     }
-    if (deps.getElements().effectsLoudnessFftWrap) {
-        deps.getElements().effectsLoudnessFftWrap.classList.toggle('hidden', !deps.getElements().effectsLoudnessEnabled?.checked);
-    }
-    if (deps.getElements().effectsLoudnessStrengthWrap) {
-        deps.getElements().effectsLoudnessStrengthWrap.classList.toggle('hidden', !deps.getElements().effectsLoudnessEnabled?.checked);
-    }
-    if (deps.getElements().effectsBassControlsWrap) {
-        deps.getElements().effectsBassControlsWrap.classList.toggle('hidden', !deps.getElements().effectsBassEnabled?.checked);
-    }
-    if (deps.getElements().effectsToneEffectWrap) {
-        deps.getElements().effectsToneEffectWrap.classList.toggle('hidden', !deps.getElements().effectsToneEffectEnabled?.checked);
-    }
+    // Tone effects: header (checkbox + name) plus one details block with every
+    // parameter. The block exists only while the effect is on.
+    setEffectDetailsVisible(deps.getElements().effectsLoudnessDetails, deps.getElements().effectsLoudnessEnabled?.checked);
+    setEffectDetailsVisible(deps.getElements().effectsBassDetails, deps.getElements().effectsBassEnabled?.checked);
+    setEffectDetailsVisible(deps.getElements().effectsToneEffectDetails, deps.getElements().effectsToneEffectEnabled?.checked);
     updateEffectsUpmixerUi();
 }
 
-// The upmixer exists in Surround only. A missing Center speaker removes just
-// the Center control: the Surround extraction does not depend on it. The FFT
-// size belongs to the HQ engine and shows only for it.
+function setEffectDetailsVisible(details, enabled) {
+    if (details) details.classList.toggle('hidden', !enabled);
+}
+
+// The upmixer exists in Surround only. Inside its details a missing Center
+// speaker removes just the Center control (the Surround extraction does not
+// depend on it), and the FFT size belongs to the HQ engine and shows only for it.
 function updateEffectsUpmixerUi() {
     const catalog = deps.getState().outputSystem?.catalog;
     const surround = catalog?.active_mode === 'surround';
@@ -896,18 +893,13 @@ function updateEffectsUpmixerUi() {
     if (deps.getElements().effectsUpmixerRow) {
         deps.getElements().effectsUpmixerRow.classList.toggle('hidden', !surround);
     }
-    if (deps.getElements().effectsUpmixerModeWrap) {
-        deps.getElements().effectsUpmixerModeWrap.classList.toggle('hidden', !enabled);
-    }
+    setEffectDetailsVisible(deps.getElements().effectsUpmixerDetails, enabled);
     if (deps.getElements().effectsUpmixerCenterWrap) {
-        deps.getElements().effectsUpmixerCenterWrap.classList.toggle('hidden', !enabled || !hasCenter);
-    }
-    if (deps.getElements().effectsUpmixerSurroundWrap) {
-        deps.getElements().effectsUpmixerSurroundWrap.classList.toggle('hidden', !enabled);
+        deps.getElements().effectsUpmixerCenterWrap.classList.toggle('hidden', !hasCenter);
     }
     if (deps.getElements().effectsUpmixerFftWrap) {
         const hq = normalizeEffectsUpmixerMode(deps.getElements().effectsUpmixerMode?.value, 'fast') === 'hq';
-        deps.getElements().effectsUpmixerFftWrap.classList.toggle('hidden', !enabled || !hq);
+        deps.getElements().effectsUpmixerFftWrap.classList.toggle('hidden', !hq);
     }
 }
 
