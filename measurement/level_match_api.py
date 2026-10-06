@@ -116,8 +116,10 @@ async def _run(job: dict[str, Any], target: dict, scope: dict) -> None:
             if job["cancel_requested"]:
                 raise asyncio.CancelledError(f"{LABEL} was cancelled")
             job["progress"] = {"step": step, "total": len(scope["units"]), "label": unit["label"]}
+            # A take without the speaker's direct sound is noise: no level of it may enter the table.
             take = await speaker_sweep.measure_unit(
-                dependencies.get_store(), dependencies.get_session(), job, target, unit, LABEL)
+                dependencies.get_store(), dependencies.get_session(), job, target, unit, LABEL,
+                require_arrival=True)
             capture_volume, system_volume = await asyncio.to_thread(_observed_volumes, take["mic_node"])
             take_fingerprint = level_match.make_fingerprint(
                 device_key=target["device_key"], sample_rate_hz=target["sample_rate_hz"],

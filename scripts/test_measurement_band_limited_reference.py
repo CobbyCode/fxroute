@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dsp.crossover import design_crossover
 from measurement.constants import SWEEP_TIMING_ANCHOR_LAYOUT
+from measurement import speaker_sweep
 from measurement.signal import build_inverse_sweep, generate_log_sweep
 from measurement.store import CaptureQualityError, MeasurementStore
 
@@ -241,6 +242,32 @@ class BandLimitedReferenceCaptureTests(unittest.TestCase):
                                                start_source="reproduced-registers")
         self.assertAlmostEqual(legacy["clock"]["start_score"], flagged["clock"]["start_score"], places=5)
         self.assertAlmostEqual(legacy["clock"]["end_score"], flagged["clock"]["end_score"], places=5)
+
+    def test_every_way_has_a_direct_arrival_and_a_capture_without_the_sweep_has_none(self):
+        # Level Matching refuses a take without a direct arrival; a bank (one way) must never be refused.
+        ways = {
+            "full": [], "low-120": [crossover_spec("lowpass", 120.0)],
+            "low": [crossover_spec("lowpass", 2500.0)], "high": [crossover_spec("highpass", 2500.0)],
+            "high-8k": [crossover_spec("highpass", 8000.0)],
+            "mid": [crossover_spec("highpass", 300.0), crossover_spec("lowpass", 2500.0)],
+        }
+        for name, specs in ways.items():
+            analysis = self.analyze(self.capture_path(specs, name=f"arrival-{name}"), band_limited=True)
+            self.assertTrue(speaker_sweep.has_direct_arrival(analysis), name)
+        played = apply_band(self.sweep, [])
+        reference = np.concatenate([np.zeros(120), played, np.zeros(RATE // 2)])
+        noise = np.random.default_rng(3).normal(0.0, 1e-3, reference.size)
+        path = self.store.captures_dir / "no-sweep.wav"
+        self.store._write_wav(path, np.column_stack([noise, reference]), RATE)
+        self.assertFalse(speaker_sweep.has_direct_arrival(self.analyze(path, band_limited=True)))
+
+
+class DirectArrivalVerdictTests(unittest.TestCase):
+    def test_only_a_valid_timing_status_counts(self):
+        self.assertTrue(speaker_sweep.has_direct_arrival({"impulse_response": {"timing_status": "valid"}}))
+        for analysis in ({"impulse_response": {"timing_status": "ambiguous"}}, {"impulse_response": {}},
+                         {"impulse_response": None}, {"impulse_response": "valid"}, {}):
+            self.assertFalse(speaker_sweep.has_direct_arrival(analysis), analysis)
 
 
 if __name__ == "__main__":

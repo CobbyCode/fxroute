@@ -193,8 +193,10 @@ def mode_state(mode, roles, *, crossover=False):
 class FakeStore:
     """Measurement store double: freezes real targets and answers takes from a level table."""
 
-    def __init__(self, state, levels, *, mic_node="mic"):
+    def __init__(self, state, levels, *, mic_node="mic", arrivals=None):
         self.state, self.levels, self.mic_node = state, levels, mic_node
+        # Roles whose take the analyzer reports another timing status for ("valid" by default).
+        self.arrivals = arrivals or {}
         self.started, self.cancelled = [], []
         self.measurement_target_provider = self._target
 
@@ -209,8 +211,12 @@ class FakeStore:
 
     def get_job(self, job_id):
         roles = tuple(self.started[int(job_id.split("-")[1]) - 1]["frozen_target"]["measured_roles"])
+        analysis = {"sample_rate": 48000, "normalized_by_db": self.levels[roles]}
+        status = self.arrivals.get(roles, "valid")
+        if status is not None:
+            analysis["impulse_response"] = {"timing_status": status}
         return {"status": "completed", "result": {
-            "analysis": {"sample_rate": 48000, "normalized_by_db": self.levels[roles]},
+            "analysis": analysis,
             "capture": {"microphone_node": self.mic_node, "mic_input_channel": 1}}}
 
     def cancel_job(self, job_id):
@@ -224,9 +230,9 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.capture_volume = 40.0
         self.addCleanup(api.configure_level_match, None)
 
-    def configure(self, state, levels):
+    def configure(self, state, levels, *, arrivals=None):
         self.state = state
-        self.store = FakeStore(state, levels)
+        self.store = FakeStore(state, levels, arrivals=arrivals)
 
         async def start_registered(rate, start_job, entry_epoch=None):
             return await start_job()
@@ -346,6 +352,53 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.status_code, 409)
         gate.set()
         await api._slot.task
+
+    async def test_a_take_without_the_speakers_direct_sound_stores_and_computes_nothing(self):
+        # The right side's sweep never reached the microphone: the left side's good reading
+        # must not be kept either, and no trim may come out of a half measurement.
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): -18.0, ("main_r",): -80.0},
+                       arrivals={("main_r",): "ambiguous"})
+        job = await self.run_job("main")
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("did not reach the microphone", job["error"])
+        self.assertIn("right", job["error"])
+        self.assertIsNone(job["result"])
+        self.assertEqual(self.table.entries("stereo"), {})
+        self.assertFalse(self.table.path.exists())
+
+    async def test_the_first_take_without_direct_sound_ends_the_run(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): -80.0, ("main_r",): -80.0},
+                       arrivals={("main_l",): "ambiguous", ("main_r",): "ambiguous"})
+        job = await self.run_job("main")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(len(self.store.started), 1)
+        self.assertEqual(self.table.entries("stereo"), {})
+
+    async def test_an_analysis_without_timing_information_is_refused(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): -18.0, ("main_r",): -20.0},
+                       arrivals={("main_l",): None})
+        job = await self.run_job("main")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(self.table.entries("stereo"), {})
+
+    async def test_a_refused_take_leaves_stored_levels_and_trims_untouched(self):
+        # Noise can read like a plausible level; only the missing direct sound marks it as unusable.
+        levels = {("main_l",): -20.0, ("main_r",): -21.0, ("rear_l",): -25.0, ("rear_r",): -24.0}
+        self.configure(mode_state("surround", SURROUND_ROLES), levels)
+        front = await self.run_job("main")
+        self.assertEqual(front["status"], "completed", front["error"])
+        stored = self.table.entries("surround")
+        self.store.arrivals = {("rear_l",): "ambiguous", ("rear_r",): "ambiguous"}
+        rear = await self.run_job("rear")
+        self.assertEqual(rear["status"], "failed")
+        self.assertIsNone(rear["result"])
+        self.assertEqual(self.table.entries("surround"), stored)
+        status = await api.get_level_match("main")
+        self.assertEqual({row["role"]: row["trim_db"] for row in status["entries"]},
+                         {"main_l": -1.0, "main_r": 0.0})
 
     async def test_status_lists_the_stored_levels_with_their_trims(self):
         self.configure(mode_state("stereo", ["main_l", "main_r"]), {("main_l",): -18.0, ("main_r",): -20.0})

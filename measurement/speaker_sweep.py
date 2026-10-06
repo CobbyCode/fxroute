@@ -72,13 +72,24 @@ async def wait_for_idle_session(session: Any) -> None:
         await asyncio.sleep(POLL_SECONDS / 2)
 
 
+def has_direct_arrival(analysis: dict[str, Any]) -> bool:
+    """Whether the analyzer found the speaker's direct sound in the take.
+
+    A capture the sweep never reached (amplifier off, wrong or unplugged
+    microphone, a loud room) has none: its level and impulse response are noise.
+    """
+    impulse_response = analysis.get("impulse_response")
+    return isinstance(impulse_response, dict) and impulse_response.get("timing_status") == "valid"
+
+
 async def measure_unit(store: Any, session: Any, job: dict[str, Any], target: dict, unit: dict,
-                       label: str) -> dict[str, Any]:
+                       label: str, *, require_arrival: bool = False) -> dict[str, Any]:
     """Run one speaker's sweep; return its ``analysis`` and the observed capture chain.
 
     ``label`` names the calling flow in error messages. The job carries
     ``_params`` (the microphone selection) and records the running take in
-    ``_measurement_job_id`` so a cancel can reach it.
+    ``_measurement_job_id`` so a cancel can reach it. With ``require_arrival`` a
+    take without a direct arrival is refused instead of returned.
     """
     params = job["_params"]
     rate = target["sample_rate_hz"]
@@ -100,6 +111,10 @@ async def measure_unit(store: Any, session: Any, job: dict[str, Any], target: di
     capture = result.get("capture") if isinstance(result.get("capture"), dict) else {}
     if analysis.get("sample_rate") != rate:
         raise RuntimeError(f"{label} capture sample rate changed")
+    if require_arrival and not has_direct_arrival(analysis):
+        raise RuntimeError(
+            f"The sweep of {unit['label']} did not reach the microphone, so the take cannot be used. "
+            f"Check the amplifier, the speaker and the microphone. Nothing was changed.")
     mic_node = str(capture.get("microphone_node") or "")
     if not mic_node:
         raise RuntimeError(f"{label} capture did not report its microphone")
