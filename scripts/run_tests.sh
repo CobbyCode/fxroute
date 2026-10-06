@@ -140,6 +140,7 @@ BROWSER_TESTS=(
     scripts/check_ui_walkthrough.py
     scripts/check_viewports.py
     scripts/test_brand_geometry.py
+    scripts/test_compare_card_fill_geometry.py
     scripts/test_effects_tone_layout_geometry.py
     scripts/test_favorite_button_geometry.py
     scripts/test_favorite_heart_render.py

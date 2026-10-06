@@ -274,6 +274,10 @@ class AbCompareLayoutTests(unittest.TestCase):
             two_col,
             r"\.effects-card-manage-order \.effects-compare-fields\s*\{\s*grid-template-columns:\s*1fr;",
         )
+        # The spare height must reach the gaps: the info line's auto margin would swallow all of it,
+        # and an empty status line would claim a gap of its own.
+        self.assertRegex(two_col, r"\.effects-card-manage-order \.effects-info\s*\{\s*margin-top:\s*0;")
+        self.assertRegex(two_col, r"\.effects-card-manage-order \.effects-status:empty\s*\{\s*display:\s*none;")
         # The one-column range keeps the side-by-side slots from 480px up.
         self.assertRegex(
             _media_block(RESPONSIVE, "@media (min-width: 480px)"),
