@@ -196,11 +196,12 @@ class DSPManager:
     LOUDNESS_OUTPUT_GAIN_MIN_DB = -36.0
     LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS = 0.35
     TONE_EFFECT_DEFAULTS = {"enabled": False, "mode": "crystalizer"}
-    # Stereo to Surround upmixer (Surround output mode only). Center and
-    # Surround are steering strengths 1 (weak) .. 10 (strong); the engine maps
-    # them to its own steering. fftSize belongs to the HQ engine.
+    # Stereo to Surround upmixer (Surround output mode only). Mode picks the
+    # engine: "fast" (adaptive matrix) or "hq" (spectral, fftSize frames per
+    # transform). Center and Surround are steering strengths 0 (this share off)
+    # .. 10 (strong); each engine maps them to its own steering.
     UPMIXER_DEFAULTS = {"enabled": False, "params": {"mode": "fast", "center": 6, "surround": 6, "fftSize": 2048}}
-    UPMIXER_MODES = ("fast",)
+    UPMIXER_MODES = ("fast", "hq")
     UPMIXER_FFT_SIZES = (1024, 2048, 4096)
     UPMIXER_STRENGTH_MIN = 0
     UPMIXER_STRENGTH_MAX = 10
@@ -1134,6 +1135,8 @@ class DSPManager:
                 lines.append(f"param intensity_band2_db {number(params.get('intensityBand2Db', -2.0))}")
             elif plugin_type == "upmixer":
                 lines.append(f"param mode {params['mode']}")
+                if params["mode"] == "hq":
+                    lines.append(f"param fft_size {number(params['fftSize'])}")
                 for name in ("center", "surround", "center_out", "side_out", "rear_out"):
                     lines.append(f"param {name} {number(params[name])}")
             elif plugin_type == "bass_enhancer":

@@ -19,6 +19,7 @@ import test_surround as surround_support
 QUAD_SUBS, ROLES = surround_support.QUAD_SUBS, surround_support.ROLES
 
 ENABLED = {"upmixer": {"enabled": True, "params": {"mode": "fast", "center": 8, "surround": 4}}}
+HQ = {"upmixer": {"enabled": True, "params": {"mode": "hq", "center": 8, "surround": 4, "fftSize": 4096}}}
 
 
 def stage_lines(text):
@@ -77,12 +78,16 @@ class UpmixerExtrasTests(unittest.TestCase):
             self.assertEqual(fallback["upmixer"]["params"]["center"], 6)
 
     def test_mode_and_fft_size_are_validated_and_unknown_params_dropped(self):
-        for params in ({"mode": "hq"}, {"mode": "other"}, {"fftSize": 512}, {"fftSize": "x"}):
+        for params in ({"mode": "other"}, {"mode": "hq2"}, {"fftSize": 512}, {"fftSize": 8192}, {"fftSize": "x"}):
             with self.subTest(params=params), self.assertRaises(ValueError):
                 self.manager.normalize_effects_extras({"upmixer": {"params": params}})
         extras = self.manager.normalize_effects_extras(
             {"upmixer": {"enabled": True, "params": {"mode": " FAST ", "fftSize": 4096, "junk": 1}}})
         self.assertEqual(extras["upmixer"]["params"], {"mode": "fast", "center": 6, "surround": 6, "fftSize": 4096})
+        for size in (1024, 2048, 4096):
+            extras = self.manager.normalize_effects_extras({"upmixer": {"params": {"mode": " HQ ", "fftSize": str(size)}}})
+            self.assertEqual(extras["upmixer"]["params"]["mode"], "hq")
+            self.assertEqual(extras["upmixer"]["params"]["fftSize"], size)
 
     def test_json_parse_merge_and_persistence_round_trip(self):
         body = {"upmixerEnabled": True, "upmixerCenter": 9, "upmixer_surround": "3", "upmixerMode": "fast"}
@@ -95,6 +100,17 @@ class UpmixerExtrasTests(unittest.TestCase):
         reloaded = DSPManager(Path(self.directory.name) / "presets", Path(self.directory.name) / "irs")
         self.assertEqual(reloaded.load_global_extras()["upmixer"], saved["upmixer"])
         self.assertEqual(json.loads(reloaded.global_extras_file.read_text())["upmixer"], saved["upmixer"])
+
+    def test_hq_mode_and_fft_size_survive_parse_merge_and_persistence(self):
+        body = {"upmixerEnabled": True, "upmixerMode": "hq", "upmixer_fft_size": "1024", "upmixerCenter": 0}
+        merged = effects_extras.merge_effects_extras_from_json(self.manager.load_global_extras(), body)
+        saved = self.manager.save_global_extras(merged)
+        self.assertEqual(saved["upmixer"], {
+            "enabled": True, "params": {"mode": "hq", "center": 0, "surround": 6, "fftSize": 1024}})
+        # A later save that names only a strength keeps the engine and its size.
+        merged = effects_extras.merge_effects_extras_from_json(saved, {"upmixerSurround": 3})
+        again = self.manager.save_global_extras(merged)
+        self.assertEqual(again["upmixer"]["params"], {"mode": "hq", "center": 0, "surround": 3, "fftSize": 1024})
 
     def test_merge_without_upmixer_fields_keeps_the_stored_section(self):
         stored = self.manager.save_global_extras(ENABLED)
@@ -115,6 +131,25 @@ class UpmixerExtrasTests(unittest.TestCase):
             "stage_begin 0 global-upmixer native upmixer", "param mode fast",
             "param center 8", "param surround 4",
             "param center_out 1", "param side_out 1", "param rear_out 1", "stage_end"])
+
+    def test_hq_stage_names_the_engine_and_its_fft_size(self):
+        self.assertEqual(stage_lines(self.compile(ROLES, HQ)), [
+            "stage_begin 0 global-upmixer native upmixer", "param mode hq", "param fft_size 4096",
+            "param center 8", "param surround 4",
+            "param center_out 1", "param side_out 1", "param rear_out 1", "stage_end"])
+        # The Fast engine has no transform size: it never reaches the engine config.
+        self.assertNotIn("fft_size", "\n".join(stage_lines(self.compile(ROLES, ENABLED))))
+
+    def test_hq_keeps_surround_extraction_without_a_center_and_with_zero_strengths(self):
+        for center, surround in ((0, 6), (6, 0), (0, 0)):
+            with self.subTest(center=center, surround=surround):
+                extras = {"upmixer": {"enabled": True, "params": {"mode": "hq", "center": center, "surround": surround}}}
+                lines = stage_lines(self.compile(QUAD_SUBS, extras))
+                self.assertTrue(lines, "a missing Center or a zero strength must not drop the HQ upmixer")
+                self.assertIn("param mode hq", lines)
+                self.assertIn("param fft_size 2048", lines)
+                self.assertIn("param center_out 0", lines)
+                self.assertIn("param rear_out 1", lines)
 
     def test_front_rear_and_subs_without_center_keeps_surround_extraction(self):
         # The test host layout: Front L/R + Rear L/R + Sub 1/2, no Center, no Side.
@@ -192,6 +227,25 @@ class UpmixerExtrasTests(unittest.TestCase):
                 self.assertEqual(old_shape, new_shape)
                 changed = {value[:3] for value in new_values if value not in old_values}
                 self.assertEqual(changed, {("param", "global-upmixer", name) for name in changed_names})
+
+    def test_hq_strength_changes_are_live_but_engine_and_fft_size_rebuild(self):
+        def parts(extras):
+            return DSPRuntime._live_config(self.compile(ROLES, extras))
+
+        def hq(**params):
+            return {"upmixer": {"enabled": True, "params": {"mode": "hq", "center": 8, "surround": 4, "fftSize": 2048, **params}}}
+
+        base_shape, base_values = parts(hq())
+        shape, values = parts(hq(center=2, surround=9))
+        self.assertEqual(shape, base_shape)
+        self.assertEqual({value[:3] for value in values if value not in base_values},
+                         {("param", "global-upmixer", "center"), ("param", "global-upmixer", "surround")})
+        # A new transform size cannot change live: the shape differs, so the runtime swaps the engine.
+        for size in (1024, 4096):
+            self.assertNotEqual(parts(hq(fftSize=size))[0], base_shape)
+        # So does a change of the engine itself, either way.
+        self.assertNotEqual(parts(ENABLED)[0], base_shape)
+        self.assertNotEqual(parts({"upmixer": {"enabled": True, "params": {"mode": "fast", "center": 8, "surround": 4}}})[0], base_shape)
 
     def test_enabling_the_upmixer_changes_the_stage_shape(self):
         old_shape, _ = DSPRuntime._live_config(self.compile(QUAD_SUBS, {}))

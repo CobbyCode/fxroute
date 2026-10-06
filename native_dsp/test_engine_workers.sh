@@ -9,7 +9,7 @@ fi
 mkdir -p build
 ${CC:-cc} -std=gnu11 -O2 -Wall -Wextra -Werror \
     $(pkg-config --cflags $packages) \
-    dsp.c worker_pool.c timing.c autogain.c crystalizer.c upmix_fast.c lv2_host.c test_engine_workers.c \
+    dsp.c worker_pool.c timing.c autogain.c crystalizer.c upmix_fast.c upmix_hq.c lv2_host.c test_engine_workers.c \
     $(pkg-config --libs $packages) -lm -pthread -Wl,--wrap=fx_crystalizer_process \
     -o build/test-engine-workers
 directory=$(mktemp -d "${TMPDIR:-/tmp}/fxroute-worker-status.XXXXXX")

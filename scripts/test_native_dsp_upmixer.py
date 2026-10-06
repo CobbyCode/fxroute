@@ -26,6 +26,12 @@ LATENCY = 64
 ON = {"limiter": {"enabled": False},
       "upmixer": {"enabled": True, "params": {"mode": "fast", "center": 10, "surround": 10}}}
 OFF = {"limiter": {"enabled": False}}
+FFT_SIZES = (1024, 2048, 4096)
+
+
+def hq(center=10, surround=10, fft=2048):
+    return {"limiter": {"enabled": False},
+            "upmixer": {"enabled": True, "params": {"mode": "hq", "center": center, "surround": surround, "fftSize": fft}}}
 
 
 def power(values, begin, count):
@@ -156,8 +162,89 @@ class NativeUpmixerTests(unittest.TestCase):
         self.assertIn("requires Surround", failing(lambda text: text.replace("surround 1\n", "")))
         self.assertIn("invalid config line", failing(lambda text: text.replace("param center 10", "param center 11")))
         self.assertIn("invalid config line", failing(lambda text: text.replace("param surround 10", "param surround -1")))
-        self.assertIn("invalid config line", failing(lambda text: text.replace("param mode fast", "param mode hq")))
+        self.assertIn("invalid config line", failing(lambda text: text.replace("param mode fast", "param mode turbo")))
         self.assertIn("invalid config line", failing(lambda text: text.replace("param rear_out 1", "param rear_out 2")))
+
+    # --- HQ engine ----------------------------------------------------------
+
+    def test_hq_every_fft_size_routes_mono_to_the_center_with_its_own_latency(self):
+        frames = 3 * RATE
+        mono = self.noise(frames, 4)
+        off = self.render(surround_support.ROLES, OFF, mono, mono)
+        for fft in FFT_SIZES:
+            with self.subTest(fft=fft):
+                on = self.render(surround_support.ROLES, hq(10, 10, fft), mono, mono)
+                self.assertGreater(power(on["center"], 2 * RATE, RATE), 1.5 * power(mono, 2 * RATE, RATE))
+                self.assertLess(power(on["main_l"], 2 * RATE, RATE), 0.01 * power(mono, 2 * RATE, RATE))
+                for name in ("side_l", "side_r", "rear_l", "rear_r"):
+                    self.assertLess(power(on[name], 2 * RATE, RATE), 1e-4 * power(mono, 2 * RATE, RATE), name)
+                self.assertEqual(power(off["center"], 0, frames), 0.0)
+
+    def test_hq_delays_every_output_by_the_fft_latency(self):
+        # A hard-left click carries no steering, so it must come out of the same speaker, FFT_SIZE - 1 frames late.
+        frames = 6 * 4096
+        click = [0.0] * frames
+        click[1000] = 0.5
+        silence = [0.0] * frames
+        off = self.render(surround_support.ROLES, OFF, click, silence)
+        for fft in FFT_SIZES:
+            with self.subTest(fft=fft):
+                on = self.render(surround_support.ROLES, hq(10, 10, fft), click, silence)
+                for name, samples in off.items():
+                    peak = max(range(frames), key=lambda index: abs(samples[index]))
+                    if abs(samples[peak]) < 1e-6:
+                        self.assertLess(max(abs(v) for v in on[name]), 1e-6, name)
+                        continue
+                    shifted = max(range(frames), key=lambda index: abs(on[name][index]))
+                    self.assertEqual(shifted - peak, fft - 1, name)
+                    self.assertAlmostEqual(abs(on[name][shifted]), abs(samples[peak]), delta=1e-5, msg=name)
+
+    def test_hq_surround_works_without_a_center_and_zero_strengths_stay_independent(self):
+        frames = 3 * RATE
+        left, right = self.noise(frames, 8), self.noise(frames, 9)
+        reference = power(left, 2 * RATE, RATE)
+        on = self.render(surround_support.QUAD_SUBS, hq(10, 10), left, right)
+        self.assertNotIn("center", on)
+        for name in ("rear_l", "rear_r"):
+            self.assertGreater(power(on[name], 2 * RATE, RATE), 0.2 * reference, name)
+        centre_only = self.render(surround_support.QUAD_SUBS, hq(10, 0), left, right)
+        for name in ("rear_l", "rear_r"):
+            self.assertEqual(power(centre_only[name], 0, frames), 0.0, name)
+        # Center 0 with Surround 10 on a full routing: the centre output stays silent, the surround is fed.
+        common = self.noise(frames, 5)
+        mixed_l = [c + n for c, n in zip(common, self.noise(frames, 6))]
+        mixed_r = [c + n for c, n in zip(common, self.noise(frames, 7))]
+        surround_only = self.render(surround_support.ROLES, hq(0, 10), mixed_l, mixed_r)
+        self.assertEqual(power(surround_only["center"], 0, frames), 0.0)
+        for name in ("side_l", "rear_l"):
+            self.assertGreater(power(surround_only[name], 2 * RATE, RATE), 0.02 * power(mixed_l, 2 * RATE, RATE), name)
+
+    def test_hq_with_both_strengths_zero_is_the_input_delayed_by_the_fft_latency(self):
+        frames = 3 * RATE
+        left, right = self.noise(frames, 12), self.noise(frames, 13)
+        off = self.render(surround_support.ROLES, OFF, left, right)
+        fft = 2048
+        neither = self.render(surround_support.ROLES, hq(0, 0, fft), left, right)
+        for name in off:
+            shifted = neither[name][fft - 1:frames - 4096]
+            reference = off[name][:frames - 4096 - fft + 1]
+            self.assertLess(max(abs(a - b) for a, b in zip(shifted, reference)), 1e-5, name)
+
+    def test_hq_stage_rejects_bad_parameters_and_defaults_the_fft_size(self):
+        silence = [0.0] * 4800
+
+        def failing(text_filter):
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                self.render(surround_support.ROLES, hq(), silence, silence, text_filter)
+            return raised.exception.stderr.decode() if isinstance(raised.exception.stderr, bytes) else raised.exception.stderr
+
+        for bad in ("param fft_size 3000", "param fft_size 512", "param fft_size 8192", "param fft_size 2048.5", "param fft_size -2048"):
+            self.assertIn("invalid config line", failing(lambda text, bad=bad: text.replace("param fft_size 2048", bad)), bad)
+        self.assertIn("requires Surround", failing(lambda text: text.replace("surround 1\n", "")))
+        # Without an fft_size line the engine runs HQ at 2048.
+        mono = self.noise(RATE, 3)
+        on = self.render(surround_support.ROLES, hq(), mono, mono, lambda text: text.replace("param fft_size 2048\n", ""))
+        self.assertGreater(power(on["center"], RATE // 2, RATE // 2), 0.5 * power(mono, RATE // 2, RATE // 2))
 
 
 if __name__ == "__main__":

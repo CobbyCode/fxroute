@@ -106,6 +106,8 @@ function makeContext() {
         ${extractFunction('normalizeEffectsLoudnessStrength')}
         ${extractFunction('normalizeEffectsToneEffectMode')}
         ${extractFunction('normalizeEffectsUpmixerStrength')}
+        ${extractFunction('normalizeEffectsUpmixerMode')}
+        ${extractFunction('normalizeEffectsUpmixerFftSize')}
         ${extractFunction('collectEffectsExtras')}
     `, context);
     require('../static/measurement_dsp.js');

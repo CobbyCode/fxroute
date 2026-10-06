@@ -3,6 +3,7 @@
 // Surround upmixer controls in the Tone group: visible in Surround only,
 // Center control follows the routed Center speaker, Surround control does
 // not, values round-trip through collect/apply as whole numbers 0..10.
+// Mode picks the engine (Fast or HQ); the FFT size shows for HQ only.
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -30,6 +31,10 @@ function elementsFixture() {
     return {
         effectsUpmixerRow: element(),
         effectsUpmixerEnabled: element(),
+        effectsUpmixerMode: element({ value: 'fast' }),
+        effectsUpmixerModeWrap: element(),
+        effectsUpmixerFftSize: element({ value: '2048' }),
+        effectsUpmixerFftWrap: element(),
         effectsUpmixerCenter: element({ value: '6' }),
         effectsUpmixerCenterWrap: element(),
         effectsUpmixerSurround: element({ value: '6' }),
@@ -53,7 +58,8 @@ const hidden = (el) => el.classList.contains('hidden');
 
 // Markup: ids and the 0..10 whole-number range, like Loudness strength.
 for (const id of ['effects-upmixer-row', 'effects-upmixer-enabled', 'effects-upmixer-center',
-    'effects-upmixer-center-wrap', 'effects-upmixer-surround', 'effects-upmixer-surround-wrap']) {
+    'effects-upmixer-center-wrap', 'effects-upmixer-surround', 'effects-upmixer-surround-wrap',
+    'effects-upmixer-mode', 'effects-upmixer-mode-wrap', 'effects-upmixer-fft-size', 'effects-upmixer-fft-wrap']) {
     assert.ok(indexSource.includes(`id="${id}"`), `index.html must contain ${id}`);
 }
 assert.match(indexSource, /id="effects-upmixer-center"[^>]*min="0" max="10" step="1"/);
@@ -61,6 +67,18 @@ assert.match(indexSource, /id="effects-upmixer-surround"[^>]*min="0" max="10" st
 assert.match(indexSource, /id="effects-loudness-strength"[^>]*min="0" max="10" step="1"/);
 assert.ok(indexSource.indexOf('effects-upmixer-row') < indexSource.indexOf('effects-loudness-enabled'),
     'the upmixer row leads the Tone group');
+{
+    const optionValues = (id) => {
+        const block = indexSource.match(new RegExp(`<select id="${id}"[^>]*>([\\s\\S]*?)</select>`));
+        assert.ok(block, `${id} must be a select`);
+        return [...block[1].matchAll(/<option value="([^"]+)"( selected)?/g)].map(match => [match[1], !!match[2]]);
+    };
+    assert.deepEqual(optionValues('effects-upmixer-mode'), [['fast', true], ['hq', false]]);
+    assert.deepEqual(optionValues('effects-upmixer-fft-size'), [['1024', false], ['2048', true], ['4096', false]]);
+    const order = ['effects-upmixer-mode-wrap', 'effects-upmixer-center-wrap', 'effects-upmixer-surround-wrap', 'effects-upmixer-fft-wrap']
+        .map(id => indexSource.indexOf(`id="${id}"`));
+    assert.deepEqual(order, [...order].sort((a, b) => a - b), 'order: Mode, Center, Surround, FFT');
+}
 assert.match(indexSource, /id="effects-upmixer-row"[^>]*class="[^"]*\bhidden\b|class="[^"]*\bhidden\b[^"]*" id="effects-upmixer-row"/,
     'the row starts hidden until the catalog says Surround');
 
@@ -75,6 +93,20 @@ assert.equal(Effects.normalizeEffectsUpmixerStrength(11), 10);
 assert.equal(Effects.normalizeEffectsUpmixerStrength(4.6), 5);
 assert.equal(Effects.normalizeEffectsUpmixerStrength('x', 6), 6);
 assert.equal(Effects.normalizeEffectsUpmixerStrength(undefined), 6);
+
+// Engine and FFT size normalisation.
+assert.equal(Effects.normalizeEffectsUpmixerMode('hq'), 'hq');
+assert.equal(Effects.normalizeEffectsUpmixerMode(' HQ '), 'hq');
+assert.equal(Effects.normalizeEffectsUpmixerMode('FAST'), 'fast');
+assert.equal(Effects.normalizeEffectsUpmixerMode(''), 'fast');
+assert.equal(Effects.normalizeEffectsUpmixerMode(null), 'fast');
+assert.equal(Effects.normalizeEffectsUpmixerMode('turbo'), 'fast');
+assert.equal(Effects.normalizeEffectsUpmixerFftSize('4096'), 4096);
+assert.equal(Effects.normalizeEffectsUpmixerFftSize(1024), 1024);
+assert.equal(Effects.normalizeEffectsUpmixerFftSize(512), 2048);
+assert.equal(Effects.normalizeEffectsUpmixerFftSize(''), 2048);
+assert.equal(Effects.normalizeEffectsUpmixerFftSize('x'), 2048);
+assert.equal(Effects.normalizeEffectsUpmixerFftSize(undefined, 1024), 1024);
 
 // Visibility by mode and routing.
 {
@@ -107,11 +139,27 @@ assert.equal(Effects.normalizeEffectsUpmixerStrength(undefined), 6);
     assert.ok(hidden(elements.effectsUpmixerCenterWrap), 'no Center: Center control hidden');
     assert.ok(!hidden(elements.effectsUpmixerSurroundWrap), 'no Center: Surround control stays');
 
+    // Mode shows with the upmixer; the FFT size only while the HQ engine is chosen.
+    state.outputSystem.catalog = catalog('surround', ['main_l', 'main_r', 'center', 'rear_l', 'rear_r']);
+    elements.effectsUpmixerMode.value = 'fast';
+    Effects.updateEffectsUpmixerUi();
+    assert.ok(!hidden(elements.effectsUpmixerModeWrap), 'Mode visible with the upmixer on');
+    assert.ok(hidden(elements.effectsUpmixerFftWrap), 'Fast: no FFT control');
+    elements.effectsUpmixerMode.value = 'hq';
+    Effects.updateEffectsUpmixerUi();
+    assert.ok(!hidden(elements.effectsUpmixerFftWrap), 'HQ: FFT control visible');
+    // HQ works without a routed Center like Fast does: only the Center control goes away.
+    state.outputSystem.catalog = catalog('surround', ['main_l', 'main_r', 'rear_l', 'rear_r', 'sub1', 'sub2']);
+    Effects.updateEffectsUpmixerUi();
+    assert.ok(hidden(elements.effectsUpmixerCenterWrap) && !hidden(elements.effectsUpmixerSurroundWrap));
+    assert.ok(!hidden(elements.effectsUpmixerModeWrap) && !hidden(elements.effectsUpmixerFftWrap));
+
     // Disabled: the row stays, the controls fold away.
     elements.effectsUpmixerEnabled.checked = false;
     Effects.updateEffectsUpmixerUi();
     assert.ok(!hidden(elements.effectsUpmixerRow));
     assert.ok(hidden(elements.effectsUpmixerCenterWrap) && hidden(elements.effectsUpmixerSurroundWrap));
+    assert.ok(hidden(elements.effectsUpmixerModeWrap) && hidden(elements.effectsUpmixerFftWrap));
 }
 
 // collect / apply round trip.
@@ -140,6 +188,26 @@ assert.equal(Effects.normalizeEffectsUpmixerStrength(undefined), 6);
     const clamped = Effects.collectEffectsExtras();
     assert.equal(clamped.upmixerCenter, 10);
     assert.equal(clamped.upmixerSurround, 6);
+
+    // Engine and FFT size round-trip; unknown values fall back to Fast / 2048.
+    Effects.applyEffectsExtras({ upmixerEnabled: true, upmixerMode: 'hq', upmixerFftSize: 4096, upmixerCenter: 6, upmixerSurround: 6 });
+    assert.equal(elements.effectsUpmixerMode.value, 'hq');
+    assert.equal(elements.effectsUpmixerFftSize.value, '4096');
+    assert.ok(!hidden(elements.effectsUpmixerFftWrap));
+    let engine = Effects.collectEffectsExtras();
+    assert.equal(engine.upmixerMode, 'hq');
+    assert.equal(engine.upmixerFftSize, 4096);
+    elements.effectsUpmixerFftSize.value = '1024';
+    assert.equal(Effects.collectEffectsExtras().upmixerFftSize, 1024);
+    elements.effectsUpmixerFftSize.value = '99';
+    elements.effectsUpmixerMode.value = 'bogus';
+    engine = Effects.collectEffectsExtras();
+    assert.equal(engine.upmixerFftSize, 2048);
+    assert.equal(engine.upmixerMode, 'fast');
+    Effects.applyEffectsExtras({ upmixerEnabled: true, upmixerCenter: 6, upmixerSurround: 6 });
+    assert.equal(elements.effectsUpmixerMode.value, 'fast', 'a state without a mode shows Fast');
+    assert.equal(elements.effectsUpmixerFftSize.value, '2048');
+    assert.ok(hidden(elements.effectsUpmixerFftWrap));
 
     // 0 is a real value for either share and survives apply/collect on its own.
     for (const [center, surround] of [[0, 5], [5, 0], [0, 0]]) {

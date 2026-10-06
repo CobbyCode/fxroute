@@ -129,7 +129,7 @@ int main(int argc, char **argv) {
             native = ROOT / "native_dsp"
             flags = subprocess.check_output(["pkg-config", "--cflags", "--libs", *DEPS], text=True).split()
             subprocess.run(["cc", "-std=c11", "-O2", "-I", str(native), str(source),
-                *(str(native / file) for file in ("dsp.c", "worker_pool.c", "timing.c", "autogain.c", "crystalizer.c", "upmix_fast.c", "lv2_host.c")),
+                *(str(native / file) for file in ("dsp.c", "worker_pool.c", "timing.c", "autogain.c", "crystalizer.c", "upmix_fast.c", "upmix_hq.c", "lv2_host.c")),
                 *flags, "-lm", "-pthread", "-o", str(path / "test")], check=True, capture_output=True)
             subprocess.run([str(path / "test"), str(config)], check=True, capture_output=True)
 

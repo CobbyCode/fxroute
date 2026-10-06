@@ -186,8 +186,10 @@ function setupEffectsActions() {
         deps.getElements().effectsAutogainTargetDb,
         deps.getElements().effectsLoudnessStrength,
         deps.getElements().effectsLoudnessFftSize,
+        deps.getElements().effectsUpmixerMode,
         deps.getElements().effectsUpmixerCenter,
         deps.getElements().effectsUpmixerSurround,
+        deps.getElements().effectsUpmixerFftSize,
         deps.getElements().effectsBassAmount,
         deps.getElements().effectsToneEffectMode,
     ].forEach(el => {
@@ -225,6 +227,8 @@ function setupEffectsActions() {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
+    // The FFT size follows the engine at once; the save itself rides the shared select debounce.
+    if (deps.getElements().effectsUpmixerMode) deps.getElements().effectsUpmixerMode.addEventListener('change', () => updateEffectsExtrasUi());
     if (deps.getElements().effectsToneEffectEnabled) deps.getElements().effectsToneEffectEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
@@ -298,8 +302,10 @@ async function fetchEffects() {
                 toneEffectEnabled: !!data.global_extras?.tone_effect?.enabled,
                 toneEffectMode: String(data.global_extras?.tone_effect?.mode || 'crystalizer'),
                 upmixerEnabled: !!data.global_extras?.upmixer?.enabled,
+                upmixerMode: String(data.global_extras?.upmixer?.params?.mode || 'fast'),
                 upmixerCenter: data.global_extras?.upmixer?.params?.center ?? 6,
                 upmixerSurround: data.global_extras?.upmixer?.params?.surround ?? 6,
+                upmixerFftSize: Number(data.global_extras?.upmixer?.params?.fftSize ?? 2048),
             });
         }
         renderEffects();
@@ -797,6 +803,18 @@ function normalizeEffectsUpmixerStrength(value, fallback = 6) {
     return Math.max(0, Math.min(10, Math.round(numeric)));
 }
 
+// Engine of the Surround upmixer: the adaptive matrix or the spectral engine.
+function normalizeEffectsUpmixerMode(value, fallback = 'fast') {
+    const mode = String(value ?? '').trim().toLowerCase();
+    return mode === 'fast' || mode === 'hq' ? mode : fallback;
+}
+
+// Transform size of the HQ engine, in frames.
+function normalizeEffectsUpmixerFftSize(value, fallback = 2048) {
+    const numeric = Number(value);
+    return [1024, 2048, 4096].includes(numeric) ? numeric : fallback;
+}
+
 function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {
     const normalized = String(value || fallback).trim().toLowerCase();
     return EFFECTS_TONE_EFFECT_MODES.has(normalized) ? normalized : fallback;
@@ -825,6 +843,12 @@ function applyEffectsExtras(extras = {}) {
         deps.getElements().effectsBassAmount.value = String(Number(extras.bassAmount || 0));
     }
     if (deps.getElements().effectsUpmixerEnabled) deps.getElements().effectsUpmixerEnabled.checked = !!extras.upmixerEnabled;
+    if (deps.getElements().effectsUpmixerMode && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerMode)) {
+        deps.getElements().effectsUpmixerMode.value = normalizeEffectsUpmixerMode(extras.upmixerMode, 'fast');
+    }
+    if (deps.getElements().effectsUpmixerFftSize && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerFftSize)) {
+        deps.getElements().effectsUpmixerFftSize.value = String(normalizeEffectsUpmixerFftSize(extras.upmixerFftSize, 2048));
+    }
     if (deps.getElements().effectsUpmixerCenter && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerCenter)) {
         deps.getElements().effectsUpmixerCenter.value = normalizeEffectsUpmixerStrength(extras.upmixerCenter, 6);
     }
@@ -861,7 +885,8 @@ function updateEffectsExtrasUi() {
 }
 
 // The upmixer exists in Surround only. A missing Center speaker removes just
-// the Center control: the Surround extraction does not depend on it.
+// the Center control: the Surround extraction does not depend on it. The FFT
+// size belongs to the HQ engine and shows only for it.
 function updateEffectsUpmixerUi() {
     const catalog = deps.getState().outputSystem?.catalog;
     const surround = catalog?.active_mode === 'surround';
@@ -871,11 +896,18 @@ function updateEffectsUpmixerUi() {
     if (deps.getElements().effectsUpmixerRow) {
         deps.getElements().effectsUpmixerRow.classList.toggle('hidden', !surround);
     }
+    if (deps.getElements().effectsUpmixerModeWrap) {
+        deps.getElements().effectsUpmixerModeWrap.classList.toggle('hidden', !enabled);
+    }
     if (deps.getElements().effectsUpmixerCenterWrap) {
         deps.getElements().effectsUpmixerCenterWrap.classList.toggle('hidden', !enabled || !hasCenter);
     }
     if (deps.getElements().effectsUpmixerSurroundWrap) {
         deps.getElements().effectsUpmixerSurroundWrap.classList.toggle('hidden', !enabled);
+    }
+    if (deps.getElements().effectsUpmixerFftWrap) {
+        const hq = normalizeEffectsUpmixerMode(deps.getElements().effectsUpmixerMode?.value, 'fast') === 'hq';
+        deps.getElements().effectsUpmixerFftWrap.classList.toggle('hidden', !enabled || !hq);
     }
 }
 
@@ -900,8 +932,10 @@ function loadSavedEffectsExtras() {
         toneEffectEnabled: !!fx.global_extras?.tone_effect?.enabled,
         toneEffectMode: String(fx.global_extras?.tone_effect?.mode || 'crystalizer'),
         upmixerEnabled: !!fx.global_extras?.upmixer?.enabled,
+        upmixerMode: String(fx.global_extras?.upmixer?.params?.mode || 'fast'),
         upmixerCenter: fx.global_extras?.upmixer?.params?.center ?? 6,
         upmixerSurround: fx.global_extras?.upmixer?.params?.surround ?? 6,
+        upmixerFftSize: Number(fx.global_extras?.upmixer?.params?.fftSize ?? 2048),
     });
 }
 
@@ -945,8 +979,10 @@ function collectEffectsExtras() {
         toneEffectEnabled: deps.getElements().effectsToneEffectEnabled?.checked || false,
         toneEffectMode: normalizeEffectsToneEffectMode(deps.getElements().effectsToneEffectMode?.value, 'crystalizer'),
         upmixerEnabled: deps.getElements().effectsUpmixerEnabled?.checked || false,
+        upmixerMode: normalizeEffectsUpmixerMode(deps.getElements().effectsUpmixerMode?.value, 'fast'),
         upmixerCenter: normalizeEffectsUpmixerStrength(deps.getElements().effectsUpmixerCenter?.value, 6),
         upmixerSurround: normalizeEffectsUpmixerStrength(deps.getElements().effectsUpmixerSurround?.value, 6),
+        upmixerFftSize: normalizeEffectsUpmixerFftSize(deps.getElements().effectsUpmixerFftSize?.value, 2048),
     };
 }
 
@@ -1003,8 +1039,10 @@ async function _doSaveEffectsExtras() {
                 enabled: !!extras.upmixerEnabled,
                 params: {
                     ...(deps.getState().dsp?.global_extras?.upmixer?.params || {}),
+                    mode: extras.upmixerMode,
                     center: extras.upmixerCenter,
                     surround: extras.upmixerSurround,
+                    fftSize: extras.upmixerFftSize,
                 },
             },
         };
@@ -1060,6 +1098,8 @@ function setEffectsExtrasFeedback(message, cls) {
         normalizeEffectsLoudnessStrength,
         normalizeEffectsToneEffectMode,
         normalizeEffectsUpmixerStrength,
+        normalizeEffectsUpmixerMode,
+        normalizeEffectsUpmixerFftSize,
         normalizeLinkedPeqSpecialBands,
         normalizePeqEqMode,
         readPeqNumberInput,

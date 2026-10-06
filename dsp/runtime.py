@@ -1240,7 +1240,8 @@ class DSPRuntime:
                 shape.append((kind, stage, parts[1]))
                 values.append((kind, stage, parts[1], float(parts[2])))
             elif kind == "param" and stage is not None and len(parts) >= 3:
-                if parts[1] == "path":
+                if parts[1] in {"path", "fft_size"}:
+                    # Paths and transform sizes cannot change live: a new value rebuilds the engine.
                     shape.append((kind, stage, parts[1], *parts[2:]))
                 else:
                     shape.append((kind, stage, parts[1]))

@@ -73,7 +73,73 @@ int main(int argc, char **argv) {
     subprocess.run([
         "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "worker_pool.c"), str(NATIVE / "timing.c"), str(NATIVE / "autogain.c"),
-        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "upmix_hq.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        *flags, "-lm", "-o", str(binary),
+    ], check=True)
+    subprocess.run([str(binary), str(config)], check=True)
+
+
+def test_releasing_the_effect_bypass_starts_the_upmixer_empty(tmp_path):
+    # The bypass skips the whole stage chain. The HQ upmixer holds a transform of past input;
+    # releasing the bypass must not replay it.
+    config = tmp_path / "upmixer.conf"
+    config.write_text(
+        "rate 48000\ninputs 8\nsurround 1\noutputs 8\n"
+        + "".join(f"matrix {index} {index} 1\n" for index in range(8))
+        + "stage_begin 0 global-upmixer native upmixer\nparam mode hq\nparam fft_size 1024\n"
+        "param center 6\nparam surround 6\nparam center_out 1\nparam side_out 1\nparam rear_out 1\nstage_end\n"
+    )
+    harness = tmp_path / "bypass_test.c"
+    binary = tmp_path / "bypass_test"
+    harness.write_text(
+        r'''
+#include "dsp.h"
+#include <math.h>
+#include <string.h>
+
+enum { BLOCK = 500, CHANNELS = 8 };
+
+/* Runs `blocks` blocks of a hard-left tone (or silence) and returns the largest output magnitude seen. */
+static float run(fxdsp *d, unsigned blocks, int tone, unsigned *phase) {
+    float input[CHANNELS][BLOCK], output[CHANNELS][BLOCK], largest = 0.0f;
+    const float *in[CHANNELS]; float *out[CHANNELS];
+    for (unsigned c = 0; c < CHANNELS; c++) { in[c] = input[c]; out[c] = output[c]; }
+    for (unsigned b = 0; b < blocks; b++) {
+        memset(input, 0, sizeof input);
+        if (tone) for (unsigned n = 0; n < BLOCK; n++) input[0][n] = 0.5f * sinf(0.05f * (float)((*phase)++));
+        fxdsp_process(d, in, out, BLOCK);
+        for (unsigned c = 0; c < CHANNELS; c++)
+            for (unsigned n = 0; n < BLOCK; n++) if (fabsf(output[c][n]) > largest) largest = fabsf(output[c][n]);
+    }
+    return largest;
+}
+
+int main(int argc, char **argv) {
+    char error[256];
+    unsigned phase = 0;
+    fxdsp *d = fxdsp_load(argv[1], error, sizeof error);
+    (void)argc;
+    if (!d) return 1;
+    run(d, 20, 1, &phase);                                  /* programme in the upmixer's history */
+    /* Control: without a bypass the history is played out after the programme stopped. */
+    if (run(d, 4, 0, &phase) < 0.1f) return 2;
+    run(d, 20, 1, &phase);
+    fxdsp_set_effect_bypass(d, 1);
+    run(d, 4, 1, &phase);                                   /* bypassed: the chain is not fed */
+    fxdsp_set_effect_bypass(d, 0);
+    if (run(d, 4, 0, &phase) != 0.0f) return 3;             /* released: nothing stale comes out */
+    fxdsp_free(d);
+    return 0;
+}
+'''
+    )
+    flags = shlex.split(subprocess.check_output(
+        ["pkg-config", "--cflags", "--libs", "libebur128", "lilv-0", "samplerate",
+         "speexdsp"], text=True))
+    subprocess.run([
+        "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
+        "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "worker_pool.c"), str(NATIVE / "timing.c"), str(NATIVE / "autogain.c"),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "upmix_hq.c"), str(NATIVE / "lv2_host.c"), str(harness),
         *flags, "-lm", "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary), str(config)], check=True)
@@ -152,7 +218,7 @@ int main(int argc, char **argv) {
     subprocess.run([
         "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "worker_pool.c"), str(NATIVE / "timing.c"), str(NATIVE / "autogain.c"),
-        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "upmix_hq.c"), str(NATIVE / "lv2_host.c"), str(harness),
         *flags, "-lm", "-pthread", "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary), str(config)], check=True, timeout=3)
@@ -247,7 +313,7 @@ int main(int argc, char **argv) {
     subprocess.run([
         "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "worker_pool.c"), str(NATIVE / "timing.c"), str(NATIVE / "autogain.c"),
-        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "upmix_hq.c"), str(NATIVE / "lv2_host.c"), str(harness),
         *flags, "-lm", "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary), str(config)], check=True)
@@ -302,7 +368,7 @@ int main(int argc, char **argv) {
     subprocess.run([
         "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "worker_pool.c"), str(NATIVE / "timing.c"), str(NATIVE / "autogain.c"),
-        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "upmix_hq.c"), str(NATIVE / "lv2_host.c"), str(harness),
         *flags, "-lm", "-o", str(binary),
     ], check=True)
     configs = {
@@ -319,6 +385,8 @@ int main(int argc, char **argv) {
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         test_atomic_mutes_and_peak_snapshots_work_offline(Path(directory))
+    with tempfile.TemporaryDirectory() as directory:
+        test_releasing_the_effect_bypass_starts_the_upmixer_empty(Path(directory))
     test_pipewire_engine_exposes_non_rt_datagram_control_protocol()
     with tempfile.TemporaryDirectory() as directory:
         test_live_commit_is_bounded_and_abort_discards_stages(Path(directory))

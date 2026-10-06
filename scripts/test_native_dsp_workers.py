@@ -143,7 +143,7 @@ int main(int argc, char **argv) {
 }
 ''')
     target = tmp_path / "graphs"
-    compile_native(target, [NATIVE / name for name in ("dsp.c", "worker_pool.c", "autogain.c", "crystalizer.c", "upmix_fast.c", "lv2_host.c")] + [harness])
+    compile_native(target, [NATIVE / name for name in ("dsp.c", "worker_pool.c", "autogain.c", "crystalizer.c", "upmix_fast.c", "upmix_hq.c", "lv2_host.c")] + [harness])
     # A second, narrower graph: no convolver stage and no output convolution,
     # so it spreads fewer jobs and leaves part of the shared pool idle.
     narrow = tmp_path / "narrow.conf"

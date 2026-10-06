@@ -946,6 +946,13 @@
                                         <div class="effects-extras-row effects-extras-row-helpers effects-loudness-row hidden" id="effects-upmixer-row">
                                             <label class="checkbox-row"><input type="checkbox" id="effects-upmixer-enabled"> Upmixer</label>
                                             <div class="effects-loudness-controls">
+                                                <label for="effects-upmixer-mode" id="effects-upmixer-mode-wrap" class="effects-inline-control hidden">
+                                                    <span class="effects-inline-control-label">Mode</span>
+                                                    <select id="effects-upmixer-mode" class="url-input effects-compact-control">
+                                                        <option value="fast" selected>Fast</option>
+                                                        <option value="hq">HQ</option>
+                                                    </select>
+                                                </label>
                                                 <label for="effects-upmixer-center" id="effects-upmixer-center-wrap" class="effects-inline-control hidden">
                                                     <span class="effects-inline-control-label">Center</span>
                                                     <div class="stepper-control">
@@ -961,6 +968,14 @@
                                                         <input type="number" id="effects-upmixer-surround" class="url-input delay-number-input stepper-input" min="0" max="10" step="1" value="6" aria-label="Surround">
                                                         <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase upmixer surround">+</button>
                                                     </div>
+                                                </label>
+                                                <label for="effects-upmixer-fft-size" id="effects-upmixer-fft-wrap" class="effects-inline-control hidden">
+                                                    <span class="effects-inline-control-label">FFT</span>
+                                                    <select id="effects-upmixer-fft-size" class="url-input effects-compact-control">
+                                                        <option value="1024">1024</option>
+                                                        <option value="2048" selected>2048</option>
+                                                        <option value="4096">4096</option>
+                                                    </select>
                                                 </label>
                                             </div>
                                         </div>
@@ -1898,7 +1913,7 @@
     <script src="/static/subwoofer_ui.js?v=0.9.7"></script>
     <script src="/static/output_system_controller.js?v=0.9.2"></script>
     <script src="/static/output_bank_ui.js?v=0.9.7"></script>
-    <script src="/static/output_effects_ui.js?v=0.9.9"></script>
+    <script src="/static/output_effects_ui.js?v=0.9.10"></script>
     <script src="/static/measurement_panel_ui.js?v=0.9.10"></script>
     <script src="/static/measurement_saved_ui.js?v=0.9.6"></script>
     <script src="/static/measurement_editors_ui.js?v=0.9.2"></script>
@@ -1916,7 +1931,7 @@
     <script src="/static/playback_core.js?v=0.9.8"></script>
     <script src="/static/playback_ui.js?v=0.9.8"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.285"></script>
+    <script src="/static/app.js?v=0.9.286"></script>
     <script src="/static/streaming.js?v=0.9.79"></script>
 </body>
 </html>

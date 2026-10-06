@@ -1270,10 +1270,14 @@ const elements = {
     effectsBassControlsWrap: document.getElementById('effects-bass-controls-wrap'),
     effectsUpmixerRow: document.getElementById('effects-upmixer-row'),
     effectsUpmixerEnabled: document.getElementById('effects-upmixer-enabled'),
+    effectsUpmixerMode: document.getElementById('effects-upmixer-mode'),
+    effectsUpmixerModeWrap: document.getElementById('effects-upmixer-mode-wrap'),
     effectsUpmixerCenter: document.getElementById('effects-upmixer-center'),
     effectsUpmixerCenterWrap: document.getElementById('effects-upmixer-center-wrap'),
     effectsUpmixerSurround: document.getElementById('effects-upmixer-surround'),
     effectsUpmixerSurroundWrap: document.getElementById('effects-upmixer-surround-wrap'),
+    effectsUpmixerFftSize: document.getElementById('effects-upmixer-fft-size'),
+    effectsUpmixerFftWrap: document.getElementById('effects-upmixer-fft-wrap'),
     effectsToneEffectEnabled: document.getElementById('effects-tone-effect-enabled'),
     effectsToneEffectWrap: document.getElementById('effects-tone-effect-wrap'),
     effectsToneEffectMode: document.getElementById('effects-tone-effect-mode'),
@@ -1726,8 +1730,10 @@ function handleWebSocketMessage(msg) {
                         toneEffectEnabled: !!state.dsp.global_extras?.tone_effect?.enabled,
                         toneEffectMode: String(state.dsp.global_extras?.tone_effect?.mode || 'crystalizer'),
                         upmixerEnabled: !!state.dsp.global_extras?.upmixer?.enabled,
+                        upmixerMode: String(state.dsp.global_extras?.upmixer?.params?.mode || 'fast'),
                         upmixerCenter: state.dsp.global_extras?.upmixer?.params?.center ?? 6,
                         upmixerSurround: state.dsp.global_extras?.upmixer?.params?.surround ?? 6,
+                        upmixerFftSize: Number(state.dsp.global_extras?.upmixer?.params?.fftSize ?? 2048),
                     });
                 }
                 EffectsUI.renderEffects();

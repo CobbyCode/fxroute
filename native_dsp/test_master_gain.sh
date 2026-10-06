@@ -16,7 +16,7 @@ SPEEXDSP_CFLAGS="$(pkg-config --cflags speexdsp)"
 SPEEXDSP_LIBS="$(pkg-config --libs speexdsp)"
 ${CC:-cc} -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
     $EBUR128_CFLAGS $LILV_CFLAGS $SAMPLERATE_CFLAGS $SPEEXDSP_CFLAGS \
-    dsp.c worker_pool.c timing.c autogain.c crystalizer.c upmix_fast.c lv2_host.c test_master_gain.c \
+    dsp.c worker_pool.c timing.c autogain.c crystalizer.c upmix_fast.c upmix_hq.c lv2_host.c test_master_gain.c \
     $EBUR128_LIBS $LILV_LIBS $SAMPLERATE_LIBS $SPEEXDSP_LIBS \
     -lm -pthread -o build/test-master-gain
 ./build/test-master-gain

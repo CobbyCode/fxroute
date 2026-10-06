@@ -148,6 +148,8 @@ function makeContext({ responses = [], stateDsp = null } = {}) {
         ${extractFunction('normalizeEffectsLoudnessStrength')}
         ${extractFunction('normalizeEffectsToneEffectMode')}
         ${extractFunction('normalizeEffectsUpmixerStrength')}
+        ${extractFunction('normalizeEffectsUpmixerMode')}
+        ${extractFunction('normalizeEffectsUpmixerFftSize')}
         ${extractFunction('collectEffectsExtras')}
         ${extractFunction('buildEffectsExtrasSaveBody')}
         ${extractFunction('setEffectsExtrasFeedback')}
