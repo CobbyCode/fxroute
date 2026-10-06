@@ -35,9 +35,9 @@ def gaussian_lobe(width_ms, at=ARRIVAL):
     return np.exp(-0.5 * t * t)
 
 
-def quadrature(ir):
-    """The same wavelet shifted by 90 degrees: equal positive and negative lobes."""
-    spectrum = np.fft.rfft(ir) * -1j
+def rotated(ir, degrees):
+    """The same wavelet with its carrier phase shifted: 90 degrees leaves equal positive and negative lobes."""
+    spectrum = np.fft.rfft(ir) * np.exp(-1j * np.deg2rad(degrees))
     return np.fft.irfft(spectrum, n=ir.size)
 
 
@@ -47,33 +47,38 @@ def verdict(ir, arrival=ARRIVAL):
 
 class VerdictTests(unittest.TestCase):
     def test_a_positive_and_a_negative_spike(self):
-        self.assertEqual(verdict(with_noise(spike()))["verdict"], polarity.CORRECT)
+        result = verdict(with_noise(spike()))
+        self.assertEqual((result["verdict"], result["peak_sign"]), (polarity.CORRECT, 1))
+        self.assertGreater(result["phase_cos"], 0.9)
         result = verdict(with_noise(-spike()))
-        self.assertEqual(result["verdict"], polarity.REVERSED)
-        self.assertEqual(result["peak_sign"], -1)
+        self.assertEqual((result["verdict"], result["peak_sign"]), (polarity.REVERSED, -1))
+        self.assertLess(result["phase_cos"], -0.9)
 
-    def test_a_speaker_like_wavelet_keeps_its_sign(self):
-        # A woofer lobe plus a slow negative undershoot and some high-frequency ringing.
-        wavelet = gaussian_lobe(0.4, ARRIVAL + 24) - 0.2 * gaussian_lobe(2.0, ARRIVAL + 200)
-        wavelet += 0.1 * np.sin(np.arange(LENGTH) * 2 * np.pi * 6000 / RATE) * gaussian_lobe(0.3, ARRIVAL)
+    def test_the_high_range_decides_when_the_mid_range_shows_the_opposite_sign(self):
+        # A multi-way speaker: a positive first pulse and, from its crossover, a negative mid-range lobe.
+        wavelet = spike() - 0.8 * gaussian_lobe(0.25, ARRIVAL + 6)
         self.assertEqual(verdict(with_noise(wavelet))["verdict"], polarity.CORRECT)
         self.assertEqual(verdict(with_noise(-wavelet))["verdict"], polarity.REVERSED)
 
-    def test_a_low_passed_lobe_has_a_clear_sign(self):
-        lobe = gaussian_lobe(1.0, ARRIVAL + 24)
-        self.assertEqual(verdict(with_noise(lobe))["verdict"], polarity.CORRECT)
-        self.assertEqual(verdict(with_noise(-lobe))["verdict"], polarity.REVERSED)
+    def test_a_moderately_rotated_phase_still_decides(self):
+        wavelet = rotated(spike(), 45)
+        self.assertEqual(verdict(with_noise(wavelet))["verdict"], polarity.CORRECT)
+        self.assertEqual(verdict(with_noise(-wavelet))["verdict"], polarity.REVERSED)
 
     def test_a_quadrature_wavelet_is_inconclusive(self):
         # Equal positive and negative lobes: the phase decides, not the wiring.
-        result = verdict(with_noise(quadrature(spike())))
-        self.assertEqual(result["verdict"], polarity.INCONCLUSIVE)
-        self.assertEqual(result["reason"], "mixed_lobes")
+        result = verdict(with_noise(rotated(spike(), 90)))
+        self.assertEqual((result["verdict"], result["reason"]), (polarity.INCONCLUSIVE, "unclear_phase"))
 
     def test_a_far_opposite_peak_does_not_count(self):
         ir = spike()
         ir[ARRIVAL + 960] = -0.9  # 20 ms later: a reflection, not part of the arrival
         self.assertEqual(verdict(with_noise(ir))["verdict"], polarity.CORRECT)
+
+    def test_a_way_without_energy_in_the_band_has_no_verdict(self):
+        # A woofer way: a smooth lobe, nothing above 4 kHz to read a peak from.
+        result = verdict(with_noise(gaussian_lobe(1.0, ARRIVAL + 24)))
+        self.assertEqual((result["verdict"], result["reason"]), (polarity.INCONCLUSIVE, "weak_signal"))
 
     def test_no_arrival_means_no_verdict(self):
         result = verdict(with_noise(spike()), arrival=None)
@@ -144,7 +149,7 @@ class AnalyzerTests(unittest.TestCase):
 
 class PersistenceTests(unittest.TestCase):
     def test_a_saved_measurement_keeps_the_polarity_reading(self):
-        reading = {"verdict": "reversed", "peak_sign": -1, "dominance_db": 12.0, "snr_db": 60.0, "reason": ""}
+        reading = {"verdict": "reversed", "peak_sign": -1, "phase_cos": 0.98, "snr_db": 60.0, "reason": ""}
         analysis = {
             "method": "test", "sample_rate": RATE, "rms_dbfs": -30.0, "peak_dbfs": -12.0, "window_count": 1,
             "normalized_by_db": 0.0, "alignment_samples": 0, "alignment_seconds": 0.0,

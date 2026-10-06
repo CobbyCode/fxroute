@@ -99,17 +99,17 @@ function row(roles, verdict, extra = {}) {
         assert.ok(calls.every((call) => call.url.startsWith('/api/measurements/polarity-check')), 'diagnostic only: no output change');
         assert.match(elements.polarityCheckResults.innerHTML, /label:main_l[\s\S]*polarity-check-verdict-correct">Correct/);
         assert.match(elements.polarityCheckResults.innerHTML, /label:main_r[\s\S]*polarity-check-verdict-reversed">Reversed/);
-        assert.match(elements.polarityCheckStatus.textContent, /reversed speaker plays out of phase/i);
+        assert.match(elements.polarityCheckStatus.textContent, /reversed speaker plays its first pulse inverted/i);
         assert.equal(elements.polarityCheckStart.textContent, 'Check polarity');
     }
 
-    // Every speaker reversed points at the microphone, not at the wiring.
+    // Every speaker reversed does not prove a wiring fault: an inverted microphone reads the same.
     {
         const rows = [row(['main_l'], 'reversed'), row(['main_r'], 'reversed', { label: 'right' })];
         const { elements } = harness({ area: MAIN, status: STATUS, jobs: [completed(rows, { all_reversed: true })] });
         await polarityCheck.openPolarityCheck();
         await polarityCheck.startPolarityCheck();
-        assert.match(elements.polarityCheckStatus.textContent, /microphone or its input is probably inverted/);
+        assert.match(elements.polarityCheckStatus.textContent, /inverted microphone or input does that too/);
         assert.doesNotMatch(elements.polarityCheckStatus.textContent, /Swap its/);
     }
 

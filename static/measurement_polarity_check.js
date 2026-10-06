@@ -13,13 +13,13 @@
         no_arrival: 'No sweep heard',
         no_signal: 'No sweep heard',
         weak_signal: 'Too quiet',
-        mixed_lobes: 'No clear peak',
+        unclear_phase: 'No clear peak',
     };
     const REASON_HINT = {
         no_arrival: 'The sweep did not reach the microphone. Check the amplifier, the speaker and the microphone, then repeat.',
         no_signal: 'The sweep did not reach the microphone. Check the amplifier, the speaker and the microphone, then repeat.',
         weak_signal: 'The sweep was too quiet to judge. Raise the volume and repeat.',
-        mixed_lobes: 'The impulse response has no clear peak, as with a way dominated by its crossover phase.',
+        unclear_phase: 'The direct sound has no clear polarity, as when a crossover or panel rotates its phase.',
     };
 
     let deps = {
@@ -70,7 +70,7 @@
     function summarize(result) {
         const rows = Array.isArray(result?.rows) ? result.rows : [];
         if (result?.all_reversed) {
-            return 'All speakers read reversed. The microphone or its input is probably inverted, not the speakers.';
+            return 'All checked speakers read reversed. An inverted microphone or input does that too: check a speaker you know is correct, such as the Front pair, to tell.';
         }
         const hints = [];
         const unclear = rows.filter((row) => row.verdict === 'inconclusive');
@@ -79,7 +79,7 @@
             if (hint && !hints.includes(hint)) hints.push(hint);
         }
         if (rows.some((row) => row.verdict === 'reversed')) {
-            hints.unshift('A reversed speaker plays out of phase. Swap its + and − wires or invert its output polarity.');
+            hints.unshift('A reversed speaker plays its first pulse inverted. Swap its + and − wires or invert its output polarity, then check again.');
         }
         if (!hints.length) return 'All checked speakers are in phase.';
         return hints.join(' ');

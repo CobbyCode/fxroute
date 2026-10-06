@@ -87,7 +87,7 @@ async def _run(job: dict[str, Any], target: dict, area: dict) -> None:
             reading = _reading(take["analysis"])
             rows.append({"label": unit["label"], "roles": list(unit["roles"]),
                          "verdict": reading["verdict"], "reason": reading.get("reason", ""),
-                         "dominance_db": reading.get("dominance_db"), "snr_db": reading.get("snr_db"),
+                         "phase_cos": reading.get("phase_cos"), "snr_db": reading.get("snr_db"),
                          "inverted": any(processing[role]["polarity"] == "invert" for role in unit["roles"])})
         await speaker_sweep.wait_for_idle_session(dependencies.get_session())
         job["result"] = {"mode": mode, "rows": rows,

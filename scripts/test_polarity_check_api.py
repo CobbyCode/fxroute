@@ -28,9 +28,9 @@ def mode_state(mode, roles, *, crossover=False):
     return switch_mode(set_mode_routing(state, mode, "A", roles), mode)
 
 
-def reading(verdict, reason="", dominance_db=12.0, snr_db=60.0):
+def reading(verdict, reason="", phase_cos=0.98, snr_db=60.0):
     return {"verdict": verdict, "peak_sign": -1 if verdict == "reversed" else 1, "reason": reason,
-            "dominance_db": dominance_db, "snr_db": snr_db}
+            "phase_cos": -phase_cos if verdict == "reversed" else phase_cos, "snr_db": snr_db}
 
 
 class AreaPlanTests(unittest.TestCase):
@@ -153,11 +153,11 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_inconclusive_reading_keeps_its_reason(self):
         self.configure(mode_state("stereo", ["main_l", "main_r"]),
-                       {("main_l",): reading("inconclusive", "mixed_lobes", dominance_db=1.2),
+                       {("main_l",): reading("inconclusive", "unclear_phase", phase_cos=0.2),
                         ("main_r",): reading("correct")})
         job = await self.run_job("main")
         row = job["result"]["rows"][0]
-        self.assertEqual((row["verdict"], row["reason"], row["dominance_db"]), ("inconclusive", "mixed_lobes", 1.2))
+        self.assertEqual((row["verdict"], row["reason"], row["phase_cos"]), ("inconclusive", "unclear_phase", 0.2))
 
     async def test_a_take_without_a_polarity_reading_fails_the_job(self):
         self.configure(mode_state("stereo", ["main_l", "main_r"]), {("main_l",): None, ("main_r",): None})
