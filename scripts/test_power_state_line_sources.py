@@ -3,11 +3,13 @@
 
 ``amp_should_be_on`` stays a plain boolean with the same four payload keys;
 Bluetooth counts only while its linked capture source is RUNNING, external
-input while its loopback link is established. Measurement keeps priority.
+input while its loopback link (or, in Surround, its digital ingress capture
+links) is established. Measurement keeps priority.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -86,7 +88,8 @@ class BluetoothStreamingProbeTests(unittest.TestCase):
             self.assertFalse(is_bluetooth_audio_streaming("bluez_input.11_22_33_44_55_66.1"))
 
 
-def _payload(*, bt_source=None, bt_streaming=False, ext_source=None, heartbeat=0.0, mapped_source=None):
+def _payload(*, bt_source=None, bt_streaming=False, ext_source=None, heartbeat=0.0, mapped_source=None,
+             digital_source=None):
     with (
         patch.object(main.runtime, "player_instance", None),
         patch.object(main.playback_state, "latest_spotify_state", {}),
@@ -94,10 +97,41 @@ def _payload(*, bt_source=None, bt_streaming=False, ext_source=None, heartbeat=0
         patch.object(main, "last_measurement_window_seen_at", heartbeat),
         patch.object(main, "bluetooth_input", SimpleNamespace(input_source_name=bt_source)),
         patch.object(main, "external_input", SimpleNamespace(
-            loopback_source_name=ext_source, mapped_source_name=mapped_source)),
+            loopback_source_name=ext_source, mapped_source_name=mapped_source,
+            digital_source_name=digital_source)),
         patch.object(main, "is_bluetooth_audio_streaming", return_value=bt_streaming),
     ):
         return main._build_power_state_payload()
+
+
+class _FakeDigitalIngress:
+    def __init__(self, present=True, error=None):
+        self.present = present
+        self.error = error
+
+    async def links_present(self):
+        if self.error is not None:
+            raise self.error
+        return self.present
+
+
+def _digital_payload(ingress, *, digital_source="alsa_input.scarlett", heartbeat=0.0):
+    """Async payload (the endpoint's path) with the digital ingress routed."""
+    external = SimpleNamespace(
+        loopback_source_name=None, mapped_source_name=None, mapped_ingress_links=(),
+        digital_source_name=digital_source, active_channels=("AUX8", "AUX9"), active_right_source=None,
+    )
+    with (
+        patch.object(main.runtime, "player_instance", None),
+        patch.object(main.runtime, "stdin_input", None),
+        patch.object(main.playback_state, "latest_spotify_state", {}),
+        patch.object(main.playback_state, "latest_qobuz_state", {}),
+        patch.object(main, "last_measurement_window_seen_at", heartbeat),
+        patch.object(main, "bluetooth_input", SimpleNamespace(input_source_name=None)),
+        patch.object(main, "external_input", external),
+        patch.object(main, "_surround_input", ingress),
+    ):
+        return asyncio.run(main._build_power_state_payload_async())
 
 
 class PowerPayloadLineSourceTests(unittest.TestCase):
@@ -132,6 +166,11 @@ class PowerPayloadLineSourceTests(unittest.TestCase):
         self.assertTrue(payload["amp_should_be_on"])
         self.assertEqual(payload["reason"], "external-input")
 
+    def test_digital_surround_input_switches_on(self):
+        payload = _payload(digital_source="alsa_input.scarlett")
+        self.assertTrue(payload["amp_should_be_on"])
+        self.assertEqual(payload["reason"], "external-input")
+
     def test_measurement_keeps_priority_over_line_sources(self):
         payload = _payload(
             bt_source="bluez_input.11_22_33_44_55_66.1",
@@ -142,6 +181,37 @@ class PowerPayloadLineSourceTests(unittest.TestCase):
         self.assertTrue(payload["amp_should_be_on"])
         self.assertEqual(payload["reason"], "measurement_window")
         self.assertTrue(payload["measurement_window_open"])
+
+
+class DigitalIngressPowerTests(unittest.TestCase):
+    """Surround external input (e.g. the TV pair) runs over the digital ingress."""
+
+    def test_live_capture_links_switch_on(self):
+        payload = _digital_payload(_FakeDigitalIngress(present=True))
+        self.assertTrue(payload["amp_should_be_on"])
+        self.assertEqual(payload["reason"], "external-input")
+        self.assertFalse(payload["playback_active"])
+
+    def test_missing_capture_links_stay_off(self):
+        payload = _digital_payload(_FakeDigitalIngress(present=False))
+        self.assertFalse(payload["amp_should_be_on"])
+        self.assertEqual(payload["reason"], "idle")
+
+    def test_missing_ingress_object_stays_off(self):
+        self.assertFalse(_digital_payload(None)["amp_should_be_on"])
+
+    def test_probe_error_is_fail_closed(self):
+        payload = _digital_payload(_FakeDigitalIngress(error=RuntimeError("pw-link failed")))
+        self.assertFalse(payload["amp_should_be_on"])
+        self.assertEqual(payload["reason"], "idle")
+
+    def test_no_digital_source_ignores_a_leftover_ingress(self):
+        self.assertFalse(_digital_payload(_FakeDigitalIngress(present=True), digital_source=None)["amp_should_be_on"])
+
+    def test_measurement_keeps_priority(self):
+        payload = _digital_payload(_FakeDigitalIngress(present=False), heartbeat=9e9)
+        self.assertTrue(payload["amp_should_be_on"])
+        self.assertEqual(payload["reason"], "measurement_window")
 
 
 if __name__ == "__main__":

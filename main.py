@@ -256,7 +256,11 @@ def _active_line_source_for_power() -> str | None:
         external_source = (external_input.loopback_source_name or "").strip()
     except Exception:
         external_source = ""
-    if external_source or getattr(external_input, "mapped_source_name", None):
+    if (
+        external_source
+        or getattr(external_input, "mapped_source_name", None)
+        or getattr(external_input, "digital_source_name", None)
+    ):
         return "external-input"
     try:
         stdin_service = runtime.stdin_input
@@ -291,6 +295,12 @@ def _external_input_link_channels(right_source: str | None = None) -> tuple[str,
     if left == right and right_source is None:
         left, right = "FL", "FR"
     return left, right
+
+
+async def _digital_ingress_links_present() -> bool:
+    """Whether the digital ingress helper runs with its capture links up."""
+    ingress = _surround_input
+    return ingress is not None and await ingress.links_present()
 
 
 async def _active_line_source_for_power_async() -> str | None:
@@ -337,6 +347,14 @@ async def _active_line_source_for_power_async() -> str | None:
     if getattr(external_input, "mapped_source_name", None) and mapped_links:
         try:
             if await ingress_links_present(mapped_links):
+                return "external-input"
+        except Exception:
+            return None
+        return None
+    if getattr(external_input, "digital_source_name", None):
+        # Surround digital ingress: the helper owns the capture links.
+        try:
+            if await _digital_ingress_links_present():
                 return "external-input"
         except Exception:
             return None
