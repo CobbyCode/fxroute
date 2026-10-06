@@ -264,7 +264,7 @@ class AlsaLockTests(unittest.TestCase):
     def fake_card(self, *, current, receiver=True):
         """Control layer of one card: a clock selector and, optionally, a receiver lock."""
         names = ["Internal", "S/PDIF", "ADAT"]
-        state = {"clock": current, "writes": []}
+        state = {"clock": current, "writes": [], "locked": True}
         elements = []
         selector = alsa_ctl._ElemId(numid=4, name=b"Clock Source Clock Source")
         selector_info = alsa_ctl._ElemInfo(id=selector, type=3, access=3, count=1)
@@ -283,7 +283,7 @@ class AlsaLockTests(unittest.TestCase):
                 if arg.id.name == b"Clock Source Clock Source":
                     arg.value.enumerated[0] = state["clock"]
                 else:
-                    arg.value.integer[0] = 1
+                    arg.value.integer[0] = int(state["locked"] or arg.id.name != b"S/PDIF Validity")
             elif request == alsa_ctl._IOCTL_ELEM_WRITE:
                 state["clock"] = arg.value.enumerated[0]
                 state["writes"].append(names[state["clock"]])
@@ -319,40 +319,80 @@ class AlsaLockTests(unittest.TestCase):
         with patch.object(alsa_ctl.Path, "glob", side_effect=OSError("denied")):
             self.assertEqual(alsa_ctl.list_cards(), [])
 
-    def test_release_all_stops_once_the_digital_input_owns_the_clock(self):
-        owned = []
+    def test_settle_returns_a_stale_digital_clock_to_internal(self):
+        state = self.fake_card(current=1)
+        with patch.object(alsa_ctl, "list_cards", return_value=[3]):
+            self.assertEqual(alsa_ctl.settle_digital_clocks(lambda card: False), [(3, False, "Internal")])
+            self.assertEqual(alsa_ctl.settle_digital_clocks(lambda card: False), [])
+        self.assertEqual(state["writes"], ["Internal"])
+
+    def test_settle_restores_the_digital_clock_the_input_holds(self):
+        """The device came back on Internal: the holder's card follows the receiver again."""
+        state = self.fake_card(current=0)
+        with patch.object(alsa_ctl, "list_cards", return_value=[3]):
+            self.assertEqual(alsa_ctl.settle_digital_clocks(lambda card: True), [(3, True, "S/PDIF")])
+            self.assertEqual(alsa_ctl.settle_digital_clocks(lambda card: True), [])
+        self.assertEqual(state["writes"], ["S/PDIF"])
+
+    def test_settle_waits_for_the_receiver_lock(self):
+        state = self.fake_card(current=0)
+        state["locked"] = False
+        with patch.object(alsa_ctl, "list_cards", return_value=[3]):
+            self.assertEqual(alsa_ctl.settle_digital_clocks(lambda card: True), [])
+            self.assertEqual(state["writes"], [], "no lock: stay on Internal")
+            state["locked"] = True
+            self.assertEqual(alsa_ctl.settle_digital_clocks(lambda card: True), [(3, True, "S/PDIF")])
+
+    def test_settle_leaves_adat_and_unmanaged_cards_alone(self):
+        state = self.fake_card(current=2)
+        with patch.object(alsa_ctl, "list_cards", return_value=[3]):
+            for wanted in (True, False, None):
+                self.assertEqual(alsa_ctl.settle_digital_clocks(lambda card: wanted), [])
+        state["clock"] = 1
+        with patch.object(alsa_ctl, "list_cards", return_value=[3]):
+            self.assertEqual(alsa_ctl.settle_digital_clocks(lambda card: None), [])
+        self.assertEqual(state["writes"], [], "ADAT and an unmanaged card keep their clock")
+
+    def test_settle_skips_a_card_without_a_digital_receiver(self):
+        state = self.fake_card(current=1, receiver=False)
+        with patch.object(alsa_ctl, "list_cards", return_value=[3]):
+            self.assertEqual(alsa_ctl.settle_digital_clocks(lambda card: False), [])
+        self.assertEqual(state["writes"], [])
+
+    def test_settle_gives_each_card_its_own_clock(self):
+        calls = []
 
         def select(card, *, digital, require_receiver):
-            self.assertEqual((digital, require_receiver), (False, True))
-            owned.append(True)
-            return f"Internal{card}"
+            calls.append((card, digital, require_receiver))
+            return "src"
 
         with patch.object(alsa_ctl, "list_cards", return_value=[2, 3, 4]), \
                 patch.object(alsa_ctl, "_select_clock_source", select):
-            self.assertEqual(alsa_ctl.release_stale_digital_clocks(lambda: len(owned) < 2),
-                             [(2, "Internal2"), (3, "Internal3")])
+            settled = alsa_ctl.settle_digital_clocks(lambda card: {2: False, 3: True}.get(card))
+        self.assertEqual(calls, [(2, False, True), (3, True, True)])
+        self.assertEqual(settled, [(2, False, "src"), (3, True, "src")])
 
-    def test_release_rechecks_ownership_under_the_clock_lock(self):
-        """The digital input claims the clock while a release waits for the lock."""
+    def test_settle_asks_for_the_wish_under_the_clock_lock(self):
+        """The digital input claims the clock while a settle waits for the lock."""
         claimed = threading.Event()
-        writes = []
+        calls = []
 
         def select(card, *, digital, require_receiver):
-            writes.append(card)
-            return "Internal"
+            calls.append((card, digital))
+            return "src"
 
         with patch.object(alsa_ctl, "list_cards", return_value=[3]), \
                 patch.object(alsa_ctl, "_select_clock_source", select):
             result = []
             with alsa_ctl._CLOCK_LOCK:
                 worker = threading.Thread(target=lambda: result.append(
-                    alsa_ctl.release_stale_digital_clocks(lambda: not claimed.is_set())))
+                    alsa_ctl.settle_digital_clocks(lambda card: claimed.is_set())))
                 worker.start()
                 time.sleep(0.05)
                 claimed.set()
             worker.join(2)
-        self.assertEqual(result, [[]])
-        self.assertEqual(writes, [])
+        self.assertEqual(calls, [(3, True)], "the claim made while waiting decides, not the earlier state")
+        self.assertEqual(result, [[(3, True, "src")]])
 
     @unittest.skipUnless(ctypes.sizeof(ctypes.c_long) == 8, "LP64 kernel ABI sizes")
     def test_control_structs_match_the_kernel_abi(self):

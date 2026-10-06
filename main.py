@@ -5592,26 +5592,39 @@ async def _select_surround_clock(card: int | None, *, digital: bool) -> None:
 DIGITAL_CLOCK_GUARD_SECONDS = 5.0
 
 
-async def _release_stale_digital_clocks() -> None:
-    """Return a digital clock that the digital input does not hold to Internal."""
-    released = await asyncio.to_thread(
-        alsa_ctl.release_stale_digital_clocks, lambda: not _surround_carrier_owned)
-    for card, source in released:
-        logger.info("Stale digital clock released: ALSA card %s back on %s", card, source)
+def _wanted_digital_clock(card: int) -> bool | None:
+    """Whether the card's clock belongs on the digital carrier; None: not managed."""
+    if not _surround_carrier_owned:
+        return False
+    if _surround_clock_card is None:
+        return None
+    return card == _surround_clock_card
+
+
+async def _settle_digital_clocks() -> None:
+    """Put the cards' clocks on the source the active input needs."""
+    settled = await asyncio.to_thread(alsa_ctl.settle_digital_clocks, _wanted_digital_clock)
+    for card, digital, source in settled:
+        if digital:
+            logger.info("Digital carrier clock restored: ALSA card %s now runs on %s", card, source)
+        else:
+            logger.info("Stale digital clock released: ALSA card %s back on %s", card, source)
 
 
 async def _digital_clock_guard_loop() -> None:
-    """Undo a digital clock FXRoute does not own, also after a USB re-enumeration.
+    """Keep the clock FXRoute needs, also after a USB re-enumeration.
 
-    A device that re-enumerates gets its saved ALSA state back, which can name
-    S/PDIF as the clock. That silenced the analog outputs of the Scarlett, and
-    a clock left by an earlier run does the same, so both are released.
+    A device that re-enumerates gets its saved ALSA state back. That can name
+    S/PDIF as the clock, which silenced the analog outputs of the Scarlett, or
+    drop the clock the digital input holds. Without the carrier a digital
+    clock goes back to Internal, with it the holder's card follows the locked
+    receiver again.
     """
     while True:
         try:
-            await _release_stale_digital_clocks()
+            await _settle_digital_clocks()
         except Exception as exc:
-            logger.warning("Stale digital clock check failed: %s", exc)
+            logger.warning("Digital clock check failed: %s", exc)
         await asyncio.sleep(DIGITAL_CLOCK_GUARD_SECONDS)
 
 
@@ -5646,8 +5659,9 @@ async def _set_surround_carrier_owned(enabled: bool, card: int | None = None) ->
             _surround_clock_card = card
             await _select_surround_clock(card, digital=True)
     elif _surround_carrier_owned:
-        await _select_surround_clock(_surround_clock_card, digital=False)
-        _surround_clock_card = None
+        # Unmanaged first, so the clock guard cannot take the clock back.
+        released_card, _surround_clock_card = _surround_clock_card, None
+        await _select_surround_clock(released_card, digital=False)
         await _transition_sample_rate_policy(samplerate.load_sample_rate_policy(), detail="digital-input-clock-release")
         _surround_carrier_owned = False
 

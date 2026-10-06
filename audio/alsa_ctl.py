@@ -244,24 +244,26 @@ def select_clock_source(card: int | None, *, digital: bool, require_receiver: bo
         return _select_clock_source(card, digital=digital, require_receiver=require_receiver)
 
 
-def release_stale_digital_clocks(still_unowned: Callable[[], bool]) -> list[tuple[int, str]]:
-    """Return every card clocked from a digital source to Internal.
+def settle_digital_clocks(wanted: Callable[[int], bool | None]) -> list[tuple[int, bool, str]]:
+    """Put every card with a digital receiver on the clock it should have.
 
-    Covers a clock left on S/PDIF by an earlier run or restored from the saved
-    ALSA state after the device re-enumerated. Only cards with a digital
-    receiver are touched. ``still_unowned`` is re-checked under the clock lock
-    before each card, so a clock the digital input holds right now stays.
-    Returns (card, new source) for each clock that moved.
+    ``wanted(card)`` is asked under the clock lock, right before the write, so
+    an ownership change that lands meanwhile is honoured. True moves an
+    Internal clock to a locked digital source, False returns a digital clock
+    to Internal, None leaves the card alone. This restores the clock after a
+    device re-enumerated and got its saved ALSA state back, or after an
+    earlier run. Returns (card, digital, new source) for each clock that moved.
     """
-    released: list[tuple[int, str]] = []
+    settled: list[tuple[int, bool, str]] = []
     for card in list_cards():
         with _CLOCK_LOCK:
-            if not still_unowned():
-                break
-            selected = _select_clock_source(card, digital=False, require_receiver=True)
+            digital = wanted(card)
+            if digital is None:
+                continue
+            selected = _select_clock_source(card, digital=digital, require_receiver=True)
         if selected:
-            released.append((card, selected))
-    return released
+            settled.append((card, digital, selected))
+    return settled
 
 
 def _select_clock_source(card: int, *, digital: bool, require_receiver: bool) -> str | None:

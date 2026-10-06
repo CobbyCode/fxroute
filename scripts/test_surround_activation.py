@@ -182,21 +182,84 @@ class CarrierClockTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DigitalClockGuardTests(unittest.IsolatedAsyncioTestCase):
-    """A digital clock the digital input does not hold goes back to Internal."""
+    """Every card gets the clock the active input needs: Internal, or the held S/PDIF."""
 
-    async def test_release_runs_only_while_the_carrier_is_not_owned(self):
-        seen = []
+    def setUp(self):
+        self.card_clock = {"clock": 0, "locked": True, "writes": []}
+        names = ["Internal", "S/PDIF", "ADAT"]
 
-        def release(still_unowned):
-            seen.append(still_unowned())
-            return [(3, "Internal")] if seen[-1] else []
+        def select(card, *, digital, require_receiver):
+            validity = {"S/PDIF Validity": self.card_clock["locked"], "Internal Validity": True}
+            target = main.alsa_ctl.clock_source_target(names, self.card_clock["clock"], validity, digital=digital)
+            if target is None:
+                return None
+            self.card_clock["clock"] = target
+            self.card_clock["writes"].append(names[target])
+            return names[target]
 
-        with patch.object(main.alsa_ctl, "release_stale_digital_clocks", release), \
-                patch.object(main, "_surround_carrier_owned", False):
-            await main._release_stale_digital_clocks()
-            with patch.object(main, "_surround_carrier_owned", True):
-                await main._release_stale_digital_clocks()
-        self.assertEqual(seen, [True, False], "the owner flag is read when the release runs")
+        async def policy(*_args, **_kwargs):
+            return None
+
+        orchestration = SimpleNamespace(sample_rate_policy_request=AsyncMock(
+            return_value=main.TransitionRequest(operation="policy", source="local", target_rate=48000)))
+        for patcher in (
+            patch.object(main, "_surround_carrier_owned", False),
+            patch.object(main, "_surround_clock_card", None),
+            patch.object(main, "get_samplerate_status", lambda: {"active_rate": 48000, "force_rate": 48000}),
+            patch.object(main.alsa_ctl, "list_cards", return_value=[3]),
+            patch.object(main.alsa_ctl, "_select_clock_source", select),
+            patch.object(main, "_transition_sample_rate_policy", policy),
+            patch.object(main.samplerate, "load_sample_rate_policy", return_value={"mode": "auto"}),
+            patch.object(main.playback_orchestration, "configured", return_value=orchestration),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_wanted_clock_follows_the_carrier_owner(self):
+        self.assertIs(main._wanted_digital_clock(3), False, "no carrier: Internal")
+        with patch.object(main, "_surround_carrier_owned", True):
+            self.assertIsNone(main._wanted_digital_clock(3), "carrier without a clock card: not managed")
+            with patch.object(main, "_surround_clock_card", 3):
+                self.assertIs(main._wanted_digital_clock(3), True, "the holder's card follows the receiver")
+                self.assertIs(main._wanted_digital_clock(5), False, "another card is not held")
+
+    async def test_clock_goes_back_to_internal_after_a_reenumeration_without_the_carrier(self):
+        self.card_clock["clock"] = 1
+        await main._settle_digital_clocks()
+        self.assertEqual(self.card_clock["writes"], ["Internal"])
+
+    async def test_held_clock_comes_back_after_a_reenumeration(self):
+        await main._set_surround_carrier_owned(True, 3)
+        self.assertEqual(self.card_clock["writes"], ["S/PDIF"])
+        self.card_clock["clock"] = 0  # the device re-enumerated and came back on Internal
+        with self.assertLogs(main.logger, "INFO") as logged:
+            await main._settle_digital_clocks()
+        self.assertEqual(self.card_clock["writes"], ["S/PDIF", "S/PDIF"])
+        self.assertTrue(any("Digital carrier clock restored: ALSA card 3" in line for line in logged.output))
+        await main._settle_digital_clocks()
+        self.assertEqual(self.card_clock["writes"], ["S/PDIF", "S/PDIF"], "a clock that is right stays")
+
+    async def test_held_clock_waits_for_the_lock_and_adat_is_never_touched(self):
+        await main._set_surround_carrier_owned(True, 3)
+        self.card_clock.update(clock=0, locked=False)
+        await main._settle_digital_clocks()
+        self.assertEqual(self.card_clock["clock"], 0, "no receiver lock: stay on Internal")
+        self.card_clock["clock"] = 2
+        await main._settle_digital_clocks()
+        self.assertEqual(self.card_clock["clock"], 2, "ADAT is the user's choice")
+        await main._set_surround_carrier_owned(False)
+        await main._settle_digital_clocks()
+        self.assertEqual(self.card_clock["clock"], 2)
+
+    async def test_released_carrier_is_not_taken_back_by_the_guard(self):
+        await main._set_surround_carrier_owned(True, 3)
+        await main._set_surround_carrier_owned(False)
+        self.assertEqual(self.card_clock["writes"], ["S/PDIF", "Internal"])
+        await main._settle_digital_clocks()
+        self.assertEqual(self.card_clock["writes"], ["S/PDIF", "Internal"])
+        self.card_clock["clock"] = 1  # restored from the saved state later
+        await main._settle_digital_clocks()
+        self.assertEqual(self.card_clock["writes"], ["S/PDIF", "Internal", "Internal"])
 
     async def test_guard_loop_survives_a_failing_check_and_repeats(self):
         real_sleep = asyncio.sleep
@@ -209,7 +272,7 @@ class DigitalClockGuardTests(unittest.IsolatedAsyncioTestCase):
             await real_sleep(0)
 
         check = AsyncMock(side_effect=[OSError("busy"), None, None])
-        with patch.object(main, "_release_stale_digital_clocks", check), \
+        with patch.object(main, "_settle_digital_clocks", check), \
                 patch.object(main.asyncio, "sleep", sleep), self.assertRaises(asyncio.CancelledError):
             await main._digital_clock_guard_loop()
         self.assertEqual(check.await_count, 3)
