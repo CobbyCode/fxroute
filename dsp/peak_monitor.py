@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 import playback.state as playback_state
 from common import process_stop
+from dsp.output_meter import MIN_MULTICHANNEL_POSITIONS, meter_positions
 from audio.samplerate import SOURCE_MODE_BLUETOOTH_INPUT, SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_STDIN_INPUT, authoritative_sample_rate, get_samplerate_status
 
 logger = logging.getLogger(__name__)
@@ -55,10 +56,19 @@ CAPTURE_NODE_SEQUENCE = count(1)
 # Meter channel attribute suffixes.  "" is the joint (both-channel) meter that
 # keeps the pre-stereo contract; "_l"/"_r" are the per-channel stereo meters.
 METER_CHANNEL_SUFFIXES = ("", "_l", "_r")
+# Engine outputs the multichannel meter can tap (the engine's own channel cap).
+MAX_TAP_OUTPUTS = 32
 VU_FLOOR_DB = -60.0
 VU_ATTACK_SECONDS = 0.18
 VU_RELEASE_SECONDS = 0.85
 VU_EMIT_INTERVAL = 0.25
+STEREO_FRAME_BYTES = 8
+# pw-record opens stdout with a little-endian Sun/AU header: magic bytes
+# "dns.", header size, data size, encoding, rate, channels (24 bytes in all).
+# That is whole stereo frames but shifts the columns of any other channel count.
+AU_HEADER_MAGIC = b"dns."
+# A tap capture carries the post-effect L/R pair first, then the engine outputs.
+TAP_FIRST_OUTPUT_CHANNEL = 2
 CAPTURE_NO_DATA_TIMEOUT = 3.0
 FALLBACK_CAPTURE_RATE = 48_000
 # After the DSP engine is recreated the graph needs a settle window before
@@ -166,8 +176,14 @@ class StereoChunkMetrics:
 
 
 class DSPPeakMonitor:
-    def __init__(self, on_change: Optional[Callable[[dict], Awaitable[None]]] = None):
+    def __init__(
+        self,
+        on_change: Optional[Callable[[dict], Awaitable[None]]] = None,
+        get_output_layout: Optional[Callable[[], Optional[tuple[str, tuple[str, ...]]]]] = None,
+    ):
         self.on_change = on_change
+        # Returns the running engine's (output mode, output roles) or None.
+        self._get_output_layout = get_output_layout
         self._task: Optional[asyncio.Task] = None
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._running = False
@@ -203,6 +219,10 @@ class DSPPeakMonitor:
         self._last_vu_update_at_l: Optional[float] = None
         self._last_vu_update_at_r: Optional[float] = None
         self._pending_frame_bytes: bytes = b""
+        # Multichannel output tap of the running capture (None: stereo only).
+        self._tap: Optional[OutputLevelTap] = None
+        self._frame_bytes = STEREO_FRAME_BYTES
+        self._stream_header_done = False
         # Ownership epoch for the monitor task: start()/stop() bump it, and
         # every task-owned emit carries the epoch it was launched with. An
         # emit from a superseded epoch is dropped, so a stopped run can
@@ -320,6 +340,9 @@ class DSPPeakMonitor:
         self._last_vu_update_at_l = None
         self._last_vu_update_at_r = None
         self._pending_frame_bytes = b""
+        self._tap = None
+        self._frame_bytes = STEREO_FRAME_BYTES
+        self._stream_header_done = False
         logger.info("Peak monitor stop completed in %.3fs (had_task=%s had_proc=%s)", time.monotonic() - stop_started_at, had_task, had_proc)
         if stop_cancelled:
             # The child/task lifecycle above ran to completion shielded;
@@ -358,6 +381,52 @@ class DSPPeakMonitor:
             "last_over_at_l": self._last_over_at_l,
             "last_over_at_r": self._last_over_at_r,
             "last_error": self._last_error,
+            "channels": self._channels_snapshot(now),
+        }
+
+    def _live_output_layout(self) -> Optional[tuple[str, tuple[str, ...]]]:
+        if self._get_output_layout is None:
+            return None
+        try:
+            return self._get_output_layout()
+        except Exception as exc:
+            logger.debug("Output layout unavailable for the multichannel meter: %s", exc)
+            return None
+
+    def _plan_output_tap(self) -> Optional[OutputLevelTap]:
+        """Tap for the running engine layout, or None while it meters as stereo."""
+        layout = self._live_output_layout()
+        if layout is None:
+            return None
+        mode, roles = layout
+        if not MIN_MULTICHANNEL_POSITIONS <= len(roles) <= MAX_TAP_OUTPUTS:
+            return None
+        if not meter_positions(mode, roles):
+            return None
+        return OutputLevelTap(len(roles))
+
+    def _channels_snapshot(self, now: float) -> Optional[dict]:
+        """Per-position levels for the live layout; None keeps the stereo meter.
+
+        The positions follow the layout at snapshot time, so a hot config swap
+        that keeps the output count never meters under stale role names, and
+        the columns exist before the first sample arrives.  Levels stay None
+        until the capture is linked to every engine output.
+        """
+        layout = self._live_output_layout()
+        if layout is None:
+            return None
+        mode, roles = layout
+        positions = meter_positions(mode, roles)
+        if len(positions) < MIN_MULTICHANNEL_POSITIONS:
+            return None
+        tap = self._tap
+        live = tap is not None and tap.linked and tap.output_count == len(roles)
+        levels = [tap.level_db(position.outputs) if live else None for position in positions]
+        return {
+            "keys": [position.key for position in positions],
+            "vu_db": [round(level, 1) if level is not None else None for level in levels],
+            "detected": [live and tap.detected(position.outputs, now) for position in positions],
         }
 
     async def _emit_if_changed(self, force: bool = False,
@@ -444,6 +513,20 @@ class DSPPeakMonitor:
         self._capture_rate = capture_rate
         self._last_audio_sample_at = None
         self._pending_frame_bytes = b""
+        self._stream_header_done = False
+        tap = self._plan_output_tap()
+        self._tap = tap
+        channel_count = 2 + (tap.output_count if tap else 0)
+        self._frame_bytes = 4 * channel_count
+        # Same read cadence (about 11 ms of audio) whatever the channel count.
+        read_size = READ_SIZE * channel_count // 2
+        # Post-effect L/R first, then one channel per engine output.  All
+        # positions are AUX: with named FL/FR next to AUXn the converter
+        # delivers silence on the AUX channels.
+        channel_args = (
+            ["--channel-map", ",".join(f"AUX{index}" for index in range(channel_count))]
+            if tap else ["--channels", "2"]
+        )
         cmd = [
             "pw-record",
             "--target",
@@ -454,8 +537,7 @@ class DSPPeakMonitor:
             f"node.name={capture_node_name}",
             "--format",
             "f32",
-            "--channels",
-            "2",
+            *channel_args,
             "--rate",
             str(capture_rate),
             "-",
@@ -498,7 +580,7 @@ class DSPPeakMonitor:
             last_target_check_at = time.monotonic()
             while self._running:
                 try:
-                    chunk = await asyncio.wait_for(self._proc.stdout.read(READ_SIZE), timeout=0.25)
+                    chunk = await asyncio.wait_for(self._proc.stdout.read(read_size), timeout=0.25)
                 except asyncio.TimeoutError:
                     chunk = b""
                 now = time.monotonic()
@@ -506,6 +588,10 @@ class DSPPeakMonitor:
                     last_data_at = now
                     self._last_audio_sample_at = now
                     frames_bytes = self._align_stereo_frames(chunk)
+                    if frames_bytes and tap:
+                        block = numpy.frombuffer(frames_bytes, dtype="<f4").reshape(-1, channel_count)
+                        tap.update(block[:, 2:], now)
+                        frames_bytes = numpy.ascontiguousarray(block[:, :2]).tobytes()
                     if frames_bytes:
                         metrics = self._stereo_metrics(frames_bytes)
                         for channel in METER_CHANNEL_SUFFIXES:
@@ -593,6 +679,8 @@ class DSPPeakMonitor:
                         raise RuntimeError("Peak monitor received no audio data while pw-record remained running")
                     for channel in METER_CHANNEL_SUFFIXES:
                         self._update_vu_db(VU_FLOOR_DB, now, channel=channel)
+                    if tap:
+                        tap.floor(now)
                 if self._expire_holds(now):
                     await self._emit_if_changed(force=True, generation=generation)
                 elif now - self._last_vu_emit_at >= VU_EMIT_INTERVAL:
@@ -652,6 +740,8 @@ class DSPPeakMonitor:
         capture_fr = None
         target_fl = f"{target.source_name}:output_FL"
         target_fr = f"{target.source_name}:output_FR"
+        tap_ready = self._tap is None
+        left_port, right_port = ("AUX0", "AUX1") if self._tap is not None else ("FL", "FR")
         deadline = time.monotonic() + LINK_DISCOVERY_TIMEOUT
         while time.monotonic() < deadline and self._running:
             port_scan_attempts += 1
@@ -675,14 +765,16 @@ class DSPPeakMonitor:
                 port_name = port["port_name"]
                 node_id = port["node_id"]
 
-                if alias == f"{capture_node_name}:input_FL":
+                if alias == f"{capture_node_name}:input_{left_port}":
                     capture_fl = alias
-                elif alias == f"{capture_node_name}:input_FR":
+                elif alias == f"{capture_node_name}:input_{right_port}":
                     capture_fr = alias
 
             target_fl, target_fr = self._target_output_ports(target, ports)
+            if self._tap is not None:
+                tap_ready = self._tap_ports_present(target, capture_node_name, ports)
 
-            if capture_fl and capture_fr and target_fl and target_fr:
+            if capture_fl and capture_fr and target_fl and target_fr and tap_ready:
                 logger.info(
                     "Peak monitor port discovery completed in %.3fs after %d scans for %s (target_fl=%s target_fr=%s)",
                     time.monotonic() - discovery_started_at,
@@ -717,6 +809,7 @@ class DSPPeakMonitor:
                 await self._run_link(target_fl, capture_fl)
                 await self._run_link(target_fr, capture_fr)
                 logger.info("Peak monitor pw-link completed in %.3fs after %d attempts for %s", time.monotonic() - link_attempt_started_at, attempt, capture_node_name)
+                await self._link_output_taps(target, capture_node_name, tap_ready)
                 return
             except Exception as exc:
                 last_error = exc
@@ -725,6 +818,35 @@ class DSPPeakMonitor:
                 await asyncio.sleep(LINK_RETRY_INTERVAL)
 
         raise RuntimeError(str(last_error) if last_error else "Peak capture link failed")
+
+    def _tap_ports_present(self, target: MonitorTarget, capture_node_name: str, ports) -> bool:
+        aliases = {port["alias"] for port in ports}
+        return all(
+            f"{target.source_name}:output_{index + 1}" in aliases
+            and f"{capture_node_name}:input_AUX{TAP_FIRST_OUTPUT_CHANNEL + index}" in aliases
+            for index in range(self._tap.output_count)
+        )
+
+    async def _link_output_taps(self, target: MonitorTarget, capture_node_name: str,
+                                ports_ready: bool) -> None:
+        """Link every engine output to the capture; never fails the stereo meter."""
+        tap = self._tap
+        if tap is None:
+            return
+        tap.linked = False
+        if not ports_ready:
+            logger.warning("Output meter ports did not resolve for %s; keeping the stereo meter", capture_node_name)
+            return
+        try:
+            for index in range(tap.output_count):
+                await self._run_link(
+                    f"{target.source_name}:output_{index + 1}",
+                    f"{capture_node_name}:input_AUX{TAP_FIRST_OUTPUT_CHANNEL + index}",
+                )
+        except Exception as exc:
+            logger.warning("Output meter links failed for %s; keeping the stereo meter: %s", capture_node_name, exc)
+            return
+        tap.linked = True
 
     @staticmethod
     def _target_output_ports(target: MonitorTarget, ports) -> tuple[str | None, str | None]:
@@ -893,15 +1015,25 @@ class DSPPeakMonitor:
         return 20.0 * math.log10(value)
 
     def _align_stereo_frames(self, chunk: bytes) -> bytes:
-        """Buffer ``chunk`` and return the complete stereo frames available.
+        """Buffer ``chunk`` and return the complete frames available.
 
-        PipeWire ``stdout.read()`` may end in the middle of an interleaved
-        stereo frame; the trailing partial frame (fewer than 8 bytes) stays
-        buffered for the next read so L/R never swap across arbitrary chunk
-        boundaries.
+        The stream's leading AU header is dropped first.  PipeWire
+        ``stdout.read()`` may end in the middle of an interleaved frame; the
+        trailing partial frame (fewer than ``_frame_bytes`` bytes, 8 for plain
+        stereo) stays buffered for the next read so channels never swap across
+        arbitrary chunk boundaries.
         """
         self._pending_frame_bytes += chunk
-        usable = len(self._pending_frame_bytes) - (len(self._pending_frame_bytes) % 8)
+        if not self._stream_header_done:
+            if len(self._pending_frame_bytes) < 8:
+                return b""
+            if self._pending_frame_bytes[:4] == AU_HEADER_MAGIC:
+                header_size = int.from_bytes(self._pending_frame_bytes[4:8], "little")
+                if len(self._pending_frame_bytes) < header_size:
+                    return b""
+                self._pending_frame_bytes = self._pending_frame_bytes[header_size:]
+            self._stream_header_done = True
+        usable = len(self._pending_frame_bytes) - (len(self._pending_frame_bytes) % self._frame_bytes)
         if usable <= 0:
             return b""
         frames = self._pending_frame_bytes[:usable]
@@ -1016,7 +1148,62 @@ class DSPPeakMonitor:
             if getattr(self, hold_attr) and now >= getattr(self, hold_attr):
                 setattr(self, hold_attr, 0.0)
                 expired = True
+        if self._tap is not None and self._tap.expire_holds(now):
+            expired = True
         return expired
+
+
+class OutputLevelTap:
+    """Smoothed level and clip hold per engine output for the multichannel meter.
+
+    Uses the same VU ballistics and peak detector as the stereo meter, so a
+    channel reads the same in both displays.
+    """
+
+    def __init__(self, output_count: int):
+        self.output_count = output_count
+        # True once the capture is linked to every engine output.
+        self.linked = False
+        self._vu_db: list[Optional[float]] = [None] * output_count
+        self._updated_at: list[Optional[float]] = [None] * output_count
+        self._hits = [0] * output_count
+        self._hold_until = [0.0] * output_count
+
+    def _smooth(self, index: int, target_db: float, now: float) -> None:
+        self._vu_db[index], self._updated_at[index] = DSPPeakMonitor._smooth_vu_db(
+            self._vu_db[index], self._updated_at[index], target_db, now
+        )
+
+    def update(self, block: numpy.ndarray, now: float) -> None:
+        """Feed one non-empty ``(frames, outputs)`` float32 block."""
+        clean = numpy.where(numpy.isfinite(block), block, 0.0)
+        peaks = numpy.abs(clean).max(axis=0)
+        rms = numpy.sqrt(numpy.square(clean, dtype=numpy.float64).mean(axis=0))
+        for index in range(self.output_count):
+            self._smooth(index, DSPPeakMonitor._linear_to_db(float(rms[index])), now)
+            self._hits[index], self._hold_until[index], _ = DSPPeakMonitor._update_peak_detection(
+                float(peaks[index]), now, self._hits[index], self._hold_until[index]
+            )
+
+    def floor(self, now: float) -> None:
+        for index in range(self.output_count):
+            self._smooth(index, VU_FLOOR_DB, now)
+
+    def expire_holds(self, now: float) -> bool:
+        expired = False
+        for index, hold in enumerate(self._hold_until):
+            if hold and now >= hold:
+                self._hold_until[index] = 0.0
+                expired = True
+        return expired
+
+    def level_db(self, outputs: tuple[int, ...]) -> Optional[float]:
+        """Loudest smoothed level among ``outputs``; None before any sample."""
+        levels = [self._vu_db[index] for index in outputs if self._vu_db[index] is not None]
+        return max(levels) if levels else None
+
+    def detected(self, outputs: tuple[int, ...], now: float) -> bool:
+        return any(now < self._hold_until[index] for index in outputs)
 
 
 @dataclass(frozen=True)

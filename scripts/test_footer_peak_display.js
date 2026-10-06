@@ -69,7 +69,7 @@ function makeBadge() {
 }
 
 const badge = makeBadge();
-const playbackMeter = { classList: makeClassList() };
+const playbackMeter = { classList: makeClassList(), setAttribute() {} };
 const sandbox = {
     state: {
         playback: {
@@ -114,12 +114,15 @@ vm.createContext(sandbox);
 vm.runInContext([
     extractDeclaration(uiSource, /let lastValidVuSnapshot = null;/),
     extractDeclaration(uiSource, /const VU_HOLDOVER_MS = \d+;/),
+    extractDeclaration(uiSource, /const MULTI_METER_MAX_POSITIONS = \d+;/),
     extractFunction(uiSource, 'isFiniteVuDb'),
     extractFunction(uiSource, 'rememberValidVu'),
     extractFunction(uiSource, 'heldVuSnapshot'),
     extractFunction(uiSource, 'meterLitCount'),
     extractFunction(uiSource, 'renderMeterChannel'),
     extractFunction(uiSource, 'renderStereoMeter'),
+    extractFunction(uiSource, 'meterChannelLayout'),
+    extractFunction(uiSource, 'renderOutputMeter'),
     extractFunction(appSource, 'nonAppSourceModeActive'),
     extractFunction(appSource, 'isFooterSignalActive'),
     extractFunction(uiSource, 'formatOutputLevelBadgeDb'),

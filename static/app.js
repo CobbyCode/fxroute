@@ -677,6 +677,7 @@ let state = {
             target: null,
             last_over_at: null,
             last_error: null,
+            channels: null,
         },
     },
     library: {
@@ -1367,6 +1368,7 @@ const elements = {
     playbackMeter: document.getElementById('playback-meter'),
     meterLeft: document.getElementById('meter-l'),
     meterRight: document.getElementById('meter-r'),
+    meterMulti: document.getElementById('meter-multi'),
     footerShuffleBtn: document.getElementById('footer-shuffle'),
     btnPrevious: document.getElementById('btn-previous'),
     btnPlayPause: document.getElementById('btn-play-pause'),

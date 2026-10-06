@@ -2626,6 +2626,7 @@ def build_playback_payload(
         "last_over_at_l": None,
         "last_over_at_r": None,
         "last_error": None,
+        "channels": None,
     }
     if playback_transition_coordinator:
         transition_status = playback_transition_coordinator.status()
@@ -3043,7 +3044,10 @@ async def lifespan(app: FastAPI):
                 logger.warning("Hardware controller not available: %s", exc)
                 hardware_controller = None
 
-        runtime.peak_monitor = DSPPeakMonitor(on_change=on_peak_monitor_change)
+        runtime.peak_monitor = DSPPeakMonitor(
+            on_change=on_peak_monitor_change,
+            get_output_layout=lambda: runtime.dsp_runtime.output_meter_layout() if runtime.dsp_runtime else None,
+        )
         runtime.dsp_runtime = DSPRuntime(dsp_manager)
         if hasattr(measurement_store, "runtime_snapshot_provider"):
             measurement_store.runtime_snapshot_provider = getattr(runtime.dsp_runtime, "snapshot", None)

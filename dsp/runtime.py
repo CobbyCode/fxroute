@@ -500,6 +500,13 @@ class DSPRuntime:
     def _engine_running(self) -> bool:
         return self._process is not None and getattr(self._process, "returncode", None) is None
 
+    def output_meter_layout(self) -> tuple[str, tuple[str, ...]] | None:
+        """Running engine's output mode and output role names, in output order."""
+        config = self._config
+        if config is None or not self._engine_running():
+            return None
+        return config.output_mode, tuple(str(channel.get("name", "")) for channel in config.layout)
+
     @property
     def surround_engine(self) -> bool:
         """Whether the running engine exposes the eight Surround program inputs."""

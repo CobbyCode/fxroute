@@ -8051,7 +8051,59 @@ input[type="number"]::-webkit-outer-spin-button {
 
 /* Hidden meter segments (JS-driven via .meter-segment-hidden): must win
    over the base .meter-segments i { display: block } row rule. */
-.meter-segments .meter-segment-hidden { display: none; }
+.meter-segments .meter-segment-hidden,
+.meter-bar .meter-segment-hidden { display: none; }
+
+/* Multichannel output meter: with three or more speaker positions the two
+   stereo rows give way to one vertical bar per position (FL FR C LFE SL SR
+   RL RR). The level in dB is dropped here; the bars say enough. */
+.meter-multi { display: none; }
+.playback-meter.is-multichannel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+}
+.playback-meter.is-multichannel .meter-row,
+.playback-meter.is-multichannel .output-level-badge { display: none; }
+.playback-meter.is-multichannel .meter-multi {
+    display: flex;
+    align-items: flex-start;
+}
+.meter-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    width: 16px;
+}
+.meter-bar {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 1.5px;
+}
+.meter-bar i {
+    display: block;
+    width: 5px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.075);
+    transition: background .08s linear, box-shadow .08s linear, opacity .08s linear;
+}
+.meter-bar i.is-lit { background: #55d99f; }
+.meter-bar i.is-lit.is-warn { background: #e9b949; }
+.meter-bar i.is-lit.is-hot { background: #ef7b4f; }
+.meter-bar i.is-peak {
+    background: #ff5a5f;
+    box-shadow: 0 0 8px rgba(255,90,95,.72);
+}
+.meter-col-label {
+    font-size: .5rem;
+    line-height: 1;
+    font-weight: 760;
+    white-space: nowrap;
+    color: rgba(160,160,172,.68);
+}
 /* Shared detail track-row body (library album detail + Tidal album/playlist
    detail): track number, round play button, stacked title/sub, favorite,
    duration. One visual language for both providers; the row container chrome
@@ -8263,6 +8315,7 @@ input[type="number"]::-webkit-outer-spin-button {
         #playback-bar .samplerate-status,
         #playback-bar .queue-status { font-size: 0.67rem; }
         #playback-bar .meter-channel { font-size: 0.57rem; }
+        #playback-bar .meter-col-label { font-size: 0.54rem; }
         #playback-bar .output-level-badge { font-size: 0.65rem; }
         .tab-btn { font-size: 0.94rem; }
         .section-title { font-size: 1.12rem; }
@@ -8379,6 +8432,12 @@ input[type="number"]::-webkit-outer-spin-button {
         gap: 1.7px;
     }
     .meter-segments i { height: 4px; }
+    /* Multichannel bars sit centred in the meter row; the stereo rows'
+       bottom alignment would push the labels into the volume row. */
+    .playback-meter.is-multichannel {
+        align-self: center;
+        margin: 0;
+    }
     .playback-bar .controls {
         width: min(100%, 235px);
         max-width: 235px;
@@ -8582,6 +8641,16 @@ input[type="number"]::-webkit-outer-spin-button {
         height: 4px;
         border-radius: 999px;
     }
+    /* Multichannel on a phone: up to eight slim bars in the 84px meter slot,
+       positions told apart by order only (labels stay in the tooltips). */
+    .playback-meter.is-multichannel {
+        width: auto;
+        max-width: 84px;
+        min-height: 0;
+    }
+    .meter-col { width: 10px; }
+    .meter-col-label { display: none; }
+    .meter-bar { gap: 1.4px; }
     .output-level-badge { display: none; }
     /* Phone: volume percent shares the seek duration right value column. */
     .playback-bar .controls {
@@ -8676,6 +8745,11 @@ input[type="number"]::-webkit-outer-spin-button {
             max-width: 78px;
             grid-template-columns: .5rem 57px;
         }
+        .playback-meter.is-multichannel {
+            width: auto;
+            max-width: 78px;
+        }
+        .meter-col { width: 9px; }
         .meter-segments {
             width: 57px;
             min-width: 57px;
