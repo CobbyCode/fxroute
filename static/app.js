@@ -356,6 +356,7 @@ window.FXRouteOutputSystemController?.init({
     syncSpeakerAlign: () => MeasurementFlows.syncSpeakerAlignButton(),
     renderSubwoofer: () => renderSubwooferPanel(),
     syncAutoSub: () => MeasurementFlows.syncAutoSubButton(),
+    updateEffectsExtras: () => window.FXRouteEffectsUI?.updateEffectsExtrasUi?.(),
     reportMutationError: (html) => {
         if (elements.osFeedback) elements.osFeedback.innerHTML = html;
     },
@@ -1267,6 +1268,12 @@ const elements = {
     effectsBassEnabled: document.getElementById('effects-bass-enabled'),
     effectsBassAmount: document.getElementById('effects-bass-amount'),
     effectsBassControlsWrap: document.getElementById('effects-bass-controls-wrap'),
+    effectsUpmixerRow: document.getElementById('effects-upmixer-row'),
+    effectsUpmixerEnabled: document.getElementById('effects-upmixer-enabled'),
+    effectsUpmixerCenter: document.getElementById('effects-upmixer-center'),
+    effectsUpmixerCenterWrap: document.getElementById('effects-upmixer-center-wrap'),
+    effectsUpmixerSurround: document.getElementById('effects-upmixer-surround'),
+    effectsUpmixerSurroundWrap: document.getElementById('effects-upmixer-surround-wrap'),
     effectsToneEffectEnabled: document.getElementById('effects-tone-effect-enabled'),
     effectsToneEffectWrap: document.getElementById('effects-tone-effect-wrap'),
     effectsToneEffectMode: document.getElementById('effects-tone-effect-mode'),
@@ -1718,6 +1725,9 @@ function handleWebSocketMessage(msg) {
                         bassAmount: Number(state.dsp.global_extras?.bass_enhancer?.params?.amount || 0),
                         toneEffectEnabled: !!state.dsp.global_extras?.tone_effect?.enabled,
                         toneEffectMode: String(state.dsp.global_extras?.tone_effect?.mode || 'crystalizer'),
+                        upmixerEnabled: !!state.dsp.global_extras?.upmixer?.enabled,
+                        upmixerCenter: state.dsp.global_extras?.upmixer?.params?.center ?? 6,
+                        upmixerSurround: state.dsp.global_extras?.upmixer?.params?.surround ?? 6,
                     });
                 }
                 EffectsUI.renderEffects();

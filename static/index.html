@@ -943,6 +943,27 @@
                                         <div class="effects-extras-group-header">
                                             <h4>Tone</h4>
                                         </div>
+                                        <div class="effects-extras-row effects-extras-row-helpers effects-loudness-row hidden" id="effects-upmixer-row">
+                                            <label class="checkbox-row"><input type="checkbox" id="effects-upmixer-enabled"> Upmixer</label>
+                                            <div class="effects-loudness-controls">
+                                                <label for="effects-upmixer-center" id="effects-upmixer-center-wrap" class="effects-inline-control hidden">
+                                                    <span class="effects-inline-control-label">Center</span>
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease upmixer center">&minus;</button>
+                                                        <input type="number" id="effects-upmixer-center" class="url-input delay-number-input stepper-input" min="1" max="10" step="1" value="6" aria-label="Center">
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase upmixer center">+</button>
+                                                    </div>
+                                                </label>
+                                                <label for="effects-upmixer-surround" id="effects-upmixer-surround-wrap" class="effects-inline-control hidden">
+                                                    <span class="effects-inline-control-label">Surround</span>
+                                                    <div class="stepper-control">
+                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease upmixer surround">&minus;</button>
+                                                        <input type="number" id="effects-upmixer-surround" class="url-input delay-number-input stepper-input" min="1" max="10" step="1" value="6" aria-label="Surround">
+                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase upmixer surround">+</button>
+                                                    </div>
+                                                </label>
+                                            </div>
+                                        </div>
                                         <div class="effects-extras-row effects-extras-row-helpers effects-loudness-row">
                                             <label class="checkbox-row"><input type="checkbox" id="effects-loudness-enabled"> Loudness</label>
                                             <div class="effects-loudness-controls">
@@ -1875,9 +1896,9 @@
     <script src="/static/src_settings.js?v=0.1.6"></script>
     <script src="/static/custom_mapping_ui.js?v=0.1.2"></script>
     <script src="/static/subwoofer_ui.js?v=0.9.7"></script>
-    <script src="/static/output_system_controller.js?v=0.9.1"></script>
+    <script src="/static/output_system_controller.js?v=0.9.2"></script>
     <script src="/static/output_bank_ui.js?v=0.9.7"></script>
-    <script src="/static/output_effects_ui.js?v=0.9.7"></script>
+    <script src="/static/output_effects_ui.js?v=0.9.8"></script>
     <script src="/static/measurement_panel_ui.js?v=0.9.10"></script>
     <script src="/static/measurement_saved_ui.js?v=0.9.6"></script>
     <script src="/static/measurement_editors_ui.js?v=0.9.2"></script>
@@ -1895,7 +1916,7 @@
     <script src="/static/playback_core.js?v=0.9.8"></script>
     <script src="/static/playback_ui.js?v=0.9.8"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.284"></script>
+    <script src="/static/app.js?v=0.9.285"></script>
     <script src="/static/streaming.js?v=0.9.79"></script>
 </body>
 </html>

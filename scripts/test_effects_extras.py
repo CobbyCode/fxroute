@@ -42,6 +42,10 @@ def full_extras(**overrides) -> dict:
             "params": {"amount": 0.0, "harmonics": 8.5, "scope": 100.0, "blend": 0.0},
         },
         "tone_effect": {"enabled": False, "mode": "crystalizer"},
+        "upmixer": {
+            "enabled": False,
+            "params": {"mode": "fast", "center": 6, "surround": 6, "fftSize": 2048},
+        },
     }
     base.update(overrides)
     return base

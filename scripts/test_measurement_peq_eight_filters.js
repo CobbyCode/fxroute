@@ -141,6 +141,7 @@ async function main() {
         syncSpeakerAlign: () => {},
         renderSubwoofer: () => {},
         syncAutoSub: () => {},
+        updateEffectsExtras: () => {},
         reportMutationError: () => {},
         syncCompareBusy: () => {},
     };

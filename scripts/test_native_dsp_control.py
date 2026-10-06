@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
     subprocess.run([
         "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "worker_pool.c"), str(NATIVE / "timing.c"), str(NATIVE / "autogain.c"),
-        str(NATIVE / "crystalizer.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "lv2_host.c"), str(harness),
         *flags, "-lm", "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary), str(config)], check=True)
@@ -152,7 +152,7 @@ int main(int argc, char **argv) {
     subprocess.run([
         "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "worker_pool.c"), str(NATIVE / "timing.c"), str(NATIVE / "autogain.c"),
-        str(NATIVE / "crystalizer.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "lv2_host.c"), str(harness),
         *flags, "-lm", "-pthread", "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary), str(config)], check=True, timeout=3)
@@ -247,7 +247,7 @@ int main(int argc, char **argv) {
     subprocess.run([
         "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "worker_pool.c"), str(NATIVE / "timing.c"), str(NATIVE / "autogain.c"),
-        str(NATIVE / "crystalizer.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "lv2_host.c"), str(harness),
         *flags, "-lm", "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary), str(config)], check=True)
@@ -302,7 +302,7 @@ int main(int argc, char **argv) {
     subprocess.run([
         "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-I", str(NATIVE), str(NATIVE / "dsp.c"), str(NATIVE / "worker_pool.c"), str(NATIVE / "timing.c"), str(NATIVE / "autogain.c"),
-        str(NATIVE / "crystalizer.c"), str(NATIVE / "lv2_host.c"), str(harness),
+        str(NATIVE / "crystalizer.c"), str(NATIVE / "upmix_fast.c"), str(NATIVE / "lv2_host.c"), str(harness),
         *flags, "-lm", "-o", str(binary),
     ], check=True)
     configs = {

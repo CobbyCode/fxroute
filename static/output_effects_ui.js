@@ -186,6 +186,8 @@ function setupEffectsActions() {
         deps.getElements().effectsAutogainTargetDb,
         deps.getElements().effectsLoudnessStrength,
         deps.getElements().effectsLoudnessFftSize,
+        deps.getElements().effectsUpmixerCenter,
+        deps.getElements().effectsUpmixerSurround,
         deps.getElements().effectsBassAmount,
         deps.getElements().effectsToneEffectMode,
     ].forEach(el => {
@@ -216,6 +218,10 @@ function setupEffectsActions() {
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
     if (deps.getElements().effectsBassEnabled) deps.getElements().effectsBassEnabled.addEventListener('change', () => {
+        updateEffectsExtrasUi();
+        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
+    });
+    if (deps.getElements().effectsUpmixerEnabled) deps.getElements().effectsUpmixerEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
@@ -291,6 +297,9 @@ async function fetchEffects() {
                 bassAmount: Number(data.global_extras?.bass_enhancer?.params?.amount || 0),
                 toneEffectEnabled: !!data.global_extras?.tone_effect?.enabled,
                 toneEffectMode: String(data.global_extras?.tone_effect?.mode || 'crystalizer'),
+                upmixerEnabled: !!data.global_extras?.upmixer?.enabled,
+                upmixerCenter: data.global_extras?.upmixer?.params?.center ?? 6,
+                upmixerSurround: data.global_extras?.upmixer?.params?.surround ?? 6,
             });
         }
         renderEffects();
@@ -777,6 +786,14 @@ function normalizeEffectsLoudnessStrength(value, fallback = 10) {
     return Math.max(1, Math.min(10, Math.round(numeric)));
 }
 
+// Steering strengths of the Surround upmixer: whole numbers 1 (weak) .. 10 (strong).
+function normalizeEffectsUpmixerStrength(value, fallback = 6) {
+    if (value === '' || value == null) return fallback;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.max(1, Math.min(10, Math.round(numeric)));
+}
+
 function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {
     const normalized = String(value || fallback).trim().toLowerCase();
     return EFFECTS_TONE_EFFECT_MODES.has(normalized) ? normalized : fallback;
@@ -804,6 +821,13 @@ function applyEffectsExtras(extras = {}) {
     if (deps.getElements().effectsBassAmount && !!extras.bassEnabled && !deps.getActiveEditing().has(deps.getElements().effectsBassAmount)) {
         deps.getElements().effectsBassAmount.value = String(Number(extras.bassAmount || 0));
     }
+    if (deps.getElements().effectsUpmixerEnabled) deps.getElements().effectsUpmixerEnabled.checked = !!extras.upmixerEnabled;
+    if (deps.getElements().effectsUpmixerCenter && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerCenter)) {
+        deps.getElements().effectsUpmixerCenter.value = normalizeEffectsUpmixerStrength(extras.upmixerCenter, 6);
+    }
+    if (deps.getElements().effectsUpmixerSurround && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerSurround)) {
+        deps.getElements().effectsUpmixerSurround.value = normalizeEffectsUpmixerStrength(extras.upmixerSurround, 6);
+    }
     if (deps.getElements().effectsToneEffectEnabled) deps.getElements().effectsToneEffectEnabled.checked = !!extras.toneEffectEnabled;
     if (deps.getElements().effectsToneEffectMode && !deps.getActiveEditing().has(deps.getElements().effectsToneEffectMode)) {
         deps.getElements().effectsToneEffectMode.value = normalizeEffectsToneEffectMode(extras.toneEffectMode, 'crystalizer');
@@ -830,6 +854,26 @@ function updateEffectsExtrasUi() {
     if (deps.getElements().effectsToneEffectWrap) {
         deps.getElements().effectsToneEffectWrap.classList.toggle('hidden', !deps.getElements().effectsToneEffectEnabled?.checked);
     }
+    updateEffectsUpmixerUi();
+}
+
+// The upmixer exists in Surround only. A missing Center speaker removes just
+// the Center control: the Surround extraction does not depend on it.
+function updateEffectsUpmixerUi() {
+    const catalog = deps.getState().outputSystem?.catalog;
+    const surround = catalog?.active_mode === 'surround';
+    const roles = catalog?.modes?.[catalog?.active_mode]?.topology?.roles;
+    const hasCenter = Array.isArray(roles) && roles.includes('center');
+    const enabled = !!deps.getElements().effectsUpmixerEnabled?.checked;
+    if (deps.getElements().effectsUpmixerRow) {
+        deps.getElements().effectsUpmixerRow.classList.toggle('hidden', !surround);
+    }
+    if (deps.getElements().effectsUpmixerCenterWrap) {
+        deps.getElements().effectsUpmixerCenterWrap.classList.toggle('hidden', !enabled || !hasCenter);
+    }
+    if (deps.getElements().effectsUpmixerSurroundWrap) {
+        deps.getElements().effectsUpmixerSurroundWrap.classList.toggle('hidden', !enabled);
+    }
 }
 
 function loadSavedEffectsExtras() {
@@ -852,6 +896,9 @@ function loadSavedEffectsExtras() {
         bassAmount: Number(fx.global_extras?.bass_enhancer?.params?.amount || 0),
         toneEffectEnabled: !!fx.global_extras?.tone_effect?.enabled,
         toneEffectMode: String(fx.global_extras?.tone_effect?.mode || 'crystalizer'),
+        upmixerEnabled: !!fx.global_extras?.upmixer?.enabled,
+        upmixerCenter: fx.global_extras?.upmixer?.params?.center ?? 6,
+        upmixerSurround: fx.global_extras?.upmixer?.params?.surround ?? 6,
     });
 }
 
@@ -894,6 +941,9 @@ function collectEffectsExtras() {
         bassAmount: parseFloat(deps.getElements().effectsBassAmount?.value || '0'),
         toneEffectEnabled: deps.getElements().effectsToneEffectEnabled?.checked || false,
         toneEffectMode: normalizeEffectsToneEffectMode(deps.getElements().effectsToneEffectMode?.value, 'crystalizer'),
+        upmixerEnabled: deps.getElements().effectsUpmixerEnabled?.checked || false,
+        upmixerCenter: normalizeEffectsUpmixerStrength(deps.getElements().effectsUpmixerCenter?.value, 6),
+        upmixerSurround: normalizeEffectsUpmixerStrength(deps.getElements().effectsUpmixerSurround?.value, 6),
     };
 }
 
@@ -946,6 +996,14 @@ async function _doSaveEffectsExtras() {
             delay: { enabled: !!extras.delayEnabled, params: { leftMs: extras.delayLeftMs, rightMs: extras.delayRightMs } },
             bass_enhancer: { enabled: !!extras.bassEnabled, params: { amount: extras.bassAmount, harmonics: 8.5, scope: 100.0, blend: 0.0 } },
             tone_effect: { enabled: !!extras.toneEffectEnabled, mode: extras.toneEffectMode },
+            upmixer: {
+                enabled: !!extras.upmixerEnabled,
+                params: {
+                    ...(deps.getState().dsp?.global_extras?.upmixer?.params || {}),
+                    center: extras.upmixerCenter,
+                    surround: extras.upmixerSurround,
+                },
+            },
         };
         renderEffects();
         // Success clears a previous failure label: the tile must never keep
@@ -998,6 +1056,7 @@ function setEffectsExtrasFeedback(message, cls) {
         normalizeEffectsLoudnessFftSize,
         normalizeEffectsLoudnessStrength,
         normalizeEffectsToneEffectMode,
+        normalizeEffectsUpmixerStrength,
         normalizeLinkedPeqSpecialBands,
         normalizePeqEqMode,
         readPeqNumberInput,
@@ -1014,6 +1073,7 @@ function setEffectsExtrasFeedback(message, cls) {
         syncLinkedPeqSpecialBandValueInDom,
         updateEffectsExtrasUi,
         updateEffectsPeqDisclosureLabel,
+        updateEffectsUpmixerUi,
         updateEffectsPeqSummary,
         updatePeqBand,
         validatePeqBands,

@@ -14,7 +14,7 @@ from native_test_runner import run_pytest_style_module
 
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "native_dsp"
-CORE_SOURCES = tuple(NATIVE / name for name in ("dsp.c", "autogain.c", "crystalizer.c", "lv2_host.c"))
+CORE_SOURCES = tuple(NATIVE / name for name in ("dsp.c", "autogain.c", "crystalizer.c", "upmix_fast.c", "lv2_host.c"))
 
 
 def compile_native(target, sources, flags=()):

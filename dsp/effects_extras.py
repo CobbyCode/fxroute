@@ -44,6 +44,11 @@ def parse_effects_extras_from_json(body: dict) -> dict:
     bass_amount = float(body.get("bassAmount", body.get("bass_amount", 0.0)) or 0.0)
     tone_effect_enabled = bool(body.get("toneEffectEnabled", body.get("tone_effect_enabled", False)))
     tone_effect_mode = str(body.get("toneEffectMode", body.get("tone_effect_mode", "crystalizer")) or "crystalizer").strip().lower()
+    upmixer_enabled = bool(body.get("upmixerEnabled", body.get("upmixer_enabled", False)))
+    upmixer_mode = str(body.get("upmixerMode", body.get("upmixer_mode", "fast")) or "fast").strip().lower()
+    upmixer_center = body.get("upmixerCenter", body.get("upmixer_center"))
+    upmixer_surround = body.get("upmixerSurround", body.get("upmixer_surround"))
+    upmixer_fft_size = body.get("upmixerFftSize", body.get("upmixer_fft_size"))
     return {
         "limiter": {"enabled": limiter_enabled},
         "headroom": {
@@ -88,6 +93,16 @@ def parse_effects_extras_from_json(body: dict) -> dict:
             "enabled": tone_effect_enabled,
             "mode": tone_effect_mode,
         },
+        "upmixer": {
+            "enabled": upmixer_enabled,
+            "params": {
+                "mode": upmixer_mode,
+                # Missing key, null and empty string keep the defaults.
+                "center": float(upmixer_center) if upmixer_center not in (None, "") else 6,
+                "surround": float(upmixer_surround) if upmixer_surround not in (None, "") else 6,
+                "fftSize": int(upmixer_fft_size) if upmixer_fft_size not in (None, "") else 2048,
+            },
+        },
     }
 
 
@@ -110,6 +125,7 @@ def merge_effects_extras_from_json(previous: dict, body: dict) -> dict:
         ("bass_enhancer", "enabled", ("bassEnabled", "bass_enabled"), bool),
         ("tone_effect", "enabled", ("toneEffectEnabled", "tone_effect_enabled"), bool),
         ("tone_effect", "mode", ("toneEffectMode", "tone_effect_mode"), str),
+        ("upmixer", "enabled", ("upmixerEnabled", "upmixer_enabled"), bool),
     )
     for section, field, names, converter in scalar_fields:
         present, value = supplied(*names)
@@ -124,6 +140,10 @@ def merge_effects_extras_from_json(previous: dict, body: dict) -> dict:
         ("delay", "leftMs", ("delayLeftMs", "delay_left_ms"), float),
         ("delay", "rightMs", ("delayRightMs", "delay_right_ms"), float),
         ("bass_enhancer", "amount", ("bassAmount", "bass_amount"), float),
+        ("upmixer", "mode", ("upmixerMode", "upmixer_mode"), lambda value: str(value).strip().lower()),
+        ("upmixer", "center", ("upmixerCenter", "upmixer_center"), float),
+        ("upmixer", "surround", ("upmixerSurround", "upmixer_surround"), float),
+        ("upmixer", "fftSize", ("upmixerFftSize", "upmixer_fft_size"), int),
     )
     for section, field, names, converter in param_fields:
         present, value = supplied(*names)

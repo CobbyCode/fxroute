@@ -3,6 +3,7 @@
 #include "autogain.h"
 #include "crystalizer.h"
 #include "lv2_host.h"
+#include "upmix_fast.h"
 
 #include <errno.h>
 #include <math.h>
@@ -70,7 +71,7 @@ typedef struct {
 } output_state;
 
 typedef enum { STAGE_CONVOLVER, STAGE_DELAY, STAGE_HEADROOM, STAGE_AUTOGAIN,
-               STAGE_CRYSTALIZER, STAGE_LV2, STAGE_MASTER_GAIN } stage_kind;
+               STAGE_CRYSTALIZER, STAGE_LV2, STAGE_MASTER_GAIN, STAGE_UPMIXER } stage_kind;
 typedef struct { char symbol[128]; float value; } stage_control;
 typedef struct {
     stage_kind kind;
@@ -87,6 +88,10 @@ typedef struct {
     fx_autogain *autogain[FXDSP_MAX_CHANNELS / 2];
     fx_crystalizer *crystalizer[FXDSP_MAX_CHANNELS];
     fx_lv2_host *lv2[FXDSP_MAX_CHANNELS / 2];
+    /* Surround upmixer: steering strengths 1..10 and the destinations that exist. */
+    fx_upmix_fast *upmixer;
+    float upmix_center, upmix_surround;
+    unsigned upmix_center_out, upmix_side_out, upmix_rear_out;
     /* Matched-latency loudness compensation (post-LSP output trim). */
     size_t lv2_frames_fed;
     unsigned lv2_frame_size, lv2_buf_size;
@@ -445,6 +450,17 @@ static int set_native_param(dsp_stage *stage, const char *key, char *raw) {
             !fx_crystalizer_intensity_db_valid(number)) return -1;
         stage->intensity_db = number; return 0;
     }
+    if (stage->kind == STAGE_UPMIXER) {
+        if (!strcmp(key, "mode")) return strcmp(value, "fast") ? -1 : 0;
+        if (parse_float_value(value, &number)) return -1;
+        if (!strcmp(key, "center") && fx_upmix_fast_strength_valid(number)) stage->upmix_center = number;
+        else if (!strcmp(key, "surround") && fx_upmix_fast_strength_valid(number)) stage->upmix_surround = number;
+        else if (!strcmp(key, "center_out") && (number == 0.0f || number == 1.0f)) stage->upmix_center_out = (unsigned)number;
+        else if (!strcmp(key, "side_out") && (number == 0.0f || number == 1.0f)) stage->upmix_side_out = (unsigned)number;
+        else if (!strcmp(key, "rear_out") && (number == 0.0f || number == 1.0f)) stage->upmix_rear_out = (unsigned)number;
+        else return -1;
+        return 0;
+    }
     if (stage->kind == STAGE_AUTOGAIN) {
         if (!strcmp(key, "reference")) {
             if (!strcmp(value, "Momentary")) stage->reference = FX_AUTOGAIN_MOMENTARY;
@@ -508,6 +524,11 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
             fx_crystalizer_set_band_intensity_db(stage->crystalizer[channel], 2U,
                                                   stage->intensity_db);
         }
+    } else if (stage->kind == STAGE_UPMIXER) {
+        if (!d->surround) { fail(error, error_size, "upmixer requires Surround"); return -1; }
+        stage->upmixer = fx_upmix_fast_create(d->rate, stage->upmix_center_out, stage->upmix_side_out, stage->upmix_rear_out);
+        if (!stage->upmixer) { fail(error, error_size, "cannot initialize upmixer"); return -1; }
+        fx_upmix_fast_set_strength(stage->upmixer, stage->upmix_center, stage->upmix_surround);
     } else if (stage->kind == STAGE_LV2) {
         if (d->inputs & 1U) { fail(error, error_size, "LV2 stages require an even stereo input count"); return -1; }
         for (channel = 0; channel < effect_pairs(d); channel++) {
@@ -587,6 +608,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
             current->dry = powf(10.0f, -5.0f); current->target_db = -12.0f;
             current->silence_db = -70.0f; current->history_seconds = 15U;
             current->reference = FX_AUTOGAIN_GEOMETRIC_MEAN_MSI; current->intensity_db = -2.0f;
+            current->upmix_center = current->upmix_surround = 6.0f;
             if (!strcmp(type, "lv2")) { current->kind = STAGE_LV2; snprintf(current->argument, sizeof current->argument, "%s", kind); }
             else if (!strcmp(type, "native") && !strcmp(kind, "convolver")) current->kind = STAGE_CONVOLVER;
             else if (!strcmp(type, "native") && !strcmp(kind, "delay")) current->kind = STAGE_DELAY;
@@ -594,6 +616,7 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
             else if (!strcmp(type, "native") && !strcmp(kind, "master_gain")) current->kind = STAGE_MASTER_GAIN;
             else if (!strcmp(type, "native") && !strcmp(kind, "autogain")) current->kind = STAGE_AUTOGAIN;
             else if (!strcmp(type, "native") && !strcmp(kind, "crystalizer")) current->kind = STAGE_CRYSTALIZER;
+            else if (!strcmp(type, "native") && !strcmp(kind, "upmixer")) current->kind = STAGE_UPMIXER;
             else goto invalid;
         } else { float x,y,z,route_gain; int enabled; float b0,b1,b2,a1,a2; int consumed;
             if (!stage_section && !post_section && sscanf(p,"rate %u %c",&d->rate,&extra)==1) {}
@@ -682,6 +705,7 @@ void fxdsp_free(fxdsp *d) {
             free_convolution(&stage->conv[channel]); free(stage->delay_line[channel]);
             fx_crystalizer_destroy(stage->crystalizer[channel]);
         }
+        fx_upmix_fast_destroy(stage->upmixer);
         for(unsigned pair=0;pair<FXDSP_MAX_CHANNELS/2;pair++) {
             fx_autogain_free(stage->autogain[pair]); fx_lv2_host_free(stage->lv2[pair]);
         }
@@ -874,6 +898,8 @@ int fxdsp_live_param(fxdsp *d, const char *stage_id, const char *key, float valu
     else if (stage->kind == STAGE_CRYSTALIZER)
         known = !strcmp(key, "intensity_band2_db") && fx_crystalizer_intensity_db_valid(value);
     else if (stage->kind == STAGE_AUTOGAIN) known = !strcmp(key, "target_db") || !strcmp(key, "silence_threshold_db");
+    else if (stage->kind == STAGE_UPMIXER)
+        known = (!strcmp(key, "center") || !strcmp(key, "surround")) && fx_upmix_fast_strength_valid(value);
     if (!known) return 0;
     snprintf(update.stage_id, sizeof update.stage_id, "%s", stage_id);
     snprintf(update.symbol, sizeof update.symbol, "%s", key);
@@ -990,7 +1016,11 @@ static void apply_live_updates(fxdsp *d) {
                         if (stage->delay[channel] >= stage->delay_size[channel]) stage->delay[channel] = stage->delay_size[channel] - 1U;
                     }
             } else if (stage->kind == STAGE_HEADROOM || stage->kind == STAGE_MASTER_GAIN) stage->gain = update->values[1];
-            else if (stage->kind == STAGE_CRYSTALIZER) {
+            else if (stage->kind == STAGE_UPMIXER) {
+                if (!strcmp(update->symbol, "center")) stage->upmix_center = update->values[0];
+                else stage->upmix_surround = update->values[0];
+                fx_upmix_fast_set_strength(stage->upmixer, stage->upmix_center, stage->upmix_surround);
+            } else if (stage->kind == STAGE_CRYSTALIZER) {
                 stage->intensity_db = update->values[0];
                 for (unsigned channel = 0; channel < d->inputs; channel++) fx_crystalizer_set_band_intensity_db(stage->crystalizer[channel], 2U, stage->intensity_db);
             } else if (stage->kind == STAGE_AUTOGAIN) {
@@ -1130,6 +1160,13 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
                 process_job job = {.d=d, .stage=stage, .source=source, .target=target, .count=count};
                 if(stage->kind==STAGE_CONVOLVER || stage->kind==STAGE_CRYSTALIZER) {
                     run_jobs(d, d->workers, d->inputs, process_channel, &job);
+                } else if(stage->kind==STAGE_UPMIXER) {
+                    /* Fixed 8 -> 8 matrix on the callback; no per-channel jobs. */
+                    const float *upmix_in[FX_UPMIX_FAST_CHANNELS]; float *upmix_out[FX_UPMIX_FAST_CHANNELS];
+                    for(unsigned channel=0;channel<FX_UPMIX_FAST_CHANNELS;channel++) {
+                        upmix_in[channel]=d->scratch[source][channel]; upmix_out[channel]=d->scratch[target][channel];
+                    }
+                    fx_upmix_fast_process(stage->upmixer,upmix_in,upmix_out,count);
                 } else if(stage->kind==STAGE_AUTOGAIN || stage->kind==STAGE_LV2) {
                     /* Stereo instances stay indivisible on the callback;
                      * this pool only moves native channel/bank kernels. */

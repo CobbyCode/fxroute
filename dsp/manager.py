@@ -196,6 +196,14 @@ class DSPManager:
     LOUDNESS_OUTPUT_GAIN_MIN_DB = -36.0
     LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS = 0.35
     TONE_EFFECT_DEFAULTS = {"enabled": False, "mode": "crystalizer"}
+    # Stereo to Surround upmixer (Surround output mode only). Center and
+    # Surround are steering strengths 1 (weak) .. 10 (strong); the engine maps
+    # them to its own steering. fftSize belongs to the HQ engine.
+    UPMIXER_DEFAULTS = {"enabled": False, "params": {"mode": "fast", "center": 6, "surround": 6, "fftSize": 2048}}
+    UPMIXER_MODES = ("fast",)
+    UPMIXER_FFT_SIZES = (1024, 2048, 4096)
+    UPMIXER_STRENGTH_MIN = 1
+    UPMIXER_STRENGTH_MAX = 10
 
     def normalize_effects_extras(self, extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         source = extras if isinstance(extras, dict) else {}
@@ -203,7 +211,7 @@ class DSPManager:
             "limiter": self.LIMITER_DEFAULTS, "headroom": self.HEADROOM_DEFAULTS,
             "delay": self.DELAY_DEFAULTS, "bass_enhancer": self.BASS_ENHANCER_DEFAULTS,
             "autogain": self.AUTOGAIN_DEFAULTS, "loudness": self.LOUDNESS_DEFAULTS,
-            "tone_effect": self.TONE_EFFECT_DEFAULTS,
+            "tone_effect": self.TONE_EFFECT_DEFAULTS, "upmixer": self.UPMIXER_DEFAULTS,
         })
         for key in result:
             value = source.get(key)
@@ -228,6 +236,7 @@ class DSPManager:
         if mode not in {"crystalizer", "maximizer"}:
             raise ValueError("tone_effect.mode must be one of: crystalizer, maximizer")
         result["tone_effect"] = {"enabled": enabled, "mode": mode}
+        result["upmixer"] = self._normalize_upmixer(result["upmixer"])
         limiter = result["limiter"]["params"]
         threshold_db = float(limiter["thresholdDb"])
         if not self.LIMITER_THRESHOLD_MIN_DB <= threshold_db <= self.LIMITER_THRESHOLD_MAX_DB:
@@ -310,6 +319,54 @@ class DSPManager:
         if not all(0 <= delay[channel] <= self.DELAY_MAX_MS for channel in ("leftMs", "rightMs")):
             raise ValueError("delay.params leftMs/rightMs must be between 0 and 500")
         return result
+
+    def _normalize_upmixer(self, definition: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate the upmixer section; unknown params are dropped."""
+        params = definition.get("params") if isinstance(definition.get("params"), dict) else {}
+        defaults = self.UPMIXER_DEFAULTS["params"]
+        mode = str(params.get("mode", defaults["mode"]) or defaults["mode"]).strip().lower()
+        if mode not in self.UPMIXER_MODES:
+            raise ValueError(f"upmixer.params.mode must be one of: {', '.join(self.UPMIXER_MODES)}")
+        normalized = {"mode": mode}
+        for name in ("center", "surround"):
+            try:
+                strength = float(params.get(name, defaults[name]))
+            except (TypeError, ValueError):
+                raise ValueError(f"upmixer.params.{name} must be a number") from None
+            if (not math.isfinite(strength) or strength != int(strength)
+                    or not self.UPMIXER_STRENGTH_MIN <= strength <= self.UPMIXER_STRENGTH_MAX):
+                raise ValueError(f"upmixer.params.{name} must be between "
+                                 f"{self.UPMIXER_STRENGTH_MIN} and {self.UPMIXER_STRENGTH_MAX}")
+            normalized[name] = int(strength)
+        try:
+            fft_size = int(params.get("fftSize", defaults["fftSize"]))
+        except (TypeError, ValueError):
+            raise ValueError("upmixer.params.fftSize is not supported") from None
+        if fft_size not in self.UPMIXER_FFT_SIZES:
+            raise ValueError("upmixer.params.fftSize is not supported")
+        normalized["fftSize"] = fft_size
+        return {"enabled": bool(definition.get("enabled", False)), "params": normalized}
+
+    @staticmethod
+    def _upmixer_stage(definition: Dict[str, Any], outputs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Engine stage of the enabled upmixer, or None where it cannot act.
+
+        Only a Surround layout has the eight positioned program inputs. The
+        stage names the destinations the routing really has: no Center output
+        means no Center extraction, no Side/Rear output means no Surround
+        extraction for that pair. A layout with none of them has nothing to
+        upmix into.
+        """
+        if not definition.get("enabled") or not any("input_positions" in output for output in outputs):
+            return None
+        names = {output["name"] for output in outputs}
+        destinations = {"center_out": int("center" in names),
+                        "side_out": int(bool(names & {"side_l", "side_r"})),
+                        "rear_out": int(bool(names & {"rear_l", "rear_r"}))}
+        if not any(destinations.values()):
+            return None
+        return {"id": "global-upmixer", "type": "upmixer", "enabled": True,
+                "params": {**copy.deepcopy(definition["params"]), **destinations}}
 
     @staticmethod
     def _clamp_limiter_time(name: str, value: Any, minimum: float, maximum: float) -> float:
@@ -890,11 +947,17 @@ class DSPManager:
         payload = self.preset_store.read(active)
         chain = copy.deepcopy(payload["chain"])
         self._validate_supported_chain(chain)
+        upmixer = None
         if active not in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-            chain.extend(self._extras_chain(
-                self.normalize_effects_extras(extras_override)
-                if extras_override is not None else self.load_global_extras()))
+            extras = (self.normalize_effects_extras(extras_override)
+                      if extras_override is not None else self.load_global_extras())
+            chain.extend(self._extras_chain(extras))
+            upmixer = self._upmixer_stage(extras["upmixer"], outputs)
         self._validate_supported_chain(chain)
+        if upmixer is not None:
+            # First stage, so Loudness, Crystalizer and the rest see the
+            # upmixed channels. Not a preset plugin: it skips the check above.
+            chain.insert(0, upmixer)
         return {"schema": self.ENGINE_SCHEMA, "version": self.ENGINE_VERSION,
                 "sample_rate_hz": sample_rate_hz, "preset": active,
                  "outputs": outputs, "chain": chain}
@@ -1062,6 +1125,10 @@ class DSPManager:
                 lines.append(f"param maximum_history_seconds {number(params.get('maximumHistorySeconds', 15))}")
             elif plugin_type == "crystalizer":
                 lines.append(f"param intensity_band2_db {number(params.get('intensityBand2Db', -2.0))}")
+            elif plugin_type == "upmixer":
+                lines.append(f"param mode {params['mode']}")
+                for name in ("center", "surround", "center_out", "side_out", "rear_out"):
+                    lines.append(f"param {name} {number(params[name])}")
             elif plugin_type == "bass_enhancer":
                 control("listen", 0)
                 control("amount", 10.0 ** (float(params.get("amount", 0.0)) / 20.0))
