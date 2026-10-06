@@ -58,8 +58,6 @@
 
     function showTrimValue(input, value) {
         input.value = formatTrimValue(value);
-        input._fxroutePreciseValue = Number(value);
-        input._fxroutePreciseDisplay = input.value;
     }
 
     // Live cutoff drag on the response graph, painted through the view module.
@@ -491,7 +489,6 @@
                 void saveCrossoverWay();
                 if (event.target === deps.getElements().effectsCrossoverLevel
                     || event.target === deps.getElements().effectsCrossoverDelay) {
-                    // Capture the precise edit before compacting its display.
                     showTrimValue(event.target, event.target.value);
                 }
             };

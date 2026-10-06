@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Browser check for crossover trim precision, stepping, and narrow layouts.
+"""Browser check for crossover trim decimals (two at most), stepping, and narrow layouts.
 
 Run against the local demo server: python3 scripts/serve_demo.py
 Then: python3 scripts/check_crossover_trim_ui.py
@@ -86,7 +86,11 @@ def main():
             page.set_viewport_size({"width": 1440, "height": 900})
             page.locator("[data-crossover-way='left_low']").click()
             level = page.locator("#effects-crossover-level")
-            level.fill("-4.47049")
+            # A third decimal is never taken: typed, pasted or filled, the field keeps two.
+            level.click()
+            level.press("Control+A")
+            level.press_sequentially("-4.47049")
+            assert level.input_value() == "-4.47", f"typed level: {level.input_value()}"
             level.press("Tab")
             assert level.input_value() == "-4.47"
             page.locator("#effects-crossover-level:not([disabled])").wait_for()
@@ -97,11 +101,11 @@ def main():
                     return state.modes['stereo-sub'].processing.left_low;
                 }""")
 
-            assert stored_trim()["level_db"] == -4.47049
+            assert stored_trim()["level_db"] == -4.47
             level.locator("xpath=../button[@data-stepper='inc']").click()
             assert level.input_value() == "-4.37", f"stepper level: {level.input_value()}"
             page.locator("#effects-crossover-level:not([disabled])").wait_for()
-            assert stored_trim()["level_db"] == -4.37049
+            assert stored_trim()["level_db"] == -4.37
             page.locator("#effects-crossover-level:not([disabled])").wait_for()
             level.locator("xpath=../button[@data-stepper='dec']").click()
             assert level.input_value() == "-4.47"
@@ -110,20 +114,20 @@ def main():
             delay.press("Tab")
             assert delay.input_value() == "7.81"
             page.locator("#effects-crossover-delay:not([disabled])").wait_for()
-            assert stored_trim()["alignment_ms"] == 7.8125
+            assert stored_trim()["alignment_ms"] == 7.81
             pick("#effects-crossover-polarity", "invert")
             page.locator("#effects-crossover-polarity:not([disabled])").wait_for()
-            assert stored_trim()["alignment_ms"] == 7.8125
-            assert stored_trim()["level_db"] == -4.47049
+            assert stored_trim()["alignment_ms"] == 7.81
+            assert stored_trim()["level_db"] == -4.47
             delay.locator("xpath=../button[@data-stepper='inc']").click()
             assert delay.input_value() == "7.91"
             page.locator("#effects-crossover-delay:not([disabled])").wait_for()
-            assert stored_trim()["alignment_ms"] == 7.9125
+            assert stored_trim()["alignment_ms"] == 7.91
             delay.locator("xpath=../button[@data-stepper='dec']").click()
             assert delay.input_value() == "7.81"
             page.locator("#effects-crossover-delay:not([disabled])").wait_for()
-            assert stored_trim()["alignment_ms"] == 7.8125
-            print("typed and +/-0.1 stepper values compact after changes")
+            assert stored_trim()["alignment_ms"] == 7.81
+            print("typed and +/-0.1 stepper values keep two decimals")
             assert not errors, errors
         finally:
             browser.close()

@@ -1605,11 +1605,9 @@
     }
 
     /* Sub trim cards mirror the speaker Trim block: Level + Align share
-       one row, Polarity sits centered below instead of dangling alone
-       in an empty second column. */
+       one row, Polarity sits below Level in the first column. */
     .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
-        grid-column: 1 / -1;
-        justify-self: center;
+        grid-column: 1;
     }
 
     /* Mobile: both crossover blocks wrap into two columns, so the single
@@ -1979,9 +1977,10 @@
    shared control column. Both cards then read the same, and a setting costs
    one row instead of a label line plus a centered control of its own width.
    The label column keeps 4.5rem for the longest single word ("Frequency");
-   the control column holds a digit-safe stepper (9rem) and grows to 10rem
-   where the card allows it, so every control in every group ends up equally
-   wide. Longer labels ("Main highpass") wrap inside their column. */
+   the control column holds a digit-safe stepper (9rem) and grows to 10.5rem
+   (two 38px buttons, the value field and the unit) where the card allows it,
+   so every control in every group ends up equally wide. Longer labels
+   ("Main highpass") wrap inside their column. */
 @media (max-width: 520px) {
     .effects-subwoofer-global-group {
         grid-template-columns: minmax(0, 1fr);
@@ -1992,7 +1991,7 @@
     .effects-subwoofer-crossover-block,
     .effects-subwoofer-channel-group {
         display: grid;
-        grid-template-columns: minmax(4.5rem, 1fr) minmax(9rem, 10rem);
+        grid-template-columns: minmax(4.5rem, 1fr) minmax(9rem, 10.5rem);
         align-items: center;
         gap: 0.5rem 0.75rem;
     }
@@ -2017,11 +2016,11 @@
         text-align: center;
         text-align-last: center;
     }
-    /* Between 9rem and 10rem the stepper buttons give up the difference
-       (34px preferred, 26px minimum); the value field keeps its digit floor. */
+    /* Between 9rem and 10.5rem the stepper buttons give up the difference
+       (38px preferred, 26px minimum); the value field keeps its digit floor. */
     .effects-subwoofer-control-group .stepper-btn {
         width: auto;
-        flex: 0 1 34px;
+        flex: 0 1 38px;
         min-width: 26px;
     }
 }

@@ -67,7 +67,13 @@ assert.match(styleSource, /\.hidden\s*\{\s*display:\s*none\s*!important/);
 assert.match(styleSource, /\.effects-effect-details\s*\{[^}]*flex-direction:\s*column/);
 assert.match(styleSource, /\.effects-effect-details\s*\{[^}]*container-type:\s*inline-size/);
 assert.match(styleSource, /\.effects-effect-line\s*\{[^}]*flex-wrap:\s*wrap/);
-assert.match(styleSource, /@container \(max-width: 24rem\)\s*\{\s*\.effects-effect-line \.effects-inline-control\s*\{[^}]*flex-direction:\s*column/);
+assert.match(styleSource, /@container \(max-width: 27rem\)\s*\{\s*\.effects-effect-line \.effects-inline-control\s*\{[^}]*flex-direction:\s*column/);
+// Fixed label/control grid: one label cell width and one control cell width for every line.
+assert.match(styleSource, /\.effects-effect-details\s*\{[^}]*--effects-label-w:[^;]+;[^}]*--effects-control-w:/);
+assert.match(styleSource, /\.effects-effect-line \.effects-inline-control-label\s*\{[^}]*flex:\s*0 0 var\(--effects-label-w\)/);
+assert.match(styleSource, /\.effects-effect-line \.stepper-control\s*\{[^}]*width:\s*var\(--effects-control-w\)/);
+assert.match(styleSource, /\.effects-effect-line \.stepper-control:has\(\.stepper-unit\)\s*\{[^}]*min-width:\s*var\(--effects-control-w\)/);
+assert.match(styleSource, /#tab-effects \.effects-effect-line select\.url-input\s*\{[^}]*min-width:\s*var\(--effects-control-w\)/);
 
 // Behaviour: the checkbox decides whether the details exist.
 function element(extra = {}) {

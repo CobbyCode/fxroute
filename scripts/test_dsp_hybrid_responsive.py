@@ -312,8 +312,10 @@ def _check_css_contract(check):
     base_at = effects.index("#tab-effects .stepper-control .stepper-input {")
     check("no dead override before the base stepper rule",
           ".stepper-input-freq" not in effects[:base_at])
-    check("crossover type select fits its widest option",
-          re.search(r"effects-crossover-type-select\s*\{[^}]*min\(100%,\s*9\.5rem\)", effects))
+    check("crossover fields share the width of the widest option",
+          re.search(r"\.crossover-control-groups\s*\{[^}]*--effects-field-w:\s*9\.7rem", effects))
+    check("crossover type select fills its field",
+          re.search(r"effects-crossover-type-select\s*\{[^}]*width:\s*100%", effects))
     check("sub trim stepper fills its field and stays flush",
           re.search(r"\.effects-subwoofer-control-group \.stepper-control\s*\{[^}]*width:\s*100%", effects))
     check("unit block has one width so neighbouring steppers match",

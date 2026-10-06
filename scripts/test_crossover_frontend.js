@@ -527,8 +527,8 @@ function initCrossoverUI(state, elements, extra = {}) {
 }
 (async () => {
 {
-    // Typed changes and stepper-dispatched changes show two places after
-    // capture; the payload still carries the user's unrounded input.
+    // Typed and stepper-dispatched changes (two decimals at most, enforced on
+    // the field by the shared number-field rule) are saved as shown.
     const state = crossoverFixtureState();
     const mode = state.outputSystem.catalog.modes['stereo-sub'];
     mode.processing.left_low = { level_db: -4.47049, alignment_ms: 7.8125 };
@@ -548,16 +548,16 @@ function initCrossoverUI(state, elements, extra = {}) {
     });
     CrossoverUI.renderCrossoverTile();
     CrossoverUI.wireCrossoverTile();
-    elements.effectsCrossoverLevel.value = '-3.141592';
+    elements.effectsCrossoverLevel.value = '-3.14';
     elements.effectsCrossoverLevel.emit('change');
-    assert.equal(applied[0].level_db, -3.141592);
+    assert.equal(applied[0].level_db, -3.14);
     assert.equal(applied[0].alignment_ms, 7.8125);
     assert.equal(elements.effectsCrossoverLevel.value, '-3.14');
     await new Promise(setImmediate);
     globalThis.document.activeElement = elements.effectsCrossoverDelay;
-    elements.effectsCrossoverDelay.value = '8.3136';
+    elements.effectsCrossoverDelay.value = '8.31';
     elements.effectsCrossoverDelay.emit('change');
-    assert.equal(applied[1].alignment_ms, 8.3136);
+    assert.equal(applied[1].alignment_ms, 8.31);
     assert.equal(elements.effectsCrossoverDelay.value, '8.31');
     globalThis.fetch = realFetch;
     globalThis.document = realDocument;

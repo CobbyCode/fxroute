@@ -121,6 +121,37 @@
         return fallbackName;
     }
 
+    // Value fields of the Tone, Crossover and Subwoofer steppers carry at most
+    // two decimals; a field marked data-decimals="0" takes whole numbers only.
+    const NUMBER_FIELD_MAX_DECIMALS = 2;
+
+    function numberFieldDecimals(input) {
+        const declared = input && typeof input.getAttribute === 'function'
+            ? input.getAttribute('data-decimals') : null;
+        const decimals = declared === null || declared === '' ? NaN : Number(declared);
+        return Number.isInteger(decimals) && decimals >= 0 && decimals <= NUMBER_FIELD_MAX_DECIMALS
+            ? decimals : NUMBER_FIELD_MAX_DECIMALS;
+    }
+
+    // Cuts the text after the allowed decimals (typing: the extra digit is not
+    // taken). The text is kept as typed otherwise, no number round trip.
+    function limitDecimalText(text, decimals) {
+        const value = String(text);
+        const point = value.indexOf('.');
+        if (point < 0) return value;
+        return decimals === 0 ? value.slice(0, point) : value.slice(0, point + 1 + decimals);
+    }
+
+    // Rounds half away from zero on the decimal text, so 1.005 gives 1.01.
+    function roundToDecimals(value, decimals) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return number;
+        const text = String(Math.abs(number));
+        const scaled = text.includes('e') ? Math.abs(number) * 10 ** decimals : Number(`${text}e${decimals}`);
+        const rounded = Number(`${Math.round(scaled)}e-${decimals}`);
+        return number < 0 && rounded !== 0 ? -rounded : rounded;
+    }
+
     function triggerBlobDownload(blob, filename) {
         const objectUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -144,6 +175,9 @@
         formatRateKhz,
         formatSampleRateKhz,
         isSelectFocused,
+        numberFieldDecimals,
+        limitDecimalText,
+        roundToDecimals,
         getDownloadFilenameFromResponse,
         triggerBlobDownload,
     };

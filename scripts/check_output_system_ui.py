@@ -201,8 +201,13 @@ def main() -> int:
                   abs(backing2['w'] - backing2['cssW'] * backing2['dpr']) <= 2)
             page.set_viewport_size({"width": 1440, "height": 900})
             page.wait_for_timeout(600)
-            check("group labels span full row",
-                  page.evaluate("getComputedStyle(document.querySelector('#effects-crossover-card .crossover-trio-group > .effects-subwoofer-group-label')).flexBasis") == "100%")
+            check("group labels span full row", page.evaluate("""(() => {
+                const label = document.querySelector('#effects-crossover-card .crossover-trio-group > .effects-subwoofer-group-label');
+                const group = label.parentElement;
+                const style = getComputedStyle(group);
+                const inner = group.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+                return Math.abs(label.getBoundingClientRect().width - inner) <= 1;
+            })()"""))
             steppers = page.locator("#effects-crossover-card .crossover-control-groups .stepper-control")
             check(f"crossover uses sub-style steppers ({steppers.count()} found)", steppers.count() == 4)
             units = page.locator("#effects-crossover-card .crossover-control-groups .stepper-unit").all_text_contents()

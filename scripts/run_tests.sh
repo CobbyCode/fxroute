@@ -147,6 +147,7 @@ BROWSER_TESTS=(
     scripts/test_footer_badge_geometry.py
     scripts/test_library_folder_back.py
     scripts/test_measurement_ui_responsive.py
+    scripts/test_number_controls_geometry.py
     scripts/test_reduced_motion.py
     scripts/test_subwoofer_controls_geometry.py
     scripts/test_tidal_direct_search.py

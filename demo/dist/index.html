@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.298">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.299">
     <link rel="stylesheet" href="./demo/demo.css?v=8">
 </head>
 <body>
@@ -982,7 +982,7 @@
                                                         <span class="effects-inline-control-label">Center</span>
                                                         <div class="stepper-control">
                                                             <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease upmixer center">&minus;</button>
-                                                            <input type="number" id="effects-upmixer-center" class="url-input delay-number-input stepper-input effects-stepper-compact" min="0" max="10" step="1" value="6" aria-label="Center">
+                                                            <input type="number" id="effects-upmixer-center" class="url-input delay-number-input stepper-input effects-stepper-compact" min="0" max="10" step="1" data-decimals="0" inputmode="numeric" value="6" aria-label="Center">
                                                             <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase upmixer center">+</button>
                                                         </div>
                                                     </label>
@@ -990,7 +990,7 @@
                                                         <span class="effects-inline-control-label">Surround</span>
                                                         <div class="stepper-control">
                                                             <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease upmixer surround">&minus;</button>
-                                                            <input type="number" id="effects-upmixer-surround" class="url-input delay-number-input stepper-input effects-stepper-compact" min="0" max="10" step="1" value="6" aria-label="Surround">
+                                                            <input type="number" id="effects-upmixer-surround" class="url-input delay-number-input stepper-input effects-stepper-compact" min="0" max="10" step="1" data-decimals="0" inputmode="numeric" value="6" aria-label="Surround">
                                                             <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase upmixer surround">+</button>
                                                         </div>
                                                     </label>
@@ -1005,7 +1005,7 @@
                                                         <span class="effects-inline-control-label">Strength</span>
                                                         <div class="stepper-control">
                                                             <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease loudness strength">&minus;</button>
-                                                            <input type="number" id="effects-loudness-strength" class="url-input delay-number-input stepper-input effects-stepper-compact" min="0" max="10" step="1" value="10" aria-label="Strength">
+                                                            <input type="number" id="effects-loudness-strength" class="url-input delay-number-input stepper-input effects-stepper-compact" min="0" max="10" step="1" data-decimals="0" inputmode="numeric" value="10" aria-label="Strength">
                                                             <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase loudness strength">+</button>
                                                         </div>
                                                     </label>
@@ -1921,12 +1921,12 @@
     <script src="/static/measurement_graph.js?v=0.9.16"></script>
     <script src="/static/speaker_align.js?v=0.9.18"></script>
     <script src="/static/measurement_flows.js?v=0.9.41"></script>
-    <script src="/static/ui_helpers.js?v=0.9.1"></script>
+    <script src="/static/ui_helpers.js?v=0.9.2"></script>
     <script src="/static/tooltip.js?v=0.9.2"></script>
     <script src="/static/output_state.js?v=0.9.19"></script>
     <script src="/static/crossover.js?v=0.9.7"></script>
     <script src="/static/crossover_view.js?v=0.9.2"></script>
-    <script src="/static/crossover_ui.js?v=0.9.4"></script>
+    <script src="/static/crossover_ui.js?v=0.9.5"></script>
     <script src="/static/radio.js?v=0.9.21"></script>
     <script src="/static/api.js?v=0.9.1"></script>
     <script src="/static/modal.js?v=0.9.1"></script>
@@ -1937,7 +1937,7 @@
     <script src="/static/subwoofer_ui.js?v=0.9.7"></script>
     <script src="/static/output_system_controller.js?v=0.9.2"></script>
     <script src="/static/output_bank_ui.js?v=0.9.7"></script>
-    <script src="/static/output_effects_ui.js?v=0.9.11"></script>
+    <script src="/static/output_effects_ui.js?v=0.9.12"></script>
     <script src="/static/measurement_panel_ui.js?v=0.9.10"></script>
     <script src="/static/measurement_saved_ui.js?v=0.9.6"></script>
     <script src="/static/measurement_editors_ui.js?v=0.9.2"></script>

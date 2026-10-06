@@ -99,6 +99,67 @@ function clearEffectsPeqStatusOnCollapse() {
     if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = '';
 }
 
+/* Compact − / value / + steppers: nudge the paired number input by its own
+   step/min/max and let the existing input/change listeners apply the value
+   (draft update + debounced save, unchanged semantics). The result keeps the
+   field's decimals: two at most, none for a whole-number field. */
+function nudgeStepperControl(button) {
+    const helpers = root.FXRouteUiHelpers;
+    const control = button.closest('.stepper-control');
+    const input = control ? control.querySelector('input[type="number"]') : null;
+    if (!input || input.disabled) return;
+    const direction = button.dataset.stepper === 'dec' ? -1 : 1;
+    const step = Number(input.step);
+    const stepValue = Number.isFinite(step) && step > 0 ? step : 1;
+    const min = input.min === '' ? -Infinity : Number(input.min);
+    const max = input.max === '' ? Infinity : Number(input.max);
+    const current = Number(input.value);
+    if (input.value === '' || !Number.isFinite(current)) return;
+    let next = helpers.roundToDecimals(current + direction * stepValue, helpers.numberFieldDecimals(input));
+    if (Number.isFinite(min)) next = Math.max(min, next);
+    if (Number.isFinite(max)) next = Math.min(max, next);
+    if (next === current) return;
+    input.focus({ preventScroll: true });
+    input.value = String(next);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/* One rule for every stepper value field (Tone, Crossover, Subwoofer): at most
+   two decimals, whole numbers only where a field says data-decimals="0" (the
+   digits after a point are not taken), and no exponent or sign characters the
+   field can never use. The listeners sit on the document in the capture phase,
+   so each field's own listeners only ever see a value that already obeys the
+   rule. */
+function stepperValueField(event) {
+    const target = event.target;
+    return target instanceof Element && target.matches('input.stepper-input') ? target : null;
+}
+
+function wireNumberFieldLimits() {
+    document.addEventListener('beforeinput', (event) => {
+        const field = stepperValueField(event);
+        if (!field || typeof event.data !== 'string') return;
+        const nonNegative = field.min !== '' && Number(field.min) >= 0;
+        const rejected = `eE+${nonNegative ? '-' : ''}`;
+        if ([...event.data].some((char) => rejected.includes(char))) event.preventDefault();
+    }, true);
+    document.addEventListener('input', (event) => {
+        const field = stepperValueField(event);
+        if (!field) return;
+        const helpers = root.FXRouteUiHelpers;
+        const limited = helpers.limitDecimalText(field.value, helpers.numberFieldDecimals(field));
+        if (limited !== field.value) field.value = limited;
+    }, true);
+    document.addEventListener('change', (event) => {
+        const field = stepperValueField(event);
+        if (!field || field.value === '') return;
+        const helpers = root.FXRouteUiHelpers;
+        const settled = helpers.roundToDecimals(field.value, helpers.numberFieldDecimals(field));
+        if (Number.isFinite(settled) && settled !== Number(field.value)) field.value = String(settled);
+    }, true);
+}
+
 function setupEffectsActions() {
     if (deps.getElements().splCalibrationOpen) deps.getElements().splCalibrationOpen.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.openSplCalibration());
     if (deps.getElements().splCalibrationClose) deps.getElements().splCalibrationClose.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.closeSplCalibration());
@@ -119,38 +180,6 @@ function setupEffectsActions() {
     });
     if (deps.getElements().effectsPeqAddBandBtn) deps.getElements().effectsPeqAddBandBtn.addEventListener('click', addPeqBandPair);
     if (deps.getElements().effectsPeqCreatePresetBtn) deps.getElements().effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
-    /* Compact − / value / + steppers: nudge the paired number input by its
-       own step/min/max and let the existing input/change listeners apply
-       the value (draft update + debounced save, unchanged semantics). */
-    function nudgeStepperControl(button) {
-        const control = button.closest('.stepper-control');
-        const input = control ? control.querySelector('input[type="number"]') : null;
-        if (!input || input.disabled) return;
-        const direction = button.dataset.stepper === 'dec' ? -1 : 1;
-        const step = Number(input.step);
-        const stepValue = Number.isFinite(step) && step > 0 ? step : 1;
-        const decimals = Math.min(Math.max((String(input.step).split('.')[1] || '').length,
-            (String(input.value).split('.')[1] || '').length), 4);
-        const min = input.min === '' ? -Infinity : Number(input.min);
-        const max = input.max === '' ? Infinity : Number(input.max);
-        // Crossover trim displays a rounded number while keeping its exact
-        // value for the next nudge. Typed edits invalidate that display match.
-        const precise = input.value === input._fxroutePreciseDisplay
-            ? Number(input._fxroutePreciseValue) : NaN;
-        const hasPreciseValue = Number.isFinite(precise);
-        const current = hasPreciseValue ? precise : Number(input.value);
-        if (!Number.isFinite(current)) return;
-        let next = current + direction * stepValue;
-        if (!hasPreciseValue) next = Number(next.toFixed(decimals));
-        if (Number.isFinite(min)) next = Math.max(min, next);
-        if (Number.isFinite(max)) next = Math.min(max, next);
-        if (next === current) return;
-        input.focus({ preventScroll: true });
-        input.value = String(next);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-
     document.addEventListener('mousedown', (event) => {
         /* Keep focus on the number input when its stepper buttons are
            pressed: losing focus would drop the input from deps.getActiveEditing()
@@ -163,6 +192,7 @@ function setupEffectsActions() {
         const button = event.target instanceof Element ? event.target.closest('.stepper-btn') : null;
         if (button) nudgeStepperControl(button);
     });
+    wireNumberFieldLimits();
 
     root.FXRouteSubwooferUI.wireSubwooferControls();
     if (deps.getElements().effectsSubwooferPreview && deps.getElements().effectsCrossoverGraph) {
@@ -840,7 +870,7 @@ function applyEffectsExtras(extras = {}) {
     if (deps.getElements().effectsBassEnabled) deps.getElements().effectsBassEnabled.checked = !!extras.bassEnabled;
     // Only update amount when bass is enabled — otherwise keep field value (user may re-enable)
     if (deps.getElements().effectsBassAmount && !!extras.bassEnabled && !deps.getActiveEditing().has(deps.getElements().effectsBassAmount)) {
-        deps.getElements().effectsBassAmount.value = String(Number(extras.bassAmount || 0));
+        deps.getElements().effectsBassAmount.value = String(root.FXRouteUiHelpers.roundToDecimals(Number(extras.bassAmount || 0), 2));
     }
     if (deps.getElements().effectsUpmixerEnabled) deps.getElements().effectsUpmixerEnabled.checked = !!extras.upmixerEnabled;
     if (deps.getElements().effectsUpmixerMode && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerMode)) {
@@ -1084,6 +1114,7 @@ function setEffectsExtrasFeedback(message, cls) {
         isPeqDelayBand,
         isPeqGainBand,
         loadSavedEffectsExtras,
+        nudgeStepperControl,
         normalizeEffectsAutogainTargetDb,
         normalizeEffectsHeadroomGainDb,
         normalizeEffectsLoudnessFftSize,
@@ -1103,6 +1134,7 @@ function setEffectsExtrasFeedback(message, cls) {
         saveEffectsExtrasDebounced,
         setEffectsExtrasFeedback,
         setupEffectsActions,
+        wireNumberFieldLimits,
         switchEffectsPreset,
         syncLinkedPeqSpecialBand,
         syncLinkedPeqSpecialBandValueInDom,
