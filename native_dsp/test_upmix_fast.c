@@ -311,7 +311,7 @@ static void test_strength_change_to_zero_while_running_is_smooth_and_settles_to_
 }
 
 static void test_real_multichannel_content_disengages_and_re_engages_late(void) {
-    size_t frames = 40U * RATE;
+    size_t frames = 25U * RATE;
     fx_upmix_fast *u = fx_upmix_fast_create(RATE, 1, 1, 1);
     bus in = bus_new(frames), out = bus_new(frames);
     size_t latency = fx_upmix_fast_latency(u);
@@ -327,10 +327,10 @@ static void test_real_multichannel_content_disengages_and_re_engages_late(void) 
     /* Disengaged: every channel equals its delayed input. */
     assert(max_abs_diff(out.c[0] + latency + RATE, in.c[0] + RATE, 3U * RATE) < 1e-6);
     assert(max_abs_diff(out.c[6] + latency + RATE, in.c[6] + RATE, 3U * RATE) < 1e-6);
-    /* Still disengaged well inside the hold time after the content stopped. */
-    assert(max_abs_diff(out.c[2] + latency + 20U * RATE, in.c[2] + 20U * RATE, 5U * RATE) < 1e-6);
+    /* Still disengaged inside the 10 s hold after the content stopped at 5 s. */
+    assert(max_abs_diff(out.c[2] + latency + 6U * RATE, in.c[2] + 6U * RATE, 8U * RATE) < 1e-6);
     /* Engaged again once the extra channels stayed silent for the hold time. */
-    assert(mean_square(out.c[2], 38U * RATE, RATE) > 1e-4);
+    assert(mean_square(out.c[2], 24U * RATE, RATE) > 1e-4);
     assert(fx_upmix_fast_engagement(u) > 0.95F);
     fx_upmix_fast_destroy(u); bus_free(&in); bus_free(&out);
 }
@@ -345,7 +345,8 @@ typedef struct {
     unsigned rate;
     float rear_noise;                       /* white noise RMS in SL */
     float rear_sine;                        /* 1 kHz sine peak in BL */
-    float ping_level;                       /* 1 kHz sine peak in SR for the bursts below */
+    float ping_level;                       /* 1 kHz sine peak for the bursts below ... */
+    unsigned ping_channel;                  /* ... in this channel (0 = SR) */
     size_t ping_period, ping_length;        /* periodic bursts (0 = none) */
     size_t burst_from, burst_to;            /* one more burst */
     size_t spike_at; float spike_value;     /* single-sample glitch in BR */
@@ -362,7 +363,7 @@ static void scene_frame(const scene *s, size_t n, float *frame) {
     if (s->rear_noise > 0.0F) frame[4] = noise(s->rear_noise);
     if (s->rear_sine > 0.0F) frame[6] = s->rear_sine * (float)sin(phase);
     if ((s->ping_period && n % s->ping_period < s->ping_length) || (n >= s->burst_from && n < s->burst_to))
-        frame[5] = s->ping_level * (float)sin(phase);
+        frame[s->ping_channel ? s->ping_channel : 5U] = s->ping_level * (float)sin(phase);
     if (s->spike_value != 0.0F && n == s->spike_at) frame[7] = s->spike_value;
 }
 
@@ -419,9 +420,9 @@ static void test_levels_around_the_threshold_do_not_flutter(void) {
     assert(t.highest < 0.01F && t.on_toggles == 0);                      /* ... but keeps a disengaged one disengaged. */
     /* Once it falls below the off level the normal hold applies. */
     s.rear_sine = 0.0002F;       /* -74 dBFS */
-    t = stream(u, &s, SECONDS(245), SECONDS(25));
+    t = stream(u, &s, SECONDS(245), SECONDS(8));
     assert(t.highest < 0.01F);
-    t = stream(u, &s, SECONDS(270), SECONDS(10));
+    t = stream(u, &s, SECONDS(253), SECONDS(7));
     assert(fx_upmix_fast_engagement(u) > 0.9F);
     fx_upmix_fast_destroy(u);
 }
@@ -431,7 +432,7 @@ static void test_short_glitches_do_not_disengage_but_real_content_does(void) {
     fx_upmix_fast *u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
     trace t;
     s.spike_value = 0.005F;      /* a single sample at -46 dBFS */
-    t = stream(u, &s, 0, SECONDS(45));
+    t = stream(u, &s, 0, SECONDS(20));
     assert(t.off_toggles == 0 && t.lowest == 1.0F);
     fx_upmix_fast_destroy(u);
 
@@ -455,48 +456,41 @@ static void test_multichannel_onset_disengages_within_milliseconds(void) {
 
 /* A disengaged matrix must not leave a denormal in its state: every sample would then run slow on x86. */
 static void test_a_disengaged_matrix_runs_without_denormals(void) {
-    scene s = {.rate = RATE, .burst_to = RATE, .ping_level = 0.01F};
+    scene s = {.rate = RATE, .burst_to = 12U * RATE, .ping_level = 0.01F};
     fx_upmix_fast *u = fx_upmix_fast_create(RATE, 1, 1, 1);
-    stream(u, &s, 0, 20U * RATE);                                  /* disengaged by the first second, then stereo only */
+    stream(u, &s, 0, 10U * RATE);                                  /* disengaged from the first millisecond on */
     feclearexcept(FE_UNDERFLOW);
-    stream(u, &s, 20U * RATE, RATE);
+    stream(u, &s, 10U * RATE, RATE);
     assert(fx_upmix_fast_engagement(u) == 0.0F);
     assert(!fetestexcept(FE_UNDERFLOW));
     fx_upmix_fast_destroy(u);
 }
 
-/* Sparse multichannel content must not make the matrix come and go. */
-static void test_sparse_multichannel_content_does_not_make_the_upmixer_breathe(void) {
-    scene s = {.rate = LONG_RATE, .ping_level = 0.003F, .ping_period = SECONDS(40), .ping_length = SECONDS(0.05)};
-    fx_upmix_fast *u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
-    trace t = stream(u, &s, 0, SECONDS(1200));
-    /* One disengagement at the first burst and at most one re-engagement that the next burst interrupts. */
-    assert(t.off_toggles <= 2 && t.on_toggles <= 1);
-    assert(fx_upmix_fast_engagement(u) < 0.01F);
-    fx_upmix_fast_destroy(u);
+/* Any single extra channel counts as multichannel content, and the matrix returns after a fixed 10 s. */
+static void test_every_extra_channel_holds_the_upmixer_off_for_ten_seconds(void) {
+    for (unsigned channel = 2U; channel < CH; channel++) {
+        scene s = {.rate = LONG_RATE, .ping_level = 0.01F, .ping_channel = channel, .burst_to = SECONDS(3)};
+        fx_upmix_fast *u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
+        trace t = stream(u, &s, 0, SECONDS(3));
+        assert(fx_upmix_fast_engagement(u) < 0.01F);
+        t = stream(u, &s, SECONDS(3), SECONDS(9.9));               /* 9.9 s after the content stopped */
+        assert(t.highest < 0.01F);
+        stream(u, &s, SECONDS(12.9), SECONDS(3.1));                /* 3 s after the hold was over */
+        assert(fx_upmix_fast_engagement(u) > 0.9F);
+        fx_upmix_fast_destroy(u);
+    }
 }
 
-/* The longer hold after interrupted engagements goes back to normal after a long stable stretch. */
-static void test_the_hold_grows_after_interruptions_and_recovers(void) {
-    scene s = {.rate = LONG_RATE, .ping_level = 0.003F, .ping_period = SECONDS(40), .ping_length = SECONDS(0.05)};
+/* Repeated interruptions do not lengthen the wait: it is 10 s after the last content, whatever came before. */
+static void test_the_hold_stays_ten_seconds_after_repeated_interruptions(void) {
+    scene s = {.rate = LONG_RATE, .ping_level = 0.003F, .ping_period = SECONDS(15), .ping_length = SECONDS(0.05)};
     fx_upmix_fast *u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
-    size_t at;
-    trace t;
-    /* Bursts at 0 s, 40 s, 80 s and 120 s: the one at 40 s interrupts a re-engagement and doubles the hold. */
-    stream(u, &s, 0, SECONDS(125));
+    trace t = stream(u, &s, 0, SECONDS(95));                       /* bursts at 0, 15, ... 90 s: engaged in between */
+    assert(t.off_toggles >= 6 && t.on_toggles >= 5);
     s.ping_period = 0;
-    t = stream(u, &s, SECONDS(125), SECONDS(40));                  /* 45 s after the last burst: a normal hold would be over */
+    t = stream(u, &s, SECONDS(95), SECONDS(4));                    /* 9 s after the last burst */
     assert(t.highest < 0.01F);
-    stream(u, &s, SECONDS(165), SECONDS(25));                      /* 65 s after it */
-    assert(fx_upmix_fast_engagement(u) > 0.9F);
-    /* More than STABLE_SECONDS engaged: the next interruption does not count against the hold. */
-    stream(u, &s, SECONDS(190), SECONDS(620));
-    assert(fx_upmix_fast_engagement(u) == 1.0F);
-    at = SECONDS(810);
-    s.burst_from = at; s.burst_to = at + SECONDS(0.05);
-    stream(u, &s, at, SECONDS(25));                                /* 25 s after the burst */
-    assert(fx_upmix_fast_engagement(u) < 0.01F);
-    stream(u, &s, at + SECONDS(25), SECONDS(10));                  /* 35 s after it: the normal 30 s hold is over */
+    stream(u, &s, SECONDS(99), SECONDS(7));                        /* 16 s after it */
     assert(fx_upmix_fast_engagement(u) > 0.9F);
     fx_upmix_fast_destroy(u);
 }
@@ -607,8 +601,8 @@ int main(void) {
     test_short_glitches_do_not_disengage_but_real_content_does();
     test_multichannel_onset_disengages_within_milliseconds();
     test_a_disengaged_matrix_runs_without_denormals();
-    test_sparse_multichannel_content_does_not_make_the_upmixer_breathe();
-    test_the_hold_grows_after_interruptions_and_recovers();
+    test_every_extra_channel_holds_the_upmixer_off_for_ten_seconds();
+    test_the_hold_stays_ten_seconds_after_repeated_interruptions();
     test_lfe_is_never_synthesised();
     test_no_destination_means_pure_delayed_pass_through();
     test_result_does_not_depend_on_the_block_size();

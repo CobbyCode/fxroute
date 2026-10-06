@@ -27,8 +27,8 @@
  * FC/LFE/SL/SR/BL/BR above the detection threshold) disengages the matrix
  * and keeps it disengaged until those channels have stayed quiet for a while.
  * Detection uses a smoothed level with hysteresis, so single glitches and
- * levels around the threshold do not switch it; repeated short engagements
- * lengthen the wait.
+ * levels around the threshold do not switch it; the matrix returns after a
+ * fixed 10 seconds without such content.
  *
  * All state is allocated at creation; process performs no allocation,
  * locking or I/O. */
