@@ -32,10 +32,22 @@
 #define ENGAGE_SECONDS 1.000
 #define DISENGAGE_SECONDS 0.005
 
-/* Real multichannel detection: FC/LFE/SL/SR/BL/BR above -66 dBFS disengage the
- * matrix until they stay quiet for HOLD_SECONDS. */
-#define MULTICHANNEL_THRESHOLD 0.0005F
+/* Real multichannel detection on the power envelope of FC/LFE/SL/SR/BL/BR,
+ * compared as the peak level of an equivalent sine. Above -66 dBFS the source
+ * counts as multichannel and the matrix disengages; while it does, the level
+ * only has to stay above -72 dBFS (hysteresis) to keep refreshing the hold,
+ * and the matrix re-engages HOLD_SECONDS after it fell below that. The
+ * envelope ignores lone glitches and noise whose peaks only touch the
+ * threshold. Content that interrupts a re-engagement within STABLE_SECONDS
+ * doubles the hold (up to HOLD_SCALE_MAX times), so sparse multichannel
+ * content does not make the matrix come and go; an engagement that lasted
+ * STABLE_SECONDS restores the normal hold. */
+#define ACTIVITY_SECONDS 0.020
+#define MULTICHANNEL_ON_POWER 1.25e-7
+#define MULTICHANNEL_OFF_POWER 3.125e-8
 #define HOLD_SECONDS 30.0
+#define HOLD_SCALE_MAX 4U
+#define STABLE_SECONDS 600.0
 
 /* Level gate on the side-chain power sum (-80 dB closed, -70 dB open). */
 #define LEVEL_GATE_LOG10_FLOOR 8.0
@@ -64,8 +76,10 @@ struct fx_upmix_fast {
     double power_left, power_right, cross;
     double center_target, surround_target, center_mix, surround_mix, engage;
     double center_scale, center_exponent, surround_scale, surround_exponent;
-    double stats_coeff, attack_coeff, release_coeff, engage_coeff, disengage_coeff;
-    size_t hold_frames, hold_left;
+    double stats_coeff, attack_coeff, release_coeff, engage_coeff, disengage_coeff, activity_coeff;
+    double activity;
+    size_t hold_frames, hold_left, stable_frames, engaged_run;
+    unsigned hold_scale;
     unsigned position, control_phase;
     float history[FX_UPMIX_FAST_CHANNELS][HISTORY];
     float side_history[HISTORY];
@@ -110,7 +124,11 @@ static void set_state_defaults(fx_upmix_fast *u) {
     u->power_left = u->power_right = u->cross = 0.0;
     u->center_target = u->surround_target = u->center_mix = u->surround_mix = 0.0;
     u->engage = 1.0;
+    u->activity = 0.0;
     u->hold_left = 0;
+    u->hold_scale = 1U;
+    /* A fresh state has no interrupted engagement behind it. */
+    u->engaged_run = u->stable_frames;
     u->position = u->control_phase = 0;
 }
 
@@ -138,7 +156,9 @@ fx_upmix_fast *fx_upmix_fast_create(unsigned rate, unsigned center_out, unsigned
     u->release_coeff = time_coeff(RELEASE_SECONDS, rate);
     u->engage_coeff = time_coeff(ENGAGE_SECONDS, rate);
     u->disengage_coeff = time_coeff(DISENGAGE_SECONDS, rate);
+    u->activity_coeff = time_coeff(ACTIVITY_SECONDS, rate);
     u->hold_frames = (size_t)(HOLD_SECONDS * rate);
+    u->stable_frames = (size_t)(STABLE_SECONDS * rate);
     set_state_defaults(u);
     fx_upmix_fast_set_strength(u, 6.0F, 6.0F);
     return u;
@@ -200,15 +220,24 @@ void fx_upmix_fast_process(fx_upmix_fast *u, const float *const *input, float *c
     for (size_t n = 0; n < frames; n++) {
         unsigned position = u->position, aligned = (position - u->half) & HISTORY_MASK;
         float sample[FX_UPMIX_FAST_CHANNELS];
-        int multichannel = 0;
+        double extra_power = 0.0;
         for (unsigned channel = 0; channel < FX_UPMIX_FAST_CHANNELS; channel++) {
             float value = input[channel] ? input[channel][n] : 0.0F;
             if (!isfinite(value)) value = 0.0F;
             sample[channel] = value;
             u->history[channel][position] = value;
-            if (channel >= 2U && fabsf(value) > MULTICHANNEL_THRESHOLD) multichannel = 1;
+            if (channel >= 2U) extra_power += (double)value * value;
         }
-        if (multichannel) u->hold_left = u->hold_frames; else if (u->hold_left) u->hold_left--;
+        u->activity += u->activity_coeff * (extra_power - u->activity);
+        if (u->activity > (u->hold_left ? MULTICHANNEL_OFF_POWER : MULTICHANNEL_ON_POWER)) {
+            if (!u->hold_left) {
+                if (u->engaged_run >= u->stable_frames) u->hold_scale = 1U;
+                else if (u->hold_scale < HOLD_SCALE_MAX) u->hold_scale *= 2U;
+                u->engaged_run = 0;
+            }
+            u->hold_left = u->hold_frames * u->hold_scale;
+        } else if (u->hold_left) u->hold_left--;
+        else if (u->engaged_run < u->stable_frames) u->engaged_run++;
         {
             double left = run_biquad(&u->sidechain[0][1], run_biquad(&u->sidechain[0][0], sample[0]));
             double right = run_biquad(&u->sidechain[1][1], run_biquad(&u->sidechain[1][0], sample[1]));
@@ -221,7 +250,7 @@ void fx_upmix_fast_process(fx_upmix_fast *u, const float *const *input, float *c
             u->control_phase = 0;
             update_targets(u);
             flush_tiny(&u->power_left); flush_tiny(&u->power_right); flush_tiny(&u->cross);
-            flush_tiny(&u->center_mix); flush_tiny(&u->surround_mix);
+            flush_tiny(&u->center_mix); flush_tiny(&u->surround_mix); flush_tiny(&u->activity);
             for (unsigned channel = 0; channel < 2U; channel++)
                 for (unsigned stage = 0; stage < 2U; stage++) {
                     flush_tiny(&u->sidechain[channel][stage].z1); flush_tiny(&u->sidechain[channel][stage].z2);

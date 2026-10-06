@@ -334,6 +334,160 @@ static void test_real_multichannel_content_disengages_and_re_engages_late(void) 
     fx_upmix_fast_destroy(u); bus_free(&in); bus_free(&out);
 }
 
+/* Detector stability. These run for minutes of programme, so they stream in
+ * small blocks at a low rate (the detector times are in seconds) instead of
+ * holding the whole programme in memory. */
+#define LONG_RATE 16000U
+#define SECONDS(count) ((size_t)((count) * LONG_RATE))
+
+typedef struct {
+    unsigned rate;
+    float rear_noise;                       /* white noise RMS in SL */
+    float rear_sine;                        /* 1 kHz sine peak in BL */
+    float ping_level;                       /* 1 kHz sine peak in SR for the bursts below */
+    size_t ping_period, ping_length;        /* periodic bursts (0 = none) */
+    size_t burst_from, burst_to;            /* one more burst */
+    size_t spike_at; float spike_value;     /* single-sample glitch in BR */
+} scene;
+
+typedef struct { float lowest, highest; unsigned off_toggles, on_toggles; } trace;
+
+/* A stereo programme in FL/FR plus whatever the scene puts into the other channels. */
+static void scene_frame(const scene *s, size_t n, float *frame) {
+    float common = noise(0.1F);
+    double phase = 2.0 * PI * 1000.0 * (double)n / s->rate;
+    memset(frame, 0, CH * sizeof *frame);
+    frame[0] = common + noise(0.06F); frame[1] = common + noise(0.06F);
+    if (s->rear_noise > 0.0F) frame[4] = noise(s->rear_noise);
+    if (s->rear_sine > 0.0F) frame[6] = s->rear_sine * (float)sin(phase);
+    if ((s->ping_period && n % s->ping_period < s->ping_length) || (n >= s->burst_from && n < s->burst_to))
+        frame[5] = s->ping_level * (float)sin(phase);
+    if (s->spike_value != 0.0F && n == s->spike_at) frame[7] = s->spike_value;
+}
+
+/* Runs frames [begin, begin + frames) of the scene and follows the engagement. */
+static trace stream(fx_upmix_fast *u, const scene *s, size_t begin, size_t frames) {
+    enum { BLOCK = 400 };
+    float input[CH][BLOCK], output[CH][BLOCK];
+    const float *ip[CH]; float *op[CH];
+    trace t = {1.0F, 0.0F, 0, 0};
+    int engaged = fx_upmix_fast_engagement(u) > 0.5F;
+    for (unsigned c = 0; c < CH; c++) { ip[c] = input[c]; op[c] = output[c]; }
+    for (size_t done = 0; done + BLOCK <= frames; done += BLOCK) {
+        float level;
+        for (size_t k = 0; k < BLOCK; k++) {
+            float frame[CH];
+            scene_frame(s, begin + done + k, frame);
+            for (unsigned c = 0; c < CH; c++) input[c][k] = frame[c];
+        }
+        fx_upmix_fast_process(u, ip, op, BLOCK);
+        level = fx_upmix_fast_engagement(u);
+        if (level < t.lowest) t.lowest = level;
+        if (level > t.highest) t.highest = level;
+        if ((level > 0.5F) != engaged) { engaged = level > 0.5F; if (engaged) t.on_toggles++; else t.off_toggles++; }
+    }
+    return t;
+}
+
+/* Rear levels in the band between the thresholds do not flip the detector. */
+static void test_levels_around_the_threshold_do_not_flutter(void) {
+    scene s = {.rate = LONG_RATE};
+    fx_upmix_fast *u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
+    trace t;
+    /* Noise whose peaks reach -66 dBFS but whose level is below the threshold stays a stereo source. */
+    s.rear_noise = 0.00025F;     /* -72 dBFS RMS */
+    t = stream(u, &s, 0, SECONDS(120));
+    assert(t.off_toggles == 0 && t.lowest == 1.0F);
+    /* Clearly above the threshold it disengages once and stays so. */
+    s.rear_noise = 0.0007F;      /* -63 dBFS RMS */
+    t = stream(u, &s, SECONDS(120), SECONDS(120));
+    assert(t.off_toggles <= 1 && t.on_toggles == 0 && fx_upmix_fast_engagement(u) < 0.01F);
+    fx_upmix_fast_destroy(u);
+
+    /* Hysteresis: a sine between the off level (-72 dBFS) and the on level (-66 dBFS) ... */
+    u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
+    memset(&s, 0, sizeof s); s.rate = LONG_RATE;
+    s.rear_sine = 0.0004F;       /* -68 dBFS */
+    t = stream(u, &s, 0, SECONDS(120));
+    assert(t.off_toggles == 0 && t.lowest == 1.0F);                      /* ... does not disengage a stereo source ... */
+    s.rear_sine = 0.001F;        /* -60 dBFS: real content */
+    t = stream(u, &s, SECONDS(120), SECONDS(5));
+    assert(fx_upmix_fast_engagement(u) < 0.01F);
+    s.rear_sine = 0.0004F;
+    t = stream(u, &s, SECONDS(125), SECONDS(120));
+    assert(t.highest < 0.01F && t.on_toggles == 0);                      /* ... but keeps a disengaged one disengaged. */
+    /* Once it falls below the off level the normal hold applies. */
+    s.rear_sine = 0.0002F;       /* -74 dBFS */
+    t = stream(u, &s, SECONDS(245), SECONDS(25));
+    assert(t.highest < 0.01F);
+    t = stream(u, &s, SECONDS(270), SECONDS(10));
+    assert(fx_upmix_fast_engagement(u) > 0.9F);
+    fx_upmix_fast_destroy(u);
+}
+
+static void test_short_glitches_do_not_disengage_but_real_content_does(void) {
+    scene s = {.rate = LONG_RATE, .spike_at = SECONDS(5)};
+    fx_upmix_fast *u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
+    trace t;
+    s.spike_value = 0.005F;      /* a single sample at -46 dBFS */
+    t = stream(u, &s, 0, SECONDS(45));
+    assert(t.off_toggles == 0 && t.lowest == 1.0F);
+    fx_upmix_fast_destroy(u);
+
+    u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
+    s.spike_value = 0.5F;        /* a loud click is real signal */
+    t = stream(u, &s, 0, SECONDS(10));
+    assert(t.off_toggles == 1);
+    fx_upmix_fast_destroy(u);
+}
+
+static void test_multichannel_onset_disengages_within_milliseconds(void) {
+    scene s = {.rate = RATE};
+    fx_upmix_fast *u = fx_upmix_fast_create(RATE, 1, 1, 1);
+    s.burst_from = 2U * RATE; s.burst_to = 10U * RATE; s.ping_level = 0.01F;       /* -40 dBFS */
+    stream(u, &s, 0, 2U * RATE);
+    assert(fx_upmix_fast_engagement(u) == 1.0F);
+    stream(u, &s, 2U * RATE, RATE / 50U);                                           /* 20 ms later */
+    assert(fx_upmix_fast_engagement(u) < 0.05F);
+    fx_upmix_fast_destroy(u);
+}
+
+/* Sparse multichannel content must not make the matrix come and go. */
+static void test_sparse_multichannel_content_does_not_make_the_upmixer_breathe(void) {
+    scene s = {.rate = LONG_RATE, .ping_level = 0.003F, .ping_period = SECONDS(40), .ping_length = SECONDS(0.05)};
+    fx_upmix_fast *u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
+    trace t = stream(u, &s, 0, SECONDS(1200));
+    /* One disengagement at the first burst and at most one re-engagement that the next burst interrupts. */
+    assert(t.off_toggles <= 2 && t.on_toggles <= 1);
+    assert(fx_upmix_fast_engagement(u) < 0.01F);
+    fx_upmix_fast_destroy(u);
+}
+
+/* The longer hold after interrupted engagements goes back to normal after a long stable stretch. */
+static void test_the_hold_grows_after_interruptions_and_recovers(void) {
+    scene s = {.rate = LONG_RATE, .ping_level = 0.003F, .ping_period = SECONDS(40), .ping_length = SECONDS(0.05)};
+    fx_upmix_fast *u = fx_upmix_fast_create(LONG_RATE, 1, 1, 1);
+    size_t at;
+    trace t;
+    /* Bursts at 0 s, 40 s, 80 s and 120 s: the one at 40 s interrupts a re-engagement and doubles the hold. */
+    stream(u, &s, 0, SECONDS(125));
+    s.ping_period = 0;
+    t = stream(u, &s, SECONDS(125), SECONDS(40));                  /* 45 s after the last burst: a normal hold would be over */
+    assert(t.highest < 0.01F);
+    stream(u, &s, SECONDS(165), SECONDS(25));                      /* 65 s after it */
+    assert(fx_upmix_fast_engagement(u) > 0.9F);
+    /* More than STABLE_SECONDS engaged: the next interruption does not count against the hold. */
+    stream(u, &s, SECONDS(190), SECONDS(620));
+    assert(fx_upmix_fast_engagement(u) == 1.0F);
+    at = SECONDS(810);
+    s.burst_from = at; s.burst_to = at + SECONDS(0.05);
+    stream(u, &s, at, SECONDS(25));                                /* 25 s after the burst */
+    assert(fx_upmix_fast_engagement(u) < 0.01F);
+    stream(u, &s, at + SECONDS(25), SECONDS(10));                  /* 35 s after it: the normal 30 s hold is over */
+    assert(fx_upmix_fast_engagement(u) > 0.9F);
+    fx_upmix_fast_destroy(u);
+}
+
 static void test_lfe_is_never_synthesised(void) {
     fx_upmix_fast *u = fx_upmix_fast_create(RATE, 1, 1, 1);
     bus in = bus_new(FRAMES), out = bus_new(FRAMES);
@@ -436,6 +590,11 @@ int main(void) {
     test_zero_strength_is_below_the_weakest_steering();
     test_strength_change_to_zero_while_running_is_smooth_and_settles_to_silence();
     test_real_multichannel_content_disengages_and_re_engages_late();
+    test_levels_around_the_threshold_do_not_flutter();
+    test_short_glitches_do_not_disengage_but_real_content_does();
+    test_multichannel_onset_disengages_within_milliseconds();
+    test_sparse_multichannel_content_does_not_make_the_upmixer_breathe();
+    test_the_hold_grows_after_interruptions_and_recovers();
     test_lfe_is_never_synthesised();
     test_no_destination_means_pure_delayed_pass_through();
     test_result_does_not_depend_on_the_block_size();

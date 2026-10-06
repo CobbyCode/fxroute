@@ -23,9 +23,12 @@
  * image); without Side and Rear outputs no Surround extraction happens. With
  * both pairs present each gets half the power.
  *
- * A source that already carries real multichannel content (anything in
+ * A source that already carries real multichannel content (a level in
  * FC/LFE/SL/SR/BL/BR above the detection threshold) disengages the matrix
- * and keeps it disengaged until those channels have been silent for a while.
+ * and keeps it disengaged until those channels have stayed quiet for a while.
+ * Detection uses a smoothed level with hysteresis, so single glitches and
+ * levels around the threshold do not switch it; repeated short engagements
+ * lengthen the wait.
  *
  * All state is allocated at creation; process performs no allocation,
  * locking or I/O. */
