@@ -2,6 +2,7 @@
 #include "upmix_fast.h"
 
 #include <assert.h>
+#include <fenv.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -452,6 +453,18 @@ static void test_multichannel_onset_disengages_within_milliseconds(void) {
     fx_upmix_fast_destroy(u);
 }
 
+/* A disengaged matrix must not leave a denormal in its state: every sample would then run slow on x86. */
+static void test_a_disengaged_matrix_runs_without_denormals(void) {
+    scene s = {.rate = RATE, .burst_to = RATE, .ping_level = 0.01F};
+    fx_upmix_fast *u = fx_upmix_fast_create(RATE, 1, 1, 1);
+    stream(u, &s, 0, 20U * RATE);                                  /* disengaged by the first second, then stereo only */
+    feclearexcept(FE_UNDERFLOW);
+    stream(u, &s, 20U * RATE, RATE);
+    assert(fx_upmix_fast_engagement(u) == 0.0F);
+    assert(!fetestexcept(FE_UNDERFLOW));
+    fx_upmix_fast_destroy(u);
+}
+
 /* Sparse multichannel content must not make the matrix come and go. */
 static void test_sparse_multichannel_content_does_not_make_the_upmixer_breathe(void) {
     scene s = {.rate = LONG_RATE, .ping_level = 0.003F, .ping_period = SECONDS(40), .ping_length = SECONDS(0.05)};
@@ -593,6 +606,7 @@ int main(void) {
     test_levels_around_the_threshold_do_not_flutter();
     test_short_glitches_do_not_disengage_but_real_content_does();
     test_multichannel_onset_disengages_within_milliseconds();
+    test_a_disengaged_matrix_runs_without_denormals();
     test_sparse_multichannel_content_does_not_make_the_upmixer_breathe();
     test_the_hold_grows_after_interruptions_and_recovers();
     test_lfe_is_never_synthesised();

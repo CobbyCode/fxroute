@@ -250,7 +250,7 @@ void fx_upmix_fast_process(fx_upmix_fast *u, const float *const *input, float *c
             u->control_phase = 0;
             update_targets(u);
             flush_tiny(&u->power_left); flush_tiny(&u->power_right); flush_tiny(&u->cross);
-            flush_tiny(&u->center_mix); flush_tiny(&u->surround_mix); flush_tiny(&u->activity);
+            flush_tiny(&u->center_mix); flush_tiny(&u->surround_mix); flush_tiny(&u->engage); flush_tiny(&u->activity);
             for (unsigned channel = 0; channel < 2U; channel++)
                 for (unsigned stage = 0; stage < 2U; stage++) {
                     flush_tiny(&u->sidechain[channel][stage].z1); flush_tiny(&u->sidechain[channel][stage].z2);
