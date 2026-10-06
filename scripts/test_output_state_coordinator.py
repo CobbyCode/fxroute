@@ -599,6 +599,98 @@ class MainTopologyBranchTests(unittest.TestCase):
                 asyncio.run(main._sync_plan_runtime({"config": "c", "text": "t"}))
 
 
+class StabilizeStagedGraphTests(unittest.IsolatedAsyncioTestCase):
+    """Auto Gain/Loudness stabilization must not re-render the previous head.
+
+    The staged v2 graph is live while the store still holds the previous
+    state.  The guarded effects re-apply renders that store head, so it
+    replaced the staged graph (or the legacy overview when the previous head
+    could not activate, e.g. a Surround crossover draft) and the transition
+    failed at effects-dsp-stabilize with "production graph changed".
+    """
+
+    SURROUND = ["main_l", "main_r", "rear_l", "rear_r", "sub1", "sub2"]
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.manager = make_manager(directory.name)
+        self.service = make_service(directory.name, self.manager)
+        extras = self.manager.load_global_extras()
+        extras["autogain"]["enabled"] = True
+        self.manager.save_global_extras(extras)
+        self.manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS = 0.0
+        async def rebuild(*_args, apply_candidate, **_kwargs):
+            apply_candidate()
+
+        self.engine = mock.MagicMock(guarded_rebuild=AsyncMock(side_effect=rebuild),
+                                     guarded_rebuild_rendered=AsyncMock(side_effect=rebuild))
+        self.runtime = make_transition_runtime()
+
+    def commit_head(self, state):
+        return self.service.commit(state, expected_revision=0)
+
+    def surround_state(self):
+        return switch_mode(set_mode_routing(
+            self.service.load(), "surround", OUTPUT_KEY, self.SURROUND), "surround")
+
+    async def stabilize(self, head, candidate, *, staged=True):
+        overview = {
+            "selected_output": {"key": OUTPUT_KEY, "channels": 6},
+            "output_mode": {"effective_output_key": OUTPUT_KEY, "effective_output_channels": 6,
+                            "hardware_playback_ports": list(PORTS)},
+        }
+        payload = v2_payload(self.service, candidate, head, expected_revision=head["revision"],
+                             target=mock.sentinel.target if staged else None)
+        loop = asyncio.get_running_loop()
+        self.manager.runtime_transition_callback = (
+            lambda previous, current, persist: asyncio.run_coroutine_threadsafe(
+                main._guarded_effects_transition(previous, current, persist), loop).result())
+        with mock.patch.multiple(
+                main,
+                get_output_service=mock.MagicMock(return_value=self.service),
+                get_audio_output_overview=mock.MagicMock(return_value=overview),
+                get_samplerate_status=mock.MagicMock(
+                    return_value={"active_rate": 48000, "force_rate": 48000}),
+                _require_dsp_manager=mock.MagicMock(return_value=self.manager),
+                dsp_manager=self.manager,
+                _volume_state_for_manager=AsyncMock(return_value=SimpleNamespace(
+                    loudness_in_path=False, preset=None, dsp_guard_db=0.0, master_percent=100))), \
+             mock.patch.object(main.runtime, "dsp_runtime", self.engine), \
+             mock.patch.object(playback_orchestration.configured(), "playback_graph_diagnosis",
+                               new=AsyncMock(return_value={"links_complete": True, "signature": "sig"})), \
+             mock.patch.object(self.runtime, "_read_and_validate_effects_runtime",
+                               new=AsyncMock(return_value={})) as readback:
+            result = await self.runtime.stabilize_effects_after_rate_change(
+                v2_request(payload), dsp_reinitialized=True)
+        return result, readback
+
+    async def test_crossover_off_keeps_the_staged_surround_graph(self):
+        head = self.commit_head(set_crossover(self.surround_state(), "surround", True))
+        candidate = set_crossover(head, "surround", False)
+        result, readback = await self.stabilize(head, candidate)
+        self.assertTrue(result["stabilized"])
+        self.assertFalse(result["no_op"])
+        self.engine.guarded_rebuild.assert_not_awaited()
+        self.engine.guarded_rebuild_rendered.assert_not_awaited()
+        readback.assert_awaited_once()
+
+    async def test_activatable_previous_head_is_not_re_rendered_either(self):
+        head = self.commit_head(self.surround_state())
+        candidate = set_mode_routing(head, "surround", OUTPUT_KEY,
+                                     ["main_l", "main_r", "rear_r", "rear_l", "sub1", "sub2"])
+        result, _ = await self.stabilize(head, candidate)
+        self.assertTrue(result["stabilized"])
+        self.engine.guarded_rebuild.assert_not_awaited()
+        self.engine.guarded_rebuild_rendered.assert_not_awaited()
+
+    async def test_transition_without_a_staged_graph_still_re_applies_the_extras(self):
+        head = self.commit_head(set_crossover(self.surround_state(), "surround", True))
+        candidate = set_crossover(head, "surround", False)
+        await self.stabilize(head, candidate, staged=False)
+        self.engine.guarded_rebuild.assert_awaited_once()
+
+
 class LegacyFilesUntouchedTests(unittest.TestCase):
     """Task-2 contract: v2 commit/rollback never touch legacy files.
 

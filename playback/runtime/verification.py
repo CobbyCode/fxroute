@@ -132,7 +132,8 @@ class _RuntimeVerificationMixin:
         loudness work point over the user volume.
         The switch therefore re-applies the canonical extras unconditionally
         instead of gating on rate_change/dsp_reinitialized, so the volume
-        never resurrects an older preset value.
+        never resurrects an older preset value.  A v2 output-state switch
+        stages the canonical extras with its graph and only validates them.
         """
         if not (
             request.rate_change
@@ -150,6 +151,16 @@ class _RuntimeVerificationMixin:
         if manager is None:
             return {"stabilized": True, "no_op": True}
 
+        # A v2 output-state transition has already staged its graph from the
+        # canonical extras.  The guarded re-apply renders the committed head,
+        # which is still the previous state until the persist stage, and
+        # would replace the staged graph with it (or with the legacy overview
+        # when the previous head cannot activate, e.g. a crossover draft).
+        staged_plan_graph = (
+            request.operation == "output-mode-switch"
+            and (request.output_state_transition or {}).get("target") is not None
+        )
+
         # The whole guarded re-apply runs under the central DSP
         # mutation ownership, and the canonical extras are (re)read after
         # acquiring it: a parallel volume/extras/SPL mutation must never be
@@ -165,27 +176,28 @@ class _RuntimeVerificationMixin:
             if not loudness_enabled and not autogain_enabled:
                 return {"stabilized": True, "no_op": True}
 
-            apply_runtime = getattr(manager, "apply_autogain_loudness_runtime", None)
-            if not callable(apply_runtime):
-                raise RuntimeError("guarded Auto Gain/Loudness runtime is unavailable")
+            if not staged_plan_graph:
+                apply_runtime = getattr(manager, "apply_autogain_loudness_runtime", None)
+                if not callable(apply_runtime):
+                    raise RuntimeError("guarded Auto Gain/Loudness runtime is unavailable")
 
-            # Passing the same canonical extras on both sides deliberately uses the
-            # existing guarded order without reloading the preset.  The helper
-            # method keeps the outputGain guard in place while the LSP volume port
-            # settles, then ramps back to the canonical work point.  The blocking
-            # manager call runs off the event loop; the caller owns the mutation
-            # lock until the worker actually finished (cancellation-safe).
-            await self._deps.drain_worker(
-                apply_runtime,
-                extras,
-                extras,
-                persist_all_presets=False,
-            )
-            settle_seconds = float(
-                getattr(manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0)
-            )
-            if settle_seconds > 0:
-                await asyncio.sleep(settle_seconds)
+                # Passing the same canonical extras on both sides deliberately uses the
+                # existing guarded order without reloading the preset.  The helper
+                # method keeps the outputGain guard in place while the LSP volume port
+                # settles, then ramps back to the canonical work point.  The blocking
+                # manager call runs off the event loop; the caller owns the mutation
+                # lock until the worker actually finished (cancellation-safe).
+                await self._deps.drain_worker(
+                    apply_runtime,
+                    extras,
+                    extras,
+                    persist_all_presets=False,
+                )
+                settle_seconds = float(
+                    getattr(manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0)
+                )
+                if settle_seconds > 0:
+                    await asyncio.sleep(settle_seconds)
 
             effects_runtime = await self._read_and_validate_effects_runtime(extras)
 

@@ -134,6 +134,26 @@ class OutputStateTests(unittest.TestCase):
                          ["main_l", "off", "main_r", "off", "sub1", "off"])
         self.assertEqual(state["modes"]["stereo-sub"]["processing"]["left_high"]["level_db"], -8)
 
+    def test_surround_crossover_off_restores_the_existing_surround_state(self):
+        speakers = ["main_l", "main_r", "rear_l", "rear_r", "sub1", "sub2", "center", "off"]
+        state = switch_mode(set_mode_routing(default_output_state(), "surround", "A", speakers),
+                            "surround")
+        state = select_bank(state, "surround", "A", 8, "sub1")
+        before = copy.deepcopy(state)
+        enabled = set_crossover(state, "surround", True)
+        self.assertEqual(routing_for_device(enabled, "surround", "A"),
+                         ["left_low", "right_low", "rear_l", "rear_r", "sub1", "sub2", "center", "off"])
+        state = set_crossover(enabled, "surround", False)
+        surround, original = state["modes"]["surround"], before["modes"]["surround"]
+        self.assertEqual(state["active_mode"], "surround")
+        self.assertFalse(surround["crossover_enabled"])
+        self.assertEqual(routing_for_device(state, "surround", "A"), speakers)
+        self.assertEqual(surround["selected_bank"], original["selected_bank"])
+        self.assertEqual(surround["bass_management"], original["bass_management"])
+        for role in ("main_l", "main_r", "rear_l", "rear_r", "sub1", "sub2", "center"):
+            self.assertEqual(surround["banks"][role], original["banks"][role])
+            self.assertEqual(surround["processing"][role], original["processing"][role])
+
     def test_mutations_and_validation_return_detached_values(self):
         original = default_output_state()
         changed = crossover_state(original, "A", WAYS)
