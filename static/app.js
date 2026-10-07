@@ -3329,6 +3329,16 @@ function renderMeasurementArea() {
         elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight || area?.available === false;
     }
     syncSweepSideRow(area);
+    syncMeasurementCalibrationMenu(area);
+}
+
+function syncMeasurementCalibrationMenu(area) {
+    /* A sub bank keeps only SPL Calibration: Auto Sub Optimize covers level
+     * and polarity there, and the backend refuses both per-speaker runs. */
+    const subwooferArea = !!area && !!outputSystemModule()?.isSubwooferBank?.(area.bank_id);
+    [elements.levelMatchOpen, elements.polarityCheckOpen].forEach((button) => {
+        button?.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', subwooferArea);
+    });
 }
 
 function syncSweepSideRow(area) {

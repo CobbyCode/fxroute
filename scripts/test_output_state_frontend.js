@@ -188,6 +188,12 @@ function measurementAreaTests() {
     assert.deepEqual(OutputState.summedRoleIds({ sub_roles: ['sub_l', 'sub_r'], sub_mode: 'stereo' }), []);
     assert.deepEqual(OutputState.summedRoleIds({ sub_roles: [], sub_mode: 'none' }), []);
     assert.deepEqual(OutputState.summedRoleIds({}), []);
+    for (const bankId of ['sub', 'sub_l', 'sub_r', 'sub1', 'sub2']) {
+        assert.equal(OutputState.isSubwooferBank(bankId), true, bankId);
+    }
+    for (const bankId of ['global', 'all', 'main', 'low_mid', 'side', 'rear', 'front', 'center', '', null, undefined]) {
+        assert.equal(OutputState.isSubwooferBank(bankId), false, String(bankId));
+    }
 
     const crossover = { ...selected, active_mode: 'stereo' };
     crossover.modes.stereo.banks.low_mid = { label: 'Low-Mid L/R', roles: ['left_low_mid', 'right_low_mid'], channel_mode: 'stereo' };

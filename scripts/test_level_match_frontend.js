@@ -21,6 +21,14 @@ assert.match(outputState, /'set_level_calibration'/);
 assert.match(app, /FXRouteMeasurementLevelMatch\?\.init\(/);
 assert.match(app, /FXRouteMeasurementLevelMatch\?\.bindEvents\(\)/);
 
+// A sub bank keeps only SPL Calibration: Level Matching and Polarity Check are hidden there.
+assert.match(app, /\n\s+syncMeasurementCalibrationMenu\(area\);\n\}/, 'renderMeasurementArea syncs the calibration menu');
+const calibrationMenuSync = app.match(/function syncMeasurementCalibrationMenu\(area\) \{[\s\S]*?\n\}\n/)?.[0] || '';
+assert.match(calibrationMenuSync, /isSubwooferBank\?\.\(area\.bank_id\)/);
+assert.match(calibrationMenuSync, /\[elements\.levelMatchOpen, elements\.polarityCheckOpen\]/);
+assert.match(calibrationMenuSync, /closest\('\.measurement-workflow-menu-choice'\)\?\.classList\.toggle\('hidden', subwooferArea\)/);
+assert.doesNotMatch(calibrationMenuSync, /spl-?[cC]alibration/i, 'SPL Calibration is never hidden');
+
 function element() {
     const listeners = {};
     return {

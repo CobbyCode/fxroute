@@ -224,6 +224,12 @@ function summedRoleIds(topology) {
     return subs;
 }
 
+// Same rule as the backend (measurement/speaker_scope.plan_area): sub banks
+// are owned by Auto Sub Optimize, not by per-speaker calibration runs.
+function isSubwooferBank(bankId) {
+    return String(bankId || '').startsWith('sub');
+}
+
 function measurementArea(catalog, bankId) {
     const mode = (catalog && catalog.active_mode) || 'stereo';
     const modeConfig = (catalog && catalog.modes && catalog.modes[mode]) || {};
@@ -452,6 +458,7 @@ function renderBankSelector(select, catalog, mode) {
         subwooferView,
         topologySummary,
         summedRoleIds,
+        isSubwooferBank,
         measurementArea,
         bankOptions,
         bankSelectorVisible,
