@@ -6,6 +6,7 @@ import asyncio
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -163,6 +164,38 @@ class RawLevelAndTrimTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             lm.derive_slot_values(table(entry("main_l", -20.0), entry("main_r", -90.0, stamp="2")))
         self.assertIn("implausible", str(caught.exception))
+
+
+class ResetValueTests(unittest.TestCase):
+    def test_a_stereo_bank_resets_only_its_own_slot(self):
+        roles = ["left_low", "right_low", "left_high", "right_high"]
+        scope = lm.plan_scope("stereo", "low", roles)
+        self.assertEqual(lm.zero_slot_values("stereo", roles, scope),
+                         {"left_low": {"bank": 0.0}, "right_low": {"bank": 0.0}})
+
+    def test_global_resets_the_global_slot_of_the_speakers_but_never_a_subwoofer(self):
+        roles = ["main_l", "main_r", "sub_l", "sub_r"]
+        scope = lm.plan_scope("stereo-sub", "global", roles)
+        self.assertEqual(lm.zero_slot_values("stereo-sub", roles, scope),
+                         {"main_l": {"global": 0.0}, "main_r": {"global": 0.0}})
+
+    def test_surround_resets_the_whole_family_front_in_global_the_rest_in_bank(self):
+        roles = SURROUND_ROLES + ["sub1"]
+        scope = lm.plan_scope("surround", "rear", roles)
+        values = lm.zero_slot_values("surround", roles, scope)
+        self.assertEqual(values["main_l"], {"global": 0.0})
+        self.assertEqual(values["main_r"], {"global": 0.0})
+        for role in ("center", "side_l", "side_r", "rear_l", "rear_r"):
+            self.assertEqual(values[role], {"bank": 0.0}, role)
+        self.assertNotIn("sub1", values)
+
+    def test_dropping_a_family_keeps_the_others(self):
+        entries = table(entry("left_low", -20.0, slot="global", family="scope:global"),
+                        entry("left_low", -21.0, slot="bank", family="scope:low"),
+                        entry("right_low", -22.0, slot="bank", family="scope:low"))
+        self.assertEqual(lm.drop_family(entries, "scope:low"),
+                         table(entry("left_low", -20.0, slot="global", family="scope:global")))
+        self.assertEqual(lm.drop_family(entries, "scope:other"), entries)
 
 
 class StoreTests(unittest.TestCase):
@@ -408,6 +441,73 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[("main_l", "bank")]["trim_db"], -2.0)
         self.assertTrue(all(row["valid"] for row in rows.values()))
         self.assertEqual(status["units"], ["left", "right"])
+
+    async def test_reset_forgets_the_stored_levels_and_returns_zero_slots(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]), {("main_l",): -18.0, ("main_r",): -20.0})
+        await self.run_job("main")
+        self.assertTrue(self.table.entries("stereo"))
+        reset = await api.reset_level_match(bank_id="main")
+        self.assertEqual(reset["mode"], "stereo")
+        self.assertEqual(reset["values"], {"main_l": {"bank": 0.0}, "main_r": {"bank": 0.0}})
+        self.assertEqual(self.table.entries("stereo"), {})
+        status = await api.get_level_match("main")
+        self.assertEqual(status["entries"], [])
+        # Resetting again is harmless and answers the same slots.
+        self.assertEqual((await api.reset_level_match(bank_id="main"))["values"], reset["values"])
+
+    async def test_reset_leaves_the_other_levels_of_the_mode_alone(self):
+        roles = ["left_low", "left_high", "right_low", "right_high"]
+        self.configure(mode_state("stereo", roles, crossover=True), {})
+        global_entry = entry("left_low", -20.0, slot="global", family="scope:global")
+        low_entries = [entry("left_low", -21.0, slot="bank", family="scope:low"),
+                       entry("right_low", -22.0, slot="bank", family="scope:low")]
+        self.table.save_entries("stereo", table(global_entry, *low_entries))
+        self.table.save_entries("surround", table(entry("main_l", -20.0)))
+        await api.reset_level_match(bank_id="low")
+        self.assertEqual(self.table.entries("stereo"), table(global_entry))
+        self.assertEqual(set(self.table.entries("surround")), {"global:main_l"})
+
+    async def test_surround_reset_clears_the_whole_family_whatever_group_is_selected(self):
+        levels = {("main_l",): -20.0, ("main_r",): -21.0, ("rear_l",): -25.0, ("rear_r",): -24.0}
+        self.configure(mode_state("surround", SURROUND_ROLES), levels)
+        await self.run_job("main")
+        await self.run_job("rear")
+        reset = await api.reset_level_match(bank_id="rear")
+        self.assertEqual(set(reset["values"]), set(SURROUND_ROLES))
+        self.assertEqual(reset["values"]["main_l"], {"global": 0.0})
+        self.assertEqual(reset["values"]["rear_r"], {"bank": 0.0})
+        self.assertEqual(self.table.entries("surround"), {})
+        # With the reference gone, the other speakers wait for Front L/R again.
+        self.assertFalse((await api.get_level_match("rear"))["reference_ready"])
+
+    async def test_reset_is_refused_while_a_run_or_auto_sub_is_active_and_for_subwoofers(self):
+        self.configure(mode_state("stereo-sub", ["main_l", "main_r", "sub1", "sub2"]),
+                       {("main_l",): -20.0, ("main_r",): -20.0})
+        with self.assertRaises(HTTPException) as caught:
+            await api.reset_level_match(bank_id="sub1")
+        self.assertEqual(caught.exception.status_code, 400)
+        stored = table(entry("main_l", -20.0, slot="global", family="scope:global"))
+        self.table.save_entries("stereo-sub", stored)
+        with patch.object(api, "_deps", replace(api._deps, auto_sub_active=lambda: True)):
+            with self.assertRaises(HTTPException) as caught:
+                await api.reset_level_match(bank_id="global")
+        self.assertEqual(caught.exception.status_code, 423)
+        gate = asyncio.Event()
+        original = self.store.start_measurement
+
+        async def slow(**kwargs):
+            await gate.wait()
+            return await original(**kwargs)
+
+        self.store.start_measurement = slow
+        await api.start_level_match(input_id="mic", input_key="", mic_input_channel="1",
+                                    calibration_ref="", bank_id="global")
+        with self.assertRaises(HTTPException) as caught:
+            await api.reset_level_match(bank_id="global")
+        self.assertEqual(caught.exception.status_code, 409)
+        gate.set()
+        await api._slot.task
+        self.assertNotEqual(self.table.entries("stereo-sub"), {})
 
 
 if __name__ == "__main__":

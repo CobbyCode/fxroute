@@ -25,6 +25,7 @@ import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from audio.output_topology import SUB_ROLES, surround_group
 from common.atomic_write import atomic_write_text
 from measurement.speaker_scope import plan_area
 
@@ -154,6 +155,24 @@ def derive_slot_values(entries: Mapping[str, dict]) -> dict[str, dict[str, float
             trim = round(round(trim / TRIM_RESOLUTION_DB) * TRIM_RESOLUTION_DB, 3)
             values.setdefault(entry["role"], {})[entry["slot"]] = min(0.0, trim) + 0.0
     return values
+
+
+def zero_slot_values(mode: str, roles: Sequence[str], scope: dict) -> dict[str, dict[str, float]]:
+    """Every slot Level Matching owns in the scope's family at 0 dB.
+
+    Has the shape of the ``set_level_calibration`` mutation. A Stereo scope resets
+    its own slot; Surround is one family, so all speaker groups go back together.
+    Subwoofer slots are never touched (Auto Sub Optimize owns them).
+    """
+    if mode == "surround":
+        return {role: {SURROUND_GROUP_SLOT[surround_group(role)]: 0.0}
+                for role in roles if role not in SUB_ROLES}
+    return {role: {scope["slot"]: 0.0} for unit in scope["units"] for role in unit["roles"]}
+
+
+def drop_family(entries: Mapping[str, dict], family: str) -> dict[str, dict]:
+    """The stored raw levels without those of one family."""
+    return {key: entry for key, entry in entries.items() if entry["family"] != family}
 
 
 class LevelMatchStore:

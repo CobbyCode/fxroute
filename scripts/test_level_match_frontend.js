@@ -20,6 +20,8 @@ assert.ok(index.indexOf('measurement_level_match.js?v=') < index.indexOf('app.js
 assert.match(outputState, /'set_level_calibration'/);
 assert.match(app, /FXRouteMeasurementLevelMatch\?\.init\(/);
 assert.match(app, /FXRouteMeasurementLevelMatch\?\.bindEvents\(\)/);
+assert.match(index, /<button id="level-match-reset"[^>]*>Reset to 0 dB<\/button>/);
+assert.match(app, /levelMatchReset: document\.getElementById\('level-match-reset'\)/);
 
 // A sub bank keeps only SPL Calibration: Level Matching and Polarity Check are hidden there.
 assert.match(app, /\n\s+syncMeasurementCalibrationMenu\(area\);\n\}/, 'renderMeasurementArea syncs the calibration menu');
@@ -39,10 +41,10 @@ function element() {
     };
 }
 
-function harness({ area, status, jobs, applied = { ok: true } }) {
+function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: true, body: { mode: 'stereo', values: { main_l: { bank: 0 }, main_r: { bank: 0 } } } }, blocked = false }) {
     const elements = {
         levelMatchOpen: element(), levelMatchPanel: element(), levelMatchClose: element(),
-        levelMatchArea: element(), levelMatchStart: element(), levelMatchActionStatus: element(),
+        levelMatchArea: element(), levelMatchStart: element(), levelMatchReset: element(), levelMatchActionStatus: element(),
         levelMatchResults: element(), levelMatchStatus: element(),
     };
     const calls = [];
@@ -55,6 +57,7 @@ function harness({ area, status, jobs, applied = { ok: true } }) {
             calls.push({ url, options });
             if (url.startsWith('/api/measurements/level-match?')) return { ok: true, json: async () => status };
             if (url === '/api/measurements/level-match/start') return { ok: true, json: async () => ({ job: { id: 'job-1', status: 'running', progress: { step: 1, total: 2, label: 'left' } } }) };
+            if (url === '/api/measurements/level-match/reset') return { ok: reset.ok, json: async () => reset.body };
             if (url.includes('/jobs/job-1/cancel')) return { ok: true, json: async () => ({}) };
             if (url.includes('/jobs/job-1')) return { ok: true, json: async () => ({ job: jobQueue.shift() }) };
             throw new Error(`unexpected ${url}`);
@@ -65,7 +68,7 @@ function harness({ area, status, jobs, applied = { ok: true } }) {
         ensureAreaCatalog: async () => {},
         normalizeMeasurementInputChannelSelections: () => {},
         applyMutation: async (kind, fields) => { mutations.push({ kind, fields }); return applied.ok ? {} : null; },
-        hasActiveMeasurementJob: () => false,
+        hasActiveMeasurementJob: () => blocked,
         escapeHtml: (value) => String(value),
         roleLabel: (role) => `label:${role}`,
         sleep: async () => {},
@@ -150,6 +153,56 @@ function harness({ area, status, jobs, applied = { ok: true } }) {
         await levelMatch.startLevelMatch();
         assert.deepEqual(mutations, []);
         assert.match(elements.levelMatchStatus.textContent, /cancelled\. Nothing was changed/);
+    }
+
+    // Reset clears the area on the server, then commits the returned 0 dB slots like a measurement does.
+    {
+        const status = { mode: 'stereo', requires_reference: false, reference_ready: true, units: ['left', 'right'],
+            entries: [{ role: 'main_l', slot: 'bank', valid: true, trim_db: -2.5 }] };
+        const { elements, calls, mutations } = harness({ area: { bank_id: 'main', label: 'Main L/R', available: true }, status, jobs: [] });
+        await levelMatch.openLevelMatch();
+        assert.equal(elements.levelMatchReset.disabled, false);
+        await levelMatch.resetLevelMatch();
+        const reset = calls.find((call) => call.url === '/api/measurements/level-match/reset');
+        assert.equal(reset.options.method, 'POST');
+        assert.equal(reset.options.body.get('bank_id'), 'main');
+        assert.deepEqual(mutations, [{ kind: 'set_level_calibration', fields: { mode: 'stereo', values: { main_l: { bank: 0 }, main_r: { bank: 0 } } } }]);
+        assert.match(elements.levelMatchStatus.textContent, /reset to 0 dB/);
+        assert.equal(elements.levelMatchReset.disabled, false);
+        assert.equal(elements.levelMatchStart.disabled, false);
+    }
+
+    // A refused reset commits nothing and shows the reason.
+    {
+        const status = { mode: 'stereo', requires_reference: false, reference_ready: true, units: ['left', 'right'], entries: [] };
+        const { elements, mutations } = harness({ area: { bank_id: 'main', label: 'Main L/R', available: true }, status, jobs: [],
+            reset: { ok: false, body: { detail: 'Auto Sub Optimize is in progress' } } });
+        await levelMatch.openLevelMatch();
+        await levelMatch.resetLevelMatch();
+        assert.deepEqual(mutations, []);
+        assert.match(elements.levelMatchStatus.textContent, /Auto Sub Optimize is in progress/);
+    }
+
+    // A rejected commit is reported, not claimed as reset.
+    {
+        const status = { mode: 'stereo', requires_reference: false, reference_ready: true, units: ['left', 'right'], entries: [] };
+        const { elements } = harness({ area: { bank_id: 'main', label: 'Main L/R', available: true }, status, jobs: [], applied: { ok: false } });
+        await levelMatch.openLevelMatch();
+        await levelMatch.resetLevelMatch();
+        assert.match(elements.levelMatchStatus.textContent, /could not be applied/);
+    }
+
+    // No area or another running measurement: Reset is unavailable and does nothing.
+    {
+        const { elements, calls } = harness({ area: { bank_id: 'all', label: 'All Banks', available: false }, status: {}, jobs: [] });
+        await levelMatch.openLevelMatch();
+        assert.equal(elements.levelMatchReset.disabled, true);
+        await levelMatch.resetLevelMatch();
+        assert.equal(calls.length, 0);
+        const status = { mode: 'stereo', requires_reference: false, reference_ready: true, units: ['left', 'right'], entries: [] };
+        const other = harness({ area: { bank_id: 'main', label: 'Main L/R', available: true }, status, jobs: [], blocked: true });
+        await levelMatch.openLevelMatch();
+        assert.equal(other.elements.levelMatchReset.disabled, true);
     }
 
     console.log('level match frontend ok');

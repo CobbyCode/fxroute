@@ -1408,6 +1408,7 @@ const elements = {
     levelMatchClose: document.getElementById('level-match-close'),
     levelMatchArea: document.getElementById('level-match-area'),
     levelMatchStart: document.getElementById('level-match-start'),
+    levelMatchReset: document.getElementById('level-match-reset'),
     levelMatchActionStatus: document.getElementById('level-match-action-status'),
     levelMatchResults: document.getElementById('level-match-results'),
     levelMatchStatus: document.getElementById('level-match-status'),

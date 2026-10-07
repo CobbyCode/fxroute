@@ -201,6 +201,19 @@ async def start_level_match(
     return {"status": "ok", "job": speaker_sweep.public_job(job)}
 
 
+@router.post("/api/measurements/level-match/reset")
+async def reset_level_match(bank_id: str = Form(...)):
+    """Forget the stored raw levels of the area's family; the client commits the 0 dB slots."""
+    dependencies = _dependencies()
+    _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
+    target, scope = _resolve_scope(bank_id)
+    table = dependencies.get_table()
+    mode = target["mode"]
+    table.save_entries(mode, level_match.drop_family(table.entries(mode), scope["family"]))
+    return {"status": "ok", "mode": mode, "bank_id": bank_id,
+            "values": level_match.zero_slot_values(mode, target["roles"], scope)}
+
+
 @router.get("/api/measurements/level-match/jobs/{job_id}")
 async def get_level_match_job(job_id: str):
     return {"status": "ok", "job": speaker_sweep.public_job(_slot.get(job_id))}

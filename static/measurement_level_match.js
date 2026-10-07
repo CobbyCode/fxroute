@@ -25,6 +25,7 @@
         sleep: (ms) => new Promise((resolve) => root.setTimeout(resolve, ms)),
     };
     let busy = false;
+    let resetting = false;
     let jobId = '';
     let generation = 0;
     let lastStatus = null;
@@ -79,8 +80,9 @@
         const waiting = !!lastStatus && lastStatus.requires_reference && !lastStatus.reference_ready;
         if (elements.levelMatchStart) {
             elements.levelMatchStart.textContent = measuring ? 'Cancel' : 'Match levels';
-            elements.levelMatchStart.disabled = !measuring && (!currentArea() || waiting || blocked);
+            elements.levelMatchStart.disabled = !measuring && (!currentArea() || waiting || blocked || resetting);
         }
+        if (elements.levelMatchReset) elements.levelMatchReset.disabled = measuring || resetting || blocked || !currentArea();
         if (!measuring) {
             if (!currentArea()) setActionLine('Select a speaker bank for level matching.');
             else if (waiting) setActionLine('Measure Front L/R first to set the level reference.');
@@ -199,6 +201,31 @@
         }
     }
 
+    async function resetLevelMatch() {
+        const area = currentArea();
+        if (!area || busy || resetting) return;
+        resetting = true;
+        setStatus();
+        renderControls();
+        try {
+            const form = new FormData();
+            form.append('bank_id', area.bank_id);
+            const response = await deps.fetch('/api/measurements/level-match/reset', { method: 'POST', body: form });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Failed to reset Level Matching');
+            const applied = await deps.applyMutation('set_level_calibration',
+                { mode: data.mode, values: data.values }, false, { quiet: true });
+            setStatus(applied
+                ? 'Level Calibration reset to 0 dB.'
+                : 'The stored levels were cleared but 0 dB could not be applied. Press Reset again.');
+        } catch (error) {
+            setStatus(error.message);
+        } finally {
+            resetting = false;
+            await refresh();
+        }
+    }
+
     async function cancelLevelMatch() {
         if (!busy || !jobId) return;
         setActionLine('Cancelling…');
@@ -219,7 +246,8 @@
             if (busy) void cancelLevelMatch();
             else void startLevelMatch();
         });
+        elements.levelMatchReset?.addEventListener('click', () => { void resetLevelMatch(); });
     }
 
-    return { init, bindEvents, openLevelMatch, closeLevelMatch, startLevelMatch, cancelLevelMatch, refresh, formatTrim };
+    return { init, bindEvents, openLevelMatch, closeLevelMatch, startLevelMatch, cancelLevelMatch, resetLevelMatch, refresh, formatTrim };
 });

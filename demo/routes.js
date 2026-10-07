@@ -3799,6 +3799,21 @@
                 error: null, cancel_requested: false };
             return j({ status: 'ok', job: levelMatchJobs[id] });
         }
+        if (p === '/api/measurements/level-match/reset' && post) {
+            const status = levelMatchStatus(String(body.bank_id || ''));
+            if (status.error) return err(status.error, 400);
+            const { scope } = status;
+            const bucket = levelMatchEntries[scope.mode] || {};
+            for (const key of Object.keys(bucket)) if (bucket[key].family === scope.family) delete bucket[key];
+            // Surround is one family (Front L/R in 'global', the rest in 'bank'); a Stereo area resets its own slot.
+            const values = {};
+            if (scope.mode === 'surround') {
+                for (const role of scope.roles) values[role] = { [scope.frontRoles.includes(role) ? 'global' : 'bank']: 0 };
+            } else {
+                for (const role of scope.members) values[role] = { [scope.slot]: 0 };
+            }
+            return j({ status: 'ok', mode: scope.mode, bank_id: String(body.bank_id), values });
+        }
         const levelMatchJob = p.match(/^\/api\/measurements\/level-match\/jobs\/([^/]+)$/);
         if (levelMatchJob) {
             const job = levelMatchJobs[levelMatchJob[1]];
