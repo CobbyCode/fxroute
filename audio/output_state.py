@@ -310,7 +310,7 @@ def effective_crossover_enabled(state: dict, mode: str, channels: int | None = N
 
 
 def fallback_bank(mode: str, roles) -> str:
-    """Selection when the stored bank is gone: Surround offers no Global bank."""
+    """Selection when the stored bank is gone: Surround falls back to All Banks."""
     return "all" if mode == "surround" and tuple(roles) else "global"
 
 
@@ -340,7 +340,7 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
         selected = resolve_bank(config, config["selected_bank"], topology.roles)["id"]
     except ValueError:
         selected = fallback
-    if selected not in (*active, "all") or (mode == "surround" and selected == "global"):
+    if selected not in (*active, "all"):
         selected = fallback
     if pure_stereo_roles(mode, topology.roles):
         selected = "global"
@@ -398,8 +398,6 @@ def set_bank_preset(state: dict, mode: str, bank_id: str, *, preset: str | None 
     roles_for_mode(mode)
     banks = result["modes"][mode]["banks"]
     members = resolve_bank(result["modes"][mode], bank_id, roles)["roles"]
-    if mode == "surround" and members == ["global"]:
-        raise ValueError("Surround has no Global bank; select an area bank or All Banks")
     if active_side is not None and active_side not in {"A", "B"}:
         raise ValueError("Compare side must be A or B")
     slot = active_side or summarize_banks([banks[role] for role in members])["active_side"] or "A"
@@ -526,8 +524,6 @@ def select_bank(state: dict, mode: str, output_key: str, channels: int, bank_id:
                              crossover_enabled=effective_crossover_enabled(result, mode, channels))
     if pure_stereo_roles(mode, active.roles) and bank_id != "global":
         raise ValueError("Pure stereo uses the Global bank; no bank selection is shown")
-    if mode == "surround" and bank_id == "global":
-        raise ValueError("Surround has no Global bank; select an area bank or All Banks")
     if bank_id == "all":
         if not active.roles:
             raise ValueError("No configured area banks")

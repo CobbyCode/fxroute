@@ -27,6 +27,7 @@ from audio.output_state_store import OutputStateStore, StateConflictError
 from dsp.native_config import layout_from_plan
 from dsp.persistence import preset_bank
 from dsp.processing_plan import compile_processing_plan
+from dsp.surround_global import BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, preset_layout
 
 __all__ = [
     "MeasurementActiveError",
@@ -175,6 +176,12 @@ class OutputService:
                 raise ValueError(
                     f'Preset "{preset}" belongs to bank "{tag.strip()}", not "{definition["id"]}"')
         if definition["id"] == "global":
+            # Surround Global holds group-tagged presets, every other mode the stereo ones.
+            if preset not in BUILTIN_PRESETS and (preset_layout(payload) == SURROUND_LAYOUT) != (mode == "surround"):
+                raise ValueError(
+                    f'Preset "{preset}" is a Surround preset and fits only the Surround Global bank'
+                    if mode != "surround" else
+                    f'Preset "{preset}" is not a Surround preset; create one for a speaker group')
             return
         self.compile_layout({
             "sample_rate_hz": 48000,

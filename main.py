@@ -5531,7 +5531,7 @@ async def get_audio_output_state():
     modes = {}
     for mode, config in state["modes"].items():
         topology = _output_state_topology(state, mode, output_key, channels)
-        banks = bank_catalog(config, topology["roles"], mode)
+        banks = bank_catalog(config, topology["roles"])
         if mode == "surround" and "main" in banks:
             banks["main"]["label"] = "Front L/R"
         modes[mode] = {

@@ -142,7 +142,7 @@
         // Strict per-bank stock: only the bank's own presets (plus built-ins;
         // untagged legacy reads as Global). No foreign presets are merged in,
         // so switching banks can never leak another bank's stock.
-        return mod.presetsForBank(entries, bankId);
+        return mod.presetsForBank(entries, bankId, catalog.active_mode);
     }
 
     function visiblePresetNamesForBank() {

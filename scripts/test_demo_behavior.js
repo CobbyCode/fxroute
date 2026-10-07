@@ -841,8 +841,8 @@ const radio = state.getPlayback();
 
     // ── Surround mode state ─────────────────────────────────────────────
     // The third output mode is explorable from the same seed: the stereo-sub
-    // front end expanded to a fully routed 7.2 system, no Global bank, All
-    // Banks selected, and the LFE hint naming both subs. The mode switch is
+    // front end expanded to a fully routed 7.2 system, All Banks selected,
+    // and the LFE hint naming both subs. The mode switch is
     // exercised and reverted, so the rest of the run stays on stereo-sub.
     const surround0 = catalog0.modes.surround;
     sameList(catalog0.capabilities.modes, ['stereo', 'stereo-sub', 'surround'], 'output modes');
@@ -860,10 +860,10 @@ const radio = state.getPlayback();
     assert.equal(surround0.topology.sub_mode, 'dual-mono');
     // Sub L / Sub R are not Surround roles; the LFE bus feeds Sub 1 / Sub 2.
     assert.equal(catalog0.capabilities.roles.surround.includes('sub_l'), false);
-    // Surround offers no Global bank; the area banks are the way pairs plus
-    // Center, Side L/R, Rear L/R and Sub 1 / Sub 2.
-    sameList(Object.keys(surround0.banks), ['low', 'high', 'side', 'rear', 'center', 'sub1', 'sub2'], 'surround banks');
-    assert.equal(Object.prototype.hasOwnProperty.call(surround0.banks, 'global'), false);
+    // Surround offers Global plus the area banks: the way pairs, Center,
+    // Side L/R, Rear L/R and Sub 1 / Sub 2.
+    sameList(Object.keys(surround0.banks), ['global', 'low', 'high', 'side', 'rear', 'center', 'sub1', 'sub2'], 'surround banks');
+    assert.equal(surround0.banks.global.label, 'Global');
     assert.equal(surround0.banks.low.label, 'Low L/R');
     assert.equal(surround0.banks.high.label, 'High L/R');
     assert.equal(surround0.banks.side.label, 'Side L/R');
@@ -888,7 +888,7 @@ const radio = state.getPlayback();
         'surround routing');
     // The real frontend helpers render that catalog: the Mode selector offers
     // Surround, the hint names the LFE target, and the bank selector shows
-    // All Banks plus the area banks without a Global entry.
+    // Global, All Banks and the area banks.
     const outputStateUi = require(path.join(root, 'demo', 'dist', 'static', 'output_state.js'));
     const modeSelect = { innerHTML: '', value: '' };
     outputStateUi.renderModeSelect(modeSelect, catalog0, 'surround');
@@ -896,7 +896,7 @@ const radio = state.getPlayback();
     assert.equal(outputStateUi.modeHint('surround', surround0.topology, 18),
         'Surround · 18 hardware outputs · LFE → Sub 1 / Sub 2');
     sameList(outputStateUi.bankOptions(surround0).map(entry => entry.id),
-        ['all', 'low', 'high', 'side', 'rear', 'center', 'sub1', 'sub2'], 'surround bank selector');
+        ['global', 'all', 'low', 'high', 'side', 'rear', 'center', 'sub1', 'sub2'], 'surround bank selector');
     assert.equal(outputStateUi.bankSelectorVisible(surround0), true);
     // The Subwoofer card's groups follow the routed roles; Speaker Auto
     // Alignment stays hidden because it needs the Global bank.
@@ -921,13 +921,20 @@ const radio = state.getPlayback();
     const partial = await partialApply.json();
     assert.equal(partial.live_applied, false);
     assert.equal(partial.topology.issues[0], 'Surround Side requires Side L and Side R');
-    // Surround never selects Global; the rejection names the reason.
-    const afterPartial = await (await demoFetch('/api/audio/output-state')).json();
+    // Global is selectable in Surround like in every other mode.
+    const beforeGlobal = await (await demoFetch('/api/audio/output-state')).json();
     const globalBank = await demoFetch('/api/audio/output-state/apply',
-        { method: 'POST', body: JSON.stringify({ expected_revision: afterPartial.revision,
+        { method: 'POST', body: JSON.stringify({ expected_revision: beforeGlobal.revision,
             mutation: { kind: 'select_bank', mode: 'surround', bank_id: 'global' } }) });
-    assert.equal(globalBank.status, 400);
-    assert.match((await globalBank.json()).detail, /no Global bank/);
+    assert.equal(globalBank.status, 200);
+    const globalSelected = await (await demoFetch('/api/audio/output-state')).json();
+    assert.equal(globalSelected.modes.surround.selected_bank, 'global');
+    const allAgain = await demoFetch('/api/audio/output-state/apply',
+        { method: 'POST', body: JSON.stringify({ expected_revision: globalSelected.revision,
+            mutation: { kind: 'select_bank', mode: 'surround', bank_id: 'all' } }) });
+    assert.equal(allAgain.status, 200);
+    const afterPartial = await (await demoFetch('/api/audio/output-state')).json();
+    assert.equal(afterPartial.modes.surround.selected_bank, 'all');
     const restoreRouting = await demoFetch('/api/audio/output-state/apply',
         { method: 'POST', body: JSON.stringify({ expected_revision: afterPartial.revision,
             mutation: { kind: 'set_routing', mode: 'surround', assignments: surroundActive.device.routing.surround } }) });

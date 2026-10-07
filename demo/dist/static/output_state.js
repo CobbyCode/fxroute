@@ -260,11 +260,9 @@ function measurementArea(catalog, bankId) {
     };
 }
 
-// Surround offers no Global bank: the catalog omits it and so does the selector.
 function bankOptions(modeConfig) {
     const banks = modeConfig?.banks || {};
-    const surround = modeConfig?.topology?.mode === 'surround';
-    return [...(surround ? [] : [{ id: 'global', label: 'Global' }]), { id: 'all', label: 'All Banks' },
+    return [{ id: 'global', label: 'Global' }, { id: 'all', label: 'All Banks' },
         ...Object.entries(banks).filter(([id]) => id !== 'global').map(([id, bank]) => ({ id, label: bank.label || roleLabel(id) }))];
 }
 
@@ -303,7 +301,9 @@ function presetBank(entry) {
     return tagged || null;
 }
 
-function presetsForBank(presets, bankId) {
+// Surround Global holds group-scoped presets (layout "surround"); every other
+// Global lists the stereo ones.
+function presetsForBank(presets, bankId, mode) {
     if (!Array.isArray(presets)) return [];
     // All Banks owns no presets: it only switches A/B jointly.
     if (!bankId || bankId === 'all') return [];
@@ -311,6 +311,7 @@ function presetsForBank(presets, bankId) {
     return presets.filter((entry) => {
         const name = typeof entry === 'string' ? entry : entry?.name;
         if (isBuiltinBankPreset(name)) return true;
+        if (wanted === 'global' && (entry?.layout === 'surround') !== (mode === 'surround')) return false;
         const tag = presetBank(entry);
         // Untagged legacy files were historically global presets (the
         // backend migrates them to Global once); show them in Global only.

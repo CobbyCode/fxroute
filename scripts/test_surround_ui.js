@@ -19,10 +19,10 @@ const view = ui.subwooferView({ active_mode: 'surround', modes: { surround: {
 assert.equal(view.mode, 'subwoofer-2.2');
 assert.equal(view.crossover.stereo, false);
 
-// Surround offers no Global bank; All Banks and area banks stay.
+// Surround offers Global like every other mode, plus All Banks and the area banks.
 const surroundConfig = { topology: { mode: 'surround', roles: ['main_l', 'main_r', 'rear_l', 'rear_r'] },
     banks: { main: { label: 'Front L/R' }, rear: { label: 'Rear L/R' } } };
-assert.deepEqual(ui.bankOptions(surroundConfig).map(entry => entry.id), ['all', 'main', 'rear']);
+assert.deepEqual(ui.bankOptions(surroundConfig).map(entry => entry.id), ['global', 'all', 'main', 'rear']);
 assert.equal(ui.bankSelectorVisible({ topology: { mode: 'surround', roles: ['main_l', 'main_r'] } }), true);
 assert.equal(ui.bankSelectorVisible({ topology: { mode: 'stereo', roles: ['main_l', 'main_r'] } }), false);
 assert.deepEqual(ui.bankOptions({ topology: { mode: 'stereo-sub', roles: ['main_l'] }, banks: {} }).map(entry => entry.id),

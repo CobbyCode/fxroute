@@ -36,6 +36,24 @@ assert.deepEqual(ui.presetsForBank(presets, 'all'), []);
 assert.deepEqual(ui.presetsForBank(presets, ''), []);
 assert.deepEqual(ui.presetsForBank('not-an-array', 'low'), []);
 
+// Surround Global lists group-scoped presets, every other Global the stereo ones.
+const layered = [
+    { name: 'Direct' },
+    { name: 'Neutral' },
+    { name: 'StereoRoom', bank: 'global' },
+    { name: 'LegacyRoom' },
+    { name: 'SurroundRoom', bank: 'global', layout: 'surround' },
+    { name: 'FrontOnly', bank: 'main' },
+];
+assert.deepEqual(ui.presetsForBank(layered, 'global', 'surround').map(p => p.name),
+    ['Direct', 'Neutral', 'SurroundRoom']);
+for (const mode of ['stereo', 'stereo-sub', undefined]) {
+    assert.deepEqual(ui.presetsForBank(layered, 'global', mode).map(p => p.name),
+        ['Direct', 'Neutral', 'StereoRoom', 'LegacyRoom']);
+}
+assert.deepEqual(ui.presetsForBank(layered, 'main', 'surround').map(p => p.name),
+    ['Direct', 'Neutral', 'FrontOnly']);
+
 assert.equal(ui.isBuiltinBankPreset('Direct'), true);
 assert.equal(ui.isBuiltinBankPreset('Neutral'), true);
 assert.equal(ui.isBuiltinBankPreset('LowCorr'), false);

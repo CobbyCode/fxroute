@@ -446,12 +446,10 @@
     }
     // Mirror of audio/filter_banks.bank_definitions plus main.py's Surround
     // rename: complete pairs become one bank, remaining roles stay mono.
-    // Surround projects no Global bank; the stored Global binding simply has
-    // no whole-system surface there.
+    // Global is offered in every mode; in Surround it holds group-scoped presets.
     function demoBankDefinitions(roles, mode) {
         const pending = new Set(roles);
-        const definitions = mode === 'surround' ? {}
-            : { global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' } };
+        const definitions = { global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' } };
         for (const [id, pair] of Object.entries(bankPairs)) {
             if (!pair.every(role => pending.has(role))) continue;
             const label = id === 'main' && mode === 'surround' ? 'Front L/R' : BANK_PAIR_LABELS[id];
@@ -655,7 +653,7 @@
             },
             surround: {
                 crossover_enabled: true,
-                // Surround never selects Global; All Banks is the fallback.
+                // An existing Surround setup lands on All Banks; Global is selectable.
                 selected_bank: 'all',
                 banks: surroundSpeakerBanks(),
                 processing: surroundProcessing(),
@@ -759,7 +757,6 @@
             let selected = config.selected_bank;
             if (pureStereo) selected = 'global';
             else if (config.selected_bank === 'all' && (topology.roles.length || !surround)) selected = 'all';
-            else if (surround && config.selected_bank === 'global') selected = fallback;
             else if (!banks[config.selected_bank]) selected = fallback;
             modes[mode] = {
                 crossover_enabled: effectiveCrossover,
@@ -804,9 +801,6 @@
             return { error: 'expected_revision must be a non-negative integer', status: 400 };
         }
         const config = outputStateStore.modes[mode];
-        if (mode === 'surround' && bankId === 'global') {
-            return { error: 'Surround has no Global bank; select an area bank or All Banks', status: 400 };
-        }
         const bank = config && outputStateCatalog().modes[mode].banks[bankId];
         if (!bank) return { error: `Unknown bank ${bankId}`, status: 400 };
         if (revision !== outputStateStore.revision) {
@@ -3084,7 +3078,6 @@
                     && routedRoles.includes('main_l') && routedRoles.includes('main_r');
                 if (pureStereo) selected = 'global';
                 else if (selected !== 'all' && !routedBanks[selected]) selected = fallback;
-                else if (mode === 'surround' && selected === 'global') selected = fallback;
                 config.selected_bank = selected;
             } else if (mutation.kind === 'select_bank') {
                 const active = outputStateCatalog().modes[mode].banks;
@@ -3092,7 +3085,6 @@
                 const bankId = String(mutation.bank_id);
                 const surround = mode === 'surround';
                 if (!surround && roles.length === 2 && roles.includes('main_l') && roles.includes('main_r') && bankId !== 'global') return fail('Pure stereo uses the Global bank; no bank selection is shown');
-                if (surround && bankId === 'global') return fail('Surround has no Global bank; select an area bank or All Banks');
                 let resolved = bankId;
                 if (bankId === 'all') {
                     if (!roles.length) return fail('No configured area banks');
@@ -3103,7 +3095,6 @@
                 }
                 config.selected_bank = resolved;
             } else if (mutation.kind === 'set_bank_preset') {
-                if (mode === 'surround' && mutation.bank_id === 'global') return fail('Surround has no Global bank; select an area bank or All Banks');
                 const bank = outputStateCatalog().modes[mode].banks[mutation.bank_id];
                 if (!bank) return fail(`Unknown bank ${mutation.bank_id}`);
                 try { updateDemoBanks(config, bank.roles, mutation); } catch (error) { return fail(error.message); }

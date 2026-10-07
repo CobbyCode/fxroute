@@ -3,7 +3,9 @@
 
 import json
 from pathlib import Path
+from audio.output_topology import SURROUND_GROUPS
 from common.atomic_write import atomic_write_text
+from dsp.surround_global import LAYOUT as SURROUND_LAYOUT, preset_layout, validate_preset_layout
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 
@@ -109,9 +111,13 @@ class DSPPresetStore:
             identifiers.add(identifier)
             if not isinstance(plugin.get("params", {}), dict):
                 raise ValueError(f"Preset chain[{index}].params must be an object")
+            if "group" in plugin and plugin["group"] not in SURROUND_GROUPS:
+                raise ValueError(f"Preset chain[{index}].group must be one of {', '.join(SURROUND_GROUPS)}")
         metadata = payload.get("metadata", {})
         if not isinstance(metadata, dict):
             raise ValueError("Preset metadata must be an object")
+        if metadata.get("layout") not in (None, SURROUND_LAYOUT):
+            raise ValueError("Preset metadata.layout must be surround when present")
         if "bank" in metadata:
             raw = metadata.get("bank")
             if raw is not None and not (isinstance(raw, str)
@@ -131,6 +137,7 @@ class DSPPresetStore:
 
     def write(self, name: str, payload: Dict[str, Any]) -> Path:
         self.validate(payload)
+        validate_preset_layout(payload)
         path = self.path(name)
         atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
         return path
@@ -146,7 +153,7 @@ class DSPPresetStore:
             payload = self.read(path.stem)
             sources = payload.get("metadata", {}).get("source_presets", [])
             result.append({"name": path.stem, "filename": path.name, "path": str(path),
-                           "bank": preset_bank(payload),
+                           "bank": preset_bank(payload), "layout": preset_layout(payload),
                            "source_presets": list(sources) if isinstance(sources, list) else []})
         return result
 
