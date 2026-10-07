@@ -351,8 +351,8 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
         if role != "off":
             config["banks"].setdefault(role, BankState().to_dict())
             config["processing"].setdefault(role, default_processing())
-    active = ["off" if value in dormant else value for value in values]
-    topology = derive_topology(mode, active, channels=count, crossover_enabled=config["crossover_enabled"])
+    masked = ["off" if value in dormant else value for value in values]
+    topology = derive_topology(mode, masked, channels=count, crossover_enabled=config["crossover_enabled"])
     active = topology.bank_ids
     fallback = fallback_bank(mode, topology.roles)
     try:
