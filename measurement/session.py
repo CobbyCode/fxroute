@@ -117,6 +117,12 @@ class MeasurementServices:
     stage_bank_v2_context: Callable[..., Any] | None = None
     stdin_measurement_acquire: Callable[[], Awaitable[None]] | None = None
     stdin_measurement_release: Callable[[], Awaitable[None]] | None = None
+    # Called after the session released the audio graph. External-input syncs
+    # swallowed while the session owned the graph are not replayed by the
+    # release itself (the release restores rates only), so the composition
+    # root marks its input routing stale and re-asserts it outside the
+    # session lock.
+    post_release_input_resync: Callable[[], Awaitable[None]] | None = None
 
 
 _services: MeasurementServices | None = None
@@ -746,6 +752,12 @@ class MeasurementSampleRateSession:
                     await release_stdin()
                 except Exception:
                     pass
+            mark_input_stale = getattr(services, "post_release_input_resync", None)
+            if callable(mark_input_stale):
+                try:
+                    await mark_input_stale()
+                except Exception as exc:
+                    logger.warning("Measurement release input-resync hook failed: %s", exc)
             logger.info(
                 "Measurement sample-rate session released: generation=%s next_generation=%s restore_rate=%s",
                 completed_generation,

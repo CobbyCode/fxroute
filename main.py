@@ -1128,6 +1128,7 @@ def _make_measurement_services() -> MeasurementServices:
             measurement_bank=measurement_bank, measurement_rate_hz=measurement_rate_hz),
         stdin_measurement_acquire=lambda: runtime.stdin_input.set_measurement_active(True) if runtime.stdin_input else _noop_async(),
         stdin_measurement_release=lambda: runtime.stdin_input.set_measurement_active(False) if runtime.stdin_input else _noop_async(),
+        post_release_input_resync=lambda: _mark_ingress_resync_pending(),
     )
 
 
@@ -5586,6 +5587,10 @@ async def apply_audio_output_state(request: Request):
 _surround_input = None
 _surround_carrier_owned = False
 _surround_clock_card: int | None = None
+# Set when a measurement-owned window dropped an external-input sync. The
+# session release restores rates but not input routing, so the digital guard
+# loop re-asserts the routing once the graph is free again.
+_ingress_resync_pending = False
 
 
 async def _select_surround_clock(card: int | None, *, digital: bool) -> None:
@@ -5626,6 +5631,10 @@ async def _digital_clock_guard_loop() -> None:
     receiver again.
     """
     while True:
+        try:
+            await _resync_pending_ingress()
+        except Exception as exc:
+            logger.warning("External-input resync check failed: %s", exc)
         try:
             await _settle_digital_clocks()
         except Exception as exc:
@@ -5711,6 +5720,33 @@ async def _digital_carrier_request(overview: dict | None, *, external: bool,
     return (True, card)
 
 
+async def _mark_ingress_resync_pending() -> None:
+    """Remember that the external-input routing must be re-asserted later."""
+    global _ingress_resync_pending
+    _ingress_resync_pending = True
+
+
+async def _resync_pending_ingress() -> None:
+    """Re-assert external-input routing a measurement-owned window dropped.
+
+    Syncs during an open measurement session are dropped on purpose (the
+    session owns the audio graph). The session release restores rates only,
+    so without this repair the digital ingress or its carrier could stay
+    dropped until the next source change or service restart. Runs from the
+    digital guard loop, never under the measurement session lock.
+    """
+    global _ingress_resync_pending
+    if not _ingress_resync_pending or _measurement_session_owns_live_rate():
+        return
+    _ingress_resync_pending = False
+    try:
+        await external_input.sync()
+        logger.info("External-input routing re-asserted after a measurement-owned window")
+    except Exception as exc:
+        _ingress_resync_pending = True
+        logger.warning("External-input routing resync failed: %s", exc)
+
+
 async def _hold_external_input_carrier(entry: dict) -> None:
     """Hold the carrier while the monitored external input needs it.
 
@@ -5721,6 +5757,7 @@ async def _hold_external_input_carrier(entry: dict) -> None:
     """
     card = await asyncio.to_thread(_input_digital_card, {"selected_input": entry})
     if _measurement_session_owns_live_rate():
+        await _mark_ingress_resync_pending()
         return
     if card is None:
         await _set_surround_carrier_owned(False)
@@ -5735,6 +5772,7 @@ async def _sync_surround_input(source: str, left: str, right: str, card: int | N
     if _measurement_session_owns_live_rate():
         if runtime.dsp_runtime is not None:
             await runtime.dsp_runtime.set_surround_input(False)
+        await _mark_ingress_resync_pending()
         return
     await _set_surround_carrier_owned(True, card)
     if _surround_input is None:
@@ -5765,6 +5803,7 @@ async def _sync_mapped_input(edges: tuple[tuple[str, str], ...]) -> None:
         raise RuntimeError("Surround needs an active native DSP runtime")
     if _measurement_session_owns_live_rate():
         await runtime.dsp_runtime.set_mapped_ingress(())
+        await _mark_ingress_resync_pending()
         return
     await runtime.dsp_runtime.set_mapped_ingress(edges)
     if not await runtime.dsp_runtime.verify():
