@@ -31,6 +31,10 @@ class SystemVolumeError(RuntimeError):
     """Raised when output volume cannot be read or changed."""
 
 
+class SystemVolumeSinkMissingError(SystemVolumeError):
+    """Raised when the sink to read does not exist (right now)."""
+
+
 class SystemVolumeReadbackError(SystemVolumeError):
     """Raised when the set completed but its verification read failed."""
 
@@ -108,7 +112,12 @@ def _selected_output_name() -> str | None:
 def _get_target_volume(target: str, *, clamp_upper: bool = True, sink: bool = False) -> int:
     """Live, timeout-bounded wpctl read (never served from a cache)."""
     if sink:
-        output = _run_command(["pactl", "get-sink-volume", target])
+        try:
+            output = _run_command(["pactl", "get-sink-volume", target])
+        except SystemVolumeError as exc:
+            if "No such entity" in str(exc):
+                raise SystemVolumeSinkMissingError(str(exc)) from exc
+            raise
         channels = re.findall(r"/\s*([0-9]+)%", output)
         if not channels:
             raise SystemVolumeError(f"Unable to parse sink volume: {output!r}")
@@ -290,12 +299,25 @@ def _read_status_volume() -> tuple[int, float] | None:
 
 
 async def _volume_monitor_loop() -> None:
-    """Refresh the status volume cache with real reads outside the loop."""
+    """Refresh the status volume cache with real reads outside the loop.
+
+    A sink that is missing for a while (its device re-enumerating) is reported
+    once when it goes and once when it is back, not on every refresh.
+    """
+    sink_missing_since: float | None = None
     while True:
         try:
             reading = await asyncio.to_thread(_read_status_volume)
             if reading is not None:
                 _publish_status_volume(*reading)
+                if sink_missing_since is not None:
+                    logger.info("Volume read monitor: output sink is back after %.0f s",
+                                time.monotonic() - sink_missing_since)
+                    sink_missing_since = None
+        except SystemVolumeSinkMissingError as exc:
+            if sink_missing_since is None:
+                sink_missing_since = time.monotonic()
+                logger.warning("Volume read monitor: output sink is missing (%s); retrying until it returns", exc)
         except Exception:
             logger.warning("Volume read monitor refresh failed", exc_info=True)
         await asyncio.sleep(VOLUME_MONITOR_INTERVAL_SECONDS)

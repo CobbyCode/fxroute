@@ -2,6 +2,7 @@
 """system_volume: live reads stay live; only the status path is cached."""
 
 import asyncio
+import logging
 import pathlib
 import subprocess
 import sys
@@ -244,18 +245,71 @@ class SystemVolumeStatusCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system_volume.get_status_volume(), 70)
         run.assert_called()
 
-    async def test_missing_sink_outside_tier_change_remains_a_reported_error(self):
+    async def _run_monitor_for(self, ticks, run):
+        """Run the monitor loop for ``ticks`` refreshes with the sleep between them skipped."""
+        real_sleep = asyncio.sleep
+        sleeps = []
+
+        async def sleep(delay):
+            sleeps.append(delay)
+            if len(sleeps) >= ticks:
+                raise asyncio.CancelledError
+            await real_sleep(0)
+
+        with mock.patch("audio.system_volume.subprocess.run", side_effect=run), \
+                mock.patch("audio.system_volume._selected_output_name", return_value="alsa_output.test"), \
+                mock.patch("audio.system_volume.asyncio.sleep", sleep), \
+                self.assertLogs("audio.system_volume", level="INFO") as logs:
+            with self.assertRaises(asyncio.CancelledError):
+                await system_volume._volume_monitor_loop()
+            logger = logging.getLogger("audio.system_volume")
+            logger.info("end of run")
+        return [r for r in logs.records if r.getMessage() != "end of run"]
+
+    async def test_missing_sink_is_one_compact_warning_per_outage(self):
         system_volume._status_volume_cache = (37, 0.0)
-        with mock.patch("audio.system_volume.subprocess.run",
-                        return_value=_completed(1, stderr="Failed to get sink information: No such entity")), \
-                self.assertLogs("audio.system_volume", level="WARNING") as logs:
-            system_volume.start_volume_read_monitor()
-            async with asyncio.timeout(2):
-                while not logs.records:
-                    await asyncio.sleep(0.01)
-            await system_volume.stop_volume_read_monitor()
-        self.assertEqual(system_volume.get_status_volume(), 37)
-        self.assertIsInstance(logs.records[0].exc_info[1], system_volume.SystemVolumeError)
+        missing = _completed(1, stderr="Failed to get sink information: No such entity")
+        records = await self._run_monitor_for(5, lambda *a, **k: missing)
+        self.assertEqual(len(records), 1, "one warning for five failed refreshes")
+        self.assertEqual(records[0].levelname, "WARNING")
+        self.assertIsNone(records[0].exc_info, "no traceback")
+        self.assertIn("No such entity", records[0].getMessage())
+        self.assertEqual(system_volume.get_status_volume(), 37, "the last value stays")
+
+    async def test_returning_sink_ends_the_outage_with_one_info_and_a_new_one_warns_again(self):
+        system_volume._status_volume_cache = (37, 0.0)
+        missing = _completed(1, stderr="Failed to get sink information: No such entity")
+        present = _completed(0, "Volume: aux0: 45875 /  70% / -9.29 dB\n")
+        replies = iter([missing, missing, present, present, missing, missing])
+        records = await self._run_monitor_for(6, lambda *a, **k: next(replies))
+        self.assertEqual([r.levelname for r in records], ["WARNING", "INFO", "WARNING"], [r.getMessage() for r in records])
+        self.assertIn("output sink is missing", records[0].getMessage())
+        self.assertRegex(records[1].getMessage(), r"output sink is back after \d+ s")
+        self.assertIn("output sink is missing", records[2].getMessage())
+        self.assertEqual(system_volume.get_status_volume(), 70)
+
+    async def test_other_refresh_errors_keep_reporting_with_traceback(self):
+        system_volume._status_volume_cache = (37, 0.0)
+        broken = _completed(1, stderr="Connection refused")
+        records = await self._run_monitor_for(3, lambda *a, **k: broken)
+        self.assertEqual(len(records), 3)
+        for record in records:
+            self.assertEqual(record.getMessage(), "Volume read monitor refresh failed")
+            self.assertIsInstance(record.exc_info[1], system_volume.SystemVolumeError)
+
+    def test_missing_sink_is_its_own_error_type_with_the_same_message(self):
+        with mock.patch("audio.system_volume._selected_output_name", return_value="alsa_output.test"), \
+                mock.patch("audio.system_volume.subprocess.run",
+                           return_value=_completed(1, stderr="Failed to get sink information: No such entity")):
+            with self.assertRaises(system_volume.SystemVolumeSinkMissingError) as raised:
+                system_volume.get_output_volume()
+        self.assertIsInstance(raised.exception, system_volume.SystemVolumeError)
+        self.assertEqual(str(raised.exception), "Failed to get sink information: No such entity")
+        with mock.patch("audio.system_volume._selected_output_name", return_value="alsa_output.test"), \
+                mock.patch("audio.system_volume.subprocess.run", return_value=_completed(1, stderr="boom")):
+            with self.assertRaises(system_volume.SystemVolumeError) as other:
+                system_volume.get_output_volume()
+        self.assertNotIsInstance(other.exception, system_volume.SystemVolumeSinkMissingError)
 
     async def test_stopped_monitor_does_not_publish_its_late_worker_read(self):
         system_volume._status_volume_cache = (37, 0.0)
