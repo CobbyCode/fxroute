@@ -306,6 +306,16 @@
     font-size: 0.78rem;
 }
 
+/* Surround Global speaker choice: up to four group chips (Front, Center,
+   Side, Rear), wrapped so they fit the menu panel. */
+.measurement-sweep-group-row {
+    flex-wrap: wrap;
+}
+
+.measurement-sweep-group-row .measurement-chip {
+    flex: 1 1 auto;
+}
+
 /* Read-only measurement area: the A/B selector owns the scope, so the sweep
    menu shows the selected area; the side chips only narrow a stereo area to
    one side for the single sweep. */

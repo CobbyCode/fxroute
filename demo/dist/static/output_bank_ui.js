@@ -209,15 +209,44 @@
          * share of the subs), so the bank row gets a Speaker choice there. */
         const select = deps.getElements().effectsGroupSelect;
         if (!select) return;
-        const modeConfig = catalog.modes?.[catalog.active_mode];
-        const options = modeConfig?.selected_bank === 'global' ? mod.globalGroupOptions(modeConfig) : [];
+        const choice = mod.globalGroupChoice(catalog, deps.getState().measurement?.globalGroup);
+        const options = choice ? choice.options : [];
         select.closest('.effects-bank-row')?.classList.toggle('hidden', options.length === 0);
-        const selected = mod.resolveGlobalGroup(modeConfig, deps.getState().measurement?.globalGroup)?.id || '';
+        const selected = choice ? choice.selected : '';
         const html = options.map(option =>
             `<option value="${mod.esc(option.id)}"${option.id === selected ? ' selected' : ''}>${mod.esc(option.label)}</option>`).join('');
         if (select.innerHTML !== html) select.innerHTML = html;
         if (select.value !== selected) select.value = selected;
         select.disabled = !!deps.getState().outputSystem.busy || effectsCompareLoadInFlight;
+    }
+
+    function renderSweepGroupRow() {
+        /* The sweep menu offers the same speaker choice as the Effects row,
+         * one chip per routed group; a single group leaves nothing to pick.
+         * Chips are only rebuilt when the routed groups change: replacing the
+         * clicked button would read as an outside click and close the menu. */
+        const row = deps.getElements().measurementSweepGroupRow;
+        const mod = outputState();
+        if (!row || !mod) return;
+        const catalog = (deps.getState().outputSystem || {}).catalog;
+        const measurement = deps.getState().measurement || {};
+        const choice = catalog ? mod.globalGroupChoice(catalog, measurement.globalGroup) : null;
+        const shown = !!choice && choice.options.length > 1;
+        row.classList.toggle('hidden', !shown);
+        const groups = shown ? choice.options.map(option => option.id).join(',') : '';
+        if (row.dataset.groups !== groups || (!shown && row.innerHTML !== '')) {
+            row.dataset.groups = groups;
+            row.innerHTML = shown ? choice.options.map(option =>
+                `<button type="button" class="measurement-chip" data-sweep-group="${mod.esc(option.id)}" `
+                + `aria-pressed="false" title="${mod.esc(option.label)}">${mod.esc(option.short)}</button>`).join('') : '';
+        }
+        if (!shown) return;
+        row.querySelectorAll('[data-sweep-group]').forEach((button) => {
+            const active = button.getAttribute('data-sweep-group') === choice.selected;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            button.disabled = !!measurement.startInFlight;
+        });
     }
 
     function selectEffectsGroup(group) {
@@ -1274,6 +1303,7 @@
         requireMeasurableArea,
         renderEffectsBankSelector,
         selectEffectsGroup,
+        renderSweepGroupRow,
         syncBankActionButtons,
         renderBankImportTarget,
         readTextFile,

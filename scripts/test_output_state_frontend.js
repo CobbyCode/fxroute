@@ -226,6 +226,10 @@ function allBanksAreaTests() {
     assert.equal('importable' in OutputState.measurementArea(catalog(), 'global'), false);
 }
 
+function onFrontBank(surround) {
+    return { ...surround, modes: { surround: { ...surround.modes.surround, selected_bank: 'main' } } };
+}
+
 function surroundGlobalAreaTests() {
     const roles = ['main_l', 'main_r', 'center', 'rear_l', 'rear_r', 'sub1', 'sub2'];
     const surround = { active_mode: 'surround', revision: 4, modes: { surround: {
@@ -247,6 +251,7 @@ function surroundGlobalAreaTests() {
         available: true, sides: ['left', 'stereo', 'right'],
         note: 'Front L/R + Sub: every other speaker is muted; the subs stay audible.',
         repeat_supported: true, repeat_note: '', group: 'front',
+        side_labels: { left: 'Front L', stereo: 'Front L+R', right: 'Front R' },
     });
     const center = OutputState.measurementArea(surround, 'global', 'center');
     assert.deepEqual([center.group, center.channel_mode, center.sides, center.repeat_supported],
@@ -254,6 +259,19 @@ function surroundGlobalAreaTests() {
     assert.equal(center.repeat_note, 'Global · Center + Sub is a mono target. Use a single sweep.');
     const rear = OutputState.measurementArea(surround, 'global', 'rear');
     assert.equal(rear.label, 'Global · Rear L/R + Sub');
+    // The side chips name the group's speaker; Center has no sides to name.
+    assert.deepEqual(rear.side_labels, { left: 'Rear L', stereo: 'Rear L+R', right: 'Rear R' });
+    assert.equal('side_labels' in center, false);
+    assert.equal('side_labels' in OutputState.measurementArea(surround, 'main'), false);
+    // The speaker choice exists only for Surround Global: every routed group, one in effect.
+    const choice = OutputState.globalGroupChoice(surround, 'rear');
+    assert.deepEqual(choice.options.map(option => [option.id, option.name, option.short]),
+        [['front', 'Front L/R', 'Front'], ['center', 'Center', 'Center'], ['rear', 'Rear L/R', 'Rear']]);
+    assert.equal(choice.selected, 'rear');
+    assert.equal(OutputState.globalGroupChoice(surround, 'side').selected, 'front');
+    assert.equal(OutputState.globalGroupChoice(onFrontBank(surround), 'rear'), null);
+    assert.equal(OutputState.globalGroupChoice(catalog(), 'rear'), null);
+    assert.equal(OutputState.globalGroupChoice(null, 'rear'), null);
     // Area banks and the other modes keep their exact shape (no group fields).
     assert.equal('group' in OutputState.measurementArea(surround, 'main', 'rear'), false);
     assert.equal('group' in OutputState.measurementArea(catalog(), 'global', 'rear'), false);

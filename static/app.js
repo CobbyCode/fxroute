@@ -1184,6 +1184,7 @@ const elements = {
     measurementSweepToggleBtn: document.getElementById('measurement-sweep-toggle'),
     measurementSweepMenu: document.getElementById('measurement-sweep-menu'),
     measurementSweepStartBtn: document.getElementById('measurement-sweep-start'),
+    measurementSweepGroupRow: document.getElementById('measurement-sweep-group-row'),
     measurementSweepSideRow: document.getElementById('measurement-sweep-side-row'),
     measurementAreaIndicator: document.getElementById('measurement-area-indicator'),
     measurementAreaNote: document.getElementById('measurement-area-note'),
@@ -3347,6 +3348,7 @@ function renderMeasurementArea() {
         elements.measurementHybridOpenBtn.title = blocked
             ? 'Advanced builds a filter model; select a filter bank to use it.' : '';
     }
+    window.FXRouteBankUI.renderSweepGroupRow();
     syncSweepSideRow(area);
     syncMeasurementCalibrationMenu(area);
 }
@@ -3373,8 +3375,12 @@ function syncSweepSideRow(area) {
         state.measurement.sweepSide = 'stereo';
     }
     const active = state.measurement.sweepSide || 'stereo';
+    const plainLabels = { left: 'Left', stereo: 'Stereo', right: 'Right' };
     row.querySelectorAll('[data-sweep-side]').forEach((button) => {
-        const selected = button.getAttribute('data-sweep-side') === active;
+        const side = button.getAttribute('data-sweep-side');
+        // A speaker-group area names the speaker each chip sweeps ("Rear L").
+        button.textContent = resolved?.side_labels?.[side] || plainLabels[side] || button.textContent;
+        const selected = side === active;
         button.classList.toggle('is-active', selected);
         button.setAttribute('aria-pressed', selected ? 'true' : 'false');
         button.disabled = !!state.measurement.startInFlight;
@@ -4919,6 +4925,13 @@ function setupMeasurementActions() {
             void window.FXRouteMeasurementCapture.startMeasurement();
         });
     }
+    elements.measurementSweepGroupRow?.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-sweep-group]');
+        if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
+        // The Effects speaker row owns the choice; the sweep menu sets the same one.
+        window.FXRouteBankUI.selectEffectsGroup(button.getAttribute('data-sweep-group') || '');
+        renderMeasurementPanel();
+    });
     document.querySelectorAll('#measurement-sweep-side-row [data-sweep-side]').forEach((button) => {
         button.addEventListener('click', () => {
             if (state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;

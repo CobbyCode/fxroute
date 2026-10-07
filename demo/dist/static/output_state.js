@@ -236,13 +236,30 @@ function globalGroupOptions(modeConfig) {
     if (modeConfig?.topology?.mode !== 'surround') return [];
     const subs = (modeConfig.topology.sub_roles || []).length > 0;
     return surroundGroups(modeConfig.topology).map(id => ({
-        id, label: SURROUND_GROUP_LABELS[id] + (subs ? ' + Sub' : ''),
+        id, name: SURROUND_GROUP_LABELS[id], short: SURROUND_GROUP_LABELS[id].replace(/ L\/R$/, ''),
+        label: SURROUND_GROUP_LABELS[id] + (subs ? ' + Sub' : ''),
         channel_mode: id === 'center' ? 'mono' : 'stereo' }));
 }
 
 function resolveGlobalGroup(modeConfig, group) {
     const options = globalGroupOptions(modeConfig);
     return options.find(option => option.id === group) || options[0] || null;
+}
+
+// The speaker-group choice of the selected Surround Global bank: its routed
+// groups and the one in effect. Null in every other bank and mode.
+function globalGroupChoice(catalog, group) {
+    const mode = catalog && catalog.active_mode;
+    const modeConfig = mode && catalog.modes && catalog.modes[mode];
+    if (mode !== 'surround' || String(modeConfig?.selected_bank || 'global') !== 'global') return null;
+    const options = globalGroupOptions(modeConfig);
+    return options.length ? { options, selected: resolveGlobalGroup(modeConfig, group).id } : null;
+}
+
+// Side chips of a group area name the speaker they sweep: "Rear L", "Rear L+R".
+function groupSideLabels(groupOption, sides) {
+    const suffix = { left: 'L', stereo: 'L+R', right: 'R' };
+    return Object.fromEntries(sides.map(side => [side, `${groupOption.short} ${suffix[side]}`]));
 }
 
 function measurementArea(catalog, bankId, group) {
@@ -283,6 +300,7 @@ function measurementArea(catalog, bankId, group) {
         repeat_supported,
         repeat_note,
         ...(groupOption ? { group: groupOption.id } : {}),
+        ...(groupOption && sides.length ? { side_labels: groupSideLabels(groupOption, sides) } : {}),
         ...(allBanks ? { importable: false } : {}),
     };
 }
@@ -493,6 +511,7 @@ function renderBankSelector(select, catalog, mode) {
         isSubwooferBank,
         globalGroupOptions,
         resolveGlobalGroup,
+        globalGroupChoice,
         measurementArea,
         bankOptions,
         bankSelectorVisible,
