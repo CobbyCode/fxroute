@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import audio.alsa_ctl as alsa_ctl
 import audio.input_activity as activity
-from audio.alsa_ctl import clock_source_target, is_digital_lock_control, read_digital_lock, select_clock_source
+from audio.alsa_ctl import (clock_source_target, has_digital_receiver, is_digital_lock_control,
+                            read_digital_lock, select_clock_source)
 from audio.input_activity import ActivityDetector, BlockAnalysis, analyze_block, detect_encoding
 from audio.input_auto_select import InputAutoSelect, InputAutoSelectDependencies, selection_key
 from audio.samplerate.parsing import _parse_pactl_sources_detailed
@@ -238,6 +239,21 @@ class AlsaLockTests(unittest.TestCase):
         with patch("audio.alsa_ctl.read_boolean_controls", side_effect=OSError("denied")):
             self.assertIsNone(read_digital_lock(3))
         self.assertIsNone(read_digital_lock(None))
+
+    def test_digital_receiver_presence_from_controls(self):
+        for controls, expected in (
+            ({"S/PDIF Validity": False, "Internal Validity": True}, True),
+            ({"IEC958 In Lock": True}, True),
+            ({"ADAT Validity": True}, False),
+            ({"Capture Switch": True, "Playback Switch": False}, False),
+        ):
+            with self.subTest(controls=controls), patch(
+                    "audio.alsa_ctl.read_boolean_controls", return_value=controls):
+                self.assertIs(has_digital_receiver(3), expected)
+        # The state of the receiver does not matter, only that the card has one.
+        with patch("audio.alsa_ctl.read_boolean_controls", side_effect=OSError("denied")):
+            self.assertFalse(has_digital_receiver(3))
+        self.assertFalse(has_digital_receiver(None))
 
     def test_clock_follows_only_a_locked_digital_source(self):
         names = ["Internal", "S/PDIF", "ADAT"]

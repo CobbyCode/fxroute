@@ -288,11 +288,28 @@ class ExternalInputRoutingTests(unittest.IsolatedAsyncioTestCase):
         # Selection tests model successful writes; graph readback has its own tests.
         self.enterContext(patch("audio.external_input.input_links_present", new=AsyncMock(return_value=True)))
 
-    def _routing(self, current_input: dict) -> ExternalInputRouting:
+    def _routing(self, current_input: dict, **overrides) -> ExternalInputRouting:
         overview = {"mode": "external-input", "selected_input": current_input}
         return ExternalInputRouting(ExternalInputRoutingDependencies(
-            get_audio_source_overview=lambda: overview,
+            get_audio_source_overview=lambda: overview, **overrides,
         ))
+
+    async def test_sync_asks_for_the_carrier_of_the_selected_input(self):
+        """The loopback path needs the digital clock too: the card holds it."""
+        entries = []
+
+        async def carrier(entry):
+            entries.append(entry)
+
+        current_input = {"key": "scarlett::pair:9-10", "source_key": "scarlett",
+                         "left_channel": "AUX8", "right_channel": "AUX9", "alsa_card": 3}
+        routing = self._routing(current_input, sync_input_carrier=carrier)
+        with patch("audio.pw_link.connect_ports", new=AsyncMock()), patch(
+                "audio.pw_link.disconnect_ports", new=AsyncMock()):
+            await routing.sync()
+            await routing.sync()
+        self.assertEqual([entry.get("alsa_card") for entry in entries], [3, 3],
+                         "every sync of the live input keeps the carrier")
 
     async def test_older_external_sync_cannot_overwrite_newer_pair(self):
         first = {"mode": "external-input", "selected_input": {

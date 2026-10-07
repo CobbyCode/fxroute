@@ -965,6 +965,7 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     stop_digital_input=lambda: _stop_surround_input(),
     sync_mapped_input=lambda edges: _sync_mapped_input(edges),
     stop_mapped_input=lambda: _stop_mapped_input(),
+    sync_input_carrier=lambda entry: _hold_external_input_carrier(entry),
 ))
 
 bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
@@ -5639,6 +5640,11 @@ async def _set_surround_carrier_owned(enabled: bool, card: int | None = None) ->
     receiver (rechecked on every call), so the capture never slips against
     the source. Releasing returns that clock to Internal before the rate
     moves, so later playback is not held to the source's clock.
+
+    Owned for any external input whose card has a digital receiver, whatever
+    the output mode: such a card delivers its digital samples only while it
+    runs on the incoming clock, so both the Surround ingress and the plain
+    stereo loopback need the carrier.
     """
     global _surround_carrier_owned, _surround_clock_card
     if not enabled and not _surround_carrier_owned:
@@ -5668,6 +5674,60 @@ async def _set_surround_carrier_owned(enabled: bool, card: int | None = None) ->
         await _select_surround_clock(released_card, digital=False)
         await _transition_sample_rate_policy(samplerate.load_sample_rate_policy(), detail="digital-input-clock-release")
         _surround_carrier_owned = False
+
+
+def _input_digital_card(overview: dict) -> int | None:
+    """ALSA card of the selected input when it can receive a digital stream.
+
+    A card without a digital receiver keeps its own clock whatever the graph
+    runs at, so only a card that exposes one is ever clocked by the incoming
+    stream and can go silent while the graph follows the playback policy.
+    """
+    entry = overview.get("selected_input") or overview.get("current_input") or {}
+    card = entry.get("alsa_card")
+    if type(card) is not int or not alsa_ctl.has_digital_receiver(card):
+        return None
+    return card
+
+
+async def _digital_carrier_request(overview: dict | None, *, external: bool,
+                                   mode: str) -> tuple[bool, int | None]:
+    """Carrier request of the active source in ``mode``: (owned, card to clock).
+
+    ``overview`` is the current source overview when the caller already has
+    one; without it only a selected external input pays for reading it. A
+    non-external source never needs the carrier, and neither does an external
+    one on a card without a digital receiver.
+    """
+    if not external:
+        return (False, None)
+    if overview is None:
+        overview = await asyncio.to_thread(get_audio_source_overview)
+    if overview.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
+        return (False, None)
+    card = await asyncio.to_thread(_input_digital_card, overview)
+    if card is None and mode != "surround":
+        return (False, None)
+    return (True, card)
+
+
+async def _hold_external_input_carrier(entry: dict) -> None:
+    """Hold the carrier while the monitored external input needs it.
+
+    Runs on every external-input sync, so an input that is already selected
+    when FXRoute starts borrows the carrier like a fresh switch does, and the
+    card follows its receiver again after a re-enumeration. A held carrier is
+    left to the clock guard: only the ownership or a new card moves it.
+    """
+    card = await asyncio.to_thread(_input_digital_card, {"selected_input": entry})
+    if _measurement_session_owns_live_rate():
+        return
+    if card is None:
+        await _set_surround_carrier_owned(False)
+    else:
+        # Re-asserted on every sync: playback start/stop move the graph rate
+        # under the running app, and the held carrier has to win.
+        await _set_surround_carrier_owned(True, card)
 
 
 async def _sync_surround_input(source: str, left: str, right: str, card: int | None = None) -> None:
@@ -5785,9 +5845,15 @@ async def _restore_input_output_mode(previous: dict, overview: dict, *, saved_st
         candidate = restore_mode(state, previous, overview)
     if candidate["active_mode"] == state["active_mode"]:
         get_output_service().commit_unowned(candidate, expected_revision=state["revision"])
-        if _surround_carrier_owned and overview.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
-            await external_input.disable()
-            await _set_surround_carrier_owned(False)
+        if overview.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
+            if _surround_carrier_owned:
+                await external_input.disable()
+                await _set_surround_carrier_owned(False)
+        else:
+            # Same output mode, new source: the carrier follows the input, so a
+            # digital external input gets it without a mode switch.
+            await _set_surround_carrier_owned(*await _digital_carrier_request(
+                overview, external=True, mode=candidate["active_mode"]))
         return overview
     await _apply_audio_output_state_body({"expected_revision": state["revision"],
         "mutation": {"kind": "switch_mode", "mode": candidate["active_mode"]}},
@@ -5820,7 +5886,7 @@ async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | N
         return await _apply_audio_output_state_candidate(body, previous_input=previous_input)
     try:
         await external_input.disable()
-        await _set_surround_carrier_owned(external and mode == "surround")
+        await _set_surround_carrier_owned(*await _digital_carrier_request(None, external=external, mode=mode))
         result = await _apply_audio_output_state_candidate(body, previous_input=previous_input,
                                                            input_modes_override=input_modes_override)
         if sync_ingress:

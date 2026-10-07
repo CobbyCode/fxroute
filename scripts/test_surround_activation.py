@@ -102,6 +102,94 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
                 await self.switch()
         stdin.resync_routing.assert_awaited_once_with()
 
+    async def switch_to(self, mode):
+        return await main._apply_audio_output_state_body({"expected_revision": self.service.load()["revision"],
+            "mutation": {"kind": "switch_mode", "mode": mode}})
+
+    def digital_input(self):
+        return {"mode": "external-input",
+                "selected_input": {"key": "scarlett::pair:9-10", "alsa_card": 3}}
+
+    async def test_external_input_on_a_digital_card_owns_the_carrier_outside_surround(self):
+        """The S/PDIF pair needs the borrowed carrier in Stereo and Stereo + Sub too."""
+        with patch.object(main, "get_audio_source_overview", return_value=self.digital_input()), \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=True):
+            await self.switch_to("stereo")
+        main._set_surround_carrier_owned.assert_awaited_with(True, 3)
+
+    async def test_external_input_without_a_digital_receiver_keeps_the_playback_policy(self):
+        with patch.object(main, "get_audio_source_overview", return_value=self.digital_input()), \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=False):
+            await self.switch_to("stereo")
+        main._set_surround_carrier_owned.assert_awaited_with(False, None)
+
+    async def test_surround_owns_the_carrier_for_any_external_card(self):
+        with patch.object(main, "get_audio_source_overview", return_value=self.digital_input()), \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=False):
+            await self.switch()
+        main._set_surround_carrier_owned.assert_awaited_with(True, None)
+
+    async def test_app_playback_switch_releases_the_carrier_without_reading_the_sources(self):
+        with patch.object(main.samplerate, "_load_audio_source_selection",
+                          return_value={"mode": "app-playback"}), \
+                patch.object(main, "get_audio_source_overview") as overview:
+            await self.switch_to("stereo")
+        main._set_surround_carrier_owned.assert_awaited_with(False, None)
+        overview.assert_not_called()
+
+    async def test_monitored_digital_input_holds_the_carrier(self):
+        """The input sync keeps the carrier, so a start with it selected works too."""
+        with patch.object(main, "_surround_carrier_owned", False), \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=True):
+            await main._hold_external_input_carrier({"alsa_card": 3})
+        main._set_surround_carrier_owned.assert_awaited_with(True, 3)
+
+    async def test_monitored_digital_input_on_another_card_moves_the_carrier(self):
+        with patch.object(main, "_surround_carrier_owned", True), \
+                patch.object(main, "_surround_clock_card", 5), \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=True):
+            await main._hold_external_input_carrier({"alsa_card": 3})
+        main._set_surround_carrier_owned.assert_awaited_with(True, 3)
+
+    async def test_a_held_carrier_is_reasserted_after_playback_moved_the_rate(self):
+        """Playback start/stop move the graph rate; the held carrier has to win."""
+        with patch.object(main, "_surround_carrier_owned", True), \
+                patch.object(main, "_surround_clock_card", 3), \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=True):
+            await main._hold_external_input_carrier({"alsa_card": 3})
+        main._set_surround_carrier_owned.assert_awaited_with(True, 3)
+
+    async def test_same_mode_input_change_owns_the_carrier_without_a_mode_switch(self):
+        state = self.service.load()
+        state["input_modes"]["external-input:scarlett::pair:9-10"] = state["active_mode"]
+        self.service.commit(state, expected_revision=state["revision"])
+        with patch.object(main, "_surround_carrier_owned", False), \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=True), \
+                patch.object(main, "get_audio_source_overview") as reader:
+            await main._restore_input_output_mode({"mode": "app-playback"}, self.digital_input())
+        main._set_surround_carrier_owned.assert_awaited_with(True, 3)
+        self.assertEqual(self.service.load()["input_modes"]["app-playback"], state["active_mode"])
+        reader.assert_not_called()
+
+    async def test_monitored_input_without_a_digital_receiver_releases_the_carrier(self):
+        with patch.object(main, "_surround_carrier_owned", False), \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=False):
+            await main._hold_external_input_carrier({"alsa_card": 2})
+        main._set_surround_carrier_owned.assert_awaited_with(False)
+
+    async def test_a_measurement_session_keeps_its_own_rate(self):
+        with patch.object(main, "_surround_carrier_owned", False), \
+                patch.object(main, "_measurement_session_owns_live_rate", return_value=True), \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=True):
+            await main._hold_external_input_carrier({"alsa_card": 3})
+        main._set_surround_carrier_owned.assert_not_awaited()
+
+    async def test_input_change_away_from_the_digital_input_releases_the_carrier(self):
+        with patch.object(main, "_surround_carrier_owned", True):
+            await main._restore_input_output_mode(self.digital_input(), {"mode": "app-playback"})
+        main._set_surround_carrier_owned.assert_awaited_with(False)
+        self.input.disable.assert_awaited()
+
     async def test_invalid_mutation_has_no_ingress_or_clock_side_effects(self):
         with self.assertRaises(main.HTTPException) as raised:
             await main._apply_audio_output_state_body({"expected_revision": self.state["revision"],
@@ -122,6 +210,47 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(raised.exception.status_code, 409)
             transition.assert_not_awaited()
 
+
+
+class DigitalCarrierRequestTests(unittest.IsolatedAsyncioTestCase):
+    """Which source owns the carrier: card with a digital receiver, or Surround."""
+
+    def overview(self, card):
+        entry = {} if card is None else {"key": "scarlett::pair:9-10", "alsa_card": card}
+        return {"mode": "external-input", "selected_input": entry}
+
+    async def request(self, overview, *, external=True, mode="stereo", receiver=True):
+        with patch.object(main.alsa_ctl, "has_digital_receiver", return_value=receiver):
+            return await main._digital_carrier_request(overview, external=external, mode=mode)
+
+    async def test_a_non_external_source_never_needs_the_carrier(self):
+        with patch.object(main, "get_audio_source_overview") as reader:
+            self.assertEqual(await self.request(None, external=False), (False, None))
+        reader.assert_not_called()
+
+    async def test_a_digital_card_is_clocked_in_every_mode(self):
+        for mode in ("stereo", "stereo-sub", "surround"):
+            with self.subTest(mode=mode):
+                self.assertEqual(await self.request(self.overview(3), mode=mode), (True, 3))
+
+    async def test_a_card_without_a_receiver_only_follows_surround(self):
+        self.assertEqual(await self.request(self.overview(2), receiver=False), (False, None))
+        self.assertEqual(await self.request(self.overview(2), mode="surround", receiver=False), (True, None))
+
+    async def test_a_missing_card_number_is_not_a_receiver(self):
+        for card in (None, "3", True):
+            with self.subTest(card=card):
+                self.assertEqual(await self.request(self.overview(card)), (False, None))
+
+    async def test_a_missing_overview_reads_the_current_selection(self):
+        with patch.object(main, "get_audio_source_overview", return_value=self.overview(3)) as reader, \
+                patch.object(main.alsa_ctl, "has_digital_receiver", return_value=True):
+            self.assertEqual(await main._digital_carrier_request(None, external=True, mode="stereo-sub"),
+                             (True, 3))
+        reader.assert_called_once_with()
+
+    async def test_an_overview_whose_source_moved_on_needs_no_carrier(self):
+        self.assertEqual(await self.request({"mode": "app-playback"}), (False, None))
 
 
 class CarrierClockTests(unittest.IsolatedAsyncioTestCase):

@@ -61,6 +61,9 @@ class ExternalInputRoutingDependencies:
     # port) edges, linked directly to the engine.
     sync_mapped_input: Callable[[tuple[tuple[str, str], ...]], Awaitable[None]] | None = None
     stop_mapped_input: Callable[[], Awaitable[None]] | None = None
+    # Selected input entry: keep the digital carrier (the card delivers its
+    # digital samples only on the incoming clock) or release it.
+    sync_input_carrier: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
 
 class ExternalInputRouting:
@@ -288,6 +291,8 @@ class ExternalInputRouting:
             return overview
         if self.digital_source_name is not None or self.mapped_source_name is not None:
             await self.disable()
+        if self._deps.sync_input_carrier is not None:
+            await self._deps.sync_input_carrier(dict(current_input))
         await self._ensure_loopback(
             str(source_name),
             left,

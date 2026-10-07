@@ -200,6 +200,23 @@ def read_digital_lock(card: int | None) -> bool | None:
     return any(states)
 
 
+def has_digital_receiver(card: int | None) -> bool:
+    """Whether ``card`` can receive an incoming digital stream at all.
+
+    True when the card exposes a validity/lock control of a digital input.
+    Only such a card delivers S/PDIF/ADAT samples, and only while it runs on
+    the incoming rate, so only such a card ever needs the digital carrier.
+    """
+    if card is None:
+        return False
+    try:
+        controls = read_boolean_controls(card)
+    except OSError as exc:
+        logger.debug("ALSA control read failed for card %s: %s", card, exc)
+        return False
+    return any(is_digital_lock_control(name) for name in controls)
+
+
 def clock_source_target(names: list[str], current: int, validity: dict[str, bool], *,
                         digital: bool) -> int | None:
     """Selector item to switch to, or None to leave the selector alone.
