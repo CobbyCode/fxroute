@@ -243,7 +243,7 @@ Autogain and Loudness can run together; the limiter stays the final stage.
 - **Stereo + Sub** — the same mains plus the sub roles (Sub L, Sub R, Sub 1, Sub 2)
 - **Surround** — the front pair plus the surround speaker roles (Center, Side L/R, Rear L/R) and Sub 1 / Sub 2 (section 5.6)
 
-**Crossover** is an independent On/Off switch next to Mode, not a third mode. Turning it On replaces Main with the speaker ways in the same routing (Main L/R become Low L/R); turning it Off maps Low back to Main and switches the higher ways Off. Presets, levels, delays, and polarities of the dormant ways are kept, so you can compare a 2-way and a 3-way setup without rebuilding them.
+**Crossover** is an independent On/Off switch next to Mode, not a third mode. Turning it On replaces Main with the speaker ways in the same routing (Main L/R become Low L/R); turning it Off maps Low back to Main and leaves the higher ways stored as **dormant crossover-path assignments**: their outputs read `Off` and stay silent, and switching the crossover back on restores the same ways on the same outputs. Presets, levels, delays, and polarities of the dormant ways are kept, so you can compare a 2-way and a 3-way setup without rebuilding them.
 
 **Output Routing** is one row per hardware output (`Out 1`, `Out 2`, …), each with a role dropdown. The hint reads: *Assign a role to each hardware output. Off leaves an output silent.* Which roles are offered follows the mode and the crossover switch:
 
@@ -265,7 +265,7 @@ One role may feed several outputs (fan-out); only the roles that actually appear
 - *Left and Right crossover ways must match*
 - *At most two distinct sub roles are supported*
 
-An incomplete routing is saved but not activated; the interface says so instead of silently ignoring it. Assignments are stored per device and per mode. When a rate change makes a device expose fewer channels, the saved roles beyond the visible outputs are kept and come back with the tier. While a measurement is running the output state is locked.
+An incomplete routing is saved but not activated; the interface says so instead of silently ignoring it. Assignments are stored per device and per mode. With the crossover off, the ways of that other role domain stay dormant: their outputs show `Off` and the plan never drives them, so a plain Stereo / Stereo + Sub configuration cannot leak a crossover path onto an output — naming another role for that output replaces the dormant way. When a rate change makes a device expose fewer channels, the saved roles beyond the visible outputs are kept and come back with the tier. While a measurement is running the output state is locked.
 
 **The sub configuration is derived, not selected.** The routed sub roles alone decide it, and the Subwoofer card badge names it: one sub role is a **Mono sub**, two distinct roles are **Dual-mono subs**, and the pair Sub L + Sub R is **Stereo subs** (Surround only offers Sub 1 and Sub 2, so it stays a Mono sub or Dual-mono subs). Older FXRoute versions and parts of the interface still call these *2.1*, *2.2* and *2.2 Stereo Bass*; those are labels for the same three derived layouts, not modes you can pick.
 

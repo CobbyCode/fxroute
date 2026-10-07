@@ -47,11 +47,38 @@ def surround_group(role: str) -> str:
     raise ValueError(f"Role {role} belongs to no Surround speaker group")
 
 
-def validate_assignments(mode: str, assignments: object, *, crossover_enabled: bool = False) -> tuple[str, ...]:
-    allowed = (*roles_for_mode(mode, crossover_enabled=crossover_enabled), "off")
+def dormant_roles(mode: str, *, crossover_enabled: bool) -> tuple[str, ...]:
+    """Roles a mode keeps stored but never applies while its crossover is off.
+
+    The speaker ways are the crossover path. Turning the crossover off returns
+    the front ports to Main and leaves the way assignments stored, so the
+    configured multi-way system comes back on the same ports; until then those
+    ports are dormant and stay silent.
+    """
+    if type(crossover_enabled) is not bool:
+        raise ValueError("Crossover enabled must be a boolean")
+    active = set(roles_for_mode(mode))
+    if crossover_enabled:
+        return ()
+    return tuple(role for role in roles_for_mode(mode, crossover_enabled=True) if role not in active)
+
+
+def validate_assignments(mode: str, assignments: object, *, crossover_enabled: bool = False,
+                         allow_dormant: bool = False) -> tuple[str, ...]:
+    """Check routing roles against the mode's domain.
+
+    ``allow_dormant`` accepts the roles of the other crossover domain as well:
+    stored routing may keep dormant crossover-path assignments while the
+    crossover is off, and only the active routing reads them as Off.
+    """
+    if type(allow_dormant) is not bool:
+        raise ValueError("Dormant assignment allowance must be a boolean")
+    allowed = {*roles_for_mode(mode, crossover_enabled=crossover_enabled)}
+    if allow_dormant:
+        allowed |= {*roles_for_mode(mode, crossover_enabled=not crossover_enabled)}
     if not isinstance(assignments, (list, tuple)) or len(assignments) > MAX_CHANNELS:
         raise ValueError("Routing must contain at most 32 hardware assignments")
-    if any(not isinstance(role, str) or role not in allowed for role in assignments):
+    if any(not isinstance(role, str) or role not in (*allowed, "off") for role in assignments):
         raise ValueError(f"Routing contains an invalid role for {mode}")
     return tuple(assignments)
 

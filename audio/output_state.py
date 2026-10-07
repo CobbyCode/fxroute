@@ -9,8 +9,8 @@ from collections.abc import Callable
 
 from audio.output_routing import device_key
 from audio.filter_banks import bank_definitions, resolve_bank, summarize_banks
-from audio.output_topology import (MAIN_ROLES, MODES, SURROUND_GROUPS, derive_topology, roles_for_mode,
-                                   validate_assignments)
+from audio.output_topology import (MAIN_ROLES, MODES, SURROUND_GROUPS, derive_topology, dormant_roles,
+                                   roles_for_mode, validate_assignments)
 from dsp.banks import BankState
 
 SCHEMA = "fxroute.output-state"
@@ -255,7 +255,9 @@ def validate_output_state(payload: object) -> dict:
         for key, assignments in routing.items():
             if _device_identity(key) != key:
                 raise ValueError("Stored routing requires normalized device keys")
-            roles = validate_assignments(mode, assignments, crossover_enabled=enabled)
+            # Dormant crossover-path assignments stay stored while the
+            # crossover is off (see routing_for_device).
+            roles = validate_assignments(mode, assignments, crossover_enabled=enabled, allow_dormant=True)
             if any(role != "off" and role not in banks for role in roles):
                 raise ValueError("Every assigned role requires an area bank")
         bass = config["bass_management"]
@@ -273,12 +275,16 @@ def validate_output_state(payload: object) -> dict:
 
 
 def routing_for_device(state: dict, mode: str, output_key: str, channels: int | None = None) -> list[str]:
-    """Stored routing, or the fixed stereo mapping on two-output devices.
+    """Active routing, or the fixed stereo mapping on two-output devices.
 
     A device with exactly two hardware outputs always plays Out 1 = Main L
     and Out 2 = Main R; custom routing is only meaningful with more outputs.
     Passing the effective channel count returns that fixed mapping so every
     caller renders the same topology instead of slicing a stale stored list.
+
+    Crossover-path assignments outside the mode's current domain are dormant
+    and read as Off here, so with the crossover off the stored ways never
+    reach the plan, the meters or the routing grid.
     """
     roles_for_mode(mode)
     if channels is not None:
@@ -288,8 +294,11 @@ def routing_for_device(state: dict, mode: str, output_key: str, channels: int | 
             count = None
         if count == 2:
             return list(MAIN_ROLES)
-    fallback = [] if state["modes"][mode]["crossover_enabled"] else list(MAIN_ROLES)
-    return list(state["modes"][mode]["routing"].get(_device_identity(output_key), fallback))
+    config = state["modes"][mode]
+    fallback = [] if config["crossover_enabled"] else list(MAIN_ROLES)
+    stored = list(config["routing"].get(_device_identity(output_key), fallback))
+    dormant = set(dormant_roles(mode, crossover_enabled=config["crossover_enabled"]))
+    return ["off" if role in dormant else role for role in stored]
 
 
 def effective_crossover_enabled(state: dict, mode: str, channels: int | None = None) -> bool:
@@ -320,20 +329,30 @@ def pure_stereo_roles(mode: str, roles) -> bool:
 
 
 def set_mode_routing(state: dict, mode: str, output_key: str, assignments: object) -> dict:
-    """Update visible ports while retaining assignments in a higher hardware tier."""
+    """Update visible ports while retaining assignments in a higher hardware tier.
+
+    A dormant crossover way keeps its port until another role claims it: the
+    plain topology cannot switch the stored ways off, only replace them, so
+    the configured multi-way system survives a crossover excursion.
+    """
     result = validate_output_state(state)
     config = result["modes"][mode]
     values = list(validate_assignments(mode, assignments, crossover_enabled=config["crossover_enabled"]))
     count = len(values)
     key = _device_identity(output_key)
     config = result["modes"][mode]
-    values.extend(config["routing"].get(key, [])[count:])
+    stored = config["routing"].get(key, [])
+    dormant = set(dormant_roles(mode, crossover_enabled=config["crossover_enabled"]))
+    values = [stored[index] if (value == "off" and index < len(stored) and stored[index] in dormant)
+              else value for index, value in enumerate(values)]
+    values.extend(stored[count:])
     config["routing"][key] = values
     for role in values:
         if role != "off":
             config["banks"].setdefault(role, BankState().to_dict())
             config["processing"].setdefault(role, default_processing())
-    topology = derive_topology(mode, values, channels=count, crossover_enabled=config["crossover_enabled"])
+    active = ["off" if value in dormant else value for value in values]
+    topology = derive_topology(mode, active, channels=count, crossover_enabled=config["crossover_enabled"])
     active = topology.bank_ids
     fallback = fallback_bank(mode, topology.roles)
     try:
@@ -359,7 +378,9 @@ def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
     """Change the role domain in the same routing, retaining dormant DSP banks.
 
     Main ports become Low ports on enable. On disable only Low ports become
-    Main; higher ways turn Off. No second crossover routing is stored.
+    Main; the higher ways stay stored as dormant crossover-path assignments,
+    so switching the crossover back on restores the same ways on the same
+    ports. No second crossover routing is stored.
     """
     roles_for_mode(mode, crossover_enabled=enabled)
     result = validate_output_state(state)
@@ -369,9 +390,10 @@ def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
     mapping = {"main_l": "left_low", "main_r": "right_low"} if enabled else {
         "left_low": "main_l", "right_low": "main_r"}
     allowed = (*roles_for_mode(mode, crossover_enabled=enabled), "off")
+    domain = (*roles_for_mode(mode), *roles_for_mode(mode, crossover_enabled=True), "off")
     config["crossover_enabled"] = enabled
     for key, assignments in config["routing"].items():
-        config["routing"][key] = [mapping.get(role, role if role in allowed else "off") for role in assignments]
+        config["routing"][key] = [mapping.get(role, role if role in domain else "off") for role in assignments]
         for role in config["routing"][key]:
             if role != "off":
                 config["banks"].setdefault(role, BankState().to_dict())

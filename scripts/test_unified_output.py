@@ -64,11 +64,23 @@ class UnifiedOutputTests(unittest.TestCase):
                                    crossover_enabled=True)
         self.assertEqual((topology.way_count, topology.sub_mode), (2, 'mono'))
         state = model.set_crossover(state, 'stereo-sub', False)
+        # The higher ways stay stored as dormant crossover-path assignments;
+        # the active routing and the plan read them as Off.
         self.assertEqual(state['modes']['stereo-sub']['routing']['A'],
+                         ['main_l', 'main_r', 'sub1', 'left_high', 'right_high'])
+        self.assertEqual(model.routing_for_device(state, 'stereo-sub', 'A'),
                          ['main_l', 'main_r', 'sub1', 'off', 'off'])
-        self.assertEqual(state['modes']['stereo-sub']['processing']['left_high']['level_db'], -8)
+        state = model.switch_mode(state, 'stereo-sub')
+        plan = compile_processing_plan(state, output_key='A', channels=6,
+                                       sample_rate_hz=48000, preset_loader=lambda _: {'chain': []})
+        self.assertEqual([row['role'] for row in plan['outputs']], ['main_l', 'main_r', 'sub1'])
+        self.assertEqual([edge['channel'] for edge in plan['physical_routes']], [0, 1, 2])
         with self.assertRaises(ValueError):
             model.set_mode_routing(state, 'stereo-sub', 'A', ['left_low'])
+        state = model.set_crossover(state, 'stereo-sub', True)
+        self.assertEqual(state['modes']['stereo-sub']['routing']['A'],
+                         ['left_low', 'right_low', 'sub1', 'left_high', 'right_high'])
+        self.assertEqual(state['modes']['stereo-sub']['processing']['left_high']['level_db'], -8)
 
     def test_version_one_upgrade_preserves_active_processing_and_revision(self):
         bank = {'preset': 'Neutral', 'preset_a': 'Neutral', 'preset_b': None}

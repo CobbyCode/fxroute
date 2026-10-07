@@ -48,6 +48,18 @@ class ProcessingPlanTests(unittest.TestCase):
                 settings["lowpass"] = crossover_filter(300 if role.endswith("low") else 2500)
         return state
 
+    def test_dormant_crossover_ways_never_reach_the_plain_plan(self):
+        """Ways stored while the crossover is off stay dormant and silent."""
+        state = set_crossover(self.crossover_state(), "stereo-sub", False)
+        mode = state["modes"]["stereo-sub"]
+        self.assertIn("left_high", mode["routing"]["A"])
+        plan = self.compile(state, channels=6)
+        self.assertFalse(plan["crossover_enabled"])
+        self.assertEqual([row["role"] for row in plan["outputs"]], ["main_l", "main_r"])
+        self.assertEqual([edge["channel"] for edge in plan["physical_routes"]], [0, 3])
+        # The parked way filters stay out of the plain plan as well.
+        self.assertEqual(plan["outputs"][0]["crossover"], [])
+
     def test_global_precedes_independent_area_banks_and_selection_is_not_solo(self):
         state = self.crossover_state()
         mode = state["modes"]["stereo-sub"]

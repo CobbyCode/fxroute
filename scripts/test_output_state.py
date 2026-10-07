@@ -134,6 +134,42 @@ class OutputStateTests(unittest.TestCase):
                          ["main_l", "off", "main_r", "off", "sub1", "off"])
         self.assertEqual(state["modes"]["stereo-sub"]["processing"]["left_high"]["level_db"], -8)
 
+    def test_crossover_path_assignments_stay_dormant_in_the_plain_topology(self):
+        """Leaving the crossover domain keeps the ways stored but never applied."""
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", STEREO_SUB),
+                            "stereo-sub")
+        state = set_crossover(state, "stereo-sub", True)
+        state = set_mode_routing(state, "stereo-sub", "A", WAYS + ["sub1", "off"])
+        ways = copy.deepcopy(state["modes"]["stereo-sub"]["routing"]["A"])
+        state = set_crossover(state, "stereo-sub", False)
+        self.assertEqual(state["modes"]["stereo-sub"]["routing"]["A"],
+                         ["main_l", "left_high", "main_r", "right_high", "sub1", "off"])
+        self.assertEqual(routing_for_device(state, "stereo-sub", "A"),
+                         ["main_l", "off", "main_r", "off", "sub1", "off"])
+        # A plain-topology save reads the dormant ways as Off and cannot wipe
+        # them; naming another role for the port replaces the dormant way.
+        plain = copy.deepcopy(state["modes"]["stereo-sub"]["routing"]["A"])
+        saved = set_mode_routing(state, "stereo-sub", "A", ["main_l", "off", "main_r", "off", "sub1", "off"])
+        self.assertEqual(saved["modes"]["stereo-sub"]["routing"]["A"], plain)
+        replaced = set_mode_routing(state, "stereo-sub", "A", ["main_l", "off", "main_r", "off", "sub2", "off"])
+        self.assertEqual(replaced["modes"]["stereo-sub"]["routing"]["A"],
+                         ["main_l", "left_high", "main_r", "right_high", "sub2", "off"])
+        with self.assertRaises(ValueError):
+            set_mode_routing(state, "stereo-sub", "A", ["left_high", "off", "main_r", "off", "sub1", "off"])
+        # Switching the crossover back on restores the same ways on the same ports.
+        restored = set_crossover(state, "stereo-sub", True)
+        self.assertEqual(routing_for_device(restored, "stereo-sub", "A"),
+                         ["left_low", "left_high", "right_low", "right_high", "sub1", "off"])
+
+    def test_crossover_off_keeps_written_routing_that_holds_dormant_ways(self):
+        """A stored plain routing may carry dormant ways; validation accepts it."""
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", STEREO_SUB),
+                            "stereo-sub")
+        state = set_crossover(state, "stereo-sub", True)
+        state = set_mode_routing(state, "stereo-sub", "A", WAYS + ["sub1", "off"])
+        state = set_crossover(state, "stereo-sub", False)
+        self.assertEqual(validate_output_state(state), state)
+
     def test_surround_crossover_off_restores_the_existing_surround_state(self):
         speakers = ["main_l", "main_r", "rear_l", "rear_r", "sub1", "sub2", "center", "off"]
         state = switch_mode(set_mode_routing(default_output_state(), "surround", "A", speakers),
