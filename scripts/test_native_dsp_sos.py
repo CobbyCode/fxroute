@@ -24,7 +24,7 @@ def sos_block(sections, output=0):
 
 
 def run_offline(tmp_path, name, cfg_text, freq_hz, rate=48000, frames=48000,
-                n_inputs=1, n_outputs=1, amplitude=0.5):
+                n_inputs=1, n_outputs=1, amplitude=0.5, active_frames=None):
     subprocess.run([str(ROOT / "native_dsp" / "build.sh")], check=True)
     cfg = tmp_path / f"{name}.conf"
     cfg.write_text(cfg_text)
@@ -33,6 +33,8 @@ def run_offline(tmp_path, name, cfg_text, freq_hz, rate=48000, frames=48000,
     values = array.array("f")
     for index in range(frames):
         sample = amplitude * math.sin(2.0 * math.pi * freq_hz * index / rate)
+        if active_frames is not None and index >= active_frames:
+            sample = 0.0
         for _ in range(n_inputs):
             values.append(sample)
     values.tofile(source.open("wb"))
@@ -91,6 +93,18 @@ def test_sos_lr24_complementary_sum_is_flat(tmp_path):
         summed = [a + b for a, b in zip(low_ch[16000:], high_ch[16000:])]
         measured = 20.0 * math.log10(steady_rms(summed, skip=0) / (0.5 / math.sqrt(2.0)))
         assert abs(measured) <= 0.2, f"LR24 sum @{freq_hz}: {measured:.2f} dB"
+
+
+def test_sos_idle_state_flushes_to_exact_silence(tmp_path):
+    # A stalled denormal state slows every following sample on x86 until the
+    # RT watchdog kills the engine, so the tail after the signal must be 0.
+    for kind in ("lowpass", "highpass"):
+        sections = design_crossover({"kind": kind, "family": "linkwitz-riley",
+                                     "slope_db_oct": 24, "frequency_hz": 80}, 48000)
+        cfg = "rate 48000\ninputs 1\noutputs 1\nmatrix 0 0 1\n" + sos_block(sections)
+        (channel,) = run_offline(tmp_path, f"sos-idle-{kind}", cfg, 1000,
+                                 frames=7 * 48000, active_frames=48000)
+        assert not any(channel[-48000:]), f"{kind}: idle state did not flush to silence"
 
 
 def test_sos_rejects_unstable_and_malformed_lines(tmp_path):
