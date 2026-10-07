@@ -71,11 +71,14 @@ def main() -> int:
                 if not condition:
                     failures.append(name)
 
-            # One mode, independent crossover, one hardware routing editor.
+            # One mode, independent crossover, one hardware routing editor. The
+            # Custom Mapping grid carries the same class but is its own editor,
+            # so the output routing editor is pinned by id.
             page.evaluate("toggleSettingsPanel(true)")
             page.wait_for_selector("#settings-output-mode-select:not([disabled])", state="visible", timeout=5000)
-            check("one routing editor", page.locator(".settings-routing-grid").count() == 1)
-            check("mode choices", page.locator("#settings-output-mode-select option").all_text_contents() == ['Stereo', 'Stereo + Sub'])
+            check("one routing editor",
+                  page.locator("#settings-routing-grid.settings-routing-grid").count() == 1)
+            check("mode choices", page.locator("#settings-output-mode-select option").all_text_contents() == ['Stereo', 'Stereo + Sub', 'Surround'])
             check("independent crossover visible", page.locator("#settings-crossover-select").is_visible())
 
             # Multichannel device, then Crossover mode.
@@ -517,6 +520,16 @@ def main() -> int:
             pick('#settings-crossover-select', 'off')
             page.wait_for_timeout(700)
             check("crossover Off removes way options", 'Low L' not in page.locator('#settings-routing-out-1 option').all_text_contents())
+            # The third mode keeps its own crossover state, and the demo's
+            # surround routing carries the speaker ways, so the front pair
+            # appears as Low/…/High L/R next to the surround roles and the subs.
+            pick('#settings-output-mode-select', 'surround')
+            page.wait_for_timeout(900)
+            surround_roles = page.locator('#settings-routing-out-1 option').all_text_contents()
+            check(f"Surround offers the surround roles ({surround_roles})",
+                  surround_roles == ['Off', 'Low L', 'Low-Mid L', 'Mid L', 'High L',
+                                     'Low R', 'Low-Mid R', 'Mid R', 'High R', 'Center',
+                                     'Side L', 'Side R', 'Rear L', 'Rear R', 'Sub 1', 'Sub 2'])
             pick('#settings-output-mode-select', 'stereo')
             page.wait_for_timeout(700)
             check("Stereo uses only stereo roles", page.locator('#settings-routing-out-1 option').all_text_contents() == ['Off', 'Main L', 'Main R'])

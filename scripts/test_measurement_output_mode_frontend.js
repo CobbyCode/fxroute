@@ -174,6 +174,7 @@ function makeMeasurementContext({ fetchResponse = null, subSaveGate = null } = {
     context.window = { FXRouteBankUI: BankUIModule };
     vm.runInContext(`
         function requireConcreteFilterBank() { return window.FXRouteBankUI.requireConcreteFilterBank(); }
+        function requireMeasurableArea() { return window.FXRouteBankUI.requireMeasurableArea(); }
         function setPendingSave() { SubwooferUI.saveSubwooferDebounced(5); }
         function flushSubwooferSettingsBeforeMeasurement() {
             return SubwooferUI.flushSubwooferSettingsBeforeMeasurement();
@@ -209,6 +210,7 @@ function makeMeasurementContext({ fetchResponse = null, subSaveGate = null } = {
         showToast: (message) => { toasts.push(message); },
         renderMeasurementPanel: () => context.renderMeasurementPanel(),
         requireConcreteFilterBank: () => context.requireConcreteFilterBank(),
+        requireMeasurableArea: () => context.requireMeasurableArea(),
         measurementModeReady: () => true,
         measurementRepeatBlockedReason: () => '',
         flushSubwooferSettingsBeforeMeasurement: () => context.flushSubwooferSettingsBeforeMeasurement(),

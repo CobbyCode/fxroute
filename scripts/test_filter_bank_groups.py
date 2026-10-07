@@ -86,12 +86,18 @@ class FilterBankGroupsTests(unittest.TestCase):
             state_api.switch_all_banks(state, "stereo-sub", "A", 4, "C")
         self.assertEqual(state, before)
 
-    def test_all_is_not_an_assignable_or_measurable_bank(self):
+    def test_all_owns_no_bank_but_is_measured_as_the_whole_system(self):
         with self.assertRaises(ValueError):
             state_api.set_bank_preset(sub_state(), "stereo-sub", "all", preset="Room")
-        with self.assertRaises(ValueError):
-            freeze_measurement_target(sub_state(), bank_id="all", output_key="A", channels=4,
-                                      sample_rate_hz=48000, fingerprint="paired-test")
+        # All Banks is measurable as the whole system as listened: every routed
+        # role is excited and nothing is muted. It stays unimportable because
+        # it owns no bank to commit into (see test_measurement_all_banks.py).
+        state = sub_state()
+        target = freeze_measurement_target(state, bank_id="all", output_key="A", channels=4,
+                                           sample_rate_hz=48000, fingerprint="paired-test")
+        self.assertEqual((target["bank_id"], target["measured_roles"]),
+                         ("all", ["main_l", "main_r", "sub_l", "sub_r"]))
+        self.assertEqual(target_output_mask(target, roles=target["roles"]), 0)
 
     def test_pure_stereo_keeps_global_bank(self):
         stereo = state_api.switch_mode(state_api.set_mode_routing(

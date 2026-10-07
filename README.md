@@ -28,6 +28,7 @@ The demo is the real FXRoute frontend — same UI — with simulated backend sta
 
 - Local music library with album, track, folder, and favorites views, playlists, uploads, album ZIP imports, media-URL imports, and multi-select downloads
 - Internet radio with a curated station catalog, personal stations, and Radio Browser search; live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
+- Surround playback from a digital S/PDIF input (Dolby Digital or DTS Core), decoded into the routed speaker roles, plus an upmixer that derives Center and the surround channels from a stereo programme
 - Spotify control for a local desktop client or spotifyd (Spotify Connect pairing, no FXRoute login), including Lossless-aware playback through a current desktop client
 - Qobuz Connect player control and a full TIDAL catalog browser with native playback through FXRoute's audio engine
 - Bluetooth and external line input as selectable sources when the host audio stack supports them
@@ -36,15 +37,15 @@ The demo is the real FXRoute frontend — same UI — with simulated backend sta
 **DSP and output**
 
 - A native DSP engine (`fxroute_dsp_sink`) built from source, in the same PipeWire session as playback
-- One output-routing model: **Stereo** or **Stereo + Sub**, an independent Crossover switch, and **Output Routing** that assigns roles (`Main L/R`, speaker ways, `Sub L`, `Sub R`, `Sub 1`, `Sub 2`) to hardware outputs
+- One output-routing model: **Stereo**, **Stereo + Sub**, or **Surround**, an independent Crossover switch, and **Output Routing** that assigns roles (`Main L/R`, speaker ways, `Center`, `Side L/R`, `Rear L/R`, `Sub L`, `Sub R`, `Sub 1`, `Sub 2`) to hardware outputs
 - Crossover derived from the routing as a 2-, 3-, or 4-way system with per-way type, slope, level, alignment, and polarity; the subwoofer configuration (**Mono sub**, **Dual-mono subs**, **Stereo subs**) is derived from the routed sub roles
-- Presets per **filter bank** (Global, the way pairs, the subs) with A/B compare, preset combining, and filter imports; two always-available presets: **Direct** (bypasses everything) and **Neutral** (clean chain, the default)
+- Presets per **filter bank** (Global, the way pairs, the subs) with A/B compare, preset combining, and filter imports; in **Surround** the Global bank is group-scoped, so one preset carries per-group PEQ and convolver plugins for **Front L/R**, **Center**, **Side L/R**, and **Rear L/R**; two always-available presets: **Direct** (bypasses everything) and **Neutral** (clean chain, the default)
 - Global output helpers that apply on top of any preset: protection limiter, headroom, autogain, loudness contouring, bass enhancer, and tone effect
 - Auto or fixed sample rate (up to 384 kHz, device permitting), with rate-driven channel tiers on interfaces that have them
 
 **Measure and correct**
 
-- Host-microphone room and speaker measurement: single L/R/Stereo sweeps scoped to the selected measuring area, same-position L/R Repeat, and a guided multi-position Advanced workflow
+- Host-microphone room and speaker measurement: single L/R/Stereo sweeps scoped to the selected measuring area — a bank, a Surround speaker group with the subs, or **All Banks** as the whole system as listened — same-position L/R Repeat, and a guided multi-position Advanced workflow that follows the selected area
 - An **electrical reference** input on the capture interface for precise arrival timing, and an electrical-reference or acoustic-only timing verdict on every run
 - **Speaker Auto Alignment** per speaker for a multi-way crossover: proposes per-way delay and gain, then verifies acoustically before committing
 - **Auto Sub Optimize** scans delay, polarity, and level around the current subwoofer settings for the derived sub layout and applies the verified winner
@@ -85,7 +86,7 @@ Supported package managers are apt, dnf, zypper, and pacman. Streaming providers
 
 ## Home Assistant
 
-`GET /api/power/state` is a read-only amplifier power hint for external automation: `amp_should_be_on` is true while local, TIDAL, Spotify, or Qobuz playback is active, while the measurement assistant is open, while Bluetooth audio is streaming, or while an external input is routed. The payload also carries a `reason` field. FXRoute does not require MQTT. A complete configuration example is in the [manual](MANUAL.md#10-home-assistant--external-automation).
+`GET /api/power/state` is a read-only amplifier power hint for external automation: `amp_should_be_on` is true while local, TIDAL, Spotify, or Qobuz playback is active, while the measurement assistant is open, while Bluetooth audio is streaming, while an external input is routed, or while a STDIN stream is active. The payload also carries a `reason` field. FXRoute does not require MQTT. A complete configuration example is in the [manual](MANUAL.md#10-home-assistant--external-automation).
 
 `POST /api/audio/input-presence` is the optional return channel: an automation reports presence for an existing input key (`{"inputKey": "<key>", "present": true}`) as a 30 s heartbeat, and input auto-select OR-s it with the local signal detection (expired or unknown reports read as absent).
 

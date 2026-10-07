@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+Work on `main` after the `1.0-beta12` stand. No public artifact carries
+this yet; the entries below are not part of any release until a release
+commit assigns them a version.
+
+### Surround
+
+- Surround is the third output mode: Front L/R, Center, Side L/R, Rear L/R,
+  and Sub 1/Sub 2 as routable roles, fold-down for a programme position
+  without its own speaker, group bass management, and one mono bass bus for
+  both subs. LFE stays a separate programme input. The mode is remembered per
+  logical input.
+- Digital ingress decodes IEC-61937 Dolby Digital (AC-3) and DTS Core from
+  the selected S/PDIF capture pair into the routed speaker roles; stereo PCM
+  and stereo AC-3 stay stereo.
+- An upmixer derives Center and the surround channels from a stereo
+  programme, with a low-latency Fast matrix and a per-frequency HQ engine.
+- **Global exists in Surround as a group-scoped preset.** One whole-system
+  preset whose PEQ and convolver plugins each carry the speaker group they
+  correct (Front L/R, Center, Side L/R, Rear L/R). A tagged plugin runs on
+  that group's effect pairs ahead of the output matrix and the bass-management
+  split, so the correction covers the speaker and its share of the sub bus.
+  LFE is no group; a group without a routed speaker folds down and its plugin
+  stays out of the chain; a delay band is refused. The native engine gained
+  per-pair plugin stage masks and an input mute for this.
+- **Measurements are scoped to a speaker group.** A Surround Global sweep
+  measures the selected group's speakers plus every sub, mutes the other
+  groups at the outputs, and silences the front pair's sink feed for every
+  group but Front so its bass cannot arrive through the shared bass bus.
+  Groups are separate measurement identities with their own commit gate.
+- **All Banks is measurable as the whole system as listened**: every routed
+  role is excited, nothing is muted, and the frozen result records each
+  bank's listened preset and the joint A/B side. It owns no bank, so such a
+  result can be saved and inspected but never imported or committed, and the
+  Advanced wizard is refused for it.
+- The Advanced wizard follows the selected measuring area: a mono group
+  (Center + Sub) produces a single Center model, a pair area keeps the L/R
+  models and the subwoofer alignment check, and sub banks stay listening-only.
+- **Speaker Auto Alignment** stays unavailable in Surround because the Global
+  bank is group-scoped there, not a whole-speaker bank.
+
+### Fixes
+
+- Suite contracts that the surround measurement work left stale now match the
+  code: the bank-group test checks that All Banks is measured as the whole
+  system, and the two measurement-start harnesses wire
+  `requireMeasurableArea` instead of the import-only bank gate.
+
 ## 1.0-beta12 (2026-10-01)
 
 Twelfth public beta. Distribution: web demo on GitHub Pages,
