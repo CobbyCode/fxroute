@@ -38,6 +38,7 @@ from audio.output_service import MeasurementActiveError
 from audio.filter_banks import resolve_bank
 from audio.output_state import referenced_presets, release_bank_presets, set_bank_preset
 from audio.output_state_store import StateConflictError
+from audio.output_topology import SURROUND_GROUPS
 from library.core import path_within_root
 from library.api import _cleanup_temp_file
 from uploads import (
@@ -220,12 +221,16 @@ def _require_output_state_service():
     return service
 
 
-def _parse_bank_binding(*, bank_mode: Any, bank_id: Any, expected_revision: Any) -> dict | None:
+def _parse_bank_binding(*, bank_mode: Any, bank_id: Any, expected_revision: Any,
+                        bank_group: Any = None) -> dict | None:
     """Normalize an optional bank target; None means no binding requested.
 
     FastAPI field markers (direct unit calls that omit form fields) count
     as absent, so pre-existing callers without bank arguments keep working.
+    ``bank_group`` names the speaker group of a Surround Global preset.
     """
+    if isinstance(bank_group, FieldInfo):
+        bank_group = ""
     if isinstance(bank_mode, FieldInfo):
         bank_mode = ""
     if isinstance(bank_id, FieldInfo):
@@ -240,10 +245,12 @@ def _parse_bank_binding(*, bank_mode: Any, bank_id: Any, expected_revision: Any)
         raise HTTPException(status_code=400, detail="bank_mode and bank_id are required together")
     if type(expected_revision) is bool or not isinstance(expected_revision, int) or expected_revision < 0:
         raise HTTPException(status_code=400, detail="expected_revision must be a non-negative integer")
-    return {"mode": mode, "bank_id": bank, "expected_revision": expected_revision}
+    group = str(bank_group or "").strip()
+    return {"mode": mode, "bank_id": bank, "expected_revision": expected_revision,
+            **({"bank_group": group} if group else {})}
 
 
-def _validate_bank_target(service, binding: dict) -> str:
+def _validate_bank_target(service, binding: dict, *, needs_group: bool = False) -> str:
     """Fail fast (400) when the requested bank does not exist yet.
 
     Returns the canonical bank id (All Banks is rejected: it owns no
@@ -260,13 +267,28 @@ def _validate_bank_target(service, binding: dict) -> str:
             raise ValueError("Unknown output mode")
         if str(binding["bank_id"]).strip() == "all":
             raise ValueError("All Banks owns no presets; select a concrete filterbank")
-        return resolve_bank(config, binding["bank_id"])["id"]
+        canonical = resolve_bank(config, binding["bank_id"])["id"]
     except ValueError as exc:
         if "All Banks" in str(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(
             status_code=400,
             detail=f"Unknown bank {binding['bank_id']} for output mode {binding['mode']}") from exc
+    # A speaker group belongs to the Surround Global bank; presets built from
+    # a measurement or filter need one there (``needs_group``).
+    group = binding.get("bank_group")
+    surround_global = binding["mode"] == "surround" and canonical == "global"
+    if group is not None and (group not in SURROUND_GROUPS or not surround_global):
+        raise HTTPException(status_code=400, detail=f"Speaker group {group} does not apply to this bank")
+    if needs_group and surround_global and group is None:
+        raise HTTPException(status_code=400, detail="Surround Global presets need a speaker group")
+    return canonical
+
+
+def _group_kwargs(binding: dict | None) -> dict:
+    """Manager keyword for the speaker group of a Surround Global binding."""
+    group = binding.get("bank_group") if binding else None
+    return {"group": group} if group else {}
 
 
 def _optional_combine_bank(body: dict) -> str | None:
@@ -731,15 +753,17 @@ async def create_convolver_preset(
     tone_effect_mode: str = Form("crystalizer"),
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
+    bank_group: str = Form(""),
     expected_revision: int = Form(-1),
     source_measurement_id: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
     binding = _parse_bank_binding(
-        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision,
+        bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
     _verify_measurement_commit(source_measurement_id, binding)
@@ -763,7 +787,7 @@ async def create_convolver_preset(
                 tone_effect_mode=tone_effect_mode,
             )
             created = dsp_mgr.create_convolver_preset(preset_name, ir_filename, extras=extras,
-                                                      bank=canonical_bank)
+                                                      bank=canonical_bank, **_group_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -1030,16 +1054,18 @@ async def create_convolver_preset_with_ir(
     file: UploadFile = File(...),
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
+    bank_group: str = Form(""),
     expected_revision: int = Form(-1),
     source_measurement_id: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
     binding = _parse_bank_binding(
-        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision,
+        bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a conflict.
     _verify_measurement_commit(source_measurement_id, binding)
@@ -1080,6 +1106,7 @@ async def create_convolver_preset_with_ir(
                 file.filename or tmp_path.name,
                 extras=extras,
                 bank=canonical_bank,
+                **_group_kwargs(binding),
             )
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
@@ -1132,7 +1159,7 @@ async def create_peq_preset(request: Request):
     extras = _parse_effects_extras_from_json(body)
     binding = _parse_bank_binding(
         bank_mode=body.get("bank_mode"), bank_id=body.get("bank_id"),
-        expected_revision=body.get("expected_revision"))
+        expected_revision=body.get("expected_revision"), bank_group=body.get("bank_group"))
     source_measurement_id = body.get("source_measurement_id", body.get("sourceMeasurementId"))
 
     if not preset_name:
@@ -1141,7 +1168,7 @@ async def create_peq_preset(request: Request):
         raise HTTPException(status_code=400, detail="peq is required")
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
     _verify_measurement_commit(source_measurement_id, binding)
@@ -1149,7 +1176,7 @@ async def create_peq_preset(request: Request):
     try:
         async with _deps().dsp_mutation_lock():
             created = dsp_mgr.create_peq_preset(preset_name, peq_definition, extras=extras,
-                                                bank=canonical_bank)
+                                                bank=canonical_bank, **_group_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -1188,6 +1215,7 @@ async def import_rew_peq_preset(
     file: UploadFile = File(...),
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
+    bank_group: str = Form(""),
     expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
@@ -1196,10 +1224,11 @@ async def import_rew_peq_preset(
         raise HTTPException(status_code=400, detail="preset_name is required")
 
     binding = _parse_bank_binding(
-        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision,
+        bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
 
     try:
@@ -1230,7 +1259,8 @@ async def import_rew_peq_preset(
                 tone_effect_mode=tone_effect_mode,
             )
             created = dsp_mgr.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras,
-                                                             bank=canonical_bank)
+                                                             bank=canonical_bank,
+                                                             **_group_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -1272,6 +1302,7 @@ async def import_dual_filter_preset(
     right_file: Optional[UploadFile] = File(None),
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
+    bank_group: str = Form(""),
     expected_revision: int = Form(-1),
     source_measurement_id: str = Form(""),
 ):
@@ -1315,10 +1346,11 @@ async def import_dual_filter_preset(
         raise HTTPException(status_code=400, detail="Provide both Left and Right files, or neither")
 
     binding = _parse_bank_binding(
-        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+        bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision,
+        bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
     _verify_measurement_commit(source_measurement_id, binding)
@@ -1354,6 +1386,7 @@ async def import_dual_filter_preset(
                     right_file.filename or right_tmp.name,
                     extras=extras,
                     bank=canonical_bank,
+                    **_group_kwargs(binding),
                 )
             import_kind = "dual-convolver"
         else:
@@ -1377,6 +1410,7 @@ async def import_dual_filter_preset(
                     right_text,
                     extras=extras,
                     bank=canonical_bank,
+                    **_group_kwargs(binding),
                 )
             import_kind = "dual-peq"
 

@@ -44,6 +44,19 @@ assert.deepEqual(savedUi.measurementAreaBadge(measurements[1]), {
     label: 'Mid L', mode: 'stereo-sub', stale: true,
     title: 'Mid L · Stereo + Sub · measured area only',
 });
+const groupTarget = { schema: 'fxroute.measurement-target', mode: 'surround', bank_id: 'global',
+    global_group: 'rear' };
+assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: groupTarget }), {
+    label: 'Global · Rear L/R', mode: 'surround', stale: false,
+    title: 'Global · Rear L/R · Surround · measured with the subs',
+});
+assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: { schema: 'fxroute.measurement-target',
+    mode: 'surround', bank_id: 'all', active_side: 'B' } }), {
+    label: 'All Banks · B', mode: 'surround', stale: false,
+    title: 'All Banks · B · Surround · measured whole system as listened',
+});
+assert.equal(savedUi.measurementAreaBadge({ measurement_target: { schema: 'fxroute.measurement-target',
+    mode: 'surround', bank_id: 'all', active_side: null } }).label, 'All Banks');
 savedUi.renderMeasurementPanelSavedListSection({ measurementState: state.measurement, measurements: saved });
 let html = elements.measurementList.innerHTML;
 assert.match(html, /<details class="measurement-saved-group" open>/);

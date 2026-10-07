@@ -123,6 +123,17 @@ function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: tru
         assert.equal(calls.length, 0);
     }
 
+    // A Surround Global group is one speaker plus the subs, not a speaker bank.
+    {
+        const { elements, calls } = harness({
+            area: { bank_id: 'global', label: 'Global · Front L/R + Sub', available: true, group: 'front' },
+            status: {}, jobs: [] });
+        await levelMatch.openLevelMatch();
+        assert.equal(elements.levelMatchStart.disabled, true);
+        assert.match(elements.levelMatchActionStatus.textContent, /Select a speaker bank/);
+        assert.equal(calls.length, 0);
+    }
+
     // A failed measurement commits nothing and shows the reason.
     {
         const status = { mode: 'stereo', requires_reference: false, reference_ready: true, units: ['left', 'right'], entries: [] };

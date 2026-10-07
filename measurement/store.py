@@ -31,7 +31,8 @@ from measurement.persistence import MeasurementPersistence
 from measurement.routing import MeasurementRouting, freeze_expected_native_context
 from measurement.signal import _write_wav, write_sweep_file
 from measurement.job_runner import MeasurementJobRunner
-from measurement.target import GLOBAL_BANK_ID, sweep_output_masks, target_output_mask
+from measurement.target import (ALL_BANKS_ID, GLOBAL_BANK_ID, sweep_output_masks, target_input_mask,
+                                target_output_mask)
 from measurement.repeat_runner import MeasurementRepeatRunner
 from measurement.analyzer import MeasurementAnalyzer
 from measurement.constants import (
@@ -111,6 +112,11 @@ class CaptureQualityError(RuntimeError):
         self.analysis = deepcopy(analysis) if isinstance(analysis, dict) else None
         hard_failures = [str(item.get("message") or "Capture QC failed") for item in self.items if item.get("level") == "error"]
         super().__init__(f"{capture_label} QC failed: " + "; ".join(hard_failures))
+
+
+def _speaker_group(value: object) -> str:
+    """Speaker group of a Surround Global start request ("" when absent)."""
+    return value.strip() if isinstance(value, str) else ""
 
 
 class MeasurementStore:
@@ -499,7 +505,8 @@ class MeasurementStore:
             raise
 
     def _freeze_measurement_job_target(self, job: dict[str, Any], measurement_bank: str,
-                                       target: dict[str, Any] | None = None) -> dict[str, Any]:
+                                       target: dict[str, Any] | None = None,
+                                       group: str = "") -> dict[str, Any]:
         """Freeze the area target and derive its output mute mask at job creation.
 
         Without an injected provider the job keeps its legacy shape (no target,
@@ -514,6 +521,9 @@ class MeasurementStore:
         Raw helper sweeps (Auto-Sub optimize, SPL calibration) are exempt: they
         bypass the active chain and drive their own isolation, so an editing
         area must never mute the outputs they are about to measure.
+
+        ``group`` names the speaker group of a Surround Global measurement.
+        A target that needs input positions silenced adds ``input_mask``.
         """
         provider = self.measurement_target_provider
         if not callable(provider):
@@ -534,23 +544,31 @@ class MeasurementStore:
                 raise ValueError(
                     f"Frozen measurement target rate {target_rate!r} is not this input's rate {rate!r}"
                 )
-            return {"measurement_bank": bank_id, "measurement_target": target, "output_mask": mask}
-        target = provider(str(measurement_bank or ""), int(rate) if type(rate) is int else 0)
-        return {
-            "measurement_bank": target["bank_id"],
-            "measurement_target": target,
-            # Bit n mutes engine output n (plan/role order); Global needs none.
-            "output_mask": target_output_mask(target, roles=target["roles"]),
-        }
+            frozen = {"measurement_bank": bank_id, "measurement_target": target, "output_mask": mask}
+        else:
+            rate_hz = int(rate) if type(rate) is int else 0
+            target = (provider(str(measurement_bank or ""), rate_hz, group=group) if group
+                      else provider(str(measurement_bank or ""), rate_hz))
+            frozen = {
+                "measurement_bank": target["bank_id"],
+                "measurement_target": target,
+                # Bit n mutes engine output n (plan/role order); Global needs none.
+                "output_mask": target_output_mask(target, roles=target["roles"]),
+            }
+        input_mask = target_input_mask(target)
+        if input_mask:
+            frozen["input_mask"] = input_mask
+        return frozen
 
-    def _freeze_repeat_job_target(self, job: dict[str, Any], measurement_bank: str) -> dict[str, Any]:
+    def _freeze_repeat_job_target(self, job: dict[str, Any], measurement_bank: str,
+                                  group: str = "") -> dict[str, Any]:
         """Freeze the area plus the per-sweep masks of a two-sided capture.
 
         An L/R repeat is a sequence of internal way sweeps over the same
         frozen area, so every sweep gets its own mask instead of the job-wide
         one the single-sweep path uses.
         """
-        frozen = self._freeze_measurement_job_target(job, measurement_bank)
+        frozen = self._freeze_measurement_job_target(job, measurement_bank, group=group)
         target = frozen.get("measurement_target")
         if not isinstance(target, dict) or target.get("legacy"):
             return frozen
@@ -629,6 +647,7 @@ class MeasurementStore:
         measurement_role: str = "",
         skip_pre_sweep_diagnostics: bool = False,
         measurement_bank: str = "",
+        measurement_group: str = "",
         frozen_target: dict[str, Any] | None = None,
         expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         expected_native_output_mode: str | None = None,
@@ -687,7 +706,8 @@ class MeasurementStore:
                 "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
                 "_skip_pre_sweep_diagnostics": bool(skip_pre_sweep_diagnostics),
             })
-            job.update(self._freeze_measurement_job_target(job, measurement_bank, frozen_target))
+            job.update(self._freeze_measurement_job_target(
+                job, measurement_bank, frozen_target, _speaker_group(measurement_group)))
             job.update({f"_{key}": value for key, value in expected.items()})
             if capture_evidence is not None:
                 capture_evidence._bind(job["id"])
@@ -724,6 +744,7 @@ class MeasurementStore:
         calibration_ref: str | None = None,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
         measurement_bank: str = "",
+        measurement_group: str = "",
         expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         expected_native_output_mode: str | None = None,
         expected_plan_fingerprint: str | None = None,
@@ -758,7 +779,8 @@ class MeasurementStore:
                 "channel": "stereo",
                 "message": "L/R repeat queued.",
             })
-            job.update(self._freeze_repeat_job_target(job, measurement_bank))
+            job.update(self._freeze_repeat_job_target(
+                job, measurement_bank, _speaker_group(measurement_group)))
             job.update({f"_{key}": value for key, value in expected.items()})
             return self._register_measurement_job(job, self._execute_lr_repeat_job)
         except BaseException:
@@ -1115,7 +1137,7 @@ class MeasurementStore:
             else job.get("measurement_bank")
         )
         measurement_bank = str(measurement_bank or "").strip()
-        band_limited_reference = bool(measurement_bank and measurement_bank != GLOBAL_BANK_ID)
+        band_limited_reference = bool(measurement_bank and measurement_bank not in (GLOBAL_BANK_ID, ALL_BANKS_ID))
         electrical_reference = None
         if use_electrical_reference:
             electrical_reference = {

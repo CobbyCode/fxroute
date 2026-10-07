@@ -238,5 +238,66 @@ const stereoSubsLeft = Hybrid.getDiagramState('subwoofer-2.2-stereo', 'left');
 assert(stereoSubsLeft.subs.left.active && !stereoSubsLeft.subs.right.active);
 const stereoSubsRight = Hybrid.getDiagramState('subwoofer-2.2-stereo', 'right');
 assert(!stereoSubsRight.subs.left.active && stereoSubsRight.subs.right.active);
+assert.deepEqual([stereoDiagram.layout, stereoDiagram.speakers], ['pair', { left: true, right: false, stereo: false }]);
+assert.deepEqual(Hybrid.getDiagramState('stereo', 'stereo').speakers, { left: true, right: true, stereo: false });
+
+// A scope describes what one run measures: a speaker pair, one mono channel, or
+// subwoofers without the 1 m direct response.
+const subTopology = { sub_mode: 'dual-mono' };
+const rearScope = Hybrid.buildScope({ bank_id: 'global', group: 'rear', label: 'Global · Rear L/R + Sub', channel_mode: 'stereo' }, subTopology);
+const centerScope = Hybrid.buildScope({ bank_id: 'global', group: 'center', label: 'Global · Center + Sub', channel_mode: 'mono' }, subTopology);
+const subScope = Hybrid.buildScope({ bank_id: 'sub1', label: 'Sub 1', channel_mode: 'mono' }, subTopology);
+const subPairScope = Hybrid.buildScope({ bank_id: 'sub', label: 'Sub L/R', channel_mode: 'stereo' }, { sub_mode: 'stereo' });
+const stereoScope = Hybrid.buildScope({ bank_id: 'global', label: 'Global', channel_mode: 'stereo' }, { sub_mode: 'none' });
+const legacyIds = Hybrid.buildSequence('subwoofer-2.2').steps.map(item => item.id);
+assert.deepEqual(Hybrid.buildSequence(rearScope).steps.map(item => item.id), legacyIds, 'a pair scope with subs is the legacy sequence');
+assert.equal(Hybrid.buildSequence(rearScope).modeLabel, 'Rear L/R + Sub');
+assert.equal(Hybrid.buildSequence(stereoScope).modeLabel, 'Stereo');
+assert.deepEqual(Hybrid.buildSequence(stereoScope).steps.map(item => item.id), Hybrid.buildSequence('stereo').steps.map(item => item.id));
+const centerSteps = Hybrid.buildSequence(centerScope).steps;
+assert.deepEqual(centerSteps.map(item => [item.id, item.role, item.position, item.channel]),
+    [['direct-stereo', 'direct', 'direct-stereo', 'stereo'], ['mlp', 'mlp', 'mlp', 'stereo'],
+        ['area-left', 'secondary', 'left', 'stereo'], ['area-right', 'secondary', 'right', 'stereo']]);
+assert(!centerScope.integration, 'one channel has no second summand for an integration check');
+assert.match(centerSteps[0].instruction, /about 1 m from the center speaker/);
+assert.doesNotMatch(centerSteps[1].instruction, /Left and right/);
+assert.equal(centerSteps[1].active, 'Center speaker');
+const subSteps = Hybrid.buildSequence(subScope).steps;
+assert.deepEqual(subSteps.map(item => [item.id, item.role, item.channel]),
+    [['mlp', 'mlp', 'stereo'], ['area-left', 'secondary', 'stereo'], ['area-right', 'secondary', 'stereo']]);
+assert.deepEqual(Hybrid.buildSequence(subPairScope).steps.map(item => [item.role, item.position, item.channel].join('/')),
+    ['mlp/mlp/left', 'mlp/mlp/right', 'secondary/left/left', 'secondary/left/right', 'secondary/right/left', 'secondary/right/right']);
+assert(!subScope.direct && !subScope.integration && !subPairScope.integration);
+assert.equal(Hybrid.getPositionSeriesEnd(Hybrid.buildSequence(subPairScope).steps, 0), 1, 'a sub pair measures L and R per position');
+assert.equal(Hybrid.getPositionSeriesEnd(subSteps, 0), 0, 'a mono sub measures one sweep per position');
+assert.notEqual(rearScope.id, centerScope.id);
+assert.notEqual(Hybrid.buildScope({ bank_id: 'global', group: 'side', label: 'Global · Side L/R + Sub', channel_mode: 'stereo' }, subTopology).id, rearScope.id);
+assert.deepEqual(Hybrid.getDiagramState(centerScope, 'stereo').speakers, { left: false, right: false, stereo: true });
+assert.equal(Hybrid.getDiagramState(centerScope, 'stereo').layout, 'single');
+assert.deepEqual(Hybrid.getDiagramState(subScope, 'stereo').speakers, { left: false, right: false, stereo: false });
+assert.equal(Hybrid.getDiagramState(subScope, 'stereo').layout, 'sub');
+assert(Hybrid.getDiagramState(subScope, 'stereo').subs.left.active, 'subs stay visible for a sub scope');
+
+// One channel: the profile carries one model and no integration; a sub scope
+// uses the listening-position model alone (no direct blend).
+const monoCaptures = [capture('direct', 'direct-stereo', 'stereo', measurement('stereo', 0, { directResponse })),
+    capture('mlp', 'mlp', 'stereo', measurement('stereo', 0)),
+    capture('secondary', 'left', 'stereo', measurement('stereo', 0)),
+    capture('secondary', 'right', 'stereo', measurement('stereo', 0))];
+const monoProfile = Hybrid.buildProfile(monoCaptures, centerScope);
+assert.deepEqual(Object.keys(monoProfile.models), ['stereo']);
+assert.equal(monoProfile.integration, null);
+assert.equal(monoProfile.left, null);
+assert.equal(monoProfile.models.stereo.modelBlend.gatedDirectLowerLimitHz, 300);
+const subProfile = Hybrid.buildProfile(monoCaptures.slice(1), subScope);
+assert.equal(subProfile.models.stereo.modelBlend, null);
+assert.equal(subProfile.models.stereo.points.length, 7);
+assert.equal(subProfile.models.stereo.constraints.length, 7);
+assert.strictEqual(subProfile.models.stereo.timingMeasurement, monoCaptures[1].measurement);
+assert.throws(() => Hybrid.buildProfile(monoCaptures.slice(2), subScope), /Missing stereo listening-area measurements/);
+const pairProfile = Hybrid.buildProfile(profileCaptures, rearScope);
+assert.deepEqual(Object.keys(pairProfile.models), ['left', 'right']);
+assert.strictEqual(pairProfile.left, pairProfile.models.left);
+assert.equal(pairProfile.mode, 'subwoofer-2.2');
 
 console.log('hybrid measurement tests: ok');

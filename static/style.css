@@ -5049,6 +5049,7 @@ select.url-input {
 
 .hybrid-speaker-left { left: 23%; }
 .hybrid-speaker-right { left: 77%; }
+.hybrid-speaker-center { left: 50%; }
 .hybrid-speaker.is-active {
     border-color: var(--accent);
     box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 14%, transparent), 0 0 28px color-mix(in srgb, var(--accent) 24%, transparent);
@@ -5119,6 +5120,19 @@ select.url-input {
 }
 .hybrid-mic-direct-left { left: 23%; top: 38%; }
 .hybrid-mic-direct-right { left: 77%; top: 38%; }
+.hybrid-mic-direct-center { left: 50%; top: 38%; }
+/* The room view shows a speaker pair (default), one speaker, or only subwoofers. */
+.hybrid-room-view .hybrid-speaker-center,
+.hybrid-room-view .hybrid-mic-direct-center,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-left,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-right,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-left,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-right,
+.hybrid-room-view[data-hybrid-layout="sub"] .hybrid-speaker,
+.hybrid-room-view[data-hybrid-layout="sub"] .hybrid-mic-direct-left,
+.hybrid-room-view[data-hybrid-layout="sub"] .hybrid-mic-direct-right { display: none; }
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-center,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-center { display: grid; }
 .hybrid-mic-left { left: 37%; top: 69%; }
 .hybrid-mic-mlp { left: 50%; top: 66%; }
 .hybrid-mic-right { left: 63%; top: 69%; }

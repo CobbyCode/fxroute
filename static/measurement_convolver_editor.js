@@ -22,6 +22,8 @@
         appendBankBindingFields: () => {},
         measurementCommitSourceId: () => '',
         requireConcreteFilterBank: () => false,
+        // Why the visible results cannot become a filter ('' when they can).
+        measurementImportBlockedReason: () => '',
         measurementBankSumsBothInputs: () => false,
         fetchEffects: async () => {},
         fetchOutputSystemCatalog: async () => {},
@@ -540,6 +542,8 @@
 
     async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, options = {}) {
         if (!deps.requireConcreteFilterBank()) throw new Error('Select a filter bank for import or measurement.');
+        const blocked = deps.measurementImportBlockedReason();
+        if (blocked) throw new Error(blocked);
         const sampleRate = Number(options.sampleRate) || getMeasurementConvolverSampleRate();
         const length = Number(options.irLength) || getMeasurementConvolverFirLength();
         const phaseMode = ui.measurementConvolverPhaseModes.includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
@@ -596,6 +600,12 @@
     }
 
     function takeMeasurementConvolverToDraft(mode = 'both') {
+        const blocked = deps.measurementImportBlockedReason();
+        if (blocked) {
+            showMeasurementConvolverFeedback(blocked);
+            deps.showToast(blocked, 'warning');
+            return;
+        }
         const selection = getMeasurementConvolverSourceSelectionState();
         if (!selection.take[mode]) {
             const warning = selection.warning || getMeasurementConvolverMultiSourceWarning();
@@ -688,6 +698,11 @@
 
     async function createMeasurementConvolverPresetFromDraft() {
         if (!deps.requireConcreteFilterBank()) return;
+        const blocked = deps.measurementImportBlockedReason();
+        if (blocked) {
+            deps.showToast(blocked, 'warning');
+            return;
+        }
         if (deps.isConvolverCreateInFlight()) {
             deps.showToast('Convolver preset creation already in progress', 'warning');
             return;

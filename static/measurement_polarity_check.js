@@ -102,8 +102,9 @@
     }
 
     function currentArea() {
+        // A Surround Global group (one speaker plus the subs) and All Banks are no speaker bank for a per-speaker run.
         const area = deps.measurementArea();
-        return area && area.available !== false ? area : null;
+        return area && area.available !== false && area.importable !== false && !area.group ? area : null;
     }
 
     function renderControls() {

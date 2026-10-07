@@ -41,6 +41,9 @@ async function main() {
     invalid.modes.stereo.processing.left_low.lowpass = null;
     assert.equal(Speaker.speakerAlignVisible(invalid), false);
     assert.equal(Speaker.speakerAlignVisible(null), false);
+    // Surround Global is measured per speaker group; whole-speaker alignment is not offered there.
+    const surround = catalog(); surround.active_mode = 'surround'; surround.modes.surround = surround.modes.stereo;
+    assert.equal(Speaker.speakerAlignVisible(surround), false);
 
     const state = { outputSystem: { catalog: catalog() }, measurement: {
         selectedInputId: 'mic-1', selectedMicInputChannel: '1', selectedReferenceInputChannel: '',

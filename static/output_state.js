@@ -230,14 +230,36 @@ function isSubwooferBank(bankId) {
     return String(bankId || '').startsWith('sub');
 }
 
-function measurementArea(catalog, bankId) {
+// Surround Global is measured and filtered per speaker group together with the
+// subs (Front L/R + Sub, Center + Sub, ...); a group needs a routed speaker.
+function globalGroupOptions(modeConfig) {
+    if (modeConfig?.topology?.mode !== 'surround') return [];
+    const subs = (modeConfig.topology.sub_roles || []).length > 0;
+    return surroundGroups(modeConfig.topology).map(id => ({
+        id, label: SURROUND_GROUP_LABELS[id] + (subs ? ' + Sub' : ''),
+        channel_mode: id === 'center' ? 'mono' : 'stereo' }));
+}
+
+function resolveGlobalGroup(modeConfig, group) {
+    const options = globalGroupOptions(modeConfig);
+    return options.find(option => option.id === group) || options[0] || null;
+}
+
+function measurementArea(catalog, bankId, group) {
     const mode = (catalog && catalog.active_mode) || 'stereo';
     const modeConfig = (catalog && catalog.modes && catalog.modes[mode]) || {};
     const selected = String(bankId || modeConfig.selected_bank || 'global');
     const bank = modeConfig.banks?.[selected];
-    const label = bank?.label || roleLabel(selected);
-    const available = selected !== 'all';
-    const channel_mode = bank?.channel_mode || 'stereo';
+    const groupOption = mode === 'surround' && selected === 'global' ? resolveGlobalGroup(modeConfig, group) : null;
+    // All Banks measures the whole system as currently listened (every bank on
+    // its A/B side). It owns no bank, so a result can be saved but not imported.
+    const allBanks = selected === 'all';
+    const routed = (modeConfig.topology?.roles || []).length > 0;
+    const listened = allBanks ? modeConfig.all_banks?.active_side : null;
+    const label = groupOption ? `Global · ${groupOption.label}`
+        : allBanks ? `All Banks${listened ? ` · ${listened}` : ''}` : bank?.label || roleLabel(selected);
+    const available = !(allBanks && !routed) && !(mode === 'surround' && selected === 'global' && !groupOption);
+    const channel_mode = groupOption ? groupOption.channel_mode : bank?.channel_mode || 'stereo';
     // A stereo area (an L/R pair bank or Global) can be swept per side or
     // together; a mono area has no sides and always sweeps both inputs at
     // once (a summed mono target needs both to reach operating level).
@@ -245,6 +267,9 @@ function measurementArea(catalog, bankId) {
     const repeat_supported = available && channel_mode === 'stereo';
     const repeat_note = !available ? 'Select a filter bank for measurement.'
         : repeat_supported ? '' : `${label} is a mono target. Use a single sweep.`;
+    const groupNote = groupOption
+        ? `${groupOption.label}: every other speaker is muted; the subs stay audible.`
+        : allBanks ? 'Whole system as listened (every bank on its A/B side); not importable.' : '';
     return {
         bank_id: selected,
         label,
@@ -252,11 +277,13 @@ function measurementArea(catalog, bankId) {
         channel_mode,
         available,
         sides,
-        note: !available ? repeat_note : selected === 'global'
+        note: !available ? repeat_note : groupNote || (selected === 'global'
             ? 'Whole system; all area banks active.'
-            : `Only ${label} stays audible; every other output is muted for this sweep.`,
+            : `Only ${label} stays audible; every other output is muted for this sweep.`),
         repeat_supported,
         repeat_note,
+        ...(groupOption ? { group: groupOption.id } : {}),
+        ...(allBanks ? { importable: false } : {}),
     };
 }
 
@@ -272,11 +299,15 @@ function bankSelectorVisible(modeConfig) {
     return roles.length > 0 && !(roles.length === 2 && roles.includes('main_l') && roles.includes('main_r'));
 }
 
-function bankBinding(catalog) {
+function bankBinding(catalog, group) {
     if (!catalog) return null;
-    const bankId = catalog.modes?.[catalog.active_mode]?.selected_bank || 'global';
+    const modeConfig = catalog.modes?.[catalog.active_mode];
+    const bankId = modeConfig?.selected_bank || 'global';
     if (bankId === 'all') throw new Error('Select a filter bank for import or measurement.');
-    return { bank_mode: catalog.active_mode, bank_id: bankId, expected_revision: catalog.revision };
+    const groupOption = catalog.active_mode === 'surround' && bankId === 'global'
+        ? resolveGlobalGroup(modeConfig, group) : null;
+    return { bank_mode: catalog.active_mode, bank_id: bankId, expected_revision: catalog.revision,
+        ...(groupOption ? { bank_group: groupOption.id } : {}) };
 }
 
 function combineBank(catalog) {
@@ -460,6 +491,8 @@ function renderBankSelector(select, catalog, mode) {
         topologySummary,
         summedRoleIds,
         isSubwooferBank,
+        globalGroupOptions,
+        resolveGlobalGroup,
         measurementArea,
         bankOptions,
         bankSelectorVisible,

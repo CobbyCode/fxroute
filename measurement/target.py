@@ -23,14 +23,16 @@ import json
 from collections.abc import Sequence
 
 from audio.output_routing import device_key
-from audio.filter_banks import resolve_bank, summarize_banks
+from audio.filter_banks import resolve_bank, summarize_all_banks, summarize_banks
 from audio.output_state import effective_crossover_enabled, routing_for_device, validate_output_state
-from audio.output_topology import MAX_CHANNELS, SUB_ROLES, derive_topology
+from audio.output_topology import MAX_CHANNELS, SUB_ROLES, derive_topology, surround_group
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 from dsp.native_config import role_side
+from dsp.surround_global import routed_groups
 from dsp.processing_plan import rendered_crossover_filters
 
 __all__ = [
+    "ALL_BANKS_ID",
     "GLOBAL_BANK_ID",
     "LEGACY_TARGET",
     "REFERENCE_TAP_INGRESS",
@@ -41,6 +43,7 @@ __all__ = [
     "require_commit_target",
     "summed_role_ids",
     "sweep_output_masks",
+    "target_input_mask",
     "target_output_mask",
     "targets_compatible",
 ]
@@ -48,11 +51,16 @@ __all__ = [
 SCHEMA = "fxroute.measurement-target"
 VERSION = 1
 GLOBAL_BANK_ID = "global"
+# All Banks measures the whole system as currently listened: no bank is owned,
+# so a result can be saved and inspected but never committed as a correction.
+ALL_BANKS_ID = "all"
 # A host-reference or electrical capture taps the DSP ingress monitor, i.e.
 # upstream of Global, the matrix, and every crossover/area filter.  A reference
 # tapped after a way's filters would subtract the delay being measured, so the
 # tap location is recorded in every target instead of being assumed.
 REFERENCE_TAP_INGRESS = "fxroute_dsp_sink.monitor"
+# Surround program positions the host sink always feeds (FL, FR): engine inputs 0 and 1.
+SURROUND_FRONT_INPUT_MASK = 0b11
 # Stored results from before the frozen target existed stay readable: they are
 # marked explicitly as legacy rather than silently treated as Global captures.
 LEGACY_TARGET = {"schema": SCHEMA, "version": VERSION, "legacy": True}
@@ -107,8 +115,13 @@ def freeze_measurement_target(
     sample_rate_hz: int,
     fingerprint: str,
     plan: dict | None = None,
+    group: str | None = None,
 ) -> dict:
     """Freeze the measurement target from committed output state.
+
+    Surround Global is measured per speaker ``group`` (front, center, side,
+    rear): the target covers that group's speakers plus every sub, so the
+    sweep sees the speaker together with its bass-management share.
 
     ``fingerprint`` is the service-computed processing fingerprint for the
     same device and rate.  ``plan``, the compiled plan behind it, adds the
@@ -121,8 +134,9 @@ def freeze_measurement_target(
     config = validated["modes"][mode]
     if not isinstance(bank_id, str):
         raise ValueError("Measurement bank must be a string")
+    all_banks = bank_id == ALL_BANKS_ID
     try:
-        definition = resolve_bank(config, bank_id)
+        definition = {"id": ALL_BANKS_ID, "roles": []} if all_banks else resolve_bank(config, bank_id)
     except ValueError as exc:
         raise ValueError(f"Bank {bank_id!r} is not stored in output mode {mode}") from exc
     if not isinstance(output_key, str) or not output_key.strip():
@@ -133,30 +147,53 @@ def freeze_measurement_target(
     topology = derive_topology(mode, routing_for_device(validated, mode, output_key, channels), channels=channels,
                                crossover_enabled=effective_crossover_enabled(validated, mode, channels))
     topology.require_activatable()
+    if all_banks:
+        if not topology.roles:
+            raise ValueError("All Banks needs at least one routed speaker")
+        definition = {**definition, "roles": list(topology.roles)}
+    surround_global = mode == "surround" and bank_id == GLOBAL_BANK_ID
+    if group is not None and not surround_global:
+        raise ValueError("A speaker group applies to the Surround Global bank only")
+    if surround_global:
+        if group not in routed_groups(topology.roles):
+            raise ValueError(
+                "Surround Global is measured per speaker group; select a routed one "
+                f"(got {group!r})")
+        definition = {**definition, "roles": [
+            role for role in topology.roles if role in SUB_ROLES or surround_group(role) == group]}
     # Internal Speaker Align captures can still address one physical way.
     measured = ([bank_id] if bank_id in topology.roles else definition["roles"])
     if bank_id != GLOBAL_BANK_ID and not set(measured) <= set(topology.roles):
         raise ValueError(f"Bank {bank_id} is not an active role on the selected outputs")
     banks = validated["modes"][mode]["banks"]
+    all_summary = summarize_all_banks([banks[role] for role in topology.roles]) if all_banks else None
     target = {
         "schema": SCHEMA,
         "version": VERSION,
         "mode": mode,
         "device_key": device_key(output_key),
         "bank_id": bank_id,
-        "preset": summarize_banks([banks[role] for role in (['global'] if bank_id == GLOBAL_BANK_ID else measured)])["preset"],
+        "preset": (all_summary["preset"] if all_banks else
+                   summarize_banks([banks[role] for role in (['global'] if bank_id == GLOBAL_BANK_ID else measured)])["preset"]),
         "revision": validated["revision"],
         "processing_fingerprint": fingerprint,
         "sample_rate_hz": sample_rate_hz,
         "channels": channels,
         "roles": list(topology.roles),
-        "measured_roles": list(topology.roles) if bank_id == GLOBAL_BANK_ID else list(measured),
+        "measured_roles": (list(measured) if surround_global
+                           else list(topology.roles) if bank_id in (GLOBAL_BANK_ID, ALL_BANKS_ID) else list(measured)),
         "reference_tap": REFERENCE_TAP_INGRESS,
     }
-    if plan is not None:
+    if surround_global:
+        target["global_group"] = group
+    if all_banks:
+        # The listened A/B side and preset of every bank; a mixed state has no single preset.
+        target["active_side"] = all_summary["active_side"]
+        target["bank_presets"] = {role: banks[role]["preset"] for role in topology.roles}
+    if plan is not None and not all_banks:
         target["commit_fingerprint"] = _context_token(
             commit_context(plan, bank_id=bank_id, measured_roles=target["measured_roles"]))
-    if bank_id != GLOBAL_BANK_ID and len(measured) == 1 and measured[0] in SUB_ROLES:
+    if bank_id not in (GLOBAL_BANK_ID, ALL_BANKS_ID) and len(measured) == 1 and measured[0] in SUB_ROLES:
         # An isolated sub has no broadband plateau at 120 Hz..8 kHz.
         # Freeze its rendered band, including per-side bass and way filters.
         filters = rendered_crossover_filters(validated, output_key=output_key, channels=channels)[measured[0]]
@@ -204,6 +241,21 @@ def target_output_mask(target: dict, *, roles: Sequence[str]) -> int:
     if target.get("bank_id") == GLOBAL_BANK_ID and len(measured) == len(ordered):
         return 0
     return sum(1 << index for index, role in enumerate(ordered) if role not in measured)
+
+
+def target_input_mask(target: dict) -> int:
+    """Return the engine input mute mask for this target (0 mutes nothing).
+
+    The sweep always plays into the host sink, which feeds the Front program
+    positions (FL, FR) as the timing reference.  A Surround Global group other
+    than Front measures its speakers together with the audible subs; Front bass
+    would reach them through the shared bass bus, so those two inputs are
+    silenced for the take.
+    """
+    group = target.get("global_group")
+    if target.get("mode") == "surround" and group is not None and group != "front":
+        return SURROUND_FRONT_INPUT_MASK
+    return 0
 
 
 def narrow_measured_target(target: dict, *, roles: Sequence[str]) -> dict:
@@ -276,6 +328,7 @@ _LIVE_FIELDS = (
     ("processing_fingerprint", "processing"),
     ("reference_tap", "reference tap"),
     ("measured_roles", "measured roles"),
+    ("global_group", "speaker group"),
 )
 # Targets carrying a commit fingerprint compare only the processing a commit
 # into the measured bank depends on (see commit_context).
@@ -283,7 +336,8 @@ _COMMIT_FIELDS = tuple(("commit_fingerprint", label) if field == "processing_fin
                        for field, label in _LIVE_FIELDS)
 
 
-def require_commit_target(target: dict, live: dict, *, mode: str, bank_id: str) -> None:
+def require_commit_target(target: dict, live: dict, *, mode: str, bank_id: str,
+                          group: str | None = None) -> None:
     """Reject a generated-correction commit whose measurement no longer applies.
 
     ``target`` is the frozen target stored with the source measurement and
@@ -300,10 +354,17 @@ def require_commit_target(target: dict, live: dict, *, mode: str, bank_id: str) 
         return
     if not isinstance(target, dict) or target.get("schema") != SCHEMA:
         raise ValueError("Source measurement carries no frozen target")
+    if target.get("bank_id") == ALL_BANKS_ID:
+        raise ValueError("A measurement taken through All Banks cannot be imported or committed into a bank")
     if target.get("mode") != mode or target.get("bank_id") != bank_id:
         raise ValueError(
             f"Measurement was captured for {target.get('mode')} area "
             f"{target.get('bank_id')!r}, but this commit targets {mode} area {bank_id!r}"
+        )
+    if target.get("global_group") != group:
+        raise ValueError(
+            f"Measurement was captured for speaker group {target.get('global_group')!r}, "
+            f"but this commit targets {group!r}"
         )
     if not isinstance(live, dict) or live.get("schema") != SCHEMA or live.get("legacy"):
         raise ValueError("Live measurement context is unavailable")
@@ -334,6 +395,7 @@ def _comparison_key(target: dict) -> tuple:
         target.get("processing_fingerprint"),
         target.get("reference_tap"),
         tuple(target.get("measured_roles") or ()),
+        target.get("global_group"),
     )
 
 

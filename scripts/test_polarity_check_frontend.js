@@ -157,6 +157,17 @@ function row(roles, verdict, extra = {}) {
         assert.equal(calls.length, 0);
     }
 
+    // A Surround Global group is one speaker plus the subs, not a speaker bank.
+    {
+        const { elements, calls } = harness({
+            area: { bank_id: 'global', label: 'Global · Front L/R + Sub', available: true, group: 'front' },
+            status: {}, jobs: [] });
+        await polarityCheck.openPolarityCheck();
+        assert.equal(elements.polarityCheckStart.disabled, true);
+        assert.match(elements.polarityCheckActionStatus.textContent, /Select a speaker bank/);
+        assert.equal(calls.length, 0);
+    }
+
     // A failed measurement shows the reason and no result.
     {
         const failed = { id: 'job-1', status: 'failed', error: 'The measurement carried no polarity reading' };

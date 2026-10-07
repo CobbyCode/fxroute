@@ -86,7 +86,7 @@ assert.strictEqual(normalized.selectedReferenceInputChannelRight, '', 'out-of-ra
 console.log('channel normalization choke point: ok');
 
 // --- Part 2: hybrid builder field snapshot -------------------------------
-function makeFlowsContext(state, warning, areaBank = '') {
+function makeFlowsContext(state, warning, areaBank = '', areaGroup = '') {
     const ctx = {
         console, Math, JSON, Object, Array, Promise, String, Number, Boolean,
         setTimeout, clearTimeout, FormData,
@@ -107,6 +107,7 @@ function makeFlowsContext(state, warning, areaBank = '') {
         normalizeMeasurementInputChannelSelections: () => {},
         getMeasurementReferenceWarning: () => warning,
         measurementAreaBank: () => areaBank,
+        measurementAreaGroup: () => areaGroup,
         api: {},
         sleep: async () => {},
         showToast: () => {},
@@ -153,6 +154,13 @@ assert.strictEqual(entries.measurement_bank, 'left_low');
 assert.strictEqual(entries.measurement_role, 'secondary');
 assert.strictEqual(entries.channel, 'left');
 console.log('hybrid payload selected area: ok');
+
+// A Surround Global speaker group travels with every advanced step.
+MF = makeFlowsContext(hybridState, '', 'global', 'rear');
+entries = formEntries(MF.buildHybridMeasurementForm(step));
+assert.strictEqual(entries.measurement_bank, 'global');
+assert.strictEqual(entries.measurement_group, 'rear');
+console.log('hybrid payload speaker group: ok');
 
 // --- Part 3: per-side reference fields -----------------------------------
 function runAppendReferenceFields(state, channelCount) {

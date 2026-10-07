@@ -92,7 +92,7 @@ class SurroundMeasurementTests(unittest.TestCase):
         return compile_processing_plan(state, output_key="device", channels=16, sample_rate_hz=48000,
                                        preset_loader=lambda _: {"chain": []})
 
-    def route(self, bank="global", *, layout=None, scope="active_chain", mode="surround", channel="stereo"):
+    def route(self, bank="all", *, layout=None, scope="active_chain", mode="surround", channel="stereo"):
         layout = self.layout if layout is None else layout
         target = freeze_measurement_target(self.state, bank_id=bank, output_key="device", channels=16,
                                           sample_rate_hz=48000, fingerprint="frozen-plan", plan=self.plan)

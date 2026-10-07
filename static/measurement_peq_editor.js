@@ -23,6 +23,8 @@
         setMeasurementActiveEditor: () => {},
         measurementBankSumsBothInputs: () => false,
         requireConcreteFilterBank: () => false,
+        // Why the visible results cannot become a filter ('' when they can).
+        measurementImportBlockedReason: () => '',
         validatePeqBands: () => null,
         normalizePeqEqMode: (mode) => mode,
         collectEffectsExtras: () => ({}),
@@ -263,6 +265,12 @@
     }
 
     function takeMeasurementPeqToPreset(mode = 'both') {
+        const blocked = deps.measurementImportBlockedReason();
+        if (blocked) {
+            showMeasurementPeqTakeFeedback(blocked);
+            deps.showToast(blocked, 'warning');
+            return;
+        }
         const peq = ensureMeasurementPeqState();
         if (!peq.filters.length) {
             deps.showToast('Add at least one measurement PEQ filter first', 'warning');
@@ -309,6 +317,11 @@
 
     async function createMeasurementPeqPresetFromDraft() {
         if (!deps.requireConcreteFilterBank()) return;
+        const blocked = deps.measurementImportBlockedReason();
+        if (blocked) {
+            deps.showToast(blocked, 'warning');
+            return;
+        }
         if (deps.isPeqCreateInFlight()) {
             deps.showToast('PEQ preset creation already in progress', 'warning');
             return;

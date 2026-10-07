@@ -582,6 +582,7 @@ from measurement.store import (
     MeasurementStore,
 )
 from measurement.target import (
+    ALL_BANKS_ID,
     freeze_measurement_target,
     measurement_target_from_context,
     require_commit_target,
@@ -4943,7 +4944,7 @@ def _output_state_device(overview: dict) -> tuple[str, int | None]:
     return key, count
 
 
-def _freeze_measurement_target(bank_id: str, sample_rate_hz: int) -> dict:
+def _freeze_measurement_target(bank_id: str, sample_rate_hz: int, group: str | None = None) -> dict:
     """Freeze the measurement target for the currently selected output device.
 
     Uses the committed output state and the same processing fingerprint the
@@ -4959,11 +4960,9 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int) -> dict:
     topology = _output_state_topology(state, state["active_mode"], output_key, channel_count)
     raw_bank = str(bank_id or "").strip() or selected_bank(state["modes"][state["active_mode"]], topology["roles"],
                                                            state["active_mode"])
-    if state["active_mode"] == "surround" and raw_bank == "global":
-        raise ValueError("Surround has no Global bank; select an area bank for measurement")
     # A single actively routed way keeps its own target so per-way captures
     # isolate exactly that way; area ids still resolve to their owning bank.
-    if raw_bank in topology["roles"]:
+    if raw_bank == ALL_BANKS_ID or raw_bank in topology["roles"]:
         bank = raw_bank
     else:
         bank = resolve_bank(state["modes"][state["active_mode"]], raw_bank, topology["roles"])["id"]
@@ -4971,7 +4970,8 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int) -> dict:
                                 sample_rate_hz=sample_rate_hz)
     return freeze_measurement_target(
         state, bank_id=bank, output_key=output_key, channels=channel_count,
-        sample_rate_hz=sample_rate_hz, fingerprint=service.fingerprint_plan(plan), plan=plan)
+        sample_rate_hz=sample_rate_hz, fingerprint=service.fingerprint_plan(plan), plan=plan,
+        group=group)
 
 
 def _live_measurement_sample_rate() -> int:
@@ -5008,10 +5008,14 @@ def _verify_measurement_commit(measurement_id: str, binding: dict) -> None:
     target = measurement_target_from_context(measurement)
     if target.get("legacy"):
         return
-    live = _freeze_measurement_target(target["bank_id"], _live_measurement_sample_rate())
+    rate = _live_measurement_sample_rate()
+    group = target.get("global_group")
+    live = (_freeze_measurement_target(target["bank_id"], rate, group) if group
+            else _freeze_measurement_target(target["bank_id"], rate))
     require_commit_target(
         target, live,
         mode=str(binding.get("mode") or ""), bank_id=str(binding.get("bank_id") or ""),
+        group=binding.get("bank_group"),
     )
 
 

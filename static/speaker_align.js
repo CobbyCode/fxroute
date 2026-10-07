@@ -94,6 +94,8 @@
     function speakerAlignVisible(catalog) {
         if (!catalog || typeof catalog !== 'object') return false;
         const modeConfig = catalog.modes && catalog.modes[catalog.active_mode];
+        // Surround Global is measured per speaker group; aligning a whole speaker is not offered there.
+        if (catalog.active_mode === 'surround') return false;
         if (!modeConfig?.crossover_enabled || modeConfig.selected_bank !== 'global') return false;
         const wayCount = modeConfig && modeConfig.topology
             ? Number(modeConfig.topology.way_count || 0) : 0;

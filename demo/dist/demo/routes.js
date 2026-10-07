@@ -803,8 +803,21 @@
         const config = outputStateStore.modes[mode];
         const bank = config && outputStateCatalog().modes[mode].banks[bankId];
         if (!bank) return { error: `Unknown bank ${bankId}`, status: 400 };
+        // Mirror of dsp.api._validate_bank_target: a speaker group belongs to
+        // the Surround Global bank, which needs one.
+        const group = String(body.bank_group || '');
+        const surroundGlobal = mode === 'surround' && bankId === 'global';
+        if (group && (!['front', 'center', 'side', 'rear'].includes(group) || !surroundGlobal)) {
+            return { error: `Speaker group ${group} does not apply to this bank`, status: 400 };
+        }
+        if (surroundGlobal && !group) return { error: 'Surround Global presets need a speaker group', status: 400 };
         if (revision !== outputStateStore.revision) {
             return { conflict: true, created: createdName };
+        }
+        if (group) {
+            // A Surround Global preset carries its group plugins and the surround layout.
+            const preset = dspPresets.find(entry => entry.name === createdName);
+            if (preset) Object.assign(preset, { bank: 'global', layout: 'surround', group });
         }
         updateDemoBanks(config, bank.roles, { preset: createdName });
         outputStateStore.revision += 1;
@@ -3410,7 +3423,11 @@
                 ? body.presetNames
                 : [body.preset1, body.preset2].filter(Boolean);
             if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: presetNames });
+                // Combining Surround presets stays a Surround preset of the Global bank.
+                const sources = presetNames.map(source => dspPresets.find(pr => pr.name === source));
+                const surround = sources.length > 0 && sources.every(source => source?.layout === 'surround');
+                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: presetNames,
+                    ...(surround ? { bank: 'global', layout: 'surround' } : {}) });
             }
             syncDspToState();
             return j({ success: true, preset: { name } });

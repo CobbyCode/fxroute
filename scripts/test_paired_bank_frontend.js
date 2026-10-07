@@ -36,7 +36,13 @@ config.selected_bank = 'all';
 assert.equal(ui.compareState(catalog).aggregate, true);
 assert.equal(ui.compareState(catalog).effectiveActiveSide, null);
 assert.equal(ui.compareState(catalog).canB, false);
-assert.equal(ui.measurementArea(catalog).available, false);
+// All Banks measures the whole system as listened, but owns no bank to import into.
+const allBanksArea = ui.measurementArea(catalog);
+assert.deepEqual([allBanksArea.bank_id, allBanksArea.available, allBanksArea.importable, allBanksArea.label],
+    ['all', true, false, 'All Banks']);
+assert.deepEqual(allBanksArea.sides, ['left', 'stereo', 'right']);
+assert.equal(allBanksArea.repeat_supported, true);
+assert.match(allBanksArea.note, /not importable/);
 assert.throws(() => ui.bankBinding(catalog), /Select a filter bank/);
 assert.deepEqual(ui.buildMutation('switch_all_banks', { mode: 'stereo-sub', active_side: 'A' }),
     { kind: 'switch_all_banks', mode: 'stereo-sub', active_side: 'A' });
@@ -113,8 +119,17 @@ vm.runInContext([
     }
     config.selected_bank = 'all';
     context.syncBankActionButtons();
-    assert.deepEqual(buttons.map(button => button.disabled), [true, true]);
-    assert.match(buttons[0].title, /All Banks/);
-    assert.match(buttons[1].title, /All Banks/);
+    // All Banks can be measured as a whole system; only the import stays disabled.
+    assert.deepEqual(buttons.map(button => button.disabled), [false, true]);
+    assert.equal(buttons[0].title, '');
+    assert.match(buttons[1].title, /All Banks only switches A\/B/);
+    // The sweep gate accepts All Banks (whole system), the import gate refuses it.
+    assert.equal(BankUI.requireMeasurableArea(), true);
+    assert.throws(() => BankUI.requireConcreteFilterBank(), /Select a filter bank for import or measurement/);
+    for (const selected of ['main', 'global']) {
+        config.selected_bank = selected;
+        assert.equal(BankUI.requireConcreteFilterBank(), true);
+        assert.equal(BankUI.requireMeasurableArea(), true);
+    }
     console.log('Paired bank frontend tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -206,7 +206,75 @@ function measurementAreaTests() {
     assert.equal(empty.label, 'Global');
 }
 
+function allBanksAreaTests() {
+    const withAll = (extra = {}, roles = ['main_l', 'main_r', 'sub1']) => ({ active_mode: 'stereo-sub', modes: { 'stereo-sub': {
+        selected_bank: 'all', topology: { mode: 'stereo-sub', roles }, banks: {}, ...extra } } });
+    const mixed = OutputState.measurementArea(withAll());
+    assert.deepEqual(mixed, {
+        bank_id: 'all', label: 'All Banks', channel: 'stereo', channel_mode: 'stereo', available: true,
+        sides: ['left', 'stereo', 'right'],
+        note: 'Whole system as listened (every bank on its A/B side); not importable.',
+        repeat_supported: true, repeat_note: '', importable: false,
+    });
+    // The joint A/B side the sweep will be heard on labels the area.
+    assert.equal(OutputState.measurementArea(withAll({ all_banks: { active_side: 'B' } })).label, 'All Banks · B');
+    assert.equal(OutputState.measurementArea(withAll({ all_banks: { active_side: null } })).label, 'All Banks');
+    // Nothing routed: nothing to measure.
+    const none = OutputState.measurementArea(withAll({}, []));
+    assert.deepEqual([none.available, none.sides, none.note], [false, [], 'Select a filter bank for measurement.']);
+    // Concrete areas never report importable.
+    assert.equal('importable' in OutputState.measurementArea(catalog(), 'global'), false);
+}
+
+function surroundGlobalAreaTests() {
+    const roles = ['main_l', 'main_r', 'center', 'rear_l', 'rear_r', 'sub1', 'sub2'];
+    const surround = { active_mode: 'surround', revision: 4, modes: { surround: {
+        selected_bank: 'global',
+        topology: { mode: 'surround', roles, sub_roles: ['sub1', 'sub2'] },
+        banks: { global: { label: 'Global', channel_mode: 'stereo' }, main: { label: 'Front L/R', channel_mode: 'stereo' },
+            center: { label: 'Center', channel_mode: 'mono' }, rear: { label: 'Rear L/R', channel_mode: 'stereo' } },
+    } } };
+    assert.deepEqual(OutputState.globalGroupOptions(surround.modes.surround).map(option => [option.id, option.label, option.channel_mode]),
+        [['front', 'Front L/R + Sub', 'stereo'], ['center', 'Center + Sub', 'mono'], ['rear', 'Rear L/R + Sub', 'stereo']]);
+    assert.deepEqual(OutputState.globalGroupOptions({ topology: { mode: 'stereo-sub', roles: ['main_l', 'main_r'] } }), []);
+    // No group yet, or one without a routed speaker, resolves to the first routed group.
+    for (const wanted of [undefined, '', 'side', 'lfe']) {
+        assert.equal(OutputState.resolveGlobalGroup(surround.modes.surround, wanted).id, 'front');
+    }
+    const front = OutputState.measurementArea(surround, undefined, 'front');
+    assert.deepEqual(front, {
+        bank_id: 'global', label: 'Global · Front L/R + Sub', channel: 'stereo', channel_mode: 'stereo',
+        available: true, sides: ['left', 'stereo', 'right'],
+        note: 'Front L/R + Sub: every other speaker is muted; the subs stay audible.',
+        repeat_supported: true, repeat_note: '', group: 'front',
+    });
+    const center = OutputState.measurementArea(surround, 'global', 'center');
+    assert.deepEqual([center.group, center.channel_mode, center.sides, center.repeat_supported],
+        ['center', 'mono', [], false]);
+    assert.equal(center.repeat_note, 'Global · Center + Sub is a mono target. Use a single sweep.');
+    const rear = OutputState.measurementArea(surround, 'global', 'rear');
+    assert.equal(rear.label, 'Global · Rear L/R + Sub');
+    // Area banks and the other modes keep their exact shape (no group fields).
+    assert.equal('group' in OutputState.measurementArea(surround, 'main', 'rear'), false);
+    assert.equal('group' in OutputState.measurementArea(catalog(), 'global', 'rear'), false);
+    // Without any routed speaker the Surround Global area is not measurable.
+    const none = { ...surround, modes: { surround: { ...surround.modes.surround,
+        topology: { mode: 'surround', roles: [], sub_roles: [] } } } };
+    assert.equal(OutputState.measurementArea(none).available, false);
+    // The create/import binding names the group only for Surround Global.
+    assert.deepEqual(OutputState.bankBinding(surround, 'rear'),
+        { bank_mode: 'surround', bank_id: 'global', expected_revision: 4, bank_group: 'rear' });
+    assert.deepEqual(OutputState.bankBinding(surround, 'bogus'),
+        { bank_mode: 'surround', bank_id: 'global', expected_revision: 4, bank_group: 'front' });
+    const onFront = { ...surround, modes: { surround: { ...surround.modes.surround, selected_bank: 'main' } } };
+    assert.deepEqual(OutputState.bankBinding(onFront, 'rear'),
+        { bank_mode: 'surround', bank_id: 'main', expected_revision: 4 });
+    assert.equal('bank_group' in OutputState.bankBinding(catalog(), 'rear'), false);
+}
+
 measurementAreaTests();
+allBanksAreaTests();
+surroundGlobalAreaTests();
 
 applyFlow().then(() => {
     assert.match(indexSource, /output_state\.js\?v=\d+\.\d+\.\d+/);

@@ -5,7 +5,7 @@
 // static/measurement_flows.js. The former app.js renderHybridRoomDiagram
 // wrapper is gone (it once reassigned step to {} in the call, so
 // position/channel never reached the renderer); with no wrapper left the
-// step/mode/complete arguments cannot be dropped or reassigned on the way.
+// step/scope/complete arguments cannot be dropped or reassigned on the way.
 
 const assert = require('assert');
 const fs = require('fs');
@@ -23,8 +23,8 @@ assert.doesNotMatch(
 );
 assert.match(
     flowsSource,
-    /function renderHybridRoomDiagram\(step = \{\}, mode = 'stereo', complete = false\) \{/,
-    'canonical renderer keeps the (step, mode, complete) signature and defaults'
+    /function renderHybridRoomDiagram\(step = \{\}, scopeOrMode = 'stereo', complete = false\) \{/,
+    'canonical renderer keeps the (step, scope-or-mode, complete) signature and defaults'
 );
 assert.match(
     flowsSource,

@@ -14,7 +14,7 @@
         fetch: (...args) => root.fetch(...args),
         showToast: () => {},
         renderMeasurementPanel: () => {},
-        requireConcreteFilterBank: () => false,
+        requireMeasurableArea: () => false,
         measurementModeReady: () => false,
         measurementRepeatBlockedReason: () => '',
         flushSubwooferSettingsBeforeMeasurement: async () => {},
@@ -55,7 +55,7 @@
     }
 
     async function startHostMeasurement(jobGeneration = deps.getState().measurement.jobGeneration) {
-        if (!deps.requireConcreteFilterBank()) return;
+        if (!deps.requireMeasurableArea()) return;
         if (!deps.getState().measurement.hostCaptureAvailable || !deps.getState().measurement.selectedInputId) {
             deps.getState().measurement.statusText = 'No usable capture input. Select one in Setup.';
             deps.renderMeasurementPanel();
@@ -79,6 +79,7 @@
                 : 'stereo';
             formData.append('channel', side);
             formData.append('measurement_bank', area.bank_id);
+            if (area.group) formData.append('measurement_group', area.group);
         }
         formData.append('mic_input_channel', deps.getState().measurement.selectedMicInputChannel || '1');
         deps.appendMeasurementReferenceFields(formData);
@@ -111,7 +112,7 @@
     }
 
     async function startLrRepeatMeasurement(jobGeneration = deps.getState().measurement.jobGeneration) {
-        if (!deps.requireConcreteFilterBank()) return;
+        if (!deps.requireMeasurableArea()) return;
         if (!deps.getState().measurement.hostCaptureAvailable || !deps.getState().measurement.selectedInputId) {
             deps.getState().measurement.statusText = 'No usable capture input. Select one in Setup.';
             deps.renderMeasurementPanel();
@@ -127,6 +128,7 @@
         // two-sided sweeps the matching output mask.
         const area = deps.measurementAreaFromCatalog();
         if (area) formData.append('measurement_bank', area.bank_id);
+        if (area?.group) formData.append('measurement_group', area.group);
         formData.append('mic_input_channel', deps.getState().measurement.selectedMicInputChannel || '1');
         deps.appendMeasurementReferenceFields(formData);
         const calibrationFile = deps.getElements().measurementCalibrationFile?.files?.[0];

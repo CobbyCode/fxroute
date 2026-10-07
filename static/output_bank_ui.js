@@ -117,7 +117,7 @@
     function outputSystemBankBinding() {
         const catalog = (deps.getState().outputSystem || {}).catalog;
         try {
-            return outputState()?.bankBinding(catalog) || null;
+            return outputState()?.bankBinding(catalog, deps.getState().measurement?.globalGroup) || null;
         } catch (e) {
             return null;
         }
@@ -154,6 +154,7 @@
         if (!binding || !formData || typeof formData.append !== 'function') return false;
         formData.append('bank_mode', binding.bank_mode);
         formData.append('bank_id', binding.bank_id);
+        if (binding.bank_group) formData.append('bank_group', binding.bank_group);
         formData.append('expected_revision', String(binding.expected_revision));
         return true;
     }
@@ -172,8 +173,17 @@
     }
 
     function requireConcreteFilterBank() {
-        if (deps.measurementArea()?.available !== false) return true;
+        // Importing or creating a filter needs a bank to commit into.
+        const area = deps.measurementArea();
+        if (area?.available !== false && area?.importable !== false) return true;
         deps.showToast('Select a filter bank for import or measurement.', 'warning');
+        return false;
+    }
+
+    function requireMeasurableArea() {
+        // A sweep only needs an area to measure; All Banks measures the whole system.
+        if (deps.measurementArea()?.available !== false) return true;
+        deps.showToast('Select a filter bank for measurement.', 'warning');
         return false;
     }
 
@@ -188,20 +198,49 @@
         }
         mod.renderBankSelector(deps.getElements().effectsBankSelect, catalog, catalog.active_mode || 'stereo');
         deps.getElements().effectsBankSelect.disabled = !!deps.getState().outputSystem.busy || effectsCompareLoadInFlight;
+        renderEffectsGroupSelector(mod, catalog);
         deps.renderMeasurementArea();
         renderBankImportTarget();
         syncBankActionButtons();
     }
 
+    function renderEffectsGroupSelector(mod, catalog) {
+        /* Surround Global filters each speaker group separately (with its
+         * share of the subs), so the bank row gets a Speaker choice there. */
+        const select = deps.getElements().effectsGroupSelect;
+        if (!select) return;
+        const modeConfig = catalog.modes?.[catalog.active_mode];
+        const options = modeConfig?.selected_bank === 'global' ? mod.globalGroupOptions(modeConfig) : [];
+        select.closest('.effects-bank-row')?.classList.toggle('hidden', options.length === 0);
+        const selected = mod.resolveGlobalGroup(modeConfig, deps.getState().measurement?.globalGroup)?.id || '';
+        const html = options.map(option =>
+            `<option value="${mod.esc(option.id)}"${option.id === selected ? ' selected' : ''}>${mod.esc(option.label)}</option>`).join('');
+        if (select.innerHTML !== html) select.innerHTML = html;
+        if (select.value !== selected) select.value = selected;
+        select.disabled = !!deps.getState().outputSystem.busy || effectsCompareLoadInFlight;
+    }
+
+    function selectEffectsGroup(group) {
+        const measurement = deps.getState().measurement;
+        if (!measurement || measurement.globalGroup === group) return;
+        measurement.globalGroup = group;
+        renderEffectsBankSelector();
+    }
+
     function syncBankActionButtons() {
-        /* All Banks only switches A/B jointly across the area banks: there is
-         * nothing to measure, import or combine there, so those entries stay
-         * disabled. */
-        const aggregate = deps.measurementArea()?.available === false;
-        for (const button of [deps.getElements().effectsMeasureOpenBtn, deps.getElements().effectsToggleImportBtn]) {
-            if (!button) continue;
-            button.disabled = aggregate;
-            button.title = aggregate ? 'All Banks only switches A/B; select a filter bank to measure or import.' : '';
+        /* All Banks switches A/B jointly and can be measured as a whole system,
+         * but owns no bank: there is nothing to import or combine there. */
+        const area = deps.measurementArea();
+        const aggregate = area?.available === false || area?.importable === false;
+        const measureButton = deps.getElements().effectsMeasureOpenBtn;
+        if (measureButton) {
+            measureButton.disabled = area?.available === false;
+            measureButton.title = area?.available === false ? 'Select a filter bank to measure.' : '';
+        }
+        const importButton = deps.getElements().effectsToggleImportBtn;
+        if (importButton) {
+            importButton.disabled = aggregate;
+            importButton.title = aggregate ? 'All Banks only switches A/B; select a filter bank to import.' : '';
         }
         if (deps.getElements().effectsCombineSaveBtn) {
             renderEffectsCombine();
@@ -218,7 +257,8 @@
         const area = deps.measurementArea();
         const mono = area?.channel_mode === 'mono';
         const note = document.getElementById('effects-import-bank-target');
-        if (note) note.textContent = area?.available === false ? 'Select a filter bank before importing.'
+        const importable = area?.available !== false && area?.importable !== false;
+        if (note) note.textContent = !importable ? 'Select a filter bank before importing.'
             : `Target: ${area?.label || 'Global'} · ${mono ? 'Mono' : 'Stereo L/R'}`;
         // Mono banks get a single import field: the stereo file area is hidden
         // and the remaining pane accepts every mono-supported format. A stale
@@ -257,7 +297,7 @@
         const leftLabel = document.querySelector('label[for="effects-rew-left-text"]');
         if (leftLabel) leftLabel.textContent = mono ? 'Mono filter' : 'Left filter';
         if (deps.getElements().effectsRewLeftText) deps.getElements().effectsRewLeftText.placeholder = mono ? 'Paste mono REW text' : 'Paste Left REW text';
-        if (deps.getElements().effectsRewDualCreatePresetBtn) deps.getElements().effectsRewDualCreatePresetBtn.disabled = area?.available === false;
+        if (deps.getElements().effectsRewDualCreatePresetBtn) deps.getElements().effectsRewDualCreatePresetBtn.disabled = !importable;
     }
 
     async function readTextFile(file) {
@@ -1231,7 +1271,9 @@
         bankBindingJson,
         measurementPeqParams,
         requireConcreteFilterBank,
+        requireMeasurableArea,
         renderEffectsBankSelector,
+        selectEffectsGroup,
         syncBankActionButtons,
         renderBankImportTarget,
         readTextFile,

@@ -77,6 +77,8 @@ window.FXRouteMeasurementFlows?.init({
         const area = measurementAreaFromCatalog();
         return area ? area.bank_id : '';
     },
+    measurementAreaGroup: () => measurementAreaFromCatalog()?.group || '',
+    measurementArea: () => measurementAreaFromCatalog(),
     getMeasurementReferenceWarning: (...args) => window.FXRouteMeasurementSetup.getMeasurementReferenceWarning(...args),
     appendMeasurementReferenceFields: (formData) => window.FXRouteMeasurementSetup.appendMeasurementReferenceFields(formData),
     normalizeOutputModeName,
@@ -496,6 +498,7 @@ window.FXRouteMeasurementPeqEditor?.init({
     setMeasurementActiveEditor: (editor) => setMeasurementActiveEditor(editor),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
     requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
+    measurementImportBlockedReason: () => measurementImportBlockedReason(),
     validatePeqBands: (side, bands) => EffectsUI.validatePeqBands(side, bands),
     normalizePeqEqMode: (mode) => EffectsUI.normalizePeqEqMode(mode),
     collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
@@ -526,6 +529,7 @@ window.FXRouteMeasurementConvolverEditor?.init({
     appendBankBindingFields: (formData) => window.FXRouteBankUI.appendBankBindingFields(formData),
     measurementCommitSourceId: () => measurementCommitSourceId(),
     requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
+    measurementImportBlockedReason: () => measurementImportBlockedReason(),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
     fetchEffects: () => EffectsUI.fetchEffects(),
     fetchOutputSystemCatalog: (force) => fetchOutputSystemCatalog(force),
@@ -545,7 +549,7 @@ window.FXRouteMeasurementCapture?.init({
     fetch: (...args) => fetch(...args),
     showToast: (message, kind) => showToast(message, kind),
     renderMeasurementPanel: () => renderMeasurementPanel(),
-    requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
+    requireMeasurableArea: () => window.FXRouteBankUI.requireMeasurableArea(),
     measurementModeReady: () => measurementModeReady(),
     measurementRepeatBlockedReason: () => measurementRepeatBlockedReason(),
     flushSubwooferSettingsBeforeMeasurement: () => flushSubwooferSettingsBeforeMeasurement(),
@@ -757,6 +761,7 @@ let state = {
         selectedReferenceInputChannelLeft: '',
         selectedReferenceInputChannelRight: '',
         sweepSide: 'stereo',
+        globalGroup: '',
         cancelRequested: false,
         repeatJobActive: false,
         displaySmoothing: '1/6-oct',
@@ -1009,6 +1014,7 @@ const elements = {
     osTopology: document.getElementById('os-topology'),
     osFeedback: document.getElementById('os-feedback'),
     effectsBankSelect: document.getElementById('effects-bank-select'),
+    effectsGroupSelect: document.getElementById('effects-group-select'),
     effectsCrossoverCard: document.getElementById('effects-crossover-card'),
     effectsCrossoverSummary: document.getElementById('effects-crossover-summary'),
     effectsCrossoverTabs: document.getElementById('effects-crossover-tabs'),
@@ -2041,6 +2047,11 @@ function setupSettingsActions() {
                 { mode: catalog.active_mode, assignments }, 'Output routing updated').then((data) => {
                 if (data) void maybeApplyCrossoverStarters();
             });
+        });
+    }
+    if (elements.effectsGroupSelect) {
+        elements.effectsGroupSelect.addEventListener('change', (event) => {
+            window.FXRouteBankUI.selectEffectsGroup(event.target.value || '');
         });
     }
     if (elements.effectsBankSelect) {
@@ -3281,7 +3292,7 @@ function measurementAreaFromCatalog() {
     const mod = outputSystemModule();
     const catalog = (state.outputSystem || {}).catalog;
     if (!mod || !catalog || typeof mod.measurementArea !== 'function') return null;
-    return mod.measurementArea(catalog);
+    return mod.measurementArea(catalog, undefined, state.measurement.globalGroup);
 }
 
 function measurementRepeatBlockedReason() {
@@ -3328,6 +3339,13 @@ function renderMeasurementArea() {
     }
     if (elements.measurementSweepStartBtn) {
         elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight || area?.available === false;
+    }
+    if (elements.measurementHybridOpenBtn) {
+        // Advanced ends in a correction model, which All Banks cannot take.
+        const blocked = area?.available === false || area?.importable === false;
+        elements.measurementHybridOpenBtn.disabled = blocked;
+        elements.measurementHybridOpenBtn.title = blocked
+            ? 'Advanced builds a filter model; select a filter bank to use it.' : '';
     }
     syncSweepSideRow(area);
     syncMeasurementCalibrationMenu(area);
@@ -3875,6 +3893,19 @@ function resetMeasurementGraph() {
 
 function waitForNextAnimationFrame() {
     return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+
+function measurementImportBlockedReason() {
+    /* A result measured through All Banks has no bank to commit into: it can be
+     * saved and inspected, but it never becomes a filter. */
+    const visibleSaved = (state.measurement.measurements || [])
+        .filter(measurement => state.measurement.visibilityById?.[measurement.id]);
+    const throughAllBanks = [...getCurrentMeasurementEntries(), ...visibleSaved]
+        .some(measurement => measurement?.measurement_target?.bank_id === 'all');
+    return throughAllBanks
+        ? 'This result was measured through All Banks; it can be saved and inspected but not imported into a bank.'
+        : '';
 }
 
 

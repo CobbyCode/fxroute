@@ -1619,6 +1619,7 @@ async def start_measurement(
     calibration_file: Optional[UploadFile] = File(None),
     measurement_role: str = Form(""),
     measurement_bank: str = Form(""),
+    measurement_group: str = Form(""),
 ):
     services = _measurement_services()
     measurement_store = services.get_store()
@@ -1660,6 +1661,7 @@ async def start_measurement(
                 calibration_ref=calibration_ref,
                 measurement_role=measurement_role,
                 measurement_bank=measurement_bank,
+                measurement_group=measurement_group,
                 **_stage_bank_v2_context(measurement_bank=measurement_bank,
                                          measurement_rate_hz=measurement_rate,
                                          channel=channel),
@@ -1689,6 +1691,7 @@ async def start_lr_repeat_measurement(
     calibration_ref: str = Form(""),
     calibration_file: Optional[UploadFile] = File(None),
     measurement_bank: str = Form(""),
+    measurement_group: str = Form(""),
 ):
     services = _measurement_services()
     measurement_store = services.get_store()
@@ -1729,6 +1732,7 @@ async def start_lr_repeat_measurement(
                 calibration_bytes=calibration_bytes,
                 calibration_ref=calibration_ref,
                 measurement_bank=measurement_bank,
+                measurement_group=measurement_group,
                 **_stage_bank_v2_context(measurement_bank=measurement_bank,
                                          measurement_rate_hz=measurement_rate, channel="stereo"),
             ),

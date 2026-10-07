@@ -26,6 +26,11 @@ OUTPUT_STATE = {
     "active_mode": "stereo",
     "modes": {"stereo": {"selected_bank": "main_l", "banks": {"global": {}, "main_l": {}}}},
 }
+SURROUND_STATE = {
+    "active_mode": "surround",
+    "modes": {"surround": {"selected_bank": "global",
+                           "banks": {"global": {}, "main_l": {}, "main_r": {}, "rear_l": {}, "rear_r": {}}}},
+}
 BINDING_FIELDS = {"bank_mode": "stereo", "bank_id": "main_l", "expected_revision": 4}
 EXTRAS = {"limiter": {"enabled": False}, "headroom": {"enabled": False}}
 PEQ = {"enabled": True, "params": {"channelMode": "dual", "leftBands": [], "rightBands": []}}
@@ -57,27 +62,35 @@ class FakeRequest:
 class FakeDspManager:
     def __init__(self):
         self.calls = []
+        self.groups = []
 
     def load_global_extras(self):
         return {}
 
+    def normalize_effects_extras(self, extras):
+        return extras
+
     def get_status(self):
         return {"status": "ok", "active_preset": None}
 
-    def create_peq_preset(self, name, peq, extras=None, bank=None):
+    def create_peq_preset(self, name, peq, extras=None, bank=None, group=None):
         self.calls.append(("create-peq", name, bank))
+        self.groups.append(group)
         return {"name": name, "chain": []}
 
-    def create_convolver_preset(self, name, ir_filename, extras=None, bank=None):
+    def create_convolver_preset(self, name, ir_filename, extras=None, bank=None, group=None):
         self.calls.append(("create-convolver", name, bank))
+        self.groups.append(group)
         return {"name": name, "chain": []}
 
-    def create_convolver_preset_with_upload(self, name, path, filename, extras=None, bank=None):
+    def create_convolver_preset_with_upload(self, name, path, filename, extras=None, bank=None, group=None):
         self.calls.append(("create-with-ir", name, bank))
+        self.groups.append(group)
         return {"ir": {"name": filename}, "preset": {"name": name, "chain": []}}
 
-    def create_convolver_preset_with_dual_uploads(self, name, *args, bank=None, **kwargs):
+    def create_convolver_preset_with_dual_uploads(self, name, *args, bank=None, group=None, **kwargs):
         self.calls.append(("import-filter-dual", name, bank))
+        self.groups.append(group)
         return {"preset": {"name": name, "chain": []}}
 
 
@@ -202,6 +215,49 @@ class MeasurementCommitGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.status_code, 409)
         self.assertEqual(self.verified[0][0], "measure-4")
         self.assertEqual(self.manager.calls, [])
+
+    def surround_peq_request(self, **overrides):
+        return self.peq_request(bank_mode="surround", bank_id="global", **overrides)
+
+    async def test_surround_global_commit_carries_its_speaker_group(self):
+        with mock.patch.object(FakeOutputService, "load", return_value=SURROUND_STATE):
+            response = await dsp_api.create_peq_preset(
+                self.surround_peq_request(bank_group="rear", source_measurement_id="measure-5"))
+
+        self.assertEqual(self.manager.calls, [("create-peq", "Room correction", "global")])
+        self.assertEqual(self.manager.groups, ["rear"])
+        binding = {"mode": "surround", "bank_id": "global", "expected_revision": 4, "bank_group": "rear"}
+        self.assertEqual(self.verified, [("measure-5", binding)])
+        self.assertEqual(self.assignments, [("Room correction", binding)])
+        self.assertTrue(response["bank"]["assigned"])
+
+    async def test_every_creation_route_takes_the_group(self):
+        fields = {"bank_mode": "surround", "bank_id": "global", "bank_group": "front", "expected_revision": 4}
+        with mock.patch.object(FakeOutputService, "load", return_value=SURROUND_STATE):
+            await dsp_api.create_convolver_preset(preset_name="A", ir_filename="x.irs", **fields)
+            await dsp_api.create_convolver_preset_with_ir(preset_name="B", file=FakeUploadFile(), **fields)
+            await dsp_api.import_dual_filter_preset(
+                preset_name="C", left_file=FakeUploadFile("l.wav"), right_file=FakeUploadFile("r.wav"), **fields)
+        self.assertEqual(self.manager.groups, ["front", "front", "front"])
+
+    async def test_surround_global_needs_a_group_and_other_banks_take_none(self):
+        with mock.patch.object(FakeOutputService, "load", return_value=SURROUND_STATE):
+            with self.assertRaises(HTTPException) as missing:
+                await dsp_api.create_peq_preset(self.surround_peq_request())
+            with self.assertRaises(HTTPException) as unknown:
+                await dsp_api.create_peq_preset(self.surround_peq_request(bank_group="lfe"))
+            with self.assertRaises(HTTPException) as foreign:
+                await dsp_api.create_peq_preset(self.peq_request(bank_mode="surround", bank_id="rear",
+                                                                  bank_group="rear"))
+        self.assertEqual(missing.exception.status_code, 400)
+        self.assertIn("need a speaker group", missing.exception.detail)
+        self.assertEqual(unknown.exception.status_code, 400)
+        self.assertEqual(foreign.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as stereo:
+            await dsp_api.create_peq_preset(self.peq_request(bank_group="front"))
+        self.assertEqual(stereo.exception.status_code, 400)
+        self.assertEqual(self.manager.calls, [])
+        self.assertEqual(self.assignments, [])
 
     async def test_missing_source_measurement_is_reported_as_a_conflict(self):
         # A deleted measurement is a conflict too: the correction can no longer
