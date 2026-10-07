@@ -3084,8 +3084,8 @@ async def lifespan(app: FastAPI):
             if not callable(method):
                 return None
 
-            def run(mask):
-                return asyncio.run_coroutine_threadsafe(method(mask), runtime_loop).result()
+            def run(mask, **options):
+                return asyncio.run_coroutine_threadsafe(method(mask, **options), runtime_loop).result()
 
             return run
 

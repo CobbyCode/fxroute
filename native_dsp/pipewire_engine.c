@@ -159,6 +159,7 @@ static int fxdsp_swap_config(struct engine *engine, const char *path, float gain
 
 static void handle_control(struct engine *engine, char *command, const struct sockaddr_un *client, socklen_t client_size) {
     static const char mute_command[]="mute";
+    static const char input_mute_command[]="inmute";
     static const char peaks_reset_command[]="peaks reset";
     static const char peaks_get_command[]="peaks get";
     static const char effects_bypass_command[]="effects bypass";
@@ -172,6 +173,10 @@ static void handle_control(struct engine *engine, char *command, const struct so
     float live_value, live_value2, live_value3;
     if(sscanf(command,"mute %li %d %c",&mask,&value,&extra)==2&&!strncmp(command,mute_command,sizeof mute_command-1)&&(value==0||value==1)&&mask>=0&&(unsigned long)mask<=UINT32_MAX) {
         fxdsp_set_mute(atomic_load_explicit(&engine->dsp,memory_order_acquire),(uint32_t)mask,value);
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    }
+    else if(sscanf(command,"inmute %li %d %c",&mask,&value,&extra)==2&&!strncmp(command,input_mute_command,sizeof input_mute_command-1)&&(value==0||value==1)&&mask>=0&&(unsigned long)mask<=UINT32_MAX) {
+        fxdsp_set_input_mute(atomic_load_explicit(&engine->dsp,memory_order_acquire),(uint32_t)mask,value);
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     }
     else if(!strcmp(command,peaks_reset_command)) {

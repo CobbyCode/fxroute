@@ -486,6 +486,7 @@ class DSPRuntime:
         self._effect_bypass = False
         self._output_gain_db = 0.0
         self._output_mask = 0
+        self._input_mask = 0
         self._stderr_drain_task: asyncio.Task | None = None
         self._stderr_tail = b""
         self._surround_input = False
@@ -613,6 +614,7 @@ class DSPRuntime:
                  "surround_input": self._surround_input,
                  "mapped_ingress": [list(edge) for edge in self._mapped_ingress],
                 "output_mask": None if self._control_poisoned else self._output_mask,
+                "input_mask": None if self._control_poisoned else self._input_mask,
                 "control_state": "unknown" if self._control_poisoned else "ready",
                 "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
                 "stderr_tail": self.stderr_tail()[:2048]}
@@ -662,7 +664,18 @@ class DSPRuntime:
         if self._control_poisoned:
             raise RuntimeError("Native DSP control state is unknown; rebuild the engine")
 
-    async def apply_output_mask(self, mask: int) -> int:
+    @staticmethod
+    def _validate_input_mask(mask: object) -> int:
+        """Validate an input-position mute mask (0 means none).
+
+        Bit ``n`` zeroes engine input ``n`` before the stage chain; the native
+        engine owns one 32-bit mask.
+        """
+        if type(mask) is not int or mask < 0 or mask >= (1 << 32):
+            raise ValueError("Input mute mask must be a 32-bit non-negative integer")
+        return mask
+
+    async def apply_output_mask(self, mask: int, *, input_mask: int = 0) -> int:
         """Mute the masked engine outputs; returns the previously applied mask.
 
         Only the given bits are set: unrelated bits (for example the legacy
@@ -670,35 +683,48 @@ class DSPRuntime:
         same mask rather than resetting the engine's whole mute state. The
         engine applies the mute before it acknowledges, so the command, its
         acknowledgement and the recorded mask finish as one unit; a cancel is
-        re-raised afterwards.
+        re-raised afterwards. ``input_mask`` additionally zeroes engine input
+        positions, for a sweep whose sink feed would otherwise reach an audible
+        output through the bass bus.
         """
         async with self._mute_ownership_lock:
             self._require_control_state()
             bits = self._validate_output_mask(mask)
+            input_bits = self._validate_input_mask(input_mask)
             previous = self._output_mask
 
             async def exchange() -> None:
                 await self._control(f"mute {bits} 1", reply=True)
                 self._output_mask |= bits
+                if input_bits:
+                    await self._control(f"inmute {input_bits} 1", reply=True)
+                    self._input_mask |= input_bits
 
             await run_to_completion(exchange())
             return previous
 
-    async def clear_output_mask(self, mask: int) -> None:
+    async def clear_output_mask(self, mask: int, *, input_mask: int = 0) -> None:
         """Release output-mask bits without clearing an active exact sub mute.
 
         Like ``apply_output_mask``, the engine command and the recorded mask
-        finish together even when the caller is cancelled meanwhile.
+        finish together even when the caller is cancelled meanwhile. The input
+        mask is released whether or not the output command succeeded.
         """
         async with self._mute_ownership_lock:
             self._require_control_state()
             bits = self._validate_output_mask(mask)
+            input_bits = self._validate_input_mask(input_mask)
             control_bits = bits & ~self._exact_sub_mute_mask
 
             async def exchange() -> None:
-                if control_bits:
-                    await self._control(f"mute {control_bits} 0", reply=True)
-                self._output_mask &= ~bits
+                try:
+                    if control_bits:
+                        await self._control(f"mute {control_bits} 0", reply=True)
+                    self._output_mask &= ~bits
+                finally:
+                    if input_bits:
+                        await self._control(f"inmute {input_bits} 0", reply=True)
+                        self._input_mask &= ~input_bits
 
             await run_to_completion(exchange())
 
@@ -1473,6 +1499,7 @@ class DSPRuntime:
         self._effect_bypass = False
         self._output_gain_db = 0.0
         self._output_mask = 0
+        self._input_mask = 0
         self._config_text = None
 
     async def verify(self) -> bool:

@@ -32,8 +32,8 @@ class MeasurementJobRunner:
         effect_bypass_setter: Callable[[bool], Any] | None = None,
         active_scope_enter: Callable[[], Any] | None = None,
         active_scope_exit: Callable[[bool], Any] | None = None,
-        output_mask_apply: Callable[[int], Any] | None = None,
-        output_mask_clear: Callable[[int], Any] | None = None,
+        output_mask_apply: Callable[..., Any] | None = None,
+        output_mask_clear: Callable[..., Any] | None = None,
     ):
         self._get_job = get_job
         self._persist_job = persist_job
@@ -67,6 +67,8 @@ class MeasurementJobRunner:
         previous_effect_bypass = None
         scope_owned = False
         output_mask = job.get("output_mask")
+        # Extra argument only for a target that needs input positions silenced.
+        mask_options = {"input_mask": job["input_mask"]} if job.get("input_mask") else {}
         mask_owned = False
         was_cancelling_before = False
         try:
@@ -101,7 +103,7 @@ class MeasurementJobRunner:
                 # Owned from the moment the command may reach the engine: a
                 # failed or cancelled acknowledgement can still leave it muted.
                 mask_owned = True
-                await self._output_mask_apply(output_mask)
+                await self._output_mask_apply(output_mask, **mask_options)
 
             _rm["scope_done"] = time.monotonic()
             worker_task = asyncio.create_task(asyncio.to_thread(executor, deepcopy(job)))
@@ -173,7 +175,7 @@ class MeasurementJobRunner:
             cleanup_cancelled = False
             if mask_owned:
                 try:
-                    await self._output_mask_clear(deepcopy(output_mask))
+                    await self._output_mask_clear(deepcopy(output_mask), **mask_options)
                 except asyncio.CancelledError:
                     cleanup_cancelled = True
                 except Exception:

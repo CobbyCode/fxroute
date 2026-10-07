@@ -123,10 +123,10 @@ class MeasurementStore:
                  raw_scope_exit: Callable[[bool], Any] | None = None,
                  active_scope_enter: Callable[[], Any] | None = None,
                  active_scope_exit: Callable[[bool], Any] | None = None,
-                 output_mask_apply: Callable[[int], Any] | None = None,
-                 output_mask_clear: Callable[[int], Any] | None = None,
-                 output_mask_apply_sync: Callable[[int], Any] | None = None,
-                 output_mask_clear_sync: Callable[[int], Any] | None = None):
+                 output_mask_apply: Callable[..., Any] | None = None,
+                 output_mask_clear: Callable[..., Any] | None = None,
+                 output_mask_apply_sync: Callable[..., Any] | None = None,
+                 output_mask_clear_sync: Callable[..., Any] | None = None):
         self.home = Path(home or Path.home())
         self.runtime_snapshot_provider = runtime_snapshot_provider
         self.effect_bypass_setter = effect_bypass_setter

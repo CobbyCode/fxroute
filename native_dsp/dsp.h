@@ -49,6 +49,8 @@ void fxdsp_process_tapped(fxdsp *dsp, const float *const *input, float *const *o
  * peaks through the atomic fxdsp_peaks instead. */
 void fxdsp_meter(const fxdsp *dsp, unsigned output, float *peak, float *rms);
 void fxdsp_set_mute(fxdsp *dsp, uint32_t mask, int muted);
+/* Zero the masked inputs before the stage chain (bit n = input n). */
+void fxdsp_set_input_mute(fxdsp *dsp, uint32_t mask, int muted);
 void fxdsp_set_effect_bypass(fxdsp *dsp, int bypassed);
 int fxdsp_effect_bypass(const fxdsp *dsp);
 void fxdsp_set_output_gain_db(fxdsp *dsp, float gain_db);

@@ -76,6 +76,47 @@ class OutputMaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.stop()
         self.assertEqual(runtime._output_mask, 0)
 
+    async def test_input_mask_rides_with_the_output_mask_and_clears_with_it(self):
+        runtime = await self._runtime()
+        await runtime.apply_output_mask(0b0011, input_mask=0b11)
+        self.assertEqual((runtime._output_mask, runtime._input_mask), (0b11, 0b11))
+        runtime._config = None
+        self.assertEqual(runtime.snapshot()["input_mask"], 0b11)
+        await runtime.clear_output_mask(0b0011, input_mask=0b11)
+        self.assertEqual((runtime._output_mask, runtime._input_mask), (0, 0))
+        self.assertEqual(self.commands, ["mute 3 1", "inmute 3 1", "mute 3 0", "inmute 3 0"])
+
+    async def test_input_mask_is_optional_and_validated(self):
+        runtime = await self._runtime()
+        await runtime.apply_output_mask(0b1)
+        self.assertEqual(self.commands, ["mute 1 1"])
+        for bad in (-1, True, 1 << 32):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "Input mute mask"):
+                await runtime.apply_output_mask(0b1, input_mask=bad)
+        self.assertEqual(runtime._input_mask, 0)
+
+    async def test_input_mask_is_released_when_the_output_clear_fails(self):
+        runtime = await self._runtime()
+        await runtime.apply_output_mask(0b11, input_mask=0b11)
+
+        async def failing_control(command, *, reply):
+            self.commands.append(command)
+            if command.startswith("mute"):
+                raise RuntimeError("engine gone")
+            return "ok\n"
+
+        runtime._control = failing_control
+        with self.assertRaisesRegex(RuntimeError, "engine gone"):
+            await runtime.clear_output_mask(0b11, input_mask=0b11)
+        self.assertEqual(runtime._input_mask, 0)
+        self.assertEqual(self.commands[-1], "inmute 3 0")
+
+    async def test_stop_resets_the_tracked_input_mask(self):
+        runtime = await self._runtime()
+        await runtime.apply_output_mask(0b11, input_mask=0b11)
+        await runtime.stop()
+        self.assertEqual(runtime._input_mask, 0)
+
     async def test_poisoned_control_rejects_mask_and_exact_mute_noops(self):
         runtime = await self._runtime()
         runtime._output_mask = 1

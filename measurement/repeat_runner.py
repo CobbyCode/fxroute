@@ -372,11 +372,12 @@ class MeasurementRepeatRunner:
         clear_mask = getattr(self._store, "output_mask_clear_sync", None)
         if type(mask) is not int or mask <= 0 or not callable(apply_mask) or not callable(clear_mask):
             return run()
-        apply_mask(mask)
+        options = {"input_mask": job["input_mask"]} if job.get("input_mask") else {}
+        apply_mask(mask, **options)
         try:
             return run()
         finally:
-            clear_mask(mask)
+            clear_mask(mask, **options)
 
     def _execute_lr_repeat_job(self, job: dict[str, Any]) -> dict[str, Any]:
         job_id = str(job["id"])
