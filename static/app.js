@@ -1864,11 +1864,6 @@ function handleWebSocketMessage(msg) {
             console.log('Unknown WS message type:', type);
     }
 }
-function sendWS(data) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(data));
-    }
-}
 // Tab navigation
 function setupTabNavigation() {
     elements.tabs.forEach(tab => {
@@ -2860,10 +2855,6 @@ function renderSourceSection() {
 // "Scanning network shares…" placeholder instead of the local-only list;
 // already-cached SMB entries keep rendering immediately.
 
-function externalInputModeActive() {
-    return state.settings?.sourceMode?.mode === 'external-input';
-}
-
 function nonAppSourceModeActive() {
     return ['external-input', 'bluetooth-input', 'stdin-input'].includes(state.settings?.sourceMode?.mode);
 }
@@ -3240,21 +3231,6 @@ async function saveSampleRatePolicy(value) {
     }
 }
 
-function applyAudioOutputOverview(data) {
-    state.settings.audioOutputs = {
-        loaded: true,
-        available: !!data.available,
-        default_output: data.default_output || null,
-        selected_output: data.selected_output || null,
-        current_output: data.current_output || null,
-        outputs: Array.isArray(data.outputs) ? data.outputs : [],
-        notes: Array.isArray(data.notes) ? data.notes : [],
-        pendingSelectionKey: null,
-        output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
-    };
-    renderSettingsPanel();
-}
-
 function outputSystemModule() {
     return (typeof window !== 'undefined' && window.FXRouteOutputState) || null;
 }
@@ -3450,10 +3426,6 @@ async function applyOutputSystemMutation(kind, fields, successMessage, options =
     return mod.applyOutputSystemMutation(kind, fields, successMessage, options);
 }
 
-
-function crossoverModule() {
-    return (typeof window !== 'undefined' && window.FXRouteCrossover) || null;
-}
 
 async function fetchCrossoverResponse() {
     // Crossover tile UI lives in static/crossover_ui.js

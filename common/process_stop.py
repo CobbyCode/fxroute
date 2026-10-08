@@ -18,25 +18,39 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def stop_command_child(proc, grace_seconds: float) -> None:
+async def stop_command_child(proc, grace_seconds: float, *, communicate_task=None) -> None:
     """Terminate a still-running command child and drain it terminally.
 
     terminate -> bounded communicate() (drains stdout+stderr) -> if the
     child ignores SIGTERM: kill -> bounded communicate().  Process and both
     pipes are thereby always worked off terminally; a final wait() guards
     against a pathological case where even the killed child's pipes never
-    close.  Already-exited processes are handled cheaply.
+    close. Reuse an existing communicate_task when the caller owns the pipe
+    reader. Already-exited processes without a reader are handled cheaply.
     """
-    if proc is None or proc.returncode is not None:
+    if proc is None:
         return
-    proc.terminate()
-    try:
-        await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
-    except asyncio.TimeoutError:
-        proc.kill()
+    if proc.returncode is not None and communicate_task is None:
+        return
+    reader = communicate_task or asyncio.create_task(proc.communicate())
+    if proc.returncode is None:
         try:
-            await asyncio.wait_for(proc.communicate(), timeout=grace_seconds)
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(asyncio.shield(reader), timeout=grace_seconds)
+    except asyncio.TimeoutError:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        try:
+            await asyncio.wait_for(asyncio.shield(reader), timeout=grace_seconds)
         except asyncio.TimeoutError:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
             await proc.wait()
 
 
@@ -72,16 +86,17 @@ async def stop_command_child_cancellation_safe(
     *,
     cleanup_log: str = "FXRoute command child cleanup failed",
     cleanup_log_exc_info: bool = False,
+    communicate_task=None,
 ) -> bool:
     """Stop and drain a command child shielded from caller cancellation.
 
     Same contract as ``stop_command_child``; the stop sequence runs in its
     own task behind ``asyncio.shield`` (see ``_run_stop_shielded``).
     """
-    if proc is None or proc.returncode is not None:
+    if proc is None or (proc.returncode is not None and communicate_task is None):
         return False
     return await run_stop_shielded(
-        stop_command_child(proc, grace_seconds),
+        stop_command_child(proc, grace_seconds, communicate_task=communicate_task),
         cleanup_log=cleanup_log,
         cleanup_log_exc_info=cleanup_log_exc_info,
     )

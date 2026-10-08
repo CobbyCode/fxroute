@@ -220,6 +220,7 @@ class TouchTargetTests(unittest.TestCase):
             ".control-btn-clear::before",
             ".track-favorite-btn::before",
             ".album-card-fav::before",
+            ".station-card-fav::before",
             ".stepper-btn::before",
             ".measurement-chip::before",
         ):
@@ -233,7 +234,6 @@ class TouchTargetTests(unittest.TestCase):
 
     def test_phone_direct_sizes(self):
         phone = _media_block(RESPONSIVE, "@media (max-width: 600px)")
-        self.assertRegex(phone, r"\.catalog-station-action\s*\{[^}]*min-height: 44px")
         self.assertRegex(
             phone, r"\.dialog-header-corner-close \.btn-close-manage\s*\{[^}]*width: 44px"
         )

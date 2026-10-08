@@ -225,17 +225,6 @@ class PowerBackend:
         self._dbus_send_path = dbus_send_path
         self._runner = runner
 
-    @property
-    def uses_real_dbus(self) -> bool:
-        """True when this backend actually shells out to ``dbus-send``.
-
-        Tests inject a fake runner with no ``dbus-send`` invocation; UI
-        layers can use this flag to skip the capability probe entirely
-        when running against the test backend.
-        """
-
-        return self._runner is _default_runner
-
     async def get_capabilities(self) -> PowerCapabilities:
         """Return ``CanSuspend`` / ``CanPowerOff`` mapped to UI status."""
 

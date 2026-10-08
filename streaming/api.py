@@ -23,7 +23,6 @@ from typing import Any, Awaitable, Callable, Optional
 from fastapi import APIRouter, HTTPException, Request
 
 import streaming
-import streaming.activation as activation
 from streaming.tidal import auth as tidal_auth
 from streaming.tidal import playback as tidal_playback
 from streaming.tidal.cache import library_cache as tidal_library_cache
@@ -785,13 +784,13 @@ async def _read_user_service_active_state(unit: str) -> str | None:
         )
     except asyncio.TimeoutError:
         if await pw_link.stop_command_child_cancellation_safe(
-            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS, communicate_task=communicate_task
         ):
             raise asyncio.CancelledError
         return None
     except asyncio.CancelledError:
         await pw_link.stop_command_child_cancellation_safe(
-            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS, communicate_task=communicate_task
         )
         raise
     if proc.returncode != 0:
@@ -998,16 +997,18 @@ async def api_streaming_provider_service_action(provider_id: str, action: str, r
         _stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate_task), timeout=15)
     except asyncio.TimeoutError:
         if await pw_link.stop_command_child_cancellation_safe(
-            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS, communicate_task=communicate_task
         ):
             raise asyncio.CancelledError
         try:
             _stdout, stderr = communicate_task.result()
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             _stdout, stderr = b"", b""
         raise HTTPException(status_code=504, detail="systemctl timed out") from None
     except asyncio.CancelledError:
-        await pw_link.stop_command_child_cancellation_safe(proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS)
+        await pw_link.stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS, communicate_task=communicate_task
+        )
         raise
     if proc.returncode != 0:
         detail = stderr.decode(errors="replace").strip() or f"systemctl {action} {unit} failed"
@@ -1044,11 +1045,12 @@ def _mdns_device_name() -> str:
 
 
 async def _restart_spotifyd_best_effort() -> bool:
-    """Restart the spotifyd user service; never raises, returns success.
+    """Restart spotifyd best-effort; propagate cancellation after child cleanup.
 
     Success requires the restart to be accepted (exit 0) and the unit to
     actually reach ActiveState=active afterwards.
     """
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "systemctl",
@@ -1063,7 +1065,16 @@ async def _restart_spotifyd_best_effort() -> bool:
             return False
         return (await _read_user_service_active_state("spotifyd.service")) == "active"
     except (OSError, asyncio.TimeoutError):
+        if await pw_link.stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        ):
+            raise asyncio.CancelledError
         return False
+    except asyncio.CancelledError:
+        await pw_link.stop_command_child_cancellation_safe(
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+        )
+        raise
 
 
 async def _sync_spotify_connect_name_best_effort() -> dict:

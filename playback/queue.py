@@ -459,8 +459,6 @@ class PlaybackQueue:
             if index < 0 or index >= len(queue_candidate.queue):
                 return False
             next_track = dict(queue_candidate.queue[index])
-            native_fields = {}
-            native_jump = False
         else:
             if len(self.tracks) <= 1 or index < 0 or index >= len(self.tracks):
                 return False
@@ -557,10 +555,7 @@ class PlaybackQueue:
                     return "unavailable"
             else:
                 if self.loop:
-                    if self.shuffle:
-                        next_index = 0
-                    else:
-                        next_index = 0
+                    next_index = 0
                 else:
                     self.reset()
                     return "ended"
@@ -582,7 +577,6 @@ class PlaybackQueue:
         self,
         target_queue: list[dict],
         target_index: int,
-        enabled: bool,
     ) -> bool:
         """Reorder MPV without committing app state until every IPC call succeeds."""
         player = self._player
@@ -710,7 +704,7 @@ class PlaybackQueue:
             # Shuffle ON keeps only the current entry in place while the rest
             # is permuted.  Rebuild the native playlist directly so changing
             # order does not enter the full output-graph transition path.
-            if await self._reorder_native_mpv_playlist(target_queue, target_index, enabled):
+            if await self._reorder_native_mpv_playlist(target_queue, target_index):
                 self.tracks = target_queue
                 self.index = target_index
                 self.shuffle = bool(enabled)

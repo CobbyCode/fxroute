@@ -105,12 +105,6 @@
         return getMeasurementConvolverCurveOptions().find((curve) => curve.key === curveKey) || ui.measurementConvolverCurves.neutral;
     }
 
-    function getMeasurementConvolverCurveDb(curveKey, frequencyHz) {
-        const curve = getMeasurementConvolverCurve(curveKey);
-        const points = curve.points || ui.measurementConvolverCurves.neutral.points;
-        return dsp.getMeasurementConvolverCurveDbFromPoints(points, frequencyHz);
-    }
-
     function getMeasurementConvolverDraftPhaseMode(draft = null) {
         return ui.getMeasurementConvolverDraftPhaseMode(draft);
     }
@@ -325,10 +319,6 @@
             points: points.length,
             ...dsp.analyzeMeasurementConvolverCorrections(points, curve.points || ui.measurementConvolverCurves.neutral.points, analysisSettings),
         };
-    }
-
-    function getMeasurementConvolverSelectedSourceCount() {
-        return getMeasurementConvolverSourceSelectionState().count;
     }
 
     function getMeasurementConvolverMultiSourceWarning() {
@@ -819,6 +809,6 @@
 
     return {
         init,
-        clampMeasurementConvolverFrequency, getDefaultMeasurementConvolverState, ensureMeasurementConvolverState, getMeasurementConvolverCurveOptions, getMeasurementConvolverCurve, getMeasurementConvolverCurveDb, getMeasurementConvolverDraftPhaseMode, getMeasurementConvolverDrafts, getMeasurementConvolverDraftPhaseMismatch, clearMeasurementConvolverDraftForPhaseChange, clearMeasurementConvolverDraftForSettingsChange, updateMeasurementConvolverField, getMeasurementConvolverSelectedSourceEntries, getMeasurementConvolverSourceEntries, getMeasurementConvolverSourceSelectionState, getMeasurementConvolverMeasurementForSide, getMeasurementConvolverTracePoints, getMeasurementConvolverAdaptiveDipGuardStrength, applyMeasurementConvolverDipGuard, analyzeMeasurementConvolverSide, getMeasurementConvolverSelectedSourceCount, getMeasurementConvolverMultiSourceWarning, buildMeasurementConvolverWarnings, formatMeasurementConvolverGain, getMeasurementConvolverNameSuffix, getMeasurementConvolverItemName, getMeasurementConvolverPreviewMode, getMeasurementConvolverPreviewGain, showMeasurementConvolverFeedback, getMeasurementConvolverSampleRate, getMeasurementConvolverTypeOption, getMeasurementConvolverTypeKeys, getMeasurementConvolverPhaseModeForType, getMeasurementConvolverPhaseLabel, getMeasurementConvolverPhaseTag, getMeasurementConvolverFirLengthForType, getMeasurementConvolverFirLength, getMeasurementConvolverTypeLabel, interpolateMeasurementConvolverCorrection, buildMeasurementConvolverMagnitudeBins, buildMeasurementConvolverLinearImpulseFromMagnitudes, fftMeasurementConvolverComplex, buildMeasurementConvolverMinimumSpectrum, buildMeasurementConvolverImpulseFromSpectrum, buildMeasurementConvolverImpulse, getMeasurementConvolverTimingMs, getMeasurementConvolverTimingDelta, getMeasurementConvolverTimingPairDebug, formatMeasurementConvolverTimingRelation, getMeasurementConvolverTimingSafetyMessage, alignStereoImpulsesForMinimumAligned, getMeasurementAnalysisSampleRate, getMeasurementDirectArrivalTiming, writeMeasurementConvolverWav, appendMeasurementConvolverExtras, createMeasurementConvolverPreset, takeMeasurementConvolverToDraft, resolveMeasurementConvolverItemName, createMeasurementConvolverPresetFromDraft,
+        clampMeasurementConvolverFrequency, getDefaultMeasurementConvolverState, ensureMeasurementConvolverState, getMeasurementConvolverCurveOptions, getMeasurementConvolverCurve, getMeasurementConvolverDraftPhaseMode, getMeasurementConvolverDrafts, getMeasurementConvolverDraftPhaseMismatch, clearMeasurementConvolverDraftForPhaseChange, clearMeasurementConvolverDraftForSettingsChange, updateMeasurementConvolverField, getMeasurementConvolverSelectedSourceEntries, getMeasurementConvolverSourceEntries, getMeasurementConvolverSourceSelectionState, getMeasurementConvolverMeasurementForSide, getMeasurementConvolverTracePoints, getMeasurementConvolverAdaptiveDipGuardStrength, applyMeasurementConvolverDipGuard, analyzeMeasurementConvolverSide, getMeasurementConvolverMultiSourceWarning, buildMeasurementConvolverWarnings, formatMeasurementConvolverGain, getMeasurementConvolverNameSuffix, getMeasurementConvolverItemName, getMeasurementConvolverPreviewMode, getMeasurementConvolverPreviewGain, showMeasurementConvolverFeedback, getMeasurementConvolverSampleRate, getMeasurementConvolverTypeOption, getMeasurementConvolverTypeKeys, getMeasurementConvolverPhaseModeForType, getMeasurementConvolverPhaseLabel, getMeasurementConvolverPhaseTag, getMeasurementConvolverFirLengthForType, getMeasurementConvolverFirLength, getMeasurementConvolverTypeLabel, interpolateMeasurementConvolverCorrection, buildMeasurementConvolverMagnitudeBins, buildMeasurementConvolverLinearImpulseFromMagnitudes, fftMeasurementConvolverComplex, buildMeasurementConvolverMinimumSpectrum, buildMeasurementConvolverImpulseFromSpectrum, buildMeasurementConvolverImpulse, getMeasurementConvolverTimingMs, getMeasurementConvolverTimingDelta, getMeasurementConvolverTimingPairDebug, formatMeasurementConvolverTimingRelation, getMeasurementConvolverTimingSafetyMessage, alignStereoImpulsesForMinimumAligned, getMeasurementAnalysisSampleRate, getMeasurementDirectArrivalTiming, writeMeasurementConvolverWav, appendMeasurementConvolverExtras, createMeasurementConvolverPreset, takeMeasurementConvolverToDraft, resolveMeasurementConvolverItemName, createMeasurementConvolverPresetFromDraft,
     };
 });

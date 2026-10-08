@@ -232,9 +232,6 @@
 .catalog-station-card .station-name {
     min-height: calc(1.3em * 2);
 }
-.catalog-station-card .catalog-station-action {
-    margin-top: auto;
-}
 .radio-station-section {
     display: flex;
     flex-direction: column;
@@ -410,33 +407,6 @@
 }
 .catalog-station-card:hover {
     transform: none;
-}
-.catalog-station-action {
-    width: 100%;
-    min-height: 36px;
-    padding: 0.48rem 0.65rem;
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-sm);
-    background: var(--accent-dim);
-    color: var(--text-primary);
-    font: inherit;
-    font-size: 0.8rem;
-    font-weight: 700;
-    cursor: pointer;
-}
-.catalog-station-action:hover:not(:disabled) {
-    background: var(--accent);
-    color: var(--bg-primary);
-}
-.catalog-station-action:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
-.catalog-station-action--saved {
-    border-color: var(--border);
-    background: rgba(255,255,255,0.035);
-    color: var(--text-secondary);
-    cursor: default;
 }
 
 .station-browser-status {

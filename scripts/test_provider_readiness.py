@@ -12,10 +12,13 @@ Regression tests for three fixed false-success reports:
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -211,6 +214,41 @@ class ProviderServiceActionReadinessTests(_ClientBase):
 
 
 class SpotifydRestartBestEffortTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_stops_and_reaps_the_command_child(self):
+        import sys
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(30)",
+                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        real_wait_for = asyncio.wait_for
+
+        async def short_wait(awaitable, timeout):
+            return await real_wait_for(awaitable, min(timeout, 0.03))
+
+        try:
+            with mock.patch.object(streaming_api.asyncio, "create_subprocess_exec", mock.AsyncMock(return_value=proc)), \
+                    mock.patch.object(streaming_api.asyncio, "wait_for", short_wait):
+                self.assertFalse(await streaming_api._restart_spotifyd_best_effort())
+            self.assertIsNotNone(proc.returncode)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+
+    async def test_cancellation_stops_child_before_propagating(self):
+        import sys
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(30)")
+        try:
+            with mock.patch.object(streaming_api.asyncio, "create_subprocess_exec", mock.AsyncMock(return_value=proc)):
+                task = asyncio.create_task(streaming_api._restart_spotifyd_best_effort())
+                await asyncio.sleep(0.02)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            self.assertIsNotNone(proc.returncode)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+
     """The best-effort spotifyd restart is only a success when active."""
 
     async def _restart(self, action_returncode=0, active_state="active"):
@@ -237,6 +275,48 @@ class SpotifydRestartBestEffortTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ServiceStateReadbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_with_inherited_pipes_stays_http_504_and_reaps_child(self):
+        import main
+        from fastapi import HTTPException
+
+        real_wait_for = asyncio.wait_for
+
+        async def short_wait(awaitable, timeout):
+            return await real_wait_for(awaitable, min(timeout, 0.03))
+
+        for endpoint in ('provider', 'hostname'):
+            with self.subTest(endpoint=endpoint), tempfile.TemporaryDirectory() as tmp:
+                ready = Path(tmp) / 'ready'
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, '-c',
+                    'import signal, subprocess, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                    'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"]); '
+                    'open(sys.argv[1], "w").close(); time.sleep(30)', str(ready),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                try:
+                    while not ready.exists():
+                        await asyncio.sleep(0.01)
+                    with mock.patch.object(asyncio, 'create_subprocess_exec', mock.AsyncMock(return_value=proc)), \
+                            mock.patch.object(asyncio, 'wait_for', short_wait), \
+                            mock.patch.object(main, 'is_request_origin_trusted', return_value=True), \
+                            mock.patch.object(main.shutil, 'which', return_value='/bin/hostnamectl'), \
+                            mock.patch.object(streaming_api, '_mdns_device_name', return_value='old-name'):
+                        request = SimpleNamespace(json=mock.AsyncMock(return_value={'hostname': 'new-name'}))
+                        with self.assertRaises(HTTPException) as raised:
+                            if endpoint == 'provider':
+                                await streaming_api.api_streaming_provider_service_action.__wrapped__(
+                                    'spotify', 'restart', request)
+                            else:
+                                await main.api_set_device_name(request)
+                        self.assertEqual(raised.exception.status_code, 504)
+                        self.assertIsNotNone(proc.returncode)
+                        self.assertEqual(asyncio.current_task().cancelling(), 0)
+                finally:
+                    if proc.returncode is None:
+                        proc.kill()
+                    await proc.wait()
+                    await asyncio.sleep(0.5)
+
     async def test_parses_active_state_value(self):
         async def fake_exec(*args, **kwargs):
             self.assertEqual(args[2:6], ("show", "-p", "ActiveState", "--value"))

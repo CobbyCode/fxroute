@@ -618,9 +618,12 @@
     const POWER_CAPABILITIES_REFRESH_MS = 60 * 1000;
     const POWER_CONFIRM_SHUTDOWN = 'Shut down the host now? Active playback will stop.';
     const POWER_CONFIRM_SUSPEND = 'Suspend the host now? Active playback will stop.';
+    let powerMenuInitialized = false;
 
     function setupPowerMenu() {
+        if (powerMenuInitialized) return;
         if (!deps.getElements().powerMenuRoot || !deps.getElements().powerMenuToggle || !deps.getElements().powerMenu) return;
+        powerMenuInitialized = true;
         deps.getElements().powerMenuToggle.addEventListener('click', ev => {
             ev.stopPropagation();
             const open = !deps.getElements().powerMenu.classList.contains('hidden');

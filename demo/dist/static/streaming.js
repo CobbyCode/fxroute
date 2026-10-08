@@ -25,7 +25,11 @@
     // the tab transport and the incoming-state/poll paths use one state
     // machine instead of two copies that can drift apart.
     let maybeShowStreamingQueueCue = function () { return false; };
-    let escapeHtml = function (v) { return String(v == null ? '' : v); };
+    let escapeHtml = function (v) {
+        return String(v == null ? '' : v).replace(/[&<>"']/g, character => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
+        })[character]);
+    };
     // Shared transition-error formatter injected by app.js. The local default
     // mirrors the canonical app.js implementation so this module never renders
     // "[object Object]" standalone: structured {message, stage} payloads keep
@@ -108,6 +112,8 @@
     const state = {
         providers: {},          // id -> { descriptor, root, els, tabBtn, tabPanel }
         lastData: {},           // id -> last normalized status payload
+        refreshSerials: {},     // id -> latest status request or external frame
+        appliedSerials: {},     // id -> latest applied response or external frame
         polls: {},              // id -> interval timer
         enabled: {},            // id -> boolean (Settings -> Providers choice)
         lastPlaybackSource: null,
@@ -165,7 +171,6 @@
     // -----------------------------------------------------------------------
     function init(interfaceApi) {
         if (initialized) return;
-        initialized = true;
         api = interfaceApi || {};
         if (typeof api.showToast === 'function') showToast = api.showToast;
         if (typeof api.maybeShowNativeTrackCue === 'function') maybeShowNativeTrackCue = api.maybeShowNativeTrackCue;
@@ -179,12 +184,20 @@
         if (typeof api.factsHtml === 'function') factsHtml = api.factsHtml;
         if (typeof api.aboutHtml === 'function') aboutHtml = api.aboutHtml;
         buildProviderDom();
+        initialized = true;
         void loadProviders();
     }
 
     // Render one provider from a normalized status payload. Used by app.js for
     // Spotify and by this module's own refresh loop for Qobuz/TIDAL.
     function renderProvider(providerId, data) {
+        if (!data) return;
+        state.refreshSerials[providerId] = (state.refreshSerials[providerId] || 0) + 1;
+        state.appliedSerials[providerId] = state.refreshSerials[providerId];
+        renderProviderData(providerId, data);
+    }
+
+    function renderProviderData(providerId, data) {
         if (!data) return;
         state.lastData[providerId] = data;
         const entry = state.providers[providerId];
@@ -801,10 +814,15 @@
     // Status refresh / polling
     // -----------------------------------------------------------------------
     async function refreshProvider(providerId) {
+        const serial = (state.refreshSerials[providerId] || 0) + 1;
+        state.refreshSerials[providerId] = serial;
         try {
             const resp = await fetch('/api/streaming/' + providerId + '/status');
             if (!resp.ok) return;
-            renderProvider(providerId, await resp.json());
+            const data = await resp.json();
+            if (serial <= (state.appliedSerials[providerId] || 0)) return;
+            state.appliedSerials[providerId] = serial;
+            renderProviderData(providerId, data);
         } catch (err) {
             // ignore transient fetch failures; the next poll retries
         }
@@ -2717,20 +2735,6 @@
         bindTidalPlaylistSaveRow(content);
         updateTidalPlaylistSaveRow();
         loadTidalPlaylistTracks(content, requestId);
-    }
-
-    async function loadTidalAlbumTracks(content, requestId = state.tidal.detailRequestId) {
-        const results = content.querySelector('#tidal-detail-results');
-        try {
-            const resp = await fetch('/api/streaming/tidal/albums/' + encodeURIComponent(state.tidal.detailId) + '/tracks');
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const items = await resp.json();
-            if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
-            renderDetailTracks(results, items);
-        } catch (err) {
-            if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
-            results.innerHTML = contentState('error', friendlyError(err?.message || err));
-        }
     }
 
     async function loadTidalPlaylistTracks(content, requestId) {

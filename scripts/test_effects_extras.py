@@ -329,6 +329,15 @@ class ParseCalibrationTests(unittest.TestCase):
 
 
 class MergeBehaviorTests(unittest.TestCase):
+    def test_explicit_loudness_volume_preserves_other_params(self):
+        previous = full_extras()
+        for field in ("loudnessVolumeDb", "loudness_volume_db"):
+            with self.subTest(field=field):
+                merged = effects_extras.merge_effects_extras_from_json(previous, {field: -24.5})
+                self.assertEqual(merged["loudness"]["params"]["volumeDb"], -24.5)
+                self.assertEqual(merged["loudness"]["params"]["fftSize"], 4096)
+                self.assertEqual(previous["loudness"]["params"]["volumeDb"], 0.0)
+
     def test_empty_body_returns_deepcopy_unchanged(self):
         previous = full_extras()
         merged = effects_extras.merge_effects_extras_from_json(previous, {})

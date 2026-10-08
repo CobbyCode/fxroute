@@ -2,11 +2,14 @@
 """Atomic persistence for FXRoute-owned DSP presets and state."""
 
 import json
+import logging
 from pathlib import Path
 from audio.output_topology import SURROUND_GROUPS
 from common.atomic_write import atomic_write_text
 from dsp.surround_global import LAYOUT as SURROUND_LAYOUT, preset_layout, validate_preset_layout
 from typing import Any, Dict, Iterable, List, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 
 def _basename(value: Any) -> str:
@@ -150,7 +153,11 @@ class DSPPresetStore:
         ) if self.presets_dir.exists() else []
         result = []
         for path in paths:
-            payload = self.read(path.stem)
+            try:
+                payload = self.read(path.stem)
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.warning("Skipping unreadable preset %s: %s", path.name, exc)
+                continue
             sources = payload.get("metadata", {}).get("source_presets", [])
             result.append({"name": path.stem, "filename": path.name, "path": str(path),
                            "bank": preset_bank(payload), "layout": preset_layout(payload),
@@ -169,9 +176,10 @@ class DSPPresetStore:
 
     def referenced_kernels_except(self, excluded: str) -> Set[str]:
         result = set()
-        for entry in self.list():
-            if entry["name"] != clean_name(excluded):
-                result.update(self.kernels(self.read(entry["name"])))
+        # Cleanup must fail closed when an unreadable preset could own an IR.
+        for path in self.presets_dir.glob("*.json"):
+            if path.stem != clean_name(excluded):
+                result.update(self.kernels(self.read(path.stem)))
         return result
 
     def find_ir_paths(self, kernel: str) -> List[Path]:

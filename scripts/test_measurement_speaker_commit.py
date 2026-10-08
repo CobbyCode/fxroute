@@ -239,6 +239,17 @@ class RequireCandidateTests(SessionFixture, unittest.TestCase):
 
 
 class StageRestoreTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_native_gain_roundtrip_does_not_reject_a_restored_level(self):
+        self.runtime["gain_db"] = -12.34567
+
+        async def rounded_stage(new, **kwargs):
+            await self.guarded_stage(new, **kwargs)
+            self.runtime["gain_db"] = -12.3456688
+
+        session = self.session(guarded_stage=rounded_stage)
+        result = await session.stage_candidate(self.proposal["candidate_state"])
+        self.assertEqual(self.runtime["fingerprint"], result["fingerprint"])
+
     async def test_stage_then_restore_roundtrip(self):
         from measurement.speaker_commit import compile_speaker_candidate
         session = self.session()

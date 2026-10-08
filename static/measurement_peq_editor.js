@@ -90,11 +90,6 @@
         deps.getElements().measurementPeqPanel.focus({ preventScroll: true });
     }
 
-    function isEditableMeasurementPeqTarget(target) {
-        if (!(target instanceof (deps.getElementType()))) return false;
-        return !!target.closest('input, select, textarea, [contenteditable="true"]');
-    }
-
     function handleMeasurementPeqNumberInputArrowKey(event) {
         const input = event.currentTarget;
         if (!(input instanceof (deps.getInputElementType())) || input.type !== 'number') return;
@@ -469,7 +464,7 @@
         init,
         getDefaultMeasurementPeqFilter, getDefaultMeasurementPeqState,
         ensureMeasurementPeqState, getMeasurementPeqFilters, getMeasurementPeqActiveFilter,
-        focusMeasurementPeqPanelContext, isEditableMeasurementPeqTarget,
+        focusMeasurementPeqPanelContext,
         handleMeasurementPeqNumberInputArrowKey, syncMeasurementPeqQInput,
         stepActiveMeasurementPeqQ, handleMeasurementPeqGraphWheel,
         selectMeasurementPeqFilter, clampMeasurementPeqFrequency,

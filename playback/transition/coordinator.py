@@ -560,7 +560,6 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             post_start_state = await self._stage(stages, "post-start-graph-reconcile", lambda: post_start_reconciler(request))
             if not isinstance(post_start_state, Mapping) or not post_start_state.get("graph_complete", False):
                 raise RuntimeError("output-mode post-start graph reconciliation did not confirm a complete graph")
-            post_start_graph_state = dict(post_start_state)
             verifier = getattr(self.runtime, "verify_output_mode_runtime", None)
             if not callable(verifier):
                 raise RuntimeError("Coordinator output-mode runtime verifier is unavailable")

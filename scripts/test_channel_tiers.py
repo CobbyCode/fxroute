@@ -325,6 +325,26 @@ class HardwareTierTests(unittest.TestCase):
         self.assertEqual(self.volume, original_volume)
         self.assertTrue(self.mute)
 
+    def test_three_failed_gate_confirms_retry_the_outer_reprobe(self):
+        change = self.change()
+        change.capture()
+        real_run = self.run_command
+        failed_confirms = 0
+
+        def settling(command):
+            nonlocal failed_confirms
+            if command[:2] == ["pactl", "set-sink-volume"] and failed_confirms < 3:
+                failed_confirms += 1
+                return ""
+            return real_run(command)
+
+        change.run = settling
+        with patch("time.sleep", return_value=None):
+            change.apply()
+        self.assertEqual(failed_confirms, 3)
+        self.assertEqual(self.volume, 23)
+        self.assertTrue(self.mute)
+
     def test_late_settling_spec_confirms_on_a_fresh_read(self):
         change = self.change()
         change.capture()

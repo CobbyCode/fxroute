@@ -201,21 +201,8 @@
         }
     }
 
-    function isSplCalibrationNoiseActive() {
-        return splCalibrationNoiseActive;
-    }
-
-    function isSplCalibrationAutomaticRunning() {
-        return splCalibrationAutomaticRunning;
-    }
-
-    function getSplCalibrationOperationGeneration() {
-        return splCalibrationOperationGeneration;
-    }
-
     return {
         init,
         splCalibrationModeLabel, resetSplCalibrationNoiseButton, runSplCalibrationNoiseCountdown, stopSplCalibrationOperation, openSplCalibration, closeSplCalibration, toggleSplCalibrationNoise, saveSplCalibration,
-        isSplCalibrationNoiseActive, isSplCalibrationAutomaticRunning, getSplCalibrationOperationGeneration,
     };
 });

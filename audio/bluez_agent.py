@@ -22,16 +22,6 @@ CAPABILITY = "DisplayYesNo"
 REREGISTER_RETRY_MS = 500
 REREGISTER_ATTEMPTS = 10
 
-AUDIO_UUID_PREFIXES = {
-    "0000110a",  # Audio Source
-    "0000110b",  # Audio Sink
-    "0000110c",  # AVRCP Target
-    "0000110e",  # AVRCP Controller
-    "0000111e",  # Handsfree
-    "0000111f",  # Handsfree Audio Gateway
-}
-
-
 class Rejected(dbus.DBusException):
     _dbus_error_name = "org.bluez.Error.Rejected"
 
@@ -67,9 +57,6 @@ class Agent(dbus.service.Object):
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
-        normalized = str(uuid).strip().lower()
-        if any(normalized.startswith(prefix) for prefix in AUDIO_UUID_PREFIXES):
-            return
         # Be permissive for already-paired device services while agent is active.
         return
 

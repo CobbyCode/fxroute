@@ -418,6 +418,16 @@ async def get_album_tracks(album_id: str):
     return [t.to_dict() for t in tracks]
 
 
+async def _favorite_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+    return body
+
+
 @router.post("/api/albums/{album_id}/favorite")
 async def set_album_favorite(album_id: str, request: Request):
     """Persist album favorite state in the smart metadata cache."""
@@ -427,7 +437,7 @@ async def set_album_favorite(album_id: str, request: Request):
     tracks = await _run_blocking(library_scanner.get_album_tracks, album_id, authoritative=True)
     if not tracks:
         raise HTTPException(status_code=404, detail="Album not found")
-    body = await request.json()
+    body = await _favorite_body(request)
     favorite = bool(body.get("favorite"))
     metadata = library_scanner.set_album_favorite(album_id, favorite)
     return {"status": "ok", "album_id": album_id, "favorite": bool(metadata.get("favorite"))}
@@ -442,7 +452,7 @@ async def set_track_favorite(track_id: str, request: Request):
     tracks = await _run_blocking(library_scanner.get_tracks, authoritative=True)
     if track_id not in {track.id for track in tracks}:
         raise HTTPException(status_code=404, detail="Track not found")
-    body = await request.json()
+    body = await _favorite_body(request)
     favorite = bool(body.get("favorite"))
     try:
         result = library_scanner.set_track_favorite(track_id, favorite)

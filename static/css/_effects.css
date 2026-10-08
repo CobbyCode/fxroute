@@ -1028,37 +1028,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 110px;
 }
 
-.delay-field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    min-width: 0;
-}
-
-.delay-field-compact {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.35rem;
-}
-
-.delay-field-compact label {
-    margin: 0;
-}
-
-.delay-field-compact .delay-input-wrap {
-    gap: 0.3rem;
-}
-
-.delay-field-compact .delay-unit {
-    font-size: 0.76rem;
-}
-
-.delay-field label {
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
 .delay-input-wrap {
     display: flex;
     align-items: center;
@@ -1519,9 +1488,6 @@ input[type="number"]::-webkit-outer-spin-button {
        the widest entry ("130.0") so the unit sits close like in steppers. */
     width: 4.6rem;
     text-align: center;
-}
-#tab-effects .delay-field-compact .delay-number-input {
-    width: 4.6rem;
 }
 /* Compact − / value / + stepper for small-range DSP numbers. Replaces the
    native spinners where stepping is the primary interaction; the value

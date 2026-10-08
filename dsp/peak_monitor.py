@@ -787,8 +787,6 @@ class DSPPeakMonitor:
             ports = list(self._iter_ports(text))
             for port in ports:
                 alias = port["alias"]
-                port_name = port["port_name"]
-                node_id = port["node_id"]
 
                 if alias == f"{capture_node_name}:input_{left_port}":
                     capture_fl = alias
@@ -971,7 +969,6 @@ class DSPPeakMonitor:
         current_serial = 0
 
         def flush_current():
-            nonlocal current_id, current_name, current_description, candidates
             node_name = current_name.strip()
             if not node_name:
                 return

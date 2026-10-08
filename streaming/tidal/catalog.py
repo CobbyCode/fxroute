@@ -291,8 +291,6 @@ def get_track(track_id: str) -> dict:
     """Fetch one TIDAL track by id and normalize it."""
     _require_tidalapi()
     session = _session()
-    import tidalapi
-
     try:
         track = session.track(track_id)
     except Exception as exc:  # noqa: BLE001
@@ -304,8 +302,6 @@ def get_album_tracks(album_id: str) -> list[dict]:
     """Return the normalized tracks of one TIDAL album."""
     _require_tidalapi()
     session = _session()
-    import tidalapi
-
     try:
         album = session.album(album_id)
         tracks = album.tracks()

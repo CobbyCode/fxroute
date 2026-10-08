@@ -27,11 +27,9 @@ from measurement.constants import LEVEL_REFERENCE_MAX_HZ, LEVEL_REFERENCE_MIN_HZ
 from measurement.store import auto_sub_chain_anchor_db
 
 from .candidates import (
-    _auto_sub_22_candidate_subwoofers,
     _auto_sub_22_global_config,
     _auto_sub_22_name,
     _auto_sub_22_sub,
-    _auto_sub_22_verify_alignment,
     _auto_sub_cancelled_candidate,
     _auto_sub_clamped_delay,
     _auto_sub_main_reference_sweep_profile,
@@ -130,33 +128,6 @@ def _auto_sub_candidate_config_fingerprint(
         return json.dumps(payload, sort_keys=True)
     except Exception:
         return f"fallback:{output_mode}:{delay_ms}:{sub1_alignment_ms}:{sub2_alignment_ms}"
-
-
-def _auto_sub_verify_candidate_alignment(
-    verify: dict[str, Any],
-    *,
-    output_mode: str,
-    delay_ms: float,
-    sub1_alignment_ms: float | None,
-    sub2_alignment_ms: float | None,
-    original_config_snapshot: dict[str, Any] | None,
-) -> bool:
-    """Cheap single-read check that the persisted mode matches the candidate."""
-    try:
-        if output_mode in OUTPUT_MODE_SUBWOOFER_22_MODES:
-            snapshot = original_config_snapshot or {}
-            sub1_delay = _auto_sub_clamped_delay(
-                sub1_alignment_ms if sub1_alignment_ms is not None else delay_ms
-            )
-            sub2_delay = _auto_sub_clamped_delay(
-                sub2_alignment_ms
-                if sub2_alignment_ms is not None
-                else _auto_sub_22_sub(snapshot, "sub2").get("alignment_ms", 0.0)
-            )
-            return bool(_auto_sub_22_verify_alignment(verify, sub1_delay, sub2_delay))
-        return float(verify.get("subwoofer", {}).get("sub_alignment_ms", -999)) == delay_ms
-    except Exception:
-        return False
 
 
 async def _auto_sub_prearm_reusable(auto_sub_rate: int) -> bool:

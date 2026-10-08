@@ -22,7 +22,7 @@ from audio.output_service import OutputService
 from audio.output_state import validate_output_state
 from audio.output_state_store import StateConflictError
 from audio.output_topology import SUB_ROLES
-from dsp.runtime import PlannedSyncTarget
+from dsp.runtime import PlannedSyncTarget, OUTPUT_GAIN_TOLERANCE_DB
 from measurement.autosub.roles import autosub_topology_from_state, require_autosub_topology
 
 
@@ -167,7 +167,7 @@ class CandidateStager:
             before_rollback_ramp=lambda: self._verify(previous))
         self._check_revision()
         await self._verify(new)
-        if await self._read_gain() != operating_gain:
+        if abs(await self._read_gain() - operating_gain) > OUTPUT_GAIN_TOLERANCE_DB:
             raise RuntimeError("AutoSub operating output gain was not restored")
 
     async def _read_gain(self) -> float:
@@ -186,7 +186,7 @@ class CandidateStager:
         try:
             try:
                 restored = (await self._matches(previous)
-                            and await self._read_gain() == previous_gain)
+                             and abs(await self._read_gain() - previous_gain) <= OUTPUT_GAIN_TOLERANCE_DB)
             except StateConflictError:
                 raise
             except Exception:

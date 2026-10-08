@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 class _RuntimeMuteMixin:
     """Attributes provided by the composing adapter instance."""
     _deps: PlaybackRuntimeDependencies
-    _output_key: str | None
     # Memoized gate sink for the current gate-ownership episode; the
     # coordinator invalidates this at episode boundaries.
     _resolved_gate_sink: str | None = None
@@ -76,4 +75,3 @@ class _RuntimeMuteMixin:
             muted,
             transition_id,
         )
-

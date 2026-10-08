@@ -449,7 +449,6 @@ class DSPManager:
         self.output_dir = self.base_dir / "presets"
         self.irs_dir = self.base_dir / "irs"
         self.state_dir = self.base_dir / "state"
-        self.db_file = self.state_dir / "active.json"
         self.global_extras_file = self.state_dir / "extras.json"
         self.compare_state_file = self.state_dir / "compare.json"
         for directory in (self.output_dir, self.irs_dir, self.state_dir):
@@ -1394,6 +1393,7 @@ class DSPManager:
     def create_peq_preset(self, preset_name: str, peq_definition: Dict[str, Any],
                           extras: Optional[Dict[str, Any]] = None, bank: Any = None,
                           group: Optional[str] = None) -> dict:
+        # Legacy caller snapshots never override the separately owned global helpers.
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:

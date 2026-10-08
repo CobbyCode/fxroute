@@ -47,7 +47,7 @@ function makeFlows({ area, topology, state }) {
         getElements: () => elements,
         measurementArea: () => area,
         measurementModeReady: () => true,
-        escapeHtml: String,
+        escapeHtml: require('../static/ui_helpers.js').escapeHtml,
         setMeasurementAssistMode: (mode) => calls.assist.push(mode),
         renderMeasurementPanel: () => { calls.panels += 1; },
         renderMeasurementPanelDefensively: () => {},
@@ -102,6 +102,12 @@ function model(channel) {
     assert.match(summary, /Center speaker response captured/);
     assert.match(summary, /Gated direct lower limit:<\/strong><br>310 Hz/);
     assert.doesNotMatch(summary, /Left and right|Advanced details|NaN/);
+    const speaker = wizard.scope.speaker;
+    wizard.scope.speaker = '<img src=x onerror=alert(1)>';
+    Flows.renderHybridMeasurementWizard();
+    assert.doesNotMatch(elements.measurementHybridSummary.innerHTML, /<img src=x/);
+    assert.match(elements.measurementHybridSummary.innerHTML, /&lt;img src=x/);
+    wizard.scope.speaker = speaker;
     Flows.openHybridProfileInConvolver();
     assert.equal(state.measurement.pendingRepeatMeasurements.length, 1);
     const entry = state.measurement.pendingRepeatMeasurements[0];

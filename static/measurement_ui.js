@@ -682,13 +682,6 @@ function summarizeMeasurementBand(summary = {}, fallbackLabel = 'No points') {
     return summary.point_count ? `${summary.point_count} pts · ${summary.min_hz || 20}–${summary.max_hz || 20000} Hz` : fallbackLabel;
 }
 
-function formatMeasurementUpperLimit(maxHz) {
-    const numericMaxHz = Number(maxHz);
-    if (!Number.isFinite(numericMaxHz) || numericMaxHz <= 0) return '';
-    if (numericMaxHz >= 1000) return `${(numericMaxHz / 1000).toFixed(numericMaxHz >= 10000 ? 1 : 2).replace(/\.0$/, '')}k`;
-    return `${Math.round(numericMaxHz)} Hz`;
-}
-
 function summarizeMeasurementEntry(measurement = {}) {
     const displaySummary = (measurement.review_summary || {}).point_count ? (measurement.review_summary || {}) : (measurement.summary || {});
     return summarizeMeasurementBand(displaySummary, 'No graph data');
@@ -1060,7 +1053,6 @@ function hybridSpeakerName(channel) {
         measurementIrAmplitudeToY,
         getNearestMeasurementIrPoint,
         summarizeMeasurementBand,
-        formatMeasurementUpperLimit,
         summarizeMeasurementEntry,
         formatMeasurementQualityReason,
         getMeasurementQualitySummary,

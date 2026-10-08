@@ -190,7 +190,9 @@ class JobSlot:
             self.job["cancel_requested"] = True
         if self.task is not None and not self.task.done():
             self.task.cancel()
-            try:
-                await self.task
-            except (asyncio.CancelledError, Exception):
-                pass
+            async def drain_worker():
+                try:
+                    await self.task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            await run_to_completion(drain_worker())

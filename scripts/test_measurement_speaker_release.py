@@ -109,6 +109,17 @@ def hold_manual_window(session, job_id="speaker-manual-job"):
 
 
 class SpeakerSessionReleaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_autosub_adapter_does_not_skip_speaker_or_use_legacy_sync(self):
+        async def refuse(_rate):
+            raise RuntimeError("committed plan refused")
+        job_id = hold_manual_window(self.session)
+        await self.session.request_close()
+        await self.session.register_autosub_release_adapter(refuse)
+        await self.session.register_speaker_align_release_adapter(self.adapter)
+        await self.session.unregister_manual_job(job_id)
+        self.assertEqual(self.adapter_rates, [RESTORE_RATE])
+        self.assertEqual(self.fakes.sync_at_rate_calls, [])
+
     def setUp(self):
         self.fakes = ReleaseServices()
         measurement_session.configure_services(self.fakes.build())

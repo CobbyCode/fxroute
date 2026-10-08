@@ -14,6 +14,41 @@ from dsp.manager import DSPManager, UnsupportedPluginError
 
 
 class DSPManagerPresetTests(unittest.TestCase):
+    def test_malformed_presets_do_not_break_listing_or_global_extras(self):
+        for name, content in (("Broken", "{"), ("Wrong schema", "[]"),
+                              ("Invalid encoding", b"\xff")):
+            path = self.manager.output_dir / f"{name}.json"
+            path.write_bytes(content.encode() if isinstance(content, str) else content)
+        self.assertEqual([entry["name"] for entry in self.manager.list_presets()],
+                         ["Direct", "Neutral"])
+        result = self.manager.apply_global_extras_to_all_presets({"headroom": {"enabled": True}})
+        self.assertTrue(result["extras"]["headroom"]["enabled"])
+        with self.assertRaises(RuntimeError):
+            self.manager.preset_store.read("Broken")
+
+    def test_corrupt_other_preset_prevents_destructive_ir_cleanup(self):
+        ir = self.manager.irs_dir / "shared.wav"
+        self._write_mono_wav(ir)
+        self.manager.create_convolver_preset("Valid", ir.name)
+        (self.manager.output_dir / "Broken.json").write_text("{")
+        with self.assertRaises(RuntimeError):
+            self.manager.delete_preset("Valid")
+        self.assertTrue(ir.exists())
+        self.assertTrue(self.manager.preset_store.path("Valid").exists())
+
+    def test_creation_keeps_output_helpers_global_not_frozen_in_presets(self):
+        self.manager.save_global_extras({"headroom": {"enabled": True, "params": {"gainDb": -6}},
+                                         "limiter": {"enabled": False}})
+        self.manager.create_peq_preset("A", self._peq_definition(), extras={"limiter": {"enabled": True}})
+        self.manager.create_peq_preset("B", self._peq_definition())
+        self.manager.combine_presets("AB", ["A", "B"], extras={"limiter": {"enabled": True}})
+        self.assertEqual([p["type"] for p in self.manager.preset_store.read("AB")["chain"]],
+                         ["equalizer", "equalizer"])
+        config = self.manager.compile_engine_config(
+            [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}], preset_name="AB")
+        self.assertIn("headroom", [p["type"] for p in config["chain"]])
+        self.assertFalse(self.manager.load_global_extras()["limiter"]["enabled"])
+
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
         self.manager = DSPManager(home=self.home)

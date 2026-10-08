@@ -778,7 +778,7 @@ class MeasurementRepeatRunner:
             return [], None, None
         indexed = list(enumerate(pair_deltas_ms))
         candidates = []
-        for anchor_idx, anchor_val in indexed:
+        for _, anchor_val in indexed:
             cluster = [
                 (idx, val) for idx, val in indexed
                 if abs(val - anchor_val) <= cluster_limit_ms
@@ -1003,7 +1003,6 @@ class MeasurementRepeatRunner:
             )
 
         own_dbg = pre_avg_debug.get(side, {})
-        other_dbg = pre_avg_debug.get("right" if side == "left" else "left", {})
         own_shifts = own_dbg.get("alignment_shifts_samples", [0])
         sample_rate = int(analysis.get("sample_rate") or 0)
         sample_spread = max(own_shifts) - min(own_shifts) if len(own_shifts) > 1 else 0
@@ -1013,18 +1012,23 @@ class MeasurementRepeatRunner:
             if len(residual_shifts) > 1 else 0
         )
         spread_limit = self._er_pre_average_sample_spread_limit(sample_rate)
-        timing_stable = (bool(own_dbg.get("pre_average_applied")) and residual_spread <= spread_limit
+        timing_stable = (sample_rate > 0 and bool(own_dbg.get("pre_average_applied")) and residual_spread <= spread_limit
                          and own_timing is not None and other_timing is not None)
 
         if delta is not None:
+            def format_shift(samples, precision):
+                milliseconds = (f"{samples / sample_rate * 1000:.{precision}f}ms"
+                                if sample_rate > 0 else "rate unavailable")
+                return f"{samples} samples ({milliseconds})"
+
             shifts_str = ", ".join(
-                f"{s}s ({s / sample_rate * 1000:.2f}ms)" for s in own_shifts
+                format_shift(s, 2) for s in own_shifts
             )
             payload["notes"].append(
                 f"Paired delta: {delta:+.4f} ms "
                 f"(ER pre-averaged, shifts: [{shifts_str}], "
-                f"raw spread: {sample_spread}s/{sample_spread / sample_rate * 1000:.3f}ms, "
-                f"residual spread: {residual_spread}s/{residual_spread / sample_rate * 1000:.3f}ms, "
+                f"raw spread: {format_shift(sample_spread, 3)}, "
+                f"residual spread: {format_shift(residual_spread, 3)}, "
                 f"timing {'stable' if timing_stable else 'review'})"
             )
         else:

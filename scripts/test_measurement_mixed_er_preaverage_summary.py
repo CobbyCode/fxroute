@@ -60,6 +60,28 @@ def _payload(measurement_id: str, channel: str, timing_ms: float, level_db: floa
 
 
 class MixedErPreaverageSummaryTests(unittest.TestCase):
+    def test_preaverage_note_uses_samples_and_handles_unknown_rate(self):
+        with tempfile.TemporaryDirectory() as tempdir, mock.patch.dict(
+                "os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}):
+            store = self._store(tempdir)
+            for rate in (48000, 0):
+                with self.subTest(rate=rate):
+                    own = _payload("left", "left", 1.0, 0.0, electrical=True)
+                    own["analysis"]["sample_rate"] = rate
+                    other = _payload("right", "right", 1.1, 0.0, electrical=True)
+                    debug = {"left": {"pre_average_applied": True,
+                                      "alignment_shifts_samples": [0, 48],
+                                      "residual_alignment_shifts_samples": [0, 0]}}
+                    result = store._repeat_runner._build_pre_averaged_lr_summary(
+                        own, other, side="left", base_name="Units", repeat_count=2, pre_avg_debug=debug)
+                    note = next(note for note in result["notes"] if note.startswith("Paired delta:"))
+                    self.assertIn("48 samples", note)
+                    if rate:
+                        self.assertIn("1.00ms", note)
+                    else:
+                        self.assertIn("rate unavailable", note)
+                        self.assertFalse(result["analysis"]["lr_repeat"]["paired_timing_stable"])
+
     def _store(self, tempdir: str) -> MeasurementStore:
         return MeasurementStore(home=Path(tempdir))
 

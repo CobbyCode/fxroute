@@ -74,9 +74,3 @@ def routed_chain(chain: Sequence[dict], routed: frozenset[str]) -> list[dict]:
     was measured on that missing speaker and must not shape the fold-down.
     """
     return [plugin for plugin in chain if plugin.get("group") in routed or not plugin.get("enabled", True)]
-
-
-def pair_mask(plugin: dict) -> int | None:
-    """Engine effect-pair mask of a tagged plugin (None means all pairs)."""
-    group = plugin.get("group")
-    return GROUP_PAIR_MASK[group] if group else None

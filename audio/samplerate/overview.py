@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -325,7 +324,6 @@ from .parsing import (
     combined_key_for_selected_key,
     group_hifi_split_sinks,
     is_hifi_combined_key,
-    is_hifi_split_sink_key,
     successor_sink_key,
 )
 from .persistence import (

@@ -967,8 +967,6 @@ class PlaybackOrchestrator:
                     v2_target = (request.output_state_transition or {}).get("target")
                     if self._deps.sync_plan_runtime is None:
                         raise RuntimeError("Coordinator plan runtime sync is unavailable")
-                    if self._deps.sync_plan_runtime is None:
-                        raise RuntimeError("Coordinator plan runtime sync is unavailable")
                     await self._deps.sync_plan_runtime(
                         v2_target, reason="coordinator-output-mode-switch")
                     helper_rebuilt = True

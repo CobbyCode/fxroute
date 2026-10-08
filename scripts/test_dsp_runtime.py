@@ -277,6 +277,23 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         self.assertIn(("effects bypass 1", True), commands)
         self.assertEqual(commands[-1][0], "gain db 0")
 
+    def test_gain_restore_accepts_float32_roundtrip_but_reports_real_drift(self):
+        async def exercise(actual):
+            runtime = DSPRuntime(self.manager)
+            runtime._control_socket = unittest.mock.Mock()
+
+            async def control(command, **kwargs):
+                return str(actual) if command == "gain db get" else "ok"
+
+            runtime._control = control
+            await runtime._settle_output_gain_db(-12.34567)
+
+        with self.assertNoLogs("dsp.runtime", level="WARNING"):
+            asyncio.run(exercise(-12.3456688))
+        with self.assertLogs("dsp.runtime", level="WARNING") as logs:
+            asyncio.run(exercise(-12.34))
+        self.assertTrue(any("restore did not land" in line for line in logs.output))
+
     def test_hot_update_swaps_compatible_config_without_rebuild(self):
         events = []
 

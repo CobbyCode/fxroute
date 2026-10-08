@@ -2800,12 +2800,6 @@ select.url-input {
     border-style: solid;
     background: linear-gradient(180deg, rgba(110,231,183,0.05), rgba(110,231,183,0.04));
 }
-.upload-area-url-primary {
-    min-height: 124px;
-    border-width: 2px;
-    border-style: dashed;
-    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
-}
 .upload-area-file-primary {
     min-height: 124px;
 }
@@ -2817,9 +2811,6 @@ select.url-input {
 }
 .upload-area-url .upload-area-icon {
     font-size: 1.1rem;
-}
-.upload-area-url-primary .upload-area-icon {
-    font-size: 1.4rem;
 }
 .upload-area-url-station .upload-area-icon {
     font-size: 1.45rem;
@@ -3362,9 +3353,6 @@ select.url-input {
 .catalog-station-card .station-name {
     min-height: calc(1.3em * 2);
 }
-.catalog-station-card .catalog-station-action {
-    margin-top: auto;
-}
 .radio-station-section {
     display: flex;
     flex-direction: column;
@@ -3540,33 +3528,6 @@ select.url-input {
 }
 .catalog-station-card:hover {
     transform: none;
-}
-.catalog-station-action {
-    width: 100%;
-    min-height: 36px;
-    padding: 0.48rem 0.65rem;
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-sm);
-    background: var(--accent-dim);
-    color: var(--text-primary);
-    font: inherit;
-    font-size: 0.8rem;
-    font-weight: 700;
-    cursor: pointer;
-}
-.catalog-station-action:hover:not(:disabled) {
-    background: var(--accent);
-    color: var(--bg-primary);
-}
-.catalog-station-action:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
-.catalog-station-action--saved {
-    border-color: var(--border);
-    background: rgba(255,255,255,0.035);
-    color: var(--text-secondary);
-    cursor: default;
 }
 
 .station-browser-status {
@@ -4169,7 +4130,6 @@ select.url-input {
     background-repeat: no-repeat;
     background-size: 100% 100%;
 }
-.streaming-result-info,
 .streaming-result .track-info { flex: 1; min-width: 0; }
 
 
@@ -6767,37 +6727,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 110px;
 }
 
-.delay-field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    min-width: 0;
-}
-
-.delay-field-compact {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.35rem;
-}
-
-.delay-field-compact label {
-    margin: 0;
-}
-
-.delay-field-compact .delay-input-wrap {
-    gap: 0.3rem;
-}
-
-.delay-field-compact .delay-unit {
-    font-size: 0.76rem;
-}
-
-.delay-field label {
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
 .delay-input-wrap {
     display: flex;
     align-items: center;
@@ -7258,9 +7187,6 @@ input[type="number"]::-webkit-outer-spin-button {
        the widest entry ("130.0") so the unit sits close like in steppers. */
     width: 4.6rem;
     text-align: center;
-}
-#tab-effects .delay-field-compact .delay-number-input {
-    width: 4.6rem;
 }
 /* Compact − / value / + stepper for small-range DSP numbers. Replaces the
    native spinners where stepping is the primary interaction; the value
@@ -9280,14 +9206,9 @@ input[type="number"]::-webkit-outer-spin-button {
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 
-        .measurement-channel-chip-row,
     .measurement-smoothing-chips {
         width: 100%;
         justify-content: flex-start;
-    }
-
-    .measurement-channel-chip-row {
-        justify-content: center;
     }
 
         .measurement-card-setup,
@@ -9646,7 +9567,6 @@ input[type="number"]::-webkit-outer-spin-button {
     }
 
     /* Touch targets that can grow without moving surrounding layout. */
-    .catalog-station-action { min-height: 44px; }
     .dialog-header-corner-close .btn-close-manage { width: 44px; height: 44px; min-height: 44px; }
     .measurement-chip { min-height: 44px; }
     .measurement-view-toggle .measurement-chip { min-height: 44px; }

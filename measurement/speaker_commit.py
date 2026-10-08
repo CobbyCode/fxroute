@@ -48,7 +48,7 @@ from audio.output_state import effective_crossover_enabled, routing_for_device, 
 from audio.output_state_store import StateConflictError
 from audio.output_topology import derive_topology
 from common.run_to_completion import restore_after, run_to_completion
-from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget
+from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget, OUTPUT_GAIN_TOLERANCE_DB
 from measurement.release_device import check_release_device
 from measurement.speaker_apply import verify_confirmation
 
@@ -239,7 +239,7 @@ class SpeakerAlignSession:
             before_rollback_ramp=lambda: self._verify(previous))
         self._check_revision()
         await self._verify(new)
-        if await self._read_gain() != operating_gain:
+        if abs(await self._read_gain() - operating_gain) > OUTPUT_GAIN_TOLERANCE_DB:
             raise RuntimeError("Speaker Align operating output gain was not restored")
 
     async def _recover(self, previous: _Prepared, previous_gain: float) -> None:
@@ -248,7 +248,7 @@ class SpeakerAlignSession:
         try:
             try:
                 restored = (await self._matches(previous)
-                            and await self._read_gain() == previous_gain)
+                             and abs(await self._read_gain() - previous_gain) <= OUTPUT_GAIN_TOLERANCE_DB)
             except StateConflictError:
                 raise
             except Exception:

@@ -73,6 +73,40 @@ function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: tru
 }
 
 (async () => {
+    // An older success or error must not replace a newer area's status, including close/reopen.
+    for (const staleError of [false, true]) {
+        const h = harness({ area: { bank_id: 'main', available: true }, status: {}, jobs: [] });
+        let area = { bank_id: 'main', available: true };
+        let mode = 'stereo';
+        const pending = [];
+        levelMatch.init({
+            measurementArea: () => area,
+            getState: () => ({ outputSystem: { catalog: { active_mode: mode } } }),
+            fetch: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
+        });
+        const first = levelMatch.refresh();
+        area = { bank_id: 'center', available: true };
+        const second = levelMatch.refresh();
+        pending[1].resolve({ ok: true, json: async () => ({ mode: 'surround', entries: [{ role: 'center', valid: true, trim_db: -3 }] }) });
+        await second;
+        const visible = h.elements.levelMatchResults.innerHTML;
+        if (staleError) pending[0].reject(new Error('stale failure'));
+        else pending[0].resolve({ ok: true, json: async () => ({ mode: 'stereo', entries: [] }) });
+        await first;
+        assert.equal(h.elements.levelMatchResults.innerHTML, visible);
+        assert.notEqual(h.elements.levelMatchStatus.textContent, 'stale failure');
+        const changedMode = levelMatch.refresh();
+        mode = 'subwoofer-2.1';
+        pending[2].resolve({ ok: true, json: async () => ({ mode: 'surround', entries: [] }) });
+        await changedMode;
+        assert.equal(h.elements.levelMatchResults.innerHTML, visible);
+        const closing = levelMatch.refresh();
+        await levelMatch.closeLevelMatch();
+        pending[3].resolve({ ok: true, json: async () => ({ entries: [] }) });
+        await closing;
+        assert.equal(h.elements.levelMatchResults.innerHTML, visible);
+    }
+
     assert.equal(levelMatch.formatTrim(-2.04), '-2.0 dB');
     assert.equal(levelMatch.formatTrim(0), '0.0 dB');
     assert.equal(levelMatch.formatTrim(undefined), '—');

@@ -19,7 +19,7 @@ import subprocess
 import playback.queue as playback_queue
 import playback.media_readiness as media_readiness
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
@@ -49,7 +49,6 @@ from safe_http import BlockedUrlError
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
-COVER_CACHE_DIR = BASE_DIR / "media" / "cache" / "covers"
 UPDATE_SCRIPT = BASE_DIR / "scripts" / "update_fxroute.sh"
 # Same rule as install.sh valid_local_hostname().
 _LOCAL_HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -141,17 +140,6 @@ def _make_system_update_deps() -> update_lifecycle.SystemUpdateDeps:
         stop_process_group=pw_link.stop_process_group_cancellation_safe,
         stop_command_child=pw_link.stop_command_child_cancellation_safe,
         log_warning=logger.warning,
-    )
-
-
-async def _run_update_script(timeout: float, *args: str) -> dict:
-    """Thin wrapper: update-script lifecycle lives in system_update (REFACTOR-012)."""
-    return await update_lifecycle.run_update_script(
-        UPDATE_SCRIPT,
-        timeout,
-        *args,
-        terminate_grace_seconds=_UPDATE_TERMINATE_GRACE_SECONDS,
-        deps=_make_system_update_deps(),
     )
 
 
@@ -515,7 +503,7 @@ from library.core import (
 )
 from downloader import Downloader
 from dsp.manager import DSPManager, ensure_kernel_supported_ir, parse_wav_frames
-from dsp.crossover import crossover_response, design_crossover
+from dsp.crossover import design_crossover
 from dsp.runtime import DSPRuntime, DSPRuntimeConfig, PlannedSyncTarget, _contains_link
 import dsp.api as dsp_api
 import dsp.orchestration as dsp_orchestration
@@ -540,7 +528,6 @@ from audio.output_state import (
     set_mode_routing,
     set_output_processing,
     switch_mode,
-    validate_output_state,
 )
 from audio.output_state_store import OutputStateStore, StateConflictError
 from audio.output_topology import MODES, SUB_ROLES, derive_topology, side_for_role
@@ -618,6 +605,7 @@ from playback.runtime import (
 
 from audio.samplerate import (
     OUTPUT_MODE_STEREO,
+    OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_MODES,
     SOURCE_MODE_APP_PLAYBACK,
     SOURCE_MODE_EXTERNAL_INPUT,
@@ -631,7 +619,6 @@ from audio.samplerate import (
     is_bluetooth_audio_streaming,
     normalize_sample_rate_policy,
     recover_saved_output_sink,
-    set_audio_output_selection,
     set_audio_source_selection,
     set_bluetooth_receiver_enabled,
     with_current_stdin_status,
@@ -2760,7 +2747,7 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
     # must never start another rate, DSP, graph or gate transition.
     synced = playback_queue.queue.sync_index_from_mpv(state)
     if synced is not None:
-        queue_index, track = synced
+        _, track = synced
         previous_track = playback_state.current_track_info or {}
         playback_state.current_track_info = track
         playback_state.last_track_info = track
@@ -3445,7 +3432,7 @@ def _current_output_mode() -> str:
         routing = spec.get("routing") if isinstance(spec, Mapping) else None
         if isinstance(routing, Mapping):
             for assignments in routing.values():
-                if any(role not in ("off", "main_l", "main_r")
+                if any(role in SUB_ROLES
                        for role in (assignments or [])):
                     return OUTPUT_MODE_SUBWOOFER_22
     except Exception:
@@ -6887,17 +6874,17 @@ async def api_set_device_name(request: Request):
         _stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate_task), timeout=15)
     except asyncio.TimeoutError:
         if await pw_link.stop_command_child_cancellation_safe(
-            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS, communicate_task=communicate_task
         ):
             raise asyncio.CancelledError
         try:
             _stdout, stderr = communicate_task.result()
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             _stdout, stderr = b"", b""
         raise HTTPException(status_code=504, detail="hostnamectl timed out") from None
     except asyncio.CancelledError:
         await pw_link.stop_command_child_cancellation_safe(
-            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS
+            proc, _SERVICE_RESTART_TERMINATE_GRACE_SECONDS, communicate_task=communicate_task
         )
         raise
     if proc.returncode != 0:

@@ -191,8 +191,7 @@ def is_request_origin_trusted(request: HTTPConnection) -> bool:
 
     trusted_host = effective_request_host(request)
     if not trusted_host:
-        # No host to compare against: the request is malformed enough that
-        # we refuse to make a decision and let the caller choose.
+        # No host to compare against: reject the request as untrusted.
         return False
 
     trusted_scheme = effective_request_scheme(request)

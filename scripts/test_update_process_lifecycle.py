@@ -2,7 +2,7 @@
 """Regression tests: bounded, cancellation-safe update process group.
 
 Covers the runtime update path (GET/POST /api/system/update,
-POST /api/system/restore -> _run_update_operation -> _run_update_script ->
+POST /api/system/restore -> _run_update_operation -> system_update.run_update_script ->
 scripts/update_fxroute.sh) against controlled shell -> python child trees:
 
 - success keeps the result shape and leaves no processes behind

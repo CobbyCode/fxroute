@@ -1155,7 +1155,7 @@ function renderHybridMeasurementWizard() {
             const integration = wizard.profile.integration;
             const lowerLimit = (channel) => Math.round(wizard.profile.models[channel].modelBlend.gatedDirectLowerLimitHz);
             const items = [
-                scope.direct ? (pair ? 'Left and right speaker response captured' : `${scope.speaker} response captured`) : null,
+                scope.direct ? (pair ? 'Left and right speaker response captured' : `${deps.escapeHtml(scope.speaker)} response captured`) : null,
                 'Main listening position measured',
                 pair ? 'Left and right listening positions measured' : 'Listening positions measured',
                 scope.direct ? 'Speaker and room measurements combined' : 'Listening-position measurements combined',

@@ -32,7 +32,6 @@ from artist_enrichment import (
 )
 
 COVER_ART_API = "https://coverartarchive.org"
-COVER_ART_MAX_BYTES = 8 * 1024 * 1024  # single cover image
 MISSING_RETENTION_SECONDS = 60 * 24 * 60 * 60
 MAX_ENRICH_PER_SCAN = 8
 
@@ -689,12 +688,17 @@ class LibraryMetadataStore:
         )
 
         cover_path, cover_mime = (None, None)
+        cover_error = None
         if not row["local_cover_source"]:
-            cover_path, cover_mime = self._fetch_cover(
-                row["album_key"],
-                match.get("mb_release_id"),
-                match.get("mb_release_group_id"),
-            )
+            try:
+                cover_path, cover_mime = self._fetch_cover(
+                    row["album_key"],
+                    match.get("mb_release_id"),
+                    match.get("mb_release_group_id"),
+                )
+            except Exception as exc:
+                cover_error = str(exc)[:240] or type(exc).__name__
+                logger.info("Optional album cover fetch failed for %s: %s", row["album_key"], cover_error)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -714,7 +718,7 @@ class LibraryMetadataStore:
                     metadata_updated_at = ?,
                     about_attempted_at = ?,
                     fetch_attempted_at = ?,
-                    fetch_error = NULL
+                    fetch_error = ?
                 WHERE album_key = ?
                 """,
                 (
@@ -733,6 +737,7 @@ class LibraryMetadataStore:
                     _utc_now(),
                     _utc_now(),
                     _utc_now(),
+                    cover_error,
                     row["album_key"],
                 ),
             )
@@ -777,10 +782,11 @@ class LibraryMetadataStore:
     ) -> tuple[Optional[Path], Optional[str]]:
         if not release_id and not release_group_id:
             return None, None
+        for suffix, mime in ((".jpg", "image/jpeg"), (".png", "image/png"), (".webp", "image/webp")):
+            destination = self.cover_dir / f"{album_key}{suffix}"
+            if destination.is_file():
+                return destination, mime
         suffix = ".jpg"
-        destination = self.cover_dir / f"{album_key}{suffix}"
-        if destination.is_file():
-            return destination, "image/jpeg"
 
         candidates = []
         if release_id:

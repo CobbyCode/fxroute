@@ -137,16 +137,12 @@ async def start_auto_sub_optimize(
 ):
     measurement_store = _measurement_store()
     measurement_sr_session = _measurement_session()
-    global _auto_sub_lock
     if not measurement_store:
         raise HTTPException(status_code=503, detail="Measurement store not available")
     try:
         input_id = measurement_store.resolve_capture_input_id(input_id=input_id, input_key=input_key)
     except ValueError as exc:
         raise bad_request(exc) from exc
-    if not _auto_sub_lock:
-        _auto_sub_lock = asyncio.Lock()
-
     # Capture the session entry epoch before any await can interleave a
     # measurement-window close: an entry invalidated by a close must never
     # register as a running Auto-Sub job afterwards.

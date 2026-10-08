@@ -164,6 +164,24 @@ stage_end
     assert list(out[3][:4]) == [0.0, 0.5, 0.0, 0.5]
 
 
+def test_matrix_rejects_nonfinite_route_gains(tmp_path):
+    build()
+    source = tmp_path / "in.f32"
+    source.write_bytes(array.array("f", [1.0]).tobytes())
+    for gain in ("nan", "inf", "-inf", "1e100"):
+        config = tmp_path / "invalid.conf"
+        config.write_text(f"rate 48000\ninputs 1\noutputs 1\nmatrix 0 0 {gain}\n")
+        result = subprocess.run([str(DSP), str(config), str(source), str(tmp_path / "out.f32")], capture_output=True)
+        assert result.returncode != 0, f"Nonfinite route gain accepted: {gain}"
+
+
+def test_matrix_preserves_signed_and_boosted_routes(tmp_path):
+    build()
+    config = "rate 48000\ninputs 1\noutputs 1\nmatrix 0 0 -2\n"
+    out = process(tmp_path, config, [0.25], 1)
+    assert list(out[0]) == [-0.5]
+
+
 from native_test_runner import run_pytest_style_module
 
 if __name__ == "__main__":

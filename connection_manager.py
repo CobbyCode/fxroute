@@ -29,6 +29,7 @@ import logging
 from typing import List
 
 from fastapi import WebSocket
+from common.run_to_completion import run_to_completion
 
 logger = logging.getLogger(__name__)
 
@@ -73,19 +74,21 @@ class _ClientSender:
 
     async def close(self) -> None:
         """Cancel the worker and drain any queued payloads."""
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
-        while True:
-            try:
-                self.queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            self.queue.task_done()
-        self._coalesced.clear()
+        async def drain():
+            if self._task is not None and not self._task.done():
+                self._task.cancel()
+                try:
+                    await self._task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            while True:
+                try:
+                    self.queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                self.queue.task_done()
+            self._coalesced.clear()
+        await run_to_completion(drain())
 
     async def run(self) -> None:
         while True:
@@ -178,8 +181,10 @@ class ConnectionManager:
         sender = await self._unregister(websocket)
         if sender is None:
             return False
-        await sender.close()
-        self._schedule_transport_close(websocket)
+        try:
+            await sender.close()
+        finally:
+            self._schedule_transport_close(websocket)
         logger.info(
             "WebSocket disconnected: reason=%s active=%s",
             reason,
@@ -298,11 +303,13 @@ class ConnectionManager:
         One failing client never aborts the shutdown of the others; per-client
         failures are only logged. Safe to call when already idle.
         """
-        async with self._list_lock:
-            connections = list(self.active_connections)
-        for connection in connections:
-            try:
-                await self.disconnect(connection, reason=reason)
-            except Exception:
-                logger.exception("Failed to disconnect websocket client during shutdown")
-        await self.drain_workers()
+        async def drain():
+            async with self._list_lock:
+                connections = list(self.active_connections)
+            for connection in connections:
+                try:
+                    await self.disconnect(connection, reason=reason)
+                except Exception:
+                    logger.exception("Failed to disconnect websocket client during shutdown")
+            await self.drain_workers()
+        await run_to_completion(drain())

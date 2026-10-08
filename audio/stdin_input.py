@@ -76,7 +76,7 @@ class StdinInputService:
         state = "waiting" if available else "unavailable"
         if session:
             state = session.state
-            if state in {"ready", "streaming"}:
+            if state == "ready":
                 recent = session.last_frame_at is not None and self._deps.monotonic() - session.last_frame_at <= 1
                 state = "streaming" if self._selected and session.routed and recent else "ready"
         elif available and self._error:
@@ -326,7 +326,7 @@ class StdinInputService:
         which owns the routing-lost verdict.
         """
         session = self._session
-        if session is None or session.sink is None or session.state not in {"ready", "streaming"}:
+        if session is None or session.sink is None or session.state != "ready":
             return
         try:
             async with asyncio.timeout(5):

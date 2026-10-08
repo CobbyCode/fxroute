@@ -121,7 +121,7 @@ class PeakMonitorRealCaptureTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     await asyncio.wait_for(stop, 4)
                 self.assertEqual(read_errors, [])
-                self.assertEqual(len(drains), 2)  # terminate timeout, then kill/reap
+                self.assertEqual(len(drains), 1)  # one reused reader through terminate timeout, kill and reap
                 self.assertEqual(proc.returncode, -signal.SIGKILL)
                 self.assertTrue(task.done())
                 self.assertTrue(proc.stdout.at_eof())

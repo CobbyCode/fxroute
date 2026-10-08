@@ -11,7 +11,6 @@ point and never total energy across differently wide ways).
 
 from __future__ import annotations
 
-import copy
 import math
 import statistics
 
@@ -282,15 +281,3 @@ def verify_gain_spread(levels_db: dict[str, float],
     return {"confirmed": not reasons, "reasons": reasons,
             "spread_db": round(float(spread), 3), "tolerance_db": float(max_spread_db),
             "levels_db": {role: round(float(level), 3) for role, level in levels_db.items()}}
-
-
-def neutralized_candidate_state(state: dict) -> dict:
-    """Return a detached copy stating the alignment rendering contract.
-
-    The persisted document itself is never neutralized here; the plan
-    compiler renders Global/area banks bypassed via neutralize_banks. This
-    helper documents the shared principle: Delay/Gain are physical base
-    tuning measured through the active crossover, PEQ/convolver apply
-    afterwards.
-    """
-    return copy.deepcopy(state)

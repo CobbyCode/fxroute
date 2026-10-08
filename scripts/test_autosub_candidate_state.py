@@ -245,6 +245,20 @@ class HardwareBoundary:
 
 
 class CandidateStagerTests(Fixture, unittest.IsolatedAsyncioTestCase):
+    async def test_native_gain_roundtrip_does_not_reject_a_restored_level(self):
+        self.hardware.gain = -12.34567
+
+        async def rounded_stage(new, **kwargs):
+            await self.hardware.guarded_stage(new, **kwargs)
+            self.hardware.gain = -12.3456688
+
+        stager = candidate_module.CandidateStager(
+            service=self.service, start_state=self.base, build_target=self.build_target,
+            guarded_stage=rounded_stage, readback=self.hardware.readback, guard_db=-30, **self.context)
+        result = await stager.stage(sub_delays={"sub1": 5})
+        self.assertEqual(self.hardware.target.config.plan_fingerprint, result["fingerprint"])
+        self.assert_unchanged()
+
     def setUp(self):
         super().setUp()
         fp, plan = self.compile(self.base)

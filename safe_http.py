@@ -330,11 +330,11 @@ def safe_get(
     session = _build_public_session()
     try:
         current = url
-        for _ in range(max_redirects + 1):
+        for hop in range(max_redirects + 1):
             validate_public_url(current)
             response = session.get(
                 current,
-                params=params,
+                params=params if hop == 0 else None,
                 headers=headers,
                 timeout=timeout,
                 allow_redirects=False,
@@ -343,13 +343,10 @@ def safe_get(
             if response.is_redirect:
                 location = response.headers.get("Location")
                 if not location:
-                    try:
-                        return _read_bounded(response, max_bytes)
-                    except BaseException:
-                        response.close()
-                        raise
+                    # Requests considers an empty Location header a redirect.
+                    return _read_bounded(response, max_bytes)
                 response.close()
-                current = urljoin(current, location)
+                current = urljoin(getattr(response, "url", None) or current, location)
                 continue
             return _read_bounded(response, max_bytes)
     finally:

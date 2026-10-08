@@ -73,11 +73,9 @@ assert.match(css, /@media\s*\(min-width:\s*701px\)\s*and\s*\(max-width:\s*1199px
     'tablet Radio header must preserve the previous search track width');
 assert.match(css, /\.catalog-station-card\s+\.station-name\s*\{[\s\S]*?min-height:\s*calc\(1\.3em\s*\*\s*2\);/,
     'catalog cards must reserve two title lines');
-assert.match(css, /\.catalog-station-card\s+\.catalog-station-action\s*\{[\s\S]*?margin-top:\s*auto;/,
-    'catalog actions must share the same bottom line');
 assert.match(css, /\.radio-search-results[\s\S]*?\.station-name[\s\S]*?min-height:\s*(?:calc\([^;]+\)|[^;]+);/,
     'direct-search station names must reserve two lines');
-assert.match(css, /\.radio-search-results[\s\S]*?\.catalog-station-card\s+\.catalog-station-action[\s\S]*?margin-top:\s*auto;/,
-    'direct-search actions must align at the bottom of every result card');
+assert.match(css, /\.station-card-fav\s*\{[^}]*position:\s*absolute;/,
+    'catalog favorite hearts must stay anchored on the cover');
 
 console.log('PASS scripts/test_radio_direct_search.js');

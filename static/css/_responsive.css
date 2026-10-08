@@ -1081,14 +1081,9 @@
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 
-        .measurement-channel-chip-row,
     .measurement-smoothing-chips {
         width: 100%;
         justify-content: flex-start;
-    }
-
-    .measurement-channel-chip-row {
-        justify-content: center;
     }
 
         .measurement-card-setup,
@@ -1447,7 +1442,6 @@
     }
 
     /* Touch targets that can grow without moving surrounding layout. */
-    .catalog-station-action { min-height: 44px; }
     .dialog-header-corner-close .btn-close-manage { width: 44px; height: 44px; min-height: 44px; }
     .measurement-chip { min-height: 44px; }
     .measurement-view-toggle .measurement-chip { min-height: 44px; }

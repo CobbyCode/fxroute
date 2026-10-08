@@ -68,7 +68,9 @@ class Downloader:
                 logger.info(f"Found yt-dlp: {result.stdout.strip()}")
             else:
                 raise RuntimeError(f"yt-dlp check failed: {result.stderr}")
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError("yt-dlp version check timed out after 30 seconds") from e
+        except FileNotFoundError as e:
             logger.error("yt-dlp is not installed or not in PATH")
             raise RuntimeError(
                 "yt-dlp is required for downloads. "

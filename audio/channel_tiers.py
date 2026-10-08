@@ -222,7 +222,7 @@ class ChannelTierChange:
                                 logger.info("Channel-tier gate confirm attempt %s waiting: %s", attempt + 1, exc)
                                 time.sleep(0.5)
                         else:
-                            raise last_error or RuntimeError("Recreated sink did not retain the output gate and volume")
+                            raise RuntimeError("Recreated sink gate confirm failed") from last_error
                     finally:
                         self._stop_wake(wake)
                     self.run(["pactl", "set-default-sink", key])

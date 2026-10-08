@@ -710,17 +710,17 @@ class MeasurementSampleRateSession:
                     release_adapter = self._autosub_release_adapter
                     speaker_adapter = self._speaker_align_release_adapter
                     if release_adapter is not None:
-                        rendered = await release_adapter(runtime_restore_rate)
-                        logger.info(
-                            "Measurement release rebuilt committed output plan: %s",
-                            rendered,
-                        )
+                        try:
+                            rendered = await release_adapter(runtime_restore_rate)
+                            logger.info("Measurement release rebuilt committed output plan: %s", rendered)
+                        except Exception as exc:
+                            logger.warning("Measurement AutoSub release adapter failed: %s", exc)
                     if speaker_adapter is not None:
-                        rendered = await speaker_adapter(runtime_restore_rate)
-                        logger.info(
-                            "Measurement release rebuilt speaker committed output plan: %s",
-                            rendered,
-                        )
+                        try:
+                            rendered = await speaker_adapter(runtime_restore_rate)
+                            logger.info("Measurement release rebuilt speaker committed output plan: %s", rendered)
+                        except Exception as exc:
+                            logger.warning("Measurement Speaker Align release adapter failed: %s", exc)
                     if release_adapter is None and speaker_adapter is None:
                         await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
                 else:

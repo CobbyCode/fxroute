@@ -14,6 +14,12 @@ from downloader import Downloader
 
 
 class DownloaderYtdlpVerifyTimeoutTests(unittest.TestCase):
+    def test_timeout_is_reported_as_an_actionable_runtime_error(self):
+        instance = Downloader.__new__(Downloader)
+        with mock.patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("yt-dlp", 30)):
+            with self.assertRaisesRegex(RuntimeError, "yt-dlp.*timed out"):
+                instance._verify_ytdlp()
+
     def test_verify_ytdlp_allows_slow_startup(self):
         """The --version probe must not use a tight timeout that fails on
         slow boards (or emulated guests) where Python startup alone can

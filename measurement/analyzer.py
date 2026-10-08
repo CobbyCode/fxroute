@@ -370,7 +370,7 @@ class MeasurementAnalyzer:
             timing_impulse_response if corrected_segment_size == analysis_segment.size
             else self._fft_convolve(analysis_segment, inverse_sweep.astype(np.float64))
         )
-        windowed_ir, ir_meta = self._window_impulse_response(timing_impulse_response, sample_rate)
+        _, ir_meta = self._window_impulse_response(timing_impulse_response, sample_rate)
         direct_timing_meta = self._estimate_impulse_direct_arrival(
             timing_impulse_response,
             reference_impulse_response,
@@ -1170,7 +1170,7 @@ class MeasurementAnalyzer:
 
         accepted_count = int(np.count_nonzero(fit_candidate_mask))
         if allow_drift_compensation and accepted_count >= 3:
-            fit_intercept, fit_slope, fit_residuals = self._weighted_anchor_line_fit(
+            fit_intercept, fit_slope, _ = self._weighted_anchor_line_fit(
                 offsets[fit_candidate_mask],
                 observed[fit_candidate_mask],
                 scores[fit_candidate_mask],
@@ -1189,7 +1189,6 @@ class MeasurementAnalyzer:
             intercept = central_start
             slope = 1.0
             fit_slope = 1.0
-            fit_residuals = observed[fit_candidate_mask] - (intercept + fit_slope * offsets[fit_candidate_mask])
             estimated_ppm = 0.0
             compensated = False
             drift_compensation_policy = (

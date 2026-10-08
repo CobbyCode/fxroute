@@ -568,7 +568,6 @@
     background-repeat: no-repeat;
     background-size: 100% 100%;
 }
-.streaming-result-info,
 .streaming-result .track-info { flex: 1; min-width: 0; }
 
 

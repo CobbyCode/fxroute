@@ -14,6 +14,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dsp.orchestration import DspOrchestrationDeps, DspOrchestrator  # noqa: E402
 
 
+class CurrentOutputModeTests(unittest.TestCase):
+    def test_v2_routed_sub_roles_are_seen_without_runtime_snapshot(self):
+        import main
+        for role, expected in (("sub1", "subwoofer-2.2"), ("main_l", "stereo"),
+                               ("center", "stereo")):
+            head = {"active_mode": "surround", "modes": {"surround": {"routing": {"hw": [role]}}}}
+            with self.subTest(role=role), mock.patch.object(main.runtime, "dsp_runtime", None), \
+                    mock.patch.object(main, "get_output_service", return_value=SimpleNamespace(load=lambda: head)):
+                self.assertEqual(main._current_output_mode(), expected)
+
+    def test_committed_runtime_mode_takes_priority(self):
+        import main
+        with mock.patch.object(main.runtime, "dsp_runtime", SimpleNamespace(snapshot=lambda: {
+                "config": {"output_mode": "subwoofer-2.2"}})):
+            self.assertEqual(main._current_output_mode(), "subwoofer-2.2")
+
+
 def _watcher_deps(overrides) -> DspOrchestrationDeps:
     """Minimal DspOrchestrationDeps; unused members point at harmless stubs."""
     stub = lambda *a, **k: None  # noqa: E731

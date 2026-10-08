@@ -220,6 +220,7 @@ function runStreaming(options = {}) {
         fetch: async (url, opts) => {
             fetchCalls.push({ url: String(url), opts: opts || {} });
             const u = String(url);
+            if (options.statusFetch && /^\/api\/streaming\/[^/]+\/status$/.test(u)) return options.statusFetch(u);
             let body = {};
             let failed = false;
             if (u === '/api/streaming/providers/discovery') {
@@ -327,8 +328,9 @@ function runStreaming(options = {}) {
         spotifyCommand: (...a) => { spotifyCommandCalls.push(a); return Promise.resolve(); },
         spotifySeek: (...a) => { spotifySeekCalls.push(a); return Promise.resolve(); },
     };
-    sandbox.window.FXRouteStreaming.init(api);
-    return { sandbox, shells, tabButtons, tabPanels, fetchCalls, spotifyCommandCalls, spotifySeekCalls, createdEls };
+    if (options.defaultEscape) delete api.escapeHtml;
+    if (!options.deferInit) sandbox.window.FXRouteStreaming.init(api);
+    return { sandbox, shells, tabButtons, tabPanels, fetchCalls, spotifyCommandCalls, spotifySeekCalls, createdEls, api };
 }
 
 const baseCaps = {
@@ -337,6 +339,78 @@ const baseCaps = {
 };
 
 async function main() {
+// Overlapping provider requests must not roll back fresher status or external frames.
+{
+    const pending = [];
+    const h = runStreaming({ statusFetch: (url) => new Promise((resolve) => pending.push({ url, resolve })) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const ui = h.sandbox.window.FXRouteStreaming;
+    const data = (title) => ({ installed: true, available: true, authenticated: true, capabilities: baseCaps,
+        status: 'Paused', title, artist: '', album: '', artUrl: '', position: 0, duration: 0 });
+    const answer = async (request, title) => {
+        request.resolve({ ok: true, json: async () => data(title) });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    h.sandbox.window.__visibleTab = 'qobuz';
+    ui.refreshActiveTab();
+    const old = pending.at(-1);
+    ui.refreshActiveTab();
+    await answer(pending.at(-1), 'new');
+    await answer(old, 'old');
+    assert.equal(h.shells.qobuz.querySelector('.streaming-title').textContent, 'new');
+    ui.refreshActiveTab();
+    const beforeFrame = pending.at(-1);
+    ui.renderProvider('qobuz', data('external'));
+    await answer(beforeFrame, 'stale poll');
+    assert.equal(h.shells.qobuz.querySelector('.streaming-title').textContent, 'external');
+    ui.refreshActiveTab();
+    const qobuz = pending.at(-1);
+    h.sandbox.window.__visibleTab = 'tidal';
+    ui.refreshActiveTab();
+    await answer(pending.at(-1), 'tidal new');
+    await answer(qobuz, 'qobuz independent');
+    assert.equal(h.shells.qobuz.querySelector('.streaming-title').textContent, 'qobuz independent');
+    h.sandbox.window.__visibleTab = 'qobuz';
+    ui.refreshActiveTab();
+    let previous = pending.at(-1);
+    for (let index = 0; index < 4; index += 1) {
+        ui.refreshActiveTab();
+        await answer(previous, `slow-${index}`);
+        assert.equal(h.shells.qobuz.querySelector('.streaming-title').textContent, `slow-${index}`);
+        previous = pending.at(-1);
+    }
+    await answer(previous, 'slow-final');
+}
+
+// A failed DOM build leaves initialization retryable, without duplicate transport listeners.
+{
+    const h = runStreaming({ deferInit: true });
+    const query = h.sandbox.document.querySelectorAll;
+    h.sandbox.document.querySelectorAll = () => { throw new Error('DOM not ready'); };
+    assert.throws(() => h.sandbox.window.FXRouteStreaming.init(h.api), /DOM not ready/);
+    h.sandbox.document.querySelectorAll = query;
+    h.sandbox.window.FXRouteStreaming.init(h.api);
+    h.sandbox.window.FXRouteStreaming.init(h.api);
+    h.shells.spotify.querySelector('[data-action="toggle"]').click();
+    assert.deepEqual(h.spotifyCommandCalls, [['toggle']]);
+}
+
+// Standalone rendering must escape catalog names even without app.js injection.
+{
+    const h = runStreaming({ defaultEscape: true, tidalFavoriteAlbums: [
+        { id: 'escape', title: '<img src=x onerror=alert(1)>', artist: 'A & B', art_url: '' },
+    ] });
+    h.sandbox.window.FXRouteStreaming.renderProvider('tidal', {
+        installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped',
+        title: '', artist: '', album: '', artUrl: '', position: 0, duration: 0,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const card = h.createdEls.find((el) => el.className === 'album-card');
+    assert.ok(card);
+    assert.ok(!card.innerHTML.includes('<img src=x'), card.innerHTML);
+    assert.ok(card.innerHTML.includes('&lt;img src=x'));
+}
+
 // --- 1. transport buttons are bound to real actions -------------------------
 
 {

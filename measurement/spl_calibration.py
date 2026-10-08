@@ -70,7 +70,6 @@ class _SplCalibrationOperation:
     kind: str
     session_job_id: str
     noise_process: subprocess.Popen[Any] | None = None
-    noise_file: Path | None = None
     noise_links: list[tuple[str, str]] | None = None
     recorder: subprocess.Popen[Any] | None = None
     restore_state: dict[str, Any] | None = None
@@ -775,7 +774,6 @@ def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[st
                     status_code=500,
                     detail=(generated.stderr or "Pink-noise generation failed").strip(),
                 )
-        operation.noise_file = noise_path
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
         operation.noise_process = subprocess.Popen(

@@ -36,7 +36,6 @@ DIRECT_SOURCE_NODES = ("mpv", "spotify")
 DSP_NODE_NAME = "fxroute_dsp"
 DSP_INGRESS_MONITOR_NODE = "fxroute_dsp_sink"
 DSP_INGRESS_PORTS = ("monitor_FL", "monitor_FR")
-DSP_INPUT_PORTS = ("input_1", "input_2")
 DSP_POST_EFFECT_PORTS = ("post_effect_FL", "post_effect_FR")
 DEFAULT_SAMPLE_RATE = 48_000
 RUNTIME_COMMAND_TIMEOUT_SECONDS = 5.0
@@ -50,9 +49,8 @@ HELPER_STDERR_TAIL_LIMIT = 64 * 1024
 # truncation instead of parsing a partial payload.
 CONTROL_REPLY_MAX_BYTES = 4096
 CONTROL_TIMEOUT_SECONDS = 1.0
-# The engine prints its gain with %.9g, so two readings of the same level may
-# still differ in the last printed digit.
-OUTPUT_GAIN_TOLERANCE_DB = 1e-6
+# Float32 gain storage and %.9g replies round-trip within 1e-5 dB over [-80, 0].
+OUTPUT_GAIN_TOLERANCE_DB = 1e-5
 logger = logging.getLogger(__name__)
 
 

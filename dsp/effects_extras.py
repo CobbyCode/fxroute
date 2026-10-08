@@ -137,6 +137,7 @@ def merge_effects_extras_from_json(previous: dict, body: dict) -> dict:
         ("autogain", "targetDb", ("autogainTargetDb", "autogain_target_db"), float),
         ("loudness", "fftSize", ("loudnessFftSize", "loudness_fft_size"), int),
         ("loudness", "strength", ("loudnessStrength", "loudness_strength"), str),
+        ("loudness", "volumeDb", ("loudnessVolumeDb", "loudness_volume_db"), float),
         ("delay", "leftMs", ("delayLeftMs", "delay_left_ms"), float),
         ("delay", "rightMs", ("delayRightMs", "delay_right_ms"), float),
         ("bass_enhancer", "amount", ("bassAmount", "bass_amount"), float),

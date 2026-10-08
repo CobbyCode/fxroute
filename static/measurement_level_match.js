@@ -29,8 +29,10 @@
     let jobId = '';
     let generation = 0;
     let lastStatus = null;
+    let refreshSerial = 0;
 
     function init(overrides) {
+        refreshSerial += 1;
         deps = Object.assign(deps, overrides || {});
     }
 
@@ -93,7 +95,16 @@
     }
 
     async function refresh() {
+        const serial = ++refreshSerial;
         const area = currentArea();
+        const mode = deps.getState().outputSystem?.catalog?.active_mode;
+        const panel = deps.getElements().levelMatchPanel;
+        const current = () => {
+            const liveArea = currentArea();
+            return serial === refreshSerial && panel === deps.getElements().levelMatchPanel
+                && mode === deps.getState().outputSystem?.catalog?.active_mode
+                && area?.bank_id === liveArea?.bank_id && area?.group === liveArea?.group;
+        };
         renderControls();
         if (!area) {
             lastStatus = null;
@@ -104,10 +115,12 @@
         try {
             const response = await deps.fetch(`/api/measurements/level-match?bank_id=${encodeURIComponent(area.bank_id)}`);
             const data = await response.json().catch(() => ({}));
+            if (!current()) return;
             if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Level Matching is unavailable');
             lastStatus = data;
             renderResults(data);
         } catch (error) {
+            if (!current()) return;
             lastStatus = null;
             renderResults(null);
             setStatus(error.message);
@@ -127,6 +140,7 @@
     }
 
     async function closeLevelMatch() {
+        refreshSerial += 1;
         if (busy) await cancelLevelMatch();
         deps.getElements().levelMatchPanel?.classList.add('hidden');
         deps.closeModal(deps.getElements().levelMatchPanel);

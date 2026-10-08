@@ -1304,12 +1304,6 @@
     border-style: solid;
     background: linear-gradient(180deg, rgba(110,231,183,0.05), rgba(110,231,183,0.04));
 }
-.upload-area-url-primary {
-    min-height: 124px;
-    border-width: 2px;
-    border-style: dashed;
-    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
-}
 .upload-area-file-primary {
     min-height: 124px;
 }
@@ -1321,9 +1315,6 @@
 }
 .upload-area-url .upload-area-icon {
     font-size: 1.1rem;
-}
-.upload-area-url-primary .upload-area-icon {
-    font-size: 1.4rem;
 }
 .upload-area-url-station .upload-area-icon {
     font-size: 1.45rem;

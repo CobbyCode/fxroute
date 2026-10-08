@@ -83,6 +83,20 @@ async def _reap(proc) -> None:
 
 
 class StopCommandChildTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_pipe_reader_is_reused_through_kill_and_reap(self):
+        with tempfile.TemporaryDirectory(prefix="stop-reader-") as tmp:
+            proc = await _spawn_term_ignoring_child(tmp)
+            reader = asyncio.create_task(proc.communicate())
+            await asyncio.sleep(0)
+            try:
+                await pw_link.stop_command_child_cancellation_safe(proc, 0.05, communicate_task=reader)
+                self.assertEqual(proc.returncode, -signal.SIGKILL)
+                self.assertTrue(reader.done())
+                self.assertEqual(reader.result(), (b"", b""))
+            finally:
+                await _reap(proc)
+                await asyncio.gather(reader, return_exceptions=True)
+
     async def test_sigterm_ignoring_child_is_killed_and_reaped(self):
         tmp = tempfile.mkdtemp(prefix="stop-lifecycle-")
         proc = await _spawn_term_ignoring_child(tmp)

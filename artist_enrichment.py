@@ -59,7 +59,6 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 from urllib.parse import quote
 
-import requests
 
 from safe_http import ENRICHMENT_JSON_MAX_BYTES, safe_get
 

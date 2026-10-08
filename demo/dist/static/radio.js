@@ -538,10 +538,6 @@
         return candidates;
     }
     
-    function stationArtUrl(station) {
-        return stationArtCandidates(station)[0] || stationArtFallbackSvg(station);
-    }
-
     function stationArtCandidatesAttribute(candidates) {
         return encodeURIComponent(JSON.stringify(candidates));
     }
@@ -702,13 +698,7 @@
     function markCatalogStationSaved(button) {
         if (!button) return;
         button.disabled = true;
-        if (button.classList.contains('station-card-fav')) {
-            updateStationFavButton(button, true);
-            return;
-        }
-        button.classList.add('catalog-station-action--saved');
-        button.textContent = 'Saved';
-        button.title = 'Added to My Stations';
+        updateStationFavButton(button, true);
     }
 
     function clearOnlineResults(shouldRender = true) {

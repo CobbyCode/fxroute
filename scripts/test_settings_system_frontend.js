@@ -119,4 +119,31 @@ assert.equal(loadingModel.disabled, true);
     assert.equal(powerToggle.title, '');
 }
 
+// Re-entering setup must neither toggle twice nor duplicate capability polling.
+{
+    const vm = require('node:vm');
+    const listeners = new Map();
+    const element = () => {
+        const classes = new Set(['hidden']);
+        const handlers = {};
+        return { classList: { contains: c => classes.has(c), toggle: (c, on) => on ? classes.add(c) : classes.delete(c) },
+            setAttribute() {}, addEventListener: (kind, handler) => (handlers[kind] ||= []).push(handler),
+            click: () => (handlers.click || []).forEach(handler => handler({ stopPropagation() {} })) };
+    };
+    const elements = { powerMenuRoot: element(), powerMenuToggle: element(), powerMenu: element() };
+    let intervals = 0;
+    const ctx = { document: { addEventListener: (kind, handler) => (listeners.get(kind) || listeners.set(kind, []).get(kind)).push(handler) },
+        fetch: async () => ({ ok: true, json: async () => ({ suspend_supported: true }) }),
+        setInterval: () => ++intervals };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(repoRoot, 'static', 'settings_system.js'), 'utf8'), ctx);
+    ctx.FXRouteSettingsSystem.init({ getElements: () => elements, getState: () => ({}) });
+    ctx.FXRouteSettingsSystem.setupPowerMenu();
+    ctx.FXRouteSettingsSystem.setupPowerMenu();
+    elements.powerMenuToggle.click();
+    assert.equal(elements.powerMenu.classList.contains('hidden'), false);
+    assert.equal(intervals, 1);
+    assert.equal(listeners.get('click').length, 1);
+}
+
 console.log('settings system frontend: ok');

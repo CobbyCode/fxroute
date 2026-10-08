@@ -66,6 +66,41 @@ def make_response(*, status_code=200, body=b"", headers=None, raw_exc=None):
 
 
 class SafeGetBoundedBodyTests(unittest.TestCase):
+    def test_redirect_uses_its_query_not_initial_params(self):
+        urls = []
+        responses = [make_response(status_code=302, headers={"Location": "https://cdn.example/final?token=signed"}),
+                     make_response(body=b"ok")]
+
+        def get(url, **kwargs):
+            prepared = requests.Request("GET", url, params=kwargs["params"]).prepare()
+            urls.append(prepared.url)
+            response = responses.pop(0)
+            response.url = prepared.url
+            return response
+
+        session = MagicMock()
+        session.get.side_effect = get
+        with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
+                patch.object(safe_http, "_build_public_session", return_value=session):
+            response = safe_http.safe_get("https://public.example/search", params={"query": "artist"}, max_bytes=1024)
+        self.assertEqual(response.content, b"ok")
+        self.assertEqual(urls, ["https://public.example/search?query=artist", "https://cdn.example/final?token=signed"])
+
+    def test_fragment_redirect_resolves_against_effective_response_url(self):
+        first = make_response(status_code=302, headers={"Location": "#result"})
+        first.url = "https://public.example/search?query=artist"
+        session = MagicMock()
+        session.get.side_effect = [first, make_response(body=b"ok")]
+        with patch.object(safe_http.socket, "getaddrinfo", side_effect=fake_dns_public), \
+                patch.object(safe_http, "_build_public_session", return_value=session):
+            safe_http.safe_get("https://public.example/search", params={"query": "artist"}, max_bytes=1024)
+        self.assertEqual(session.get.call_args.args[0], "https://public.example/search?query=artist#result")
+        self.assertIsNone(session.get.call_args.kwargs["params"])
+
+    def test_empty_location_returns_bounded_body(self):
+        response = self._fetch([make_response(status_code=302, headers={"Location": ""}, body=b"empty")])
+        self.assertEqual(response.content, b"empty")
+
     def _fetch(self, responses, url="https://public.example/radio.pls", max_bytes=1024):
         session = MagicMock()
         session.get.side_effect = responses

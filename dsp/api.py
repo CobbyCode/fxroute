@@ -33,7 +33,6 @@ from dsp.effects_extras import (
     merge_effects_extras_from_json,
     parse_effects_extras_from_json,
 )
-from dsp.persistence import clean_name
 from audio.output_service import MeasurementActiveError
 from audio.filter_banks import resolve_bank
 from audio.output_state import referenced_presets, release_bank_presets, set_bank_preset
@@ -456,10 +455,10 @@ async def save_dsp_extras(request: Request):
     try:
         async with _deps().dsp_mutation_lock():
             previous = dsp_mgr.load_global_extras()
-            parsed = _merge_effects_extras_from_json(previous, body)
             try:
+                parsed = _merge_effects_extras_from_json(previous, body)
                 extras = _resolve_effects_extras(parsed)
-            except ValueError as exc:
+            except (ValueError, TypeError, OverflowError) as exc:
                 raise HTTPException(
                     status_code=400,
                     detail={"code": "invalid_effects_extras", "message": str(exc)},
@@ -769,10 +768,8 @@ async def create_convolver_preset(
     _verify_measurement_commit(source_measurement_id, binding)
 
     try:
-        # The canonical loudness read inside _effects_extras_from_form must
-        # happen under the same mutation ownership as the preset creation:
-        # a parallel extras mutation may never be frozen into the new preset
-        # from a stale pre-lock snapshot.
+        # Resolve legacy form values under mutation ownership. Native presets
+        # keep only filters; output helpers remain separately owned global state.
         async with _deps().dsp_mutation_lock():
             extras = _effects_extras_from_form(
                 limiter_enabled=limiter_enabled,
@@ -1077,13 +1074,8 @@ async def create_convolver_preset_with_ir(
             tmp_path = Path(tmp.name)
             await save_upload_to_file(file, tmp, DSP_IR_MAX_BYTES)
 
-        # The canonical loudness read inside _effects_extras_from_form must
-        # happen under the same mutation ownership as the preset creation:
-        # a parallel extras mutation during the (potentially slow) upload
-        # staging may never be frozen into the new preset from a stale
-        # pre-lock snapshot.  The lock is acquired here (not via
-        # _run_locked_worker, which would re-acquire) and the blocking
-        # manager call runs through the cancellation-safe worker.
+        # Resolve legacy form values under mutation ownership. The blocking
+        # manager call uses the cancellation-safe worker without re-acquiring.
         async with _deps().dsp_mutation_lock():
             extras = _effects_extras_from_form(
                 limiter_enabled=limiter_enabled,
@@ -1240,9 +1232,7 @@ async def import_rew_peq_preset(
         raise HTTPException(status_code=400, detail="REW import file must be UTF-8 text")
 
     try:
-        # Canonical extras resolution under the same mutation ownership as
-        # the import: never freeze a stale pre-lock loudness snapshot into
-        # the new preset.
+        # Resolve legacy form values under the same ownership as the import.
         async with _deps().dsp_mutation_lock():
             extras = _effects_extras_from_form(
                 limiter_enabled=limiter_enabled,
