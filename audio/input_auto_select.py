@@ -12,6 +12,9 @@ remembered selection is restored. Any other selection change ends the
 engagement, so a manual selection is what the next automatic switch returns
 to.
 
+The routed Surround input is also monitored for its power hint, even when
+unarmed. That monitor never arms an input or changes the selection.
+
 No imports from ``main``: the composition root injects the services.
 """
 
@@ -248,6 +251,8 @@ class InputAutoSelectDependencies:
     # External presence per input key (e.g. Home Assistant), already
     # TTL-filtered by its owner; None means no external signal source.
     external_presence: Callable[[str], bool] | None = None
+    # Routed Surround capture pair to monitor for the power hint without Auto.
+    power_input_key: Callable[[], str | None] | None = None
     probe_factory: Callable[[ProbeSpec, ActivityDetector], Any] = InputProbe
     state_path: Callable[[], Path] = default_state_path
     monotonic: Callable[[], float] = time.monotonic
@@ -304,8 +309,26 @@ class InputAutoSelect:
         if engaged != self._engaged:
             self._engaged = dict(engaged) if engaged else None
             for key, detector in self._detectors.items():
-                detector.release_seconds = RELEASE_SECONDS if engaged and engaged["key"] == key else REARM_SECONDS
+                detector.release_seconds = self._release_seconds(key)
             self._save()
+
+    def _power_input_key(self) -> str | None:
+        reader = self._deps.power_input_key
+        return reader() if reader is not None else None
+
+    def _release_seconds(self, key: str) -> float:
+        held = key == self._power_input_key() or bool(self._engaged and self._engaged["key"] == key)
+        return RELEASE_SECONDS if held else REARM_SECONDS
+
+    def active_for_power(self, key: str | None) -> bool:
+        """Activity of the current power-monitored input, not just its route."""
+        if self._paused or not key or key != self._power_input_key():
+            return False
+        detector = self._detectors.get(key)
+        if detector is None:
+            return False
+        detector.update(self._deps.monotonic())
+        return detector.active
 
     # Client state ----------------------------------------------------------
 
@@ -321,8 +344,7 @@ class InputAutoSelect:
                     "lock": detector.lock,
                     "presence": detector.external_presence,
                 }
-                for key in self._armed
-                if (detector := self._detectors.get(key)) is not None
+                for key, detector in self._detectors.items()
             },
         }
 
@@ -385,7 +407,7 @@ class InputAutoSelect:
 
     async def _tick(self) -> None:
         now = self._deps.monotonic()
-        if not self._armed:
+        if not self._armed and self._power_input_key() is None:
             await self._stop_probes({})
             self._detectors.clear()
             self._was_active.clear()
@@ -409,18 +431,22 @@ class InputAutoSelect:
         await self._publish_if_changed()
 
     async def _reconcile(self, now: float) -> None:
-        for key in [key for key in self._detectors if key not in self._armed]:
+        monitored = list(self._armed)
+        power_key = self._power_input_key()
+        if power_key and power_key not in monitored:
+            monitored.append(power_key)
+        for key in [key for key in self._detectors if key not in monitored]:
             del self._detectors[key]
             self._was_active.pop(key, None)
         specs: dict[str, ProbeSpec | None] = {}
-        if any(key != STDIN_KEY for key in self._armed):
+        if any(key != STDIN_KEY for key in monitored):
             overview = self._deps.get_fresh_overview(OVERVIEW_MAX_AGE_SECONDS) or await self._deps.read_overview()
             if now - self._capture_rate_at >= CAPTURE_RATE_REFRESH_SECONDS:
                 self._capture_rate = await asyncio.to_thread(self._deps.resolve_capture_rate)
                 self._capture_rate_at = now
             entries = {entry.get("key"): entry for entry in overview.get("inputs") or [] if isinstance(entry, dict)}
-            specs = {key: self._probe_spec(entries.get(key)) for key in self._armed if key != STDIN_KEY}
-        for key in self._armed:
+            specs = {key: self._probe_spec(entries.get(key)) for key in monitored if key != STDIN_KEY}
+        for key in monitored:
             detector = self._detectors.get(key)
             spec = specs.get(key)
             if detector is None:
@@ -428,11 +454,12 @@ class InputAutoSelect:
                 engaged = bool(self._engaged and self._engaged["key"] == key)
                 detector = self._detectors[key] = ActivityDetector(
                     kind, now, assume_active=engaged,
-                    release_seconds=RELEASE_SECONDS if engaged else REARM_SECONDS,
+                    release_seconds=self._release_seconds(key),
                 )
                 self._was_active[key] = engaged
             elif spec is not None and spec.digital:
                 detector.mark_digital()
+            detector.release_seconds = self._release_seconds(key)
         wanted = {key: spec for key, spec in specs.items() if spec is not None}
         await self._stop_probes(wanted)
         for key, spec in wanted.items():

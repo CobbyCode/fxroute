@@ -294,6 +294,52 @@ class ExternalInputRoutingTests(unittest.IsolatedAsyncioTestCase):
             get_audio_source_overview=lambda: overview, **overrides,
         ))
 
+    async def test_surround_power_uses_resolved_pair_without_rewriting_legacy_selection(self):
+        import main
+        short = _short_line(200, FOURCH_NAME, "s32le 4ch 48000Hz")
+        detailed = _detailed_block(
+            number=200, name=FOURCH_NAME, description="Test 4ch Interface",
+            spec="s32le 4ch 48000Hz", channel_map="front-left,front-right,rear-left,rear-right",
+        )
+        saved = {"mode": "external-input", "selected_input_key": FOURCH_NAME}
+        with patch.object(overview_mod, "_save_audio_source_selection",
+                          side_effect=AssertionError("power monitoring must not rewrite selection")):
+            overview = _overview_with(_run_command_for(short, detailed), FOURCH_NAME, "external-input")
+            routing = ExternalInputRouting(ExternalInputRoutingDependencies(
+                get_audio_source_overview=lambda: overview, get_output_mode=lambda: "surround",
+                sync_digital_input=AsyncMock(), stop_digital_input=AsyncMock(),
+            ))
+            await routing.sync()
+            with patch.object(main, "external_input", routing), patch.object(
+                main.samplerate, "_load_audio_source_selection", return_value=saved,
+            ):
+                self.assertEqual(main._digital_input_key_for_power(), f"{FOURCH_NAME}::pair:1-2")
+        self.assertEqual(saved, {"mode": "external-input", "selected_input_key": FOURCH_NAME})
+
+    async def test_failed_surround_sync_clears_power_identity(self):
+        sync = AsyncMock()
+        routing = self._routing(
+            {"key": "scarlett::pair:9-10", "source_key": "scarlett"},
+            get_output_mode=lambda: "surround", sync_digital_input=sync, stop_digital_input=AsyncMock(),
+        )
+        await routing.sync()
+        self.assertEqual(routing.digital_selection_key, "scarlett::pair:9-10")
+        sync.side_effect = RuntimeError("capture links down")
+        with self.assertRaisesRegex(RuntimeError, "capture links down"):
+            await routing.sync()
+        self.assertIsNone(routing.digital_source_name)
+        self.assertIsNone(routing.digital_selection_key)
+
+    async def test_leaving_surround_clears_power_identity(self):
+        routing = self._routing(
+            {"key": "scarlett::pair:9-10", "source_key": "scarlett"},
+            get_output_mode=lambda: "surround", sync_digital_input=AsyncMock(), stop_digital_input=AsyncMock(),
+        )
+        await routing.sync()
+        self.assertEqual(routing.digital_selection_key, "scarlett::pair:9-10")
+        await routing.sync({"mode": "app-playback"})
+        self.assertIsNone(routing.digital_selection_key)
+
     async def test_sync_asks_for_the_carrier_of_the_selected_input(self):
         """The loopback path needs the digital clock too: the card holds it."""
         entries = []

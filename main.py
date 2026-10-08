@@ -256,10 +256,10 @@ def _active_line_source_for_power() -> str | None:
         external_source = (external_input.loopback_source_name or "").strip()
     except Exception:
         external_source = ""
-    if (
-        external_source
-        or getattr(external_input, "mapped_source_name", None)
-        or getattr(external_input, "digital_source_name", None)
+    if external_source or getattr(external_input, "mapped_source_name", None):
+        return "external-input"
+    if getattr(external_input, "digital_source_name", None) and input_auto_select.active_for_power(
+        _digital_input_key_for_power()
     ):
         return "external-input"
     try:
@@ -303,6 +303,17 @@ async def _digital_ingress_links_present() -> bool:
     return ingress is not None and await ingress.links_present()
 
 
+def _digital_input_key_for_power() -> str | None:
+    """Selected capture pair routed through the Surround ingress, if any."""
+    if not getattr(external_input, "digital_source_name", None):
+        return None
+    selection = samplerate._load_audio_source_selection()
+    if selection.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
+        return None
+    # Discovery can resolve legacy saved keys without rewriting persistence.
+    return getattr(external_input, "digital_selection_key", None)
+
+
 async def _active_line_source_for_power_async() -> str | None:
     """Routed line source keeping the amp hint on, if any (never blocks).
 
@@ -310,7 +321,8 @@ async def _active_line_source_for_power_async() -> str | None:
     HTTP path: the blocking ``wpctl`` Bluetooth read runs off the event
     loop, and the external-input hint requires the loopback link to be
     present in the live graph instead of trusting the stored source
-    name. Both probes stay fail-closed on any error.
+    name. Surround also requires input signal activity, independently of
+    Auto arming. Probes stay fail-closed on any error.
     """
     try:
         bluetooth_source = (bluetooth_input.input_source_name or "").strip()
@@ -352,9 +364,10 @@ async def _active_line_source_for_power_async() -> str | None:
             return None
         return None
     if getattr(external_input, "digital_source_name", None):
-        # Surround digital ingress: the helper owns the capture links.
+        # Capture links survive silence and receiver lock is not programme.
         try:
-            if await _digital_ingress_links_present():
+            if (await _digital_ingress_links_present()
+                    and input_auto_select.active_for_power(_digital_input_key_for_power())):
                 return "external-input"
         except Exception:
             return None
@@ -1422,6 +1435,7 @@ input_auto_select = InputAutoSelect(InputAutoSelectDependencies(
     measurement_owns_graph=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
     resolve_capture_rate=lambda: resolve_capture_rate(),
     external_presence=lambda key: input_presence.present(key),
+    power_input_key=lambda: _digital_input_key_for_power(),
 ))
 
 

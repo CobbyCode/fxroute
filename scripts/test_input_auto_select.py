@@ -480,6 +480,7 @@ class Harness:
         self.stdin = None
         self.probes = {}
         self.presence = {}
+        self.power_key = None
         self.state_path = Path(state_dir) / "input-auto-select.json"
 
         async def read_overview():
@@ -515,6 +516,7 @@ class Harness:
             measurement_owns_graph=lambda: self.measurement,
             resolve_capture_rate=lambda: RATE,
             external_presence=lambda key: self.presence.get(key, False),
+            power_input_key=lambda: self.power_key,
             probe_factory=probe_factory,
             state_path=lambda: self.state_path,
             monotonic=lambda: self.now,
@@ -550,6 +552,122 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
 
     def harness(self, **kwargs):
         return Harness(self, self.tmp.name, **kwargs)
+
+    async def test_power_monitor_works_without_arming_or_switching(self):
+        h = self.harness(mode="external-input", input_key=Y)
+        h.power_key = Y
+        await h.tick()
+        self.assertIn(Y, h.controller.snapshot()["inputs"], "selected Surround input must be monitored without Auto")
+        self.assertFalse(h.controller.active_for_power(Y))
+        await h.signal(Y, 2)
+        self.assertTrue(h.controller.active_for_power(Y))
+        await h.silence(Y, 59)
+        self.assertTrue(h.controller.active_for_power(Y), "a short pause keeps the power hint on")
+        await h.silence(Y, 2)
+        self.assertFalse(h.controller.active_for_power(Y))
+        await h.signal(Y, 2)
+        self.assertTrue(h.controller.active_for_power(Y), "new programme restores the hint")
+        self.assertEqual(h.switches, [])
+        self.assertEqual(h.controller.snapshot()["armed"], [])
+        self.assertIsNone(h.controller.snapshot()["engaged"])
+
+    async def test_disarming_keeps_the_selected_power_probe(self):
+        h = self.harness(mode="external-input", input_key=Y)
+        h.power_key = Y
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        self.assertIn(Y, h.controller.snapshot()["inputs"])
+        await h.signal(Y, 2)
+        probe = h.probes[Y]
+        await h.controller.set_armed(Y, False)
+        await h.tick()
+        self.assertFalse(probe.stopped)
+        self.assertTrue(h.controller.active_for_power(Y))
+        await h.silence(Y, 61)
+        self.assertFalse(h.controller.active_for_power(Y))
+        self.assertEqual(h.switches, [])
+
+    async def test_leaving_power_input_stops_its_unarmed_probe(self):
+        h = self.harness(mode="external-input", input_key=Y)
+        h.power_key = Y
+        await h.tick()
+        self.assertIn(Y, h.controller.snapshot()["inputs"])
+        await h.signal(Y, 2)
+        h.power_key = None
+        self.assertFalse(h.controller.active_for_power(Y), "old selection cannot keep the power hint on")
+        await h.tick()
+        self.assertTrue(h.probes[Y].stopped)
+        self.assertEqual(h.controller.snapshot()["inputs"], {})
+
+    async def test_leaving_power_input_preserves_short_auto_rearm(self):
+        h = self.harness(mode="external-input", input_key=Y)
+        h.power_key = Y
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        await h.signal(Y, 2)
+        h.power_key = None
+        h.selection = {"mode": "app-playback", "selected_input_key": Y}
+        await h.silence(Y, 2)
+        await h.signal(Y, 2)
+        self.assertEqual(h.switches, [("external-input", Y)])
+
+    async def test_power_probe_missing_releases_without_changing_selection(self):
+        h = self.harness(mode="external-input", input_key=Y)
+        h.power_key = Y
+        await h.tick()
+        self.assertIn(Y, h.controller.snapshot()["inputs"])
+        await h.signal(Y, 2)
+        h.inputs = [entry for entry in h.inputs if entry["key"] != Y]
+        await h.tick()
+        await h.tick(11)
+        self.assertFalse(h.controller.active_for_power(Y))
+        self.assertEqual(h.selection["selected_input_key"], Y)
+        self.assertEqual(h.switches, [])
+
+    async def test_power_probe_pauses_for_measurement(self):
+        h = self.harness(mode="external-input", input_key=Y)
+        h.power_key = Y
+        await h.tick()
+        self.assertIn(Y, h.controller.snapshot()["inputs"])
+        await h.signal(Y, 2)
+        h.measurement = True
+        await h.tick()
+        self.assertTrue(h.probes[Y].stopped)
+        self.assertFalse(h.controller.active_for_power(Y), "measurement owns the graph, not input activity")
+        h.measurement = False
+        await h.tick()
+        self.assertTrue(h.probes[Y].started)
+        self.assertEqual(h.switches, [])
+
+    async def test_presence_keeps_power_on_without_auto_switches(self):
+        h = self.harness(mode="external-input", input_key=Y)
+        h.power_key = Y
+        h.presence[Y] = True
+        await h.tick()
+        self.assertIn(Y, h.controller.snapshot()["inputs"])
+        self.assertTrue(h.controller.active_for_power(Y))
+        h.presence[Y] = False
+        await h.tick()
+        await h.tick(61)
+        self.assertFalse(h.controller.active_for_power(Y))
+        self.assertEqual(h.switches, [])
+
+    async def test_locked_pause_bursts_release_the_power_hint(self):
+        h = self.harness(mode="external-input", input_key=Y)
+        h.power_key = Y
+        await h.tick()
+        self.assertIn(Y, h.controller.snapshot()["inputs"])
+        detector = h.detector(Y)
+        for data_type in (1, 11):
+            for _ in range(10):
+                h.now += 0.1
+                detector.observe_block(h.now, analyze_block(iec61937_block(data_type)), lock=True)
+            self.assertTrue(h.controller.active_for_power(Y))
+            for _ in range(611):
+                h.now += 0.1
+                detector.observe_block(h.now, analyze_block(iec61937_block(3)), lock=True)
+            self.assertFalse(h.controller.active_for_power(Y), "lock and pause carrier are not programme")
+        self.assertEqual(h.switches, [])
 
     async def test_signal_switches_and_silence_returns(self):
         h = self.harness()

@@ -74,6 +74,7 @@ class ExternalInputRouting:
         self.loopback_source_name: str | None = None
         self.loopback_selection_key: str | None = None
         self.digital_source_name: str | None = None
+        self.digital_selection_key: str | None = None
         self.mapped_source_name: str | None = None
         # Links of the established mapped ingress, for the power-hint probe.
         self.mapped_ingress_links: tuple[tuple[str, str], ...] = ()
@@ -142,6 +143,7 @@ class ExternalInputRouting:
         if self.digital_source_name is not None and self._deps.stop_digital_input is not None:
             await self._deps.stop_digital_input()
         self.digital_source_name = None
+        self.digital_selection_key = None
         if self.mapped_source_name is not None and self._deps.stop_mapped_input is not None:
             await self._deps.stop_mapped_input()
         self.mapped_source_name = None
@@ -284,8 +286,10 @@ class ExternalInputRouting:
                 if self._deps.stop_digital_input is not None:
                     await self._deps.stop_digital_input()
                 self.digital_source_name = None
+                self.digital_selection_key = None
                 raise
             self.digital_source_name = str(source_name)
+            self.digital_selection_key = str(current_input.get("key") or "") or None
             self._active_channels = (left, right)
             self._remembered_input = dict(current_input)
             return overview
