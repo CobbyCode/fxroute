@@ -56,6 +56,9 @@ def _dependencies() -> PolarityCheckDeps:
 def _resolve_area(bank_id: str) -> tuple[dict, dict]:
     """Freeze the area's target and plan what the run measures."""
     target = speaker_sweep.freeze_area_target(_dependencies().get_store(), bank_id)
+    implicit_stereo = target["mode"] != "surround" and set(target["roles"]) == {"main_l", "main_r"}
+    if bank_id == "all" or (bank_id == "global" and not implicit_stereo):
+        raise bad_request(ValueError("Select an individual speaker bank to check wiring polarity"))
     try:
         area = plan_area(target["mode"], bank_id, target["roles"])
     except ValueError as exc:

@@ -48,9 +48,31 @@ async function request(url, body) {
     assert.ok(!Object.keys(surround.data.values).some((role) => role.startsWith('sub')));
     assert.deepEqual((await request('/api/measurements/level-match?bank_id=low')).data.entries, []);
 
-    // Subwoofers belong to Auto Sub Optimize, an unknown bank is no speaker bank.
-    assert.equal((await request('/api/measurements/level-match/reset', { bank_id: 'sub1' })).status, 400);
+    // Sub contexts still match mode speakers; an unknown bank is invalid.
+    assert.equal((await request('/api/measurements/level-match/reset', { bank_id: 'sub1' })).status, 200);
     assert.equal((await request('/api/measurements/level-match/reset', { bank_id: 'nonsense' })).status, 400);
+
+    for (const bank_id of ['global', 'all', 'sub1']) {
+        const run = await request('/api/measurements/level-match/start', { bank_id });
+        assert.equal(run.status, 200);
+        assert.equal(run.data.job.result.values.left_low.global, -4);
+        assert.equal(run.data.job.result.values.left_high.global, -4);
+        assert.equal(run.data.job.result.values.rear_l.bank, 0);
+        assert.ok(!('sub1' in run.data.job.result.values));
+    }
+
+    const routed = (await request('/api/audio/output-state')).data;
+    const assignments = routed.device.routing.surround
+        .map(role => role.startsWith('rear') || role.startsWith('side') ? 'off' : role);
+    const removed = await request('/api/audio/output-state/apply', {
+        expected_revision: routed.revision,
+        mutation: { kind: 'set_routing', mode: 'surround', assignments } });
+    assert.equal(removed.status, 200);
+    const activeStatus = (await request('/api/measurements/level-match?bank_id=global')).data;
+    assert.ok(activeStatus.entries.every(row => !/^(rear|side)/.test(row.role)));
+    const activeRun = await request('/api/measurements/level-match/start', { bank_id: 'global' });
+    assert.equal(activeRun.data.job.result.values.left_low.global, -2.5);
+    assert.ok(!('rear_l' in activeRun.data.job.result.values));
 
     console.log('demo level match ok');
 })().catch((error) => { console.error(error); process.exit(1); });

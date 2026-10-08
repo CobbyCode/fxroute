@@ -123,7 +123,7 @@ function row(roles, verdict, extra = {}) {
         assert.match(elements.polarityCheckStatus.textContent, /did not reach the microphone/);
     }
 
-    // All speakers in phase, an inverted output and a multi-way side are labelled.
+    // Wiring polarity, an inverted output and a multi-way side are labelled.
     {
         const rows = [row(['left_low', 'left_high'], 'correct', { inverted: true }), row(['right_low', 'right_high'], 'correct', { label: 'right' })];
         const { elements } = harness({ area: MAIN, status: STATUS, jobs: [completed(rows)] });
@@ -131,7 +131,7 @@ function row(roles, verdict, extra = {}) {
         await polarityCheck.startPolarityCheck();
         assert.match(elements.polarityCheckResults.innerHTML, /Left \(all ways\)[\s\S]*output inverted/);
         assert.match(elements.polarityCheckResults.innerHTML, /Right \(all ways\)/);
-        assert.equal(elements.polarityCheckStatus.textContent, 'All checked speakers are in phase.');
+        assert.equal(elements.polarityCheckStatus.textContent, 'All checked speakers have correct polarity.');
     }
 
     // The newest finished job of this area shows again when the dialog reopens; another area's does not.
@@ -157,10 +157,15 @@ function row(roles, verdict, extra = {}) {
         assert.equal(calls.length, 0);
     }
 
-    // A Surround Global group is one speaker plus the subs, not a speaker bank.
-    {
+    // Aggregate contexts and subs cannot start a wiring check.
+    for (const area of [
+        { bank_id: 'global', label: 'Global', available: true },
+        { bank_id: 'all', label: 'All Banks', available: true, importable: false },
+        { bank_id: 'sub', label: 'Sub L/R', available: true },
+        { bank_id: 'global', label: 'Global · Front L/R + Sub', available: true, group: 'front' },
+    ]) {
         const { elements, calls } = harness({
-            area: { bank_id: 'global', label: 'Global · Front L/R + Sub', available: true, group: 'front' },
+            area,
             status: {}, jobs: [] });
         await polarityCheck.openPolarityCheck();
         assert.equal(elements.polarityCheckStart.disabled, true);

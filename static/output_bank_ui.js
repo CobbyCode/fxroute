@@ -198,31 +198,14 @@
         }
         mod.renderBankSelector(deps.getElements().effectsBankSelect, catalog, catalog.active_mode || 'stereo');
         deps.getElements().effectsBankSelect.disabled = !!deps.getState().outputSystem.busy || effectsCompareLoadInFlight;
-        renderEffectsGroupSelector(mod, catalog);
         deps.renderMeasurementArea();
         renderBankImportTarget();
         syncBankActionButtons();
     }
 
-    function renderEffectsGroupSelector(mod, catalog) {
-        /* Surround Global filters each speaker group separately (with its
-         * share of the subs), so the bank row gets a Speaker choice there. */
-        const select = deps.getElements().effectsGroupSelect;
-        if (!select) return;
-        const choice = mod.globalGroupChoice(catalog, deps.getState().measurement?.globalGroup);
-        const options = choice ? choice.options : [];
-        select.closest('.effects-bank-row')?.classList.toggle('hidden', options.length === 0);
-        const selected = choice ? choice.selected : '';
-        const html = options.map(option =>
-            `<option value="${mod.esc(option.id)}"${option.id === selected ? ' selected' : ''}>${mod.esc(option.label)}</option>`).join('');
-        if (select.innerHTML !== html) select.innerHTML = html;
-        if (select.value !== selected) select.value = selected;
-        select.disabled = !!deps.getState().outputSystem.busy || effectsCompareLoadInFlight;
-    }
-
     function renderSweepGroupRow() {
-        /* The sweep menu offers the same speaker choice as the Effects row,
-         * one chip per routed group; a single group leaves nothing to pick.
+        /* Only Measure narrows Global to a speaker group, one chip per routed
+         * group; a single group leaves nothing to pick.
          * Chips are only rebuilt when the routed groups change: replacing the
          * clicked button would read as an outside click and close the menu. */
         const row = deps.getElements().measurementSweepGroupRow;
@@ -238,7 +221,7 @@
             row.dataset.groups = groups;
             row.innerHTML = shown ? choice.options.map(option =>
                 `<button type="button" class="measurement-chip" data-sweep-group="${mod.esc(option.id)}" `
-                + `aria-pressed="false" title="${mod.esc(option.label)}">${mod.esc(option.short)}</button>`).join('') : '';
+                + `aria-pressed="false" aria-label="${mod.esc(option.label)}" data-tooltip="${mod.esc(option.label)}">${mod.esc(option.short)}</button>`).join('') : '';
         }
         if (!shown) return;
         row.querySelectorAll('[data-sweep-group]').forEach((button) => {
@@ -263,11 +246,13 @@
         const aggregate = area?.available === false || area?.importable === false;
         const measureButton = deps.getElements().effectsMeasureOpenBtn;
         if (measureButton) {
+            measureButton.classList?.toggle('hidden', area?.available === false);
             measureButton.disabled = area?.available === false;
             measureButton.title = area?.available === false ? 'Select a filter bank to measure.' : '';
         }
         const importButton = deps.getElements().effectsToggleImportBtn;
         if (importButton) {
+            importButton.classList?.toggle('hidden', aggregate);
             importButton.disabled = aggregate;
             importButton.title = aggregate ? 'All Banks only switches A/B; select a filter bank to import.' : '';
         }
@@ -515,8 +500,12 @@
         const busy = effectsCompareLoadInFlight || !!deps.getState().outputSystem?.busy;
         if (deps.getElements().effectsCompareA) deps.getElements().effectsCompareA.disabled = busy || !!compare.aggregate;
         if (deps.getElements().effectsCompareB) deps.getElements().effectsCompareB.disabled = busy || !!compare.aggregate;
+        [deps.getElements().effectsCompareA, deps.getElements().effectsCompareB].forEach(select => {
+            select?.closest?.('.field-group')?.classList.toggle('hidden', !!compare.aggregate);
+        });
         const unavailable = !!deps.getState().outputSystem?.catalog && !(compare.effectiveActiveSide === 'A' ? compare.canB : compare.canA);
         if (deps.getElements().effectsCompareToggle) {
+            deps.getElements().effectsCompareToggle.classList?.toggle('hidden', unavailable);
             deps.getElements().effectsCompareToggle.disabled = busy || unavailable;
             deps.getElements().effectsCompareToggle.title = unavailable ? (compare.aggregate
                 ? 'Assign preset B in at least one bank first.' : 'Select preset B to compare.') : '';

@@ -281,9 +281,13 @@ function measurementArea(catalog, bankId, group) {
     // together; a mono area has no sides and always sweeps both inputs at
     // once (a summed mono target needs both to reach operating level).
     const sides = available && channel_mode === 'stereo' ? ['left', 'stereo', 'right'] : [];
-    const repeat_supported = available && channel_mode === 'stereo';
+    const repeat_supported = available && channel_mode === 'stereo' && !isSubwooferBank(selected);
+    const implicitStereo = selected === 'global' && !bankSelectorVisible(modeConfig);
+    const polarity_supported = available && !isSubwooferBank(selected)
+        && selected !== 'all' && (selected !== 'global' || implicitStereo) && !groupOption;
     const repeat_note = !available ? 'Select a filter bank for measurement.'
-        : repeat_supported ? '' : `${label} is a mono target. Use a single sweep.`;
+        : repeat_supported ? '' : channel_mode === 'stereo'
+            ? `${label}: use a single sweep or Auto Sub Optimize.` : `${label} is a mono target. Use a single sweep.`;
     const groupNote = groupOption
         ? `${groupOption.label}: every other speaker is muted; the subs stay audible.`
         : allBanks ? 'Whole system as listened (every bank on its A/B side); not importable.' : '';
@@ -299,6 +303,7 @@ function measurementArea(catalog, bankId, group) {
             : `Only ${label} stays audible; every other output is muted for this sweep.`),
         repeat_supported,
         repeat_note,
+        polarity_supported,
         ...(groupOption ? { group: groupOption.id } : {}),
         ...(groupOption && sides.length ? { side_labels: groupSideLabels(groupOption, sides) } : {}),
         ...(allBanks ? { importable: false } : {}),

@@ -344,6 +344,23 @@ class SurroundGlobalPresetTests(unittest.TestCase):
         everything = self.plan(self.state(ROLES))
         self.assertEqual([plugin["group"] for plugin in everything["global"]["chain"]], self.ALL_GROUPS)
 
+    def test_global_compare_switches_every_group_without_changing_area_banks(self):
+        state = set_bank_preset(self.state(ROLES), "surround", "global", preset_b="Room B")
+        before = copy.deepcopy(state)
+        switched = set_bank_preset(state, "surround", "global", active_side="B")
+        payload_b = self.preset()
+        for plugin in payload_b["chain"]:
+            plugin["params"]["bands"][0]["gainDb"] = -6.0
+        plan = compile_processing_plan(switched, output_key="A", channels=16, sample_rate_hz=48000,
+                                       preset_loader=lambda name: payload_b if name == "Room B" else {"chain": []})
+        self.assertEqual(plan["global"]["preset"], "Room B")
+        self.assertEqual([plugin["group"] for plugin in plan["global"]["chain"]], ["front", "center", "side", "rear"])
+        self.assertTrue(all(plugin["params"]["bands"][0]["gainDb"] == -6.0 for plugin in plan["global"]["chain"]))
+        self.assertEqual([output["role"] for output in plan["outputs"]], ROLES)
+        for role in ROLES:
+            self.assertEqual(switched["modes"]["surround"]["banks"][role], before["modes"]["surround"]["banks"][role])
+        self.assertEqual(switched["modes"]["stereo"], before["modes"]["stereo"])
+
     def test_crossover_ways_count_as_the_front_group(self):
         state = set_crossover(self.state(QUAD_SUBS), "surround", True)
         state = set_mode_routing(state, "surround", "A",

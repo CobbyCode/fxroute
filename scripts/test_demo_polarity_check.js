@@ -21,23 +21,25 @@ async function request(url, body) {
 }
 
 (async () => {
-    const idle = await request('/api/measurements/polarity-check?bank_id=global');
+    assert.equal((await request('/api/measurements/polarity-check?bank_id=global')).status, 400);
+    assert.equal((await request('/api/measurements/polarity-check?bank_id=all')).status, 400);
+    const idle = await request('/api/measurements/polarity-check?bank_id=low');
     assert.equal(idle.status, 200);
     assert.deepEqual(idle.data.units, ['left', 'right']);
     assert.equal(idle.data.job, null);
 
-    const started = await request('/api/measurements/polarity-check/start', { bank_id: 'global' });
+    const started = await request('/api/measurements/polarity-check/start', { bank_id: 'low' });
     assert.equal(started.status, 200);
     const job = started.data.job;
     assert.equal(job.status, 'completed');
-    assert.deepEqual(job.result.rows.map((row) => row.roles), [['left_low', 'left_high'], ['right_low', 'right_high']]);
+    assert.deepEqual(job.result.rows.map((row) => row.roles), [['left_low'], ['right_low']]);
     assert.ok(job.result.rows.every((row) => ['correct', 'reversed', 'inconclusive'].includes(row.verdict)));
     assert.equal(job.result.all_reversed, false);
 
     assert.equal((await request(`/api/measurements/polarity-check/jobs/${job.id}`)).data.job.id, job.id);
     assert.equal((await request(`/api/measurements/polarity-check/jobs/${job.id}/cancel`, {})).status, 200);
     assert.equal((await request('/api/measurements/polarity-check/jobs/missing')).status, 404);
-    assert.equal((await request('/api/measurements/polarity-check?bank_id=global')).data.job.id, job.id);
+    assert.equal((await request('/api/measurements/polarity-check?bank_id=low')).data.job.id, job.id);
 
     // Subwoofers belong to Auto Sub Optimize, an unknown bank is no speaker bank.
     assert.equal((await request('/api/measurements/polarity-check?bank_id=sub1')).status, 400);

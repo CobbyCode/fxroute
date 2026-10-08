@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +39,7 @@ class LevelMatchDeps:
     get_output_state: Callable[[], dict]
     get_output_volume: Callable[[], int]
     get_node_volume: Callable[[str], int]
+    capture_scope: Callable[..., Any] | None = None
 
 
 _deps: LevelMatchDeps | None = None
@@ -57,8 +59,8 @@ def _dependencies() -> LevelMatchDeps:
 
 
 def _resolve_scope(bank_id: str) -> tuple[dict, dict]:
-    """Freeze the area's target and plan what the run measures."""
-    target = speaker_sweep.freeze_area_target(_dependencies().get_store(), bank_id)
+    """Freeze the listened mode; the selected bank never isolates a crossover way."""
+    target = speaker_sweep.freeze_area_target(_dependencies().get_store(), "all")
     try:
         scope = level_match.plan_scope(target["mode"], bank_id, target["roles"])
     except ValueError as exc:
@@ -73,10 +75,16 @@ def _front_roles(target: dict) -> list[str]:
             if role not in SUB_ROLES and surround_group(role) == "front"]
 
 
+def _routed_entries(target: dict, entries: dict[str, dict]) -> dict[str, dict]:
+    """Discard dormant speakers before choosing a capture anchor or level target."""
+    return {key: entry for key, entry in entries.items() if entry["role"] in target["roles"]}
+
+
 def _reference_ready(target: dict, scope: dict, entries: dict[str, dict]) -> bool:
     """Surround speakers need a comparable Front L/R reference from this setup."""
     if not scope["requires_reference"]:
         return True
+    entries = _routed_entries(target, entries)
     front = _front_roles(target)
     if not level_match.has_front_reference(entries, front):
         return False
@@ -87,7 +95,25 @@ def _reference_ready(target: dict, scope: dict, entries: dict[str, dict]) -> boo
 
 def _own_slots(state: dict, mode: str, roles: list[str], slot: str) -> list[float]:
     processing = state["modes"][mode]["processing"]
-    return [processing[role]["level_cal_db"][slot] for role in roles]
+    return [processing[role]["level_cal_db"][slot]
+            + (processing[role]["level_cal_db"]["bank"] if mode != "surround" else 0.0)
+            for role in roles]
+
+
+@asynccontextmanager
+async def _capture_scope(job: dict, target: dict, scope: dict, state: dict):
+    unequal = False
+    for unit in scope["units"]:
+        slots = _own_slots(state, target["mode"], unit["roles"], unit.get("slot", scope["slot"]))
+        unequal |= any(abs(value - slots[0]) > 1e-9 for value in slots)
+    factory = _dependencies().capture_scope
+    if factory is None:
+        if unequal or _dependencies().get_session() is not None:
+            raise RuntimeError("Level Matching untrimmed capture is unavailable")
+        yield {"state": state, "target": target}
+        return
+    async with factory(job, target, scope, state, neutralize=unequal) as capture:
+        yield capture
 
 
 def _observed_volumes(mic_node: str) -> tuple[float | None, float | None]:
@@ -109,43 +135,53 @@ async def _run(job: dict[str, Any], target: dict, scope: dict) -> None:
     table = dependencies.get_table()
     try:
         state = dependencies.get_output_state()
-        stored = table.entries(mode)
+        stored = _routed_entries(target, table.entries(mode))
         fresh: dict[str, dict] = {}
         fingerprint: dict | None = None
-        for step, unit in enumerate(scope["units"], start=1):
-            if job["cancel_requested"]:
-                raise asyncio.CancelledError(f"{LABEL} was cancelled")
-            job["progress"] = {"step": step, "total": len(scope["units"]), "label": unit["label"]}
-            # A take without the speaker's direct sound is noise: no level of it may enter the table.
-            take = await speaker_sweep.measure_unit(
-                dependencies.get_store(), dependencies.get_session(), job, target, unit, LABEL,
-                require_arrival=True)
-            capture_volume, system_volume = await asyncio.to_thread(_observed_volumes, take["mic_node"])
-            take_fingerprint = level_match.make_fingerprint(
-                device_key=target["device_key"], sample_rate_hz=target["sample_rate_hz"],
-                mic_node=take["mic_node"], mic_channel=take["mic_channel"],
-                capture_volume_percent=capture_volume, system_volume_percent=system_volume)
-            if fingerprint is None:
-                fingerprint = take_fingerprint
-            elif not level_match.fingerprints_match(fingerprint, take_fingerprint):
-                raise RuntimeError("Microphone or output gain changed between the takes; run Level Matching again")
-            raw_db = level_match.raw_level_db(
-                take["analysis"].get("normalized_by_db"),
-                _own_slots(state, mode, unit["roles"], scope["slot"]))
-            for role in unit["roles"]:
-                fresh[level_match.entry_key(role, scope["slot"])] = level_match.make_entry(
-                    role=role, raw_db=raw_db, slot=scope["slot"], family=scope["family"],
-                    fingerprint=fingerprint, measured_at=speaker_sweep.now())
+        async with _capture_scope(job, target, scope, state) as capture:
+            for step, unit in enumerate(scope["units"], start=1):
+                if job["cancel_requested"]:
+                    raise asyncio.CancelledError(f"{LABEL} was cancelled")
+                job["progress"] = {"step": step, "total": len(scope["units"]), "label": unit["label"]}
+                # A take without the speaker's direct sound is noise: no level of it may enter the table.
+                take = await speaker_sweep.measure_unit(
+                    dependencies.get_store(), dependencies.get_session(), job, capture["target"], unit, LABEL,
+                    require_arrival=True,
+                    **{key: capture[key] for key in ("expected_native_context", "session_owned") if key in capture})
+                capture_volume, system_volume = await asyncio.to_thread(_observed_volumes, take["mic_node"])
+                take_fingerprint = level_match.make_fingerprint(
+                    device_key=target["device_key"], sample_rate_hz=target["sample_rate_hz"],
+                    mic_node=take["mic_node"], mic_channel=take["mic_channel"],
+                    capture_volume_percent=capture_volume, system_volume_percent=system_volume)
+                if fingerprint is None:
+                    fingerprint = take_fingerprint
+                elif not level_match.fingerprints_match(fingerprint, take_fingerprint):
+                    raise RuntimeError("Microphone or output gain changed between the takes; run Level Matching again")
+                slot = unit.get("slot", scope["slot"])
+                raw_db = level_match.raw_level_db(
+                    take["analysis"].get("normalized_by_db"),
+                    _own_slots(capture["state"], mode, unit["roles"], slot))
+                for role in unit["roles"]:
+                    fresh[level_match.entry_key(role, slot)] = level_match.make_entry(
+                        role=role, raw_db=raw_db, slot=slot, family=scope["family"],
+                        fingerprint=fingerprint, measured_at=speaker_sweep.now())
         if scope["requires_reference"]:
             front = _front_roles(target)
             reference = stored.get(level_match.entry_key(front[0], level_match.SURROUND_GROUP_SLOT["front"])) if front else None
             if reference is None or not level_match.fingerprints_match(reference["fingerprint"], fingerprint):
                 raise RuntimeError(
                     "Microphone or output setup changed since Front L/R was measured; measure Front L/R again")
-        merged = {**stored, **fresh}
+        merged = {**stored, **fresh} if mode == "surround" else fresh
         derived = level_match.derive_slot_values(merged)
-        table.save_entries(mode, merged)
+        if mode != "surround":
+            for slots in derived.values():
+                slots["bank"] = 0.0
         await speaker_sweep.wait_for_idle_session(dependencies.get_session())
+        if job["cancel_requested"]:
+            raise asyncio.CancelledError(f"{LABEL} was cancelled")
+        if dependencies.get_output_state()["revision"] != state["revision"]:
+            raise RuntimeError("Level Matching output state changed; run again")
+        table.save_entries(mode, merged)
         job["result"] = {"mode": mode, "values": derived,
                          "measured_roles": sorted({entry["role"] for entry in fresh.values()}),
                          "state_revision": state["revision"]}
@@ -163,7 +199,7 @@ async def _run(job: dict[str, Any], target: dict, scope: dict) -> None:
 @router.get("/api/measurements/level-match")
 async def get_level_match(bank_id: str):
     target, scope = _resolve_scope(bank_id)
-    entries = _dependencies().get_table().entries(target["mode"])
+    entries = _routed_entries(target, _dependencies().get_table().entries(target["mode"]))
     valid = level_match.valid_entries(entries)
     try:
         trims = level_match.derive_slot_values(entries)
@@ -189,12 +225,15 @@ async def start_level_match(
     bank_id: str = Form(...),
 ):
     dependencies = _dependencies()
+    session = dependencies.get_session()
+    entry_epoch = session.capture_entry_epoch() if session is not None else None
     _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
     target, scope = _resolve_scope(bank_id)
     if not _reference_ready(target, scope, dependencies.get_table().entries(target["mode"])):
         raise HTTPException(status_code=409, detail="Measure Front L/R first to set the level reference")
     job = speaker_sweep.new_job(
         "level-match", mode=target["mode"], bank_id=bank_id, units=scope["units"], slot=scope["slot"],
+        _entry_epoch=entry_epoch,
         params={"input_id": input_id, "input_key": input_key,
                 "mic_input_channel": mic_input_channel, "calibration_ref": calibration_ref})
     _slot.start(job, _run(job, target, scope))
@@ -209,7 +248,8 @@ async def reset_level_match(bank_id: str = Form(...)):
     target, scope = _resolve_scope(bank_id)
     table = dependencies.get_table()
     mode = target["mode"]
-    table.save_entries(mode, level_match.drop_family(table.entries(mode), scope["family"]))
+    table.save_entries(mode, level_match.drop_family(table.entries(mode), scope["family"])
+                       if mode == "surround" else {})
     return {"status": "ok", "mode": mode, "bank_id": bank_id,
             "values": level_match.zero_slot_values(mode, target["roles"], scope)}
 

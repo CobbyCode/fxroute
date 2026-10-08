@@ -73,7 +73,8 @@ function setup(catalog, measurement = {}) {
 function chips(row) {
     return row.buttons.map(button => ({ id: button.attrs['data-sweep-group'],
         pressed: button.attrs['aria-pressed'] === 'true', active: button.classList.contains('is-active'),
-        title: button.attrs.title, disabled: button.disabled, text: button.textContent }));
+        tooltip: button.attrs['data-tooltip'], label: button.attrs['aria-label'],
+        disabled: button.disabled, text: button.textContent }));
 }
 
 // One chip per routed group, the effective one pressed; the tooltip carries the Effects wording.
@@ -82,9 +83,9 @@ function chips(row) {
     BankUI.renderSweepGroupRow();
     assert.equal(row.classList.contains('hidden'), false);
     assert.deepEqual(chips(row), [
-        { id: 'front', pressed: true, active: true, title: 'Front L/R + Sub', disabled: false, text: 'Front' },
-        { id: 'center', pressed: false, active: false, title: 'Center + Sub', disabled: false, text: 'Center' },
-        { id: 'rear', pressed: false, active: false, title: 'Rear L/R + Sub', disabled: false, text: 'Rear' },
+        { id: 'front', pressed: true, active: true, tooltip: 'Front L/R + Sub', label: 'Front L/R + Sub', disabled: false, text: 'Front' },
+        { id: 'center', pressed: false, active: false, tooltip: 'Center + Sub', label: 'Center + Sub', disabled: false, text: 'Center' },
+        { id: 'rear', pressed: false, active: false, tooltip: 'Rear L/R + Sub', label: 'Rear L/R + Sub', disabled: false, text: 'Rear' },
     ]);
 }
 
@@ -216,19 +217,16 @@ function syncSideRow(area, sweepSide = 'stereo') {
 }
 
 // One choice end to end: the shared setter re-renders the sweep chips, and the
-// area, the create/import binding and the Effects select follow the same group.
+// area and create/import binding follow it; A/B has no group selection.
 {
     const { row, state, elements } = setup(catalogFor({ roles: ALL_ROLES }));
     const select = () => ({ innerHTML: '', value: '', disabled: false, closest: () => ({ classList: classList() }) });
     elements.effectsBankSelect = select();
-    elements.effectsGroupSelect = select();
     BankUI.renderEffectsBankSelector();
     assert.deepEqual(chips(row).filter(chip => chip.pressed).map(chip => chip.id), ['front']);
     BankUI.selectEffectsGroup('rear');
     assert.equal(state.measurement.globalGroup, 'rear');
     assert.deepEqual(chips(row).filter(chip => chip.pressed).map(chip => chip.id), ['rear']);
-    assert.equal(elements.effectsGroupSelect.value, 'rear');
-    assert.match(elements.effectsGroupSelect.innerHTML, /<option value="rear" selected>Rear L\/R \+ Sub<\/option>/);
     const area = OutputState.measurementArea(state.outputSystem.catalog, undefined, state.measurement.globalGroup);
     assert.deepEqual([area.group, area.label, area.bank_id], ['rear', 'Global \u00b7 Rear L/R + Sub', 'global']);
     assert.equal(OutputState.bankBinding(state.outputSystem.catalog, state.measurement.globalGroup).bank_group, 'rear');

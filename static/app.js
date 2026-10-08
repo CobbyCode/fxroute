@@ -1014,7 +1014,6 @@ const elements = {
     osTopology: document.getElementById('os-topology'),
     osFeedback: document.getElementById('os-feedback'),
     effectsBankSelect: document.getElementById('effects-bank-select'),
-    effectsGroupSelect: document.getElementById('effects-group-select'),
     effectsCrossoverCard: document.getElementById('effects-crossover-card'),
     effectsCrossoverSummary: document.getElementById('effects-crossover-summary'),
     effectsCrossoverTabs: document.getElementById('effects-crossover-tabs'),
@@ -2048,11 +2047,6 @@ function setupSettingsActions() {
                 { mode: catalog.active_mode, assignments }, 'Output routing updated').then((data) => {
                 if (data) void maybeApplyCrossoverStarters();
             });
-        });
-    }
-    if (elements.effectsGroupSelect) {
-        elements.effectsGroupSelect.addEventListener('change', (event) => {
-            window.FXRouteBankUI.selectEffectsGroup(event.target.value || '');
         });
     }
     if (elements.effectsBankSelect) {
@@ -3308,6 +3302,7 @@ function measurementRepeatBlockedReason() {
 function syncMeasurementRepeatNote(lrActive, blockedReason) {
     /* A running repeat stays cancellable, so its reason never disables it. */
     if (elements.measurementRepeatStartBtn) {
+        elements.measurementRepeatStartBtn.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', !!blockedReason && !lrActive);
         elements.measurementRepeatStartBtn.title = lrActive ? '' : blockedReason;
     }
     if (elements.measurementRepeatNote) {
@@ -3339,27 +3334,28 @@ function renderMeasurementArea() {
             : 'Whole system; all area banks active.';
     }
     if (elements.measurementSweepStartBtn) {
+        elements.measurementSweepStartBtn.classList?.toggle('hidden', area?.available === false);
         elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight || area?.available === false;
     }
     if (elements.measurementHybridOpenBtn) {
         // Advanced ends in a correction model, which All Banks cannot take.
-        const blocked = area?.available === false || area?.importable === false;
-        elements.measurementHybridOpenBtn.disabled = blocked;
-        elements.measurementHybridOpenBtn.title = blocked
-            ? 'Advanced builds a filter model; select a filter bank to use it.' : '';
+        const blocked = area?.available === false || area?.importable === false
+            || !!outputSystemModule()?.isSubwooferBank?.(area?.bank_id);
+        elements.measurementHybridOpenBtn.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', blocked);
+        elements.measurementHybridOpenBtn.disabled = !!state.measurement.startInFlight;
+        elements.measurementHybridOpenBtn.title = '';
     }
     window.FXRouteBankUI.renderSweepGroupRow();
     syncSweepSideRow(area);
     syncMeasurementCalibrationMenu(area);
+    syncMeasurementRepeatNote(window.FXRouteMeasurementJob?.getActiveMeasurementKind() === 'lr_repeat',
+        area?.repeat_supported === false ? area.repeat_note || 'Use a single sweep.' : '');
 }
 
 function syncMeasurementCalibrationMenu(area) {
-    /* A sub bank keeps only SPL Calibration: Auto Sub Optimize covers level
-     * and polarity there, and the backend refuses both per-speaker runs. */
-    const subwooferArea = !!area && !!outputSystemModule()?.isSubwooferBank?.(area.bank_id);
-    [elements.levelMatchOpen, elements.polarityCheckOpen].forEach((button) => {
-        button?.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', subwooferArea);
-    });
+    // Matching owns the mode, polarity only a concrete speaker bank (or implicit Stereo).
+    elements.levelMatchOpen?.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', area?.available === false);
+    elements.polarityCheckOpen?.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', !area?.polarity_supported);
 }
 
 function syncSweepSideRow(area) {

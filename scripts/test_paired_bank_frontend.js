@@ -102,6 +102,12 @@ vm.runInContext([
     assert.deepEqual(JSON.parse(JSON.stringify(calls.pop())), {
         kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'main', active_side: 'B',
     });
+    config.selected_bank = 'global';
+    sharedState.measurement = { globalGroup: 'rear' };
+    await context.toggleComparePreset();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls.pop())), {
+        kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'global', active_side: 'B',
+    }, 'Global compare never inherits the Measure speaker group');
     config.selected_bank = 'all';
     config.all_banks.can_b = true;
     await context.toggleComparePreset();

@@ -1457,6 +1457,21 @@ class DSPRuntime:
                 raise RuntimeError("Decoded ingress links could not be verified")
         self._links = [link for link in self._links if not link.target.startswith(f"{DSP_NODE_NAME}:input_")] + established
 
+    async def stop_verified(self) -> None:
+        """Require helper exit; retain its identity if emergency shutdown fails."""
+        process = self._process
+        links = list(self._links)
+        try:
+            await self.stop()
+        finally:
+            # stop() may finish cleanup after both reap timeouts. Its cleared
+            # snapshot alone is not evidence that the captured helper exited.
+            if process is not None and getattr(process, "returncode", None) is None:
+                self._process = process
+                self._links = links
+                self._error = "Native DSP helper exit could not be confirmed; recovery required"
+                raise RuntimeError(self._error)
+
     async def stop(self) -> None:
         for link in self._links:
             await self._run(("pw-link", "-d", link.source, link.target))

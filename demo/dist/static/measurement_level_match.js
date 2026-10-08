@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-/** Level Matching panel: measure the selected area, show the stored levels, commit the trims. */
+/** Level Matching panel: mode-wide logical speaker levels and output trims. */
 (function (root, factory) {
     const api = factory(root);
     root.FXRouteMeasurementLevelMatch = api;
@@ -67,15 +67,15 @@
     }
 
     function currentArea() {
-        // A Surround Global group (one speaker plus the subs) and All Banks are no speaker bank for a per-speaker run.
         const area = deps.measurementArea();
-        return area && area.available !== false && area.importable !== false && !area.group ? area : null;
+        return area && area.available !== false ? area : null;
     }
 
     function renderControls() {
         const elements = deps.getElements();
         const area = deps.measurementArea();
-        if (elements.levelMatchArea) elements.levelMatchArea.textContent = area?.label || 'Global';
+        const mode = lastStatus?.mode || deps.getState().outputSystem?.catalog?.active_mode;
+        if (elements.levelMatchArea) elements.levelMatchArea.textContent = `Output mode · ${root.FXRouteOutputState?.modeLabel(mode) || mode || 'Stereo'}`;
         const measuring = busy;
         const blocked = !measuring && deps.hasActiveMeasurementJob();
         const waiting = !!lastStatus && lastStatus.requires_reference && !lastStatus.reference_ready;

@@ -1753,33 +1753,43 @@
         const roles = modeConfig.topology.roles.filter(role => !role.startsWith('sub'));
         const surround = mode === 'surround';
         const front = (role) => role === 'main_l' || role === 'main_r' || /^(left|right)_/.test(role);
+        if (!['global', 'all'].includes(bankId) && !modeConfig.banks[bankId]) return { error: `Bank ${bankId} is not an active bank` };
+        const wholeMode = ['global', 'all'].includes(bankId) || bankId.startsWith('sub');
         let members;
-        if (bankId === 'global' && !surround) members = roles;
-        else if (modeConfig.banks[bankId] && bankId !== 'global') members = modeConfig.banks[bankId].roles.filter(role => roles.includes(role));
-        else return { error: `Bank ${bankId} is not an active speaker bank` };
-        if (!members.length) return { error: 'Subwoofers are handled by Auto Sub Optimize' };
+        if (!surround || wholeMode) members = roles;
+        else members = modeConfig.banks[bankId].roles.filter(role => roles.includes(role));
+        if (!members.length) return { error: 'Level Matching needs a routed speaker' };
         const isFront = members.every(front);
         if (surround && isFront) members = roles.filter(front);
-        const slot = surround ? (isFront ? 'global' : 'bank') : (bankId === 'global' ? 'global' : 'bank');
-        return { mode, roles, members, slot, family: surround ? 'surround' : `scope:${bankId}`,
-            requiresReference: surround && !isFront, frontRoles: roles.filter(front),
-            units: members.some(role => !/_(l|r)$|^(left|right)_/.test(role)) ? ['center'] : ['left', 'right'] };
+        const slot = surround && !isFront && !wholeMode ? 'bank' : 'global';
+        const slotForRole = (role) => surround && !front(role) ? 'bank' : 'global';
+        const groups = surround ? ['front', 'center', 'side', 'rear'].map(group =>
+            members.filter(role => group === 'front' ? front(role) : role.startsWith(group))) : [members];
+        return { mode, roles, members, slot, slotForRole, family: surround ? 'surround' : 'scope:global',
+            requiresReference: surround && !isFront && !wholeMode, frontRoles: roles.filter(front),
+            units: groups.flatMap(group => polarityCheckUnits(group).map(unit => unit.label)) };
+    }
+    function levelMatchRoutedEntries(mode) {
+        const roles = outputStateCatalog().modes[mode].topology.roles;
+        return Object.fromEntries(Object.entries(levelMatchEntries[mode] || {})
+            .filter(([, entry]) => roles.includes(entry.role)));
     }
     function levelMatchDerive(mode) {
-        const entries = Object.values(levelMatchEntries[mode] || {});
+        const entries = Object.values(levelMatchRoutedEntries(mode));
         const targets = {};
         for (const entry of entries) targets[entry.family] = Math.min(targets[entry.family] ?? Infinity, entry.raw_db);
         const values = {};
         for (const entry of entries) {
             const trim = Math.min(0, Math.round((targets[entry.family] - entry.raw_db) * 10) / 10) + 0;
             (values[entry.role] = values[entry.role] || {})[entry.slot] = trim;
+            if (mode !== 'surround') values[entry.role].bank = 0;
         }
         return values;
     }
     function levelMatchStatus(bankId) {
         const scope = levelMatchScope(bankId);
         if (scope.error) return scope;
-        const entries = levelMatchEntries[scope.mode] || {};
+        const entries = levelMatchRoutedEntries(scope.mode);
         const values = levelMatchDerive(scope.mode);
         const frontSlot = 'global';
         const referenceReady = !scope.requiresReference
@@ -1811,8 +1821,20 @@
         return units;
     }
     function polarityCheckStatus(bankId) {
-        const scope = levelMatchScope(bankId);
-        if (scope.error) return scope;
+        const catalog = outputStateCatalog();
+        const config = catalog.modes[catalog.active_mode];
+        const roles = config.topology.roles;
+        const implicitStereo = catalog.active_mode !== 'surround'
+            && roles.length === 2 && roles.includes('main_l') && roles.includes('main_r');
+        if (bankId === 'all' || bankId.startsWith('sub') || (bankId === 'global' && !implicitStereo)) {
+            return { error: 'Select an individual speaker bank to check wiring polarity' };
+        }
+        const bank = config.banks[bankId];
+        if (!bank) return { error: `Bank ${bankId} is not an active speaker bank` };
+        const scope = { mode: catalog.active_mode, members: bankId === 'global' ? roles : bank.roles };
+        if (scope.mode === 'surround' && scope.members.every(role => /^(main_[lr]|left_|right_)/.test(role))) {
+            scope.members = roles.filter(role => /^(main_[lr]|left_|right_)/.test(role));
+        }
         return { scope, units: polarityCheckUnits(scope.members) };
     }
 
@@ -3795,9 +3817,11 @@
             if (status.error) return err(status.error, 400);
             if (!status.referenceReady) return err('Measure Front L/R first to set the level reference', 409);
             const { scope } = status;
+            levelMatchEntries[scope.mode] = scope.mode === 'surround' ? levelMatchRoutedEntries(scope.mode) : {};
             const bucket = (levelMatchEntries[scope.mode] = levelMatchEntries[scope.mode] || {});
             for (const role of scope.members) {
-                bucket[`${scope.slot}:${role}`] = { role, slot: scope.slot, family: scope.family,
+                const slot = scope.slotForRole(role);
+                bucket[`${slot}:${role}`] = { role, slot, family: scope.family,
                     raw_db: levelMatchRoleRaw(role), measured_at: new Date().toISOString() };
             }
             const id = 'demo_levelmatch_' + (++levelMatchSeq);
@@ -3812,13 +3836,13 @@
             if (status.error) return err(status.error, 400);
             const { scope } = status;
             const bucket = levelMatchEntries[scope.mode] || {};
-            for (const key of Object.keys(bucket)) if (bucket[key].family === scope.family) delete bucket[key];
-            // Surround is one family (Front L/R in 'global', the rest in 'bank'); a Stereo area resets its own slot.
+            for (const key of Object.keys(bucket)) if (scope.mode !== 'surround' || bucket[key].family === scope.family) delete bucket[key];
+            // Reset the mode family, including legacy Stereo bank trims.
             const values = {};
             if (scope.mode === 'surround') {
                 for (const role of scope.roles) values[role] = { [scope.frontRoles.includes(role) ? 'global' : 'bank']: 0 };
             } else {
-                for (const role of scope.members) values[role] = { [scope.slot]: 0 };
+                for (const role of scope.members) values[role] = { global: 0, bank: 0 };
             }
             return j({ status: 'ok', mode: scope.mode, bank_id: String(body.bank_id), values });
         }

@@ -20,6 +20,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from http_errors import bad_request
+from common.run_to_completion import run_to_completion
 from measurement import session as measurement_session
 from measurement.constants import TERMINAL_JOB_STATUSES
 from measurement.target import narrow_measured_target
@@ -83,7 +84,9 @@ def has_direct_arrival(analysis: dict[str, Any]) -> bool:
 
 
 async def measure_unit(store: Any, session: Any, job: dict[str, Any], target: dict, unit: dict,
-                       label: str, *, require_arrival: bool = False) -> dict[str, Any]:
+                       label: str, *, require_arrival: bool = False,
+                       expected_native_context: dict | None = None,
+                       session_owned: bool = False) -> dict[str, Any]:
     """Run one speaker's sweep; return its ``analysis`` and the observed capture chain.
 
     ``label`` names the calling flow in error messages. The job carries
@@ -94,18 +97,26 @@ async def measure_unit(store: Any, session: Any, job: dict[str, Any], target: di
     params = job["_params"]
     rate = target["sample_rate_hz"]
     narrowed = narrow_measured_target(target, roles=unit["roles"])
-    entry_epoch = session.capture_entry_epoch() if session is not None else None
-    started = await measurement_session._start_registered_manual_measurement(
-        rate,
-        lambda: store.start_measurement(
+    entry_epoch = job.get("_entry_epoch") if "_entry_epoch" in job else (
+        session.capture_entry_epoch() if session is not None else None)
+    def start_take():
+        return store.start_measurement(
             input_id=params["input_id"], input_key=params["input_key"], channel=unit["channel"],
             mic_input_channel=params["mic_input_channel"], calibration_ref=params["calibration_ref"],
             frozen_target=narrowed,
-            **measurement_session._stage_bank_v2_context(
-                measurement_bank=target["bank_id"], measurement_rate_hz=rate, channel=unit["channel"])),
-        entry_epoch=entry_epoch)
+            **(expected_native_context if expected_native_context is not None else measurement_session._stage_bank_v2_context(
+                 measurement_bank=target["bank_id"], measurement_rate_hz=rate, channel=unit["channel"])),
+        )
+    started = (await start_take() if session_owned else
+               await measurement_session._start_registered_manual_measurement(rate, start_take, entry_epoch=entry_epoch))
     job["_measurement_job_id"] = str(started["id"])
-    finished = await _wait_for_take(store, str(started["id"]), job, label)
+    try:
+        finished = await _wait_for_take(store, str(started["id"]), job, label)
+    finally:
+        # Terminal status precedes mask cleanup; consume only a fully drained child.
+        await run_to_completion(store.drain_job(str(started["id"])))
+    if job["cancel_requested"]:
+        raise asyncio.CancelledError(f"{label} was cancelled")
     result = finished.get("result") if isinstance(finished.get("result"), dict) else {}
     analysis = result.get("analysis") if isinstance(result.get("analysis"), dict) else {}
     capture = result.get("capture") if isinstance(result.get("capture"), dict) else {}

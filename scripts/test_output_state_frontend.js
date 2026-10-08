@@ -177,6 +177,7 @@ function measurementAreaTests() {
         note: 'Only Sub 1 stays audible; every other output is muted for this sweep.',
         repeat_supported: false,
         repeat_note: 'Sub 1 is a mono target. Use a single sweep.',
+        polarity_supported: false,
     });
     assert.equal(OutputState.measurementArea(selected, 'global').repeat_supported, true);
     assert.equal(OutputState.measurementArea(selected, 'global').channel, 'stereo');
@@ -214,7 +215,7 @@ function allBanksAreaTests() {
         bank_id: 'all', label: 'All Banks', channel: 'stereo', channel_mode: 'stereo', available: true,
         sides: ['left', 'stereo', 'right'],
         note: 'Whole system as listened (every bank on its A/B side); not importable.',
-        repeat_supported: true, repeat_note: '', importable: false,
+        repeat_supported: true, repeat_note: '', polarity_supported: false, importable: false,
     });
     // The joint A/B side the sweep will be heard on labels the area.
     assert.equal(OutputState.measurementArea(withAll({ all_banks: { active_side: 'B' } })).label, 'All Banks · B');
@@ -250,7 +251,7 @@ function surroundGlobalAreaTests() {
         bank_id: 'global', label: 'Global · Front L/R + Sub', channel: 'stereo', channel_mode: 'stereo',
         available: true, sides: ['left', 'stereo', 'right'],
         note: 'Front L/R + Sub: every other speaker is muted; the subs stay audible.',
-        repeat_supported: true, repeat_note: '', group: 'front',
+        repeat_supported: true, repeat_note: '', polarity_supported: false, group: 'front',
         side_labels: { left: 'Front L', stereo: 'Front L+R', right: 'Front R' },
     });
     const center = OutputState.measurementArea(surround, 'global', 'center');

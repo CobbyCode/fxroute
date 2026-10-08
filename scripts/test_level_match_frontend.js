@@ -23,12 +23,8 @@ assert.match(app, /FXRouteMeasurementLevelMatch\?\.bindEvents\(\)/);
 assert.match(index, /<button id="level-match-reset"[^>]*>Reset to 0 dB<\/button>/);
 assert.match(app, /levelMatchReset: document\.getElementById\('level-match-reset'\)/);
 
-// A sub bank keeps only SPL Calibration: Level Matching and Polarity Check are hidden there.
-assert.match(app, /\n\s+syncMeasurementCalibrationMenu\(area\);\n\}/, 'renderMeasurementArea syncs the calibration menu');
+// Context visibility is exercised in test_measurement_context_actions.js.
 const calibrationMenuSync = app.match(/function syncMeasurementCalibrationMenu\(area\) \{[\s\S]*?\n\}\n/)?.[0] || '';
-assert.match(calibrationMenuSync, /isSubwooferBank\?\.\(area\.bank_id\)/);
-assert.match(calibrationMenuSync, /\[elements\.levelMatchOpen, elements\.polarityCheckOpen\]/);
-assert.match(calibrationMenuSync, /closest\('\.measurement-workflow-menu-choice'\)\?\.classList\.toggle\('hidden', subwooferArea\)/);
 assert.doesNotMatch(calibrationMenuSync, /spl-?[cC]alibration/i, 'SPL Calibration is never hidden');
 
 function element() {
@@ -88,7 +84,7 @@ function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: tru
         const done = { id: 'job-1', status: 'completed', result: { mode: 'stereo', values: { main_l: { bank: -2.5 }, main_r: { bank: 0 } } } };
         const { elements, calls, mutations } = harness({ area: { bank_id: 'main', label: 'Main L/R', available: true }, status, jobs: [done] });
         await levelMatch.openLevelMatch();
-        assert.equal(elements.levelMatchArea.textContent, 'Main L/R');
+        assert.match(elements.levelMatchArea.textContent, /Output mode/);
         assert.equal(elements.levelMatchStart.disabled, false);
         assert.match(elements.levelMatchActionStatus.textContent, /left and right one after the other/);
         assert.match(elements.levelMatchResults.innerHTML, /label:main_l[\s\S]*-2\.5 dB/);
@@ -123,15 +119,19 @@ function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: tru
         assert.equal(calls.length, 0);
     }
 
-    // A Surround Global group is one speaker plus the subs, not a speaker bank.
-    {
+    // A mode-wide run is available even when Measure has a group or no import bank.
+    for (const area of [
+        { bank_id: 'global', label: 'Global · Front L/R + Sub', available: true, group: 'front' },
+        { bank_id: 'all', label: 'All Banks', available: true, importable: false },
+        { bank_id: 'sub', label: 'Sub L/R', available: true },
+    ]) {
         const { elements, calls } = harness({
-            area: { bank_id: 'global', label: 'Global · Front L/R + Sub', available: true, group: 'front' },
+            area,
             status: {}, jobs: [] });
         await levelMatch.openLevelMatch();
-        assert.equal(elements.levelMatchStart.disabled, true);
-        assert.match(elements.levelMatchActionStatus.textContent, /Select a speaker bank/);
-        assert.equal(calls.length, 0);
+        assert.equal(elements.levelMatchStart.disabled, false);
+        assert.equal(calls.length, 1);
+        assert.match(elements.levelMatchArea.textContent, /Output mode/);
     }
 
     // A failed measurement commits nothing and shows the reason.

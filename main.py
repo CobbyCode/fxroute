@@ -653,6 +653,7 @@ import audio.canonical_volume as canonical_volume
 import measurement.level_match_api as level_match_api
 import measurement.polarity_check_api as polarity_check_api
 from measurement.level_match import LevelMatchStore
+from measurement.level_match_runtime import build_level_match_scope
 import measurement.spl_calibration as spl_calibration
 import measurement.speaker_api as speaker_api
 import measurement.autosub as autosub
@@ -1143,6 +1144,7 @@ level_match_api.configure_level_match(level_match_api.LevelMatchDeps(
     get_output_state=lambda: get_output_service().ensure_state(),
     get_output_volume=lambda: get_output_volume(),
     get_node_volume=lambda node: get_node_volume(node),
+    capture_scope=lambda *args, **kwargs: _level_match_capture_scope(*args, **kwargs),
 ))
 polarity_check_api.configure_polarity_check(polarity_check_api.PolarityCheckDeps(
     get_store=lambda: measurement_store,
@@ -5250,6 +5252,18 @@ async def _try_render_v2_sync_target(rate: int, overview: dict):
     except Exception as exc:
         logger.warning("V2 plan render for DSP sync failed, using legacy overview: %s", exc)
         return None
+
+
+def _level_match_capture_scope(job: dict, target: dict, scope: dict, state: dict, *, neutralize: bool):
+    service = get_output_service()
+    manager = _require_dsp_manager()
+    factory = build_level_match_scope(
+        output_service=service, get_session=lambda: measurement_sr_session,
+        get_native_runtime=lambda: runtime.dsp_runtime,
+        build_target=lambda plan, **kwargs: _build_plan_target(
+            service, manager, plan, rate=target["sample_rate_hz"], **kwargs),
+        prepare_measurement=measurement_session._measurement_entry_preflight)
+    return factory(job, target, scope, state, neutralize=neutralize)
 
 
 def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,

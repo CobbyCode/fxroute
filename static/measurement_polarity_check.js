@@ -81,7 +81,7 @@
         if (rows.some((row) => row.verdict === 'reversed')) {
             hints.unshift('A reversed speaker plays its first pulse inverted. Swap its + and − wires or invert its output polarity, then check again.');
         }
-        if (!hints.length) return 'All checked speakers are in phase.';
+        if (!hints.length) return 'All checked speakers have correct polarity.';
         return hints.join(' ');
     }
 
@@ -102,9 +102,9 @@
     }
 
     function currentArea() {
-        // A Surround Global group (one speaker plus the subs) and All Banks are no speaker bank for a per-speaker run.
         const area = deps.measurementArea();
-        return area && area.available !== false && area.importable !== false && !area.group ? area : null;
+        const supported = area?.polarity_supported ?? (area && !['global', 'all'].includes(area.bank_id) && !String(area.bank_id).startsWith('sub'));
+        return area && area.available !== false && supported ? area : null;
     }
 
     function renderControls() {

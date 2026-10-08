@@ -1093,6 +1093,49 @@ class DSPRuntimeLifecycleTests(unittest.TestCase):
 
 
 
+class VerifiedShutdownTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_disconnect_and_unreaped_helper_keep_process_identity(self):
+        class StubbornProcess:
+            pid = 4321
+            returncode = None
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+            async def wait(self):
+                raise asyncio.TimeoutError()
+
+        async def run(args):
+            return CommandResult(1, "", "disconnect failed")
+
+        runtime = DSPRuntime(object(), command_runner=run)
+        child = runtime._process = StubbornProcess()
+        links = runtime._links = [PipeWireLink("fxroute-dsp:output_1", "hw:playback_FL")]
+        stop = getattr(runtime, "stop_verified", runtime.stop)
+        with self.assertRaisesRegex(RuntimeError, "exit"):
+            await stop()
+        self.assertIs(runtime._process, child)
+        self.assertEqual(runtime._links, links)
+        self.assertEqual(runtime.snapshot()["helper_pid"], 4321)
+
+    async def test_verified_exit_is_safe_even_if_link_disconnect_failed(self):
+        async def run(args):
+            return CommandResult(1, "", "disconnect failed")
+
+        runtime = DSPRuntime(object(), command_runner=run)
+        child = runtime._process = FakeProcess()
+        runtime._links = [PipeWireLink("fxroute-dsp:output_1", "hw:playback_FL")]
+        stop = getattr(runtime, "stop_verified", runtime.stop)
+        await stop()
+        self.assertEqual(child.returncode, 0)
+        self.assertIsNone(runtime._process)
+        self.assertFalse(runtime.snapshot()["active"])
+        self.assertIsNone(runtime.snapshot()["helper_pid"])
+
+
 class ContainsLinkTests(unittest.TestCase):
     """Link recognition must be independent of link ordering within a port."""
 

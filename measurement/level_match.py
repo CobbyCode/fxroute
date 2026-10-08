@@ -9,8 +9,8 @@ family share a target ``T`` equal to the quietest raw level, and each role's
 trim is ``T - raw`` (never above 0 dB).  The per-output gain sits behind the
 protection limiter, so a positive trim could clip.
 
-Families: Stereo scopes (Global or one bank) match their L/R roles among each
-other; Surround has one family over all speaker groups, where Front L/R
+Families: Stereo matches logical L/R speakers across all crossover ways,
+independent of the selected bank; Surround has one family over all speaker groups, where Front L/R
 establishes the reference.  Raw levels are stored, not the trims, so a later,
 quieter speaker lowers ``T`` and every stored trim follows from the table.
 
@@ -25,7 +25,8 @@ import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from audio.output_topology import SUB_ROLES, surround_group
+from audio.filter_banks import bank_definitions
+from audio.output_topology import SUB_ROLES, SURROUND_GROUPS, surround_group
 from common.atomic_write import atomic_write_text
 from measurement.speaker_scope import plan_area
 
@@ -56,15 +57,28 @@ def plan_scope(mode: str, bank_id: str, roles: Sequence[str]) -> dict:
     Returns ``family``, ``slot``, ``requires_reference`` and ``units`` (see
     ``speaker_scope.plan_area``; subwoofers are never measured).
     """
-    area = plan_area(mode, bank_id, roles)
+    if bank_id not in ("global", "all", *bank_definitions(roles), *roles):
+        raise ValueError(f"Bank {bank_id} is not an active bank")
+    whole_mode = bank_id in ("global", "all") or bank_id.startswith("sub")
     if mode == "surround":
+        if whole_mode:
+            units = []
+            for group in SURROUND_GROUPS:
+                if any(role not in SUB_ROLES and surround_group(role) == group for role in roles):
+                    units.extend({**unit, "slot": SURROUND_GROUP_SLOT[group]}
+                                 for unit in plan_area(mode, group, roles)["units"])
+            if not units:
+                raise ValueError("Level Matching needs a routed speaker")
+            return {"family": SURROUND_FAMILY, "slot": "global", "requires_reference": False,
+                    "group": None, "units": units}
+        area = plan_area(mode, bank_id, roles)
         group = area["group"]
         return {"family": SURROUND_FAMILY, "slot": SURROUND_GROUP_SLOT[group],
                 "requires_reference": group != "front", "group": group, "units": area["units"]}
-    slot, family = ("global", "scope:global") if bank_id == "global" else ("bank", f"scope:{bank_id}")
+    area = plan_area(mode, "global", roles)
     if len(area["units"]) < 2:
         raise ValueError("Level Matching needs a left/right speaker pair")
-    return {"family": family, "slot": slot, "requires_reference": False, "group": None,
+    return {"family": "scope:global", "slot": "global", "requires_reference": False, "group": None,
             "units": area["units"]}
 
 
@@ -95,7 +109,9 @@ def raw_level_db(normalized_by_db: object, own_slot_db: Sequence[float]) -> floa
     """Level reference of a take with the role's own Level Calibration slot removed."""
     measured = _finite(normalized_by_db, "measured level")
     slots = [_finite(value, "slot") for value in own_slot_db]
-    return round(measured - (sum(slots) / len(slots) if slots else 0.0), 3)
+    if slots and any(abs(value - slots[0]) > 1e-9 for value in slots):
+        raise ValueError("Unequal crossover trims require an untrimmed Level Matching capture")
+    return round(measured - (slots[0] if slots else 0.0), 3)
 
 
 def entry_key(role: str, slot: str) -> str:
@@ -160,14 +176,14 @@ def derive_slot_values(entries: Mapping[str, dict]) -> dict[str, dict[str, float
 def zero_slot_values(mode: str, roles: Sequence[str], scope: dict) -> dict[str, dict[str, float]]:
     """Every slot Level Matching owns in the scope's family at 0 dB.
 
-    Has the shape of the ``set_level_calibration`` mutation. A Stereo scope resets
-    its own slot; Surround is one family, so all speaker groups go back together.
+    Has the shape of the ``set_level_calibration`` mutation. Stereo also clears
+    legacy bank trims; Surround resets its shared family across all groups.
     Subwoofer slots are never touched (Auto Sub Optimize owns them).
     """
     if mode == "surround":
         return {role: {SURROUND_GROUP_SLOT[surround_group(role)]: 0.0}
                 for role in roles if role not in SUB_ROLES}
-    return {role: {scope["slot"]: 0.0} for unit in scope["units"] for role in unit["roles"]}
+    return {role: {"global": 0.0, "bank": 0.0} for unit in scope["units"] for role in unit["roles"]}
 
 
 def drop_family(entries: Mapping[str, dict], family: str) -> dict[str, dict]:

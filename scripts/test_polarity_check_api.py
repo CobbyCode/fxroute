@@ -85,6 +85,9 @@ class FakeStore:
     def cancel_job(self, job_id):
         self.cancelled.append(job_id)
 
+    async def drain_job(self, job_id):
+        pass
+
 
 class JobTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -166,14 +169,23 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no polarity reading", job["error"])
         self.assertIsNone(job["result"])
 
-    async def test_the_global_area_measures_all_ways_of_a_side_together(self):
+    async def test_aggregate_areas_are_refused_but_a_crossover_bank_checks_its_wiring(self):
         roles = ["left_low", "left_high", "right_low", "right_high"]
         self.configure(mode_state("stereo", roles, crossover=True),
-                       {("left_low", "left_high"): reading("correct"), ("right_low", "right_high"): reading("correct")})
-        job = await self.run_job("global")
+                       {("left_low",): reading("correct"), ("right_low",): reading("correct")})
+        for bank in ("global", "all"):
+            with self.assertRaises(HTTPException) as caught:
+                await self.start(bank)
+            self.assertEqual(caught.exception.status_code, 400)
+        job = await self.run_job("low")
         self.assertEqual(job["status"], "completed", job["error"])
         self.assertEqual([row["roles"] for row in job["result"]["rows"]],
-                         [["left_low", "left_high"], ["right_low", "right_high"]])
+                          [["left_low"], ["right_low"]])
+
+    async def test_plain_stereo_without_bank_selection_keeps_polarity_check(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): reading("correct"), ("main_r",): reading("correct")})
+        self.assertEqual((await self.run_job("global"))["status"], "completed")
 
     async def test_subwoofer_banks_are_refused(self):
         self.configure(mode_state("stereo-sub", ["main_l", "main_r", "sub1", "sub2"]), {})
