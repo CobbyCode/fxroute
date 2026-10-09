@@ -246,6 +246,13 @@ siehe Vorschlag (Queued-Watermark).
 
 ## 10. Umsetzung und Verifikation (09.10.2026)
 
+> Korrektur 10.10.2026: Reale TCL-Wechsel zeigen verwaiste AC-3-Payload-Präfixe
+> nach der Lücke. Deshalb löscht eine neu erkannte Präambel wieder das gesamte
+> noch ausstehende Präfix ab dem frühesten unemittierten Frame (bis zu
+> 42,71 ms PCM-Verlust unmittelbar vor dem Wechsel); nur früheres PCM bleibt
+> pegelgetreu. Die darunter beschriebene Erhaltung etablierten PCM-Tails vor der
+> Präambel gilt nicht mehr.
+
 ### Aktuelle Regeln
 
 | Größe | Neu | Wirkung |

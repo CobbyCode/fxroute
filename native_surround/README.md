@@ -47,10 +47,13 @@ suppression only, once its sync recurs three times at one constant frame
 spacing; a lone sync pattern is ordinary PCM (TV PCM hits -225/+232 about once
 a minute). It is not decoded.
 
-An IEC transition clears pending audio only from its first preamble frame,
-preserving established PCM before it. At startup, a preamble inside the first
-2050-frame window instead suppresses the unclassified prefix, which might be
-a partial payload; pure PCM is still unity from frame zero. Broad safety muting also publishes an
+An IEC transition clears all still-pending audio from the earliest
+unemitted frame, including a possible unframed payload prefix after a switch
+gap. Already emitted audio cannot be retracted; the retractable window is the
+2050-frame lookahead (bounded by the 3074-frame live delay for other safety
+mutes). Up to 42.71 ms of genuine PCM immediately before a transition is lost
+by design; earlier PCM stays unity and valid decoded audio after the preamble
+is unchanged. Broad safety muting also publishes an
 atomic absolute-frame watermark to the output consumer. Queued audio below it
 is silenced, but future valid decoded frames are not. Worker and RT never edit
 each other's queue slots. The retractable window is bounded by the 3074-frame

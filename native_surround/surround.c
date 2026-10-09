@@ -29,7 +29,7 @@ struct surround {
     uint64_t input, emitted, burst_frame, previous_frame, errors, decoded;
     uint64_t words, last_sync, raw_last, raw_spacing;
     uint32_t raw_pattern;
-    unsigned raw_repeats, raw_latched, pcm_established;
+    unsigned raw_repeats, raw_latched;
     enum carrier_mode mode;
     unsigned silence, phase, swapped, kind, bits, payload_words, payload_have, header_error;
     uint16_t previous;
@@ -277,7 +277,6 @@ static void reset_raw_dts(surround *d) {
 static void return_to_pcm(surround *d) {
     flush_decoders(d);
     d->mode = MODE_PCM;
-    d->pcm_established = 1;
     d->previous = d->raw_sync = 0;
     reset_raw_dts(d);
     pcm_metadata(d);
@@ -354,10 +353,11 @@ static void word(surround *d, uint16_t value) {
     }
     if ((d->previous == 0xf872 && value == 0x4e1f) ||
         (d->previous == 0x72f8 && value == 0x1f4e)) {
-        /* A first preamble inside startup lookahead may follow a partial payload.
-         * Once PCM is established, preserve its tail before the preamble. */
+        /* The prefix before a newly recognised preamble may be an unframed
+         * payload tail after a switch gap. Suppress it from the earliest
+         * still-pending frame; already emitted audio cannot be retracted. */
         d->burst_frame = d->previous_frame;
-        if (d->mode == MODE_PCM) mute_pending(d, d->pcm_established ? d->burst_frame : 0);
+        if (d->mode == MODE_PCM) mute_pending(d, d->emitted);
         reset_raw_dts(d);
         d->mode = MODE_ENCODED;
         d->silence = 0;
@@ -406,7 +406,6 @@ void surround_reset(surround *d) {
     d->input = d->emitted = 0;
     d->previous = d->phase = d->silence = d->raw_sync = 0;
     d->last_sync = 0;
-    d->pcm_established = 0;
     reset_raw_dts(d);
     d->mode = MODE_UNKNOWN;
     metadata(d, "discontinuity");
@@ -442,7 +441,6 @@ void surround_push(surround *d, const float *stereo, size_t frames) {
         word(d, carrier_word(r));
         d->input++;
         if (d->input > SURROUND_LOOKAHEAD) {
-            if (d->mode == MODE_PCM) d->pcm_established = 1;
             d->emit(d->data, d->emitted, slot(d, d->emitted)->pcm);
             d->emitted++;
         }

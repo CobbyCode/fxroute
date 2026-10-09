@@ -2,6 +2,8 @@
 """Fail-closed digital ingress and lifecycle regressions (stdlib only)."""
 import array
 import asyncio
+import gzip
+import hashlib
 import importlib.util
 import json
 import math
@@ -210,9 +212,15 @@ class NativeIngressTests(unittest.TestCase):
                         prefix += struct.pack("<i", 0)
                     output, _ = self.run_carrier(prefix + words_to_carrier(carrier)
                                                 + (struct.pack("<i", 0) if shifted else b""), 1)
-                    self.assertTrue(output[:9000 * 8] == array.array("f",
-                                    [0.125, -0.25, 0, 0, 0, 0, 0, 0] * 9000),
-                                    "IEC transition discarded valid PCM before the burst")
+                    # Prefix safety mutes the still-pending 2050 frames before IEC
+                    # acquisition; earlier PCM stays unity. Up to 42.71 ms of real
+                    # PCM immediately before a transition is lost by design.
+                    kept = 9000 - 2050 + (1 if shifted else 0)
+                    self.assertTrue(output[:kept * 8] == array.array("f",
+                                    [0.125, -0.25, 0, 0, 0, 0, 0, 0] * kept),
+                                    "IEC transition discarded PCM before the retractable window")
+                    self.assertTrue(all(v == 0 for v in output[kept * 8:9000 * 8]),
+                                    "pending PCM before IEC acquisition was not suppressed")
 
     def test_mid_payload_startup_is_not_established_pcm(self):
         for codec, duration in (("ac3", 1536), ("dca", 512)):
@@ -227,13 +235,55 @@ class NativeIngressTests(unittest.TestCase):
                     self.assertLess(max(abs(value) for value in output), 0.5)
                     self.assertEqual(status["codec"], "dts" if codec == "dca" else codec)
 
+    def check_captured_switch_prefix(self, pcm_source):
+        fixtures = ROOT / "scripts/fixtures/spdif-switch"
+        manifest = json.loads((fixtures / "manifest.json").read_text())
+        for event in manifest["events"]:
+            data = gzip.decompress((fixtures / event["file"]).read_bytes())
+            self.assertEqual(hashlib.sha256(data).hexdigest(), event["s32_sha256"])
+            preamble = event["preamble_frame"]
+            if pcm_source:
+                # Established PCM followed by the actual unframed TV payload.
+                data = pcm(9000) + data[(preamble - 2050) * 8:]
+                preamble = 9000 + 2050
+            carrier = b"".join(struct.pack("<h", integer >> 16)
+                               for (integer,) in struct.iter_unpack("<i", data[preamble * 8:]))
+            reference = self.reference(carrier)
+            self.assertEqual(len(reference), 3 * 1536 * 2)
+            for stereo in (False, True):
+                channels = 2 if stereo else 8
+                for chunk in (1, 257, 1024):
+                    with self.subTest(event=event["event"], stereo=stereo, chunk=chunk):
+                        output, status = self.run_carrier(data, chunk, stereo=stereo)
+                        prefix = output[(preamble - 2050) * channels:preamble * channels]
+                        self.assertGreater(max(abs(integer / 2147483648) for (integer,) in
+                            struct.iter_unpack("<i", data[(preamble - 2050) * 8:preamble * 8])), 0.99)
+                        self.assertEqual(max(abs(value) for value in prefix), 0,
+                                         "captured orphan payload escaped as PCM before IEC acquisition")
+                        decoded = output[preamble * channels:]
+                        self.assertGreater(max(abs(value) for value in decoded), 0.001)
+                        for side in range(2):
+                            self.assertLess(max(abs(a - b) for a, b in
+                                zip(decoded[side::channels], reference[side::2])), 1e-5)
+                        if not stereo:
+                            self.assertTrue(all(value == 0 for channel in range(2, 8)
+                                                for value in decoded[channel::8]))
+                        self.assertEqual((status["codec"], status["state"]), ("ac3", "encoded"))
+
+    def test_captured_dd_gap_dd_orphan_prefix_is_silent(self):
+        self.check_captured_switch_prefix(pcm_source=False)
+
+    def test_captured_pcm_dd_orphan_prefix_is_silent(self):
+        self.check_captured_switch_prefix(pcm_source=True)
+
     def test_longest_corrupt_dts_burst_cannot_leak_past_lookahead(self):
         # Payload completes at the last word, including a cross-frame preamble.
         data = pcm(9000) + struct.pack("<i", 0)
         data += burst(0x0d, b"\xff\x7f" * 4092, 2048) + struct.pack("<i", 0)
         output, status = self.run_carrier(data, 1)
-        self.assertTrue(output[:9000 * 8] == array.array("f", [0.125, -0.25, 0, 0, 0, 0, 0, 0] * 9000))
-        self.assertTrue(all(v == 0 for v in output[9000 * 8:]))
+        kept = 9000 - 2050 + 1
+        self.assertTrue(output[:kept * 8] == array.array("f", [0.125, -0.25, 0, 0, 0, 0, 0, 0] * kept))
+        self.assertTrue(all(v == 0 for v in output[kept * 8:]))
         self.assertEqual(status["mute_reason"], "corrupt")
 
     def test_eac3_maximum_period_never_falls_back_between_bursts(self):

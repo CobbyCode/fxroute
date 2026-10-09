@@ -1,0 +1,47 @@
+{
+  "source_record_sha256": "a3b2ffa25164be21f8347e0ef4779d88a8a8c0a8a8850fcc360e4729cd8f7d2f",
+  "rate_hz": 48000,
+  "source_channels": 22,
+  "raw_channels": [
+    0,
+    1
+  ],
+  "events": [
+    {
+      "event": 3,
+      "file": "event-03.s32.gz",
+      "source_start_frame": 647124,
+      "source_end_frame": 793254,
+      "preamble_frame": 141522,
+      "frames": 146130,
+      "s32_sha256": "03c1fb36260199ddf47f9845fe44dc6106bd08d5be7aa3a55584a835cd9c94cd"
+    },
+    {
+      "event": 5,
+      "file": "event-05.s32.gz",
+      "source_start_frame": 2140904,
+      "source_end_frame": 2287034,
+      "preamble_frame": 141522,
+      "frames": 146130,
+      "s32_sha256": "98f1f1f1dd273d7a59cc904eced7b85ed5cc4bece4c274b97451aaf90140f23b"
+    },
+    {
+      "event": 7,
+      "file": "event-07.s32.gz",
+      "source_start_frame": 3228680,
+      "source_end_frame": 3374810,
+      "preamble_frame": 141522,
+      "frames": 146130,
+      "s32_sha256": "b260cdff6c343a24f8609af8f25bd57b57a4c1763ff6c69477f078e9553234ad"
+    },
+    {
+      "event": 11,
+      "file": "event-11.s32.gz",
+      "source_start_frame": 3994896,
+      "source_end_frame": 4141026,
+      "preamble_frame": 141522,
+      "frames": 146130,
+      "s32_sha256": "2293f91166029075627309d3c32f65af0626db172d6f2ee89a0fdca7e71837d7"
+    }
+  ]
+}
