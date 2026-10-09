@@ -38,7 +38,7 @@ class IngressResyncFlagTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main.runtime, "dsp_runtime", dsp), \
                 patch.object(main, "_set_surround_carrier_owned", AsyncMock()):
             await main._sync_surround_input("alsa_input.usb-mic", "aux_FL", "aux_FR", 3)
-        dsp.set_surround_input.assert_awaited_once_with(False)
+        dsp.set_surround_input.assert_not_awaited()
         self.assertTrue(main._ingress_resync_pending)
 
     async def test_swallowed_carrier_hold_marks_resync_pending(self):
@@ -54,7 +54,7 @@ class IngressResyncFlagTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "_measurement_session_owns_live_rate", return_value=True), \
                 patch.object(main.runtime, "dsp_runtime", dsp):
             await main._sync_mapped_input((("alsa_input.usb-mic:capture_AUX1", "input_FL"),))
-        dsp.set_mapped_ingress.assert_awaited_once_with(())
+        dsp.set_mapped_ingress.assert_not_awaited()
         self.assertTrue(main._ingress_resync_pending)
 
     async def test_resync_waits_until_measurement_releases(self):

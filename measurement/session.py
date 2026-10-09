@@ -10,12 +10,13 @@ Every application service is supplied by the composition root through
 """
 
 import asyncio
+from contextlib import asynccontextmanager, nullcontext
 import json
 import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping, Optional
+from typing import Any, AsyncContextManager, AsyncIterator, Awaitable, Callable, Mapping, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -123,6 +124,9 @@ class MeasurementServices:
     # root marks its input routing stale and re-asserts it outside the
     # session lock.
     post_release_input_resync: Callable[[], Awaitable[None]] | None = None
+    # Routing must be idle before taking the session lock: carrier repair
+    # also needs that lock. Release routing once entry claims ownership.
+    input_entry_guard: Callable[[], AsyncContextManager[None]] | None = None
 
 
 _services: MeasurementServices | None = None
@@ -270,6 +274,25 @@ class MeasurementSampleRateSession:
             )
         return captured
 
+    @asynccontextmanager
+    async def _entry_registration_lock(self, entry_epoch: int | None) -> AsyncIterator[None]:
+        """Claim entry in routing-before-session lock order, then free routing."""
+        guard = getattr(_measurement_services(), "input_entry_guard", None)
+        locked = False
+        try:
+            async with guard() if callable(guard) else nullcontext():
+                await self.lock.acquire()
+                locked = True
+                self._validate_entry_epoch(entry_epoch)
+                if not self.active:
+                    self.entry_in_progress = True
+            yield
+        finally:
+            if locked:
+                if not self.active:
+                    self.entry_in_progress = False
+                self.lock.release()
+
     async def _start_locked(self, measurement_rate: int) -> int:
         services = _measurement_services()
         get_samplerate_status = services.get_samplerate_status
@@ -294,12 +317,12 @@ class MeasurementSampleRateSession:
         self._rate_changed = False
         self.entry_in_progress = True
         try:
-            status = await asyncio.to_thread(get_samplerate_status)
-            self.original_force_rate = int(status.get("force_rate") or 0)
-        except Exception as exc:
-            logger.warning("Measurement sample-rate session could not read force-rate: %s", exc)
-            self.original_force_rate = 0
-        try:
+            try:
+                status = await asyncio.to_thread(get_samplerate_status)
+                self.original_force_rate = int(status.get("force_rate") or 0)
+            except Exception as exc:
+                logger.warning("Measurement sample-rate session could not read force-rate: %s", exc)
+                self.original_force_rate = 0
             context = await _coordinator_current_playback_context()
             # Capture playback state from the same read-only live context that
             # the guarded measurement-entry transition will pause.  This is
@@ -359,8 +382,7 @@ class MeasurementSampleRateSession:
         return self.generation
 
     async def start(self, measurement_rate: int, entry_epoch: int | None = None) -> int:
-        async with self.lock:
-            self._validate_entry_epoch(entry_epoch)
+        async with self._entry_registration_lock(entry_epoch):
             return await self._start_locked(measurement_rate)
 
     async def register_manual_job(
@@ -370,9 +392,8 @@ class MeasurementSampleRateSession:
         *,
         report_entry: bool = False,
     ) -> int | tuple[int, bool]:
-        async with self.lock:
+        async with self._entry_registration_lock(entry_epoch):
             self._require_no_speaker_job()
-            self._validate_entry_epoch(entry_epoch)
             entry_established = False
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=manual-sweep job_id=%s", job_id)
@@ -394,9 +415,8 @@ class MeasurementSampleRateSession:
             await self._check_release()
 
     async def register_auto_sub(self, job_id: str, entry_epoch: int | None = None) -> int:
-        async with self.lock:
+        async with self._entry_registration_lock(entry_epoch):
             self._require_no_speaker_job()
-            self._validate_entry_epoch(entry_epoch)
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=auto-sub job_id=%s", job_id)
                 await self._start_locked(_resolve_measurement_start_sample_rate())
@@ -404,9 +424,8 @@ class MeasurementSampleRateSession:
             return self.generation
 
     async def register_spl_job(self, job_id: str, entry_epoch: int | None = None) -> int:
-        async with self.lock:
+        async with self._entry_registration_lock(entry_epoch):
             self._require_no_speaker_job()
-            self._validate_entry_epoch(entry_epoch)
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=spl-meter job_id=%s", job_id)
                 await self._start_locked(_resolve_measurement_start_sample_rate())
@@ -429,8 +448,7 @@ class MeasurementSampleRateSession:
             raise RuntimeError("Speaker Auto Alignment is in progress")
 
     async def register_speaker_job(self, job_id: str, entry_epoch: int | None = None) -> tuple[int, bool]:
-        async with self.lock:
-            self._validate_entry_epoch(entry_epoch)
+        async with self._entry_registration_lock(entry_epoch):
             if self.has_active_jobs:
                 raise RuntimeError("Another measurement is already running")
             entered = not self.active

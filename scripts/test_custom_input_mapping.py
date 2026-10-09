@@ -1031,13 +1031,13 @@ class MainWiringTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "could not be verified"):
                 await main._sync_mapped_input(mapped_ingress_edges(PRO_SOURCE, SUFFIXES))
 
-    async def test_measurement_owning_the_rate_keeps_the_ingress_unlinked(self):
+    async def test_measurement_owning_the_rate_defers_ingress_sync(self):
         import main
         dsp = SimpleNamespace(set_mapped_ingress=AsyncMock(), verify=AsyncMock(side_effect=AssertionError))
         with patch.object(main.runtime, "dsp_runtime", dsp), patch.object(
                 main, "_measurement_session_owns_live_rate", return_value=True):
             await main._sync_mapped_input(mapped_ingress_edges(PRO_SOURCE, SUFFIXES))
-        dsp.set_mapped_ingress.assert_awaited_once_with(())
+        dsp.set_mapped_ingress.assert_not_awaited()
 
     async def test_missing_runtime_is_an_error_but_stop_is_a_no_op(self):
         import main

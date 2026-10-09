@@ -969,6 +969,8 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     sync_mapped_input=lambda edges: _sync_mapped_input(edges),
     stop_mapped_input=lambda: _stop_mapped_input(),
     sync_input_carrier=lambda entry: _hold_external_input_carrier(entry),
+    measurement_audio_graph_owned=lambda: _measurement_session_owns_live_rate(),
+    defer_input_resync=lambda: _mark_ingress_resync_pending(),
 ))
 
 bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
@@ -1132,6 +1134,7 @@ def _make_measurement_services() -> MeasurementServices:
         stdin_measurement_acquire=lambda: runtime.stdin_input.set_measurement_active(True) if runtime.stdin_input else _noop_async(),
         stdin_measurement_release=lambda: runtime.stdin_input.set_measurement_active(False) if runtime.stdin_input else _noop_async(),
         post_release_input_resync=lambda: _mark_ingress_resync_pending(),
+        input_entry_guard=lambda: external_input.measurement_entry_guard(),
     )
 
 
@@ -5844,8 +5847,7 @@ async def _sync_surround_input(source: str, left: str, right: str, card: int | N
                                right_source: str | None = None) -> None:
     global _surround_input
     if _measurement_session_owns_live_rate():
-        if runtime.dsp_runtime is not None:
-            await runtime.dsp_runtime.set_surround_input(False)
+        # The measurement scope owns ingress suspension and restoration.
         await _mark_ingress_resync_pending()
         return
     await _set_surround_carrier_owned(True, card)
@@ -5876,7 +5878,7 @@ async def _sync_mapped_input(edges: tuple[tuple[str, str], ...]) -> None:
     if runtime.dsp_runtime is None:
         raise RuntimeError("Surround needs an active native DSP runtime")
     if _measurement_session_owns_live_rate():
-        await runtime.dsp_runtime.set_mapped_ingress(())
+        # Do not mutate the entry readbacks or the scope's saved ingress.
         await _mark_ingress_resync_pending()
         return
     await runtime.dsp_runtime.set_mapped_ingress(edges)

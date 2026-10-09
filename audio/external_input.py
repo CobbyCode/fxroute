@@ -9,9 +9,10 @@ connect/disconnect behavior, moved out of ``main.py``.  No imports from
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from audio import pw_link
 from audio.input_links import input_links_present
@@ -64,6 +65,8 @@ class ExternalInputRoutingDependencies:
     # Selected input entry: keep the digital carrier (the card delivers its
     # digital samples only on the incoming clock) or release it.
     sync_input_carrier: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+    measurement_audio_graph_owned: Callable[[], bool] | None = None
+    defer_input_resync: Callable[[], Awaitable[None]] | None = None
 
 
 class ExternalInputRouting:
@@ -236,8 +239,19 @@ class ExternalInputRouting:
         async with self._sync_lock:
             return await self._sync_unlocked(source_overview)
 
+    @asynccontextmanager
+    async def measurement_entry_guard(self) -> AsyncIterator[None]:
+        """Hold routing idle until measurement atomically claims graph ownership."""
+        async with self._sync_lock:
+            yield
+
     async def _sync_unlocked(self, source_overview: dict[str, Any] | None = None) -> dict[str, Any]:
         overview = source_overview or await asyncio.to_thread(self._deps.get_audio_source_overview)
+        owns_graph = self._deps.measurement_audio_graph_owned
+        if owns_graph is not None and owns_graph():
+            if self._deps.defer_input_resync is not None:
+                await self._deps.defer_input_resync()
+            return overview
         if not self._external_persisted():
             # Left external input: an old outage must not count later.
             self.availability.reset()
