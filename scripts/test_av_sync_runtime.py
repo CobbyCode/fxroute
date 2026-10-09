@@ -53,7 +53,15 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     runtime._surround_input = enabled
                 async def mapped(links):
                     runtime._mapped_ingress = links
+                calls = 0
                 async def unavailable():
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        return {'ready': True, 'input': 3074}
+                    self.assertFalse(runtime._surround_input)
+                    self.assertEqual(runtime._mapped_ingress, ())
+                    self.assertEqual(runtime._effect_bypass, raw)
                     raise RuntimeError('latency readiness failed')
                 runtime._control_unlocked = control
                 runtime.set_surround_input = surround

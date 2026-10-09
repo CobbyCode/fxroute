@@ -255,6 +255,8 @@ class AutoSubCandidateSession:
             raise RuntimeError('No latency captures recorded for this run; refusing another run evidence')
         sweep = snapshot.get('measurement_latency') or {}
         for recorded in self._latency_captures:
+            if recorded.get('ingress_restore') != sweep.get('ingress_restore'):
+                raise RuntimeError('Latency capture run changed during measurement')
             for key in ('rate', 'input', 'bypassed'):
                 if recorded.get(key) != sweep.get(key):
                     raise RuntimeError('Latency capture run changed during measurement')

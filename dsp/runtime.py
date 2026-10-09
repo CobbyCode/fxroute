@@ -499,6 +499,7 @@ class DSPRuntime:
         self._stderr_tail = b""
         self._surround_input = False
         self._measurement_surround_input = False
+        self._measurement_ingress_restore: dict = {}
         self._mapped_ingress: tuple[tuple[str, str], ...] = ()
         self._measurement_mapped_ingress: tuple[tuple[str, str], ...] = ()
         self._latency_snapshot: dict = {}
@@ -617,6 +618,8 @@ class DSPRuntime:
         self.validate_measurement_latency(snapshot)
         snapshot['verified'] = True
         snapshot['capture_id'] = job.get('id')
+        if self._measurement_ingress_restore:
+            snapshot['ingress_restore'] = copy.deepcopy(self._measurement_ingress_restore)
         target_roles = list((job.get('measurement_target') or {}).get('measured_roles') or [])
         if target_roles:
             snapshot['measured_roles'] = target_roles
@@ -994,12 +997,17 @@ class DSPRuntime:
         """
         self._measurement_latency_signature = None
         self._measurement_latency_owner = None
+        self._measurement_latency_snapshot.pop('ingress_restored', None)
         restoration = asyncio.create_task(self.set_effect_bypass(previous))
+        bypass_restored = False
         try:
             await run_to_completion(restoration)
+            bypass_restored = True
         finally:
             try:
                 await run_to_completion(self._resume_surround_input())
+                if bypass_restored:
+                    await run_to_completion(self._confirm_measurement_ingress_restore())
             finally:
                 self._measurement_scope_lock.release()
 
@@ -1020,12 +1028,21 @@ class DSPRuntime:
     async def exit_active_measurement(self, _previous: bool) -> None:
         self._measurement_latency_signature = None
         self._measurement_latency_owner = None
+        self._measurement_latency_snapshot.pop('ingress_restored', None)
         try:
             await run_to_completion(self._resume_surround_input())
+            await run_to_completion(self._confirm_measurement_ingress_restore())
         finally:
             self._measurement_scope_lock.release()
 
     async def _suspend_surround_input(self) -> None:
+        self._measurement_latency_snapshot.pop('ingress_restored', None)
+        self._measurement_ingress_restore = {}
+        if self._latency_tracking and (self._surround_input or self._mapped_ingress):
+            entry = await self.settled_latency()
+            self._measurement_ingress_restore = {
+                'input': entry['input'], 'surround_input': self._surround_input,
+                'mapped_ingress': [list(edge) for edge in self._mapped_ingress]}
         self._measurement_surround_input = self._surround_input
         self._measurement_mapped_ingress = self._mapped_ingress
         if self._surround_input:
@@ -1040,6 +1057,28 @@ class DSPRuntime:
         if self._measurement_mapped_ingress:
             mapped, self._measurement_mapped_ingress = self._measurement_mapped_ingress, ()
             await self.set_mapped_ingress(mapped)
+
+    async def _confirm_measurement_ingress_restore(self) -> None:
+        """Certify the actual restored graph and input, never routing intent alone."""
+        capture = self._measurement_latency_snapshot
+        ingress = self._measurement_ingress_restore
+        if not ingress or capture.get('verified') is not True:
+            return
+        engine_inputs = {f'{DSP_NODE_NAME}:input_{index + 1}'
+                         for index in range(self._config.input_count)}
+        expected = [(source, target) for source, target in ingress['mapped_ingress']
+                    if target in engine_inputs]
+        if ingress['surround_input']:
+            expected.extend(decoded_ingress_edges(self._config.input_count))
+        links = await self._run(('pw-link', '-l'))
+        if (links.returncode or any(not _contains_link(links.stdout, source, target)
+                                    for source, target in expected)):
+            raise RuntimeError('Measurement ingress restoration links are unavailable')
+        restored = await self.settled_latency()
+        if (restored.get('input') != ingress['input']
+                or capture.get('ingress_restore') != ingress):
+            raise RuntimeError('Measurement ingress restoration latency changed')
+        capture['ingress_restored'] = True
 
     async def set_output_gain_db(self, gain_db: float) -> float:
         value = max(-80.0, min(0.0, float(gain_db)))

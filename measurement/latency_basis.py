@@ -17,10 +17,25 @@ def calibrated_state(state: dict, runtime: dict, *, restored: bool, expected_byp
             or bool(sweep.get('bypassed')) != expected_bypass):
         raise RuntimeError('Verified calibration latency evidence is unavailable')
     sweep_context, live_context = sweep.get('context') or {}, live.get('context') or {}
+    expected_input = sweep.get('input')
+    ingress = sweep.get('ingress_restore')
+    if restored and ingress is not None:
+        # Injected sweeps bypass program ingress. Certify only its exact,
+        # settled pre-suspension destination, not arbitrary input drift.
+        if (sweep.get('ingress_restored') is not True
+                or not isinstance(ingress, dict) or type(ingress.get('input')) is not int
+                or ingress['input'] < 0 or sweep.get('input') != 0
+                or type(ingress.get('surround_input')) is not bool
+                or not isinstance(ingress.get('mapped_ingress'), list)
+                or not (ingress['surround_input'] or ingress['mapped_ingress'])
+                or ingress['surround_input'] != runtime.get('surround_input')
+                or ingress['mapped_ingress'] != runtime.get('mapped_ingress')):
+            raise RuntimeError('Calibration ingress restoration is not verified')
+        expected_input = ingress['input']
     if (not sweep_context.get('timing_key')
             or sweep_context.get('timing_key') != live_context.get('timing_key')
             or sweep_context.get('output_key') != live_context.get('output_key')
-            or sweep.get('rate') != live.get('rate') or sweep.get('input') != live.get('input')):
+            or sweep.get('rate') != live.get('rate') or expected_input != live.get('input')):
         raise RuntimeError('Calibration timing changed after the successful sweep')
     if not restored and latency_signature(sweep) != latency_signature(live):
         raise RuntimeError('Calibration latency changed after the successful sweep')
