@@ -32,6 +32,7 @@ class MeasurementJobRunner:
         effect_bypass_setter: Callable[[bool], Any] | None = None,
         active_scope_enter: Callable[[], Any] | None = None,
         active_scope_exit: Callable[[bool], Any] | None = None,
+        latency_capture_finish: Callable[[dict], Any] | None = None,
         output_mask_apply: Callable[..., Any] | None = None,
         output_mask_clear: Callable[..., Any] | None = None,
     ):
@@ -47,6 +48,7 @@ class MeasurementJobRunner:
         self._effect_bypass_setter = effect_bypass_setter
         self._active_scope_enter = active_scope_enter
         self._active_scope_exit = active_scope_exit
+        self._latency_capture_finish = latency_capture_finish
         self._output_mask_apply = output_mask_apply
         self._output_mask_clear = output_mask_clear
         self.tasks: dict[str, asyncio.Task[Any]] = {}
@@ -130,6 +132,8 @@ class MeasurementJobRunner:
                 raise
 
             _rm["worker_back"] = time.monotonic()
+            if scope_owned and callable(self._latency_capture_finish):
+                job['latency_capture'] = await self._latency_capture_finish(deepcopy(job))
             with self.process_lock:
                 if not self._is_terminal(job.get("status")):
                     if job_id in self.cancelled_jobs:

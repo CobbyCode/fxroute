@@ -14,6 +14,7 @@ from audio.output_state import (BASS_FIELDS, SUB_SIDES, default_bass_management,
 from audio.output_topology import MAX_CHANNELS, SUB_ROLES, roles_for_mode
 from audio.samplerate.persistence import _normalize_subwoofer_config, _normalize_subwoofer_22_config
 from dsp.banks import BankState
+from dsp.latency import default_av_sync
 
 _LEGACY_ROLES = {
     "stereo": ("off", "main_l", "main_r", "off", "off"),
@@ -175,7 +176,7 @@ def _upgrade_v4_level_calibration(payload: dict) -> dict:
             raise ValueError("Invalid version-four output state")
         for settings in processing.values():
             settings.setdefault("level_cal_db", default_level_cal())
-    return validate_output_state(result)
+    return upgrade_output_state(result)
 
 
 def upgrade_output_state(payload: dict) -> dict:
@@ -186,6 +187,17 @@ def upgrade_output_state(payload: dict) -> dict:
     routing or DSP. Loading does not write; the next revision-checked commit
     atomically persists the upgraded document.
     """
+    if isinstance(payload, dict) and payload.get('version') == 5:
+        result = copy.deepcopy(payload)
+        result['version'] = 6
+        modes = result.get('modes')
+        if not isinstance(modes, dict):
+            raise ValueError('Invalid version-five output state')
+        for config in modes.values():
+            if not isinstance(config, dict):
+                raise ValueError('Invalid version-five output state')
+            config.setdefault('av_sync', default_av_sync())
+        return validate_output_state(_drop_stale_surround_side_overrides(result))
     if isinstance(payload, dict) and payload.get("version") == 3:
         if (set(payload) != {"schema", "version", "revision", "active_mode", "modes", "legacy"}
                 or not isinstance(payload.get("modes"), dict)
@@ -225,6 +237,7 @@ def upgrade_output_state(payload: dict) -> dict:
         # active configuration. Old stereo was allowed to route sub roles.
         candidate = default_output_state()
         config["crossover_enabled"] = enabled
+        config['av_sync'] = default_av_sync()
         config["bass_management"] = _defaulted_bass_management(config.get("bass_management"))
         candidate["modes"]["stereo-sub"] = config
         validate_output_state(candidate)

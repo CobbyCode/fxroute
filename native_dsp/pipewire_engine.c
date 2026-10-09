@@ -122,6 +122,43 @@ static void reply_peaks(struct engine *engine, const struct sockaddr_un *client,
     (void)sendto(engine->control_fd,reply,used,0,(const struct sockaddr *)client,client_size);
 }
 
+static void reply_latency(struct engine *engine, const struct sockaddr_un *client, socklen_t client_size) {
+    fxdsp_latency s;
+    if (!fxdsp_read_latency(atomic_load_explicit(&engine->dsp, memory_order_acquire), &s)) {
+        const char *reply = "{\"ready\":false}\n";
+        (void)sendto(engine->control_fd, reply, strlen(reply), 0, (const struct sockaddr *)client, client_size);
+        return;
+    }
+    char reply[16384];
+    size_t used = (size_t)snprintf(reply, sizeof reply,
+        "{\"ready\":true,\"rate\":%" PRIu64 ",\"reference\":%" PRIu64
+        ",\"enabled\":%" PRIu64 ",\"bypassed\":%" PRIu64 ",\"input\":%" PRIu64
+        ",\"target\":%" PRIu64 ",\"minimum\":%" PRIu64 ",\"maximum\":%" PRIu64
+        ",\"common\":%" PRIu64 ",\"actual\":%" PRIu64 ",\"limited\":%" PRIu64
+        ",\"balance_limited\":%" PRIu64 ",\"balance_unavailable\":%" PRIu64 ",\"outputs\":[",
+        s.rate, s.reference, s.enabled, s.bypassed, s.input, s.target, s.minimum,
+        s.maximum, s.common, s.actual, s.limited, s.balance_limited, s.balance_unavailable);
+    for (unsigned o = 0; o < s.outputs; o++) {
+        const fxdsp_output_latency *r = &s.output[o];
+        used += (size_t)snprintf(reply + used, sizeof reply - used,
+            "%s{\"dsp\":%" PRIu64 ",\"intentional\":%" PRIu64 ",\"align\":%" PRIu64
+            ",\"balance\":%" PRIu64 ",\"sync\":%" PRIu64 ",\"total\":%" PRIu64
+            ",\"basis_known\":%" PRIu64 ",\"unknown\":%" PRIu64 ",\"mixed\":%" PRIu64 "}",
+            o ? "," : "", r->dsp, r->intentional, r->align, r->balance, r->sync, r->total,
+            r->basis_known, r->unknown, r->mixed);
+    }
+    used += (size_t)snprintf(reply + used, sizeof reply - used, "],\"sources\":[");
+    for (unsigned c=0; c<s.inputs; c++) {
+        const fxdsp_output_latency *r=&s.source[c];
+        used += (size_t)snprintf(reply + used, sizeof reply - used,
+            "%s{\"dsp\":%" PRIu64 ",\"balance\":%" PRIu64 ",\"basis_known\":%" PRIu64
+            ",\"intentional\":%" PRIu64 ",\"unknown\":%" PRIu64 "}",
+            c ? "," : "", r->dsp, r->balance, r->basis_known, r->intentional, r->unknown);
+    }
+    used += (size_t)snprintf(reply + used, sizeof reply - used, "]}\n");
+    (void)sendto(engine->control_fd, reply, used, 0, (const struct sockaddr *)client, client_size);
+}
+
 static int fxdsp_swap_config(struct engine *engine, const char *path, float gain_db) {
     char error[256];
     fxdsp *candidate = fxdsp_load(path, error, sizeof error);
@@ -184,6 +221,10 @@ static void handle_control(struct engine *engine, char *command, const struct so
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     }
     else if(!strcmp(command,peaks_get_command))reply_peaks(engine,client,client_size);
+    else if(!strcmp(command,"latency get"))reply_latency(engine,client,client_size);
+    else if(sscanf(command,"input latency %f %c",&live_value,&extra)==1 &&
+            fxdsp_set_input_latency(atomic_load_explicit(&engine->dsp,memory_order_acquire),live_value))
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     else if(!strcmp(command,"timing get"))reply_timing(engine,client,client_size);
     else if(!strcmp(command,"timing reset")) {
         const char *reply = fxdsp_reset_timing(atomic_load_explicit(&engine->dsp,memory_order_acquire))
@@ -221,6 +262,9 @@ static void handle_control(struct engine *engine, char *command, const struct so
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     else if(sscanf(command,"live output %u %f %f %15s %c",&first,&live_value,&live_value2,polarity,&extra)==4 &&
             fxdsp_live_output(atomic_load_explicit(&engine->dsp,memory_order_acquire),first,live_value,live_value2,!strcmp(polarity,"invert")))
+        (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
+    else if(sscanf(command,"live avsync %f %u %c",&live_value,&first,&extra)==2 &&
+            fxdsp_live_avsync(atomic_load_explicit(&engine->dsp,memory_order_acquire),live_value,first))
         (void)sendto(engine->control_fd,"ok\n",3,0,(const struct sockaddr *)client,client_size);
     else { float gain_db;
         if(sscanf(command,"gain db %f %c",&gain_db,&extra)==1&&!strncmp(command,gain_db_command,sizeof gain_db_command-1)&&isfinite(gain_db)&&gain_db>=-80.0f&&gain_db<=0.0f) {

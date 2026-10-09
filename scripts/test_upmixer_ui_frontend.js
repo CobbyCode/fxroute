@@ -73,7 +73,7 @@ assert.ok(indexSource.indexOf('effects-upmixer-row') < indexSource.indexOf('effe
         return [...block[1].matchAll(/<option value="([^"]+)"( selected)?/g)].map(match => [match[1], !!match[2]]);
     };
     assert.deepEqual(optionValues('effects-upmixer-mode'), [['fast', true], ['hq', false]]);
-    assert.deepEqual(optionValues('effects-upmixer-fft-size'), [['1024', false], ['2048', true], ['4096', false]]);
+    assert.deepEqual(optionValues('effects-upmixer-fft-size'), [['1024', false], ['2048', true], ['4096', false], ['8192', false]]);
     // The details hold two lines: Mode and FFT first, Center and Surround second.
     const row = indexSource.slice(indexSource.indexOf('id="effects-upmixer-row"'), indexSource.indexOf('id="effects-loudness-row"'));
     const lines = row.split('class="effects-effect-line"').slice(1);
@@ -105,6 +105,7 @@ assert.equal(Effects.normalizeEffectsUpmixerMode(''), 'fast');
 assert.equal(Effects.normalizeEffectsUpmixerMode(null), 'fast');
 assert.equal(Effects.normalizeEffectsUpmixerMode('turbo'), 'fast');
 assert.equal(Effects.normalizeEffectsUpmixerFftSize('4096'), 4096);
+assert.equal(Effects.normalizeEffectsUpmixerFftSize('8192'), 8192);
 assert.equal(Effects.normalizeEffectsUpmixerFftSize(1024), 1024);
 assert.equal(Effects.normalizeEffectsUpmixerFftSize(512), 2048);
 assert.equal(Effects.normalizeEffectsUpmixerFftSize(''), 2048);
@@ -200,6 +201,8 @@ assert.equal(Effects.normalizeEffectsUpmixerFftSize(undefined, 1024), 1024);
     assert.equal(engine.upmixerFftSize, 4096);
     elements.effectsUpmixerFftSize.value = '1024';
     assert.equal(Effects.collectEffectsExtras().upmixerFftSize, 1024);
+    elements.effectsUpmixerFftSize.value = '8192';
+    assert.equal(Effects.collectEffectsExtras().upmixerFftSize, 8192);
     elements.effectsUpmixerFftSize.value = '99';
     elements.effectsUpmixerMode.value = 'bogus';
     engine = Effects.collectEffectsExtras();

@@ -1,9 +1,11 @@
 # DSP-Latenzen in FXRoute — Bestandsaufnahme für ein zentrales AV-Sync-Management
 
-Status: Research, keine Implementierung. Alle Werte sind aus dem Code abgeleitet
-oder auf der Testmaschine gemessen; geschätzt wird nichts. Offene Punkte sind als
-solche gekennzeichnet. Die Abschnitte 4.2–4.4, 6 und 8 sind die Ergebnisse der
-zweiten Messrunde (Auftrag „Offene DSP-Latenzen untersuchen").
+Die Abschnitte 1–14 dokumentieren die Bestandsaufnahme vor AV Sync und das
+daraus abgeleitete Konzept. Abschnitt 15 beschreibt die Implementierung.
+Alle Werte sind aus dem Code abgeleitet oder auf der Testmaschine gemessen;
+offene Messgrenzen sind ausdrücklich gekennzeichnet. Korrektur vom 08.10.2026:
+PCM durch den Live-Surround-Helfer hat ebenfalls 8192 Frames Eingangslatenz;
+die frühere Nullmessung betraf nur dessen Offline-Decoder, nicht den Ingress.
 
 ## 1. Vorgehen und Belege
 
@@ -54,8 +56,9 @@ zweiten Messrunde (Auftrag „Offene DSP-Latenzen untersuchen").
    Artefakt (leerer Ausgang während des Plugin-Warm-ups, 4.2).
 7. **Crystalizer: Speex-Anteil 80 Samples bei allen acht getesteten Raten**
    (44,1…384 kHz); die Gesamtlatenz folgt der Codeformel (4.4).
-8. **Surround-Eingang:** Ein komprimierter Stream (AC-3/DTS) ist gegenüber PCM um
-   **8192 Frames (170,67 ms)** verzögert; PCM selbst um 0. Ein Wechsel
+8. **Surround-Eingang:** PCM und komprimierte Streams (AC-3/DTS) durch den
+   Live-Helfer sind um **8192 Frames (170,67 ms)** verzögert. Direkte PCM-Pfade
+   außerhalb dieses Helfers haben diesen Anteil nicht. Ein Wechsel
    Bitstream→PCM kostet gemessen **10754 Frames ≈ 224 ms** Stille, PCM→Bitstream
    verschluckt die letzten **4096 Frames (85,33 ms)** PCM (6.4).
 9. **Live-Änderungen können die Latenz mitten im Stream verschieben**, ohne
@@ -139,6 +142,7 @@ Least-Squares-/Kreuzkorrelations-Lag bestätigt (siehe 4.2/4.3).
 | Upmixer **HQ** | FFT 1024 | **1023** (21,31 ms) | 1023 (23,20 ms) | konfigurationsabhängig |
 | Upmixer **HQ** | FFT 2048 | **2047** (42,65 ms) | 2047 (46,42 ms) | konfigurationsabhängig |
 | Upmixer **HQ** | FFT 4096 | **4095** (85,31 ms) | 4095 (92,86 ms) | konfigurationsabhängig |
+| Upmixer **HQ** | FFT 8192 | **8191** (170,65 ms) | 8191 (185,74 ms) | AV-Sync-Erweiterung; nativer Impulstest |
 | **Loudness** (LSP `loud_comp_stereo`) ✓ | `fftSize` = S | **S** (256…16384) | **S** | konfigurationsabhängig; Default 4096 → 85,33 / 92,88 ms |
 | **Protection Limiter** (LSP `sc_limiter_stereo`) | Lookahead L ms | **floor(L·rate/1000)** (5 ms → 240) | 5 ms → 220 | Port korrekt |
 | **Crystalizer** (nativ) ✓ | immer | **1904** (39,667 ms) | **1839** (41,70 ms) | fest pro Rate (Formel 4.4) |
@@ -155,7 +159,7 @@ Least-Squares-/Kreuzkorrelations-Lag bestätigt (siehe 4.2/4.3).
 | **Autogain** (nativ) | — | **0** | 0 | nur Gain |
 | **Crossover** (Butterworth/LR-SOS) | — | **0** fest | 0 | nur frequenzabhängige Gruppenlaufzeit |
 | **Surround-Eingang, komprimiert** (AC-3/DTS) | Live-Pfad | **8192** (170,67 ms) | — (nur 48 kHz) | siehe Abschnitt 6 |
-| **Surround-Eingang, PCM** | Live-Pfad | **0** | — | nur 48 kHz |
+| **Surround-Eingang, PCM** | Live-Pfad durch Helfer | **8192** (170,67 ms) | — | nur 48 kHz; direkter PCM-Pfad ohne Helfer: 0 |
 | PipeWire **SRC-Adapter** | Rate ≠ Graph-Rate | deklariert **750 ms** | dito | siehe Abschnitt 9 |
 
 ### 4.1 Formeln, die sich direkt aus dem Code berechnen lassen
@@ -182,7 +186,7 @@ Least-Squares-/Kreuzkorrelations-Lag bestätigt (siehe 4.2/4.3).
 - Limiter: Latenz = Lookahead in Samples, von LSP abgerundet; der LV2-Port
   bestätigt das (0,1/1/4/16 ms → 4/48/192/768 @48 kHz, 4/44/176/705 @44,1 kHz).
   Die nativen Delay-Stufen runden dagegen per `llround`.
-- Surround-Eingang komprimiert: 8192 Frames = `SURROUND_LIVE_LATENCY`
+- Surround-Eingang durch Helfer (PCM und komprimiert): 8192 Frames = `SURROUND_LIVE_LATENCY`
   (`surround.h:14`, `ingress.c:119-125`). Das Erkennungsfenster
   `SURROUND_LOOKAHEAD = 4096` (`surround.h:9`, `surround.c:406`) ist die
   Vorlaufzeit der Decoder-Entscheidung, **kein** zusätzlicher Summand (6.3).
@@ -361,9 +365,11 @@ mit `ffmpeg`-Fixtures (48 kHz, 1–2 s Sinus-Mix) über
 
 ### 6.2 PCM gegen Bitstream
 
-- **PCM:** Latenz **0**. Gemessen: reiner PCM-Träger 30000 Frames → erster
-  Nicht-Null-Ausgang bei Frame 0, `state=pcm`, `errors=0`.
-- **Komprimiert (Live-Pfad):** 8192 Frames = **170,67 ms**
+- **PCM im Offline-Decoder:** Latenz **0**. Gemessen: reiner PCM-Träger
+  30000 Frames → erster Nicht-Null-Ausgang bei Frame 0, `state=pcm`, `errors=0`.
+  Das ist nicht die Latenz des Live-Ingress: `ingress.c` puffert auch diese
+  PCM-Ausgabe um 8192 Frames.
+- **PCM und komprimiert durch den Live-Helfer:** 8192 Frames = **170,67 ms**
   (`SURROUND_LIVE_LATENCY`, `ingress.c:119-125`). Der Live-Ausgang liest bei
   Eingabe-Frame `N` den dekodierten Inhalt von Index `N − 8192`; die
   Inhalt-Zeitachse wird beim Emittieren 1:1 weitergeführt
@@ -545,7 +551,7 @@ hier still falsch.
   **Startup-Reserve**, keine Ziel-Latenz.
 - **PCM-Eingang (STDIN):** `pw-cat … --latency 100ms`
   (`audio/stdin_pipewire.py:77`) → Gerätepuffer-Ziel des Ingress-Knotens.
-- **Surround-Eingang (AC-3/DTS):** Live-Ausgabe um **8192 Frames (170,67 ms)**
+- **Surround-Eingang (PCM/AC-3/DTS durch Helfer):** Live-Ausgabe um **8192 Frames (170,67 ms)**
   verzögert (Abschnitt 6), 32768-Frame-Queues, nur 48 kHz.
 - **CPU-Rechenzeit ≠ Latenz:** `FXDSP_TIMING_*` (`timing.c/h`) und
   `max_callback_ms`/`first_output_ns` messen Wanduhr-/CPU-Zeit. Sie verschieben
@@ -625,8 +631,8 @@ Die vier Anforderungen, an denen das Konzept gemessen wird:
    sich nicht ändern — auch nicht durch den Ausgleich.
 3. **Unterschiedliche DSP-Pfade** (Kanal/Gruppe, 7.2) werden berücksichtigt,
    ohne bestehende Alignment-Korrekturen aufzuheben.
-4. **PCM/AC-3/DTS** haben unterschiedliche Eingangslatenzen und müssen in
-   derselben Bilanz erscheinen.
+4. **PCM/AC-3/DTS** müssen entsprechend ihrem tatsächlichen Eingangszweig in
+   derselben Bilanz erscheinen; der Live-Helfer verzögert alle drei gleich.
 
 Daraus folgt die tragende Semantik — und die Abgrenzung zur ersten Fassung
 dieses Abschnitts, die einen **additiven** AV-Offset beschrieb (`Gesamt =
@@ -674,7 +680,7 @@ für jeden Ausgang i:
 Zwei Eigenschaften, die die Anforderungen 2 und 3 per Konstruktion erfüllen:
 
 - **(L1) Eine gleichmäßige Änderung ist relativ wirkungslos.** Wächst
-  `E_i + L_i` auf allen Ausgängen gleich — z. B. PCM → AC-3/DTS: 8192 Frames für
+   `E_i + L_i` auf allen Ausgängen gleich — z. B. direkter PCM-Pfad → Helfer: 8192 Frames für
   alle —, ist `max_j Δ_j = Δ_i` und damit `D_i = 0` für alle; nur `C` schrumpft.
   Ein Eingangszweigwechsel kann die Ausrichtung also nicht verschieben.
 - **(L2) Die Ausrichtung ist invariant.** Mit `D_i = maxΔ − Δ_i` gilt
@@ -773,15 +779,16 @@ Die Audio-Latenz hängt nicht nur am DSP, sondern am gewählten **Zweig**:
 |---|---:|---|
 | PCM-Eingang / Datei-Wiedergabe | 0 (Gerätepuffer separat, Abschnitt 9) | `audio/stdin_pipewire.py:77` |
 | Digital-In komprimiert (AC-3/DTS) | **8192 Frames = 170,67 ms** | 6.2 |
-| Digital-In PCM | 0 | 6.2 |
+| Digital-In PCM durch Surround-Helfer | **8192 Frames = 170,67 ms** | 6.2 |
 | SRC-Adapter aktiv (Rate ≠ Graph-Rate) | dynamisch (`timeline_delay`), nicht stabil | `native_src/build.py:133`, `docs/playback-src.md` |
 | Nicht-48-kHz-Graph am Surround-Eingang | Stille (fail closed) — keine Bilanz | `ingress.c:100-101` |
 
 Konsequenz für das Konzept: Der Eingangszweig ist unter der Guthaben-Semantik
 kein Zusatzproblem, sondern ein **automatischer Abzug von `C`**. Wechselt der
-Nutzer von PCM auf Dolby Digital, sinkt `C` um 170,67 ms, die
-Gesamtverzögerung bleibt `W`, und die relative Ausrichtung ändert sich nicht
-(Lemma L1, 12.2). Voraussetzungen:
+Nutzer vom direkten PCM-Pfad zum Live-Helfer, sinkt `C` um 170,67 ms, die
+Gesamtverzögerung bleibt bei erreichbarem Ziel `W`, und die relative Ausrichtung
+ändert sich nicht (Lemma L1, 12.2). PCM ↔ AC-3/DTS innerhalb des Helfers verändert
+das Guthaben nicht. Voraussetzungen:
 
 - Der Zweig muss **bekannt** sein: `state` (`pcm` / `encoded` / `muted`) und
   `sample_rate` aus dem Status des Eingangs-Helfers.
@@ -1230,3 +1237,46 @@ Zentrale Codefundstellen:
 `static/measurement_dsp.js:180-345`,
 `static/index.html:1211-1233` + `static/app.js` (`syncMeasurementCalibrationMenu`),
 `MANUAL.md:393`/`415-423`, `main.py:5258-5270`.
+
+## 15. Implementierung: AV Sync
+
+- Der Native-DSP-Engine bilanziert die tatsächliche Kette pro Quelle und Ausgang
+  und veröffentlicht kohärente, atomare `latency get`-Snapshots. Die Bilanz folgt
+  Live-Kontrollen, Bypass, Rebuilds, Rate und Eingangsguthaben; Loudness verwendet
+  die FFT-Größe statt des veralteten LV2-Ports.
+- Schema v6 speichert `av_sync` mit Ziel und Quellen-/Ausgangsbasis pro Modus.
+  Die Basis enthält `input + dsp + balance`, nicht Alignment, bewusste Delays
+  oder den gemeinsamen AV-Rest. Eine neue Teilkalibrierung verschiebt erhaltene
+  und inaktive Basiswerte gemeinsam in dieselbe Epoche. Eine gemeinsame
+  Normalisierung verhindert negative gespeicherte Millisekunden und erhält die
+  relative Zeit, nicht zwingend jeden alten Zahlenwert.
+- Surround-Quellen werden **vor** gemischten Bass-/Fold-down-Sends ausgeglichen;
+  danach folgt die Ausgangsbilanz. Quelle, Ausgangsausgleich, Alignment und
+  gemeinsamer Rest teilen sich das 500-ms-Budget jedes betroffenen Pfads.
+  Bewusste unterschiedliche Delays bleiben Absicht; unvereinbare gemischte Pfade
+  werden als `mixed` gemeldet.
+- Bestandskalibrierungen übernehmen erst nach verifiziertem normalem Rendering
+  dessen aktuelle Basis, ohne die vorhandene Spreizung ein zweites Mal
+  auszugleichen. Das ist eine sichere Adoption, kein Nachweis der historischen
+  Kalibrierbedingungen. Neu vermessen erzeugt eine gemessene Basis.
+- Neue Korrektur-WAVs tragen validierte RIFF-`fxlt`-Metadaten pro Kanal für
+  algorithmische und beabsichtigte Frames. Nicht markierte IRs gelten als
+  unbekannt; ihre Länge wird nicht als `N/2` interpretiert. `balance_unavailable`
+  deaktiviert den relativen Ausgleich ausdrücklich und verhindert, dass eine
+  unbekannte IR als vermeintliche Absenkung auf Null behandelt wird.
+- Speaker Align und AutoSub übernehmen nur verifizierte Sweep-Zeitevidenz;
+  AutoSub verwendet den Raw-Sweep, nicht das danach restaurierte DSP-Rendering.
+  Laufende Messungen prüfen auch kleine Timingänderungen sowie Nebenquellen
+  gemischter Sends vor dem erfolgreichen Abschluss.
+- Die UI unter **Calibration → AV Sync** zeigt Ziel, erreichbare Gesamtzahl,
+  Grenzen und Einzelanteile in allen drei Modi. Unerreichbare Ziele bleiben
+  gespeichert, werden aber nicht als angewandt ausgegeben. Gerätepuffer,
+  Schallflug und variable SRC-Reserve zählen nicht als deterministisches
+  Guthaben. Es gibt keinen Video-Offset.
+
+Reproduzierbare native Prüfung: `sh native_dsp/test_av_sync.sh`. Sie prüft
+Snapshots und echte Impulspositionen bei 44,1/48/96 kHz, Stereo/Sub,
+Loudness-Livewechsel, Direct, Eingangsguthaben und Surround-Recompile nach einer
+Teilkalibrierung. `test_upmix_hq.c` prüft außerdem alle acht Kanäle sample-genau
+für FFT 8192. Diese elektronischen Prüfungen ersetzen keine neue akustische
+Abnahme am Hörplatz und keine physische Messung der DAC-/TV-Latenz.

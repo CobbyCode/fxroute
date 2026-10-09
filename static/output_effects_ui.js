@@ -161,6 +161,7 @@ function wireNumberFieldLimits() {
 }
 
 function setupEffectsActions() {
+    root.FXRouteAvSync?.bindEvents();
     if (deps.getElements().splCalibrationOpen) deps.getElements().splCalibrationOpen.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.openSplCalibration());
     if (deps.getElements().splCalibrationClose) deps.getElements().splCalibrationClose.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.closeSplCalibration());
     if (deps.getElements().splCalibrationPanel?.querySelector('.manage-overlay-backdrop')) {
@@ -842,7 +843,7 @@ function normalizeEffectsUpmixerMode(value, fallback = 'fast') {
 // Transform size of the HQ engine, in frames.
 function normalizeEffectsUpmixerFftSize(value, fallback = 2048) {
     const numeric = Number(value);
-    return [1024, 2048, 4096].includes(numeric) ? numeric : fallback;
+    return [1024, 2048, 4096, 8192].includes(numeric) ? numeric : fallback;
 }
 
 function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {

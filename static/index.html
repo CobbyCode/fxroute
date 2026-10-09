@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.303">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.304">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -960,6 +960,7 @@
                                                             <option value="1024">1024</option>
                                                             <option value="2048" selected>2048</option>
                                                             <option value="4096">4096</option>
+                                                            <option value="8192">8192</option>
                                                         </select>
                                                     </label>
                                                 </div>
@@ -1221,6 +1222,10 @@
                                             <div class="measurement-workflow-menu">
                                                 <button id="measurement-calibration-toggle" class="btn-secondary" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="measurement-calibration-menu">Calibration</button>
                                                 <div id="measurement-calibration-menu" class="measurement-workflow-menu-panel hidden" tabindex="-1" aria-labelledby="measurement-calibration-toggle">
+                                                    <div class="measurement-workflow-menu-choice">
+                                                        <button id="measurement-av-sync-open" class="btn-secondary" type="button">AV Sync</button>
+                                                        <span class="measurement-repeat-help">Set total electronic audio delay. Speaker alignment stays unchanged.</span>
+                                                    </div>
                                                     <div class="measurement-workflow-menu-choice">
                                                         <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
                                                         <span class="measurement-repeat-help">Calibrate your loudness reference.</span>
@@ -1504,6 +1509,34 @@
             </section>
         </div>
 
+        <div id="av-sync-panel" class="manage-overlay measurement-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog av-sync-dialog" role="dialog" aria-modal="true" aria-labelledby="av-sync-title">
+                <div class="manage-dialog-header dialog-header-corner-close">
+                    <div>
+                        <h2 id="av-sync-title" class="section-title">AV Sync</h2>
+                        <p class="section-subtitle">Total electronic audio delay · <span id="av-sync-mode"></span></p>
+                    </div>
+                    <button id="av-sync-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close AV Sync"><span class="btn-ghost-icon">✕</span></button>
+                </div>
+                <div class="effects-stack">
+                    <p class="measurement-repeat-help">Existing input and DSP latency count toward your target. Speaker alignment remains separate and unchanged.</p>
+                    <div class="field-group">
+                        <label for="av-sync-target">Target delay</label>
+                        <div class="delay-input-wrap">
+                            <input id="av-sync-target" class="url-input delay-number-input" type="number" min="0" max="20000" step="0.1" inputmode="decimal" aria-describedby="av-sync-limits">
+                            <span class="delay-unit">ms</span>
+                        </div>
+                    </div>
+                    <div class="av-sync-readout"><span>Achievable delay at the reference speaker</span><strong id="av-sync-actual" aria-live="polite">Waiting for audio engine…</strong></div>
+                    <p id="av-sync-limits" class="measurement-repeat-help"></p>
+                    <div id="av-sync-status" class="effects-info" role="status"></div>
+                    <div class="effects-actions-row effects-actions-right"><button id="av-sync-save" class="btn-primary" type="button">Save / Apply</button></div>
+                    <details><summary>Timing details</summary><div id="av-sync-details"></div><p id="av-sync-basis" class="measurement-repeat-help"></p></details>
+                    <p class="measurement-repeat-help">Excludes device buffering, acoustic travel and variable input resampling. Alignment and automatic compensation share a 500 ms delay capacity.</p>
+                </div>
+            </section>
+        </div>
         <div id="spl-calibration-panel" class="manage-overlay measurement-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
             <section class="manage-dialog spl-calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="spl-calibration-title">
@@ -1905,7 +1938,7 @@
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="/static/measurement_dsp.js?v=0.9.17"></script>
+    <script src="/static/measurement_dsp.js?v=0.9.18"></script>
     <script src="/static/autosub_target.js?v=0.9.18"></script>
     <script src="/static/hybrid_measurement.js?v=0.9.18"></script>
     <script src="/static/measurement_ui.js?v=0.9.24"></script>
@@ -1914,7 +1947,7 @@
     <script src="/static/measurement_flows.js?v=0.9.43"></script>
     <script src="/static/ui_helpers.js?v=0.9.2"></script>
     <script src="/static/tooltip.js?v=0.9.2"></script>
-    <script src="/static/output_state.js?v=0.9.24"></script>
+    <script src="/static/output_state.js?v=0.9.25"></script>
     <script src="/static/crossover.js?v=0.9.7"></script>
     <script src="/static/crossover_view.js?v=0.9.2"></script>
     <script src="/static/crossover_ui.js?v=0.9.5"></script>
@@ -1928,14 +1961,14 @@
     <script src="/static/subwoofer_ui.js?v=0.9.7"></script>
     <script src="/static/output_system_controller.js?v=0.9.2"></script>
     <script src="/static/output_bank_ui.js?v=0.9.12"></script>
-    <script src="/static/output_effects_ui.js?v=0.9.12"></script>
+    <script src="/static/output_effects_ui.js?v=0.9.13"></script>
     <script src="/static/measurement_panel_ui.js?v=0.9.10"></script>
     <script src="/static/measurement_saved_ui.js?v=0.9.7"></script>
     <script src="/static/measurement_editors_ui.js?v=0.9.2"></script>
     <script src="/static/measurement_setup.js?v=0.9.2"></script>
     <script src="/static/measurement_calibration.js?v=0.9.1"></script>
     <script src="/static/measurement_peq_editor.js?v=0.9.3"></script>
-    <script src="/static/measurement_convolver_editor.js?v=0.9.3"></script>
+    <script src="/static/measurement_convolver_editor.js?v=0.9.4"></script>
     <script src="/static/measurement_capture.js?v=0.9.3"></script>
     <script src="/static/measurement_job.js?v=0.9.4"></script>
     <script src="/static/measurement_saved_actions.js?v=0.9.3"></script>
@@ -1946,7 +1979,8 @@
     <script src="/static/playback_core.js?v=0.9.8"></script>
     <script src="/static/playback_ui.js?v=0.9.8"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/app.js?v=0.9.293"></script>
+    <script src="/static/av_sync.js?v=0.9.1"></script>
+    <script src="/static/app.js?v=0.9.294"></script>
     <script src="/static/streaming.js?v=0.9.80"></script>
 </body>
 </html>

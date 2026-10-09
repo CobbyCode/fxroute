@@ -15,7 +15,7 @@
 const OUTPUT_MODES = ['stereo', 'stereo-sub', 'surround'];
 const MUTATION_KINDS = ['set_routing', 'switch_mode', 'select_bank', 'set_bank_preset',
     'switch_all_banks', 'set_crossover', 'set_subwoofers', 'set_processing', 'set_level_calibration',
-    'set_extras'];
+    'set_extras', 'set_av_sync'];
 const FAMILY_LABELS = { 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' };
 const FAMILY_PREFIXES = { 'linkwitz-riley': 'LR', butterworth: 'BW', bessel: 'BS' };
 const SUB_SIDES = ['left', 'right'];

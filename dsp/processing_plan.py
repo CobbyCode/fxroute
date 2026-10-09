@@ -266,6 +266,7 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
         "crossover_enabled": xo_enabled,
         "order": ["global", "matrix", "crossover", "area-bank", "output-trim", "guard-mute"],
         "global": global_bank, "outputs": outputs, "physical_routes": edges,
+        "av_sync": copy.deepcopy(config['av_sync']),
     }
     if mode == "surround":
         plan["input_positions"] = list(SURROUND_POSITIONS)

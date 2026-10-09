@@ -382,6 +382,8 @@ def build_speaker_align_service(
             require_runtime()
             before = native_runtime.snapshot()
             links_valid = await native_runtime.verify()
+            if before.get('latency_tracking'):
+                await native_runtime.settled_latency()
             require_runtime()
             after = native_runtime.snapshot()
             config = after.get("config") or {}

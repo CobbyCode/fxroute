@@ -15,6 +15,8 @@ import logging
 import socket
 import shlex
 import shutil
+import copy
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
@@ -29,7 +31,8 @@ from audio.output_ports import (
     warn_semantic_playback_fallback,
 )
 from audio.pw_link import stop_command_child_cancellation_safe
-from common.run_to_completion import run_to_completion
+from common.run_to_completion import restore_after, run_to_completion
+from dsp.latency import latency_signature
 
 # Sources that must reach the hardware only through the DSP output stage.
 DIRECT_SOURCE_NODES = ("mpv", "spotify")
@@ -47,7 +50,7 @@ HELPER_STDERR_TAIL_LIMIT = 64 * 1024
 # datagram socket: an oversized reply is silently truncated at the receive
 # buffer, so the reader requests one extra byte and treats a full buffer as
 # truncation instead of parsing a partial payload.
-CONTROL_REPLY_MAX_BYTES = 4096
+CONTROL_REPLY_MAX_BYTES = 16384
 CONTROL_TIMEOUT_SECONDS = 1.0
 # Float32 gain storage and %.9g replies round-trip within 1e-5 dB over [-80, 0].
 OUTPUT_GAIN_TOLERANCE_DB = 1e-5
@@ -491,6 +494,205 @@ class DSPRuntime:
         self._measurement_surround_input = False
         self._mapped_ingress: tuple[tuple[str, str], ...] = ()
         self._measurement_mapped_ingress: tuple[tuple[str, str], ...] = ()
+        self._latency_snapshot: dict = {}
+        self._latency_tracking = False
+        self._input_latency_provider: Callable[[], float] | None = None
+        self._last_input_latency_ms: float | None = None
+        self._measurement_latency_signature: tuple | None = None
+        self._measurement_latency_snapshot: dict = {}
+        self._measurement_latency_owner: asyncio.Task | None = None
+
+    def configure_latency_tracking(self, *, input_latency_provider: Callable[[], float]) -> None:
+        self._latency_tracking = True
+        self._input_latency_provider = input_latency_provider
+
+    async def update_input_latency(self) -> None:
+        if not self._latency_tracking or not self._engine_running():
+            return
+        value = float(self._input_latency_provider()) if self._input_latency_provider else 0.0
+        if not math.isfinite(value) or not 0 <= value <= 20000:
+            raise RuntimeError('Input latency is unavailable')
+        if value != self._last_input_latency_ms:
+            await self._control(f'input latency {value:.9g}', reply=True)
+            self._last_input_latency_ms = value
+
+    async def read_latency(self) -> dict:
+        if not self._engine_running() or self._config is None:
+            return {'ready': False}
+        config = self._config
+        payload = json.loads(await self._control('latency get', reply=True))
+        if not isinstance(payload, dict) or not payload.get('ready'):
+            self._latency_snapshot = {'ready': False}
+            return copy.deepcopy(self._latency_snapshot)
+        rows = payload.get('outputs')
+        if (self._config is not config or payload.get('rate') != config.sample_rate
+                or not isinstance(rows, list) or len(rows) != len(config.layout)):
+            raise RuntimeError('Native latency does not match the active rendering')
+        rate = payload['rate']
+        for key in ('input', 'target', 'minimum', 'maximum', 'common', 'actual'):
+            value = payload.get(key)
+            if type(value) is not int or value < 0:
+                raise RuntimeError('Native latency contains invalid frames')
+            payload[f'{key}_ms'] = value * 1000.0 / rate
+        for index, row in enumerate(rows):
+            row['role'] = str(config.layout[index].get('name', ''))
+            for key in ('dsp', 'intentional', 'align', 'balance', 'sync', 'total'):
+                value = row.get(key)
+                if type(value) is not int or value < 0:
+                    raise RuntimeError('Native output latency contains invalid frames')
+                row[f'{key}_ms'] = value * 1000.0 / rate
+        positions = SURROUND_POSITIONS if config.input_count == 8 else ('FL', 'FR')
+        for index, row in enumerate(payload.get('sources', [])):
+            if index >= len(positions):
+                raise RuntimeError('Native latency contains an unknown source')
+            row['position'] = positions[index]
+            row['roles'] = [str(channel.get('name', '')) for channel in config.layout
+                            if any(send.get('input') == index and send.get('gain', 0) != 0
+                                   for send in (channel.get('routes', [])
+                                                + channel.get('post_crossover_routes', [])
+                                                + [send for group in channel.get('crossover_groups', [])
+                                                   for send in group['routes']]))]
+            row['active'] = bool(row['roles'])
+            for key in ('dsp', 'balance'):
+                if type(row.get(key)) is not int or row[key] < 0:
+                    raise RuntimeError('Native source latency contains invalid frames')
+                row[f'{key}_ms'] = row[key] * 1000.0 / rate
+        payload['context'] = {'output_key': config.output_key,
+                              'plan_fingerprint': config.plan_fingerprint,
+                              'rendering': hashlib.sha256((self._config_text or '').encode()).hexdigest(),
+                              'timing_key': self._timing_key()}
+        self._latency_snapshot = payload
+        return copy.deepcopy(payload)
+
+    async def settled_latency(self) -> dict:
+        expected_bypass = self._effect_bypass
+        await self.update_input_latency()
+        expected_input = (round(self._last_input_latency_ms * self._config.sample_rate / 1000)
+                          if self._last_input_latency_ms is not None and self._config else None)
+        for _ in range(20):
+            value = await self.read_latency()
+            if (value.get('ready') and bool(value.get('bypassed')) == expected_bypass
+                    and (expected_input is None or value.get('input') == expected_input)):
+                return value
+            await asyncio.sleep(0.025)
+        raise RuntimeError('Native latency readback is not ready')
+
+    def _timing_key(self) -> str:
+        """Rendering identity excluding measurement-owned zero-latency controls."""
+        lines = [line for line in (self._config_text or '').splitlines()
+                 if line.split() and line.split()[0] not in
+                 {'output', 'sos', 'peq', 'xsos', 'gxsos', 'avsync', 'input_latency', 'bypass'}]
+        config = self._config
+        identity = (config.output_key, config.sample_rate, config.output_mode,
+                    tuple(row.get('name') for row in config.layout), lines) if config else ()
+        return hashlib.sha256(repr(identity).encode()).hexdigest()
+
+    def freeze_measurement_latency(self, snapshot: dict) -> None:
+        if not snapshot.get('ready'):
+            raise RuntimeError('Measurement latency readback is unavailable')
+        self._measurement_latency_signature = latency_signature(snapshot)
+        self._measurement_latency_snapshot = copy.deepcopy(snapshot)
+        self._measurement_latency_owner = asyncio.current_task()
+
+    def validate_measurement_latency(self, snapshot: dict) -> None:
+        if (self._measurement_latency_signature is not None
+                and (not snapshot.get('ready') or latency_signature(snapshot) != self._measurement_latency_signature)):
+            raise RuntimeError('DSP/input latency changed during measurement; restart calibration')
+
+    async def finish_measurement_latency(self, job: dict) -> dict:
+        """Validate the final capture block before accepting any worker result."""
+        if not self._latency_tracking:
+            return {}
+        self._measurement_latency_snapshot.pop('verified', None)
+        if self._measurement_latency_signature is None:
+            raise RuntimeError('Measurement latency scope is unavailable')
+        snapshot = await self.settled_latency()
+        self.validate_measurement_latency(snapshot)
+        snapshot['verified'] = True
+        snapshot['capture_id'] = job.get('id')
+        target_roles = list((job.get('measurement_target') or {}).get('measured_roles') or [])
+        if target_roles:
+            snapshot['measured_roles'] = target_roles
+        elif job.get('measurement_scope') == 'raw_helper':
+            snapshot['measured_roles'], snapshot['measured_positions'] = self._raw_helper_coverage(job)
+        else:
+            snapshot['measured_roles'] = [row['role'] for row in snapshot['outputs']]
+        self._measurement_latency_snapshot = copy.deepcopy(snapshot)
+        return snapshot
+
+    def _raw_helper_coverage(self, job: dict) -> tuple[list, list]:
+        """Roles and source positions one raw sweep actually excited.
+
+        A raw child bypasses the active chain and carries no measurement
+        target, so the whole layout is not evidence. The sweep channel
+        selects the excited program positions (left FL, right FR); an
+        output is measured only when unmuted and fed by an excited
+        position through any route, including post-crossover and grouped
+        bass sends. A source position is measured only when excited itself
+        and reaching an unmuted output, so an unexcited LFE never inherits
+        a sub's measured basis from its shared output role.
+        """
+        channel = str(job.get('channel') or '').strip().lower()
+        config = self._config
+        positions = (SURROUND_POSITIONS if config is not None and config.input_count == 8
+                     else ('FL', 'FR'))
+        if channel == 'left':
+            excited = ['FL']
+        elif channel == 'right':
+            excited = ['FR']
+        elif channel == 'stereo':
+            excited = ['FL', 'FR']
+        else:
+            excited = list(positions)
+        excited = [position for position in excited if position in positions]
+        excited_indices = {positions.index(position) for position in excited}
+        input_muted = int(getattr(self, '_input_mask', 0) or 0)
+        excited_indices = {index for index in excited_indices if not (input_muted >> index) & 1}
+        muted = int(getattr(self, '_output_mask', 0) or 0) | int(
+            getattr(self, '_exact_sub_mute_mask', 0) or 0)
+        layout = tuple(getattr(config, 'layout', ()) or ()) if config is not None else ()
+        roles: list[str] = []
+        reaching: set[str] = set()
+        for index, entry in enumerate(layout):
+            if (muted >> index) & 1:
+                continue
+            sends = [send for send in (entry.get('routes', []) or [])
+                     if send.get('gain', 0) != 0]
+            sends += [send for send in (entry.get('post_crossover_routes', []) or [])
+                      if send.get('gain', 0) != 0]
+            for group in entry.get('crossover_groups', []) or []:
+                sends += [send for send in (group.get('routes', []) or [])
+                          if send.get('gain', 0) != 0]
+            fed = {send.get('input') for send in sends} & excited_indices
+            if fed:
+                roles.append(str(entry.get('name', '')))
+                for position_index in fed:
+                    reaching.add(positions[position_index])
+        measured_positions = [position for position in excited if position in reaching]
+        return roles, measured_positions
+
+    async def latency_watch_loop(self, *, on_ready: Callable[[dict], Awaitable[None]] | None = None) -> None:
+        while True:
+            await asyncio.sleep(0.1)
+            if not self._engine_running() or self._lock.locked() or self._control_poisoned:
+                continue
+            try:
+                await self.update_input_latency()
+                value = await self.read_latency()
+                try:
+                    self.validate_measurement_latency(value)
+                except RuntimeError:
+                    owner = self._measurement_latency_owner
+                    if owner is not None and not owner.done():
+                        logger.error('DSP/input latency changed; cancelling measurement')
+                        owner.cancel()
+                    continue
+                if value.get('ready') and on_ready is not None and not self._measurement_scope_lock.locked():
+                    await on_ready(value)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning('AV Sync readback unavailable: %s', exc)
 
     @property
     def sync_in_progress(self) -> bool:
@@ -614,7 +816,10 @@ class DSPRuntime:
                 "output_mask": None if self._control_poisoned else self._output_mask,
                 "input_mask": None if self._control_poisoned else self._input_mask,
                 "control_state": "unknown" if self._control_poisoned else "ready",
-                "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
+                 "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
+                 "latency_tracking": self._latency_tracking,
+                "av_sync": copy.deepcopy(self._latency_snapshot),
+                "measurement_latency": copy.deepcopy(self._measurement_latency_snapshot),
                 "stderr_tail": self.stderr_tail()[:2048]}
 
     async def set_exact_sub_mute(self, enabled: bool, *, mask: int | None = None) -> bool:
@@ -737,30 +942,37 @@ class DSPRuntime:
         return {f"output_{index + 1}": float(value) for index, value in enumerate(values)}
 
     async def set_effect_bypass(self, enabled: bool) -> bool:
-        async with self._control_lock:
-            previous = bool(int((await self._control_unlocked(
-                "effects bypass get", reply=True)).strip()))
-            await self._control_unlocked(
-                f"effects bypass {1 if enabled else 0}", reply=True)
-        self._effect_bypass = bool(enabled)
-        return previous
+        async def exchange() -> bool:
+            async with self._control_lock:
+                previous = bool(int((await self._control_unlocked(
+                    "effects bypass get", reply=True)).strip()))
+                await self._control_unlocked(
+                    f"effects bypass {1 if enabled else 0}", reply=True)
+                self._effect_bypass = bool(enabled)
+            return previous
+        return await run_to_completion(exchange())
 
     async def enter_raw_measurement(self) -> bool:
         await self._measurement_scope_lock.acquire()
+        transition = None
         try:
-            await self._suspend_surround_input()
-        except BaseException:
-            self._measurement_scope_lock.release()
-            raise
-        transition = asyncio.create_task(self.set_effect_bypass(True))
-        try:
-            return await asyncio.shield(transition)
-        except BaseException:
+            await run_to_completion(self._suspend_surround_input())
+            transition = asyncio.create_task(self.set_effect_bypass(True))
+            previous = await asyncio.shield(transition)
+            if self._latency_tracking:
+                self.freeze_measurement_latency(await self.settled_latency())
+            return previous
+        except BaseException as exc:
+            async def restore() -> None:
+                try:
+                    if transition is not None:
+                        previous = await transition
+                        await self.set_effect_bypass(previous)
+                finally:
+                    await self._resume_surround_input()
             try:
-                previous = await transition
-                await asyncio.shield(self.set_effect_bypass(previous))
+                await restore_after(exc, restore(), what='Raw measurement entry restore')
             finally:
-                await self._resume_surround_input()
                 self._measurement_scope_lock.release()
             raise
 
@@ -773,6 +985,8 @@ class DSPRuntime:
         restore is still in flight and no second measurement path can take
         over the scope early.
         """
+        self._measurement_latency_signature = None
+        self._measurement_latency_owner = None
         restoration = asyncio.create_task(self.set_effect_bypass(previous))
         try:
             await run_to_completion(restoration)
@@ -785,13 +999,20 @@ class DSPRuntime:
     async def enter_active_measurement(self) -> bool:
         await self._measurement_scope_lock.acquire()
         try:
-            await self._suspend_surround_input()
-        except BaseException:
-            self._measurement_scope_lock.release()
+            await run_to_completion(self._suspend_surround_input())
+            if self._latency_tracking:
+                self.freeze_measurement_latency(await self.settled_latency())
+        except BaseException as exc:
+            try:
+                await restore_after(exc, self._resume_surround_input(), what='Active measurement entry restore')
+            finally:
+                self._measurement_scope_lock.release()
             raise
         return self._effect_bypass
 
     async def exit_active_measurement(self, _previous: bool) -> None:
+        self._measurement_latency_signature = None
+        self._measurement_latency_owner = None
         try:
             await run_to_completion(self._resume_surround_input())
         finally:
@@ -887,7 +1108,7 @@ class DSPRuntime:
             if command == "live commit":
                 self._poison_control()
             raise RuntimeError(response)
-        if command not in {"peaks get", "gain db get", "effects bypass get"} and response != "ok\n":
+        if command not in {"peaks get", "gain db get", "effects bypass get", "latency get"} and response != "ok\n":
             self._poison_control()
             raise RuntimeError(f"Native DSP returned an unexpected control reply: {response!r}")
         return response
@@ -1141,6 +1362,11 @@ class DSPRuntime:
         if not self.binary.is_file():
             self._error = f"Native DSP binary is not available: {self.binary}"
             raise RuntimeError(self._error)
+        self._latency_snapshot = {}
+        self._last_input_latency_ms = None
+        if self._latency_tracking:
+            input_ms = float(self._input_latency_provider()) if self._input_latency_provider else 0.0
+            text += f'input_latency {input_ms:.9g}\n'
         await self._stop_orphan_helpers()
         fd, config_name = tempfile.mkstemp(prefix="fxroute-dsp-", suffix=".conf")
         os.write(fd, text.encode("utf-8")); os.close(fd)
@@ -1166,6 +1392,7 @@ class DSPRuntime:
                     Path(config_name).unlink(missing_ok=True)
                     self._config = config
                     self._config_text = text
+                    self._effect_bypass = any(line.strip() == 'bypass 1' for line in text.splitlines())
                     self._error = None
                     return
                 if self._control_poisoned:
@@ -1178,6 +1405,7 @@ class DSPRuntime:
                 Path(config_name).unlink(missing_ok=True)
                 self._config = config
                 self._config_text = text
+                self._effect_bypass = any(line.strip() == 'bypass 1' for line in text.splitlines())
                 self._error = None
                 return
             except Exception as exc:
@@ -1284,6 +1512,11 @@ class DSPRuntime:
             elif kind == "output" and len(parts) == 5:
                 shape.append((kind, parts[1]))
                 values.append((kind, int(parts[1]), float(parts[2]), float(parts[3]), parts[4]))
+            elif kind == 'avsync' and len(parts) == 3:
+                shape.append((kind, parts[2]))
+                values.append((kind, float(parts[1]), int(parts[2])))
+            elif kind in {'latency_basis', 'source_basis', 'olatency', 'latency'}:
+                shape.append((kind, *parts[1:]))
             elif kind in {"sos", "oconv", "xsos", "gxsos", "gmatrix", "postmatrix", "inputs", "surround"} and len(parts) >= 2:
                 # Output-bank lines join the shape with full content: any
                 # bank change forces a rebuild, while identical banks allow
@@ -1322,6 +1555,10 @@ class DSPRuntime:
                 old = next((v for v in old_values if v[:2] == item[:2]), None)
                 if old is None or old[2:] != item[2:]:
                     updates.append("live output %s %.9g %.9g %s" % item[1:])
+            elif item[0] == 'avsync':
+                old = next((v for v in old_values if v[0] == 'avsync'), None)
+                if old != item:
+                    updates.append('live avsync %.9g %s' % item[1:])
         if not updates:
             return True
         began = False
@@ -1380,6 +1617,7 @@ class DSPRuntime:
         if self._engine_running():
             async with self._lock:
                 await self._reconcile_ingress_links()
+                await self.update_input_latency()
 
     async def set_mapped_ingress(self, edges: Sequence[tuple[str, str]]) -> None:
         """Select analog multichannel ingress (custom input mapping); empty clears it.

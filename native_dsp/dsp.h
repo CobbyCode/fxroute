@@ -10,6 +10,22 @@
 
 typedef struct fxdsp fxdsp;
 
+/* Coherent audio-thread snapshot. Every numeric latency is in stream frames. */
+typedef struct {
+    uint64_t dsp, intentional, align, balance, sync, total, basis_known, unknown, mixed;
+} fxdsp_output_latency;
+typedef struct {
+    uint64_t rate, outputs, reference, enabled, bypassed, input, inputs;
+    uint64_t target, minimum, maximum, common, actual, limited, balance_limited;
+    uint64_t balance_unavailable;
+    fxdsp_output_latency output[FXDSP_MAX_CHANNELS];
+    fxdsp_output_latency source[FXDSP_MAX_CHANNELS];
+} fxdsp_latency;
+int fxdsp_read_latency(const fxdsp *dsp, fxdsp_latency *latency);
+/* Applies with the entire sync balance at the next audio block boundary. */
+int fxdsp_set_input_latency(fxdsp *dsp, float milliseconds);
+int fxdsp_live_avsync(fxdsp *dsp, float target_ms, unsigned reference);
+
 fxdsp *fxdsp_load(const char *path, char *error, size_t error_size);
 void fxdsp_free(fxdsp *dsp);
 /* Outside processing only. NULL policy prepares a normal-priority offline

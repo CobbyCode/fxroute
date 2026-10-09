@@ -947,6 +947,13 @@ async def _measure_auto_sub_candidate(
                     exact_sub_mute_mask=exact_sub_mute_mask,
                     _pending_remeasure_allowed=False,
                 )
+            capture = final.get("latency_capture")
+            if isinstance(capture, dict) and capture.get("verified") is True:
+                try:
+                    _candidate_owner(job["id"]).record_latency_capture(capture)
+                except Exception:
+                    logger.exception("Auto-sub: dropping unverifiable latency capture job=%s sweep=%s",
+                                     job.get("id") or "", sweep_id)
             return _return_candidate({
                 "delay_ms": delay_ms,
                 "name": str(delay_ms),

@@ -20,6 +20,7 @@ from audio.output_state_store import StateConflictError
 from dsp.runtime import PlannedSyncTarget
 from measurement.autosub.candidate_state import CandidateStager, sub_candidate_state
 from measurement.autosub.roles import autosub_topology_from_state
+from measurement.latency_basis import calibrated_state
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,11 @@ class AutoSubCandidateSession:
         self._current: dict | None = None
         self._committed = False
         self._lock = asyncio.Lock()
+        # Run-owned latency evidence: one verified child capture per
+        # successful sweep. The union of their measured roles is the only
+        # basis the winner may certify; the last child's whole layout is
+        # never evidence for outputs its sweep never excited.
+        self._latency_captures: list[dict] = []
 
     @property
     def committed(self) -> bool:
@@ -216,6 +222,64 @@ class AutoSubCandidateSession:
             raise RuntimeError("AutoSub runtime output gain readback is unavailable or invalid")
         return copy.deepcopy(snapshot)
 
+    def record_latency_capture(self, snapshot: dict) -> None:
+        """Retain one verified child sweep's timing evidence for this run.
+
+        Only successful sweeps belong here: the snapshot must already carry
+        the runtime's verified capture (ready, verified, capture id and the
+        narrowed measured roles). Anything else is a caller bug, not
+        evidence. Later winner commits certify exactly the union of these
+        roles, never the last sweep's whole layout.
+        """
+        if (not isinstance(snapshot, dict) or not snapshot.get('ready')
+                or snapshot.get('verified') is not True):
+            raise ValueError('Latency capture is not a verified successful sweep')
+        roles = snapshot.get('measured_roles')
+        if not isinstance(roles, list) or not roles:
+            raise ValueError('Latency capture has no measured roles')
+        self._latency_captures.append(copy.deepcopy(snapshot))
+
+    def _apply_run_coverage(self, snapshot: dict) -> None:
+        """Restrict the commit to this run's successfully measured roles.
+
+        Without a recorded capture this run measured nothing verifiable:
+        refusing is safer than reusing another run's runtime evidence.
+        Recorded captures must share the commit rendering's timing
+        identity; their union replaces the last child's blanket roles, and
+        their union of source positions keeps unexcited inputs (such as LFE
+        on a mains-only sweep) out of the source basis.
+        """
+        if not snapshot.get('latency_tracking'):
+            return
+        if not self._latency_captures:
+            raise RuntimeError('No latency captures recorded for this run; refusing another run evidence')
+        sweep = snapshot.get('measurement_latency') or {}
+        for recorded in self._latency_captures:
+            for key in ('rate', 'input', 'bypassed'):
+                if recorded.get(key) != sweep.get(key):
+                    raise RuntimeError('Latency capture run changed during measurement')
+            recorded_context, sweep_context = recorded.get('context') or {}, sweep.get('context') or {}
+            if (recorded_context.get('timing_key') != sweep_context.get('timing_key')
+                    or recorded_context.get('output_key') != sweep_context.get('output_key')):
+                raise RuntimeError('Latency capture run changed during measurement')
+        roles: list = []
+        for source in (*self._latency_captures, sweep):
+            for role in source.get('measured_roles') or []:
+                if role not in roles:
+                    roles.append(role)
+        if not roles:
+            raise RuntimeError('Latency capture run measured no roles')
+        sweep['measured_roles'] = roles
+        positions: list = []
+        for source in (*self._latency_captures, sweep):
+            for position in source.get('measured_positions') or []:
+                if position not in positions:
+                    positions.append(position)
+        if positions:
+            sweep['measured_positions'] = positions
+        elif 'measured_positions' in sweep:
+            sweep.pop('measured_positions', None)
+
     async def commit_winner(self, proposal: AutoSubProposal) -> dict:
         """Commit only the normalized proposal currently staged; acceptance is external."""
         async with self._lock:
@@ -230,11 +294,13 @@ class AutoSubCandidateSession:
             # and all untouched processing, without comparing raw numeric forms.
             if normalized != self._current["state"]:
                 raise ValueError("AutoSub winner proposal does not match the current staged state")
-            await self._ensure_ready_unlocked(self._sample_rate_hz)
+            snapshot = await self._ensure_ready_unlocked(self._sample_rate_hz)
+            self._apply_run_coverage(snapshot)
+            enriched = calibrated_state(self._current['state'], snapshot, restored=True, expected_bypass=True)
             # No await between this final revision check and the synchronous commit.
             self._check_revision()
             committed = self._service.commit(
-                copy.deepcopy(self._current["state"]), expected_revision=self._revision)
+                enriched, expected_revision=self._revision)
             self._committed = True
             return committed
 
@@ -267,19 +333,27 @@ class AutoSubCandidateSession:
                 # Equal-to-start (or nothing ever staged): verify the runtime
                 # still shows the frozen start graph, then return it unchanged
                 # without bumping the revision.
-                await self._ensure_ready_unlocked(self._sample_rate_hz)
+                snapshot = await self._ensure_ready_unlocked(self._sample_rate_hz)
+                self._apply_run_coverage(snapshot)
+                enriched = calibrated_state(self._start_state, snapshot, restored=True, expected_bypass=True)
                 self._check_revision()
                 if _cancelled():
                     raise RuntimeError("AutoSub winner commit skipped: cancellation requested")
+                if enriched == self._start_state:
+                    committed = copy.deepcopy(self._service.load())
+                else:
+                    committed = self._service.commit(enriched, expected_revision=self._revision)
                 self._committed = True
-                return copy.deepcopy(self._service.load())
-            await self._ensure_ready_unlocked(self._sample_rate_hz)
+                return committed
+            snapshot = await self._ensure_ready_unlocked(self._sample_rate_hz)
+            self._apply_run_coverage(snapshot)
+            enriched = calibrated_state(self._current['state'], snapshot, restored=True, expected_bypass=True)
             # No await between these final checks and the synchronous commit.
             self._check_revision()
             if _cancelled():
                 raise RuntimeError("AutoSub winner commit skipped: cancellation requested")
             committed = self._service.commit(
-                copy.deepcopy(self._current["state"]), expected_revision=self._revision)
+                enriched, expected_revision=self._revision)
             self._committed = True
             return committed
 

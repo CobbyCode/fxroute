@@ -79,7 +79,7 @@ struct fx_upmix_hq {
     float *history[FX_UPMIX_HQ_CHANNELS];
 };
 
-int fx_upmix_hq_fft_size_valid(unsigned fft_size) { return fft_size == 1024U || fft_size == 2048U || fft_size == 4096U; }
+int fx_upmix_hq_fft_size_valid(unsigned fft_size) { return fft_size == 1024U || fft_size == 2048U || fft_size == 4096U || fft_size == 8192U; }
 
 /* In-place forward complex FFT, radix-2 with the first two stages fused (their
  * twiddles are 1 and -j). Twiddles are stored per stage, so every stage reads

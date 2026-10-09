@@ -11,6 +11,7 @@ text; the native engine executes it.
 from __future__ import annotations
 
 import math
+import copy
 from collections.abc import Callable
 
 from audio.output_topology import SUB_ROLES
@@ -213,4 +214,6 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
                 layout[-1]["crossover_groups"] = groups
         if plan.get("mode") == "surround":
             layout[-1]["input_positions"] = list(plan["input_positions"])
+    if layout and 'av_sync' in plan:
+        layout[0]['av_sync'] = copy.deepcopy(plan['av_sync'])
     return layout

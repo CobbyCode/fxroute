@@ -82,7 +82,7 @@ static double db(double ratio) { return 10.0 * log10(ratio); }
 #define FRAMES (4U * RATE)
 #define SETTLED (2U * RATE)
 #define SETTLED_FRAMES (2U * RATE)
-static const unsigned FFT_SIZES[3] = {1024U, 2048U, 4096U};
+static const unsigned FFT_SIZES[4] = {1024U, 2048U, 4096U, 8192U};
 
 /* Band-limited noise: random-phase spectrum inside [low, high] Hz, synthesised
  * with an inverse FFT, one period of NOISE_FRAMES samples repeated. */
@@ -148,9 +148,13 @@ static double front_azimuth(double left, double right, double center) {
 static void test_fft_sizes_and_rates_are_validated_and_latency_is_fft_size_minus_one(void) {
     unsigned rates[] = {44100U, 48000U, 96000U, 192000U};
     assert(fx_upmix_hq_fft_size_valid(1024U) && fx_upmix_hq_fft_size_valid(2048U) && fx_upmix_hq_fft_size_valid(4096U));
+    assert(fx_upmix_hq_fft_size_valid(8192U));
+    fx_upmix_hq *large = fx_upmix_hq_create(RATE, 8192U, 1, 1, 1);
+    assert(large && fx_upmix_hq_latency(large) == 8191U);
+    fx_upmix_hq_destroy(large);
     assert(!fx_upmix_hq_fft_size_valid(0U) && !fx_upmix_hq_fft_size_valid(512U) && !fx_upmix_hq_fft_size_valid(3000U) &&
-           !fx_upmix_hq_fft_size_valid(8192U));
-    for (unsigned size = 0; size < 3U; size++)
+           !fx_upmix_hq_fft_size_valid(16384U));
+    for (unsigned size = 0; size < 4U; size++)
         for (unsigned i = 0; i < 4U; i++) {
             fx_upmix_hq *u = fx_upmix_hq_create(rates[i], FFT_SIZES[size], 1, 1, 1);
             assert(u && fx_upmix_hq_latency(u) == FFT_SIZES[size] - 1U);
@@ -164,7 +168,7 @@ static void test_fft_sizes_and_rates_are_validated_and_latency_is_fft_size_minus
 
 /* A hard-panned impulse carries no steering, so the engaged upmixer must hand it back sample exact. */
 static void test_every_channel_is_delayed_by_exactly_the_latency(void) {
-    for (unsigned size = 0; size < 3U; size++) {
+    for (unsigned size = 0; size < 4U; size++) {
         fx_upmix_hq *u = fx_upmix_hq_create(RATE, FFT_SIZES[size], 1, 1, 1);
         size_t latency = fx_upmix_hq_latency(u), frames = 3U * FFT_SIZES[size];
         bus in = bus_new(frames), out = bus_new(frames);

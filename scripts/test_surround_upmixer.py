@@ -78,13 +78,13 @@ class UpmixerExtrasTests(unittest.TestCase):
             self.assertEqual(fallback["upmixer"]["params"]["center"], 6)
 
     def test_mode_and_fft_size_are_validated_and_unknown_params_dropped(self):
-        for params in ({"mode": "other"}, {"mode": "hq2"}, {"fftSize": 512}, {"fftSize": 8192}, {"fftSize": "x"}):
+        for params in ({"mode": "other"}, {"mode": "hq2"}, {"fftSize": 512}, {"fftSize": 16384}, {"fftSize": "x"}):
             with self.subTest(params=params), self.assertRaises(ValueError):
                 self.manager.normalize_effects_extras({"upmixer": {"params": params}})
         extras = self.manager.normalize_effects_extras(
             {"upmixer": {"enabled": True, "params": {"mode": " FAST ", "fftSize": 4096, "junk": 1}}})
         self.assertEqual(extras["upmixer"]["params"], {"mode": "fast", "center": 6, "surround": 6, "fftSize": 4096})
-        for size in (1024, 2048, 4096):
+        for size in (1024, 2048, 4096, 8192):
             extras = self.manager.normalize_effects_extras({"upmixer": {"params": {"mode": " HQ ", "fftSize": str(size)}}})
             self.assertEqual(extras["upmixer"]["params"]["mode"], "hq")
             self.assertEqual(extras["upmixer"]["params"]["fftSize"], size)

@@ -16,6 +16,8 @@ from dsp.runtime import _contains_link
 NODE_NAME = "fxroute_surround_input"
 BUS_POSITIONS = ("FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR")
 DEFAULT_BINARY = Path(__file__).resolve().parents[1] / "native_surround/build/fxroute-surround-input"
+# native_surround/surround.h: the live callback delays PCM and encoded paths alike.
+LIVE_LATENCY_FRAMES = 8192
 
 
 class DigitalInput:
@@ -180,6 +182,11 @@ class DigitalInput:
             self._error = str(exc) or "Digital ingress recovery failed"
             await run_stop_shielded(self._cleanup(from_recovery=True), cleanup_log="Digital ingress recovery cleanup failed")
 
+    def deterministic_latency_ms(self) -> float:
+        if self.process is None or self.process.returncode is not None:
+            raise RuntimeError('Digital ingress latency is unavailable')
+        return LIVE_LATENCY_FRAMES * 1000.0 / 48000
+
     def snapshot(self) -> dict:
         if self._status_path is not None:
             try:
@@ -195,6 +202,7 @@ class DigitalInput:
                 pass
         running = self.process is not None and self.process.returncode is None
         return {**self._metadata, "running": running, "node_name": NODE_NAME,
+                "live_latency_frames": LIVE_LATENCY_FRAMES if running else None,
                 "source_name": self._source_name, "source_ports": list(self._source_ports),
                 "output_ports": list(self.output_ports), "rate": 48000,
                 "status_path": str(self._status_path) if self._status_path else None,

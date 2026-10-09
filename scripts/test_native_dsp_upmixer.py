@@ -238,7 +238,7 @@ class NativeUpmixerTests(unittest.TestCase):
                 self.render(surround_support.ROLES, hq(), silence, silence, text_filter)
             return raised.exception.stderr.decode() if isinstance(raised.exception.stderr, bytes) else raised.exception.stderr
 
-        for bad in ("param fft_size 3000", "param fft_size 512", "param fft_size 8192", "param fft_size 2048.5", "param fft_size -2048"):
+        for bad in ("param fft_size 3000", "param fft_size 512", "param fft_size 16384", "param fft_size 2048.5", "param fft_size -2048"):
             self.assertIn("invalid config line", failing(lambda text, bad=bad: text.replace("param fft_size 2048", bad)), bad)
         self.assertIn("requires Surround", failing(lambda text: text.replace("surround 1\n", "")))
         # Without an fft_size line the engine runs HQ at 2048.

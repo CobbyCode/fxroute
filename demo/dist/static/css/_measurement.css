@@ -1334,3 +1334,54 @@
 .measurement-saved-delete-action.is-inert {
     display: none;
 }
+
+.av-sync-dialog {
+    width: min(680px, calc(100vw - 2rem));
+}
+
+.av-sync-readout {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.av-sync-readout strong {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+}
+
+.av-sync-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    margin-top: 0.75rem;
+}
+
+.av-sync-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.av-sync-table th,
+.av-sync-table td {
+    text-align: right;
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.av-sync-table th:first-child {
+    text-align: left;
+}
+
+.av-sync-table td {
+    font-family: var(--font-mono);
+}
+
+.av-sync-dialog details > summary {
+    cursor: pointer;
+    color: var(--text-muted);
+}

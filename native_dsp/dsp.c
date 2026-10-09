@@ -56,6 +56,9 @@ typedef struct {
 typedef struct {
     float gain, polarity;
     size_t delay, delay_pos, delay_size;
+    size_t sync;
+    float basis_ms, conv_latency_ms, conv_intent_ms;
+    unsigned basis_known, conv_latency_known;
     float *delay_line;
     biquad filters[MAX_BIQUADS];
     unsigned filter_count;
@@ -77,6 +80,12 @@ typedef enum { STAGE_CONVOLVER, STAGE_DELAY, STAGE_HEADROOM, STAGE_AUTOGAIN,
                STAGE_CRYSTALIZER, STAGE_LV2, STAGE_MASTER_GAIN, STAGE_UPMIXER } stage_kind;
 typedef struct { char symbol[128]; float value; } stage_control;
 typedef struct {
+    float basis_ms;
+    unsigned basis_known;
+    size_t sync, position, capacity;
+    float *history;
+} source_sync_state;
+typedef struct {
     stage_kind kind;
     char id[256], argument[1024];
     stage_control controls[MAX_CONTROLS];
@@ -87,6 +96,8 @@ typedef struct {
     /* Effect pairs a convolver or LV2 stage runs on (bit n = pair n); every
      * other pair passes through. Only Surround presets restrict it. */
     unsigned pair_mask;
+    float conv_latency_ms[2], conv_intent_ms[2];
+    unsigned conv_latency_known;
     fx_autogain_reference reference;
     convolution conv[FXDSP_MAX_CHANNELS];
     float *delay_line[FXDSP_MAX_CHANNELS];
@@ -109,7 +120,7 @@ typedef struct {
     size_t lv2_comp_boundary_l, lv2_comp_boundary_r;
 } dsp_stage;
 
-typedef enum { LIVE_CONTROL, LIVE_PARAM, LIVE_MATRIX, LIVE_PEQ, LIVE_OUTPUT } live_kind;
+typedef enum { LIVE_CONTROL, LIVE_PARAM, LIVE_MATRIX, LIVE_PEQ, LIVE_OUTPUT, LIVE_AVSYNC } live_kind;
 typedef struct {
     live_kind kind;
     unsigned first, second;
@@ -154,6 +165,13 @@ struct fxdsp {
     int measure;
     fx_timing timing[FXDSP_TIMING_COUNT];
     _Atomic int timing_reset;
+    unsigned avsync_enabled, avsync_reference;
+    float avsync_target_ms;
+    _Atomic uint32_t input_latency_bits;
+    source_sync_state source_sync[FXDSP_MAX_CHANNELS];
+    fxdsp_latency last_latency;
+    _Atomic uint64_t latency_sequence;
+    _Atomic uint64_t latency_words[sizeof(fxdsp_latency) / sizeof(uint64_t)];
 };
 
 static unsigned effect_pairs(const fxdsp *d) { return d->surround ? 5U : d->inputs / 2U; }
@@ -640,6 +658,17 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
         if (current) {
             char key[128], raw[MAX_LINE]; float value; unsigned pairs;
             if (sscanf(p, "stage_end %c", &extra) == EOF) current = NULL;
+            else if (current->kind == STAGE_CONVOLVER &&
+                     sscanf(p, "latency %f %f %f %f %u %c", &current->conv_latency_ms[0],
+                            &current->conv_latency_ms[1], &current->conv_intent_ms[0],
+                            &current->conv_intent_ms[1], &current->conv_latency_known, &extra) == 5 &&
+                     current->conv_latency_known <= 1 &&
+                     isfinite(current->conv_latency_ms[0]) && isfinite(current->conv_latency_ms[1]) &&
+                     isfinite(current->conv_intent_ms[0]) && isfinite(current->conv_intent_ms[1]) &&
+                     current->conv_latency_ms[0] >= 0 && current->conv_latency_ms[1] >= 0 &&
+                      current->conv_intent_ms[0] >= 0 && current->conv_intent_ms[1] >= 0 &&
+                      current->conv_latency_ms[0] <= 20000 && current->conv_latency_ms[1] <= 20000 &&
+                      current->conv_intent_ms[0] <= 20000 && current->conv_intent_ms[1] <= 20000) {}
             else if (current->kind == STAGE_LV2 && sscanf(p, "control %127s %f %c", key, &value, &extra) == 2 &&
                      current->control_count < MAX_CONTROLS && isfinite(value)) {
                 stage_control *control = &current->controls[current->control_count++];
@@ -699,6 +728,11 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
                 conv_state->has_conv = 1;
             }
             else if (sscanf(p,"output %u %f %f %31s %c",&out,&x,&y,arg,&extra)==4 && out<FXDSP_MAX_CHANNELS && isfinite(x) && isfinite(y) && y>=0.0f && y<=OUTPUT_DELAY_MAX_MS && (!strcmp(arg,"normal") || !strcmp(arg,"invert"))) { post_section=1; d->out[out].gain=powf(10,x/20); d->out[out].delay=(size_t)llround(y*d->rate/1000); d->out[out].polarity=!strcmp(arg,"invert")?-1:1; }
+            else if (post_section && sscanf(p,"avsync %f %u %c",&x,&out,&extra)==2 && isfinite(x) && x>=0 && x<=20000 && out<d->outputs) { d->avsync_enabled=1; d->avsync_target_ms=x; d->avsync_reference=out; }
+            else if (post_section && sscanf(p,"latency_basis %u %f %c",&out,&x,&extra)==2 && out<d->outputs && isfinite(x) && x>=0 && x<=20000) { d->out[out].basis_known=1; d->out[out].basis_ms=x; }
+            else if (post_section && sscanf(p,"source_basis %u %f %c",&in,&x,&extra)==2 && in<d->inputs && isfinite(x) && x>=0 && x<=20000) { d->source_sync[in].basis_known=1; d->source_sync[in].basis_ms=x; }
+            else if (post_section && sscanf(p,"olatency %u %f %f %u %c",&out,&x,&y,&in,&extra)==4 && out<d->outputs && isfinite(x) && isfinite(y) && x>=0 && y>=0 && x<=20000 && y<=20000 && in<=1) { d->out[out].conv_latency_ms=x; d->out[out].conv_intent_ms=y; d->out[out].conv_latency_known=in; }
+            else if (post_section && sscanf(p,"input_latency %f %c",&x,&extra)==1 && fxdsp_set_input_latency(d,x)) {}
             else if (post_section && sscanf(p,"bypass %d %c",&enabled,&extra)==1) atomic_store_explicit(&d->effect_bypass,!!enabled,memory_order_relaxed);
             else { invalid: snprintf(line,sizeof line,"invalid config line %u",line_no); fail(error,error_size,line); goto bad; }
         }
@@ -726,6 +760,12 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     for(unsigned i=0;i<CONV_BLOCK*2;i++){unsigned value=i,reversed=0;for(unsigned bit=0;bit<9;bit++){reversed=(reversed<<1)|(value&1);value>>=1;}d->fft_reverse[i]=reversed;}
     for(unsigned i=0;i<CONV_BLOCK;i++){double angle=-2*PI*i/(CONV_BLOCK*2);d->fft_roots[i].re=cos(angle);d->fft_roots[i].im=sin(angle);}
     for(out=0;out<d->outputs;out++) { output_state *s=&d->out[out]; s->delay_size=(size_t)llround((double)OUTPUT_DELAY_MAX_MS*d->rate/1000.0)+1U; s->delay_line=calloc(s->delay_size,sizeof(float)); if(!s->delay_line){fail(error,error_size,"out of memory");goto bad;} }
+    for (in=0; in<d->inputs; in++) {
+        source_sync_state *s=&d->source_sync[in];
+        s->capacity=(size_t)llround((double)OUTPUT_DELAY_MAX_MS*d->rate/1000.0)+1U;
+        s->history=calloc(s->capacity,sizeof(float));
+        if(!s->history){fail(error,error_size,"out of memory");goto bad;}
+    }
     for(out=0;out<d->outputs;out++) {
         output_state *s=&d->out[out];
         if(!s->has_conv) continue;
@@ -754,6 +794,7 @@ void fxdsp_free(fxdsp *d) {
     if(!d)return;
     fx_workers_destroy(d->owned_workers);
     for(unsigned i=0;i<FXDSP_MAX_CHANNELS;i++) {
+        free(d->source_sync[i].history);
         free(d->out[i].delay_line); free(d->scratch[0][i]); free(d->scratch[1][i]);
         free_convolution(&d->out[i].conv);
     }
@@ -1001,6 +1042,18 @@ int fxdsp_live_output(fxdsp *d, unsigned output, float gain_db, float delay_ms, 
     return live_add(d, &update);
 }
 
+int fxdsp_live_avsync(fxdsp *d, float target_ms, unsigned reference) {
+    if (!d || !isfinite(target_ms) || target_ms < 0 || target_ms > 20000 || reference >= d->outputs) return 0;
+    live_update update = {.kind=LIVE_AVSYNC, .first=reference, .values={target_ms}};
+    return live_add(d, &update);
+}
+
+int fxdsp_set_input_latency(fxdsp *d, float milliseconds) {
+    if (!d || !isfinite(milliseconds) || milliseconds < 0 || milliseconds > 20000) return 0;
+    atomic_store_explicit(&d->input_latency_bits, float_bits(milliseconds), memory_order_release);
+    return 1;
+}
+
 /* Inverse trim for one output sample of a matched-latency loudness
  * transition.  The plugin crossfades the work-point curve (its flat 1 kHz
  * component g) from g_old to g_new over one frame with the squared cosine
@@ -1023,7 +1076,11 @@ static void apply_live_updates(fxdsp *d) {
     unsigned count = atomic_load_explicit(&d->live_count, memory_order_acquire);
     for (unsigned i = 0; i < count; i++) {
         live_update *update = &d->live[i];
-        if (update->kind == LIVE_MATRIX) {
+        if (update->kind == LIVE_AVSYNC) {
+            d->avsync_enabled = 1;
+            d->avsync_target_ms = update->values[0];
+            d->avsync_reference = update->first;
+        } else if (update->kind == LIVE_MATRIX) {
             for (unsigned route = 0; route < d->route_count; route++)
                 if (d->routes[route].out == update->first && d->routes[route].in == update->second) d->routes[route].gain = update->values[0];
         } else if (update->kind == LIVE_OUTPUT) {
@@ -1042,6 +1099,8 @@ static void apply_live_updates(fxdsp *d) {
             dsp_stage *stage = find_stage(d, update->stage_id);
             if (!stage) continue;
             if (update->kind == LIVE_CONTROL) {
+                for (unsigned c = 0; c < stage->control_count; c++)
+                    if (!strcmp(stage->controls[c].symbol, update->symbol)) stage->controls[c].value = update->values[0];
                 for (unsigned pair = 0; pair < effect_pairs(d); pair++)
                     if (stage_runs_on_pair(stage, pair))
                         fx_lv2_host_set_control(stage->lv2[pair], update->symbol, update->values[0]);
@@ -1197,7 +1256,7 @@ static void process_output_bank(void *context, unsigned channel) {
     for (size_t n = 0; n < j->count; n++) {
         float value = d->scratch[j->target][channel][n];
         state->delay_line[state->delay_pos] = value;
-        size_t read = (state->delay_pos + state->delay_size - state->delay) % state->delay_size;
+        size_t read = (state->delay_pos + state->delay_size - state->delay - state->sync) % state->delay_size;
         value = state->delay_line[read] * state->gain * state->polarity;
         state->delay_pos = (state->delay_pos + 1U) % state->delay_size;
         value *= bits_float(atomic_load_explicit(&d->output_gain_bits, memory_order_relaxed));
@@ -1206,6 +1265,189 @@ static void process_output_bank(void *context, unsigned channel) {
         float magnitude = fabsf(value); if (magnitude > state->peak) state->peak = magnitude;
         update_peak(&d->peak_bits[channel], magnitude); state->square_sum += value * value; state->meter_frames++;
     }
+}
+
+static uint64_t latency_frames(const fxdsp *d, double milliseconds) {
+    return (uint64_t)llround(milliseconds * d->rate / 1000.0);
+}
+
+static float stage_value(const dsp_stage *stage, const char *symbol, float fallback) {
+    for (unsigned c = 0; c < stage->control_count; c++)
+        if (!strcmp(stage->controls[c].symbol, symbol)) return stage->controls[c].value;
+    return fallback;
+}
+
+static uint64_t stage_latency(const fxdsp *d, const dsp_stage *stage, unsigned channel) {
+    unsigned pair = channel_pair(d, channel);
+    if (!stage_runs_on_pair(stage, pair)) return 0;
+    if (stage->kind == STAGE_UPMIXER)
+        return stage->upmixer_hq ? fx_upmix_hq_latency(stage->upmixer_hq) : fx_upmix_fast_latency(stage->upmixer);
+    if (stage->kind == STAGE_CRYSTALIZER) return fx_crystalizer_latency(stage->crystalizer[channel]);
+    if (stage->kind == STAGE_CONVOLVER)
+        return latency_frames(d, stage->conv_latency_ms[channel_side(d, channel)]);
+    if (stage->kind != STAGE_LV2) return 0;
+    /* Loudness's latency port is stale; the measured offset is the FFT size. */
+    if (strstr(stage->argument, "/loud_comp_stereo")) {
+        int rank = (int)stage_value(stage, "fft", 4);
+        if (rank < 0) rank = 0;
+        if (rank > 6) rank = 6;
+        return UINT64_C(256) << rank;
+    }
+    /* These controls describe the latency of this block, unlike a port that
+     * can still describe the block before a live parameter transition. */
+    if (strstr(stage->argument, "/para_equalizer_x32_lr")) {
+        int mode = (int)stage_value(stage, "mode", 0);
+        return mode == 1 || mode == 2 ? 6144U : mode == 3 ? 4096U : 0U;
+    }
+    if (strstr(stage->argument, "/sc_limiter_stereo")) {
+        double lookahead = stage_value(stage, "lk", 5);
+        if (lookahead < 0.1) lookahead = 0.1;
+        if (lookahead > 20) lookahead = 20;
+        return (uint64_t)floor(lookahead * d->rate / 1000.0);
+    }
+    if (!strcmp(stage->argument, "urn:zamaudio:ZaMaximX2")) return 480U;
+    float port = fx_lv2_host_latency(stage->lv2[pair]);
+    return isfinite(port) && port > 0 ? (uint64_t)llround(port) : 0;
+}
+
+static void update_latency(fxdsp *d, int bypassed) {
+    uint64_t algorithmic[FXDSP_MAX_CHANNELS] = {0}, intentional[FXDSP_MAX_CHANNELS] = {0};
+    unsigned unknown[FXDSP_MAX_CHANNELS] = {0};
+    fxdsp_latency s = {0};
+    s.rate = d->rate; s.outputs = d->outputs; s.inputs = d->inputs; s.reference = d->avsync_reference;
+    s.enabled = d->avsync_enabled; s.bypassed = (unsigned)bypassed;
+    s.input = latency_frames(d, bits_float(atomic_load_explicit(&d->input_latency_bits, memory_order_acquire)));
+    s.target = latency_frames(d, d->avsync_target_ms);
+    if (!bypassed) for (unsigned st = 0; st < d->stage_count; st++) {
+        const dsp_stage *stage = &d->stages[st];
+        for (unsigned c = 0; c < d->inputs; c++) {
+            if (!stage_runs_on_pair(stage, channel_pair(d, c))) continue;
+            algorithmic[c] += stage_latency(d, stage, c);
+            if (stage->kind == STAGE_DELAY) intentional[c] += stage->delay[c];
+            if (stage->kind == STAGE_CONVOLVER) {
+                intentional[c] += latency_frames(d, stage->conv_intent_ms[channel_side(d, c)]);
+                unknown[c] |= !stage->conv_latency_known;
+            }
+        }
+    }
+    uint64_t capacity = (uint64_t)llround(OUTPUT_DELAY_MAX_MS * d->rate / 1000.0);
+    unsigned used[FXDSP_MAX_CHANNELS] = {0};
+    for (unsigned r=0; r<d->route_count; r++) if (d->routes[r].gain != 0) used[d->routes[r].in]=1;
+    for (unsigned c=0; c<d->inputs; c++) if (used[c] && unknown[c]) s.balance_unavailable=1;
+    for (unsigned o=0; o<d->outputs; o++)
+        if (d->out[o].has_conv && !d->out[o].conv_latency_known) s.balance_unavailable=1;
+    /* An unknown IR is not evidence of a drop to zero latency. Disable the
+     * relative balance explicitly instead of synthesizing a guessed delta. */
+    unsigned balance_enabled=s.enabled && !s.balance_unavailable;
+    int64_t source_delta[FXDSP_MAX_CHANNELS] = {0}, maximum_source_delta=INT64_MIN;
+    for (unsigned c=0; c<d->inputs; c++) {
+        source_sync_state *state=&d->source_sync[c];
+        fxdsp_output_latency *row=&s.source[c];
+        row->dsp=algorithmic[c]; row->intentional=intentional[c]; row->unknown=unknown[c];
+        row->basis_known=state->basis_known;
+        if (used[c] && state->basis_known) {
+            source_delta[c]=(int64_t)(s.input+algorithmic[c])-(int64_t)latency_frames(d,state->basis_ms);
+            if(source_delta[c]>maximum_source_delta) maximum_source_delta=source_delta[c];
+        }
+    }
+    if(maximum_source_delta==INT64_MIN) maximum_source_delta=0;
+    for (unsigned c=0; c<d->inputs; c++) {
+        fxdsp_output_latency *row=&s.source[c];
+        uint64_t balance=balance_enabled && used[c] && row->basis_known ? (uint64_t)(maximum_source_delta-source_delta[c]) : 0;
+        uint64_t available=capacity;
+        for (unsigned r=0; r<d->route_count; r++) {
+            const route *send=&d->routes[r];
+            if (send->in!=c || send->gain==0) continue;
+            uint64_t alignment=d->out[send->out].delay;
+            uint64_t remaining=alignment<capacity ? capacity-alignment : 0;
+            if(remaining<available) available=remaining;
+        }
+        if(balance>available){balance=available;s.balance_limited=1;}
+        row->balance=row->sync=balance; row->total=s.input+row->dsp+balance;
+        d->source_sync[c].sync=(size_t)balance;
+    }
+    int64_t delta[FXDSP_MAX_CHANNELS] = {0}, maximum_delta = INT64_MIN;
+    uint64_t primary_balance[FXDSP_MAX_CHANNELS] = {0}, largest_source_balance[FXDSP_MAX_CHANNELS] = {0};
+    for (unsigned o = 0; o < d->outputs; o++) {
+        output_state *out = &d->out[o];
+        fxdsp_output_latency *row = &s.output[o];
+        int found = 0;
+        /* The first audible send is the program/reference path. Secondary
+         * mixed paths cannot be aligned by one output delay; report them. */
+        for (unsigned r = d->route_start[o]; r < d->route_start[o + 1]; r++) {
+            const route *send = &d->routes[d->route_order[r]];
+            if (send->gain == 0) continue;
+            if (!found) {
+                row->dsp = algorithmic[send->in]; row->intentional = intentional[send->in]; found = 1;
+                primary_balance[o]=s.source[send->in].balance;
+            } else if (row->dsp+primary_balance[o] != algorithmic[send->in]+s.source[send->in].balance || row->intentional != intentional[send->in]) row->mixed = 1;
+            if(s.source[send->in].balance>largest_source_balance[o]) largest_source_balance[o]=s.source[send->in].balance;
+            row->unknown |= unknown[send->in];
+        }
+        if (out->has_conv) {
+            row->dsp += latency_frames(d, out->conv_latency_ms);
+            row->intentional += latency_frames(d, out->conv_intent_ms);
+            row->unknown |= !out->conv_latency_known;
+        }
+        row->align = out->delay;
+        row->basis_known = out->basis_known;
+        if (out->basis_known) {
+            delta[o] = (int64_t)(s.input + row->dsp + primary_balance[o]) - (int64_t)latency_frames(d, out->basis_ms);
+            if (delta[o] > maximum_delta) maximum_delta = delta[o];
+        }
+    }
+    if (maximum_delta == INT64_MIN) maximum_delta = 0;
+    uint64_t common_capacity = capacity;
+    for (unsigned o = 0; o < d->outputs; o++) {
+        fxdsp_output_latency *row = &s.output[o];
+        uint64_t balance = balance_enabled && row->basis_known ? (uint64_t)(maximum_delta - delta[o]) : 0;
+        if (balance + row->align + largest_source_balance[o] > capacity) {
+            s.balance_limited = 1;
+            balance = row->align + largest_source_balance[o] < capacity ? capacity - row->align - largest_source_balance[o] : 0;
+        }
+        row->balance = balance + primary_balance[o];
+        row->total = s.input + row->dsp + row->intentional + row->align + row->balance;
+        uint64_t occupied=row->align + balance + largest_source_balance[o];
+        uint64_t available = occupied < capacity ? capacity - occupied : 0;
+        if (available < common_capacity) common_capacity = available;
+    }
+    s.minimum = s.output[s.reference].total;
+    s.maximum = s.minimum + common_capacity;
+    s.common = s.enabled && s.target > s.minimum ? s.target - s.minimum : 0;
+    if (s.common > common_capacity) s.common = common_capacity;
+    s.actual = s.minimum + s.common;
+    s.limited = s.enabled && (s.target != s.actual || s.balance_limited || s.balance_unavailable);
+    for (unsigned o = 0; o < d->outputs; o++) {
+        s.output[o].sync = s.output[o].balance + s.common;
+        s.output[o].total += s.common;
+        d->out[o].sync = (size_t)(s.output[o].sync-primary_balance[o]);
+    }
+    if (memcmp(&s, &d->last_latency, sizeof s)) {
+        uint64_t words[sizeof s / sizeof(uint64_t)];
+        memcpy(words, &s, sizeof s);
+        /* Atomic payload words avoid C data races during a sequence retry. */
+        atomic_fetch_add_explicit(&d->latency_sequence, 1, memory_order_seq_cst);
+        for (unsigned i = 0; i < sizeof words / sizeof words[0]; i++)
+            atomic_store_explicit(&d->latency_words[i], words[i], memory_order_seq_cst);
+        atomic_fetch_add_explicit(&d->latency_sequence, 1, memory_order_seq_cst);
+        d->last_latency = s;
+    }
+}
+
+int fxdsp_read_latency(const fxdsp *d, fxdsp_latency *latency) {
+    if (!d || !latency) return 0;
+    for (unsigned attempt = 0; attempt < 8; attempt++) {
+        uint64_t before = atomic_load_explicit(&d->latency_sequence, memory_order_seq_cst);
+        if (!before || (before & 1U)) continue;
+        uint64_t words[sizeof *latency / sizeof(uint64_t)];
+        for (unsigned i = 0; i < sizeof words / sizeof words[0]; i++)
+            words[i] = atomic_load_explicit(&d->latency_words[i], memory_order_seq_cst);
+        if (before == atomic_load_explicit(&d->latency_sequence, memory_order_seq_cst)) {
+            memcpy(latency, words, sizeof *latency);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *output,
@@ -1275,6 +1517,19 @@ void fxdsp_process_tapped(fxdsp *d, const float *const *input, float *const *out
          * crossover/trim (applied after the matrix). */
         if(post_effect) {
             write_post_effect_taps(post_effect,d->inputs,d->scratch[source],offset,count);
+        }
+        update_latency(d, bypassed);
+        /* Compensate differential program paths before fold-down/bass mixing.
+         * This preserves the measured relations of every send, not only the
+         * primary speaker path. Intentional stage delays are not equalized. */
+        for (unsigned c=0; c<d->inputs; c++) {
+            source_sync_state *state=&d->source_sync[c];
+            for (size_t n=0; n<count; n++) {
+                state->history[state->position]=d->scratch[source][c][n];
+                size_t read=(state->position+state->capacity-state->sync)%state->capacity;
+                d->scratch[source][c][n]=state->history[read];
+                state->position=(state->position+1U)%state->capacity;
+            }
         }
         unsigned routed=1U-source;
         process_job bank = {.d=d, .source=source, .target=routed, .count=count,

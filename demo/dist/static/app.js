@@ -607,6 +607,14 @@ window.FXRouteMeasurementSplCalibration?.init({
     openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
     closeModal: (panel) => window.FXRouteModal?.close(panel),
 });
+window.FXRouteAvSync?.init({
+    getElements: () => elements,
+    fetch: (...args) => fetch(...args),
+    refreshCatalog: () => fetchOutputSystemCatalog(true),
+    closeCalibrationMenu: () => setMeasurementCalibrationMenuOpen(false),
+    hasActiveMeasurementJob: () => !!state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob(),
+    roleLabel: (role, mode) => window.FXRouteOutputState?.roleLabel(role, mode) ?? role,
+});
 window.FXRouteMeasurementLevelMatch?.init({
     getElements: () => elements,
     getState: () => state,
@@ -1407,6 +1415,17 @@ const elements = {
     volumeSlider: document.getElementById('volume-slider'),
     volumeDisplay: document.getElementById('volume-display'),
     splCalibrationOpen: document.getElementById('measurement-spl-calibration-open'),
+    avSyncOpen: document.getElementById('measurement-av-sync-open'),
+    avSyncPanel: document.getElementById('av-sync-panel'),
+    avSyncClose: document.getElementById('av-sync-close'),
+    avSyncTarget: document.getElementById('av-sync-target'),
+    avSyncMode: document.getElementById('av-sync-mode'),
+    avSyncActual: document.getElementById('av-sync-actual'),
+    avSyncLimits: document.getElementById('av-sync-limits'),
+    avSyncDetails: document.getElementById('av-sync-details'),
+    avSyncStatus: document.getElementById('av-sync-status'),
+    avSyncBasis: document.getElementById('av-sync-basis'),
+    avSyncSave: document.getElementById('av-sync-save'),
     measurementCalibrationToggleBtn: document.getElementById('measurement-calibration-toggle'),
     measurementCalibrationMenu: document.getElementById('measurement-calibration-menu'),
     levelMatchOpen: document.getElementById('measurement-level-match-open'),

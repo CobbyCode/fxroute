@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from dsp.native_config import PEQ_Q_MAX, PEQ_Q_MIN
+from dsp.latency import ir_latency, render_av_sync, validate_ir_latency
 from dsp.persistence import DSPPresetStore, DSPStateStore, clean_bank, clean_name, kernel_name, preset_bank
 from dsp.surround_global import (BUILTIN_PRESETS as SURROUND_BUILTINS, GROUP_PAIR_MASK, LAYOUT as SURROUND_LAYOUT, preset_layout,
                                  routed_chain, routed_groups, validate_surround_chain)
@@ -36,6 +37,7 @@ def parse_wav_frames(path: Path) -> Dict[str, Any]:
         raise ValueError(f"IR file is not a RIFF/WAVE file: {path.name}")
     fmt: Optional[bytes] = None
     data: Optional[bytes] = None
+    latency = None
     offset = 12
     while offset + 8 <= len(raw):
         chunk_id = raw[offset:offset + 4]
@@ -45,6 +47,11 @@ def parse_wav_frames(path: Path) -> Dict[str, Any]:
             fmt = body
         elif chunk_id == b"data" and data is None:
             data = body
+        elif chunk_id == b'fxlt':
+            try:
+                latency = json.loads(body)
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError('Invalid IR latency metadata') from exc
         offset += 8 + size + (size & 1)
     if fmt is None or data is None or len(fmt) < 16:
         raise ValueError(f"IR WAV file is missing fmt/data chunks: {path.name}")
@@ -70,6 +77,8 @@ def parse_wav_frames(path: Path) -> Dict[str, Any]:
     if len(data) % frame_size:
         raise ValueError(f"IR WAV data is truncated: {path.name}")
     params["frames"] = len(data) // frame_size
+    if latency is not None:
+        params['latency'] = validate_ir_latency(latency, channels)
     if params["frames"] <= 0:
         raise ValueError(f"IR WAV file contains no audio frames: {path.name}")
     return params
@@ -119,18 +128,25 @@ def normalize_ir_frames(params: Dict[str, Any], name: str) -> Dict[str, Any]:
     return normalized
 
 
-def build_wav_bytes(channels: int, rate: int, bits: int, format_tag: int, data: bytes) -> bytes:
+def build_wav_bytes(channels: int, rate: int, bits: int, format_tag: int, data: bytes, *, latency=None) -> bytes:
     """Serialize a canonical 44-byte-header RIFF/WAVE file."""
     byte_rate = rate * channels * (bits // 8)
     block_align = channels * (bits // 8)
+    metadata = b''
+    padding = b'\0' if len(data) % 2 else b''
+    if latency is not None:
+        encoded = json.dumps(validate_ir_latency(latency, channels), separators=(',', ':')).encode()
+        metadata = b'fxlt' + len(encoded).to_bytes(4, 'little') + encoded + (b'\0' if len(encoded) % 2 else b'')
     return b"".join([
-        b"RIFF", (36 + len(data)).to_bytes(4, "little"), b"WAVE",
+        b"RIFF", (36 + len(data) + len(padding) + len(metadata)).to_bytes(4, "little"), b"WAVE",
         b"fmt ", (16).to_bytes(4, "little"),
         format_tag.to_bytes(2, "little"), channels.to_bytes(2, "little"),
         rate.to_bytes(4, "little"), byte_rate.to_bytes(4, "little"),
         block_align.to_bytes(2, "little"), bits.to_bytes(2, "little"),
         b"data", len(data).to_bytes(4, "little"),
         data,
+        padding,
+        metadata,
     ])
 
 
@@ -204,7 +220,7 @@ class DSPManager:
     # .. 10 (strong); each engine maps them to its own steering.
     UPMIXER_DEFAULTS = {"enabled": False, "params": {"mode": "fast", "center": 6, "surround": 6, "fftSize": 2048}}
     UPMIXER_MODES = ("fast", "hq")
-    UPMIXER_FFT_SIZES = (1024, 2048, 4096)
+    UPMIXER_FFT_SIZES = (1024, 2048, 4096, 8192)
     UPMIXER_STRENGTH_MIN = 0
     UPMIXER_STRENGTH_MAX = 10
 
@@ -1008,6 +1024,7 @@ class DSPManager:
                             preset_name: Optional[str] = None,
                             sample_rate_hz: int = 48000,
                             extras_override: Optional[Dict[str, Any]] = None) -> str:
+        av_sync = output_layout[0].get('av_sync') if output_layout else None
         config = self.compile_engine_config(
             output_layout, preset_name=preset_name, sample_rate_hz=sample_rate_hz,
             extras_override=extras_override)
@@ -1155,6 +1172,10 @@ class DSPManager:
                 # test_native_dsp_convolver_sr_level.py at 44.1/48/96/192 kHz),
                 # so no compensation is applied.
                 lines.append(f"param path {json.dumps(str(resolved))}")
+                timing = ir_latency(parse_wav_frames(resolved))
+                alg, intent = timing['algorithmic_ms'], timing['intentional_ms']
+                lines.append('latency %.9g %.9g %.9g %.9g %d' %
+                             (alg[0], alg[min(1, len(alg)-1)], intent[0], intent[min(1, len(intent)-1)], timing['known']))
                 for name, default in (("wet_db", 0.0), ("dry_db", -100.0),
                                       ("input_gain_db", 0.0), ("output_gain_db", 0.0)):
                     lines.append(f"param {name} {number(params.get(name, default))}")
@@ -1254,6 +1275,15 @@ class DSPManager:
             polarity = "invert" if output["invert"] else "normal"
             lines.append(f"output {output_index} {output['gain_db']:.9g} {output['delay_ms']:.9g} {polarity}")
         lines.append(f"bypass {1 if config['preset'] == self.PURE_PRESET else 0}")
+        if av_sync is not None:
+            lines.extend(render_av_sync(config['outputs'], av_sync))
+        for index, output in enumerate(config['outputs']):
+            if output.get('oconv'):
+                conv = output['oconv']
+                timing = ir_latency(parse_wav_frames(Path(conv['path'])))
+                channel = conv['channel']
+                lines.append('olatency %d %.9g %.9g %d' %
+                             (index, timing['algorithmic_ms'][channel], timing['intentional_ms'][channel], timing['known']))
         return "\n".join(lines) + "\n"
 
     def _extras_chain(self, extras: Dict[str, Any]) -> List[dict]:
@@ -1788,6 +1818,7 @@ class DSPManager:
             data = build_wav_bytes(
                 params["channels"], params["rate"], params["bits"],
                 params["format"], params["data"],
+                latency=params.get('latency'),
             )
         else:
             data = source.read_bytes()
@@ -1845,10 +1876,15 @@ class DSPManager:
             stereo[width + byte_offset::2 * width] = right_data[byte_offset::width]
         destination = self.irs_dir / Path(merged_name).name
         self._guard_ir_destination(destination, destination.name)
+        latency = None
+        if left.get('latency') is not None and right.get('latency') is not None:
+            latency = {'version': 1, **{key: [left['latency'][key][0], right['latency'][key][0]]
+                                      for key in ('algorithmic_frames', 'intentional_frames')}}
         self._publish_staged_ir(
             self._stage_ir_bytes(destination, build_wav_bytes(
                 channels=2, rate=left["rate"], bits=left["bits"],
                 format_tag=left["format"], data=bytes(stereo),
+                latency=latency,
             )),
             destination,
         )

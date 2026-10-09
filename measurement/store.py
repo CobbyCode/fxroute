@@ -129,6 +129,7 @@ class MeasurementStore:
                  raw_scope_exit: Callable[[bool], Any] | None = None,
                  active_scope_enter: Callable[[], Any] | None = None,
                  active_scope_exit: Callable[[bool], Any] | None = None,
+                 latency_capture_finish: Callable[[dict], Any] | None = None,
                  output_mask_apply: Callable[..., Any] | None = None,
                  output_mask_clear: Callable[..., Any] | None = None,
                  output_mask_apply_sync: Callable[..., Any] | None = None,
@@ -140,6 +141,7 @@ class MeasurementStore:
         self.raw_scope_exit = raw_scope_exit
         self.active_scope_enter = active_scope_enter
         self.active_scope_exit = active_scope_exit
+        self.latency_capture_finish = latency_capture_finish
         self.output_mask_apply = output_mask_apply
         self.output_mask_clear = output_mask_clear
         # Synchronous twins for the sequential capture runners (L/R repeat),
@@ -208,6 +210,7 @@ class MeasurementStore:
             effect_bypass_setter=self.effect_bypass_setter,
             active_scope_enter=self.active_scope_enter,
             active_scope_exit=self.active_scope_exit,
+            latency_capture_finish=self.latency_capture_finish,
             output_mask_apply=self.output_mask_apply,
             output_mask_clear=self.output_mask_clear,
         )
@@ -586,6 +589,7 @@ class MeasurementStore:
         self._job_runner._effect_bypass_setter = self.effect_bypass_setter
         self._job_runner._active_scope_enter = self.active_scope_enter
         self._job_runner._active_scope_exit = self.active_scope_exit
+        self._job_runner._latency_capture_finish = self.latency_capture_finish
         self._job_runner._output_mask_apply = self.output_mask_apply
         self._job_runner._output_mask_clear = self.output_mask_clear
         # Handover the start reservation to the concrete job atomically:
@@ -981,6 +985,7 @@ class MeasurementStore:
         self._job_runner._effect_bypass_setter = self.effect_bypass_setter
         self._job_runner._active_scope_enter = self.active_scope_enter
         self._job_runner._active_scope_exit = self.active_scope_exit
+        self._job_runner._latency_capture_finish = self.latency_capture_finish
         self._job_runner._output_mask_apply = self.output_mask_apply
         self._job_runner._output_mask_clear = self.output_mask_clear
         await self._job_runner.run(job_id, job, executor)

@@ -512,8 +512,8 @@
         return ui.getMeasurementDirectArrivalTiming(measurement);
     }
 
-    function writeMeasurementConvolverWav(channels, sampleRate) {
-        return dsp.writeMeasurementConvolverWav(channels, sampleRate);
+    function writeMeasurementConvolverWav(channels, sampleRate, latency = null) {
+        return dsp.writeMeasurementConvolverWav(channels, sampleRate, latency);
     }
 
     function appendMeasurementConvolverExtras(formData) {
@@ -537,6 +537,9 @@
         const sampleRate = Number(options.sampleRate) || getMeasurementConvolverSampleRate();
         const length = Number(options.irLength) || getMeasurementConvolverFirLength();
         const phaseMode = ui.measurementConvolverPhaseModes.includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
+        const algorithmicFrames = ['linear', 'hybrid_aligned'].includes(phaseMode) ? Math.floor(length / 2) : 0;
+        const timingMetadata = (intentionalFrames = 0) => ({ version: 1,
+            algorithmic_frames: [algorithmicFrames], intentional_frames: [intentionalFrames] });
         const filenameBase = itemName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'measurement-convolver';
         const bySide = Object.fromEntries(analyses.map((analysis) => [analysis.side, analysis]));
         const hybridTransition = typeof dsp.getMeasurementConvolverHybridTransition === 'function'
@@ -557,8 +560,8 @@
             const [finalLeft, finalRight] = ui.measurementConvolverAlignedPhaseModes.includes(phaseMode)
                 ? alignStereoImpulsesForMinimumAligned(leftImpulse, rightImpulse, sampleRate, options.leftTiming || null, options.rightTiming || null, Number(options.timingSafetyLimitMs) || deps.getTimingSafetyLimitMs())
                 : [leftImpulse, rightImpulse];
-            const leftBlob = writeMeasurementConvolverWav([finalLeft], sampleRate);
-            const rightBlob = writeMeasurementConvolverWav([finalRight], sampleRate);
+            const leftBlob = writeMeasurementConvolverWav([finalLeft], sampleRate, timingMetadata(finalLeft.length - leftImpulse.length));
+            const rightBlob = writeMeasurementConvolverWav([finalRight], sampleRate, timingMetadata(finalRight.length - rightImpulse.length));
             const formData = new (deps.getFormDataType())();
             formData.append('preset_name', itemName);
             appendMeasurementConvolverExtras(formData);
@@ -575,7 +578,7 @@
         const side = mode === 'right' ? 'right' : 'left';
         const applyPhaseMode = phaseMode === 'minimum_aligned' ? 'minimum' : phaseMode;
         const impulse = buildMeasurementConvolverImpulse(bySide[side], sampleRate, length, sharedAutoGainDb, applyPhaseMode);
-        const blob = writeMeasurementConvolverWav([impulse], sampleRate);
+        const blob = writeMeasurementConvolverWav([impulse], sampleRate, timingMetadata());
         const formData = new (deps.getFormDataType())();
         formData.append('preset_name', itemName);
         appendMeasurementConvolverExtras(formData);

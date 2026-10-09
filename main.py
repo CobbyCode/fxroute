@@ -524,6 +524,7 @@ from audio.output_state import (
     set_bank_preset,
     set_bass_management,
     set_crossover,
+    set_av_sync,
     set_mode_extras,
     set_mode_routing,
     set_output_processing,
@@ -3073,6 +3074,12 @@ async def lifespan(app: FastAPI):
             get_output_layout=lambda: runtime.dsp_runtime.output_meter_layout() if runtime.dsp_runtime else None,
         )
         runtime.dsp_runtime = DSPRuntime(dsp_manager)
+        configure_latency = getattr(runtime.dsp_runtime, 'configure_latency_tracking', None)
+        if callable(configure_latency):
+            configure_latency(input_latency_provider=_deterministic_input_latency_ms)
+            _create_lifecycle_background_task(
+                runtime.dsp_runtime.latency_watch_loop(on_ready=_adopt_av_sync_basis),
+                name='av-sync-latency-watch')
         if hasattr(measurement_store, "runtime_snapshot_provider"):
             measurement_store.runtime_snapshot_provider = getattr(runtime.dsp_runtime, "snapshot", None)
             measurement_store.effect_bypass_setter = getattr(runtime.dsp_runtime, "set_effect_bypass", None)
@@ -3080,6 +3087,7 @@ async def lifespan(app: FastAPI):
             measurement_store.raw_scope_exit = getattr(runtime.dsp_runtime, "exit_raw_measurement", None)
             measurement_store.active_scope_enter = getattr(runtime.dsp_runtime, "enter_active_measurement", None)
             measurement_store.active_scope_exit = getattr(runtime.dsp_runtime, "exit_active_measurement", None)
+            measurement_store.latency_capture_finish = getattr(runtime.dsp_runtime, 'finish_measurement_latency', None)
             measurement_store.output_mask_apply = getattr(runtime.dsp_runtime, "apply_output_mask", None)
             measurement_store.output_mask_clear = getattr(runtime.dsp_runtime, "clear_output_mask", None)
             measurement_store.measurement_target_provider = _freeze_measurement_target
@@ -5153,6 +5161,10 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
         if not isinstance(args.get("extras"), dict):
             raise HTTPException(status_code=400, detail="extras must be an object")
         return lambda state: set_mode_extras(state, mode, args["extras"])
+    if kind == 'set_av_sync':
+        args = strict({'mode', 'target_ms'})
+        mode = _require_state_mode(args.get('mode'))
+        return lambda state: set_av_sync(state, mode, target_ms=args.get('target_ms'))
     raise HTTPException(status_code=400, detail=f"Unknown mutation kind: {kind}")
 
 
@@ -5401,6 +5413,8 @@ def _create_auto_sub_candidate_session(*, service, start_state: dict, output_key
         require_runtime()
         before = native_runtime.snapshot()
         links_valid = await native_runtime.verify()
+        if before.get('latency_tracking'):
+            await native_runtime.settled_latency()
         require_runtime()
         after = native_runtime.snapshot()
         config = after.get("config") or {}
@@ -5563,6 +5577,7 @@ async def get_audio_output_state():
             "processing": config["processing"],
             "bass_management": config["bass_management"],
             "extras": config["extras"],
+            "av_sync": config['av_sync'],
             "topology": topology,
         }
     return {
@@ -5599,6 +5614,39 @@ async def apply_audio_output_state(request: Request):
     return await _apply_audio_output_state_body(body)
 
 
+@app.get('/api/audio/av-sync')
+async def get_av_sync():
+    state = get_output_service().ensure_state()
+    native = runtime.dsp_runtime
+    latency = {'ready': False}
+    if native is not None and not native.sync_in_progress:
+        try:
+            latency = await native.settled_latency()
+        except (RuntimeError, ValueError):
+            pass
+    return {'status': 'ok', 'revision': state['revision'], 'active_mode': state['active_mode'],
+            'settings': state['modes'][state['active_mode']]['av_sync'], 'latency': latency}
+
+
+async def _adopt_av_sync_basis(latency: dict) -> None:
+    if (_measurement_session_owns_live_rate() or _playback_transition_is_active()
+            or runtime.dsp_runtime is None):
+        return
+    from dsp.av_sync_service import adopt_latency_basis
+    async with _dsp_mutation_lock():
+        service = get_output_service()
+        native = runtime.dsp_runtime
+        config = native.snapshot().get('config') or {}
+        if not config:
+            return
+        await adopt_latency_basis(
+            service=service, native=native, latency=latency,
+            measurement_active=lambda: _measurement_session_owns_live_rate(),
+            build_target=lambda plan, fingerprint: _build_plan_target(
+                service, _require_dsp_manager(), plan, output_key=config['output_key'],
+                rate=config['sample_rate'], hardware_ports=config['hardware_ports'], fingerprint=fingerprint))
+
+
 _surround_input = None
 _surround_carrier_owned = False
 _surround_clock_card: int | None = None
@@ -5606,6 +5654,15 @@ _surround_clock_card: int | None = None
 # session release restores rates but not input routing, so the digital guard
 # loop re-asserts the routing once the graph is free again.
 _ingress_resync_pending = False
+
+
+def _deterministic_input_latency_ms() -> float:
+    dsp = runtime.dsp_runtime
+    if dsp is None or not dsp.snapshot().get('surround_input'):
+        return 0.0
+    if _surround_input is None:
+        raise RuntimeError('Routed digital ingress latency is unavailable')
+    return _surround_input.deterministic_latency_ms()
 
 
 async def _select_surround_clock(card: int | None, *, digital: bool) -> None:

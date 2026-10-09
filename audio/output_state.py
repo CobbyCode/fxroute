@@ -12,9 +12,10 @@ from audio.filter_banks import bank_definitions, resolve_bank, summarize_banks
 from audio.output_topology import (MAIN_ROLES, MODES, SURROUND_GROUPS, derive_topology, dormant_roles,
                                    roles_for_mode, validate_assignments)
 from dsp.banks import BankState
+from dsp.latency import default_av_sync, validate_av_sync
 
 SCHEMA = "fxroute.output-state"
-VERSION = 5
+VERSION = 6
 # Level Calibration slots per role: "global" holds the whole-speaker match
 # (Global measurement; Surround Front), "bank" the match of the role's own bank.
 LEVEL_CAL_SLOTS = ("global", "bank")
@@ -68,6 +69,7 @@ def default_output_state() -> dict:
             "processing": {role: default_processing() for role in roles},
             "bass_management": default_bass_management(),
             "extras": {},
+            "av_sync": default_av_sync(),
         }
     return {"schema": SCHEMA, "version": VERSION, "revision": 0,
             "active_mode": "stereo", "modes": modes, "legacy": {}, "input_modes": {}}
@@ -231,7 +233,7 @@ def validate_output_state(payload: object) -> dict:
     if not isinstance(payload["legacy"], dict):
         raise ValueError("Legacy snapshot must be an object")
     for mode, config in payload["modes"].items():
-        _object_fields(config, {"routing", "crossover_enabled", "selected_bank", "banks", "processing", "bass_management", "extras"}, "Mode state")
+        _object_fields(config, {"routing", "crossover_enabled", "selected_bank", "banks", "processing", "bass_management", "extras", "av_sync"}, "Mode state")
         enabled = config["crossover_enabled"]
         roles_for_mode(mode, crossover_enabled=enabled)
         # Dormant banks retain their filters when crossover is toggled.
@@ -271,7 +273,16 @@ def validate_output_state(payload: object) -> dict:
         _validate_bass_overrides(mode, bass["sub_filters"])
         if not isinstance(config["extras"], dict):
             raise ValueError("Global helpers must be an object")
+        validate_av_sync(config['av_sync'], allowed, surround=mode == 'surround')
     return copy.deepcopy(payload)
+
+
+def set_av_sync(state: dict, mode: str, *, target_ms: object) -> dict:
+    result = validate_output_state(state)
+    if mode not in MODES:
+        raise ValueError('Unknown AV Sync output mode')
+    result['modes'][mode]['av_sync']['target_ms'] = target_ms
+    return validate_output_state(result)
 
 
 def routing_for_device(state: dict, mode: str, output_key: str, channels: int | None = None) -> list[str]:

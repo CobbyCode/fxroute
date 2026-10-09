@@ -51,6 +51,7 @@ from common.run_to_completion import restore_after, run_to_completion
 from dsp.runtime import DSPRuntimeConfig, PlannedSyncTarget, OUTPUT_GAIN_TOLERANCE_DB
 from measurement.release_device import check_release_device
 from measurement.speaker_apply import verify_confirmation
+from measurement.latency_basis import calibrated_state
 
 
 class SpeakerAlignRestoreError(RuntimeError):
@@ -402,21 +403,27 @@ class SpeakerAlignSession:
         if required == self._start_state:
             # Equal-to-start: verify the runtime still shows the frozen start
             # graph, then return it unchanged without bumping the revision.
-            await self._ensure_ready_unlocked(self._start_prepared)
+            snapshot = await self._ensure_ready_unlocked(self._start_prepared)
+            enriched = calibrated_state(required, snapshot, restored=False, expected_bypass=True)
             self._check_revision()
             if cancel_requested is not None and cancel_requested():
                 raise RuntimeError("Speaker Align winner commit skipped: cancellation requested")
+            if enriched == required:
+                self._committed = True
+                return copy.deepcopy(self._service.load())
+            committed = self._service.commit(enriched, expected_revision=self._revision)
             self._committed = True
-            return copy.deepcopy(self._service.load())
+            return committed
         if self._staged.state != required:
             raise ValueError("Speaker Align winner candidate does not match the current staged state")
-        await self._ensure_ready_unlocked(self._staged)
+        snapshot = await self._ensure_ready_unlocked(self._staged)
+        enriched = calibrated_state(self._staged.state, snapshot, restored=False, expected_bypass=True)
         # No await between these final checks and the synchronous commit.
         self._check_revision()
         if cancel_requested is not None and cancel_requested():
             raise RuntimeError("Speaker Align winner commit skipped: cancellation requested")
         committed = self._service.commit(
-            copy.deepcopy(self._staged.state), expected_revision=self._revision)
+            enriched, expected_revision=self._revision)
         self._committed = True
         return committed
 

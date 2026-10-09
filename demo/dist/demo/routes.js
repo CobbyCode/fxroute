@@ -97,7 +97,7 @@
     }
     function demoUpmixerFftSize(value, fallback) {
         const numeric = Number(value);
-        return [1024, 2048, 4096].includes(numeric) ? numeric : fallback;
+        return [1024, 2048, 4096, 8192].includes(numeric) ? numeric : fallback;
     }
 
     function demoMeterOffsetDb() {
@@ -663,6 +663,9 @@
             },
         },
     };
+    for (const config of Object.values(outputStateStore.modes)) {
+        config.av_sync = { target_ms: 0, basis: {}, source_basis: {}, basis_origin: 'adopted', basis_context: {} };
+    }
     // Out 1/2 mains, 3/4 subs, 5/6 tweeters, 7..18 silent — the .104 routing.
     const DEMO_ROUTING_TAIL = 'off';
     outputStateStore.modes.stereo.routing[SCARLETT_KEY] =
@@ -766,6 +769,7 @@
                 processing: JSON.parse(JSON.stringify(config.processing)),
                 bass_management: { ...config.bass_management },
                 extras: JSON.parse(JSON.stringify(config.extras)),
+                av_sync: JSON.parse(JSON.stringify(config.av_sync)),
                 topology,
             };
         }
@@ -787,6 +791,43 @@
                 max_biquads_per_output: 32,
             },
         };
+    }
+    function demoAvSync() {
+        const catalog = outputStateCatalog(), mode = catalog.active_mode;
+        const config = outputStateStore.modes[mode], roles = catalog.modes[mode].topology.roles;
+        const rate = samplerate.active_rate || 48000;
+        const globalPreset = config.banks.global.preset || 'Neutral';
+        const direct = globalPreset === 'Direct';
+        const presetLatency = name => /Hyb|Lin/i.test(name || '') ? 4096 * 1000 / rate : 0;
+        let shared = direct ? 0 : presetLatency(globalPreset);
+        if (!direct && dspExtras.limiter.enabled) shared += dspExtras.limiter.params.lookaheadMs;
+        if (!direct && dspExtras.loudness.enabled) shared += dspExtras.loudness.params.fftSize * 1000 / rate;
+        if (!direct && dspExtras.tone_effect.enabled) shared += (dspExtras.tone_effect.mode === 'maximizer' ? 480 : 1904) * 1000 / rate;
+        if (!direct && mode === 'surround' && dspExtras.upmixer.enabled) shared +=
+            (dspExtras.upmixer.params.mode === 'hq' ? dspExtras.upmixer.params.fftSize - 1 : Math.round(rate * 64 / 48000)) * 1000 / rate;
+        const input = mode === 'surround' && sourceMode === 'external-input' ? 8192 / 48 : 0;
+        const offset = Math.max(0, -Math.min(0, ...roles.map(role => config.processing[role]?.alignment_ms || 0)));
+        const rows = roles.map(role => {
+            const dsp = shared + presetLatency(config.banks[role]?.preset);
+            if (!(role in config.av_sync.basis)) config.av_sync.basis[role] = input + dsp;
+            return { role, dsp_ms: dsp, intentional_ms: 0, align_ms: offset + (config.processing[role]?.alignment_ms || 0),
+                balance_ms: 0, total_ms: 0, unknown: 0, mixed: 0, basis_known: 1 };
+        });
+        const deltas = rows.map(row => input + row.dsp_ms - config.av_sync.basis[row.role]);
+        const maximumDelta = deltas.length ? Math.max(...deltas) : 0;
+        rows.forEach((row, index) => { row.balance_ms = maximumDelta - deltas[index]; });
+        const reference = Math.max(0, roles.findIndex(role => ['main_l', 'left_low', 'FL'].includes(role)));
+        const minimum = rows.length ? input + rows[reference].dsp_ms + rows[reference].align_ms + rows[reference].balance_ms : 0;
+        const available = Math.max(0, 500 - Math.max(0, ...rows.map(row => row.align_ms + row.balance_ms)));
+        const maximum = minimum + available;
+        const common = Math.max(0, Math.min(available, config.av_sync.target_ms - minimum));
+        rows.forEach(row => { row.sync_ms = row.balance_ms + common;
+            row.total_ms = input + row.dsp_ms + row.intentional_ms + row.align_ms + row.sync_ms; });
+        return { status: 'ok', revision: catalog.revision, active_mode: mode, settings: JSON.parse(JSON.stringify(config.av_sync)),
+            latency: { simulated: true, ready: rows.length > 0, rate, reference, input_ms: input, target_ms: config.av_sync.target_ms,
+                minimum_ms: minimum, maximum_ms: maximum, actual_ms: minimum + common, common_ms: common,
+                limited: Math.abs(minimum + common - config.av_sync.target_ms) > 0.02, balance_limited: 0, balance_unavailable: 0,
+                outputs: rows, sources: [] } };
     }
     // Assigns a just-created preset to its bank when the request carries
     // a bank target (multipart fields arrive as strings, JSON as
@@ -3051,6 +3092,9 @@
             return j(outputMode);
         }
 
+        if (p === '/api/audio/av-sync' && !post) {
+            return j(demoAvSync());
+        }
         if (p === '/api/audio/output-state' && !post) {
             return j(outputStateCatalog());
         }
@@ -3185,6 +3229,11 @@
                     return fail('extras must be an object');
                 }
                 config.extras = mutation.extras;
+            } else if (mutation.kind === 'set_av_sync') {
+                if (Object.keys(mutation).some(key => !['kind', 'mode', 'target_ms'].includes(key))
+                    || typeof mutation.target_ms !== 'number' || !Number.isFinite(mutation.target_ms)
+                    || mutation.target_ms < 0 || mutation.target_ms > 20000) return fail('AV Sync target must be between 0 and 20000 ms');
+                config.av_sync.target_ms = mutation.target_ms;
             } else {
                 return fail(`Unknown mutation kind: ${mutation.kind}`);
             }
