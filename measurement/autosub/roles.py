@@ -172,7 +172,7 @@ def autosub_explicit_knobs(
     words are strict: anything but normal/invert is a programming error,
     never silently normalized.
     """
-    _autosub_covered_roles(
+    validated, _, _ = _autosub_covered_roles(
         start_state, output_key=output_key, channels=channels,
         sub_role_map=sub_role_map)
     for label, mapping in (("delays", slot_delays), ("levels", slot_levels),
@@ -192,9 +192,16 @@ def autosub_explicit_knobs(
         levels[sub_role_map[slot]] = level
     polarities = {sub_role_map[slot]: _autosub_strict_polarity(value, f"{slot} polarity")
                   for slot, value in slot_polarities.items()}
+    if validated["active_mode"] == "surround":
+        # The scan uses the effective Front crossover, but never edits group
+        # filters or shared fallback values used by the other speaker groups.
+        bass = validated["modes"]["surround"]["bass_management"]
+        candidate_bass = {key: bass[key] for key in ("frequency_hz", "main_highpass_enabled")}
+    else:
+        candidate_bass = _autosub_checked_bass(crossover_hz, main_highpass_enabled)
     return {"sub_delays": delays, "sub_levels": levels,
             "sub_polarities": polarities,
-            "bass": _autosub_checked_bass(crossover_hz, main_highpass_enabled)}
+            "bass": candidate_bass}
 
 
 def autosub_apply_knobs(

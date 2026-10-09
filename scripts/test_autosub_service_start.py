@@ -297,6 +297,59 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["output_state_context"]["channels"], 3)
         self.assertEqual(job["output_state_context"]["sub_role_map"], {"sub1": "sub2"})
 
+    async def test_surround_entry_scans_effective_front_crossover_and_preserves_groups(self):
+        from audio.output_state import set_bass_management
+        from measurement.autosub.candidate_session import AutoSubProposal
+        from measurement.autosub.roles import autosub_scan_knobs
+        roles = ["main_l", "main_r", "rear_l", "rear_r", "sub1", "sub2"]
+        state = switch_mode(set_mode_routing(default_output_state(), "surround", "dev", roles), "surround")
+        state = set_bass_management(state, "surround", frequency_hz=199.5, sub_link=False,
+                                   sub_filters={"front": {"family": "bessel", "slope_db_oct": 12,
+                                                          "frequency_hz": 80, "highpass_enabled": False},
+                                                "rear": {"family": "linkwitz-riley", "slope_db_oct": 24,
+                                                         "frequency_hz": 120, "highpass_enabled": True}})
+        state = self.store.commit(state, expected_revision=0)
+        self.overview["selected_output"]["channels"] = 6
+        self.overview["output_mode"]["hardware_playback_ports"] = [f"playback_AUX{i}" for i in range(6)]
+        job = (await self.request())["job"]
+        self.assertEqual(job["mode"], "subwoofer-2.2")
+        self.assertEqual(job["crossover_hz"], 80)
+        self.assertEqual(job["step_ms"], 0.78125)
+        config = job["original_config_snapshot"]["subwoofer"]
+        self.assertEqual((config["crossover_family"], config["crossover_slope_db_oct"],
+                          config["main_highpass_enabled"]), ("bessel", 12, False))
+        self.assertEqual(job["output_state_context"]["sub_mute_mask"], 48)
+        knobs = autosub_scan_knobs(
+            state, output_key="dev", channels=6, sub_role_map={"sub1": "sub1", "sub2": "sub2"},
+            delay_ms=0, sub1_alignment_ms=None, sub2_alignment_ms=None, active_subs=("sub1", "sub2"),
+            sub1_polarity=None, sub2_polarity=None, crossover_hz=80, main_highpass_enabled=False,
+            original_level=0, original_polarity="normal", original_config_snapshot=job["original_config_snapshot"])
+        self.assertEqual(knobs["bass"], {"frequency_hz": 199.5, "main_highpass_enabled": True})
+        owner = self.owners[0]
+        owner.activate(96000)
+        plan = self.service.compile_plan(state, output_key="dev", channels=6, sample_rate_hz=96000)
+        self.runtime.state["config"] = {"sample_rate": 96000,
+                                        "plan_fingerprint": self.service.fingerprint_plan(plan),
+                                        "output_key": "dev", "hardware_ports": self.overview["output_mode"]["hardware_playback_ports"]}
+        staged = await owner.stage(AutoSubProposal(**knobs))
+        self.assertEqual(staged["state"]["modes"]["surround"]["bass_management"],
+                         state["modes"]["surround"]["bass_management"])
+        self.assertEqual(self.service.load(), state)
+        async def stage_changed(target, **kwargs):
+            kwargs["apply_candidate"]()
+            self.runtime.transitions.append(target)
+            self.runtime.state["config"]["plan_fingerprint"] = target.config.plan_fingerprint
+            await kwargs["before_ramp"]()
+
+        self.runtime.guarded_rebuild_rendered = stage_changed
+        knobs["sub_delays"]["sub1"] = 1.25
+        staged = await owner.stage(AutoSubProposal(**knobs))
+        self.assertEqual(staged["state"]["modes"]["surround"]["processing"]["sub1"]["alignment_ms"], 1.25)
+        committed = await owner.commit_staged()
+        self.assertEqual(committed["revision"], state["revision"] + 1)
+        self.assertEqual(committed["modes"]["surround"]["bass_management"],
+                         state["modes"]["surround"]["bass_management"])
+
     async def test_suspended_output_uses_device_channel_map_before_entry(self):
         self.seed(["main_l", "main_r", "sub1", "sub1"])
         output = self.overview["output_mode"]

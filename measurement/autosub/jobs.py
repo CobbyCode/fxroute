@@ -17,6 +17,7 @@ from typing import Any, Mapping
 import numpy as np
 import audio.volume_contract as volume_contract
 from audio.system_volume import volume_percent_to_linear_gain
+from audio.output_topology import SURROUND_POSITIONS
 from fastapi import APIRouter, HTTPException
 
 from dsp.manager import ensure_kernel_supported_ir, parse_wav_frames
@@ -397,22 +398,17 @@ def _auto_sub_plan_peak_cache_key(
     )
 
 
-def _auto_sub_validated_layout_output(
-    entry: dict[str, Any], index: int, sample_rate: int,
-) -> dict[str, Any]:
-    """Normalize one compiled layout output, failing closed on garbage."""
-    prefix = f"layout output {index + 1}"
-    if not isinstance(entry, dict):
-        raise ValueError(f"{prefix} must be an object")
-    routes = entry.get("routes")
-    if not isinstance(routes, list) or not routes:
+def _auto_sub_validated_routes(routes: Any, prefix: str, input_count: int,
+                               *, allow_empty: bool = False) -> list[tuple[int, float]]:
+    """Validate route terms against the compiled layout's input capacity."""
+    if not isinstance(routes, list) or (not routes and not allow_empty):
         raise ValueError(f"{prefix} requires a non-empty routes array")
     normalized_routes = []
     for route in routes:
         source = route.get("input") if isinstance(route, dict) else None
         gain = route.get("gain", 1.0) if isinstance(route, dict) else None
-        if type(source) is not int or source not in (0, 1):
-            raise ValueError(f"{prefix} routes must address stereo input 0 or 1")
+        if type(source) is not int or not 0 <= source < input_count:
+            raise ValueError(f"{prefix} routes must address input 0..{input_count - 1}")
         try:
             gain_value = float(gain)
         except (TypeError, ValueError):
@@ -420,6 +416,49 @@ def _auto_sub_validated_layout_output(
         if not math.isfinite(gain_value):
             raise ValueError(f"{prefix} route gain must be finite")
         normalized_routes.append((source, gain_value))
+    return normalized_routes
+
+
+def _auto_sub_validated_sos(sos: Any, prefix: str) -> list[tuple[float, ...]]:
+    """Validate stable native crossover or bank SOS sections."""
+    if not isinstance(sos, list):
+        raise ValueError(f"{prefix} must be an array")
+    biquads = []
+    for position, section in enumerate(sos):
+        if (not isinstance(section, (list, tuple)) or len(section) != 5
+                or not all(type(value) in (int, float) and math.isfinite(value)
+                           for value in section)):
+            raise ValueError(f"{prefix}[{position}] must be five finite numbers")
+        _, _, _, a1, a2 = (float(value) for value in section)
+        if not (abs(a2) < 1.0 and abs(a1) < 1.0 + a2):
+            raise ValueError(f"{prefix}[{position}] has poles outside the unit circle")
+        biquads.append(tuple(float(value) for value in section))
+    return biquads
+
+
+def _auto_sub_validated_layout_output(
+    entry: dict[str, Any], index: int, sample_rate: int, input_count: int,
+) -> dict[str, Any]:
+    """Normalize every compiled bus and output stage, failing closed on garbage."""
+    prefix = f"layout output {index + 1}"
+    if not isinstance(entry, dict):
+        raise ValueError(f"{prefix} must be an object")
+    normalized_routes = _auto_sub_validated_routes(entry.get("routes"), prefix, input_count)
+    crossover = _auto_sub_validated_sos(entry.get("crossover_sos", []), f"{prefix} crossover_sos")
+    post_routes = _auto_sub_validated_routes(
+        entry.get("post_crossover_routes", []), f"{prefix} post-crossover", input_count, allow_empty=True)
+    raw_groups = entry.get("crossover_groups", [])
+    if not isinstance(raw_groups, list):
+        raise ValueError(f"{prefix} crossover_groups must be an array")
+    groups = []
+    for position, group in enumerate(raw_groups):
+        label = f"{prefix} crossover_groups[{position}]"
+        if not isinstance(group, dict):
+            raise ValueError(f"{label} must be an object")
+        groups.append({
+            "routes": _auto_sub_validated_routes(group.get("routes"), label, input_count),
+            "biquads": _auto_sub_validated_sos(group.get("sos", []), f"{label} sos"),
+        })
     try:
         gain_db = float(entry.get("gain_db", 0.0))
         delay_ms = float(entry.get("delay_ms", 0.0))
@@ -458,18 +497,7 @@ def _auto_sub_validated_layout_output(
         coefficients = _auto_sub_native_peq_coefficients(
             raw["type"], frequency, sample_rate, quality, band_gain)
         biquads.extend([coefficients] * stages)
-    sos = entry.get("sos", [])
-    if not isinstance(sos, list):
-        raise ValueError(f"{prefix} sos must be an array")
-    for position, section in enumerate(sos):
-        if (not isinstance(section, (list, tuple)) or len(section) != 5
-                or not all(type(value) in (int, float) and math.isfinite(value)
-                           for value in section)):
-            raise ValueError(f"{prefix} sos[{position}] must be five finite numbers")
-        _, _, _, a1, a2 = (float(value) for value in section)
-        if not (abs(a2) < 1.0 and abs(a1) < 1.0 + a2):
-            raise ValueError(f"{prefix} sos[{position}] has poles outside the unit circle")
-        biquads.append(tuple(float(value) for value in section))
+    biquads.extend(_auto_sub_validated_sos(entry.get("sos", []), f"{prefix} sos"))
     oconv = entry.get("oconv")
     convolver = None
     if oconv is not None:
@@ -488,7 +516,8 @@ def _auto_sub_validated_layout_output(
         convolver = {"taps": taps, **gains}
     return {"routes": normalized_routes, "gain_db": gain_db, "delay_ms": delay_ms,
             "invert": bool(entry.get("invert", False)),
-            "biquads": biquads, "convolver": convolver}
+            "biquads": biquads, "convolver": convolver,
+            "crossover": crossover, "groups": groups, "post_routes": post_routes}
 
 
 def _auto_sub_layout_peak_prediction(
@@ -499,8 +528,10 @@ def _auto_sub_layout_peak_prediction(
 ) -> dict[str, Any]:
     """Run the known measurement PCM through one compiled output layout.
 
-    Per output, in native engine order: route sums → PEQ/crossover biquads →
-    mono convolver → delay/trim/polarity → runtime output gain → sink gain.
+    Per output, in native engine order: independently low-passed route buses
+    + post-crossover sends → bank biquads → mono convolver → delay/trim/polarity
+    → runtime output gain → sink gain. Surround AutoSub drives only FL/FR;
+    Center, LFE, Side and Rear program inputs stay silent.
     Only the per-output chain is modeled; the global bank chain holds
     arbitrary LV2 plugins the predictor cannot evaluate, so callers must run
     this against a neutral global path (as staged AutoSub candidates do).
@@ -530,7 +561,13 @@ def _auto_sub_layout_peak_prediction(
         raise ValueError("playback_gain and sink_gain must be non-negative")
     if not isinstance(layout, list) or not layout:
         raise ValueError("Layout peak prediction requires a non-empty layout")
-    validated = [_auto_sub_validated_layout_output(entry, index, rate)
+    positions = layout[0].get("input_positions") if isinstance(layout[0], dict) else None
+    if positions is not None and positions != list(SURROUND_POSITIONS):
+        raise ValueError("Surround peak prediction requires the canonical eight input positions")
+    if any(not isinstance(entry, dict) or entry.get("input_positions") != positions for entry in layout):
+        raise ValueError("Layout peak prediction requires consistent input positions")
+    input_count = len(SURROUND_POSITIONS) if positions is not None else 2
+    validated = [_auto_sub_validated_layout_output(entry, index, rate, input_count)
                  for index, entry in enumerate(layout)]
     try:
         layout_signature = json.dumps(layout, sort_keys=True, separators=(",", ":"),
@@ -562,8 +599,8 @@ def _auto_sub_layout_peak_prediction(
     sweep = _auto_sub_sweep_input_pcm(sweep_profile, rate) * source_gain
     zeros = np.zeros_like(sweep)
     inputs = (sweep if channel in ("left", "stereo") else zeros,
-              sweep if channel in ("right", "stereo") else zeros)
-    input_silent = (inputs[0] is zeros, inputs[1] is zeros)
+              sweep if channel in ("right", "stereo") else zeros) + (zeros,) * (input_count - 2)
+    input_silent = tuple(values is zeros for values in inputs)
     runtime_linear = 10.0 ** (runtime_gain / 20.0)
 
     def shifted(signal: np.ndarray, delay_ms: float) -> np.ndarray:
@@ -573,8 +610,17 @@ def _auto_sub_layout_peak_prediction(
         return np.concatenate((np.zeros(samples), signal))[:signal.size]
 
     peaks = {}
+    def route_bus(routes, biquads):
+        if all(input_silent[source] or gain == 0.0 for source, gain in routes):
+            return zeros
+        signal = sum(gain * inputs[source] for source, gain in routes)
+        for coefficients in biquads:
+            signal = _auto_sub_run_plan_biquad(np.ascontiguousarray(signal), coefficients)
+        return signal
+
     for position, stage in enumerate(validated):
-        routes = stage["routes"]
+        routes = stage["routes"] + stage["post_routes"] + [
+            route for group in stage["groups"] for route in group["routes"]]
         # An output whose every route term is a silent input (a single-sided
         # sweep leaves the opposite side's outputs undriven) filters an
         # all-zero signal, so no biquad, convolver, delay or trim can move its
@@ -584,7 +630,11 @@ def _auto_sub_layout_peak_prediction(
         if not routes or all(input_silent[source] or gain == 0.0 for source, gain in routes):
             peaks[f"output_{position + 1}"] = 0.0
             continue
-        signal = sum(gain * inputs[source] for source, gain in routes)
+        signal = route_bus(stage["routes"], stage["crossover"])
+        for group in stage["groups"]:
+            signal = signal + route_bus(group["routes"], group["biquads"])
+        if stage["post_routes"]:
+            signal = signal + route_bus(stage["post_routes"], [])
         for coefficients in stage["biquads"]:
             signal = _auto_sub_run_plan_biquad(np.ascontiguousarray(signal), coefficients)
         convolver = stage["convolver"]

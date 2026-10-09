@@ -10,7 +10,7 @@ import json
 import logging
 
 from audio.output_ports import hardware_playback_port_fallback_from_mode
-from audio.output_state import bass_crossover_for_side, shared_bass_crossover
+from audio.output_state import bass_crossover_for_group, bass_crossover_for_side, shared_bass_crossover
 from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
@@ -101,13 +101,18 @@ def _auto_sub_runner_snapshot(state: dict, topology) -> tuple[dict, dict]:
                 "crossover_family": definition["family"],
                 "crossover_slope_db_oct": definition["slope_db_oct"]}
 
-    shared = shape(shared_bass_crossover(bass))
+    definition = shared_bass_crossover(bass)
+    highpass = bass["main_highpass_enabled"]
+    if topology.mode == "surround":
+        # AutoSub sweeps FL/FR, not the other speaker groups or LFE.
+        definition, highpass = bass_crossover_for_group(bass, "front")
+    shared = shape(definition)
     if topology.sub_mode == "stereo":
         sides = {"sub1": shape(bass_crossover_for_side(bass, "left")),
                  "sub2": shape(bass_crossover_for_side(bass, "right"))}
     else:
         sides = {"sub1": shared, "sub2": shared}
-    common = {**shared, "main_highpass_enabled": bass["main_highpass_enabled"]}
+    common = {**shared, "main_highpass_enabled": highpass}
     subs = {slot: {field: active["processing"][role][field]
                    for field in ("alignment_ms", "level_db", "polarity")}
             for slot, role in role_map.items()}
