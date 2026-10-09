@@ -133,7 +133,8 @@ class MeasurementStore:
                  output_mask_apply: Callable[..., Any] | None = None,
                  output_mask_clear: Callable[..., Any] | None = None,
                  output_mask_apply_sync: Callable[..., Any] | None = None,
-                 output_mask_clear_sync: Callable[..., Any] | None = None):
+                 output_mask_clear_sync: Callable[..., Any] | None = None,
+                 peak_capture_begin_sync: Callable[[str], Any] | None = None):
         self.home = Path(home or Path.home())
         self.runtime_snapshot_provider = runtime_snapshot_provider
         self.effect_bypass_setter = effect_bypass_setter
@@ -149,6 +150,7 @@ class MeasurementStore:
         # letting the job runner mask a whole job.
         self.output_mask_apply_sync = output_mask_apply_sync
         self.output_mask_clear_sync = output_mask_clear_sync
+        self.peak_capture_begin_sync = peak_capture_begin_sync
         # Optional application hook: freezes the measurement target (mode,
         # bank, revision, fingerprint, reference tap) and returns it.  Without
         # it the store behaves exactly as before the frozen-target era.

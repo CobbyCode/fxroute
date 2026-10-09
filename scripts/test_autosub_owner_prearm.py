@@ -346,6 +346,77 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
                          "compiled-layout-v1")
         self.assertFalse(result["stage_output_peaks"]["relevant_mismatch"])
 
+    def captured_peak_evidence(self, *, change=None, contaminated_live=False):
+        snapshot = self.runtime.snapshot
+        self.runtime.snapshot = lambda: {**snapshot(), 'latency_tracking': True}
+        get_job = self.measure_store.get_job
+
+        def captured(job_id):
+            child = get_job(job_id)
+            prediction = self.runtime.captured_prediction['linear']
+            peaks = {key: value / self.runtime.captured_sink_gain for key, value in prediction.items()}
+            capture = {'ready': True, 'verified': True, 'capture_id': job_id, 'output_peaks': peaks,
+                       'measured_roles': ['main_l', 'main_r', 'sub1'], 'bypassed': 1,
+                       'context': {'plan_fingerprint': self.hardware.target.config.plan_fingerprint}}
+            if change == 'missing': capture.pop('output_peaks')
+            if change == 'stale': capture['capture_id'] = 'another-sweep'
+            if change == 'unverified': capture['verified'] = False
+            if change == 'not-ready': capture['ready'] = False
+            if change == 'not-raw': capture['bypassed'] = 0
+            if change == 'graph': capture['context']['plan_fingerprint'] = 'another-plan'
+            if change == 'mismatch': peaks['output_1'] *= 2
+            if change == 'clipping': peaks['output_1'] = 2 / self.runtime.captured_sink_gain
+            child['latency_capture'] = capture
+            return child
+
+        self.measure_store.get_job = captured
+        if contaminated_live:
+            read = self.runtime.read_output_peaks
+
+            async def restored_program():
+                peaks = await read()
+                peaks['output_2'] = 0.4
+                return peaks
+
+            self.runtime.read_output_peaks = restored_program
+
+    async def test_service_uses_captured_peaks_not_the_restored_program_meter(self):
+        self.captured_peak_evidence(contaminated_live=True)
+        result = await self.sweep(self.service_job())
+        self.assertEqual(result['status'], 'completed')
+        self.assertFalse(result['stage_output_peaks']['relevant_mismatch'])
+
+    async def test_missing_stale_or_unverified_peak_evidence_never_falls_back(self):
+        for change in ('missing', 'stale', 'unverified', 'not-ready', 'not-raw', 'graph'):
+            with self.subTest(change=change):
+                previous_snapshot = self.runtime.snapshot
+                previous_job = self.measure_store.get_job
+                try:
+                    self.captured_peak_evidence(change=change)
+                    job = self.service_job()
+                    with self.assertRaises(funnel.AutoSubPeakSafetyError):
+                        await self.sweep(job)
+                finally:
+                    self.runtime.snapshot = previous_snapshot
+                    self.measure_store.get_job = previous_job
+
+    async def test_actual_captured_mismatch_and_clipping_still_stop_the_run(self):
+        for change in ('mismatch', 'clipping'):
+            with self.subTest(change=change):
+                previous_snapshot = self.runtime.snapshot
+                previous_job = self.measure_store.get_job
+                try:
+                    self.captured_peak_evidence(change=change)
+                    job = self.service_job()
+                    with self.assertRaises(funnel.AutoSubPeakSafetyError):
+                        await self.sweep(job)
+                    comparison = job['auto_gain']['stage_output_peaks']
+                    self.assertTrue(comparison['relevant_mismatch'])
+                    self.assertEqual(comparison['measured_safe'], change != 'clipping')
+                finally:
+                    self.runtime.snapshot = previous_snapshot
+                    self.measure_store.get_job = previous_job
+
     async def test_repeated_candidate_reuses_staged_graph(self):
         job = self.service_job()
         first = await self.sweep(job)

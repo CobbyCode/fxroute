@@ -10,7 +10,8 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -91,6 +92,10 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def wire(self, *, mode="stereo-sub", failure=False, unequal=True):
         from measurement.level_match_runtime import build_level_match_scope
 
+        services = patch.object(fixtures.speaker_sweep.measurement_session, "_services",
+                                SimpleNamespace(input_entry_guard=None))
+        services.start()
+        self.addCleanup(services.stop)
         roles = ["left_low", "right_low", "left_high", "right_high", "sub1"]
         if mode == "surround":
             roles += ["center", "rear_l", "rear_r"]

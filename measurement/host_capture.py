@@ -372,6 +372,10 @@ class HostCaptureRunner:
             time.sleep(record_preroll_seconds)
             phase["preroll_done"] = time.monotonic()
 
+            peak_begin = getattr(store, 'peak_capture_begin_sync', None)
+            if callable(peak_begin):
+                peak_begin(owner_job_id)
+
             play_process = store._start_job_process(owner_job_id, play_command)
             phase["play_spawned"] = time.monotonic()
             if playback_route["route"] == "direct-sink":

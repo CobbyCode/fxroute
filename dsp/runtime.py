@@ -509,6 +509,7 @@ class DSPRuntime:
         self._measurement_latency_signature: tuple | None = None
         self._measurement_latency_snapshot: dict = {}
         self._measurement_latency_owner: asyncio.Task | None = None
+        self._measurement_peak_capture_id: str | None = None
 
     def configure_latency_tracking(self, *, input_latency_provider: Callable[[], float]) -> None:
         self._latency_tracking = True
@@ -607,6 +608,21 @@ class DSPRuntime:
                 and (not snapshot.get('ready') or latency_signature(snapshot) != self._measurement_latency_signature)):
             raise RuntimeError('DSP/input latency changed during measurement; restart calibration')
 
+    async def begin_measurement_peak_capture(self, capture_id: str) -> None:
+        """Reset once after preroll; retain every retry's peaks in this scope."""
+        async with self._control_lock:
+            if (not self._measurement_scope_lock.locked()
+                    or self._measurement_latency_signature is None):
+                raise RuntimeError('Measurement peak scope is unavailable')
+            if not isinstance(capture_id, str) or not capture_id:
+                raise ValueError('Measurement peak capture requires a capture id')
+            if self._measurement_peak_capture_id == capture_id:
+                return
+            if self._measurement_peak_capture_id is not None:
+                raise RuntimeError('Measurement peak capture belongs to another job')
+            await self._control_unlocked('peaks reset', reply=True)
+            self._measurement_peak_capture_id = capture_id
+
     async def finish_measurement_latency(self, job: dict) -> dict:
         """Validate the final capture block before accepting any worker result."""
         if not self._latency_tracking:
@@ -616,6 +632,10 @@ class DSPRuntime:
             raise RuntimeError('Measurement latency scope is unavailable')
         snapshot = await self.settled_latency()
         self.validate_measurement_latency(snapshot)
+        if self._measurement_peak_capture_id is not None:
+            if self._measurement_peak_capture_id != job.get('id'):
+                raise RuntimeError('Measurement peak capture belongs to another job')
+            snapshot['output_peaks'] = await run_to_completion(self.read_output_peaks())
         snapshot['verified'] = True
         snapshot['capture_id'] = job.get('id')
         if self._measurement_ingress_restore:
@@ -997,6 +1017,7 @@ class DSPRuntime:
         """
         self._measurement_latency_signature = None
         self._measurement_latency_owner = None
+        self._measurement_peak_capture_id = None
         self._measurement_latency_snapshot.pop('ingress_restored', None)
         restoration = asyncio.create_task(self.set_effect_bypass(previous))
         bypass_restored = False
@@ -1028,6 +1049,7 @@ class DSPRuntime:
     async def exit_active_measurement(self, _previous: bool) -> None:
         self._measurement_latency_signature = None
         self._measurement_latency_owner = None
+        self._measurement_peak_capture_id = None
         self._measurement_latency_snapshot.pop('ingress_restored', None)
         try:
             await run_to_completion(self._resume_surround_input())
@@ -1036,6 +1058,7 @@ class DSPRuntime:
             self._measurement_scope_lock.release()
 
     async def _suspend_surround_input(self) -> None:
+        self._measurement_peak_capture_id = None
         self._measurement_latency_snapshot.pop('ingress_restored', None)
         self._measurement_ingress_restore = {}
         if self._latency_tracking and (self._surround_input or self._mapped_ingress):

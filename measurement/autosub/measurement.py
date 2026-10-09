@@ -537,7 +537,7 @@ async def _start_and_wait_auto_sub_capture(
 ) -> dict[str, Any] | None:
     """Start the child sweep and poll it to a terminal state.
 
-    Enables exact mute, resets peaks and registers the child id, then
+    Enables exact mute and registers the child id, then
     polls up to 300 times at 0.2 s with cooperative cancel checks. A
     sweep that never reaches a terminal state is cancelled with a 0.5 s
     settle; the caller then runs the existing drain path.
@@ -563,7 +563,8 @@ async def _start_and_wait_auto_sub_capture(
             raise RuntimeError("Subwoofer helper did not retain exact digital mute state")
     if _dsp_runtime() is None:
         raise RuntimeError("Native DSP output peak capture unavailable")
-    await _dsp_runtime().reset_output_peaks()
+    if not _dsp_runtime().snapshot().get('latency_tracking'):
+        await _dsp_runtime().reset_output_peaks()
     # Per-side references travel on the job so the single sweep funnel
     # stays signature-compatible with every Auto-Sub runner.
     configured_reference_channels = job.get("reference_channels")
@@ -841,7 +842,16 @@ async def _measure_auto_sub_candidate(
             await measurement_store.drain_job(sweep_id)
             sweep_drained = True
             capture_state["sweep_drained"] = True
-        measured_stage_peaks = await _dsp_runtime().read_output_peaks()
+        if _dsp_runtime().snapshot().get('latency_tracking'):
+            capture = (measurement_store.get_job(sweep_id).get('latency_capture') or {})
+            measured_stage_peaks = capture.get('output_peaks')
+            if (not capture.get('ready') or capture.get('verified') is not True
+                    or capture.get('capture_id') != sweep_id or not capture.get('bypassed')
+                    or not isinstance(measured_stage_peaks, dict) or not measured_stage_peaks
+                    or (service_job and (capture.get('context') or {}).get('plan_fingerprint') != staged_fingerprint)):
+                raise AutoSubPeakSafetyError('Verified native DSP sweep peak capture unavailable')
+        else:
+            measured_stage_peaks = await _dsp_runtime().read_output_peaks()
         stage_peak_comparison = _auto_sub_stage_peak_comparison(
             stage_peak_prediction, measured_stage_peaks, sink_gain=sink_gain,
         )
