@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #define SURROUND_CHANNELS 8
+#define SURROUND_OUTPUTS 10
 #define SURROUND_RATE 48000
 #define SURROUND_LOOKAHEAD 4096
 #define SURROUND_SILENCE_RESET 8192
@@ -14,7 +15,8 @@
 #define SURROUND_LIVE_LATENCY 8192
 
 typedef struct surround surround;
-typedef void (*surround_emit)(void *data, uint64_t frame, const float pcm[8]);
+/* Eight discrete positions followed by the normalized stereo fold-down. */
+typedef void (*surround_emit)(void *data, uint64_t frame, const float pcm[SURROUND_OUTPUTS]);
 extern const char *const surround_positions[8];
 surround *surround_create(surround_emit emit, void *data);
 void surround_destroy(surround *decoder);

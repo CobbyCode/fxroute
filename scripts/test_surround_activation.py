@@ -85,6 +85,15 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(head["input_modes"], {})
         self.assertEqual(head["modes"], self.state["modes"])
 
+    async def test_ingress_failure_restores_the_previous_clock_card(self):
+        self.input.sync.side_effect = [RuntimeError("decoder did not start"), None]
+        with patch.object(main, "_surround_carrier_owned", True), \
+                patch.object(main, "_surround_clock_card", 3), \
+                patch.object(main, "get_audio_source_overview", return_value={"mode": "external-input"}):
+            with self.assertRaisesRegex(RuntimeError, "decoder did not start"):
+                await self.switch()
+        main._set_surround_carrier_owned.assert_awaited_with(True, 3)
+
     async def test_live_stdin_stream_is_resynced_after_the_mode_switch(self):
         stdin = SimpleNamespace(resync_routing=AsyncMock())
         order = []
@@ -117,11 +126,11 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
             await self.switch_to("stereo")
         main._set_surround_carrier_owned.assert_awaited_with(True, 3)
 
-    async def test_external_input_without_a_digital_receiver_keeps_the_playback_policy(self):
+    async def test_automatic_pair_ingress_borrows_48khz_without_a_digital_receiver(self):
         with patch.object(main, "get_audio_source_overview", return_value=self.digital_input()), \
                 patch.object(main.alsa_ctl, "has_digital_receiver", return_value=False):
             await self.switch_to("stereo")
-        main._set_surround_carrier_owned.assert_awaited_with(False, None)
+        main._set_surround_carrier_owned.assert_awaited_with(True, None)
 
     async def test_surround_owns_the_carrier_for_any_external_card(self):
         with patch.object(main, "get_audio_source_overview", return_value=self.digital_input()), \
@@ -213,7 +222,7 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DigitalCarrierRequestTests(unittest.IsolatedAsyncioTestCase):
-    """Which source owns the carrier: card with a digital receiver, or Surround."""
+    """Automatic pair ingress owns 48 kHz without requiring a digital label."""
 
     def overview(self, card):
         entry = {} if card is None else {"key": "scarlett::pair:9-10", "alsa_card": card}
@@ -233,14 +242,21 @@ class DigitalCarrierRequestTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(mode=mode):
                 self.assertEqual(await self.request(self.overview(3), mode=mode), (True, 3))
 
-    async def test_a_card_without_a_receiver_only_follows_surround(self):
-        self.assertEqual(await self.request(self.overview(2), receiver=False), (False, None))
-        self.assertEqual(await self.request(self.overview(2), mode="surround", receiver=False), (True, None))
+    async def test_a_card_without_a_receiver_uses_the_helper_rate_in_every_mode(self):
+        for mode in ("stereo", "stereo-sub", "surround"):
+            with self.subTest(mode=mode):
+                self.assertEqual(await self.request(self.overview(2), mode=mode, receiver=False), (True, None))
 
-    async def test_a_missing_card_number_is_not_a_receiver(self):
+    async def test_a_missing_card_number_never_clocks_an_unrelated_card(self):
         for card in (None, "3", True):
             with self.subTest(card=card):
-                self.assertEqual(await self.request(self.overview(card)), (False, None))
+                self.assertEqual(await self.request(self.overview(card)), (True, None))
+
+    async def test_custom_pcm_mapping_without_receiver_keeps_the_stereo_rate_policy(self):
+        overview = self.overview(2)
+        overview["selected_input"]["custom_mapping"] = {"suffixes": {"FL": "AUX0", "FR": "AUX1"}}
+        for mode in ("stereo", "stereo-sub"):
+            self.assertEqual(await self.request(overview, mode=mode, receiver=False), (False, None))
 
     async def test_a_missing_overview_reads_the_current_selection(self):
         with patch.object(main, "get_audio_source_overview", return_value=self.overview(3)) as reader, \
@@ -297,8 +313,6 @@ class CarrierClockTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_release_returns_the_clock_before_the_rate_moves(self):
         await main._set_surround_carrier_owned(True, 3)
-        await main._set_surround_carrier_owned(True)
-        self.assertEqual(main._surround_clock_card, 3, "a card-less sync keeps the clock owner")
         await main._set_surround_carrier_owned(False)
         self.assertEqual(self.calls[-2:], [("clock", 3, False), ("policy", "digital-input-clock-release")])
         self.assertFalse(main._surround_carrier_owned)
@@ -308,6 +322,14 @@ class CarrierClockTests(unittest.IsolatedAsyncioTestCase):
         await main._set_surround_carrier_owned(True, 3)
         await main._set_surround_carrier_owned(True, 5)
         self.assertEqual(self.calls, [("clock", 3, True), ("clock", 3, False), ("clock", 5, True)])
+
+    async def test_cardless_pair_releases_previous_clock_but_keeps_the_helper_rate(self):
+        await main._set_surround_carrier_owned(True, 3)
+        await main._set_surround_carrier_owned(True, None)
+        self.assertEqual(self.calls, [("clock", 3, True), ("clock", 3, False)])
+        self.assertTrue(main._surround_carrier_owned)
+        self.assertIsNone(main._surround_clock_card)
+        self.assertIsNot(main._wanted_digital_clock(3), True)
 
 
 class DigitalClockGuardTests(unittest.IsolatedAsyncioTestCase):

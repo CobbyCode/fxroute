@@ -118,6 +118,7 @@ class SourcePushTests(unittest.IsolatedAsyncioTestCase):
         for patcher in (
             patch.object(main.manager, "broadcast", self.broadcast),
             patch.object(main, "peak_monitor_coordinator", self.coordinator),
+            patch.object(main, "_set_surround_carrier_owned", AsyncMock()),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -274,7 +275,7 @@ class SourcePushTests(unittest.IsolatedAsyncioTestCase):
                          "the first tick pushes the fallback, the unchanged second tick does not")
         disable.assert_not_awaited()
 
-    async def test_external_fallback_without_a_loopback_is_pushed(self):
+    async def test_external_fallback_without_an_ingress_is_pushed(self):
         """External selected but never linked, inputs gone: push the fallback once, then recover."""
         selected = {"key": "scarlett::pair:1-2", "name": "scarlett", "source_key": "scarlett"}
         await main.source_overview_feed.publish(_overview("external-input", selected_input=selected))
@@ -286,7 +287,9 @@ class SourcePushTests(unittest.IsolatedAsyncioTestCase):
                           return_value={"mode": "external-input", "selected_input_key": selected["key"]}), patch.object(
             main, "get_audio_source_overview", Mock(side_effect=builds)
         ), patch.object(main.external_input, "loopback_source_name", None), patch.object(
-            main.external_input, "_ensure_loopback", link
+            main.external_input, "digital_source_name", None
+        ), patch.object(main.external_input, "digital_selection_key", None), patch.object(
+            main, "_sync_surround_input", link
         ):
             for _tick in range(3):
                 await main.external_input._monitor_once()

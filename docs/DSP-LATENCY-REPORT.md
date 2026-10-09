@@ -376,6 +376,17 @@ mit `ffmpeg`-Fixtures (48 kHz, 1–2 s Sinus-Mix) über
   (`surround.c:403-408`, `live_emit` mit `base + frame`), sodass Träger-Frame `k`
   um `k + 8192` am DSP-Eingang anliegt.
 
+**Ergänzung vom 09.10.2026:** Die automatische Eingangsstufe wird nun auch in
+Stereo und Stereo + Sub verwendet. Ihre zusätzlichen Stereo-Downmix-Ports
+teilen dieselbe Inhalt-Zeitachse und denselben algorithmischen Offset wie die
+acht diskreten Ports; PCM und kodiertes Stereo bleiben pegelgetreu. Der
+erweiterte `native_surround/test_live.py` zeichnet im privaten PipeWire-Graphen
+Rohträger und Helferausgang synchron auf und vergleicht sie sample-genau mit
+der Offline-Referenz. Bei 256 Frames Quantum ergibt dieser Beobachterpfad
+**8448 Frames = 8192 + 256**: Zum Helferpuffer kommt ein Graph-Scheduling-Hop.
+Dieser Transportanteil ist nicht Teil des bisherigen algorithmischen AV-Sync-
+Providers und keine Messung der physischen TV-/ADC-/DAC-Kette.
+
 ### 6.3 Erkennungsfenster
 
 `SURROUND_LOOKAHEAD = 4096` (`surround.h:9`): Der Decoder emittiert einen Frame
@@ -405,10 +416,9 @@ absolute Lage ändert sich. Ein Quellenwechsel Bitstream→PCM kostet also rund
 - **Nur 48 kHz** (`position->clock.rate == 1/48000`, `ingress.c:100-101`);
   jeder andere Graph-Rate liefert Stille (fail closed).
 - Roh-DTS wird nur zur Unterdrückung erkannt, nicht dekodiert.
-- Die Live-Verzögerung wurde **nicht** in einem laufenden PipeWire-Graphen
-  end-to-end gemessen (dafür war die Live-Umgebung nicht nötig und wurde nicht
-  verändert); der Wert ist aus `ingress.c` abgeleitet und über das
-  Offline-Verhalten (6.1–6.4) gegenprüft.
+- Die ursprüngliche Messrunde leitete den Live-Offset aus `ingress.c` und dem
+  Offline-Verhalten ab. Die Ergänzung vom 09.10.2026 prüft ihn auch im privaten
+  PipeWire-Testgraphen (6.2), weiterhin **nicht** physisch end-to-end.
 
 ## 7. Serielle und parallele Pfade
 

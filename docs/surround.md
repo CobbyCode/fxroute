@@ -1,6 +1,6 @@
 # Basic Surround path
 
-Surround is an output mode in the existing Output System. The mode is remembered for each logical input, including each external stereo pair. Stereo and Stereo + Sub keep their existing routing and DSP state.
+Surround is an output mode in the existing Output System. The mode is remembered for each logical input, including each external stereo pair. Stereo and Stereo + Sub keep their routing and DSP state, but now share automatic input recognition with Surround.
 
 ## Routing and processing
 
@@ -18,11 +18,15 @@ Surround is an output mode in the existing Output System. The mode is remembered
 
 ## Digital ingress
 
-The selected capture pair feeds `fxroute_surround_input` before stereo ingress, gain, remix or SRC. Its realtime callback only exchanges bounded PCM/carrier buffers; a separate worker recognizes IEC-61937, validates/deframes AC-3 and DTS Core, decodes with libavcodec and projects actual decoder positions onto the shared bus.
+The selected capture pair feeds `fxroute_surround_input` before stereo ingress, gain, remix or SRC in all three output modes. Detection uses samples, not a sound-card name or a manual digital/analog flag. Its realtime callback only exchanges bounded PCM/carrier buffers; a separate worker recognizes IEC-61937, validates/deframes AC-3 and DTS Core, decodes with libavcodec and projects actual decoder positions onto the shared bus. Split stereo pairs can feed the two carrier ports from different capture nodes. Explicit custom PCM mappings retain their direct routing.
+
+Surround links the eight discrete output positions. Stereo and Stereo + Sub instead link `output_stereo_FL/FR` to the two DSP inputs: Front at unity, Center and the corresponding Side/Rear at −3 dB, LFE at half gain per side, all scaled by one normalization derived from the actual decoded layout. This retains every channel and the stereo image without changing the discrete Surround bus. PCM and encoded stereo keep unity gain. The downmix precedes the existing stereo global effects and bass management, so Stereo + Sub distributes its bass and LFE through the configured crossover rather than creating a second sub path.
 
 Stereo PCM and AC-3 stereo remain stereo. AC-3 or DTS identity alone never implies 5.1. Null/pause, unsupported carriers and decoder errors must not pass as PCM. A mute latch ends with digital silence, a valid burst, or 12288 frames without any IEC preamble or confirmed raw-DTS sync; raw DTS needs its sync to recur at a constant frame spacing, since single sync patterns occur in ordinary PCM. DTS-HD Master Audio is not a supported full-resolution S/PDIF transport; the TV may deliver DTS Core or PCM instead.
 
-The initial carrier adapter supports the measured 48 kHz carrier. Selecting an external input on a card with a digital receiver — in Surround and in Stereo / Stereo + Sub alike — temporarily borrows that graph rate through the existing transition coordinator without overwriting the user's Auto/Fixed playback policy. Leaving it restores the playback policy. The card delivers its digital samples only while it runs on the incoming clock, so without the borrowed carrier the same capture reads digital silence outside Surround too; an input on a card without a digital receiver keeps the playback policy untouched. Where the capture card exposes a clock selector, FXRoute moves it to the locked digital source and back to Internal; otherwise the clock source is device-specific and must be set on the interface itself (follow the digital source). A lock indication alone does not prove bit-exact reception.
+The carrier adapter supports a 48 kHz graph. Selecting a normal external pair in any output mode temporarily borrows that graph rate through the existing transition coordinator without overwriting the user's Auto/Fixed playback policy. Leaving it restores the playback policy. Where the capture card exposes a clock selector, FXRoute follows a locked digital source and returns to Internal on release; this generic clock handling is separate from sample-driven format detection. Custom PCM mappings outside Surround only borrow the carrier when their card needs it. A lock indication alone does not prove bit-exact reception.
+
+Both discrete and stereo helper outputs have the same 8192-frame live offset (170.67 ms), including PCM. AV Sync credits the actual routed helper regardless of codec or output mode and reduces the common AV delay accordingly. If the target is below the remaining input/DSP latency, no negative delay can restore it; the UI reports the achievable minimum. The 4096-frame recognition lookahead is included in the live offset, not added again.
 
 `GET /api/audio/surround` exposes helper liveness, decoder format/layout, errors and carrier ownership. A separate transport can feed the same position-tagged PCM bus without changing output banks or routing.
 
@@ -35,6 +39,7 @@ Focused checks:
 ```sh
 python3 scripts/test_surround.py
 python3 scripts/test_surround_source.py
+python3 scripts/test_digital_input_modes.py
 python3 scripts/test_surround_native.py
 python3 scripts/test_surround_ingress.py
 python3 scripts/test_measurement_global_group.py

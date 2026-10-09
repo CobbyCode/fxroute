@@ -46,16 +46,18 @@ class NativeIngressTests(unittest.TestCase):
         subprocess.run(["sh", str(NATIVE / "build.sh")], check=True)
         cls.binary = NATIVE / "build/fxroute-surround-input"
 
-    def run_carrier(self, data, chunk=257):
+    def run_carrier(self, data, chunk=257, stereo=False):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             (base / "input.s32").write_bytes(data)
-            subprocess.run([str(self.binary), "--offline", str(base / "input.s32"),
+            command = [str(self.binary), "--offline", str(base / "input.s32"),
                             str(base / "output.f32"), "--status", str(base / "status.json"),
-                            "--chunk", str(chunk)], check=True, capture_output=True)
+                            "--chunk", str(chunk)] + (["--stereo"] if stereo else [])
+            result = subprocess.run(command, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
             output = array.array("f")
             output.frombytes((base / "output.f32").read_bytes())
-            self.assertEqual(len(output), len(data) // 8 * 8)
+            self.assertEqual(len(output), len(data) // 8 * (2 if stereo else 8))
             self.assertTrue(all(math.isfinite(v) for v in output))
             return output, json.loads((base / "status.json").read_text())
 
@@ -64,6 +66,49 @@ class NativeIngressTests(unittest.TestCase):
         self.assertEqual(list(output[:16]), [0.125, -0.25, 0, 0, 0, 0, 0, 0] * 2)
         self.assertEqual(status["codec"], "pcm")
         self.assertEqual(status["positions"], ["FL", "FR"])
+
+    def test_stereo_tap_preserves_pcm_and_encoded_stereo_at_unity(self):
+        output, _ = self.run_carrier(pcm(17001), stereo=True)
+        self.assertEqual(list(output), [0.125, -0.25] * 17001)
+        for codec in ("ac3", "dca"):
+            with self.subTest(codec=codec):
+                carrier = self.encoded_fixture(codec, "stereo")
+                output, _ = self.run_carrier(words_to_carrier(carrier), stereo=True)
+                reference = self.reference(carrier)
+                self.assertEqual(len(output), len(reference))
+                self.assertLess(max(abs(a-b) for a, b in zip(output, reference)), 1e-5)
+
+    def test_stereo_downmix_contains_center_surround_and_lfe_with_shared_headroom(self):
+        for codec in ("ac3", "dca"):
+            with self.subTest(codec=codec):
+                carrier = self.encoded_fixture(codec, "5.1(side)")
+                output, status = self.run_carrier(words_to_carrier(carrier), stereo=True)
+                reference = self.reference(carrier)
+                # FL/FR unity, Center/Surround -3 dB, LFE -6 dB; one common normalization.
+                gain = 1 / (1 + math.sqrt(2) + 0.5)
+                for side in range(2):
+                    expected = [(reference[i + side] + math.sqrt(0.5) * reference[i + 2]
+                                 + 0.5 * reference[i + 3] + math.sqrt(0.5) * reference[i + 4 + side]) * gain
+                                for i in range(0, len(reference), 6)]
+                    self.assertLess(max(abs(a-b) for a, b in zip(output[side::2], expected)), 1e-5)
+                self.assertEqual(status["positions"], POSITIONS[:6], "downmix must not relabel the input format")
+
+    def test_stereo_tap_tracks_layout_changes_without_stale_normalization(self):
+        stereo = self.encoded_fixture("ac3", "stereo")
+        multichannel = self.encoded_fixture("ac3", "5.1(side)")
+        data = words_to_carrier(stereo + multichannel + stereo) + pcm(20000)
+        output, _ = self.run_carrier(data, chunk=1, stereo=True)
+        start = (len(stereo) + len(multichannel)) // 4
+        reference = self.reference(stereo)
+        actual = output[start * 2:start * 2 + len(reference)]
+        self.assertLess(max(abs(a-b) for a, b in zip(actual, reference)), 1e-5)
+        self.assertEqual(list(output[-8000:]), [0.125, -0.25] * 4000)
+
+    def test_stereo_tap_mutes_unsupported_and_corrupt_carriers(self):
+        for kind in (0, 3, 4, 1, 0x0b):
+            with self.subTest(kind=kind):
+                output, _ = self.run_carrier(burst(kind, b"\xff\x7f" * 300) * 5, stereo=True)
+                self.assertTrue(all(value == 0 for value in output))
 
     def test_unsupported_corrupt_null_and_pause_never_escape_as_pcm(self):
         for kind in (0, 3, 4, 0x15, 1, 0x0B):
@@ -348,6 +393,45 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(pid, 0)
             self.assertFalse(adapter.snapshot()["running"])
+
+    async def test_split_mono_nodes_use_distinct_ports_and_restart_on_right_node_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "helper"
+            binary.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
+            binary.chmod(0o755)
+            adapter = self.module.DigitalInput(binary=binary)
+            edges = set()
+            captures = {"left:capture_MONO", "right:capture_MONO", "other:capture_MONO"}
+
+            async def command(*args):
+                running = adapter.process is not None and adapter.process.returncode is None
+                if args == ("-o",):
+                    if not running:
+                        edges.clear()
+                    return "\n".join(captures | (set(adapter.output_ports) if running else set()))
+                if args == ("-i",):
+                    return "\n".join(adapter.carrier_ports) if running else ""
+                if args == ("-l",):
+                    return "\n".join(f"{a} -> {b}" for a, b in edges)
+                self.assertIn(args[0], captures)
+                self.assertIn(args[1], adapter.carrier_ports)
+                edges.add(args)
+                return ""
+
+            with mock.patch.object(self.module.pw_link, "run_pw_link_command", side_effect=command):
+                try:
+                    await adapter.start("left", "MONO", "MONO", right_source="right")
+                    pid = adapter.process.pid
+                    self.assertEqual(edges, {("left:capture_MONO", "fxroute_surround_input:carrier_L"),
+                                             ("right:capture_MONO", "fxroute_surround_input:carrier_R")})
+                    await adapter.start("left", "MONO", "MONO", right_source="right")
+                    self.assertEqual(adapter.process.pid, pid)
+                    await adapter.start("left", "MONO", "MONO", right_source="other")
+                    self.assertNotEqual(adapter.process.pid, pid)
+                    self.assertEqual(edges, {("left:capture_MONO", "fxroute_surround_input:carrier_L"),
+                                             ("other:capture_MONO", "fxroute_surround_input:carrier_R")})
+                finally:
+                    await adapter.stop()
 
 
 if __name__ == "__main__":

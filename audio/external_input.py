@@ -54,8 +54,8 @@ class ExternalInputRoutingDependencies:
     get_source_transition_lock: Callable[[], asyncio.Lock] | None = None
     sync_peak_monitor_for_source_mode_state: Callable[[dict[str, Any]], Awaitable[None]] | None = None
     get_output_mode: Callable[[], str] | None = None
-    # (source, left, right, ALSA card of the source or None)
-    sync_digital_input: Callable[[str, str, str, int | None], Awaitable[None]] | None = None
+    # (source, left, right, ALSA card, optional right capture node)
+    sync_digital_input: Callable[..., Awaitable[None]] | None = None
     stop_digital_input: Callable[[], Awaitable[None]] | None = None
     # Surround ingress of a custom input mapping: (capture port, engine input
     # port) edges, linked directly to the engine.
@@ -261,9 +261,9 @@ class ExternalInputRouting:
         left, right = _pair_channels(current_input, right_source)
         surround = self._deps.get_output_mode is not None and self._deps.get_output_mode() == "surround"
         custom_mapping = current_input.get("custom_mapping")
-        if surround and not isinstance(custom_mapping, dict) and right_source is not None:
-            # A pair split over two capture nodes has no decoder path (the
-            # decoder reads one node): link Front L/R straight to the engine.
+        if (surround and not isinstance(custom_mapping, dict) and right_source is not None
+                and self._deps.sync_digital_input is None):
+            # A legacy caller without a decoder links split Front L/R directly.
             custom_mapping = {
                 "suffixes": {"FL": left, "FR": right},
                 "sources": {"FL": str(source_name), "FR": right_source},
@@ -273,15 +273,18 @@ class ExternalInputRouting:
             self._active_channels = (left, right)
             self._remembered_input = dict(current_input)
             return overview
-        if surround:
+        if not isinstance(custom_mapping, dict) and (surround or self._deps.sync_digital_input is not None):
             if self._deps.sync_digital_input is None:
                 await self.disable()
-                raise RuntimeError("Surround digital ingress is unavailable")
+                raise RuntimeError("Automatic input ingress is unavailable")
             if self.loopback_source_name is not None or self.mapped_source_name is not None:
                 await self.disable()
             try:
-                await self._deps.sync_digital_input(str(source_name), left, right,
-                                                    current_input.get("alsa_card"))
+                args = (str(source_name), left, right, current_input.get("alsa_card"))
+                if right_source:
+                    await self._deps.sync_digital_input(*args, right_source)
+                else:
+                    await self._deps.sync_digital_input(*args)
             except BaseException:
                 if self._deps.stop_digital_input is not None:
                     await self._deps.stop_digital_input()
@@ -291,6 +294,7 @@ class ExternalInputRouting:
             self.digital_source_name = str(source_name)
             self.digital_selection_key = str(current_input.get("key") or "") or None
             self._active_channels = (left, right)
+            self._active_right_source = right_source
             self._remembered_input = dict(current_input)
             return overview
         if self.digital_source_name is not None or self.mapped_source_name is not None:

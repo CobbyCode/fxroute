@@ -2,7 +2,7 @@
 """External input: act on a confirmed loss only, never substitute the selection.
 
 A single failed pactl probe empties the input list and must not tear down a
-working loopback; only a loss that persists for
+working ingress; only a loss that persists for
 SOURCE_UNAVAILABLE_CONFIRM_SECONDS (observed by the routing, read by the
 overview) unlinks it (and falls back to App
 playback when no input is left). A saved input that disappears while other
@@ -154,23 +154,34 @@ class MonitorScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.coordinator, _monitor = make_coordinator()
         self.links = []
         self.routing = main.external_input
+        self.active_pair = None
 
-        async def connect(ports, sink):
-            self.links.append(("connect", ports[0].split(":")[0], ports[0].split("_")[-1], sink))
+        async def sync_decoded(source, left, right, card, right_source=None):
+            pair = (source, left, right, right_source)
+            if pair != self.active_pair:
+                self.links.extend(("connect", node, channel, sink) for node, channel, sink in (
+                    (source, left, "carrier_L"), (right_source or source, right, "carrier_R")))
+                self.active_pair = pair
 
-        async def disconnect(ports, sink):
-            self.links.append(("disconnect", ports[0].split(":")[0], ports[0].split("_")[-1], sink))
+        async def stop_decoded():
+            if self.active_pair is not None:
+                source, left, right, right_source = self.active_pair
+                self.links.extend(("disconnect", node, channel, sink) for node, channel, sink in (
+                    (source, left, "carrier_L"), (right_source or source, right, "carrier_R")))
+                self.active_pair = None
 
         persisted = {"mode": "external-input", "selected_input_key": SELECTED}
         for patcher in (
             *_host_patches(self.host, persisted),
             patch.object(main.manager, "broadcast", self.broadcast),
             patch.object(main, "peak_monitor_coordinator", self.coordinator),
-            patch.object(external_module.pw_link, "connect_ports", connect),
-            patch.object(external_module.pw_link, "disconnect_ports", disconnect),
-            patch.object(external_module, "input_links_present", AsyncMock(return_value=True)),
+            patch.object(main, "_sync_surround_input", sync_decoded),
+            patch.object(main, "_stop_surround_input", stop_decoded),
+            patch.object(external_module.pw_link, "connect_ports", side_effect=AssertionError("raw carrier bypass")),
             patch.object(self.routing, "loopback_source_name", None),
             patch.object(self.routing, "loopback_selection_key", None),
+            patch.object(self.routing, "digital_source_name", None),
+            patch.object(self.routing, "digital_selection_key", None),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -192,15 +203,15 @@ class MonitorScenarioTests(unittest.IsolatedAsyncioTestCase):
     def _linked_sources(self, action):
         return [source for kind, source, _channel, _sink in self.links if kind == action]
 
-    async def test_transient_probe_failure_keeps_the_loopback(self):
+    async def test_transient_probe_failure_keeps_the_decoded_ingress(self):
         await self._tick()
-        self.assertEqual(self.routing.loopback_selection_key, SELECTED)
+        self.assertEqual(self.routing.digital_selection_key, SELECTED)
         self.assertEqual(self.coordinator.signature, f"external:{SELECTED}")
         links_before = list(self.links)
         await self._tick(probe_fails=True)
         await self._tick(probe_fails=False)
         self.assertEqual(self.links, links_before, "no unlink, no relink")
-        self.assertEqual(self.routing.loopback_selection_key, SELECTED)
+        self.assertEqual(self.routing.digital_selection_key, SELECTED)
         self.assertEqual(self._pushed(), [("external-input", "available")], "nothing pushed for the blip")
         self.assertTrue(self.coordinator.armed)
 
@@ -211,12 +222,12 @@ class MonitorScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._linked_sources("disconnect"), [], "3 s of loss is not confirmed yet")
         await self._tick()
         self.assertEqual(self._linked_sources("disconnect"), [FOURCH_NAME, FOURCH_NAME])
-        self.assertIsNone(self.routing.loopback_source_name)
+        self.assertIsNone(self.routing.digital_source_name)
         self.assertEqual(self._pushed()[-1], ("app-playback", "unavailable"))
         self.assertFalse(self.coordinator.armed)
 
         await self._tick(probe_fails=False)
-        self.assertEqual(self.routing.loopback_selection_key, SELECTED)
+        self.assertEqual(self.routing.digital_selection_key, SELECTED)
         self.assertEqual(self._linked_sources("connect")[-2:], [FOURCH_NAME, FOURCH_NAME])
         self.assertEqual(self._pushed()[-1], ("external-input", "available"))
         self.assertEqual(self.coordinator.signature, f"external:{SELECTED}")
@@ -227,7 +238,7 @@ class MonitorScenarioTests(unittest.IsolatedAsyncioTestCase):
         await self._tick()
         self.assertEqual(self._linked_sources("disconnect"), [])
         await self._tick()
-        self.assertIsNone(self.routing.loopback_source_name)
+        self.assertIsNone(self.routing.digital_source_name)
         self.assertNotIn(UMC_NAME, self._linked_sources("connect"), "never relinked to another input")
         self.assertEqual(self._pushed()[-1], ("external-input", "unavailable"))
         pushed = self.broadcast.await_args_list[-1].args[0]["data"]
@@ -237,7 +248,7 @@ class MonitorScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.coordinator.armed, "no peak monitor for an unlinked input")
 
         await self._tick(fourch=True)
-        self.assertEqual(self.routing.loopback_selection_key, SELECTED)
+        self.assertEqual(self.routing.digital_selection_key, SELECTED)
         self.assertEqual([channel for kind, _source, channel, _sink in self.links if kind == "connect"][-2:],
                          ["RL", "RR"], "the saved pair 3-4 is relinked")
         self.assertEqual(self._pushed()[-1], ("external-input", "available"))

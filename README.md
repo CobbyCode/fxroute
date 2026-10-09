@@ -28,7 +28,7 @@ The demo is the real FXRoute frontend — same UI — with simulated backend sta
 
 - Local music library with album, track, folder, and favorites views, playlists, uploads, album ZIP imports, media-URL imports, and multi-select downloads
 - Internet radio with a curated station catalog, personal stations, and Radio Browser search; live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
-- Surround playback from a digital S/PDIF input (Dolby Digital or DTS Core), decoded into the routed speaker roles, plus an upmixer that derives Center and the surround channels from a stereo programme
+- Automatic PCM, Dolby Digital and DTS Core recognition on external input pairs in every output mode: discrete Surround playback or a complete stereo downmix, plus an upmixer that derives Center and the surround channels from a stereo programme
 - Spotify control for a local desktop client or spotifyd (Spotify Connect pairing, no FXRoute login), including Lossless-aware playback through a current desktop client
 - Qobuz Connect player control and a full TIDAL catalog browser with native playback through FXRoute's audio engine
 - Bluetooth and external line input as selectable sources when the host audio stack supports them

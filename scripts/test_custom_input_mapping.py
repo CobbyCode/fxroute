@@ -778,21 +778,21 @@ class SplitPairRoutingTests(unittest.IsolatedAsyncioTestCase):
                      (f"{_umc_mic(2)}:capture_MONO", "fxroute_dsp_sink:playback_FR")])
                 self.assertEqual(routing.active_right_source, _umc_mic(2))
 
-    async def test_surround_links_front_l_and_r_directly_and_skips_the_decoder(self):
+    async def test_split_pair_uses_automatic_ingress_with_both_capture_nodes(self):
         sync_mapped, stop_mapped, digital = AsyncMock(), AsyncMock(), AsyncMock()
         routing = _routing(_umc_pair_selected(), "surround", sync_mapped_input=sync_mapped,
                            stop_mapped_input=stop_mapped, sync_digital_input=digital,
                            stop_digital_input=AsyncMock())
         with patch("audio.pw_link.connect_ports", AsyncMock(side_effect=AssertionError("sink loopback used"))):
             await routing.sync()
-        digital.assert_not_awaited()
-        expected = ((f"{_umc_mic(1)}:capture_MONO", "fxroute_dsp:input_1"),
-                    (f"{_umc_mic(2)}:capture_MONO", "fxroute_dsp:input_2"))
-        self.assertEqual(sync_mapped.await_args.args[0], expected)
-        self.assertEqual((routing.mapped_source_name, routing.mapped_ingress_links), (_umc_mic(1), expected))
+        self.assertEqual(digital.await_args.args[:3], (_umc_mic(1), "MONO", "MONO"))
+        self.assertEqual(digital.await_args.args[4], _umc_mic(2))
+        sync_mapped.assert_not_awaited()
+        self.assertEqual(routing.digital_source_name, _umc_mic(1))
+        self.assertEqual(routing.active_right_source, _umc_mic(2))
         self.assertIsNone(routing.loopback_source_name)
         await routing.disable()
-        stop_mapped.assert_awaited_once()
+        self.assertIsNone(routing.digital_source_name)
 
     async def test_leaving_surround_returns_to_the_loopback(self):
         mode = {"value": "surround"}

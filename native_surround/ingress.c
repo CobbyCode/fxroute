@@ -15,12 +15,12 @@
 
 #define QUEUE 32768
 struct input_frame { uint64_t seq; float pcm[2]; };
-struct output_frame { uint64_t seq; float pcm[8]; };
+struct output_frame { uint64_t seq; float pcm[SURROUND_OUTPUTS]; };
 struct engine {
     struct pw_main_loop *loop;
     struct pw_filter *filter;
     struct spa_hook listener;
-    void *inputs[2], *outputs[8];
+    void *inputs[2], *outputs[SURROUND_OUTPUTS];
     struct input_frame input[QUEUE];
     struct output_frame output[QUEUE];
     _Atomic uint64_t input_read, input_write, output_read, output_write;
@@ -33,7 +33,7 @@ struct engine {
     const char *status;
 };
 
-static void live_emit(void *data, uint64_t frame, const float pcm[8]) {
+static void live_emit(void *data, uint64_t frame, const float pcm[SURROUND_OUTPUTS]) {
     struct engine *e = data;
     uint64_t w = atomic_load_explicit(&e->output_write, memory_order_relaxed);
     uint64_t r = atomic_load_explicit(&e->output_read, memory_order_acquire);
@@ -91,8 +91,8 @@ static void process(void *data, struct spa_io_position *position) {
     uint32_t frames = position->clock.duration;
     const float *left = pw_filter_get_dsp_buffer(e->inputs[0], frames);
     const float *right = pw_filter_get_dsp_buffer(e->inputs[1], frames);
-    float *output[8];
-    for (unsigned c = 0; c < 8; c++) {
+    float *output[SURROUND_OUTPUTS];
+    for (unsigned c = 0; c < SURROUND_OUTPUTS; c++) {
         output[c] = pw_filter_get_dsp_buffer(e->outputs[c], frames);
         if (output[c]) memset(output[c], 0, (size_t)frames * sizeof(float));
     }
@@ -120,7 +120,7 @@ static void process(void *data, struct spa_io_position *position) {
         uint64_t wanted = e->seq - SURROUND_LIVE_LATENCY;
         while (or < ow && e->output[or % QUEUE].seq < wanted) or++;
         if (or < ow && e->output[or % QUEUE].seq == wanted) {
-            if (valid) for (unsigned c = 0; c < 8; c++)
+            if (valid) for (unsigned c = 0; c < SURROUND_OUTPUTS; c++)
                 if (output[c]) output[c][i] = e->output[or % QUEUE].pcm[c];
             or++;
         }
@@ -150,18 +150,19 @@ static const struct pw_filter_events events = {
     PW_VERSION_FILTER_EVENTS, .state_changed = filter_state, .process = process,
 };
 
-struct offline_writer { FILE *file; int error; };
-static void offline_emit(void *data, uint64_t frame, const float pcm[8]) {
+struct offline_writer { FILE *file; int error, stereo; };
+static void offline_emit(void *data, uint64_t frame, const float pcm[SURROUND_OUTPUTS]) {
     (void)frame;
     struct offline_writer *w = data;
-    if (fwrite(pcm, sizeof(float), 8, w->file) != 8) w->error = 1;
+    unsigned channels = w->stereo ? 2 : 8;
+    if (fwrite(pcm + (w->stereo ? 8 : 0), sizeof(float), channels, w->file) != channels) w->error = 1;
 }
 
-static int offline(const char *input, const char *output, const char *status, unsigned chunk) {
+static int offline(const char *input, const char *output, const char *status, unsigned chunk, int stereo_output) {
     if (!strcmp(input, output)) { fprintf(stderr, "input and output must differ\n"); return 1; }
     FILE *in = fopen(input, "rb");
     if (!in) { perror(input); return 1; }
-    struct offline_writer w = {.file = fopen(output, "wb")};
+    struct offline_writer w = {.file = fopen(output, "wb"), .stereo = stereo_output};
     if (!w.file) { perror(output); fclose(in); return 1; }
     surround *d = surround_create(offline_emit, &w);
     uint8_t *raw = malloc((size_t)chunk * 8);
@@ -212,8 +213,10 @@ static int live(const char *status) {
             pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, input_names[i], NULL), NULL, 0);
         if (!e->inputs[i]) goto error;
     }
-    for (unsigned i = 0; i < 8; i++) {
-        char name[32]; snprintf(name, sizeof name, "output_%s", surround_positions[i]);
+    for (unsigned i = 0; i < SURROUND_OUTPUTS; i++) {
+        char name[32];
+        if (i < 8) snprintf(name, sizeof name, "output_%s", surround_positions[i]);
+        else snprintf(name, sizeof name, "output_stereo_%s", surround_positions[i - 8]);
         e->outputs[i] = pw_filter_add_port(e->filter, PW_DIRECTION_OUTPUT,
             PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
             pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, name, NULL), NULL, 0);
@@ -247,17 +250,20 @@ error:
 int main(int argc, char **argv) {
     const char *input = NULL, *output = NULL, *status = NULL;
     unsigned chunk = 257;
+    int stereo = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--offline") && i + 2 < argc) { input = argv[++i]; output = argv[++i]; }
         else if (!strcmp(argv[i], "--status") && i + 1 < argc) status = argv[++i];
+        else if (!strcmp(argv[i], "--stereo")) stereo = 1;
         else if (!strcmp(argv[i], "--chunk") && i + 1 < argc) {
             char *end; unsigned long n = strtoul(argv[++i], &end, 10);
             if (*end || n < 1 || n > 16384) goto usage;
             chunk = (unsigned)n;
         } else goto usage;
     }
-    return input ? offline(input, output, status, chunk) : live(status);
+    if (stereo && !input) goto usage;
+    return input ? offline(input, output, status, chunk, stereo) : live(status);
 usage:
-    fprintf(stderr, "usage: %s [--offline INPUT.s32 OUTPUT.f32] [--status PATH] [--chunk FRAMES]\n", argv[0]);
+    fprintf(stderr, "usage: %s [--offline INPUT.s32 OUTPUT.f32 [--stereo]] [--status PATH] [--chunk FRAMES]\n", argv[0]);
     return 2;
 }

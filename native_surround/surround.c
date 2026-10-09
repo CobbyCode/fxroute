@@ -20,7 +20,7 @@
 
 const char *const surround_positions[8] = {"FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR"};
 enum carrier_mode { MODE_PCM, MODE_ENCODED, MODE_UNKNOWN };
-struct pending_frame { uint64_t tag; float pcm[8]; };
+struct pending_frame { uint64_t tag; float pcm[SURROUND_OUTPUTS]; };
 struct surround {
     surround_emit emit;
     void *data;
@@ -156,6 +156,23 @@ static int receive_packet(surround *d, AVCodecContext *context) {
     return avcodec_receive_frame(context, d->frame);
 }
 
+static void stereo_matrix(const unsigned *positions, unsigned count, float matrix[2][8]) {
+    const float fold = 0.7071067811865476f;
+    const float weights[2][8] = {{1, 0, fold, 0.5f, fold, 0, fold, 0},
+                                  {0, 1, fold, 0.5f, 0, fold, 0, fold}};
+    float sums[2] = {0, 0};
+    memset(matrix, 0, sizeof(float) * 16);
+    for (unsigned side = 0; side < 2; side++) for (unsigned c = 0; c < count; c++) {
+        unsigned position = positions[c];
+        matrix[side][position] = weights[side][position];
+        sums[side] += weights[side][position];
+    }
+    /* One layout-dependent gain preserves the stereo image and bounds coherent peaks. */
+    float scale = 1.0f / fmaxf(1.0f, fmaxf(sums[0], sums[1]));
+    for (unsigned side = 0; side < 2; side++) for (unsigned c = 0; c < 8; c++)
+        matrix[side][c] *= scale;
+}
+
 static int decode(surround *d) {
     AVCodecContext **owner = d->kind == 1 ? &d->ac3 : &d->dts;
     if (!*owner) *owner = open_decoder(d->kind == 1 ? AV_CODEC_ID_AC3 : AV_CODEC_ID_DTS);
@@ -204,12 +221,16 @@ static int decode(surround *d) {
     av_channel_layout_describe(&f->ch_layout, d->layout, sizeof d->layout);
     d->position_count = (unsigned)channels;
     memcpy(d->position_index, mapping, (size_t)channels * sizeof mapping[0]);
+    float matrix[2][8];
+    stereo_matrix(mapping, (unsigned)channels, matrix);
     for (int i = 0; i < count; i++) {
         uint64_t index = d->burst_frame + (unsigned)i;
         if (index < d->emitted) return -1;
         struct pending_frame *p = slot(d, index);
         memset(p->pcm, 0, sizeof p->pcm);
         for (int c = 0; c < channels; c++) p->pcm[mapping[c]] = d->converted[i * channels + c];
+        for (unsigned side = 0; side < 2; side++) for (unsigned c = 0; c < 8; c++)
+            p->pcm[8 + side] += matrix[side][c] * p->pcm[c];
     }
     d->decoded++;
     return 0;
@@ -391,7 +412,7 @@ void surround_push(surround *d, const float *stereo, size_t frames) {
             unknown(d, "corrupt");
             l = r = 0;
         }
-        if (d->mode == MODE_PCM) { p->pcm[0] = l; p->pcm[1] = r; }
+        if (d->mode == MODE_PCM) { p->pcm[0] = p->pcm[8] = l; p->pcm[1] = p->pcm[9] = r; }
         if (l == 0 && r == 0 && !d->phase) {
             if (++d->silence >= SURROUND_SILENCE_RESET && d->mode != MODE_PCM) return_to_pcm(d);
             if (d->silence > SURROUND_SILENCE_RESET) d->silence = SURROUND_SILENCE_RESET;

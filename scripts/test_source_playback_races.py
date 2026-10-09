@@ -434,6 +434,12 @@ class ClaimInvalidationTests(SourceRaceCase):
 
 
 class SourceRouteTests(SourceRaceCase):
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(main, "_set_surround_carrier_owned", AsyncMock())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _request(self, mode, input_key=None):
         request = Mock()
         payload = {"mode": mode}

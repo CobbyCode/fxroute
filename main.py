@@ -963,7 +963,8 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     # Also pushes the overview to clients (SourceTransitions.sync_source_mode_state).
     sync_peak_monitor_for_source_mode_state=lambda overview: source_transitions.sync_source_mode_state(overview),
     get_output_mode=lambda: get_output_service().ensure_state()["active_mode"],
-    sync_digital_input=lambda source, left, right, card: _sync_surround_input(source, left, right, card),
+    sync_digital_input=lambda source, left, right, card, right_source=None: _sync_surround_input(
+        source, left, right, card, right_source),
     stop_digital_input=lambda: _stop_surround_input(),
     sync_mapped_input=lambda edges: _sync_mapped_input(edges),
     stop_mapped_input=lambda: _stop_mapped_input(),
@@ -5722,10 +5723,9 @@ async def _set_surround_carrier_owned(enabled: bool, card: int | None = None) ->
     the source. Releasing returns that clock to Internal before the rate
     moves, so later playback is not held to the source's clock.
 
-    Owned for any external input whose card has a digital receiver, whatever
-    the output mode: such a card delivers its digital samples only while it
-    runs on the incoming clock, so both the Surround ingress and the plain
-    stereo loopback need the carrier.
+    Automatic pair ingress borrows 48 kHz in every output mode. Hardware clock
+    ownership is separate: a card-less pair releases the previous card without
+    giving up the graph rate.
     """
     global _surround_carrier_owned, _surround_clock_card
     if not enabled and not _surround_carrier_owned:
@@ -5744,10 +5744,10 @@ async def _set_surround_carrier_owned(enabled: bool, card: int | None = None) ->
             if confirmed.get("active_rate") != 48000:
                 raise RuntimeError("Digital carrier clock did not settle at 48000 Hz")
         _surround_carrier_owned = True
+        released_card, _surround_clock_card = _surround_clock_card, card
+        if released_card is not None and released_card != card:
+            await _select_surround_clock(released_card, digital=False)
         if card is not None:
-            if _surround_clock_card not in (None, card):
-                await _select_surround_clock(_surround_clock_card, digital=False)
-            _surround_clock_card = card
             await _select_surround_clock(card, digital=True)
     elif _surround_carrier_owned:
         # Unmanaged first, so the clock guard cannot take the clock back.
@@ -5777,8 +5777,8 @@ async def _digital_carrier_request(overview: dict | None, *, external: bool,
 
     ``overview`` is the current source overview when the caller already has
     one; without it only a selected external input pays for reading it. A
-    non-external source never needs the carrier, and neither does an external
-    one on a card without a digital receiver.
+    Non-external sources never need the carrier. Normal external pairs need
+    the helper's 48 kHz graph, with or without a digital receiver.
     """
     if not external:
         return (False, None)
@@ -5787,7 +5787,8 @@ async def _digital_carrier_request(overview: dict | None, *, external: bool,
     if overview.get("mode") != SOURCE_MODE_EXTERNAL_INPUT:
         return (False, None)
     card = await asyncio.to_thread(_input_digital_card, overview)
-    if card is None and mode != "surround":
+    entry = overview.get("selected_input") or overview.get("current_input") or {}
+    if card is None and mode != "surround" and isinstance(entry.get("custom_mapping"), dict):
         return (False, None)
     return (True, card)
 
@@ -5839,7 +5840,8 @@ async def _hold_external_input_carrier(entry: dict) -> None:
         await _set_surround_carrier_owned(True, card)
 
 
-async def _sync_surround_input(source: str, left: str, right: str, card: int | None = None) -> None:
+async def _sync_surround_input(source: str, left: str, right: str, card: int | None = None,
+                               right_source: str | None = None) -> None:
     global _surround_input
     if _measurement_session_owns_live_rate():
         if runtime.dsp_runtime is not None:
@@ -5851,12 +5853,12 @@ async def _sync_surround_input(source: str, left: str, right: str, card: int | N
         from audio.digital_input import DigitalInput
         _surround_input = DigitalInput()
     if runtime.dsp_runtime is None:
-        raise RuntimeError("Surround needs an active native DSP runtime")
+        raise RuntimeError("Automatic input ingress needs an active native DSP runtime")
     try:
-        await _surround_input.start(source, left, right, rate=48000)
+        await _surround_input.start(source, left, right, rate=48000, right_source=right_source)
         await runtime.dsp_runtime.set_surround_input(True)
         if not await runtime.dsp_runtime.verify():
-            raise RuntimeError("Surround DSP links could not be verified")
+            raise RuntimeError("Decoded input DSP links could not be verified")
     except BaseException:
         await _stop_surround_input()
         raise
@@ -5989,6 +5991,7 @@ async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | N
     selection = samplerate._load_audio_source_selection()
     external = selection.get("mode") == SOURCE_MODE_EXTERNAL_INPUT
     previous_owned = _surround_carrier_owned
+    previous_clock_card = _surround_clock_card
     previous_state = get_output_service().ensure_state()
     _build_output_state_mutation(mutation, output_key="", channels=None)(previous_state)
     if (type(body.get("expected_revision")) is not int
@@ -6008,7 +6011,7 @@ async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | N
         if head["active_mode"] == mode and head["revision"] == previous_state["revision"] + 1:
             service.revert(previous_state, expected_revision=head["revision"])
             await _sync_v2_head_after_bank_assign()
-        await _set_surround_carrier_owned(previous_owned)
+        await _set_surround_carrier_owned(previous_owned, previous_clock_card)
         if sync_ingress:
             await external_input.sync()
         await _resync_stdin_routing()

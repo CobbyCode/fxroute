@@ -34,7 +34,7 @@ class DigitalInput:
         self._recovery_task: asyncio.Task | None = None
         self._stderr_tail = b""
         self._source_name: str | None = None
-        self._request: tuple[str, str, str, int] | None = None
+        self._request: tuple[str, str, str, int, str] | None = None
         self._source_ports: tuple[str, ...] = ()
         self._status_dir: Path | None = None
         self._status_path: Path | None = None
@@ -43,7 +43,7 @@ class DigitalInput:
 
     @property
     def output_ports(self) -> tuple[str, ...]:
-        return tuple(f"{NODE_NAME}:output_{position}" for position in BUS_POSITIONS)
+        return tuple(f"{NODE_NAME}:output_{position}" for position in (*BUS_POSITIONS, "stereo_FL", "stereo_FR"))
 
     @property
     def carrier_ports(self) -> tuple[str, str]:
@@ -88,15 +88,17 @@ class DigitalInput:
                 return port
         raise RuntimeError(f"Digital capture port is missing: {source}:{channel}")
 
-    async def start(self, source_name: str, left: str, right: str, rate: int = 48000) -> None:
+    async def start(self, source_name: str, left: str, right: str, rate: int = 48000,
+                    *, right_source: str | None = None) -> None:
         if rate != 48000:
             raise ValueError("Digital ingress requires a fixed 48000 Hz carrier graph")
         source = str(source_name).strip()
+        right_node = str(right_source or source).strip()
         left, right = str(left).strip(), str(right).strip()
-        if not source or not left or not right or left == right:
-            raise ValueError("Digital ingress requires one source and two distinct capture ports")
+        if not source or not right_node or not left or not right or (left == right and source == right_node):
+            raise ValueError("Digital ingress requires two distinct capture ports")
         async with self._lock:
-            request = (source, left, right, rate)
+            request = (source, left, right, rate, right_node)
             if (self.process is not None and self.process.returncode is None
                     and self._request == request):
                 try:
@@ -125,7 +127,7 @@ class DigitalInput:
                 if any(port.startswith(f"{NODE_NAME}:") for port in outputs | inputs):
                     raise RuntimeError("Digital ingress node already exists; refusing a duplicate")
                 self._source_ports = (self._resolve_port(source, left, outputs),
-                                      self._resolve_port(source, right, outputs))
+                                      self._resolve_port(right_node, right, outputs))
                 if self._source_ports[0] == self._source_ports[1]:
                     raise ValueError("Digital ingress capture ports must be distinct")
                 self._source_name = source

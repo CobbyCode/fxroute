@@ -70,6 +70,13 @@ class PipeWireLink:
     target: str
 
 
+def decoded_ingress_edges(input_count: int) -> tuple[tuple[str, str], ...]:
+    """Discrete Surround positions or the complete stereo downmix, never Front-only."""
+    positions = SURROUND_POSITIONS if input_count == 8 else ("stereo_FL", "stereo_FR")
+    return tuple((f"fxroute_surround_input:output_{position}", f"{DSP_NODE_NAME}:input_{index + 1}")
+                 for index, position in enumerate(positions))
+
+
 def mapped_ingress_edges(
     source: str,
     suffixes: Mapping[str, str],
@@ -1647,9 +1654,7 @@ class DSPRuntime:
         desired = [PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{port}", f"{DSP_NODE_NAME}:input_{index + 1}")
                    for index, port in enumerate(DSP_INGRESS_PORTS)]
         if self._surround_input:
-            desired.extend(PipeWireLink(f"fxroute_surround_input:output_{position}",
-                                       f"{DSP_NODE_NAME}:input_{index + 1}")
-                           for index, position in enumerate(SURROUND_POSITIONS[:count]))
+            desired.extend(PipeWireLink(source, target) for source, target in decoded_ingress_edges(count))
         engine_inputs = {f"{DSP_NODE_NAME}:input_{index + 1}" for index in range(count)}
         mapped = {PipeWireLink(source, target) for source, target in self._mapped_ingress
                   if target in engine_inputs}

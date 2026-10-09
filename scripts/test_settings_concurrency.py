@@ -11,7 +11,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -75,6 +75,7 @@ class SourceModeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(main, "set_audio_source_selection", side_effect=set_source),
                 patch.object(main.samplerate, "_load_audio_source_selection", side_effect=lambda: dict(state)),
                 patch.object(main, "external_input", SimpleNamespace(sync=external_sync)),
+                patch.object(main, "_set_surround_carrier_owned", AsyncMock()),
                 patch.object(main, "bluetooth_input", SimpleNamespace(
                     sync=bluetooth_sync, finish_bluetoothctl_actions=bluetooth_finish)),
                 patch.object(main, "_pause_all_app_playback_for_external_input", no_pause),
