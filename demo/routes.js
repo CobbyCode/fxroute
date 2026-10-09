@@ -805,7 +805,9 @@
         if (!direct && dspExtras.tone_effect.enabled) shared += (dspExtras.tone_effect.mode === 'maximizer' ? 480 : 1904) * 1000 / rate;
         if (!direct && mode === 'surround' && dspExtras.upmixer.enabled) shared +=
             (dspExtras.upmixer.params.mode === 'hq' ? dspExtras.upmixer.params.fftSize - 1 : Math.round(rate * 64 / 48000)) * 1000 / rate;
-        const input = mode === 'surround' && sourceMode === 'external-input' ? 8192 / 48 : 0;
+        const automaticInput = sourceMode === 'external-input'
+            && SOURCE_INPUTS.some(item => item.key === selectedSourceInputKey);
+        const input = automaticInput ? 3074 / 48 : 0;
         const offset = Math.max(0, -Math.min(0, ...roles.map(role => config.processing[role]?.alignment_ms || 0)));
         const rows = roles.map(role => {
             const dsp = shared + presetLatency(config.banks[role]?.preset);

@@ -17,7 +17,7 @@ NODE_NAME = "fxroute_surround_input"
 BUS_POSITIONS = ("FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR")
 DEFAULT_BINARY = Path(__file__).resolve().parents[1] / "native_surround/build/fxroute-surround-input"
 # native_surround/surround.h: the live callback delays PCM and encoded paths alike.
-LIVE_LATENCY_FRAMES = 8192
+LIVE_LATENCY_FRAMES = 3074
 
 
 class DigitalInput:
@@ -199,7 +199,10 @@ class DigitalInput:
                     if isinstance(value, dict):
                         self._metadata = {key: value[key] for key in (
                             "codec", "sample_rate", "layout", "positions", "bus_positions", "errors",
-                            "decoded_bursts", "lookahead_frames", "state", "mute_reason") if key in value}
+                            "decoded_bursts", "lookahead_frames", "state", "mute_reason",
+                            "worker_margin_frames", "worker_quantum_frames", "worker_delay_max_us",
+                            "worker_reserve_min_us", "input_queue_peak_frames", "late_frames",
+                            "underrun_frames", "queued_muted_frames", "transport_faults") if key in value}
             except (OSError, ValueError):
                 pass
         running = self.process is not None and self.process.returncode is None

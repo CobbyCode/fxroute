@@ -30,22 +30,44 @@ with persistent per-codec contexts, converts sample format without SRC or
 rematrixing on the discrete bus, derives the stereo fold-down, and writes status. Late output is discarded;
 underruns are silence. Overruns, lost inputs and wrong clocks fail closed.
 
-Recognition retains 4096 carrier frames before releasing PCM. Live output uses
-an 8192-frame delay (170.67 ms at 48 kHz), including worker scheduling margin,
+Recognition retains 2050 carrier frames before releasing PCM. Live output uses
+a 3074-frame delay (64.04 ms at 48 kHz), including 1024 frames of worker margin,
 for PCM and encoded audio alike on all ten outputs. AV Sync credits this
 existing input delay independently of the codec and output mode.
 Uncompressed PCM occupies FL/FR and the unity stereo pair only. AC-3 and DTS Core IEC 61937 types 1 and
 11/12/13 decode automatically, including same-codec layout changes. Null,
 pause, unsupported and corrupt bursts are muted. Payloads of rejected bursts
 are not scanned as nested IEC streams. Unknown/raw-DTS input stays muted until
-a valid supported burst, 8192 consecutive exact-zero stereo frames, or 12288
-frames without any IEC preamble or confirmed raw-DTS sync. Every IEC stream
+a valid supported burst, 8192 consecutive exact-zero stereo frames, or more than 6656
+frames without any IEC preamble (confirmed raw DTS: 8704 frames without sync). Every IEC stream
 repeats its preamble at least every 6144 frames, so a running compressed stream
 never becomes PCM, while a latch never outlives it (including after
 discontinuities). Raw DTS, including 14-bit forms, is recognized for
 suppression only, once its sync recurs three times at one constant frame
 spacing; a lone sync pattern is ordinary PCM (TV PCM hits -225/+232 about once
 a minute). It is not decoded.
+
+An IEC transition clears pending audio only from its first preamble frame,
+preserving established PCM before it. At startup, a preamble inside the first
+2050-frame window instead suppresses the unclassified prefix, which might be
+a partial payload; pure PCM is still unity from frame zero. Broad safety muting also publishes an
+atomic absolute-frame watermark to the output consumer. Queued audio below it
+is silenced, but future valid decoded frames are not. Worker and RT never edit
+each other's queue slots. The retractable window is bounded by the 3074-frame
+live delay; already pulled raw-DTS prefixes cannot be undone. Unrecognizable
+payload before a first sync later than the recognition window remains
+indistinguishable from PCM. Confirmed raw DTS has an 8704-frame timeout, above
+its longest accepted sync interval (8192). Each IEC preamble clears raw-DTS
+history so IEC recovery keeps its shorter timeout.
+The confirmed raw-DTS latch is separate from candidate repeat counts. Plausible
+syncs preserve suppression during spacing/packing requalification; only IEC,
+safe PCM return or a discontinuity reset clears it.
+
+Non-silent PCM after AC-3 resumes at last preamble +6658 frames: 5122 frames
+after the 1536-frame burst ends (106.71 ms). DTS-512 leaves 6146 frames (128.04 ms).
+Silence reset is unchanged pending a real TV idle-carrier measurement.
+Quanta above 1024 frames fail closed because the recognition decision would
+miss some same-callback pulls. The helper never forces a graph quantum.
 
 Channel positions come from the decoded frame, not its channel count. For
 example, `5.1(side)` occupies SL/SR while a true back layout occupies BL/BR.
@@ -62,10 +84,24 @@ retained across codec flushes. No input-type or device-name hint is used.
 `--status PATH` atomically replaces a small JSON file, normally about every
 100 ms. Fields are `codec`, `sample_rate`, `layout`, `positions` (decoder order),
 `bus_positions` (fixed output order), `errors`, `decoded_bursts`,
-`lookahead_frames`, `state`, and `mute_reason`. `state` is `pcm`, `encoded` or
+`lookahead_frames`, `live_latency_frames`, `worker_margin_frames`, `state`, and `mute_reason`. `state` is `pcm`, `encoded` or
 `muted`. A corrupt burst after valid decoding retains the last valid codec and
 layout, with `state=muted` and its reason; this is not a successful current
 decode. A discontinuity clears current layout metadata.
+
+Live JSON additionally reports lifetime extrema/counters:
+
+- `worker_quantum_frames`: most recent callback size.
+- `worker_delay_max_us`: maximum input callback-to-worker completion time,
+  including queue wait and decode/emission work.
+- `worker_reserve_min_us`: minimum time remaining until the quantum-rounded
+  output pull deadline; `null` before any output decision. This is a measured
+  estimate assuming the current graph period, not an OS scheduling guarantee.
+- `input_queue_peak_frames`: largest backlog observed by the worker.
+- `late_frames`: output discarded after its pull deadline, never replayed.
+- `underrun_frames`: missing output at a pull, excluding pre-input startup.
+- `queued_muted_frames`: queued output suppressed by the safety watermark.
+- `transport_faults`: queue, link and unsupported clock/quantum faults.
 
 `audio.digital_input.DigitalInput` exposes:
 
@@ -91,6 +127,7 @@ runtime's responsibility.
 ```sh
 native_surround/build/fxroute-surround-input --offline INPUT.s32 OUTPUT.f32 --status STATUS.json
 python3 scripts/test_surround_ingress.py
+python3 scripts/test_surround_live_queue.py
 python3 native_surround/test_captures.py
 python3 native_surround/test_live.py
 ```
@@ -109,10 +146,21 @@ private hardware-free PipeWire server; it never changes the normal server,
 hardware, product service or graph rate.
 It exercises PCM, AC-3 and DTS on both discrete and stereo taps. Raw input
 and decoded output are recorded together and compared frame-for-frame with
-the offline reference: this 256-frame-quantum graph observes 8192 helper frames
+the offline reference: this 256-frame-quantum graph observes 3074 helper frames
 plus one 256-frame filter scheduling hop. That graph transport is separate
 from the algorithmic AV Sync credit; the test is not a physical end-to-end
 latency measurement.
+
+`SURROUND_STRESS=1 python3 native_surround/test_live.py` also runs six CPU busy
+workers with rapid PCM/AC-3/DTS/layout changes at quantum 1024. All ten outputs
+are checked, including expected silence; late/underrun/fault/error counters must
+not grow and worker reserve must stay positive. Whole-block observer-hop changes
+are distinguished from helper underruns. `SURROUND_LIVE_SECONDS` extends the
+switch run and `SURROUND_LIVE_REPORT` retains raw recordings and status samples.
+Production injection is opt-in (`SURROUND_PRODUCTION=1`, run only the two
+rapid-switch methods), requires a quiet existing carrier, and never restarts or
+reconfigures the product helper. Only test-owned record/source/load processes
+are terminated; their temporary links disappear with their nodes.
 
 Limitations: only 48 kHz decoded audio is accepted, raw DTS is suppressed rather
 than decoded, and arbitrary compressed data lacking any recognizable sync

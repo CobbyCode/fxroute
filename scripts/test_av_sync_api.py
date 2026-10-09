@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Per-mode target API and deterministic live helper ingress latency."""
 import asyncio
+import json
 import sys
 import tempfile
 import unittest
@@ -45,18 +46,35 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         helper = DigitalInput()
         helper.process = SimpleNamespace(returncode=None, pid=123)
         for codec in ('pcm', 'ac3', 'dts'):
-            helper._metadata = {'codec': codec, 'lookahead_frames': 4096}
+            helper._metadata = {'codec': codec, 'lookahead_frames': 2050}
             with self.subTest(codec=codec):
-                self.assertAlmostEqual(helper.deterministic_latency_ms(), 8192 / 48)
+                self.assertAlmostEqual(helper.deterministic_latency_ms(), 3074 / 48)
 
     def test_input_credit_follows_the_routed_path_not_the_selected_source(self):
         helper = DigitalInput()
         helper.process = SimpleNamespace(returncode=None, pid=123)
         engine = SimpleNamespace(snapshot=lambda: {'surround_input': True})
         with patch.object(main.runtime, 'dsp_runtime', engine), patch.object(main, '_surround_input', helper):
-            self.assertAlmostEqual(main._deterministic_input_latency_ms(), 8192 / 48)
+            self.assertAlmostEqual(main._deterministic_input_latency_ms(), 3074 / 48)
             engine.snapshot = lambda: {'surround_input': False}
             self.assertEqual(main._deterministic_input_latency_ms(), 0)
+
+    def test_helper_snapshot_exposes_worker_reserve_and_losses(self):
+        helper = DigitalInput()
+        helper.process = SimpleNamespace(returncode=None, pid=123)
+        metrics = {'worker_margin_frames': 1024, 'worker_quantum_frames': 1024,
+                   'worker_delay_max_us': 3900, 'worker_reserve_min_us': 17433,
+                   'input_queue_peak_frames': 1024, 'late_frames': 7,
+                   'underrun_frames': 7, 'queued_muted_frames': 351, 'transport_faults': 0}
+        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+            helper._status_path = Path(directory) / 'status.json'
+            helper._status_path.write_text(json.dumps({**metrics, 'codec': 'pcm',
+                'lookahead_frames': 2050, 'live_latency_frames': 3074, 'untrusted_field': 'ignored'}))
+            status = helper.snapshot()
+            for key, value in metrics.items():
+                self.assertEqual(status.get(key), value, key)
+            self.assertEqual(status['live_latency_frames'], 3074)
+            self.assertNotIn('untrusted_field', status)
 
 
 if __name__ == '__main__':

@@ -4,6 +4,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -14,7 +15,11 @@
 #include <unistd.h>
 
 #define QUEUE 32768
-struct input_frame { uint64_t seq; float pcm[2]; };
+struct input_frame {
+    uint64_t seq, block_seq, published_ns;
+    uint32_t quantum;
+    float pcm[2];
+};
 struct output_frame { uint64_t seq; float pcm[SURROUND_OUTPUTS]; };
 struct engine {
     struct pw_main_loop *loop;
@@ -25,22 +30,95 @@ struct engine {
     struct output_frame output[QUEUE];
     _Atomic uint64_t input_read, input_write, output_read, output_write;
     _Atomic uint64_t faults;
+    _Atomic uint64_t mute_before, pull_before, ready_from, late_frames, underrun_frames, queued_muted_frames;
+    _Atomic uint32_t quantum;
     _Atomic int stopping;
     uint64_t seq, base;
+    uint64_t worker_delay_max_us, input_queue_peak_frames;
+    int64_t worker_reserve_min_us;
     int has_input;
     pthread_t worker;
     surround *decoder;
     const char *status;
 };
 
+static uint64_t monotonic_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000 + (uint64_t)now.tv_nsec;
+}
+
+static void live_mute(void *data, uint64_t before) {
+    struct engine *e = data;
+    before += e->base;
+    /* Only the worker publishes this watermark; it never edits queued slots. */
+    if (before > atomic_load_explicit(&e->mute_before, memory_order_relaxed))
+        atomic_store_explicit(&e->mute_before, before, memory_order_release);
+}
+
 static void live_emit(void *data, uint64_t frame, const float pcm[SURROUND_OUTPUTS]) {
     struct engine *e = data;
+    uint64_t seq = e->base + frame;
+    if (seq < atomic_load_explicit(&e->pull_before, memory_order_acquire)) {
+        atomic_fetch_add_explicit(&e->late_frames, 1, memory_order_relaxed);
+        return;
+    }
     uint64_t w = atomic_load_explicit(&e->output_write, memory_order_relaxed);
     uint64_t r = atomic_load_explicit(&e->output_read, memory_order_acquire);
     if (w - r >= QUEUE) { atomic_fetch_add(&e->faults, 1); return; }
-    e->output[w % QUEUE].seq = e->base + frame;
+    e->output[w % QUEUE].seq = seq;
     memcpy(e->output[w % QUEUE].pcm, pcm, sizeof e->output[0].pcm);
     atomic_store_explicit(&e->output_write, w + 1, memory_order_release);
+}
+
+static int live_pull(struct engine *e, uint64_t wanted, uint64_t *read, uint64_t write,
+                     float pcm[SURROUND_OUTPUTS]) {
+    memset(pcm, 0, sizeof(float) * SURROUND_OUTPUTS);
+    while (*read < write && e->output[*read % QUEUE].seq < wanted) {
+        (*read)++;
+        atomic_fetch_add_explicit(&e->late_frames, 1, memory_order_relaxed);
+    }
+    if (*read == write || e->output[*read % QUEUE].seq != wanted) {
+        if (wanted >= atomic_load_explicit(&e->ready_from, memory_order_acquire))
+            atomic_fetch_add_explicit(&e->underrun_frames, 1, memory_order_relaxed);
+        return 0;
+    }
+    if (wanted < atomic_load_explicit(&e->mute_before, memory_order_acquire))
+        atomic_fetch_add_explicit(&e->queued_muted_frames, 1, memory_order_relaxed);
+    else memcpy(pcm, e->output[*read % QUEUE].pcm, sizeof(float) * SURROUND_OUTPUTS);
+    (*read)++;
+    return 1;
+}
+
+static void worker_observe(struct engine *e, const struct input_frame *f, uint64_t now) {
+    uint64_t age = (now - f->published_ns) / 1000;
+    if (age > e->worker_delay_max_us) e->worker_delay_max_us = age;
+    if (f->seq - e->base < SURROUND_LOOKAHEAD) return;
+    /* Output is acquired once per callback. Its deadline is the beginning of
+     * the callback containing its pull, not the individual sample position. */
+    uint64_t ticks = (f->seq - f->block_seq + SURROUND_LIVE_LATENCY - SURROUND_LOOKAHEAD) / f->quantum;
+    uint64_t deadline = f->published_ns + ticks * f->quantum * 1000000000 / SURROUND_RATE;
+    int64_t reserve = ((int64_t)deadline - (int64_t)now) / 1000;
+    if (reserve < e->worker_reserve_min_us) e->worker_reserve_min_us = reserve;
+}
+
+static int write_live_status(struct engine *e) {
+    char buffer[2048], reserve[32];
+    int n = surround_status_json(e->decoder, buffer, sizeof buffer);
+    if (n < 2) return -1;
+    if (e->worker_reserve_min_us == INT64_MAX) snprintf(reserve, sizeof reserve, "null");
+    else snprintf(reserve, sizeof reserve, "%lld", (long long)e->worker_reserve_min_us);
+    int extra = snprintf(buffer + n - 2, sizeof buffer - (size_t)n + 2,
+        ",\"worker_quantum_frames\":%u,\"worker_delay_max_us\":%llu,"
+        "\"worker_reserve_min_us\":%s,\"input_queue_peak_frames\":%llu,"
+        "\"late_frames\":%llu,\"underrun_frames\":%llu,\"queued_muted_frames\":%llu,"
+        "\"transport_faults\":%llu}\n",
+        atomic_load(&e->quantum), (unsigned long long)e->worker_delay_max_us, reserve,
+        (unsigned long long)e->input_queue_peak_frames, (unsigned long long)atomic_load(&e->late_frames),
+        (unsigned long long)atomic_load(&e->underrun_frames),
+        (unsigned long long)atomic_load(&e->queued_muted_frames), (unsigned long long)atomic_load(&e->faults));
+    if (extra < 0 || (size_t)extra >= sizeof buffer - (size_t)n + 2) return -1;
+    return surround_write_status_json(buffer, e->status);
 }
 
 static void *decode_worker(void *data) {
@@ -51,6 +129,7 @@ static void *decode_worker(void *data) {
     while (!atomic_load(&e->stopping)) {
         uint64_t r = atomic_load_explicit(&e->input_read, memory_order_relaxed);
         uint64_t w = atomic_load_explicit(&e->input_write, memory_order_acquire);
+        if (w - r > e->input_queue_peak_frames) e->input_queue_peak_frames = w - r;
         uint64_t fault = atomic_load(&e->faults);
         if (last_fault != fault) {
             surround_reset(e->decoder);
@@ -62,17 +141,19 @@ static void *decode_worker(void *data) {
             struct input_frame f = e->input[r % QUEUE];
             if (!started) {
                 e->base = f.seq;
+                atomic_store_explicit(&e->ready_from, f.seq, memory_order_release);
                 started = 1;
             } else if (f.seq != next) {
                 surround_reset(e->decoder);
                 e->base = f.seq;
             }
             surround_push(e->decoder, f.pcm, 1);
+            worker_observe(e, &f, monotonic_ns());
             next = f.seq + 1;
             atomic_store_explicit(&e->input_read, ++r, memory_order_release);
         }
         if (++status_ticks >= 100) {
-            if (surround_write_status(e->decoder, e->status)) {
+            if (write_live_status(e)) {
                 fprintf(stderr, "cannot write Surround status: %s\n", strerror(errno));
                 pw_main_loop_quit(e->loop);
                 break;
@@ -89,6 +170,8 @@ static void process(void *data, struct spa_io_position *position) {
     struct engine *e = data;
     if (!position || !position->clock.duration) return;
     uint32_t frames = position->clock.duration;
+    uint64_t published_ns = monotonic_ns(), block_seq = e->seq;
+    atomic_store_explicit(&e->quantum, frames, memory_order_relaxed);
     const float *left = pw_filter_get_dsp_buffer(e->inputs[0], frames);
     const float *right = pw_filter_get_dsp_buffer(e->inputs[1], frames);
     float *output[SURROUND_OUTPUTS];
@@ -96,15 +179,19 @@ static void process(void *data, struct spa_io_position *position) {
         output[c] = pw_filter_get_dsp_buffer(e->outputs[c], frames);
         if (output[c]) memset(output[c], 0, (size_t)frames * sizeof(float));
     }
-    /* This filter does not force a hardware/graph rate. Wrong clocks fail closed. */
+    /* This filter does not force a hardware/graph rate or quantum. */
     int clock_valid = position->clock.rate.num == 1 && position->clock.rate.denom == SURROUND_RATE;
-    int valid = left && right && clock_valid;
+    int timing_valid = clock_valid && frames <= SURROUND_LIVE_LATENCY - SURROUND_LOOKAHEAD;
+    int valid = left && right && timing_valid;
     /* Unlinked startup is not a stream discontinuity: the first PCM source
      * must still receive recognition lookahead rather than an unknown latch. */
-    if (!clock_valid || (!valid && e->has_input)) atomic_fetch_add(&e->faults, 1);
+    if (!timing_valid || (!valid && e->has_input)) atomic_fetch_add(&e->faults, 1);
     uint64_t iw = atomic_load_explicit(&e->input_write, memory_order_relaxed);
     uint64_t ir = atomic_load_explicit(&e->input_read, memory_order_acquire);
     uint64_t or = atomic_load_explicit(&e->output_read, memory_order_relaxed);
+    /* Anything produced after this snapshot cannot enter this output block. */
+    if (e->seq + frames > SURROUND_LIVE_LATENCY)
+        atomic_store_explicit(&e->pull_before, e->seq + frames - SURROUND_LIVE_LATENCY, memory_order_release);
     uint64_t ow = atomic_load_explicit(&e->output_write, memory_order_acquire);
     if (valid && frames > QUEUE - (iw - ir)) {
         valid = 0;
@@ -113,17 +200,16 @@ static void process(void *data, struct spa_io_position *position) {
     if (valid) e->has_input = 1;
     for (uint32_t i = 0; i < frames; i++, e->seq++) {
         if (valid) {
-            e->input[iw % QUEUE] = (struct input_frame){.seq = e->seq, .pcm = {left[i], right[i]}};
+            e->input[iw % QUEUE] = (struct input_frame){.seq = e->seq, .block_seq = block_seq,
+                .published_ns = published_ns, .quantum = frames, .pcm = {left[i], right[i]}};
             iw++;
         }
         if (e->seq < SURROUND_LIVE_LATENCY) continue;
         uint64_t wanted = e->seq - SURROUND_LIVE_LATENCY;
-        while (or < ow && e->output[or % QUEUE].seq < wanted) or++;
-        if (or < ow && e->output[or % QUEUE].seq == wanted) {
-            if (valid) for (unsigned c = 0; c < SURROUND_OUTPUTS; c++)
-                if (output[c]) output[c][i] = e->output[or % QUEUE].pcm[c];
-            or++;
-        }
+        float pcm[SURROUND_OUTPUTS];
+        if (live_pull(e, wanted, &or, ow, pcm) && valid)
+            for (unsigned c = 0; c < SURROUND_OUTPUTS; c++)
+                if (output[c]) output[c][i] = pcm[c];
     }
     atomic_store_explicit(&e->input_write, iw, memory_order_release);
     atomic_store_explicit(&e->output_read, or, memory_order_release);
@@ -195,7 +281,10 @@ static int live(const char *status) {
     struct engine *e = calloc(1, sizeof *e);
     if (!e) return 1;
     e->status = status;
+    e->worker_reserve_min_us = INT64_MAX;
+    atomic_store(&e->ready_from, UINT64_MAX);
     e->decoder = surround_create(live_emit, e);
+    if (e->decoder) surround_set_mute(e->decoder, live_mute);
     pw_init(NULL, NULL);
     e->loop = pw_main_loop_new(NULL);
     if (!e->decoder || !e->loop) goto error;
@@ -222,7 +311,7 @@ static int live(const char *status) {
             pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, name, NULL), NULL, 0);
         if (!e->outputs[i]) goto error;
     }
-    if (surround_write_status(e->decoder, status)) goto error;
+    if (write_live_status(e)) goto error;
     if (pw_filter_connect(e->filter, PW_FILTER_FLAG_RT_PROCESS, NULL, 0) < 0) goto error;
     if (pthread_create(&e->worker, NULL, decode_worker, e)) goto error;
     signal_engine = e;

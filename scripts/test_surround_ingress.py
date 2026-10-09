@@ -119,13 +119,13 @@ class NativeIngressTests(unittest.TestCase):
                     self.assertGreater(status["errors"], 0)
 
     def test_unknown_latch_requires_safe_silence_before_pcm(self):
-        output, _ = self.run_carrier(burst(4) + pcm(10000) + pcm(10000, 0, 0) + pcm(10000))
-        self.assertTrue(all(v == 0 for v in output[:(1536 + 10000) * 8]))
+        output, _ = self.run_carrier(burst(4) + pcm(4000) + pcm(10000, 0, 0) + pcm(10000))
+        self.assertTrue(all(v == 0 for v in output[:(1536 + 4000) * 8]))
         self.assertEqual(list(output[-8:]), [0.125, -0.25, 0, 0, 0, 0, 0, 0])
 
     def test_split_header_is_detected_before_pcm_release(self):
         # More than a maximum DTS burst of lookahead protects preamble transitions.
-        output, _ = self.run_carrier(pcm(12000) + burst(4) + pcm(7000), 1)
+        output, _ = self.run_carrier(pcm(12000) + burst(4) + pcm(4000), 1)
         self.assertEqual(list(output[:8]), [0.125, -0.25, 0, 0, 0, 0, 0, 0])
         self.assertTrue(all(v == 0 for v in output[12000 * 8:]))
 
@@ -151,12 +151,111 @@ class NativeIngressTests(unittest.TestCase):
         self.assertEqual([output[i * 8 + c] for i in range(24000) for c in (0, 1)], expected)
         self.assertEqual((status["codec"], status["state"], status["errors"]), ("pcm", "pcm", 0))
 
+    def test_confirmed_raw_dts_never_reopens_pcm_between_long_sync_intervals(self):
+        for spacing in (7000, 8192):
+            with self.subTest(spacing=spacing):
+                frame = bytes.fromhex("fe7f0180") + b"\x55\xaa" * (spacing * 2 - 2)
+                output, status = self.run_carrier(words_to_carrier(frame * 5), 1)
+                self.assertTrue(all(value == 0 for value in output[spacing * 2 * 8:]),
+                                "confirmed raw-DTS carrier escaped before its next accepted sync")
+                self.assertEqual(status["state"], "muted")
+                self.assertEqual(status["mute_reason"], "raw-dts")
+
+    def test_iec_recovery_uses_short_timeout_after_confirmed_raw_dts(self):
+        raw = bytes.fromhex("fe7f0180") + b"\x55\xaa" * 1022
+        carrier = self.encoded_fixture("ac3", "stereo")
+        data = words_to_carrier(raw * 5 + carrier) + pcm(9000)
+        output, status = self.run_carrier(data, 1)
+        resumed = 5 * 512 + len(carrier) // 4 + 5122
+        self.assertEqual(list(output[resumed * 8:(resumed + 1) * 8]),
+                         [0.125, -0.25, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(status["state"], "pcm")
+
+    def test_confirmed_raw_dts_keeps_suppression_during_spacing_and_packing_changes(self):
+        for change in ("spacing", "packing"):
+            with self.subTest(change=change):
+                period = 3584 if change == "spacing" else 4096
+                syncs = [(0, "fe7f0180"), (4096, "fe7f0180"), (8192, "fe7f0180")]
+                syncs += [(8192 + period * i, "7ffe8001" if change == "packing" else "fe7f0180")
+                          for i in range(1, 7)]
+                carrier = bytearray(b"\x55\xaa" * ((syncs[-1][0] + period) * 2))
+                for frame, sync in syncs:
+                    carrier[frame * 4:frame * 4 + 4] = bytes.fromhex(sync)
+                output, status = self.run_carrier(words_to_carrier(carrier), 1)
+                self.assertTrue(all(value == 0 for value in output[8192 * 8:]),
+                                "confirmed raw-DTS suppression was lost during requalification")
+                self.assertEqual(status["state"], "muted")
+
     def test_encoded_stream_ending_without_silence_returns_to_pcm(self):
         output, status = self.run_carrier(burst(4) * 3 + pcm(20000), 5)
         last_burst = 2 * 1536
-        self.assertTrue(all(v == 0 for v in output[:(last_burst + 12288) * 8]))
+        resumed = last_burst + 6658
+        self.assertTrue(all(v == 0 for v in output[:resumed * 8]))
+        self.assertEqual(list(output[resumed * 8:(resumed + 1) * 8]),
+                         [0.125, -0.25, 0, 0, 0, 0, 0, 0])
         self.assertEqual(list(output[-8:]), [0.125, -0.25, 0, 0, 0, 0, 0, 0])
         self.assertEqual(status["state"], "pcm")
+
+    def test_pcm_tail_survives_supported_unsupported_and_pause_transitions(self):
+        carriers = [self.encoded_fixture("ac3", "stereo"),
+                    self.encoded_fixture("dca", "5.1(side)")]
+        carriers += [struct.pack("<HHHH", 0xf872, 0x4e1f, kind, 16).ljust(6144, b"\0")
+                     for kind in (0, 3, 4, 0x81)]
+        for carrier in carriers:
+            for shifted in (False, True):
+                with self.subTest(kind=carrier[4], shifted=shifted):
+                    prefix = pcm(9000)
+                    if shifted:
+                        # Preamble starts on the right port of the boundary frame.
+                        prefix += struct.pack("<i", 0)
+                    output, _ = self.run_carrier(prefix + words_to_carrier(carrier)
+                                                + (struct.pack("<i", 0) if shifted else b""), 1)
+                    self.assertTrue(output[:9000 * 8] == array.array("f",
+                                    [0.125, -0.25, 0, 0, 0, 0, 0, 0] * 9000),
+                                    "IEC transition discarded valid PCM before the burst")
+
+    def test_mid_payload_startup_is_not_established_pcm(self):
+        for codec, duration in (("ac3", 1536), ("dca", 512)):
+            for stereo in (False, True):
+                with self.subTest(codec=codec, stereo=stereo):
+                    carrier = self.encoded_fixture(codec, "stereo")[40:]
+                    output, status = self.run_carrier(words_to_carrier(carrier), 1, stereo=stereo)
+                    channels = 2 if stereo else 8
+                    self.assertTrue(all(value == 0 for value in output[:(duration - 10) * channels]),
+                                    "partial startup payload was released as PCM")
+                    self.assertGreater(max(abs(value) for value in output), 0.001)
+                    self.assertLess(max(abs(value) for value in output), 0.5)
+                    self.assertEqual(status["codec"], "dts" if codec == "dca" else codec)
+
+    def test_longest_corrupt_dts_burst_cannot_leak_past_lookahead(self):
+        # Payload completes at the last word, including a cross-frame preamble.
+        data = pcm(9000) + struct.pack("<i", 0)
+        data += burst(0x0d, b"\xff\x7f" * 4092, 2048) + struct.pack("<i", 0)
+        output, status = self.run_carrier(data, 1)
+        self.assertTrue(output[:9000 * 8] == array.array("f", [0.125, -0.25, 0, 0, 0, 0, 0, 0] * 9000))
+        self.assertTrue(all(v == 0 for v in output[9000 * 8:]))
+        self.assertEqual(status["mute_reason"], "corrupt")
+
+    def test_eac3_maximum_period_never_falls_back_between_bursts(self):
+        output, status = self.run_carrier(burst(0x15, b"\xff\x7f" * 100, 6144) * 5, 19)
+        self.assertTrue(all(v == 0 for v in output))
+        self.assertEqual(status["state"], "muted")
+
+    def test_rapid_codec_switches_preserve_all_decoded_frames(self):
+        ac3 = self.encoded_fixture("ac3", "stereo")[:6144]
+        dts = self.encoded_fixture("dca", "5.1(side)")[:2048]
+        multichannel = self.encoded_fixture("ac3", "5.1(side)")[:6144]
+        segments = [(ac3, 2), (dts, 6), (multichannel, 6)] * 12
+        output, status = self.run_carrier(words_to_carrier(b"".join(data for data, _ in segments)), 1)
+        offset = 0
+        for data, channels in segments:
+            reference = self.reference(data)
+            for channel in range(channels):
+                actual = output[offset * 8 + channel:(offset + len(data) // 4) * 8:8]
+                self.assertLess(max(abs(a - b) for a, b in zip(actual, reference[channel::channels])), 1e-5)
+            offset += len(data) // 4
+        self.assertEqual(status["errors"], 0)
+        self.assertEqual(status["decoded_bursts"], 36)
 
     def encoded_fixture(self, codec, layout):
         if not shutil.which("ffmpeg"):

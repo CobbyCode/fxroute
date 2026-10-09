@@ -23,12 +23,13 @@ enum carrier_mode { MODE_PCM, MODE_ENCODED, MODE_UNKNOWN };
 struct pending_frame { uint64_t tag; float pcm[SURROUND_OUTPUTS]; };
 struct surround {
     surround_emit emit;
+    surround_mute mute;
     void *data;
     struct pending_frame pending[PENDING];
     uint64_t input, emitted, burst_frame, previous_frame, errors, decoded;
     uint64_t words, last_sync, raw_last, raw_spacing;
     uint32_t raw_pattern;
-    unsigned raw_repeats;
+    unsigned raw_repeats, raw_latched, pcm_established;
     enum carrier_mode mode;
     unsigned silence, phase, swapped, kind, bits, payload_words, payload_have, header_error;
     uint16_t previous;
@@ -86,13 +87,15 @@ static void flush_decoders(surround *d) {
     d->active = NULL;
 }
 
-static void mute_pending(surround *d) {
-    for (uint64_t i = d->emitted; i <= d->input + DECODE_SAMPLES; i++)
+static void mute_pending(surround *d, uint64_t start) {
+    if (start < d->emitted) start = d->emitted;
+    for (uint64_t i = start; i <= d->input + DECODE_SAMPLES; i++)
         memset(slot(d, i)->pcm, 0, sizeof slot(d, i)->pcm);
 }
 
 static void unknown(surround *d, const char *reason) {
-    mute_pending(d);
+    if (d->mute) d->mute(d->data, d->input + 1);
+    mute_pending(d, d->emitted);
     flush_decoders(d);
     d->mode = MODE_UNKNOWN;
     d->silence = 0;
@@ -244,6 +247,9 @@ static int raw_dts_sync(uint32_t sync) {
  * only when its sync recurs three times at one constant frame spacing. */
 static void raw_dts_candidate(surround *d) {
     uint64_t spacing = d->words - d->raw_last;
+    /* Once confirmed, plausible syncs keep suppression during requalification. */
+    if (d->raw_latched && spacing >= RAW_DTS_MIN_SPACING && spacing <= RAW_DTS_MAX_SPACING)
+        d->last_sync = d->input;
     if (d->raw_last && d->raw_pattern == d->raw_sync &&
         spacing >= RAW_DTS_MIN_SPACING && spacing <= RAW_DTS_MAX_SPACING) {
         if (spacing == d->raw_spacing) d->raw_repeats++;
@@ -255,6 +261,7 @@ static void raw_dts_candidate(surround *d) {
     }
     d->raw_last = d->words;
     if (d->raw_repeats < 2) return;
+    d->raw_latched = 1;
     /* Raw DTS decoding is deliberately unsupported, including 14-bit packing. */
     if (d->mode != MODE_UNKNOWN) unknown(d, "raw-dts");
     d->last_sync = d->input;
@@ -264,11 +271,13 @@ static void reset_raw_dts(surround *d) {
     d->raw_last = d->raw_spacing = 0;
     d->raw_pattern = 0;
     d->raw_repeats = 0;
+    d->raw_latched = 0;
 }
 
 static void return_to_pcm(surround *d) {
     flush_decoders(d);
     d->mode = MODE_PCM;
+    d->pcm_established = 1;
     d->previous = d->raw_sync = 0;
     reset_raw_dts(d);
     pcm_metadata(d);
@@ -345,13 +354,16 @@ static void word(surround *d, uint16_t value) {
     }
     if ((d->previous == 0xf872 && value == 0x4e1f) ||
         (d->previous == 0x72f8 && value == 0x1f4e)) {
-        if (d->mode == MODE_PCM) mute_pending(d);
+        /* A first preamble inside startup lookahead may follow a partial payload.
+         * Once PCM is established, preserve its tail before the preamble. */
+        d->burst_frame = d->previous_frame;
+        if (d->mode == MODE_PCM) mute_pending(d, d->pcm_established ? d->burst_frame : 0);
+        reset_raw_dts(d);
         d->mode = MODE_ENCODED;
         d->silence = 0;
         d->last_sync = d->input;
         d->swapped = d->previous == 0x72f8;
         /* The preceding word may be the right port of the preceding frame. */
-        d->burst_frame = d->previous_frame;
         d->phase = 1;
         d->previous = 0;
         d->raw_sync = 0;
@@ -376,6 +388,8 @@ surround *surround_create(surround_emit emit, void *data) {
     return d;
 }
 
+void surround_set_mute(surround *d, surround_mute mute) { d->mute = mute; }
+
 void surround_destroy(surround *d) {
     if (!d) return;
     avcodec_free_context(&d->ac3);
@@ -386,11 +400,13 @@ void surround_destroy(surround *d) {
 }
 
 void surround_reset(surround *d) {
+    if (d->mute) d->mute(d->data, d->input);
     flush_decoders(d);
     for (unsigned i = 0; i < PENDING; i++) d->pending[i].tag = UINT64_MAX;
     d->input = d->emitted = 0;
     d->previous = d->phase = d->silence = d->raw_sync = 0;
     d->last_sync = 0;
+    d->pcm_established = 0;
     reset_raw_dts(d);
     d->mode = MODE_UNKNOWN;
     metadata(d, "discontinuity");
@@ -419,12 +435,14 @@ void surround_push(surround *d, const float *stereo, size_t frames) {
         } else d->silence = 0;
         /* Every IEC stream repeats its preamble each burst; without one the
          * carrier is PCM again, so no latch outlives the stream it guarded. */
-        if (d->mode != MODE_PCM && !d->phase && d->input - d->last_sync > SURROUND_SYNC_TIMEOUT)
+        uint64_t timeout = d->raw_latched ? SURROUND_RAW_SYNC_TIMEOUT : SURROUND_SYNC_TIMEOUT;
+        if (d->mode != MODE_PCM && !d->phase && d->input - d->last_sync > timeout)
             return_to_pcm(d);
         word(d, carrier_word(l));
         word(d, carrier_word(r));
         d->input++;
         if (d->input > SURROUND_LOOKAHEAD) {
+            if (d->mode == MODE_PCM) d->pcm_established = 1;
             d->emit(d->data, d->emitted, slot(d, d->emitted)->pcm);
             d->emitted++;
         }
@@ -449,9 +467,11 @@ int surround_status_json(const surround *d, char *buffer, size_t size) {
         "{\"codec\":\"%s\",\"sample_rate\":%u,\"layout\":\"%s\",\"positions\":[%s],"
         "\"bus_positions\":[\"FL\",\"FR\",\"FC\",\"LFE\",\"SL\",\"SR\",\"BL\",\"BR\"],"
         "\"errors\":%llu,\"decoded_bursts\":%llu,\"lookahead_frames\":%u,"
+        "\"live_latency_frames\":%u,\"worker_margin_frames\":%u,"
         "\"state\":\"%s\",\"mute_reason\":\"%s\"}\n",
         d->codec, d->rate, d->layout, positions, (unsigned long long)d->errors,
-        (unsigned long long)d->decoded, SURROUND_LOOKAHEAD,
+        (unsigned long long)d->decoded, SURROUND_LOOKAHEAD, SURROUND_LIVE_LATENCY,
+        SURROUND_LIVE_LATENCY - SURROUND_LOOKAHEAD,
         d->mode == MODE_PCM ? "pcm" : d->mode == MODE_UNKNOWN || !d->position_count ? "muted" : "encoded",
         d->mute_reason);
     return n >= 0 && (size_t)n < size ? n : -1;
@@ -459,12 +479,19 @@ int surround_status_json(const surround *d, char *buffer, size_t size) {
 
 int surround_write_status(const surround *d, const char *path) {
     if (!path) return 0;
-    char buffer[1024], temporary[4096];
+    char buffer[1024];
     int n = surround_status_json(d, buffer, sizeof buffer);
-    if (n < 0 || snprintf(temporary, sizeof temporary, "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof temporary) return -1;
+    return n < 0 ? -1 : surround_write_status_json(buffer, path);
+}
+
+int surround_write_status_json(const char *json, const char *path) {
+    if (!path) return 0;
+    char temporary[4096];
+    size_t n = strlen(json);
+    if (snprintf(temporary, sizeof temporary, "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof temporary) return -1;
     FILE *file = fopen(temporary, "w");
     if (!file) return -1;
-    int error = fwrite(buffer, 1, (size_t)n, file) != (size_t)n;
+    int error = fwrite(json, 1, n, file) != n;
     if (fclose(file)) error = 1;
     if (!error && rename(temporary, path)) error = 1;
     if (error) unlink(temporary);

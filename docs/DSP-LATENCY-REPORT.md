@@ -4,8 +4,14 @@ Die Abschnitte 1–14 dokumentieren die Bestandsaufnahme vor AV Sync und das
 daraus abgeleitete Konzept. Abschnitt 15 beschreibt die Implementierung.
 Alle Werte sind aus dem Code abgeleitet oder auf der Testmaschine gemessen;
 offene Messgrenzen sind ausdrücklich gekennzeichnet. Korrektur vom 08.10.2026:
-PCM durch den Live-Surround-Helfer hat ebenfalls 8192 Frames Eingangslatenz;
+PCM durch den Live-Surround-Helfer hatte ebenfalls 8192 Frames Eingangslatenz;
 die frühere Nullmessung betraf nur dessen Offline-Decoder, nicht den Ingress.
+
+Optimierung vom 09.10.2026: Der aktuelle Helfer nutzt für PCM/AC-3/DTS
+**3074 Frames (64,04 ms)** mit 2050 Frames Erkennungsfenster und 1024 Frames
+Worker-Marge. Aktuelle Werte unten sind entsprechend nachgeführt; die alte
+Umschaltmessung in 6.4 bleibt als historische Vergleichsbasis erhalten.
+Messbelege und Schutzgrenzen: `docs/SPDIF-LATENCY-ANALYSIS.md`, Abschnitt 10.
 
 ## 1. Vorgehen und Belege
 
@@ -57,10 +63,11 @@ die frühere Nullmessung betraf nur dessen Offline-Decoder, nicht den Ingress.
 7. **Crystalizer: Speex-Anteil 80 Samples bei allen acht getesteten Raten**
    (44,1…384 kHz); die Gesamtlatenz folgt der Codeformel (4.4).
 8. **Surround-Eingang:** PCM und komprimierte Streams (AC-3/DTS) durch den
-   Live-Helfer sind um **8192 Frames (170,67 ms)** verzögert. Direkte PCM-Pfade
+    Live-Helfer sind um **3074 Frames (64,04 ms)** verzögert. Direkte PCM-Pfade
    außerhalb dieses Helfers haben diesen Anteil nicht. Ein Wechsel
-   Bitstream→PCM kostet gemessen **10754 Frames ≈ 224 ms** Stille, PCM→Bitstream
-   verschluckt die letzten **4096 Frames (85,33 ms)** PCM (6.4).
+    Bitstream→PCM wartet sicher bis zur Sync-Abwesenheit von mehr als 6656 Frames;
+    nach AC-3 bleiben **5122 Frames ≈ 106,71 ms**, nach DTS-512 **6146 Frames ≈ 128,04 ms**.
+    PCM→Bitstream erhält den vollständigen etablierten PCM-Tail (6.4).
 9. **Live-Änderungen können die Latenz mitten im Stream verschieben**, ohne
    Rebuild: gemessen Loudness `fft` 256 → 8192 (Δ 7936 Frames = 165,3 ms) direkt
    hintereinander (8.2). Ein Latenz-Balance, die nur den Compile-Zustand kennt,
@@ -158,8 +165,8 @@ Least-Squares-/Kreuzkorrelations-Lag bestätigt (siehe 4.2/4.3).
 | Headroom / Master-Gain | — | **0** | 0 | nur Gain |
 | **Autogain** (nativ) | — | **0** | 0 | nur Gain |
 | **Crossover** (Butterworth/LR-SOS) | — | **0** fest | 0 | nur frequenzabhängige Gruppenlaufzeit |
-| **Surround-Eingang, komprimiert** (AC-3/DTS) | Live-Pfad | **8192** (170,67 ms) | — (nur 48 kHz) | siehe Abschnitt 6 |
-| **Surround-Eingang, PCM** | Live-Pfad durch Helfer | **8192** (170,67 ms) | — | nur 48 kHz; direkter PCM-Pfad ohne Helfer: 0 |
+| **Surround-Eingang, komprimiert** (AC-3/DTS) | Live-Pfad | **3074** (64,04 ms) | — (nur 48 kHz) | siehe Abschnitt 6 |
+| **Surround-Eingang, PCM** | Live-Pfad durch Helfer | **3074** (64,04 ms) | — | nur 48 kHz; direkter PCM-Pfad ohne Helfer: 0 |
 | PipeWire **SRC-Adapter** | Rate ≠ Graph-Rate | deklariert **750 ms** | dito | siehe Abschnitt 9 |
 
 ### 4.1 Formeln, die sich direkt aus dem Code berechnen lassen
@@ -186,9 +193,9 @@ Least-Squares-/Kreuzkorrelations-Lag bestätigt (siehe 4.2/4.3).
 - Limiter: Latenz = Lookahead in Samples, von LSP abgerundet; der LV2-Port
   bestätigt das (0,1/1/4/16 ms → 4/48/192/768 @48 kHz, 4/44/176/705 @44,1 kHz).
   Die nativen Delay-Stufen runden dagegen per `llround`.
-- Surround-Eingang durch Helfer (PCM und komprimiert): 8192 Frames = `SURROUND_LIVE_LATENCY`
-  (`surround.h:14`, `ingress.c:119-125`). Das Erkennungsfenster
-  `SURROUND_LOOKAHEAD = 4096` (`surround.h:9`, `surround.c:406`) ist die
+- Surround-Eingang durch Helfer (PCM und komprimiert): 3074 Frames = `SURROUND_LIVE_LATENCY`
+  (`surround.h`, `ingress.c:process`). Das Erkennungsfenster
+  `SURROUND_LOOKAHEAD = 2050` (`surround.h`, `surround.c:surround_push`) ist die
   Vorlaufzeit der Decoder-Entscheidung, **kein** zusätzlicher Summand (6.3).
 
 ### 4.2 EQ im FIR/FFT-Modus: Auflösung der 6144/10240-Abweichung
@@ -368,13 +375,13 @@ mit `ffmpeg`-Fixtures (48 kHz, 1–2 s Sinus-Mix) über
 - **PCM im Offline-Decoder:** Latenz **0**. Gemessen: reiner PCM-Träger
   30000 Frames → erster Nicht-Null-Ausgang bei Frame 0, `state=pcm`, `errors=0`.
   Das ist nicht die Latenz des Live-Ingress: `ingress.c` puffert auch diese
-  PCM-Ausgabe um 8192 Frames.
-- **PCM und komprimiert durch den Live-Helfer:** 8192 Frames = **170,67 ms**
-  (`SURROUND_LIVE_LATENCY`, `ingress.c:119-125`). Der Live-Ausgang liest bei
-  Eingabe-Frame `N` den dekodierten Inhalt von Index `N − 8192`; die
+  PCM-Ausgabe um 3074 Frames.
+- **PCM und komprimiert durch den Live-Helfer:** 3074 Frames = **64,04 ms**
+  (`SURROUND_LIVE_LATENCY`, `ingress.c:process`). Der Live-Ausgang liest bei
+  Eingabe-Frame `N` den dekodierten Inhalt von Index `N − 3074`; die
   Inhalt-Zeitachse wird beim Emittieren 1:1 weitergeführt
   (`surround.c:403-408`, `live_emit` mit `base + frame`), sodass Träger-Frame `k`
-  um `k + 8192` am DSP-Eingang anliegt.
+  um `k + 3074` am DSP-Eingang anliegt, zuzüglich Graph-Transport.
 
 **Ergänzung vom 09.10.2026:** Die automatische Eingangsstufe wird nun auch in
 Stereo und Stereo + Sub verwendet. Ihre zusätzlichen Stereo-Downmix-Ports
@@ -383,21 +390,25 @@ acht diskreten Ports; PCM und kodiertes Stereo bleiben pegelgetreu. Der
 erweiterte `native_surround/test_live.py` zeichnet im privaten PipeWire-Graphen
 Rohträger und Helferausgang synchron auf und vergleicht sie sample-genau mit
 der Offline-Referenz. Bei 256 Frames Quantum ergibt dieser Beobachterpfad
-**8448 Frames = 8192 + 256**: Zum Helferpuffer kommt ein Graph-Scheduling-Hop.
+**3330 Frames = 3074 + 256**: Zum Helferpuffer kommt ein Graph-Scheduling-Hop
+(vor der Optimierung: 8448 = 8192 +256).
 Dieser Transportanteil ist nicht Teil des bisherigen algorithmischen AV-Sync-
 Providers und keine Messung der physischen TV-/ADC-/DAC-Kette.
 
 ### 6.3 Erkennungsfenster
 
-`SURROUND_LOOKAHEAD = 4096` (`surround.h:9`): Der Decoder emittiert einen Frame
-erst, wenn 4096 weitere Trägerframes eingelesen sind
-(`if (d->input > SURROUND_LOOKAHEAD)`, `surround.c:406`) — er kann also
+`SURROUND_LOOKAHEAD = 2050` (`surround.h`): Der Decoder emittiert einen Frame
+erst, wenn 2050 weitere Trägerframes eingelesen sind
+(`if (d->input > SURROUND_LOOKAHEAD)`, `surround.c:surround_push`) — er kann also
 innerhalb dieses Fensters noch nachträglich stumm schalten. Damit ist der
-Vorlauf **kleiner** als die Live-Verzögerung (4096 < 8192) und wird von ihr
+Vorlauf **kleiner** als die Live-Verzögerung (2050 < 3074) und wird von ihr
 abgedeckt: **er ist kein Summand**. Der Status meldet ihn als
-`lookahead_frames=4096` (in allen Messungen bestätigt).
+`lookahead_frames=2050`. Ein atomarer Safety-Watermark erreicht zusätzlich
+noch nicht gepullte Output-Queue-Frames, ohne deren Worker-Slots zu verändern.
 
 ### 6.4 Umschaltverhalten (gemessen)
+
+Historische Messung **vor** der Optimierung:
 
 | Übergang | Messung | Länge |
 |---|---|---:|
@@ -406,16 +417,24 @@ abgedeckt: **er ist kein Summand**. Der Status meldet ihn als
 | AC-3 → DTS → AC-3 | ein Stream, 1 s je Abschnitt: **keine** Lücke, `errors=0`, `decoded_bursts=158` (= 32 + 94 + 32), Inhalt je Abschnitt deckungsgleich mit der Referenz | 0 |
 | AC-3 stereo → AC-3 5.1(side) (Layoutwechsel) | `test_surround_ingress.py` und eigene Messung: Kanalhistorie wird per `avcodec_flush_buffers` zurückgesetzt, Audio bleibt sample-genau, `errors=0` | 0 |
 
-Wichtig für die Gesamtbilanz: Die **Stille-Länge** ist im Live-Pfad dieselbe wie
-offline (beide Kanten werden um dieselbe Live-Verzögerung verschoben); nur die
-absolute Lage ändert sich. Ein Quellenwechsel Bitstream→PCM kostet also rund
-**224 ms Stille**, ein Wechsel PCM→Bitstream verschluckt 85,3 ms PCM-Tail.
+Aktuell erhält PCM→Bitstream jeden etablierten PCM-Frame vor der Präambel. Ein
+erster Burst innerhalb des Anlauffensters löscht weiterhin den unklassifizierten
+Präfix, damit ein mitten im Payload beginnender Eingang nicht verrauscht. Direkte
+Codec-/Layoutwechsel bleiben lückenlos. Der sichere Rückweg nach PCM beginnt
+bei letzter Präambel +6658: nach AC-3 **5122 Frames (106,71 ms)**, nach DTS-512
+**6146 Frames (128,04 ms)** nach Burst-Ende. Die **Stille-Länge** ist im
+Live-Pfad dieselbe wie offline; beide Kanten werden um dieselbe feste Latenz
+verschoben. Die Regel bleibt länger als die maximale E-AC-3-Periode (6144).
 
 ### 6.5 Grenzen
 
 - **Nur 48 kHz** (`position->clock.rate == 1/48000`, `ingress.c:100-101`);
   jeder andere Graph-Rate liefert Stille (fail closed).
 - Roh-DTS wird nur zur Unterdrückung erkannt, nicht dekodiert.
+- Nur Quantum ≤1024: Größere Callbacks enthalten Pulls, deren Erkennung erst
+  im selben Callback eingelesen würde, und liefern deshalb Stille. Der Helfer
+  erzwingt keine Quantum-Änderung. Worker-Telemetrie belegt die Reserve im
+  geprüften Graphen; beliebige OS-Stalls können weiterhin fail-closed Stille erzeugen.
 - Die ursprüngliche Messrunde leitete den Live-Offset aus `ingress.c` und dem
   Offline-Verhalten ab. Die Ergänzung vom 09.10.2026 prüft ihn auch im privaten
   PipeWire-Testgraphen (6.2), weiterhin **nicht** physisch end-to-end.
@@ -561,7 +580,7 @@ hier still falsch.
   **Startup-Reserve**, keine Ziel-Latenz.
 - **PCM-Eingang (STDIN):** `pw-cat … --latency 100ms`
   (`audio/stdin_pipewire.py:77`) → Gerätepuffer-Ziel des Ingress-Knotens.
-- **Surround-Eingang (PCM/AC-3/DTS durch Helfer):** Live-Ausgabe um **8192 Frames (170,67 ms)**
+- **Surround-Eingang (PCM/AC-3/DTS durch Helfer):** Live-Ausgabe um **3074 Frames (64,04 ms)**
   verzögert (Abschnitt 6), 32768-Frame-Queues, nur 48 kHz.
 - **CPU-Rechenzeit ≠ Latenz:** `FXDSP_TIMING_*` (`timing.c/h`) und
   `max_callback_ms`/`first_output_ns` messen Wanduhr-/CPU-Zeit. Sie verschieben
@@ -690,7 +709,7 @@ für jeden Ausgang i:
 Zwei Eigenschaften, die die Anforderungen 2 und 3 per Konstruktion erfüllen:
 
 - **(L1) Eine gleichmäßige Änderung ist relativ wirkungslos.** Wächst
-   `E_i + L_i` auf allen Ausgängen gleich — z. B. direkter PCM-Pfad → Helfer: 8192 Frames für
+   `E_i + L_i` auf allen Ausgängen gleich — z. B. direkter PCM-Pfad → Helfer: 3074 Frames für
   alle —, ist `max_j Δ_j = Δ_i` und damit `D_i = 0` für alle; nur `C` schrumpft.
   Ein Eingangszweigwechsel kann die Ausrichtung also nicht verschieben.
 - **(L2) Die Ausrichtung ist invariant.** Mit `D_i = maxΔ − Δ_i` gilt
@@ -788,14 +807,14 @@ Die Audio-Latenz hängt nicht nur am DSP, sondern am gewählten **Zweig**:
 | Zweig | `E` = Guthaben (`W`-Anrechnung) | Quelle |
 |---|---:|---|
 | PCM-Eingang / Datei-Wiedergabe | 0 (Gerätepuffer separat, Abschnitt 9) | `audio/stdin_pipewire.py:77` |
-| Digital-In komprimiert (AC-3/DTS) | **8192 Frames = 170,67 ms** | 6.2 |
-| Digital-In PCM durch Surround-Helfer | **8192 Frames = 170,67 ms** | 6.2 |
+| Digital-In komprimiert (AC-3/DTS) | **3074 Frames = 64,04 ms** | 6.2 |
+| Digital-In PCM durch Surround-Helfer | **3074 Frames = 64,04 ms** | 6.2 |
 | SRC-Adapter aktiv (Rate ≠ Graph-Rate) | dynamisch (`timeline_delay`), nicht stabil | `native_src/build.py:133`, `docs/playback-src.md` |
 | Nicht-48-kHz-Graph am Surround-Eingang | Stille (fail closed) — keine Bilanz | `ingress.c:100-101` |
 
 Konsequenz für das Konzept: Der Eingangszweig ist unter der Guthaben-Semantik
 kein Zusatzproblem, sondern ein **automatischer Abzug von `C`**. Wechselt der
-Nutzer vom direkten PCM-Pfad zum Live-Helfer, sinkt `C` um 170,67 ms, die
+Nutzer vom direkten PCM-Pfad zum Live-Helfer, sinkt `C` um 64,04 ms, die
 Gesamtverzögerung bleibt bei erreichbarem Ziel `W`, und die relative Ausrichtung
 ändert sich nicht (Lemma L1, 12.2). PCM ↔ AC-3/DTS innerhalb des Helfers verändert
 das Guthaben nicht. Voraussetzungen:
@@ -803,8 +822,8 @@ das Guthaben nicht. Voraussetzungen:
 - Der Zweig muss **bekannt** sein: `state` (`pcm` / `encoded` / `muted`) und
   `sample_rate` aus dem Status des Eingangs-Helfers.
 - `C` muss beim Zweigwechsel **innerhalb derselben Transaktion** neu gerechnet
-  werden; die Übergänge selbst sind Stille (224 ms bitstream→PCM, 85,3 ms
-  PCM→bitstream, 6.4), in der jede Bilanz bedeutungslos ist.
+  werden; die sichere Bitstream→PCM-Lücke beträgt je nach Burst etwa 107–128 ms;
+  PCM→Bitstream verwirft keinen etablierten PCM-Tail (6.4).
 - **`OFFEN` — SRC-Zweig:** Die effektive Latenz folgt `timeline_delay` und ist
   situationsabhängig; ein Guthaben daraus wäre nicht stabil. Vorschlag: SRC
   nicht anrechnen (konservativ, `C` bleibt größer) und als eigene Zeile melden.
@@ -826,7 +845,7 @@ das Guthaben nicht. Voraussetzungen:
   3. **Eingabefeld Wunsch-Gesamtverzögerung**, gespeichert pro Output-Modus.
   4. **Spreizungszeile:** „Kanal/Gruppe X hat Δ = … ms; Ausgleich ergänzt … ms"
      plus der Hinweis, dass dabei **kein Align-Wert** verändert wird.
-  5. **Zweigzeile:** „Digital-In (Dolby Digital 5.1): 170,7 ms angerechnet".
+   5. **Zweigzeile:** „Digital-In (Dolby Digital 5.1): 64,04 ms angerechnet".
   6. Anzeige „angewandt" / „gedeckelt" / „nicht erreichbar" (jeweils mit Grund).
   7. Hinweis, dass der Wert nur die Audio-Seite verzögert und dass strenge
      Lip-Sync-Ziele den Video-Zweig brauchen (12.4).
@@ -867,7 +886,7 @@ das Guthaben nicht. Voraussetzungen:
 - Ein zweiter, engine-geführter Delay-Term pro Ausgang (12.3), damit Messung und
   AV-Sync sich nicht überschreiben.
 - Latenz-Ausgabe des Eingangs-Helfers (vorhandene Felder `lookahead_frames`,
-  `state` plus der Live-Wert 8192) in derselben Bilanz.
+  `state` plus `live_latency_frames=3074`) in derselben Bilanz.
 
 ### 12.9 Umsetzung in Stufen (Vorschlag)
 
@@ -1137,9 +1156,12 @@ Zur vorgeschlagenen **`align`/`sync`-Trennung** selbst:
 1. **Physische Latenz** von DAC/AVR/TV (HDMI/eARC) ist nicht Teil des Codes und
    muss extern bestimmt werden (Messmikrofon oder Geräteangabe). Sie ist der
    größte verbliebene unbekannte Anteil der Gesamtbilanz.
-2. **Live-Pfad des Surround-Eingangs** wurde nicht in einem laufenden Graphen
-   gemessen (nur code- und offline-abgeleitet, 6.5); die 8192 Frames gelten für
-   48 kHz und ein fehlerfreies Scheduling.
+2. **Live-Pfad des Surround-Eingangs:** Der aktuelle Offset von 3074 Frames
+   ist im privaten Graphen bei 48 kHz inklusive Schnellwechseln und CPU-Last
+   sowie passiv im Produktgraphen am aktiven TV-PCM geprüft (je 30 s ohne/mit
+   sechs Busy-Workern, keine Verluste, mindestens 16,268 ms Worker-Reserve).
+   Der Beobachterhop ist getrennt von der algorithmischen Latenz;
+   physische TV-/ADC-/DAC-Latenz bleibt ungemessen (6.5).
 3. **LSP-Loudness-Port**: Ursache des konstanten 7680 und des Nachhinkens ist
    aus dem TTL nicht erklärbar (gemessen, 4.3). Für die Bilanz ist nur die
    Formel „Latenz = fftSize" zu verwenden.
