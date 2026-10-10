@@ -1077,11 +1077,19 @@
        width here and dragged the room view and the action row out of the
        panel on a 320px screen. */
     .hybrid-wizard-grid { grid-template-columns: minmax(0, 1fr); }
-    .hybrid-room-view { min-height: 300px; }
+    .hybrid-room-view { min-height: 320px; }
     /* A phone-wide room: a smaller seat leaves the side and rear speakers
-       their own space instead of sitting on its arms. */
-    .hybrid-seat { transform: translate(-50%, -50%) scale(0.8); }
-    .hybrid-room-view[data-hybrid-group="rear"] { --hybrid-speaker-y: 88%; --hybrid-direct-y: 68%; }
+       their own space instead of sitting on its arms (the front group keeps
+       the full seat). */
+    .hybrid-room-view[data-hybrid-group="side"] .hybrid-seat,
+    .hybrid-room-view[data-hybrid-group="rear"] .hybrid-seat { transform: translate(-50%, -50%) scale(0.8); }
+    /* Rear: seat, 1 m microphones and speakers stack in the 320px room
+       without touching (the room is too short for the wide-room positions). */
+    .hybrid-room-view[data-hybrid-group="rear"] {
+        --hybrid-listen-shift: -33%;
+        --hybrid-direct-y: 66%;
+        --hybrid-speaker-y: 85%;
+    }
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 

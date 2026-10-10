@@ -49,7 +49,8 @@ function chipRow() {
     return row;
 }
 
-function measurementFor(form, index) {
+// `ungatedGroups`: groups whose direct response reports no gated lower limit.
+function measurementFor(form, index, ungatedGroups = new Set()) {
     const role = form.get('measurement_role');
     const channel = form.get('channel');
     const group = form.get('measurement_group');
@@ -64,7 +65,7 @@ function measurementFor(form, index) {
     };
     if (role === 'direct') {
         measurement.analysis.direct_response = { usable: true, points: frequencies.map(frequency => [frequency, 0]),
-            gated_direct_lower_limit_hz: 300, direct_confidence: 1, gate_confidence: 1 };
+            gated_direct_lower_limit_hz: ungatedGroups.has(group) ? null : 300, direct_confidence: 1, gate_confidence: 1 };
     }
     if (role === 'mlp') measurement.analysis.complex_response = complex(1);
     // The sum of the two main-position captures.
@@ -72,7 +73,8 @@ function measurementFor(form, index) {
     return measurement;
 }
 
-function makeSeries({ groups = ['front', 'center', 'side', 'rear'], selected = 'front', poorIntegrationOnce = [] } = {}) {
+function makeSeries({ groups = ['front', 'center', 'side', 'rear'], selected = 'front', poorIntegrationOnce = [],
+    ungated = [] } = {}) {
     const state = {
         measurement: { selectedInputId: 'in1', selectedInputKey: 'k', selectedMicInputChannel: '1',
             selectedReferenceInputChannel: '', pendingRepeatMeasurements: [] },
@@ -83,6 +85,7 @@ function makeSeries({ groups = ['front', 'center', 'side', 'rear'], selected = '
     const choice = { selected };
     const forms = [];
     const poorLeft = new Set(poorIntegrationOnce);
+    const ungatedGroups = new Set(ungated);
     const calls = { assist: [], views: [], selected: [], panels: 0 };
     const elements = {
         measurementHybridPanel: Object.assign(element(), {
@@ -94,6 +97,7 @@ function makeSeries({ groups = ['front', 'center', 'side', 'rear'], selected = '
     };
     const ctx = { console, Math, JSON, Object, Array, Promise, String, Number, Boolean, Date, Set, setTimeout, clearTimeout,
         FormData, window: {},
+        FXRouteUiHelpers: require('../static/ui_helpers.js'),
         FXRouteMeasurementUI: { MEASUREMENT_JOB_SUCCESS_STATES: new Set(['completed']),
             MEASUREMENT_JOB_FAILED_STATES: new Set(['failed']), MEASUREMENT_JOB_CANCELLED_STATES: new Set(['cancelled']),
             hybridSpeakerName: () => 'speaker' },
@@ -113,7 +117,7 @@ function makeSeries({ groups = ['front', 'center', 'side', 'rear'], selected = '
             pollMeasurementJob: async (id) => {
                 const index = Number(id.slice(4));
                 const form = forms[index - 1];
-                const measurement = measurementFor(form, index);
+                const measurement = measurementFor(form, index, ungatedGroups);
                 // The first integration check of a listed group fails once.
                 if (form.get('measurement_role') === 'integration' && poorLeft.has(form.get('measurement_group'))) {
                     poorLeft.delete(form.get('measurement_group'));
@@ -164,20 +168,22 @@ async function runToEnd(Flows, { stopOnError = false } = {}) {
         Flows.openHybridMeasurementWizard();
         const row = elements.measurementHybridScopeRow;
         assert.equal(row.classList.contains('hidden'), false);
-        assert.equal(row.dataset.groups, 'front,center,side,rear,all');
+        assert.deepEqual(row.dataset.chips.split('|').map(chip => chip.split('=')[0]),
+            ['front', 'center', 'side', 'rear', 'all']);
         const wizard = Flows.getHybridWizardState();
-        assert.equal(wizard.series, false, 'opening starts with the selected group, like before');
+        assert.equal(wizard.scope.series === true, false, 'opening starts with the selected group, like before');
+        assert.equal('series' in wizard, false, 'the scope alone says whether this is a series');
         assert.equal(wizard.sequence.length, 9);
         Flows.selectHybridWizardScope('rear');
         assert.deepEqual(calls.selected, ['rear']);
         assert.equal(choice.selected, 'rear');
-        assert.equal(wizard.series, false);
+        assert.equal(wizard.scope.series === true, false);
         assert.equal(wizard.scope.group, 'rear');
         assert.equal(wizard.sequence.length, 9);
         Flows.selectHybridWizardScope('center');
         assert.equal(wizard.sequence.length, 4, 'a single speaker is one channel with no integration step');
         Flows.selectHybridWizardScope('all');
-        assert.equal(wizard.series, true);
+        assert.equal(wizard.scope.series, true);
         assert.equal(choice.selected, 'center', 'All is the wizard only; the speaker selection stays');
         assert.deepEqual([...new Set(wizard.sequence.map(step => step.group))], ['front', 'center', 'side', 'rear']);
         assert.equal(wizard.sequence.length, 9 + 4 + 9 + 9);
@@ -192,7 +198,7 @@ async function runToEnd(Flows, { stopOnError = false } = {}) {
         Flows.openHybridMeasurementWizard();
         assert.equal(elements.measurementHybridScopeRow.classList.contains('hidden'), true);
         Flows.selectHybridWizardScope('all');
-        assert.equal(Flows.getHybridWizardState().series, false);
+        assert.equal(Flows.getHybridWizardState().scope.series === true, false);
     }
 
     // A series measures each group with its own group in the request and ends with every model.
@@ -204,8 +210,11 @@ async function runToEnd(Flows, { stopOnError = false } = {}) {
         await Flows.runHybridWizardSweep();
         assert.equal(wizard.stepIndex, 1, 'each direct measurement is its own position series');
         assert.equal(elements.measurementHybridScopeRow.chips.all.disabled, true, 'the choice is locked once measuring began');
+        assert.equal(elements.measurementHybridScopeRow.chips.all.classList.contains('is-active'), true,
+            'a locked row still marks the selected speakers');
+        assert.equal(elements.measurementHybridScopeRow.chips.rear.classList.contains('is-active'), false);
         Flows.selectHybridWizardScope('rear');
-        assert.equal(wizard.series, true, 'a locked choice is ignored');
+        assert.equal(wizard.scope.series, true, 'a locked choice is ignored');
         await runToEnd(Flows);
         assert.equal(forms.length, 31);
         const groupsOfRequests = [];
@@ -227,9 +236,15 @@ async function runToEnd(Flows, { stopOnError = false } = {}) {
         assert.match(summary, /subwoofer routing checked \(ok\)/);
         assert.equal(elements.measurementHybridPrimaryBtn.textContent, 'Show results');
 
+        // An unsaved Auto Sub result would take the graph and "Save current".
+        state.measurement.autoSubMeasurements = [{ id: 'auto-before' }, { id: 'auto-after' }];
         Flows.openHybridProfileInConvolver();
+        assert.deepEqual(state.measurement.autoSubMeasurements, [],
+            'the series models replace an unsaved Auto Sub result');
         const entries = state.measurement.pendingRepeatMeasurements;
         assert.equal(entries.length, 7, 'Front L/R, Center, Side L/R and Rear L/R');
+        assert.equal(state.measurement.currentMeasurement, entries[0]);
+        assert.equal(state.measurement.currentMeasurementSaved, false);
         assert.equal(new Set(entries.map(entry => entry.id)).size, 7, 'one save rejects duplicate ids');
         assert.deepEqual(entries.map(entry => entry.save_suffix), [
             'Front L/R + Sub · L', 'Front L/R + Sub · R', 'Center + Sub',
@@ -282,7 +297,87 @@ async function runToEnd(Flows, { stopOnError = false } = {}) {
         Flows.getHybridWizardState().open = false;
         Flows.openHybridMeasurementWizard();
         const wizard = Flows.getHybridWizardState();
-        assert.deepEqual([wizard.series, wizard.captures.length, wizard.sequence.length], [false, 0, 9]);
+        assert.deepEqual([wizard.scope.series === true, wizard.captures.length, wizard.sequence.length], [false, 0, 9]);
+    }
+
+    // A group without a gated lower limit says so instead of printing NaN, and
+    // every pair group keeps its integration numbers one click away.
+    {
+        const { Flows, elements } = makeSeries({ ungated: ['front'] });
+        Flows.openHybridMeasurementWizard();
+        Flows.selectHybridWizardScope('all');
+        const wizard = await runToEnd(Flows);
+        assert.ok(wizard.profile);
+        const summary = elements.measurementHybridSummary.innerHTML;
+        assert.doesNotMatch(summary, /NaN/);
+        assert.match(summary, /Gated direct lower limit: Left unavailable · Right unavailable/);
+        assert.match(summary, /Gated direct lower limit: 300 Hz/, 'gated groups keep their number');
+        // Front, Side and Rear are pairs; Center is one speaker without an L/R check.
+        assert.equal((summary.match(/<details class="hybrid-advanced-details">/g) || []).length, 3);
+        assert.match(summary, /Consistency status: ok · band /);
+    }
+
+    // The single run prints the same text for an ungated response.
+    {
+        const { Flows, elements } = makeSeries({ ungated: ['front'] });
+        Flows.openHybridMeasurementWizard();
+        const wizard = await runToEnd(Flows);
+        assert.ok(wizard.profile);
+        assert.doesNotMatch(elements.measurementHybridSummary.innerHTML, /NaN/);
+        assert.match(elements.measurementHybridSummary.innerHTML, /Left: unavailable<br>Right: unavailable/);
+    }
+
+    // A single group result also replaces an unsaved Auto Sub result.
+    {
+        const { Flows, state, calls } = makeSeries();
+        Flows.openHybridMeasurementWizard();
+        Flows.selectHybridWizardScope('center');
+        const wizard = await runToEnd(Flows);
+        assert.ok(wizard.profile);
+        state.measurement.autoSubMeasurements = [{ id: 'auto-before' }];
+        Flows.openHybridProfileInConvolver();
+        assert.deepEqual(state.measurement.autoSubMeasurements, []);
+        assert.equal(state.measurement.pendingRepeatMeasurements.length, 1);
+        assert.deepEqual(calls.assist, ['convolver']);
+    }
+
+    // The chips follow the group labels (routing changes them under the same
+    // ids) and the row stays in place for a click.
+    {
+        const { Flows, elements } = makeSeries();
+        Flows.openHybridMeasurementWizard();
+        const row = elements.measurementHybridScopeRow;
+        assert.match(row.innerHTML, /data-tooltip="Front L\/R \+ Sub"/);
+        const original = GROUPS.front.label;
+        GROUPS.front.label = 'Front L/R';
+        try {
+            Flows.renderHybridMeasurementWizard();
+            assert.match(row.innerHTML, /data-tooltip="Front L\/R"/);
+            assert.doesNotMatch(row.innerHTML, /Front L\/R \+ Sub/);
+        } finally {
+            GROUPS.front.label = original;
+        }
+    }
+
+    // An Advanced series saves seven runs; each one needs its own colour next to the current green.
+    {
+        const UI = require('../static/measurement_ui.js');
+        const palette = UI.measurementComparePalette;
+        assert.ok(palette.length >= 7, 'seven saved series runs');
+        assert.equal(new Set(palette).size, palette.length, 'no colour repeats inside the palette');
+        assert.equal(palette.includes(UI.measurementCurrentColor), false, 'the current run keeps its own green');
+    }
+
+    // The app's initial wizard state has the keys the module's own default has.
+    {
+        const { Flows, state } = makeSeries();
+        delete state.measurement.hybridWizard;
+        const moduleKeys = Object.keys(Flows.getHybridWizardState()).sort();
+        const appSource = fs.readFileSync(path.join(root, 'static', 'app.js'), 'utf8');
+        const literal = /\n        hybridWizard: \{\n([\s\S]*?)\n        \},/.exec(appSource);
+        assert.ok(literal, 'app.js must declare the initial hybridWizard state');
+        const appKeys = [...literal[1].matchAll(/^ {12}(\w+):/gm)].map(match => match[1]).sort();
+        assert.deepEqual(appKeys, moduleKeys);
     }
 
     console.log('hybrid series flow: ok');

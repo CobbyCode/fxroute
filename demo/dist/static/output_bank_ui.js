@@ -215,21 +215,10 @@
         const allBanks = catalog?.modes?.[catalog.active_mode]?.selected_bank === 'all';
         const choice = catalog ? mod.globalGroupChoice(catalog,
             allBanks ? measurement.allBanksGroup : measurement.globalGroup) : null;
-        const shown = !!choice && choice.options.length > 1;
-        row.classList.toggle('hidden', !shown);
-        const groups = shown ? choice.options.map(option => option.id).join(',') : '';
-        if (row.dataset.groups !== groups || (!shown && row.innerHTML !== '')) {
-            row.dataset.groups = groups;
-            row.innerHTML = shown ? choice.options.map(option =>
-                `<button type="button" class="measurement-chip" data-sweep-group="${mod.esc(option.id)}" `
-                + `aria-pressed="false" aria-label="${mod.esc(option.label)}" data-tooltip="${mod.esc(option.label)}">${mod.esc(option.short)}</button>`).join('') : '';
-        }
-        if (!shown) return;
-        row.querySelectorAll('[data-sweep-group]').forEach((button) => {
-            const active = button.getAttribute('data-sweep-group') === choice.selected;
-            button.classList.toggle('is-active', active);
-            button.setAttribute('aria-pressed', active ? 'true' : 'false');
-            button.disabled = !!measurement.startInFlight;
+        root.FXRouteUiHelpers.renderChipRow(row, choice ? choice.options : [], {
+            attribute: 'data-sweep-group',
+            selected: choice ? choice.selected : '',
+            disabled: !!measurement.startInFlight,
         });
     }
 

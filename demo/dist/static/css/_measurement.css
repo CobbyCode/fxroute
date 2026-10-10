@@ -755,13 +755,16 @@
 /* Side speakers stand at the walls beside the listener, rear speakers behind
    the seat; the listening area moves up to make room for them. */
 .hybrid-room-view[data-hybrid-group="side"] {
-    --hybrid-speaker-y: 62%;
+    --hybrid-speaker-y: 60%;
     /* Half a speaker plus a margin from the wall, also on a phone. */
     --hybrid-speaker-left: max(9%, 33px);
     --hybrid-speaker-right: min(91%, calc(100% - 33px));
     --hybrid-direct-y: 50%;
-    --hybrid-direct-left: 25%;
-    --hybrid-direct-right: 75%;
+    /* The 1 m microphone stands on the listener's side of its speaker: a
+       quarter of a wide room in, never inside the speaker on a narrow one
+       (half a speaker + half a microphone + a gap = 59px from its centre). */
+    --hybrid-direct-left: max(25%, calc(var(--hybrid-speaker-left) + 59px));
+    --hybrid-direct-right: min(75%, calc(var(--hybrid-speaker-right) - 59px));
 }
 .hybrid-room-view[data-hybrid-group="rear"] {
     --hybrid-speaker-y: 87%;
@@ -812,8 +815,26 @@
 .hybrid-action-row { display: grid; grid-template-columns: minmax(0, 0.35fr) minmax(0, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
 .hybrid-action-row button { min-height: 54px; }
 .hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
-/* The speaker choice of the dialog: one chip per routed group, plus All. */
-.hybrid-scope-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+/* The speaker choice of the dialog: one chip per routed group, plus All.  The
+   chips are compact so that all five fit one line of the narrowest step card
+   and grow to fill it, like the sweep menu's group chips. */
+.hybrid-scope-row { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.75rem; }
+.hybrid-scope-row .measurement-chip {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-inline: 0.4rem;
+    font-size: 0.75rem;
+}
+/* Once measuring began the row is locked (disabled), but it still has to say
+   which speakers are measured: the selected chip keeps its look and only the
+   other chips dim. */
+.hybrid-scope-row .measurement-chip.is-active:disabled {
+    color: #0d0d0f;
+    background: var(--accent);
+    border-color: transparent;
+    cursor: default;
+    opacity: 1;
+}
 .measurement-current-key { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.78rem; }
 .measurement-current-key-item { display: inline-flex; align-items: center; gap: 0.4rem; }
 .hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }

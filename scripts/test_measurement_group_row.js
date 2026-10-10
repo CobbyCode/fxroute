@@ -10,6 +10,7 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 const OutputState = require('../static/output_state.js');
+require('../static/ui_helpers.js');
 const BankUI = require('../static/output_bank_ui.js');
 
 const root = path.join(__dirname, '..');
@@ -205,6 +206,11 @@ for (const roles of [ALL_ROLES, ['center', 'sub1'], ['side_l', 'side_r', 'sub1']
 function clickHandler(overrides) {
     const match = /elements\.measurementSweepGroupRow\?\.addEventListener\('click', \(event\) => \{[\s\S]*?\n    \}\);\n/.exec(appSource);
     assert.ok(match, 'app.js must bind clicks on the sweep group row');
+    // One function sets the shared group for the sweep menu and the Advanced dialog.
+    const select = /function selectMeasurementSpeakerGroup\(group\) \{[\s\S]*?\n\}\n/.exec(appSource);
+    assert.ok(select, 'app.js must define selectMeasurementSpeakerGroup');
+    assert.match(appSource, /selectMeasurementGroup: \(group\) => selectMeasurementSpeakerGroup\(group\),/,
+        'the Advanced dialog uses the same function as the sweep menu');
     const row = fakeRow();
     const calls = [];
     const env = {
@@ -217,7 +223,7 @@ function clickHandler(overrides) {
         renderMeasurementPanel: () => calls.push(['panel']),
         ...overrides,
     };
-    new Function('elements', 'state', 'window', 'renderMeasurementPanel', match[0])(
+    new Function('elements', 'state', 'window', 'renderMeasurementPanel', `${select[0]}\n${match[0]}`)(
         env.elements, env.state, env.window, env.renderMeasurementPanel);
     const chip = group => ({ target: { closest: () => ({ getAttribute: () => group }) } });
     return { fire: event => row.listeners.click(event), chip, calls, env };

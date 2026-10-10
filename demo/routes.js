@@ -3687,11 +3687,11 @@
         }
         const measJobMatch = p.match(/^\/api\/measurements\/jobs\/([^/]+)$/);
         if (measJobMatch) {
+            // A finished job only reports its result: the real store keeps a
+            // run only after "Save current" (the save route below), so a
+            // wizard's step captures never reach the saved list.
             const payload = S.jobPayload(measJobMatch[1]);
             if (!payload) return err('Job not found');
-            if (payload.status === 'completed' && payload.result && payload.result.measurement) {
-                if (!savedMeasurements.find(m => m.id === payload.result.measurement.id)) savedMeasurements.unshift(payload.result.measurement);
-            }
             return j({ job: payload });
         }
         const measCancel = p.match(/^\/api\/measurements\/jobs\/([^/]+)\/cancel$/);

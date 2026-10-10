@@ -163,6 +163,34 @@
         setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     }
 
+    // One toggle chip per {id, short, label}; `attribute` carries the id.
+    // Fewer than two chips leave nothing to choose: the row is hidden and
+    // empty. The buttons are rebuilt only when a chip changes, so a click
+    // updates them in place (a replaced button reads as an outside click and
+    // drops keyboard focus). Returns whether the row is shown.
+    function renderChipRow(row, chips, { attribute, selected = '', disabled = false } = {}) {
+        if (!row) return false;
+        const list = Array.isArray(chips) ? chips : [];
+        const shown = list.length > 1;
+        row.classList.toggle('hidden', !shown);
+        const signature = shown ? list.map(chip => [chip.id, chip.short, chip.label].join('=')).join('|') : '';
+        if (row.dataset.chips !== signature || (!shown && row.innerHTML !== '')) {
+            row.dataset.chips = signature;
+            row.innerHTML = shown ? list.map(chip => `<button type="button" class="measurement-chip" `
+                + `${attribute}="${escapeHtml(chip.id)}" aria-pressed="false" `
+                + `aria-label="${escapeHtml(chip.label)}" data-tooltip="${escapeHtml(chip.label)}">`
+                + `${escapeHtml(chip.short)}</button>`).join('') : '';
+        }
+        if (!shown) return false;
+        row.querySelectorAll(`[${attribute}]`).forEach((button) => {
+            const active = button.getAttribute(attribute) === selected;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            button.disabled = !!disabled;
+        });
+        return true;
+    }
+
     return {
         escapeHtml,
         formatTime,
@@ -180,5 +208,6 @@
         roundToDecimals,
         getDownloadFilenameFromResponse,
         triggerBlobDownload,
+        renderChipRow,
     };
 });

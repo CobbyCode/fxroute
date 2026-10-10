@@ -37,10 +37,12 @@ function makeStorage(initial = {}) {
 // A fresh simulated page load: re-runs every demo fixture/module in a new
 // VM context, exactly like a browser reload of the built demo page. Passing a
 // storage keeps the session, so a reload can find what the last one left.
-function makeDemoContext(storage = makeStorage()) {
+// `intervals` collects the interval callbacks so a test can advance the
+// simulated jobs itself (the default drops them).
+function makeDemoContext(storage = makeStorage(), intervals = null) {
     const ctx = {
         window: {},
-        setInterval() { return 0; },
+        setInterval(callback) { if (intervals) intervals.push(callback); return 0; },
         clearInterval() {},
         sessionStorage: storage,
         Date,
@@ -1184,6 +1186,36 @@ const radio = state.getPlayback();
     assert.equal(splApply.status, 'ok');
     assert.equal(splApply.required_adjustment_db, 0.4);
     assert.equal(splApply.calibrated, true);
+
+    // A finished sweep job only reports its result.  A run reaches the saved
+    // list through "Save current", like in the real store: an Advanced series
+    // takes 31 sweeps and must not leave 31 saved runs behind.
+    {
+        const intervals = [];
+        const sweepContext = makeDemoContext(makeStorage(), intervals);
+        const sweepFetch = sweepContext.fetch;
+        const savedIds = async () => (await (await sweepFetch('/api/measurements')).json()).measurements.map(m => m.id);
+        const seeded = await savedIds();
+        const results = [];
+        for (const channel of ['left', 'right']) {
+            const started = await (await sweepFetch('/api/measurements/start', { method: 'POST',
+                body: JSON.stringify({ measurement_role: 'direct', channel, measurement_group: 'front' }) })).json();
+            let polled = null;
+            for (let guard = 0; guard < 80 && (!polled || polled.job.status !== 'completed'); guard += 1) {
+                intervals.forEach(tick => tick());
+                polled = await (await sweepFetch('/api/measurements/jobs/' + started.job.id)).json();
+            }
+            assert.equal(polled.job.status, 'completed');
+            results.push(polled.job.result.measurement);
+        }
+        assert.deepEqual(await savedIds(), seeded, 'finished sweep jobs are not saved runs');
+        const saveBody = { measurements: results.map((measurement, index) => ({ ...measurement, name: `Series ${index}` })) };
+        const saved = await (await sweepFetch('/api/measurements/save', { method: 'POST', body: JSON.stringify(saveBody) })).json();
+        assert.equal(saved.measurements.length, 2);
+        const afterSave = await savedIds();
+        assert.equal(afterSave.length, seeded.length + 2, 'only the saved runs join the list');
+        results.forEach(measurement => assert.equal(afterSave.filter(id => id === measurement.id).length, 1));
+    }
 
     const lrStart = await (await demoFetch('/api/measurements/lr-repeat/start', { method: 'POST', body: JSON.stringify({ base_name: 'Contract LR' }) })).json();
     assert.equal(lrStart.job.job_kind, 'lr-repeat');

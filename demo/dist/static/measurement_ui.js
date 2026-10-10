@@ -17,7 +17,9 @@ const MEASUREMENT_JOB_CANCELLED_STATES = new Set(['cancelled', 'canceled']);
 const MEASUREMENT_JOB_FAILED_STATES = new Set(['failed', 'failure', 'error']);
 const MEASUREMENT_JOB_SUCCESS_STATES = new Set(['completed', 'complete', 'finished', 'success', 'ready', 'done', 'ok']);
 const MEASUREMENT_LR_REPEAT_DELTA_TOOLTIP = 'L/R delta is calculated as Right - Left. Positive means the right channel arrives later.';
-const measurementComparePalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa', '#f87171', '#facc15'];
+// An Advanced series saves up to seven runs (Front L/R, Center, Side L/R,
+// Rear L/R) next to the current green, so seven saved runs stay distinct.
+const measurementComparePalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa', '#f87171', '#facc15', '#22d3ee', '#a3e635'];
 const measurementCurrentColor = '#22c55e';
 const measurementPeqPalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa'];
 const measurementPeqTypes = ['bell', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass', 'notch', 'gain'];

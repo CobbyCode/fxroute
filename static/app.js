@@ -83,10 +83,7 @@ window.FXRouteMeasurementFlows?.init({
     // group, and the shared speaker selection (the sweep menu chips set it too).
     measurementGroupChoice: () => measurementGroupChoiceFromCatalog(),
     measurementAreaForGroup: (group) => measurementAreaFromCatalog(group),
-    selectMeasurementGroup: (group) => {
-        window.FXRouteBankUI.selectEffectsGroup(group);
-        renderMeasurementPanel();
-    },
+    selectMeasurementGroup: (group) => selectMeasurementSpeakerGroup(group),
     getMeasurementReferenceWarning: (...args) => window.FXRouteMeasurementSetup.getMeasurementReferenceWarning(...args),
     appendMeasurementReferenceFields: (formData) => window.FXRouteMeasurementSetup.appendMeasurementReferenceFields(formData),
     normalizeOutputModeName,
@@ -852,8 +849,10 @@ let state = {
             jobId: '',
             stepIndex: 0,
             mode: 'stereo',
+            scope: null,
             sequence: [],
             captures: [],
+            groupProfiles: {},
             status: '',
             phase: '',
             cancelRequested: false,
@@ -3319,6 +3318,13 @@ function adoptSelectedMeasurementGroup() {
     if (choice?.options.some(option => option.id === group)) window.FXRouteBankUI.selectEffectsGroup(group);
 }
 
+function selectMeasurementSpeakerGroup(group) {
+    /* The Effects speaker row owns the choice; the sweep menu and the Advanced
+     * dialog set the same one. */
+    window.FXRouteBankUI.selectEffectsGroup(group);
+    renderMeasurementPanel();
+}
+
 function measurementGroupChoiceFromCatalog() {
     /* Routed speaker groups when the selection is Surround Global (not All
      * Banks, which has no Advanced); null elsewhere. */
@@ -4959,9 +4965,7 @@ function setupMeasurementActions() {
     elements.measurementSweepGroupRow?.addEventListener('click', (event) => {
         const button = event.target.closest?.('[data-sweep-group]');
         if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
-        // The Effects speaker row owns the choice; the sweep menu sets the same one.
-        window.FXRouteBankUI.selectEffectsGroup(button.getAttribute('data-sweep-group') || '');
-        renderMeasurementPanel();
+        selectMeasurementSpeakerGroup(button.getAttribute('data-sweep-group') || '');
     });
     document.querySelectorAll('#measurement-sweep-side-row [data-sweep-side]').forEach((button) => {
         button.addEventListener('click', () => {

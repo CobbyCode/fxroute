@@ -11,7 +11,10 @@ from coming back:
 3. the sub/crossover Level and Alignment steppers must be flush, exactly as
    wide as each other and without overhanging their field,
 4. no stepper value field may be narrower than the widest value the app can
-   render ("-40.00", "20000"), because a number input clips silently.
+   render ("-40.00", "20000"), because a number input clips silently,
+5. the Advanced room view keeps the speakers, the 1 m microphones and the
+   seat apart for the side and rear speaker groups at every width, and the
+   speaker choice row stays on one line with its selected chip readable.
 
 Runs the real rendered page (static server + stubbed audio API) in headless
 Chromium and skips cleanly when playwright is unavailable.
@@ -253,6 +256,70 @@ HYBRID = """
 }
 """
 
+# Speakers, subwoofers, 1 m microphones and the seat must not touch in the
+# side and rear groups (the listening microphones sit on the seat on purpose).
+ROOM_AUDIT = """
+([group, layout]) => {
+    const room = document.querySelector('.hybrid-room-view');
+    if (!document.getElementById('audit-no-transition')) {
+        const style = document.createElement('style');
+        style.id = 'audit-no-transition';
+        style.textContent = '*,*::before,*::after{transition:none!important}';
+        document.head.appendChild(style);
+    }
+    room.setAttribute('data-hybrid-group', group);
+    room.setAttribute('data-hybrid-layout', layout);
+    const kinds = [
+        ['speaker', '.hybrid-speaker'], ['sub', '.hybrid-sub'], ['seat', '.hybrid-seat-back'],
+        ['seat', '.hybrid-seat-arm'], ['direct-mic', '.hybrid-mic-direct-left'],
+        ['direct-mic', '.hybrid-mic-direct-right'], ['direct-mic', '.hybrid-mic-direct-center'],
+    ];
+    const items = [];
+    for (const [kind, selector] of kinds) {
+        room.querySelectorAll(selector).forEach((node, index) => {
+            if (getComputedStyle(node).display === 'none') return;
+            const b = node.getBoundingClientRect();
+            items.push({kind, name: selector.replace('.hybrid-', '') + '#' + index, b});
+        });
+    }
+    const rb = room.getBoundingClientRect();
+    const touching = [];
+    for (let i = 0; i < items.length; i += 1) {
+        for (let j = i + 1; j < items.length; j += 1) {
+            if (items[i].kind === 'seat' && items[j].kind === 'seat') continue;
+            const a = items[i].b, c = items[j].b;
+            const w = Math.min(a.right, c.right) - Math.max(a.left, c.left);
+            const h = Math.min(a.bottom, c.bottom) - Math.max(a.top, c.top);
+            if (w > 1 && h > 1) touching.push(items[i].name + ' x ' + items[j].name + ' ' + Math.round(w) + 'x' + Math.round(h));
+        }
+    }
+    const outside = items.filter(i => i.b.left < rb.left - 0.5 || i.b.right > rb.right + 0.5
+        || i.b.top < rb.top - 0.5 || i.b.bottom > rb.bottom + 0.5).map(i => i.name);
+    return {touching, outside, room: Math.round(rb.width) + 'x' + Math.round(rb.height)};
+}
+"""
+
+# The speaker row is filled by the app only for a Surround system with several
+# routed groups; the same markup is written here to audit its layout.
+SCOPE_ROW_AUDIT = """
+() => {
+    const row = document.getElementById('measurement-hybrid-scope-row');
+    row.classList.remove('hidden');
+    const names = ['Front', 'Center', 'Side', 'Rear', 'All'];
+    row.innerHTML = names.map((name, index) => `<button type="button" class="measurement-chip${index === 4 ? ' is-active' : ''}"`
+        + ` aria-pressed="${index === 4}" disabled>${name}</button>`).join('');
+    const chips = [...row.children];
+    const tops = new Set(chips.map(chip => Math.round(chip.getBoundingClientRect().top)));
+    const rowBox = row.getBoundingClientRect();
+    const active = getComputedStyle(chips[4]);
+    const inactive = getComputedStyle(chips[0]);
+    return {lines: tops.size, overflow: Math.max(...chips.map(chip => chip.getBoundingClientRect().right)) - rowBox.right,
+            activeBackground: active.backgroundColor, inactiveBackground: inactive.backgroundColor,
+            activeOpacity: active.opacity, inactiveOpacity: inactive.opacity,
+            texts: chips.map(chip => chip.scrollWidth > chip.clientWidth + 1)};
+}
+"""
+
 PEQ_ROW = """
 () => {
     const row = document.querySelector('.effects-peq-add-row');
@@ -322,6 +389,18 @@ def _check_css_contract(check):
           re.search(r"\.stepper-unit\s*\{[^}]*min-width:\s*1\.5rem", effects))
     check("PEQ add row wraps instead of overrunning",
           re.search(r"\.effects-peq-add-row\s*\{[^}]*flex-wrap:\s*wrap", effects))
+    check("side direct microphones stay clear of their speakers on a narrow room",
+          re.search(r"\[data-hybrid-group=\"side\"\]\s*\{[^}]*--hybrid-direct-left:\s*max\(25%,\s*calc\(var\(--hybrid-speaker-left\)\s*\+\s*59px\)\)"
+                    r"[^}]*--hybrid-direct-right:\s*min\(75%,\s*calc\(var\(--hybrid-speaker-right\)\s*-\s*59px\)\)",
+                    measurement))
+    check("the phone seat shrink is limited to the side and rear groups",
+          re.search(r"\[data-hybrid-group=\"side\"\]\s*\.hybrid-seat,\s*\.hybrid-room-view\[data-hybrid-group=\"rear\"\]\s*\.hybrid-seat"
+                    r"\s*\{\s*transform:[^}]*scale\(0\.8\)", responsive)
+          and not re.search(r"(^|\n)\s*\.hybrid-seat\s*\{\s*transform", responsive))
+    check("a locked speaker row keeps its selected chip lit",
+          re.search(r"\.hybrid-scope-row \.measurement-chip\.is-active:disabled\s*\{[^}]*background:\s*var\(--accent\)", measurement))
+    check("speaker choice chips grow to fill the row",
+          re.search(r"\.hybrid-scope-row \.measurement-chip\s*\{[^}]*flex:\s*1 1 auto", measurement))
     check("sub cards stay stacked until the split fits",
           re.search(r"@media \(min-width: 761px\) and \(max-width: 800px\)"
                     r"\s*\{[^}]*\.effects-subwoofer-controls", responsive))
@@ -387,6 +466,23 @@ def _run():
                       not hyb["escapes"], hyb)
                 check(f"[{width}px] hybrid Start button fully visible",
                       hyb["primary"]["fullyVisible"], hyb["primary"])
+
+                # Side and rear speaker groups: nothing sits on anything else.
+                for group in ("side", "rear"):
+                    room = page.evaluate(ROOM_AUDIT, [group, "pair"])
+                    check(f"[{width}px] {group} group: speakers, microphones and seat stay apart",
+                          not room["touching"], room)
+                    check(f"[{width}px] {group} group: everything stays inside the room",
+                          not room["outside"], room)
+
+                # The speaker row: one line, the locked selection stays readable.
+                row = page.evaluate(SCOPE_ROW_AUDIT)
+                check(f"[{width}px] speaker choice chips fit one line", row["lines"] == 1, row)
+                check(f"[{width}px] speaker choice chips stay inside their row", row["overflow"] <= 0.5, row)
+                check(f"[{width}px] speaker choice chip labels are not clipped", not any(row["texts"]), row)
+                check(f"[{width}px] locked selected chip differs from the locked others",
+                      row["activeBackground"] != row["inactiveBackground"]
+                      and float(row["activeOpacity"]) > float(row["inactiveOpacity"]), row)
                 page.close()
             browser.close()
     finally:
