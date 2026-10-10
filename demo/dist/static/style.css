@@ -4984,6 +4984,15 @@ select.url-input {
 }
 
 .hybrid-room-view {
+    /* Where the speakers, their 1 m microphones and the listening area sit.
+       The front wall is the default; side and rear groups override below. */
+    --hybrid-speaker-y: 16%;
+    --hybrid-speaker-left: 23%;
+    --hybrid-speaker-right: 77%;
+    --hybrid-direct-y: 38%;
+    --hybrid-direct-left: 23%;
+    --hybrid-direct-right: 77%;
+    --hybrid-listen-shift: 0%;
     position: relative;
     min-height: 470px;
     overflow: hidden;
@@ -5005,7 +5014,7 @@ select.url-input {
 }
 
 .hybrid-speaker {
-    top: 16%;
+    top: var(--hybrid-speaker-y);
     width: 58px;
     height: 74px;
     border: 2px solid var(--border);
@@ -5017,8 +5026,8 @@ select.url-input {
     transition: 180ms ease;
 }
 
-.hybrid-speaker-left { left: 23%; }
-.hybrid-speaker-right { left: 77%; }
+.hybrid-speaker-left { left: var(--hybrid-speaker-left); }
+.hybrid-speaker-right { left: var(--hybrid-speaker-right); }
 .hybrid-speaker-center { left: 50%; }
 .hybrid-speaker.is-active {
     border-color: var(--accent);
@@ -5043,7 +5052,7 @@ select.url-input {
 
 .hybrid-seat {
     left: 50%;
-    top: 79%;
+    top: calc(79% + var(--hybrid-listen-shift));
     width: 210px;
     height: 92px;
     z-index: var(--z-base);
@@ -5088,9 +5097,9 @@ select.url-input {
     font-size: 0.62rem;
     transition: 180ms ease;
 }
-.hybrid-mic-direct-left { left: 23%; top: 38%; }
-.hybrid-mic-direct-right { left: 77%; top: 38%; }
-.hybrid-mic-direct-center { left: 50%; top: 38%; }
+.hybrid-mic-direct-left { left: var(--hybrid-direct-left); top: var(--hybrid-direct-y); }
+.hybrid-mic-direct-right { left: var(--hybrid-direct-right); top: var(--hybrid-direct-y); }
+.hybrid-mic-direct-center { left: 50%; top: var(--hybrid-direct-y); }
 /* The room view shows a speaker pair (default), one speaker, or only subwoofers. */
 .hybrid-room-view .hybrid-speaker-center,
 .hybrid-room-view .hybrid-mic-direct-center,
@@ -5103,9 +5112,25 @@ select.url-input {
 .hybrid-room-view[data-hybrid-layout="sub"] .hybrid-mic-direct-right { display: none; }
 .hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-center,
 .hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-center { display: grid; }
-.hybrid-mic-left { left: 37%; top: 69%; }
-.hybrid-mic-mlp { left: 50%; top: 66%; }
-.hybrid-mic-right { left: 63%; top: 69%; }
+.hybrid-mic-left { left: 37%; top: calc(69% + var(--hybrid-listen-shift)); }
+.hybrid-mic-mlp { left: 50%; top: calc(66% + var(--hybrid-listen-shift)); }
+.hybrid-mic-right { left: 63%; top: calc(69% + var(--hybrid-listen-shift)); }
+/* Side speakers stand at the walls beside the listener, rear speakers behind
+   the seat; the listening area moves up to make room for them. */
+.hybrid-room-view[data-hybrid-group="side"] {
+    --hybrid-speaker-y: 62%;
+    /* Half a speaker plus a margin from the wall, also on a phone. */
+    --hybrid-speaker-left: max(9%, 33px);
+    --hybrid-speaker-right: min(91%, calc(100% - 33px));
+    --hybrid-direct-y: 50%;
+    --hybrid-direct-left: 25%;
+    --hybrid-direct-right: 75%;
+}
+.hybrid-room-view[data-hybrid-group="rear"] {
+    --hybrid-speaker-y: 87%;
+    --hybrid-direct-y: 74%;
+    --hybrid-listen-shift: -18%;
+}
 .hybrid-mic.is-target {
     border: 2px solid var(--success);
     background: color-mix(in srgb, var(--success) 18%, var(--bg-surface));
@@ -5150,6 +5175,10 @@ select.url-input {
 .hybrid-action-row { display: grid; grid-template-columns: minmax(0, 0.35fr) minmax(0, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
 .hybrid-action-row button { min-height: 54px; }
 .hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
+/* The speaker choice of the dialog: one chip per routed group, plus All. */
+.hybrid-scope-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+.measurement-current-key { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.78rem; }
+.measurement-current-key-item { display: inline-flex; align-items: center; gap: 0.4rem; }
 .hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
 .hybrid-summary-item::before { content: '✓'; float: left; margin-left: -1.2rem; color: var(--success); }
 .hybrid-advanced-details { margin-top: 0.35rem; color: var(--text-muted); font-size: 0.78rem; }
@@ -9349,6 +9378,10 @@ input[type="number"]::-webkit-outer-spin-button {
        panel on a 320px screen. */
     .hybrid-wizard-grid { grid-template-columns: minmax(0, 1fr); }
     .hybrid-room-view { min-height: 300px; }
+    /* A phone-wide room: a smaller seat leaves the side and rear speakers
+       their own space instead of sitting on its arms. */
+    .hybrid-seat { transform: translate(-50%, -50%) scale(0.8); }
+    .hybrid-room-view[data-hybrid-group="rear"] { --hybrid-speaker-y: 88%; --hybrid-direct-y: 68%; }
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 

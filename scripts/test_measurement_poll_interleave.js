@@ -53,7 +53,7 @@ function makeFlowsContext({ state, api, toasts }) {
             MEASUREMENT_JOB_CANCELLED_STATES: new Set(['cancelled']),
             hybridSpeakerName: () => 'speaker',
         },
-        FXRouteHybridMeasurement: { getDiagramState: () => ({ speakers: {} }) },
+        FXRouteHybridMeasurement: { getDiagramState: () => ({ speakers: {} }), scopeForStep: (scope) => scope || { channels: ['left', 'right'] }, groupCaptures: (captures) => captures },
     };
     ctx.window = ctx;
     vm.createContext(ctx);

@@ -76,6 +76,28 @@ async function main() {
         assert.deepEqual(h.state.measurement.pendingRepeatMeasurements, []);
     }
 
+    // 2b. An Advanced series names the speaker group of each entry; the hint is not sent.
+    {
+        const h = makeSavedHarness();
+        h.state.measurement.pendingRepeatMeasurements = [
+            { id: 'fl', channel: 'left', save_suffix: 'Front L/R + Sub · L' },
+            { id: 'fr', channel: 'right', save_suffix: 'Front L/R + Sub · R' },
+            { id: 'c', channel: 'left', save_suffix: 'Center + Sub' },
+            { id: 'rl', channel: 'left', save_suffix: 'Rear L/R + Sub · L' },
+        ];
+        h.state.measurement.currentMeasurementName = 'Advanced';
+        h.fetchHandler = async (url, options) => {
+            h.calls.push(['save-body', JSON.parse(options.body)]);
+            return { ok: true, json: async () => ({ measurements: [{ id: 's1' }] }) };
+        };
+        await saved.saveCurrentMeasurement();
+        const body = h.calls.find((c) => c[0] === 'save-body')[1];
+        assert.deepEqual(body.measurements.map((m) => m.name), [
+            'Advanced · Front L/R + Sub · L', 'Advanced · Front L/R + Sub · R',
+            'Advanced · Center + Sub', 'Advanced · Rear L/R + Sub · L']);
+        assert.ok(body.measurements.every((m) => !('save_suffix' in m)), 'the naming hint stays in the client');
+    }
+
     // 3. Single delete confirms, clears visibility and reloads.
     {
         const h = makeSavedHarness();

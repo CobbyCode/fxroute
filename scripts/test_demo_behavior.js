@@ -1046,6 +1046,21 @@ const radio = state.getPlayback();
         assert.ok(Math.abs(pred - meas) < 1e-9, 'integration response must match L+R sum at ' + f + ' Hz');
     }
 
+    // A speaker group of an Advanced series carries its frozen area, and each
+    // group answers with its own response so the groups can be told apart.
+    const groupLevel = (group) => {
+        const sweep = state.makeMeasurement({ role: 'mlp', channel: 'left', group, bank: 'global', mode: 'surround', id: 'demo_g_' + group });
+        return { sweep, db: sweep.traces[0].points.find(([hz]) => hz >= 1000)[1] };
+    };
+    const frontGroup = groupLevel('front');
+    const rearGroup = groupLevel('rear');
+    assert.deepEqual(
+        [rearGroup.sweep.measurement_target.global_group, rearGroup.sweep.measurement_target.bank_id],
+        ['rear', 'global']);
+    assert.equal(state.makeMeasurement({ role: 'mlp', channel: 'left', id: 'demo_ng' }).measurement_target, undefined,
+        'a sweep without a group keeps no frozen area');
+    assert.ok(Math.abs(frontGroup.db - rearGroup.db) > 1, 'groups differ in level');
+
     const lrJobId = state.startLrRepeatMeasurement({ base_name: 'Contract LR' });
     const lrPoll = state.jobPayload(lrJobId);
     assert.equal(lrPoll.job_kind, 'lr-repeat');

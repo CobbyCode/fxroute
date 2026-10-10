@@ -79,6 +79,14 @@ window.FXRouteMeasurementFlows?.init({
     },
     measurementAreaGroup: () => measurementAreaFromCatalog()?.group || '',
     measurementArea: () => measurementAreaFromCatalog(),
+    // Routed speaker groups of the Surround Global area, the area of one such
+    // group, and the shared speaker selection (the sweep menu chips set it too).
+    measurementGroupChoice: () => measurementGroupChoiceFromCatalog(),
+    measurementAreaForGroup: (group) => measurementAreaFromCatalog(group),
+    selectMeasurementGroup: (group) => {
+        window.FXRouteBankUI.selectEffectsGroup(group);
+        renderMeasurementPanel();
+    },
     getMeasurementReferenceWarning: (...args) => window.FXRouteMeasurementSetup.getMeasurementReferenceWarning(...args),
     appendMeasurementReferenceFields: (formData) => window.FXRouteMeasurementSetup.appendMeasurementReferenceFields(formData),
     normalizeOutputModeName,
@@ -424,6 +432,7 @@ window.FXRouteMeasurementSavedUI?.init({
     renderMeasurementPanel: () => renderMeasurementPanel(),
     mergeSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.mergeSelectedMeasurements(),
     deleteSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.deleteSelectedMeasurements(),
+    adoptSelectedMeasurementGroup: () => adoptSelectedMeasurementGroup(),
 });
 window.FXRouteMeasurementEditorsUI?.init({
     getState: () => state,
@@ -1214,6 +1223,7 @@ const elements = {
     measurementHybridHeaderActions: document.getElementById('measurement-hybrid-header-actions'),
     measurementHybridMode: document.getElementById('measurement-hybrid-mode'),
     measurementHybridProgress: document.getElementById('measurement-hybrid-progress'),
+    measurementHybridScopeRow: document.getElementById('measurement-hybrid-scope-row'),
     measurementHybridTitle: document.getElementById('measurement-hybrid-step-title'),
     measurementHybridInstruction: document.getElementById('measurement-hybrid-instruction'),
     measurementHybridActive: document.getElementById('measurement-hybrid-active'),
@@ -1232,6 +1242,7 @@ const elements = {
     measurementGraph: document.getElementById('measurement-graph'),
     measurementIrDiagnostics: document.getElementById('measurement-ir-diagnostics'),
     measurementEmpty: document.getElementById('measurement-empty'),
+    measurementCurrentKey: document.getElementById('measurement-current-key'),
     measurementPeqPanel: document.getElementById('measurement-peq-panel'),
     measurementPeqChips: document.getElementById('measurement-peq-chips'),
     measurementPeqEditor: document.getElementById('measurement-peq-editor'),
@@ -3277,15 +3288,45 @@ async function fetchOutputSystemCatalog(force = false) {
     return mod.fetchOutputSystemCatalog(force);
 }
 
-function measurementAreaFromCatalog() {
+function measurementAreaFromCatalog(group) {
     /* Read-only measurement area: the single A/B selector owns the scope, so
-     * the sweep menu shows it instead of offering its own channel chips. */
+     * the sweep menu shows it instead of offering its own channel chips.
+     * `group` names another speaker group of the Surround Global area (the
+     * Advanced series measures them all); omitted, the selected one. */
     const mod = outputSystemModule();
     const catalog = (state.outputSystem || {}).catalog;
     if (!mod || !catalog || typeof mod.measurementArea !== 'function') return null;
     const allBanks = catalog.modes?.[catalog.active_mode]?.selected_bank === 'all';
+    if (group) return mod.measurementArea(catalog, 'global', group);
     return mod.measurementArea(catalog, undefined,
         allBanks ? state.measurement.allBanksGroup : state.measurement.globalGroup);
+}
+
+function adoptSelectedMeasurementGroup() {
+    /* Saved results all measured for one speaker group select that group, so
+     * a filter made from them is bound to the group they were measured for.
+     * Mixed, ungrouped or unrouted selections leave the selection alone. */
+    if (state.measurement.startInFlight || window.FXRouteMeasurementJob?.hasActiveMeasurementJob()) return;
+    const mod = outputSystemModule();
+    const catalog = (state.outputSystem || {}).catalog;
+    if (!mod || catalog?.active_mode !== 'surround' || catalog.modes?.surround?.selected_bank !== 'global') return;
+    const selected = (state.measurement.measurements || [])
+        .filter(measurement => state.measurement.visibilityById?.[measurement.id]);
+    const groups = new Set(selected.map(measurement => measurement.measurement_target?.global_group || ''));
+    if (!selected.length || groups.size !== 1) return;
+    const [group] = [...groups];
+    const choice = group ? mod.globalGroupChoice(catalog, state.measurement.globalGroup) : null;
+    if (choice?.options.some(option => option.id === group)) window.FXRouteBankUI.selectEffectsGroup(group);
+}
+
+function measurementGroupChoiceFromCatalog() {
+    /* Routed speaker groups when the selection is Surround Global (not All
+     * Banks, which has no Advanced); null elsewhere. */
+    const mod = outputSystemModule();
+    const catalog = (state.outputSystem || {}).catalog;
+    if (!mod || !catalog || typeof mod.globalGroupChoice !== 'function') return null;
+    if (catalog.modes?.[catalog.active_mode]?.selected_bank === 'all') return null;
+    return mod.globalGroupChoice(catalog, state.measurement.globalGroup);
 }
 
 function measurementRepeatBlockedReason() {

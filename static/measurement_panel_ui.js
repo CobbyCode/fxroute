@@ -301,6 +301,16 @@
                     plainEntries.length ? '; other measurements -2 ms to +30 ms' : ''}.`
                 : 'Impulse response view: -2 ms to +30 ms.';
         }
+        if (elements.measurementCurrentKey) {
+            // Unsaved results beyond an L/R pair (an Advanced series) have no
+            // other key before they are saved; the saved list has its own.
+            const keyed = graphEntries.filter(entry => entry.current && entry.graphColor);
+            const shown = keyed.length > 2;
+            elements.measurementCurrentKey.classList.toggle('hidden', !shown);
+            elements.measurementCurrentKey.innerHTML = shown ? keyed.map(entry => `<span class="measurement-current-key-item" role="listitem">`
+                + `<span class="measurement-swatch" style="background:${deps.escapeHtml(entry.graphColor)}"></span>`
+                + `${deps.escapeHtml(entry.name)}</span>`).join('') : '';
+        }
         if (elements.measurementEmpty) {
             elements.measurementEmpty.textContent = frequencyView
                 ? 'No current or saved measurements yet.'

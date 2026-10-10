@@ -1388,6 +1388,23 @@
         return copy;
     }
 
+    // The demo's fixtures are one pair of speakers.  A speaker group of an
+    // Advanced series gets its own level and tilt so the groups can be told
+    // apart in the graph.
+    const GROUP_SHAPE_DB = { front: [0, 0], center: [-2.5, 0.8], side: [1.5, -0.6], rear: [-4, 1.2] };
+    function shapeFixtureForGroup(fixture, group) {
+        const shape = GROUP_SHAPE_DB[group];
+        if (!shape || !fixture) return fixture;
+        const copy = JSON.parse(JSON.stringify(fixture));
+        ['traces', 'review_traces'].forEach((key) => {
+            (copy[key] || []).forEach((trace) => {
+                trace.points = (trace.points || []).map(([hz, db, ...rest]) =>
+                    [hz, db + shape[0] + shape[1] * Math.log2(Math.max(hz, 20) / 1000), ...rest]);
+            });
+        });
+        return copy;
+    }
+
     function makeMeasurement(opts = {}) {
         const id = opts.id || 'demo_meas_' + (++measurementSeq);
         const name = opts.name || 'Demo Measurement ' + measurementSeq;
@@ -1415,10 +1432,19 @@
                 source = pool[sweepFixtureIndex % pool.length];
             }
             sweepFixtureIndex += 1;
-            const measurement = prepareFixtureMeasurement(source, opts);
+            const measurement = prepareFixtureMeasurement(shapeFixtureForGroup(source, opts.group), opts);
             measurement.id = id;
             measurement.name = name;
             measurement.created_at = created;
+            // Frozen area of a Surround Global group sweep (its saved badge).
+            if (opts.group) {
+                measurement.measurement_target = {
+                    schema: 'fxroute.measurement-target',
+                    bank_id: opts.bank || 'global',
+                    mode: opts.mode || 'surround',
+                    global_group: opts.group,
+                };
+            }
             if (opts.channel) measurement.channel = String(opts.channel).toLowerCase();
             if (opts.role) measurement.measurement_role = String(opts.role);
             if (opts.kind) measurement.measurement_kind = String(opts.kind);

@@ -20,6 +20,7 @@
         renderMeasurementPanel: () => {},
         mergeSelectedMeasurements: () => {},
         deleteSelectedMeasurements: () => {},
+        adoptSelectedMeasurementGroup: () => {},
     };
 
     function init(overrides) {
@@ -144,6 +145,7 @@
             if (input.matches('[data-measurement-toggle]')) {
                 deps.getState().measurement.visibilityById[input.dataset.measurementToggle] = !!input.checked;
                 deps.getState().measurement.savedGroupOpen = true;
+                deps.adoptSelectedMeasurementGroup();
                 deps.renderMeasurementPanel();
                 return;
             }
@@ -152,6 +154,7 @@
                     deps.getState().measurement.visibilityById[measurement.id] = !!input.checked;
                 });
                 deps.getState().measurement.savedGroupOpen = true;
+                deps.adoptSelectedMeasurementGroup();
                 deps.renderMeasurementPanel();
             }
         });

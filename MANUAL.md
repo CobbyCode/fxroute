@@ -374,11 +374,15 @@ The wizard follows the selected **Measuring area**, so the step list and the mod
 - a mono area — the Surround group **Center** — measures one channel instead of a pair: one direct response, the main listening position, and the two listening positions are captured as a single **Center + Sub** model (the label drops the `Global · ` prefix and keeps the group name, for example `Center + Sub · measuring area`). There is no L/R comparison and no subwoofer alignment check.
 - **Sub** and **All Banks** hide Advanced. Sub banks offer a single sweep and Auto Sub Optimize; All Banks owns no bank to receive the filter model (section 6.2).
 
+In **Surround Global** the open Advanced dialog shows a speaker row (`Front`, `Center`, `Side`, `Rear`, `All`) above the first step, so the pair or the single Center can be chosen without leaving it. A group chip sets the same speaker selection as the chips in the sweep menu; the room view places the speakers for the group (front wall, side walls, behind the seat). **All** measures every routed group one after another with the steps above — Front, Center, Side, Rear — and the header names the group being measured. A failed subwoofer alignment check is repeated for its group before the next group starts. The speaker row is locked once the first measurement is taken; close and reopen the dialog to change it.
+
 When subwoofer routing is active, a final **Subwoofer alignment check** step returns the microphone to the main listening position and measures the summed L+R response with the subs in circuit. The wizard label reflects the derived sub layout (`Stereo`, `2.1`, `2.2 Mono`, `2.2 Stereo`).
 
 FXRoute validates position, L/R timing, and the summed response and asks you to repeat a step after correcting it (**Repeat measurement**). Keep the microphone at ear height and move it only when a step asks. Use the electrical reference input when available.
 
 When the run finishes, the dialog lists what was captured, compares left and right, reports the gated direct lower limit, and offers **Open filter generator**. That hands the combined speaker and room model to the **Convolver** assistant as a left/right pair (`Advanced … L` and `· R`) so you can turn it straight into a FIR preset.
+
+A run over **All** speakers ends with **Show results** instead: the models of every group appear together on the graph, with a colour key under it, and **Save current** stores them as one set named `<name> · <group> · L` / `· R` (Center without a side). Saved, they are ordinary runs: tick one group's L and R to work on them in the Convolver assistant. Ticking saved runs that were all measured for one speaker group also selects that group's speaker chip, so a filter made from them is bound to the group they were measured for.
 
 ### 6.5 Speaker Auto Alignment
 

@@ -162,6 +162,13 @@ assert.strictEqual(entries.measurement_bank, 'global');
 assert.strictEqual(entries.measurement_group, 'rear');
 console.log('hybrid payload speaker group: ok');
 
+// A series step names its own group, whatever the speaker selection is.
+MF = makeFlowsContext(hybridState, '', 'global', 'front');
+entries = formEntries(MF.buildHybridMeasurementForm({ ...step, group: 'side' }));
+assert.strictEqual(entries.measurement_bank, 'global');
+assert.strictEqual(entries.measurement_group, 'side');
+console.log('hybrid payload series group: ok');
+
 // --- Part 3: per-side reference fields -----------------------------------
 function runAppendReferenceFields(state, channelCount) {
     const measurement = { ...state, inputs: channelCount == null ? [] : [{ id: 'test-input', channels: channelCount }],

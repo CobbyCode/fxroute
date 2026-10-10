@@ -300,16 +300,21 @@ function syncSideRow(area, sweepSide = 'stereo') {
 
 // The app reads the separate memories instead of leaking Global's group into All Banks.
 {
-    const match = /function measurementAreaFromCatalog\(\) \{[\s\S]*?\n\}\n/.exec(appSource);
+    const match = /function measurementAreaFromCatalog\(group\) \{[\s\S]*?\n\}\n/.exec(appSource);
     const catalog = catalogFor({ roles: ALL_ROLES, selectedBank: 'all' });
     const state = { outputSystem: { catalog }, measurement: { globalGroup: 'rear', allBanksGroup: '' } };
-    const area = () => new Function('state', 'outputSystemModule', `${match[0]}; return measurementAreaFromCatalog();`)(
-        state, () => OutputState);
+    const area = (group) => new Function('state', 'outputSystemModule', 'group', `${match[0]}; return measurementAreaFromCatalog(group);`)(
+        state, () => OutputState, group);
     assert.equal(area().group, 'front');
     state.measurement.allBanksGroup = 'center';
     assert.equal(area().group, 'center');
     catalog.modes.surround.selected_bank = 'global';
     assert.equal(area().group, 'rear');
+    // A named group is that group's Global area, whatever the selection says
+    // (the Advanced series measures every routed group).
+    assert.deepEqual([area('center').group, area('center').bank_id], ['center', 'global']);
+    catalog.modes.surround.selected_bank = 'all';
+    assert.deepEqual([area('rear').group, area('rear').bank_id], ['rear', 'global']);
 }
 
 // One choice end to end: the shared setter re-renders the sweep chips, and the
@@ -344,5 +349,40 @@ assert.match(indexSource, /id="measurement-sweep-group-row"[^>]*class="[^"]*hidd
 assert.match(appSource, /measurementSweepGroupRow: document\.getElementById\('measurement-sweep-group-row'\)/);
 assert.match(appSource, /window\.FXRouteBankUI\.renderSweepGroupRow\(\);\s*syncSweepSideRow\(area\);/,
     'the area render refreshes the group row before the side chips');
+
+// Saved results of exactly one speaker group select that group, so a filter
+// made from them is bound to the group they were measured for.
+{
+    const match = /function adoptSelectedMeasurementGroup\(\) \{[\s\S]*?\n\}\n/.exec(appSource);
+    assert.ok(match, 'app.js owns the group adoption');
+    const run = ({ measurements, visible, selectedBank = 'global', mode = 'surround', active = false, startInFlight = false, roles = ALL_ROLES }) => {
+        const catalog = catalogFor({ roles, selectedBank, mode });
+        const state = { outputSystem: { catalog }, measurement: { globalGroup: 'front', measurements,
+            visibilityById: Object.fromEntries(visible.map(id => [id, true])), startInFlight } };
+        const selected = [];
+        const win = { FXRouteBankUI: { selectEffectsGroup: group => selected.push(group) },
+            FXRouteMeasurementJob: { hasActiveMeasurementJob: () => active } };
+        new Function('state', 'outputSystemModule', 'window', `${match[0]}; adoptSelectedMeasurementGroup();`)(
+            state, () => OutputState, win);
+        return selected;
+    };
+    const entry = (id, group) => ({ id, measurement_target: group === undefined ? null : { global_group: group } });
+    assert.deepEqual(run({ measurements: [entry('a', 'rear'), entry('b', 'rear'), entry('c', 'center')], visible: ['a', 'b'] }), ['rear']);
+    assert.deepEqual(run({ measurements: [entry('a', 'rear'), entry('c', 'center')], visible: ['a', 'c'] }), [],
+        'a mixed selection leaves the speaker selection alone');
+    assert.deepEqual(run({ measurements: [entry('a', 'rear'), entry('x')], visible: ['a', 'x'] }), [],
+        'a result without a group is not a group selection');
+    assert.deepEqual(run({ measurements: [entry('a', 'side')], visible: ['a'] }), [], 'an unrouted group is ignored');
+    assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: [] }), [], 'nothing selected');
+    assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: ['a'], selectedBank: 'all' }), [],
+        'All Banks results are never imported');
+    assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: ['a'], selectedBank: 'rear' }), [], 'a concrete bank');
+    assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: ['a'], active: true }), [], 'not during a measurement');
+    assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: ['a'], startInFlight: true }), []);
+    assert.match(appSource, /adoptSelectedMeasurementGroup: \(\) => adoptSelectedMeasurementGroup\(\)/);
+    const savedUiSource = fs.readFileSync(path.join(root, 'static', 'measurement_saved_ui.js'), 'utf8');
+    assert.equal((savedUiSource.match(/deps\.adoptSelectedMeasurementGroup\(\);/g) || []).length, 2,
+        'the checkbox and select-all both adopt the group');
+}
 
 console.log('measurement group row: ok');

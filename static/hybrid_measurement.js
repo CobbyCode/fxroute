@@ -71,7 +71,37 @@
             speaker: channels.length === 1 ? (subwoofer ? name : `${name} speaker`) : '',
             unit: subwoofer ? 'sub' : 'speaker',
             wholeSystem,
+            group: String(area.group || ''),
+            groupName: name,
         };
+    }
+
+    // A series runs the regular sequence of several speaker groups one after
+    // another.  Its scope only lists the group scopes; every reader of one
+    // step's scope goes through scopeForStep.
+    function buildSeriesScope(scopes) {
+        const list = (Array.isArray(scopes) ? scopes : []).filter(Boolean);
+        return {
+            id: ['series', ...list.map(scope => scope.id)].join('+'),
+            series: true,
+            scopes: list,
+            mode: list[0]?.mode || 'stereo',
+            label: 'All speakers',
+            channels: [],
+            direct: true,
+            integration: false,
+            speaker: '',
+            unit: 'speaker',
+            wholeSystem: false,
+            group: '',
+            groupName: '',
+        };
+    }
+
+    function scopeForStep(scopeOrMode, step) {
+        const scope = normalizeScope(scopeOrMode);
+        if (!scope.series) return scope;
+        return scope.scopes.find(item => item.group === step?.group) || scope.scopes[0] || scope;
     }
 
     function buildSequence(scopeOrMode = 'stereo') {
@@ -103,19 +133,43 @@
         return { mode: scope.mode, scope, modeLabel: scope.label, steps };
     }
 
+    // The regular sequence of every group scope, back to back.  Step ids carry
+    // their group so captures of different groups never share an id.
+    function buildSeriesSequence(scopes) {
+        const scope = buildSeriesScope(scopes);
+        const steps = [];
+        scope.scopes.forEach((groupScope) => {
+            // A single speaker already names itself ("Center speaker").
+            const named = groupScope.channels.length === 2;
+            buildSequence(groupScope).steps.forEach(item => steps.push({
+                ...item,
+                id: `${groupScope.group}:${item.id}`,
+                group: groupScope.group,
+                active: named ? `${groupScope.groupName} · ${item.active}` : item.active,
+            }));
+        });
+        return { mode: scope.mode, scope, modeLabel: scope.label, steps };
+    }
+
     function getPositionSeriesEnd(steps, startIndex) {
-        const position = steps[startIndex]?.position;
+        const { position, group } = steps[startIndex] || {};
         let endIndex = startIndex;
-        while (endIndex + 1 < steps.length && steps[endIndex + 1].position === position) endIndex += 1;
+        while (endIndex + 1 < steps.length && steps[endIndex + 1].position === position
+            && steps[endIndex + 1].group === group) endIndex += 1;
         return endIndex;
     }
 
     function getPreviousPositionIndex(steps, currentIndex) {
         if (currentIndex <= 0) return 0;
-        const previousPosition = steps[currentIndex - 1]?.position;
+        const previous = steps[currentIndex - 1] || {};
         let index = currentIndex - 1;
-        while (index > 0 && steps[index - 1]?.position === previousPosition) index -= 1;
+        while (index > 0 && steps[index - 1]?.position === previous.position
+            && steps[index - 1]?.group === previous.group) index -= 1;
         return index;
+    }
+
+    function groupCaptures(captures, group) {
+        return (Array.isArray(captures) ? captures : []).filter(item => (item.group || '') === (group || ''));
     }
 
     function interpolate(points, frequency) {
@@ -397,6 +451,7 @@
         }
         return {
             layout,
+            group: scope.group || '',
             speakers: {
                 left: layout === 'pair' && (stereoStep || activeChannel === 'left'),
                 right: layout === 'pair' && (stereoStep || activeChannel === 'right'),
@@ -431,12 +486,28 @@
         return { mode: scope.mode, scope, models, left: models.left || null, right: models.right || null, integration };
     }
 
+    // The finished series: one regular profile per group, in series order.
+    function buildSeriesProfile(scopeOrSeries, profilesByGroup = {}) {
+        const scope = normalizeScope(scopeOrSeries);
+        const parts = scope.scopes.map((groupScope) => {
+            const profile = profilesByGroup[groupScope.group];
+            if (!profile) throw new Error(`Missing ${groupScope.groupName || groupScope.group} measurement profile`);
+            return { scope: groupScope, profile };
+        });
+        return { series: true, mode: scope.mode, scope, parts };
+    }
+
     return {
         CONFIG,
         MODE_LABELS,
         buildScope,
+        buildSeriesScope,
+        scopeForStep,
         normalizeScope,
         buildSequence,
+        buildSeriesSequence,
+        buildSeriesProfile,
+        groupCaptures,
         getPositionSeriesEnd,
         getPreviousPositionIndex,
         buildListeningModel,

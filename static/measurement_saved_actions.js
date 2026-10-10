@@ -70,7 +70,9 @@
                 measurements: repeatMeasurements.map((measurement) => {
                     const item = JSON.parse(JSON.stringify(measurement));
                     const sideSuffix = String(item.channel || '').toLowerCase() === 'right' ? 'R' : 'L';
-                    item.name = `${baseName} · ${takeSuffix[item.speaker_align_take?.take] || sideSuffix}`;
+                    // An Advanced series names the speaker group of each entry.
+                    item.name = `${baseName} · ${takeSuffix[item.speaker_align_take?.take] || item.save_suffix || sideSuffix}`;
+                    delete item.save_suffix;
                     return item;
                 }),
             };

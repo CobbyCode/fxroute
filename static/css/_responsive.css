@@ -1078,6 +1078,10 @@
        panel on a 320px screen. */
     .hybrid-wizard-grid { grid-template-columns: minmax(0, 1fr); }
     .hybrid-room-view { min-height: 300px; }
+    /* A phone-wide room: a smaller seat leaves the side and rear speakers
+       their own space instead of sitting on its arms. */
+    .hybrid-seat { transform: translate(-50%, -50%) scale(0.8); }
+    .hybrid-room-view[data-hybrid-group="rear"] { --hybrid-speaker-y: 88%; --hybrid-direct-y: 68%; }
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 

@@ -3680,7 +3680,9 @@
         if (p === '/api/measurements/start' && post) {
             const role = String(body.measurement_role || 'single');
             const channel = String(body.channel || 'left');
-            const id = S.startMeasurement({ role, channel, mode: outputMode.mode, seed: 1 + Math.random() * 50 });
+            const group = String(body.measurement_group || '');
+            const bank = String(body.measurement_bank || '');
+            const id = S.startMeasurement({ role, channel, group, bank, mode: outputMode.mode, seed: 1 + Math.random() * 50 });
             return j({ job: { id, job_kind: 'single', status: 'running', progress_pct: 0, message: 'Sweep starting…' } });
         }
         const measJobMatch = p.match(/^\/api\/measurements\/jobs\/([^/]+)$/);

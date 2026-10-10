@@ -278,6 +278,46 @@ assert.deepEqual(Hybrid.getDiagramState(subScope, 'stereo').speakers, { left: fa
 assert.equal(Hybrid.getDiagramState(subScope, 'stereo').layout, 'sub');
 assert(Hybrid.getDiagramState(subScope, 'stereo').subs.left.active, 'subs stay visible for a sub scope');
 
+// A series is the regular sequence of every group back to back; step ids carry
+// the group, and a position series never runs across a group boundary.
+{
+    const groupNames = { front: 'Front L/R', center: 'Center', side: 'Side L/R', rear: 'Rear L/R' };
+    const seriesScopes = Object.keys(groupNames).map(group => Hybrid.buildScope(
+        { bank_id: 'global', group, label: `Global · ${groupNames[group]} + Sub`, channel_mode: group === 'center' ? 'mono' : 'stereo' },
+        subTopology));
+    const series = Hybrid.buildSeriesSequence(seriesScopes);
+    assert.equal(series.scope.series, true);
+    assert.equal(series.steps.length, 9 + 4 + 9 + 9);
+    assert.deepEqual(series.steps.slice(0, 9).map(item => item.id.replace(/^front:/, '')), legacyIds);
+    assert.deepEqual([...new Set(series.steps.map(item => item.group))], ['front', 'center', 'side', 'rear']);
+    assert.equal(new Set(series.steps.map(item => item.id)).size, series.steps.length);
+    assert.equal(series.steps[9].id, 'center:direct-stereo');
+    assert.equal(series.steps[9].active, 'Center speaker', 'a single speaker already names itself');
+    assert.equal(series.steps[0].active, 'Front L/R · Left speaker');
+    assert.equal(Hybrid.scopeForStep(series.scope, series.steps[10]), seriesScopes[1]);
+    assert.equal(Hybrid.scopeForStep(rearScope, series.steps[10]), rearScope, 'a plain scope is its own step scope');
+    // Front's last step (integration, position mlp) and Center's first never merge.
+    assert.equal(Hybrid.getPositionSeriesEnd(series.steps, 8), 8);
+    assert.equal(Hybrid.getPositionSeriesEnd(series.steps, 9), 9);
+    assert.equal(Hybrid.getPreviousPositionIndex(series.steps, 9), 8, 'Back from a group start returns to the previous group');
+    assert.equal(Hybrid.getPreviousPositionIndex(series.steps, 11), 10);
+    // Equal positions in different groups are different series.
+    const joined = [{ position: 'mlp', group: 'a' }, { position: 'mlp', group: 'b' }, { position: 'mlp', group: 'b' }];
+    assert.equal(Hybrid.getPositionSeriesEnd(joined, 0), 0);
+    assert.equal(Hybrid.getPositionSeriesEnd(joined, 1), 2);
+    assert.equal(Hybrid.getPreviousPositionIndex(joined, 2), 1);
+    assert.equal(rearScope.group, 'rear');
+    assert.equal(Hybrid.getDiagramState(rearScope, 'left').group, 'rear');
+    assert.equal(Hybrid.getDiagramState('stereo', 'left').group, '');
+    // Captures of a group, and the finished series in series order.
+    const tagged = [{ group: 'front', stepId: 'a' }, { group: 'rear', stepId: 'b' }, { stepId: 'c' }];
+    assert.deepEqual(Hybrid.groupCaptures(tagged, 'rear').map(item => item.stepId), ['b']);
+    assert.deepEqual(Hybrid.groupCaptures(tagged, '').map(item => item.stepId), ['c']);
+    const profile = Hybrid.buildSeriesProfile(series.scope, { front: { id: 1 }, center: { id: 2 }, side: { id: 3 }, rear: { id: 4 } });
+    assert.deepEqual(profile.parts.map(part => part.profile.id), [1, 2, 3, 4]);
+    assert.throws(() => Hybrid.buildSeriesProfile(series.scope, { front: {} }), /Missing .* measurement profile/);
+}
+
 // One channel: the profile carries one model and no integration; a sub scope
 // uses the listening-position model alone (no direct blend).
 const monoCaptures = [capture('direct', 'direct-stereo', 'stereo', measurement('stereo', 0, { directResponse })),
