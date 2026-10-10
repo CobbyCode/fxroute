@@ -250,7 +250,7 @@ function surroundGlobalAreaTests() {
     assert.deepEqual(front, {
         bank_id: 'global', label: 'Global · Front L/R + Sub', channel: 'stereo', channel_mode: 'stereo',
         available: true, sides: ['left', 'stereo', 'right'],
-        note: 'Front L/R + Sub: every other speaker is muted; the subs stay audible.',
+        note: 'Only selected speakers and subs play.',
         repeat_supported: true, repeat_note: '', polarity_supported: false, group: 'front',
         side_labels: { left: 'Front L', stereo: 'Front L+R', right: 'Front R' },
     });

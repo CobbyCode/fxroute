@@ -289,7 +289,7 @@ function measurementArea(catalog, bankId, group) {
         : repeat_supported ? '' : channel_mode === 'stereo'
             ? `${label}: use a single sweep or Auto Sub Optimize.` : `${label} is a mono target. Use a single sweep.`;
     const groupNote = groupOption
-        ? `${groupOption.label}: every other speaker is muted; the subs stay audible.`
+        ? 'Only selected speakers and subs play.'
         : allBanks ? 'Whole system as listened (every bank on its A/B side); not importable.' : '';
     return {
         bank_id: selected,

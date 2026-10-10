@@ -324,11 +324,11 @@ def _run():
                     page.locator("#measurement-sweep-start").inner_text(),
                     page.locator("#measurement-repeat-start").inner_text(),
                     page.locator("#measurement-hybrid-open").inner_text(),
-                ] == ["Global", "Run Single Sweep", "Start LR Repeat", "Advanced"]
+                ] == ["Global", "Single Sweep", "Start LR Repeat", "Advanced"]
                 first_choice = page.locator(".measurement-workflow-menu-choice").nth(0).inner_text()
                 # The label is uppercased by CSS; compare case-insensitively.
                 assert "measuring area" in first_choice.lower()
-                assert "Run Single Sweep" in first_choice
+                assert "Single Sweep" in first_choice
                 assert "L / R / Stereo" not in first_choice
                 assert page.locator("[data-measurement-channel]").count() == 0
                 # Stereo areas offer an area-scoped side choice for the single

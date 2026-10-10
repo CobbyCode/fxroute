@@ -62,7 +62,7 @@ assert.doesNotMatch(index, /data-measurement-channel/, 'the area selector owns t
 assert.match(index, /id="measurement-area-row"[^>]*role="group"[^>]*aria-label="Selected measurement area"/);
 assert.match(index, /<span class="measurement-area-label">Measuring area<\/span>/);
 assert.match(index, /id="measurement-area-indicator"[^>]*aria-live="polite">Global<\/span>/);
-assert.match(index, /id="measurement-sweep-start"[^>]*class="btn-secondary"[^>]*>Run Single Sweep<\/button>/);
+assert.match(index, /id="measurement-sweep-start"[^>]*class="btn-secondary"[^>]*>Single Sweep<\/button>/);
 assert.match(index, /id="measurement-sweep-side-row"[^>]*aria-label="Single sweep side"/);
 assert.match(index, /data-sweep-side="left"[^>]*>Left<\/button>/);
 assert.match(index, /data-sweep-side="stereo"[^>]*>Stereo<\/button>/);
