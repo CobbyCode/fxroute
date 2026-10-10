@@ -216,7 +216,10 @@
             elements.measurementNameInput.title = areaBadge
                 ? `Measured area: ${areaBadge.title}`
                 : 'Measurement name';
-            elements.measurementNameInput.placeholder = 'Measurement name';
+            // An Auto Sub result is saved as "AutoSub" while the field is blank.
+            const autoSubPending = Array.isArray(measurementState.autoSubMeasurements)
+                && measurementState.autoSubMeasurements.length > 0;
+            elements.measurementNameInput.placeholder = autoSubPending ? 'AutoSub' : 'Measurement name';
         }
         deps.syncMeasurementSweepButton();
         if (elements.measurementRepeatStartBtn) {

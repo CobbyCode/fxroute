@@ -29,7 +29,7 @@ import traceback
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PORT = 8241
-WIDTHS = (320, 360, 390, 440, 480, 600, 768, 1024, 1440)
+WIDTHS = (320, 360, 390, 440, 480, 600, 700, 768, 900, 1024, 1440, 2560)
 
 try:
     from playwright.sync_api import sync_playwright
@@ -342,6 +342,21 @@ SCOPE_ROW_AUDIT = """
 }
 """
 
+# The dialog takes the width the viewport allows, up to 980px: the generic
+# .manage-dialog width steps (<=900px, >=2560px) once capped it at 620px and
+# left the room view 253px wide on a tablet.
+DIALOG_WIDTH = """
+() => {
+    const dialog = document.querySelector('.hybrid-measurement-dialog');
+    const overlay = dialog.parentElement;
+    const style = getComputedStyle(overlay);
+    const inner = overlay.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    return {dialog: dialog.getBoundingClientRect().width, inner,
+            room: document.querySelector('.hybrid-room-view').getBoundingClientRect().width,
+            grid: document.querySelector('.hybrid-wizard-grid').getBoundingClientRect().width};
+}
+"""
+
 PEQ_ROW = """
 () => {
     const row = document.querySelector('.effects-peq-add-row');
@@ -489,6 +504,14 @@ def _run():
                 check(f"[{width}px] hybrid Start button fully visible",
                       hyb["primary"]["fullyVisible"], hyb["primary"])
 
+                # The dialog is as wide as the viewport allows, so the room view
+                # keeps its share (45% of the grid) from 640px up.
+                size = page.evaluate(DIALOG_WIDTH)
+                check(f"[{width}px] hybrid dialog takes the width the viewport allows",
+                      abs(size["dialog"] - min(980, size["inner"])) <= 1, size)
+                if width >= 640:
+                    check(f"[{width}px] room view keeps its share of the grid",
+                          size["room"] >= (size["grid"] - 20) * 0.45 - 1, size)
                 # Every group: no speaker, subwoofer or microphone sits on another.
                 for group, layout, subs in ROOM_COMBOS:
                     room = page.evaluate(ROOM_AUDIT, [group, layout, subs])

@@ -32,11 +32,12 @@ function makeContext() {
     };
     ctx.window = ctx;
     vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(root, 'static', 'measurement_ui.js'), 'utf8'), ctx);
     vm.runInContext(fs.readFileSync(path.join(root, 'static', 'measurement_flows.js'), 'utf8'), ctx);
     return ctx;
 }
 
-async function classify(result) {
+async function classify(result, measurementOverrides = {}) {
     const ctx = makeContext();
     const MF = ctx.FXRouteMeasurementFlows;
     assert.ok(typeof MF.handleAutoSubResult === 'function', 'measurement_flows must expose handleAutoSubResult');
@@ -48,6 +49,7 @@ async function classify(result) {
             autoSubInFlight: false,
             currentMeasurementSaved: true,
             currentMeasurementName: '',
+            ...measurementOverrides,
         },
     };
     const toasts = [];
@@ -209,6 +211,25 @@ function base21Result(overrides = {}) {
         assert.doesNotMatch(state.measurement.statusText, /gate_reverted/);
         assert.equal(toasts[0].type, 'success');
         assert.equal(toasts[0].text, 'Auto Sub applied');
+    }
+
+    // 9. The result does not store "AutoSub" in the name field: the next
+    //    sweep or L/R repeat would take it over as its base name. The save
+    //    names it AutoSub while the field is blank. A typed name is kept; a
+    //    name a result proposed earlier is not a typed one.
+    {
+        const fresh = await classify(base21Result());
+        assert.equal(fresh.state.measurement.currentMeasurementName, '');
+        const earlier = await classify(base21Result(), {
+            currentMeasurementName: 'Demo Measurement 3', typedMeasurementName: '' });
+        assert.equal(earlier.state.measurement.currentMeasurementName, '', 'a sweep result name does not stay');
+        const typed = await classify(base21Result(), {
+            currentMeasurementName: 'Seat A', typedMeasurementName: 'Seat A' });
+        assert.equal(typed.state.measurement.currentMeasurementName, 'Seat A', 'a typed name is kept');
+        const replaced = await classify(base21Result(), {
+            currentMeasurementName: 'Demo Measurement 3', typedMeasurementName: 'Seat A' });
+        assert.equal(replaced.state.measurement.currentMeasurementName, '',
+            'a typed name that was since replaced by a proposal is not typed any more');
     }
 
     console.log('ok auto-sub result classification (weak only via confidence; kept/rejected honest)');

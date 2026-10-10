@@ -283,6 +283,28 @@ async function main() {
         assert.equal(failed.state.measurement.autoSubMeasurements.length, 1, 'a failed sweep leaves the Auto Sub result alone');
     }
 
+    // 7d. A single sweep result proposes its own name; a name the user typed
+    //     stays.
+    {
+        const run = async (measurementState) => {
+            const h = makeJobHarness({
+                getMeasurementJobResultMeasurement: (j) => j.result?.measurement || null,
+                setMeasurementGraphView: () => {},
+            });
+            Object.assign(h.state.measurement, measurementState);
+            h.state.measurement.activeJobId = 'j7';
+            h.state.measurement.activeMeasurementKind = 'single';
+            h.fetchResponses.push({ ok: true, json: async () => ({ job: { id: 'j7', status: 'completed',
+                message: 'Measurement finished.', result: { measurement: { id: 'sweep-2', name: 'Sweep 7', review_traces: [] } } } }) });
+            await job.pollMeasurementJob('j7', 7);
+            return h.state.measurement.currentMeasurementName;
+        };
+        assert.equal(await run({ currentMeasurementName: '' }), 'Sweep 7');
+        assert.equal(await run({ currentMeasurementName: 'Sweep 3', typedMeasurementName: '' }), 'Sweep 7');
+        assert.equal(await run({ currentMeasurementName: 'Seat A', typedMeasurementName: 'Seat A' }), 'Seat A');
+        assert.equal(await run({ currentMeasurementName: 'Sweep 3', typedMeasurementName: 'Seat A' }), 'Sweep 7');
+    }
+
     // 8. An L/R repeat cancel is labelled as such.
     {
         const h = makeJobHarness();

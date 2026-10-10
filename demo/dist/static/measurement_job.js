@@ -330,11 +330,12 @@
                 const resultMeasurement = deps.getMeasurementJobResultMeasurement(job);
                 if (resultMeasurement) {
                     try {
+                        const typedName = ui.getTypedMeasurementName(deps.getState().measurement);
                         deps.getState().measurement.currentMeasurement = deps.normalizeMeasurementEntry(resultMeasurement, 0);
                         // Same as the L/R repeat: the new sweep replaces an
                         // unsaved Auto Sub result instead of hiding behind it.
                         deps.getState().measurement.autoSubMeasurements = [];
-                        deps.getState().measurement.currentMeasurementName = deps.getState().measurement.currentMeasurement.name || '';
+                        deps.getState().measurement.currentMeasurementName = typedName || deps.getState().measurement.currentMeasurement.name || '';
                         deps.getState().measurement.currentMeasurementSaved = false;
                         deps.getState().measurement.reviewVisibilityById[deps.getState().measurement.currentMeasurement.id] = !!deps.getState().measurement.currentMeasurement.review_traces?.length;
                         deps.setMeasurementGraphView('freq');

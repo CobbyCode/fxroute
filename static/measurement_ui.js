@@ -180,6 +180,15 @@ function hasUnsavedMeasurementContent(measurementState = {}) {
         || (Array.isArray(measurementState.autoSubMeasurements) && measurementState.autoSubMeasurements.length > 0);
 }
 
+// The name the user typed into the name field.  '' while the field holds a
+// name the app proposed for a result (AutoSub, a sweep's own name) or nothing:
+// such a proposal never replaces a typed name.
+function getTypedMeasurementName(measurementState = {}) {
+    const typed = String(measurementState.typedMeasurementName || '').trim();
+    const shown = String(measurementState.currentMeasurementName || '').trim();
+    return typed && typed === shown ? typed : '';
+}
+
 function hasResettableMeasurementSettings(assistMode, peq, conv, defaults = getDefaultMeasurementConvolverState()) {
     if (assistMode !== 'peq' && assistMode !== 'convolver') return false;
     if (conv.targetCurve !== defaults.targetCurve) return true;
@@ -1013,6 +1022,7 @@ function hybridSpeakerName(channel) {
         getDefaultMeasurementPeqState,
         getDefaultMeasurementConvolverState,
         hasUnsavedMeasurementContent,
+        getTypedMeasurementName,
         hasResettableMeasurementSettings,
         getMeasurementConvolverDraftPhaseMode,
         getMeasurementPeqNameSuffix,

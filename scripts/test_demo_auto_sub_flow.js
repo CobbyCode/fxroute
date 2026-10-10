@@ -56,6 +56,7 @@ function makeContext() {
     for (const file of DEMO_MODULES) {
         vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), ctx);
     }
+    vm.runInContext(fs.readFileSync(path.join(root, 'static', 'measurement_ui.js'), 'utf8'), ctx);
     vm.runInContext(fs.readFileSync(path.join(root, 'static', 'measurement_flows.js'), 'utf8'), ctx);
     return { ctx, clock };
 }

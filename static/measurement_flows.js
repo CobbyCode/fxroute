@@ -499,7 +499,10 @@ async function handleAutoSubResult(job) {
         measurementState.autoSubMeasurements = autoSubMeasurements;
     }
     measurementState.currentMeasurementSaved = false;
-    measurementState.currentMeasurementName = 'AutoSub';
+    // The result is saved as AutoSub while the field is blank (the field's
+    // placeholder says so); a stored "AutoSub" would be taken over by the next
+    // sweep or L/R repeat as its base name.  A typed name is kept.
+    measurementState.currentMeasurementName = ui.getTypedMeasurementName(measurementState);
     const winner = result.winner || {};
     // The outcome line comes first; scan details follow on a second line.
     const withDetail = (outcome, detailParts) => (detailParts.length ? `${outcome}\n${detailParts.join(' · ')}` : outcome);

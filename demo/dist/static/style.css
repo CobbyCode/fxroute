@@ -4965,6 +4965,10 @@ select.url-input {
     max-height: calc(100dvh - 2rem);
     overflow-y: auto;
 }
+/* The generic .manage-dialog width steps (up to 900px and from 2560px, in
+   _responsive.css) come later in the cascade and cap this dialog at 620px,
+   which left the room view 253px wide on a tablet.  Two classes win. */
+.manage-dialog.hybrid-measurement-dialog { width: min(980px, 100%); }
 
 .hybrid-mode-label {
     margin: 0 0 0.25rem;

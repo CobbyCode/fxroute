@@ -107,6 +107,13 @@ panel.renderMeasurementPanelActionsSection(context);
 assert.deepEqual(calls.slice(0, 2), ['sweep', ['repeat', false, '']]);
 assert.equal(elements.measurementNameInput.value, 'Sweep 1');
 assert.equal(elements.measurementNameInput.title, 'Measured area: Left mid · measured area');
+assert.equal(elements.measurementNameInput.placeholder, 'Measurement name');
+// An Auto Sub result is saved as "AutoSub" while the field is blank.
+panel.renderMeasurementPanelActionsSection({ ...context, measurementState: {
+    ...measurementState, currentMeasurementName: '', autoSubMeasurements: [{ id: 'autosub-1' }] } });
+assert.equal(elements.measurementNameInput.value, '');
+assert.equal(elements.measurementNameInput.placeholder, 'AutoSub');
+panel.renderMeasurementPanelActionsSection(context);
 assert.equal(elements.measurementRepeatStartBtn.textContent, 'Start LR Repeat');
 assert.equal(elements.measurementSaveBtn.disabled, false);
 

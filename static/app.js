@@ -764,6 +764,7 @@ let state = {
         pendingRepeatMeasurements: [],
         currentMeasurementSaved: false,
         currentMeasurementName: '',
+        typedMeasurementName: '',
         inputs: [],
         selectedInputId: '',
         selectedInputLegacyId: '',
@@ -5049,6 +5050,7 @@ function setupMeasurementActions() {
     if (elements.measurementNameInput) {
         elements.measurementNameInput.addEventListener('input', (event) => {
             state.measurement.currentMeasurementName = event.target.value || '';
+            state.measurement.typedMeasurementName = state.measurement.currentMeasurementName;
         });
     }
     if (elements.measurementRepeatStartBtn) {

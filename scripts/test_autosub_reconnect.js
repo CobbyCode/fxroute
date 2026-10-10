@@ -33,6 +33,7 @@ function harness(currentJob, { sleep = async () => {}, poll = async () => ({}) }
         FXRouteMeasurementUI: {}, FXRouteHybridMeasurement: {} };
     ctx.window = ctx;
     vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/measurement_ui.js'), 'utf8'), ctx);
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/measurement_flows.js'), 'utf8'), ctx);
     const flows = ctx.FXRouteMeasurementFlows;
     flows.init({
