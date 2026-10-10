@@ -27,7 +27,7 @@
         elements.avSyncMode.textContent = modeLabels[data.active_mode] || data.active_mode;
         elements.avSyncActual.textContent = latency.ready ? ms(latency.actual_ms) : 'Waiting for audio engine…';
         elements.avSyncLimits.textContent = latency.ready
-            ? `Achievable range: ${ms(latency.minimum_ms)} – ${ms(latency.maximum_ms)}` : '';
+            ? `Available range: ${ms(latency.minimum_ms)} – ${ms(latency.maximum_ms)}` : '';
         elements.avSyncBasis.textContent = ({ calibrated: 'Measured calibration basis stored.',
             adopted: 'Existing alignment preserved; current DSP timing adopted. Recalibrate for a measured basis.',
             unavailable: 'Calibration basis unavailable. Existing alignment is preserved without guessing its DSP timing.' })[data.settings?.basis_origin] || '';
@@ -35,12 +35,12 @@
         if (!latency.ready) warning = 'The target is stored, but live timing is unavailable.';
         else if (latency.balance_unavailable) warning = 'IR timing is unknown. Automatic speaker balancing is unavailable; the reported delay is not guaranteed.';
         else if (latency.balance_limited) warning = 'Speaker compensation exceeds the shared 500 ms delay capacity. Recalibrate or reduce DSP latency.';
-        else if (data.settings.target_ms < latency.minimum_ms - 0.02) warning = 'Target is below the minimum. FXRoute cannot reduce the existing electronic delay.';
-        else if (data.settings.target_ms > latency.maximum_ms + 0.02) warning = 'Target exceeds the shared 500 ms delay capacity. The achievable delay is shown above.';
+        else if (data.settings.target_ms < latency.minimum_ms - 0.02) warning = 'No additional delay applied – target is below the minimum electronic delay.';
+        else if (data.settings.target_ms > latency.maximum_ms + 0.02) warning = 'Target exceeds the shared 500 ms delay capacity. The effective delay shows the achievable value.';
         else if (latency.outputs?.some(row => row.mixed)) warning = 'Mixed paths have different timing; one output delay cannot align every send.';
         status(feedback || warning);
         const rows = latency.ready ? latency.outputs || [] : [];
-        elements.avSyncDetails.innerHTML = latency.ready ? `<p class="measurement-repeat-help">Input: ${ms(latency.input_ms)} · Common AV delay: ${ms(latency.common_ms)}</p>
+        elements.avSyncDetails.innerHTML = latency.ready ? `<p class="av-sync-summary">Input ${ms(latency.input_ms)} · Common ${ms(latency.common_ms)}</p>
             <div class="av-sync-table-wrap"><table class="av-sync-table"><thead><tr><th>Speaker</th><th>DSP</th><th>Intentional</th><th>Align</th><th>Balance</th><th>Total</th></tr></thead><tbody>${rows.map(row =>
                 `<tr><th>${escape(deps.roleLabel(row.role, mode))}</th>${['dsp', 'intentional', 'align', 'balance', 'total'].map(key => `<td>${ms(row[`${key}_ms`])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '';
         elements.avSyncSave.disabled = saving || revision < 0 || deps.hasActiveMeasurementJob();

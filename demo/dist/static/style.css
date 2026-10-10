@@ -5699,41 +5699,109 @@ select.url-input {
 }
 
 .av-sync-dialog {
-    width: min(680px, calc(100vw - 2rem));
+    width: min(560px, calc(100vw - 2rem));
 }
 
-.av-sync-readout {
+.av-sync-stack {
+    gap: 0.7rem;
+}
+
+/* Target and effective delay share one row; the range sits compactly below. */
+.av-sync-values {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
     flex-wrap: wrap;
-    gap: 0.75rem;
+    align-items: flex-end;
+    gap: 0.75rem 2rem;
 }
 
-.av-sync-readout strong {
+.av-sync-target-group {
+    margin-bottom: 0;
+}
+
+/* Compact stepper (~165 px total): same value width as the effect steppers,
+   native spinners hidden by the shared .stepper-control rules. */
+.av-sync-stepper .av-sync-target-input {
+    width: 4.5rem;
+    min-width: 4.5rem;
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+    border: 0;
+    background: transparent;
+    text-align: center;
+    padding: 0.35rem 0;
+    font-size: 0.92rem;
+}
+
+.av-sync-stepper .av-sync-target-input:focus {
+    outline: none;
+    border-color: transparent;
+    box-shadow: none;
+}
+
+.av-sync-effective {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding-bottom: 0.35rem;
+}
+
+.av-sync-effective-label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.av-sync-effective strong {
     color: var(--accent);
     font-family: var(--font-mono);
+    font-size: 1.05rem;
+    line-height: 1.2;
     white-space: nowrap;
+}
+
+.av-sync-range {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+
+.av-sync-range:empty {
+    display: none;
+}
+
+.av-sync-summary {
+    margin: 0.6rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.3;
 }
 
 .av-sync-table-wrap {
     max-width: 100%;
     overflow-x: auto;
-    margin-top: 0.75rem;
+    margin-top: 0.5rem;
 }
 
 .av-sync-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     white-space: nowrap;
 }
 
 .av-sync-table th,
 .av-sync-table td {
     text-align: right;
-    padding: 0.5rem;
+    padding: 0.35rem 0.5rem;
     border-bottom: 1px solid var(--border);
+}
+
+.av-sync-table thead th {
+    color: var(--text-secondary);
+    font-weight: 600;
 }
 
 .av-sync-table th:first-child {
@@ -5744,9 +5812,36 @@ select.url-input {
     font-family: var(--font-mono);
 }
 
-.av-sync-dialog details > summary {
+.av-sync-note {
+    margin: 0.5rem 0 0;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.35;
+}
+
+.av-sync-note:empty {
+    display: none;
+}
+
+.av-sync-details > summary {
     cursor: pointer;
     color: var(--text-muted);
+}
+
+@media (max-width: 480px) {
+    .av-sync-values {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.7rem;
+    }
+
+    .av-sync-stepper {
+        align-self: flex-start;
+    }
+
+    .av-sync-effective {
+        padding-bottom: 0;
+    }
 }
 /* ============================================================
    Effects tab styling

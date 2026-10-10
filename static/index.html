@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.304">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.305">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -1519,21 +1519,26 @@
                     </div>
                     <button id="av-sync-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close AV Sync"><span class="btn-ghost-icon">✕</span></button>
                 </div>
-                <div class="effects-stack">
-                    <p class="measurement-repeat-help">Existing input and DSP latency count toward your target. Speaker alignment remains separate and unchanged.</p>
-                    <div class="field-group">
-                        <label for="av-sync-target">Target delay</label>
-                        <div class="delay-input-wrap">
-                            <input id="av-sync-target" class="url-input delay-number-input" type="number" min="0" max="20000" step="0.1" inputmode="decimal" aria-describedby="av-sync-limits">
-                            <span class="delay-unit">ms</span>
+                <div class="effects-stack av-sync-stack">
+                    <div class="av-sync-values">
+                        <div class="field-group av-sync-target-group">
+                            <label for="av-sync-target">Target delay</label>
+                            <div class="stepper-control av-sync-stepper">
+                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease target delay">&minus;</button>
+                                <input id="av-sync-target" class="url-input delay-number-input stepper-input av-sync-target-input" type="number" min="0" max="20000" step="0.1" inputmode="decimal" aria-describedby="av-sync-limits">
+                                <span class="stepper-unit" aria-hidden="true">ms</span>
+                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase target delay">+</button>
+                            </div>
+                        </div>
+                        <div class="av-sync-effective">
+                            <span class="av-sync-effective-label">Effective delay</span>
+                            <strong id="av-sync-actual" aria-live="polite">Waiting for audio engine…</strong>
                         </div>
                     </div>
-                    <div class="av-sync-readout"><span>Achievable delay at the reference speaker</span><strong id="av-sync-actual" aria-live="polite">Waiting for audio engine…</strong></div>
-                    <p id="av-sync-limits" class="measurement-repeat-help"></p>
+                    <p id="av-sync-limits" class="av-sync-range"></p>
                     <div id="av-sync-status" class="effects-info" role="status"></div>
                     <div class="effects-actions-row effects-actions-right"><button id="av-sync-save" class="btn-primary" type="button">Save / Apply</button></div>
-                    <details><summary>Timing details</summary><div id="av-sync-details"></div><p id="av-sync-basis" class="measurement-repeat-help"></p></details>
-                    <p class="measurement-repeat-help">Excludes device buffering, acoustic travel and variable input resampling. Alignment and automatic compensation share a 500 ms delay capacity.</p>
+                    <details class="av-sync-details"><summary>Timing details</summary><div id="av-sync-details"></div><p id="av-sync-basis" class="av-sync-note"></p><p class="av-sync-note">Excludes device buffering, acoustic travel and variable input resampling. Alignment and automatic compensation share a 500 ms delay capacity.</p></details>
                 </div>
             </section>
         </div>
@@ -1979,7 +1984,7 @@
     <script src="/static/playback_core.js?v=0.9.8"></script>
     <script src="/static/playback_ui.js?v=0.9.8"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/static/av_sync.js?v=0.9.1"></script>
+    <script src="/static/av_sync.js?v=0.9.2"></script>
     <script src="/static/app.js?v=0.9.294"></script>
     <script src="/static/streaming.js?v=0.9.80"></script>
 </body>

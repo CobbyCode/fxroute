@@ -47,6 +47,12 @@ async function main() {
     payload.latency.actual_ms = 270;
     await ui.refresh();
     assert.equal(elements.avSyncTarget.value, '300', 'polls must not overwrite an edited target');
+    assert.match(elements.avSyncLimits.textContent, /Available range/,
+        'range reads as a compact available range below both values');
+    assert.match(elements.avSyncDetails.innerHTML, /av-sync-summary/,
+        'timing details keep a compact input/common summary');
+    assert.match(elements.avSyncDetails.innerHTML, /<table/,
+        'timing details keep the full per-speaker breakdown');
     await ui.save();
     assert.deepEqual(posts[0], { expected_revision: 7, mutation: { kind: 'set_av_sync', mode: 'stereo', target_ms: 300 } });
     for (const value of ['', '-1', 'NaN', '20001']) {
@@ -74,6 +80,8 @@ async function main() {
         common_ms: 0, input_ms: 171, limited: 1, outputs: [] };
     await ui.refresh();
     assert.match(elements.avSyncStatus.textContent, /cannot.*reduce|below.*minimum/i);
+    assert.match(elements.avSyncStatus.textContent, /No additional delay applied/,
+        'below-minimum targets read as neutral guidance, not an error');
     assert.match(elements.avSyncActual.textContent, /600/);
     payload.latency.balance_unavailable = 1;
     await ui.refresh();
