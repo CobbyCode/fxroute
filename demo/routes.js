@@ -195,34 +195,10 @@
     // capture input is the one that offers the split Electrical Ref L/R pair.
     let selectedOutputKeyCache = SCARLETT_KEY;
 
-    // ── Demo faults ─────────────────────────────────────────────────────
-    // The states a real box shows but a healthy demo never does. Unplugging
-    // the USB interface removes it from the device list and hands playback to
-    // the built-in output — and every consequence (mode fallback to Stereo on
-    // a 2-channel device, the capture switching with the output) then runs
-    // through the existing device-switch code path instead of a special case.
-    let demoInterfaceUnplugged = false;
-    function availableOutputs() {
-        return demoInterfaceUnplugged ? OUTPUTS.filter(o => o.key !== SCARLETT_KEY) : OUTPUTS;
-    }
+    // The demo always serves the full device list: the seeded device is the
+    // machine the demo describes and no simulated unplug changes it.
     function selectedOutput() {
-        const pool = availableOutputs();
-        return pool.find(o => o.key === selectedOutputKeyCache) || pool[0];
-    }
-    function setDemoInterfaceUnplugged(unplugged) {
-        demoInterfaceUnplugged = !!unplugged;
-        if (!demoInterfaceUnplugged || selectedOutputKeyCache !== SCARLETT_KEY) return null;
-        const fallback = availableOutputs()[0];
-        selectedOutputKeyCache = fallback.key;
-        setMeasurementCaptureInput(captureInputForOutputKey(fallback.key), true);
-        const adjustment = applyDeviceOutputModeForSwitch(fallback.key, Number(fallback.channels || 0));
-        outputStateStore.revision += 1;
-        return adjustment;
-    }
-    function captureInputsForDemo() {
-        return demoInterfaceUnplugged
-            ? CAPTURE_INPUTS.filter(input => input !== MULTICHANNEL_CAPTURE_INPUT)
-            : CAPTURE_INPUTS;
+        return OUTPUTS.find(o => o.key === selectedOutputKeyCache) || OUTPUTS[0];
     }
 
     // ── Output-mode per-device memory (mirrors the real backend) ─────────
@@ -913,7 +889,7 @@
             default_output: { key: OUTPUTS[0].key, target_name: OUTPUTS[0].name, target_label: OUTPUTS[0].label },
             selected_output: { key: out.key, label: out.name, channels, active_rate: out.active_rate, supported_rates: out.supported_rates, device_profile: out.device_profile },
             current_output: { key: out.key, label: out.name, channels, active_rate: out.active_rate },
-            outputs: availableOutputs().map(o => outputEntry(o)),
+            outputs: OUTPUTS.map(o => outputEntry(o)),
             notes: [],
             output_mode: mode,
         };
@@ -3689,7 +3665,7 @@
                 scope_note: DEMO_MEASUREMENT_SCOPE_NOTE,
                 modes: [{ id: 'host-local', label: 'Host-local capture', primary: true,
                     available: true, note: 'FXRoute plays and records on the host via PipeWire.' }],
-                inputs: captureInputsForDemo().map(input => ({ ...input, available: true, kind: 'pipewire-source' })),
+                inputs: CAPTURE_INPUTS.map(input => ({ ...input, available: true, kind: 'pipewire-source' })),
                 selection: {
                     input_id: measurementSettings.selectedInputId,
                     persistent_id: measurementSettings.selectedInputKey,
@@ -3698,7 +3674,7 @@
                     legacy_input_id: '',
                 },
                 capture_available: true,
-                discovery: { method: 'wpctl status -n + pactl list short sources', source_count: captureInputsForDemo().length },
+                discovery: { method: 'wpctl status -n + pactl list short sources', source_count: CAPTURE_INPUTS.length },
             });
         }
         if (p === '/api/measurements/start' && post) {
@@ -4069,29 +4045,6 @@
         // ── fallthrough ─────────────────────────────────────────────────
         if (p.startsWith('/api/')) console.warn('[demo] unmapped API call:', method, p);
         return origFetch.apply(this, arguments);
-    };
-
-    // Fault switches for the demo banner (see demo/boot.js). Together with
-    // the response pace they are the only levers the demo UI itself pulls.
-    window.FXROUTE_DEMO_FAULTS = {
-        /** Unplug / replug the simulated USB interface. */
-        unplugInterface: () => setDemoInterfaceUnplugged(true),
-        plugInterface: () => setDemoInterfaceUnplugged(false),
-        interfaceUnplugged: () => demoInterfaceUnplugged,
-        /** Simulated backend restart: WS outage, then a clean reconnect. */
-        restartBackend: (outageMs) => (typeof window.__demoBackendRestart === 'function'
-            ? window.__demoBackendRestart(outageMs)
-            : null),
-        /** Drop the parked session so the next load opens on the stock. */
-        resetSession: () => {
-            if (S.session) S.session.clear();
-            if (typeof sessionStorage !== 'undefined') {
-                try { sessionStorage.removeItem('fxroute.demo.autosub.job'); } catch (e) { /* nothing parked */ }
-            }
-            return { ok: true };
-        },
-        /** Reattach the last session (or a fresh one) without a reload. */
-        reload: () => window.location.reload(),
     };
 
     window.FXROUTE_DEMO_API = {

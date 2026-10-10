@@ -166,8 +166,9 @@ const flush = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     assert.equal(stoppedReload.FXROUTE_DEMO_STATE.getPlayback().playing, false,
         'a stopped session must not come back playing');
 
-    // A session reset drops everything: the next load opens on the stock.
-    second.FXROUTE_DEMO_FAULTS.resetSession();
+    // Dropping the stored session clears everything: the next load opens on
+    // the stock.
+    second.FXROUTE_DEMO_STATE.session.clear();
     const afterReset = makeDemoContext({ storage, search: '?fast' });
     assert.equal(afterReset.FXROUTE_DEMO_STATE.getPlayback().playing, false,
         'a dropped session must not reattach');
