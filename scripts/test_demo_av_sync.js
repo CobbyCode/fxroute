@@ -42,12 +42,12 @@ async function request(url, body) {
     }
     await request('/api/audio/source-mode', { mode: 'external-input' });
     const externalTiming = await request('/api/audio/av-sync');
-    assert.equal(externalTiming.latency.input_ms, 3074 / 48);
+    assert.equal(externalTiming.latency.input_ms, 2818 / 48);
     for (const mode of ['stereo', 'stereo-sub']) {
         catalog = await request('/api/audio/output-state');
         await request('/api/audio/output-state/apply', { expected_revision: catalog.revision,
             mutation: { kind: 'switch_mode', mode } });
-        assert.equal((await request('/api/audio/av-sync')).latency.input_ms, 3074 / 48);
+        assert.equal((await request('/api/audio/av-sync')).latency.input_ms, 2818 / 48);
     }
     console.log('Demo AV Sync tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

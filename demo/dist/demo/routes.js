@@ -807,7 +807,7 @@
             (dspExtras.upmixer.params.mode === 'hq' ? dspExtras.upmixer.params.fftSize - 1 : Math.round(rate * 64 / 48000)) * 1000 / rate;
         const automaticInput = sourceMode === 'external-input'
             && SOURCE_INPUTS.some(item => item.key === selectedSourceInputKey);
-        const input = automaticInput ? 3074 / 48 : 0;
+        const input = automaticInput ? 2818 / 48 : 0;
         const offset = Math.max(0, -Math.min(0, ...roles.map(role => config.processing[role]?.alignment_ms || 0)));
         const rows = roles.map(role => {
             const dsp = shared + presetLatency(config.banks[role]?.preset);

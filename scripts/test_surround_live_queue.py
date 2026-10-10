@@ -81,16 +81,16 @@ int main(void) {
     assert(live_pull(e, 32400, &r, 2, out) && out[0] == 0);
     assert(live_pull(e, 32401, &r, 2, out) && out[0] == 0.25f);
 
-    /* Quantum 1024 leaves one callback period, not an additional period. */
+    /* Quantum 768 leaves one callback period, not an additional period. */
     e->base = 0;
     struct input_frame f = {.seq = 2050, .block_seq = 2048,
-                            .published_ns = 1000000000, .quantum = 1024};
+                            .published_ns = 1000000000, .quantum = 768};
     worker_observe(e, &f, 1005000000);
     assert(e->worker_delay_max_us == 5000);
-    assert(e->worker_reserve_min_us == 16333);
+    assert(e->worker_reserve_min_us == 11000);
     worker_observe(e, &f, 1022000000);
     assert(e->worker_delay_max_us == 22000);
-    assert(e->worker_reserve_min_us == -666);
+    assert(e->worker_reserve_min_us == -6000);
     surround_destroy(e->decoder);
     free(e);
     return 0;

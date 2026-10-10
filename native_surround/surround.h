@@ -14,7 +14,14 @@
 #define SURROUND_SYNC_TIMEOUT 6656
 /* Confirmed raw DTS accepts sync spacing up to 8192 carrier frames. */
 #define SURROUND_RAW_SYNC_TIMEOUT 8704
-#define SURROUND_LIVE_LATENCY 3074
+#define SURROUND_LIVE_LATENCY 2818
+/* Live input delay: 2050-frame recognition plus 768-frame worker margin
+ * (58.71 ms at 48 kHz). The graph quantum is capped at the same 768 frames
+ * so the worker always has at least one full callback period; larger quanta
+ * and non-48-kHz clocks fail closed. Quantum 256 showed DSP instability;
+ * 768 raises callback rate by 33 percent over 1024 instead of 300 percent,
+ * preserving headroom for the observed worker maxima. */
+#define SURROUND_MAX_QUANTUM 768
 
 typedef struct surround surround;
 /* Eight discrete positions followed by the normalized stereo fold-down. */

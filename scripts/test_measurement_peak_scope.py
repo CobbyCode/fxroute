@@ -35,7 +35,7 @@ class PeakScopeTests(unittest.IsolatedAsyncioTestCase):
                                                ('playback_AUX0', 'playback_AUX1'), layout)
         self.native._config_text = 'rate 48000\ninputs 8\noutputs 2\n'
         self.native.configure_latency_tracking(
-            input_latency_provider=lambda: 3074 / 48 if self.native._surround_input else 0)
+            input_latency_provider=lambda: 2818 / 48 if self.native._surround_input else 0)
         self.frames = 0
         self.peaks = [0.0, 0.4]
         self.events = []

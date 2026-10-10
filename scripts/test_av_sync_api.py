@@ -48,14 +48,14 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         for codec in ('pcm', 'ac3', 'dts'):
             helper._metadata = {'codec': codec, 'lookahead_frames': 2050}
             with self.subTest(codec=codec):
-                self.assertAlmostEqual(helper.deterministic_latency_ms(), 3074 / 48)
+                self.assertAlmostEqual(helper.deterministic_latency_ms(), 2818 / 48)
 
     def test_input_credit_follows_the_routed_path_not_the_selected_source(self):
         helper = DigitalInput()
         helper.process = SimpleNamespace(returncode=None, pid=123)
         engine = SimpleNamespace(snapshot=lambda: {'surround_input': True})
         with patch.object(main.runtime, 'dsp_runtime', engine), patch.object(main, '_surround_input', helper):
-            self.assertAlmostEqual(main._deterministic_input_latency_ms(), 3074 / 48)
+            self.assertAlmostEqual(main._deterministic_input_latency_ms(), 2818 / 48)
             engine.snapshot = lambda: {'surround_input': False}
             self.assertEqual(main._deterministic_input_latency_ms(), 0)
 
@@ -69,11 +69,11 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
             helper._status_path = Path(directory) / 'status.json'
             helper._status_path.write_text(json.dumps({**metrics, 'codec': 'pcm',
-                'lookahead_frames': 2050, 'live_latency_frames': 3074, 'untrusted_field': 'ignored'}))
+                'lookahead_frames': 2050, 'live_latency_frames': 2818, 'untrusted_field': 'ignored'}))
             status = helper.snapshot()
             for key, value in metrics.items():
                 self.assertEqual(status.get(key), value, key)
-            self.assertEqual(status['live_latency_frames'], 3074)
+            self.assertEqual(status['live_latency_frames'], 2818)
             self.assertNotIn('untrusted_field', status)
 
 

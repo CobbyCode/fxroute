@@ -58,7 +58,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     nonlocal calls
                     calls += 1
                     if calls == 1:
-                        return {'ready': True, 'input': 3074}
+                        return {'ready': True, 'input': 2818}
                     self.assertFalse(runtime._surround_input)
                     self.assertEqual(runtime._mapped_ingress, ())
                     self.assertEqual(runtime._effect_bypass, raw)

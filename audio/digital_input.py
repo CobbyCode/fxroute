@@ -17,7 +17,7 @@ NODE_NAME = "fxroute_surround_input"
 BUS_POSITIONS = ("FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR")
 DEFAULT_BINARY = Path(__file__).resolve().parents[1] / "native_surround/build/fxroute-surround-input"
 # native_surround/surround.h: the live callback delays PCM and encoded paths alike.
-LIVE_LATENCY_FRAMES = 3074
+LIVE_LATENCY_FRAMES = 2818
 
 
 class DigitalInput:

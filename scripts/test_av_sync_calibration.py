@@ -129,7 +129,7 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
         native._links = [PipeWireLink(f'fxroute_dsp:output_{index}', f'dev:playback_AUX{index - 1}')
                          for index in range(1, 5)]
         ingress.links = {(link.source, link.target) for link in native._links}
-        native.configure_latency_tracking(input_latency_provider=lambda: 3074 / 48 if native._surround_input else 0)
+        native.configure_latency_tracking(input_latency_provider=lambda: 2818 / 48 if native._surround_input else 0)
         frames = 0
         restore_started = False
         restore_readbacks = 0
@@ -207,7 +207,7 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
         native = await self.capture_external_ingress(fail_restore=True)
         self.assertTrue(native.snapshot()['surround_input'])
         self.assertIsNot(self.sweep.get('ingress_restored'), True)
-        self.assertEqual(self.live['input'], 3074)
+        self.assertEqual(self.live['input'], 2818)
         self.assertFalse(any(source.startswith('fxroute_surround_input:')
                              for source, target in self.ingress_fixture.links))
         with patch.object(main.runtime, 'dsp_runtime', native), \
@@ -236,7 +236,7 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auto_sub_external_scope_restore_commits_changed_winner(self):
         await self.capture_external_ingress()
-        self.assertEqual(self.live['input'], 3074)
+        self.assertEqual(self.live['input'], 2818)
         owner = self.make_timed_owner()
         proposal = self.fixture.proposal(sub_delays={'sub1': 4, 'sub2': 0})
         await owner.stage(proposal)
@@ -254,11 +254,11 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_active_capture_retains_actual_sweep_and_original_ingress_timing(self):
         native = await self.capture_external_ingress(raw=False)
-        self.assertEqual(self.live['input'], 3074)
+        self.assertEqual(self.live['input'], 2818)
         self.assertEqual(self.sweep['ingress_restore'], {
-            'input': 3074, 'surround_input': True, 'mapped_ingress': []})
+            'input': 2818, 'surround_input': True, 'mapped_ingress': []})
         self.sweep['ingress_restore']['input'] = 1
-        self.assertEqual(native.snapshot()['measurement_latency']['ingress_restore']['input'], 3074)
+        self.assertEqual(native.snapshot()['measurement_latency']['ingress_restore']['input'], 2818)
 
     async def test_auto_sub_rejects_unproven_or_changed_restored_input(self):
         await self.capture_external_ingress()
@@ -266,7 +266,7 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
         for change in ('missing-evidence', 'unconfirmed', 'input', 'routing', 'output', 'rate', 'timing'):
             with self.subTest(change=change):
                 self.sweep = copy.deepcopy(original)
-                self.live['input'] = 3074
+                self.live['input'] = 2818
                 self.live['rate'] = 48000
                 self.live['context'] = copy.deepcopy(original['context'])
                 self.live_ingress['surround_input'] = True

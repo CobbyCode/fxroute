@@ -13,6 +13,13 @@ Worker-Marge. Aktuelle Werte unten sind entsprechend nachgeführt; die alte
 Umschaltmessung in 6.4 bleibt als historische Vergleichsbasis erhalten.
 Messbelege und Schutzgrenzen: `docs/SPDIF-LATENCY-ANALYSIS.md`, Abschnitt 10.
 
+Korrektur vom 10.10.2026: Helfer jetzt **2818 Frames (58,71 ms)** mit 2050
+Frames Lookahead und **768 Frames (16,00 ms)** Marge, Quantum **768** (erzwungen,
+bei Stopp restauriert). 3071/1024 wurde wegen systematischer
+Late/Underrun-Verluste verworfen, 256 wegen DSP-Instabilität. Historische
+3074er-Werte unten bleiben für die alte Fassung gültig; Produkt-Livebelege für
+2818/768 folgen nach Deploy und TCL-Prüfung.
+
 ## 1. Vorgehen und Belege
 
 - Codeanalyse aller Stufen im Native-DSP-Engine (`native_dsp/`), des

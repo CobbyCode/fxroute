@@ -31,7 +31,7 @@ rematrixing on the discrete bus, derives the stereo fold-down, and writes status
 underruns are silence. Overruns, lost inputs and wrong clocks fail closed.
 
 Recognition retains 2050 carrier frames before releasing PCM. Live output uses
-a 3074-frame delay (64.04 ms at 48 kHz), including 1024 frames of worker margin,
+a 2818-frame delay (63.98 ms at 48 kHz), including 768 frames of worker margin,
 for PCM and encoded audio alike on all ten outputs. AV Sync credits this
 existing input delay independently of the codec and output mode.
 Uncompressed PCM occupies FL/FR and the unity stereo pair only. AC-3 and DTS Core IEC 61937 types 1 and
@@ -50,13 +50,13 @@ a minute). It is not decoded.
 An IEC transition clears all still-pending audio from the earliest
 unemitted frame, including a possible unframed payload prefix after a switch
 gap. Already emitted audio cannot be retracted; the retractable window is the
-2050-frame lookahead (bounded by the 3074-frame live delay for other safety
+2050-frame lookahead (bounded by the 2818-frame live delay for other safety
 mutes). Up to 42.71 ms of genuine PCM immediately before a transition is lost
 by design; earlier PCM stays unity and valid decoded audio after the preamble
 is unchanged. Broad safety muting also publishes an
 atomic absolute-frame watermark to the output consumer. Queued audio below it
 is silenced, but future valid decoded frames are not. Worker and RT never edit
-each other's queue slots. The retractable window is bounded by the 3074-frame
+each other's queue slots. The retractable window is bounded by the 2818-frame
 live delay; already pulled raw-DTS prefixes cannot be undone. Unrecognizable
 payload before a first sync later than the recognition window remains
 indistinguishable from PCM. Confirmed raw DTS has an 8704-frame timeout, above
@@ -69,8 +69,8 @@ safe PCM return or a discontinuity reset clears it.
 Non-silent PCM after AC-3 resumes at last preamble +6658 frames: 5122 frames
 after the 1536-frame burst ends (106.71 ms). DTS-512 leaves 6146 frames (128.04 ms).
 Silence reset is unchanged pending a real TV idle-carrier measurement.
-Quanta above 1024 frames fail closed because the recognition decision would
-miss some same-callback pulls. The helper never forces a graph quantum.
+Quanta above 768 frames fail closed because the recognition decision would
+miss some same-callback pulls. The helper forces 768-frame callbacks while active (restored on stop).
 
 Channel positions come from the decoded frame, not its channel count. For
 example, `5.1(side)` occupies SL/SR while a true back layout occupies BL/BR.

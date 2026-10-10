@@ -179,9 +179,10 @@ static void process(void *data, struct spa_io_position *position) {
         output[c] = pw_filter_get_dsp_buffer(e->outputs[c], frames);
         if (output[c]) memset(output[c], 0, (size_t)frames * sizeof(float));
     }
-    /* This filter does not force a hardware/graph rate or quantum. */
+    /* The helper forces 768-frame callbacks while active (restored on stop);
+     * larger quanta and non-48-kHz clocks fail closed without forcing a rate. */
     int clock_valid = position->clock.rate.num == 1 && position->clock.rate.denom == SURROUND_RATE;
-    int timing_valid = clock_valid && frames <= SURROUND_LIVE_LATENCY - SURROUND_LOOKAHEAD;
+    int timing_valid = clock_valid && frames <= SURROUND_MAX_QUANTUM;
     int valid = left && right && timing_valid;
     /* Unlinked startup is not a stream discontinuity: the first PCM source
      * must still receive recognition lookahead rather than an unknown latch. */
@@ -292,7 +293,8 @@ static int live(const char *status) {
         pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Filter",
             PW_KEY_MEDIA_ROLE, "DSP", PW_KEY_NODE_NAME, "fxroute_surround_input",
             PW_KEY_NODE_AUTOCONNECT, "false", "node.dont-reconnect", "true",
-            "node.want-driver", "true", "node.rate", "1/48000", "audio.rate", "48000", NULL),
+            "node.want-driver", "true", "node.rate", "1/48000", "audio.rate", "48000",
+            "node.force-quantum", "768", NULL),
         &events, e);
     if (!e->filter) goto error;
     const char *input_names[2] = {"carrier_L", "carrier_R"};

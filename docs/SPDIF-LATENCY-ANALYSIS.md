@@ -246,6 +246,16 @@ siehe Vorschlag (Queued-Watermark).
 
 ## 10. Umsetzung und Verifikation (09.10.2026)
 
+> Korrektur 10.10.2026 (Latenz): Eingangsdelay 3074 → **2818 Frames (58,71 ms)**,
+> Worker-Marge 1024 → **768 Frames (16,00 ms)**, Graph-Quantum **768** (vom Helfer
+> erzwungen, bei Stopp restauriert). 3071 Frames (63,98 ms) mit Quantum 1024
+> wurden gemessen und verworfen: 3 Frames systematisches Late/Underrun pro
+> 1024er-Block (0,29 %). Quantum 256 wurde wegen dokumentierter DSP-Instabilität
+> nicht übernommen. Private Graphen (PCM/AC-3/DTS, Stereo/diskret,
+> Schnellwechsel mit/ohne Last, 2048-Quantum-Prevention) sind verlustfrei mit
+> positiver Reserve; siehe Staging-Artefakte. Historische 3074er-Messwerte unten
+> bleiben für die alte Fassung gültig.
+
 > Korrektur 10.10.2026: Reale TCL-Wechsel zeigen verwaiste AC-3-Payload-Präfixe
 > nach der Lücke. Deshalb löscht eine neu erkannte Präambel wieder das gesamte
 > noch ausstehende Präfix ab dem frühesten unemittierten Frame (bis zu
