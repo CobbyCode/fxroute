@@ -108,7 +108,7 @@ assert.match(capture, /deps\.showToast\('L\/R repeat unavailable', 'warning'\)/)
 assert.match(index, /id="measurement-hybrid-open"[^>]*>Advanced<\/button>/);
 assert.match(index, /Combined Speaker and Room Measurement/);
 assert.match(index, /id="measurement-spl-calibration-open"[^>]*>SPL Calibration<\/button>/);
-assert.match(index, /Calibrate your loudness reference\./);
+assert.match(index, /Calibrate reference level\./);
 // Speaker Auto Alignment is compact: two equal buttons side by side, one
 // short note to their right that doubles as the live status line, results
 // underneath. No sequence line and no long explanation paragraphs.
