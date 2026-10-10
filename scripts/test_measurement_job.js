@@ -243,6 +243,46 @@ async function main() {
         assert.equal(h.state.measurement.measurementView, 'freq');
     }
 
+    // 7c. A finished single sweep or L/R repeat replaces an unsaved Auto Sub
+    //     result: it would otherwise take precedence in the graph and in
+    //     "Save current" over the new curves. A failed sweep keeps it.
+    {
+        const autoSub = [{ id: 'autosub-1', traces: [{ role: 'left' }] }];
+        const single = makeJobHarness({
+            getMeasurementJobResultMeasurement: (j) => j.result?.measurement || null,
+            setMeasurementGraphView: () => {},
+        });
+        single.state.measurement.autoSubMeasurements = autoSub.slice();
+        single.state.measurement.activeJobId = 'j4';
+        single.state.measurement.activeMeasurementKind = 'single';
+        single.state.measurement.startInFlight = true;
+        single.fetchResponses.push({ ok: true, json: async () => ({ job: { id: 'j4', status: 'completed',
+            message: 'Measurement finished.', result: { measurement: { id: 'sweep-1', name: 'Sweep', review_traces: [] } } } }) });
+        await job.pollMeasurementJob('j4', 7);
+        assert.deepEqual(single.state.measurement.autoSubMeasurements, [], 'single sweep drops the unsaved Auto Sub result');
+        assert.equal(single.state.measurement.currentMeasurement.id, 'sweep-1');
+
+        const repeat = makeJobHarness({ setMeasurementGraphView: () => {} });
+        repeat.state.measurement.autoSubMeasurements = autoSub.slice();
+        repeat.state.measurement.activeJobId = 'j5';
+        repeat.state.measurement.activeMeasurementKind = 'lr_repeat';
+        repeat.state.measurement.repeatJobActive = true;
+        repeat.fetchResponses.push({ ok: true, json: async () => ({ job: { id: 'j5', status: 'completed',
+            message: 'Measurement finished.', result: { base_name: 'Seat',
+                measurements: [{ id: 'l', review_traces: [] }, { id: 'r', review_traces: [] }] } } }) });
+        await job.pollMeasurementJob('j5', 7);
+        assert.deepEqual(repeat.state.measurement.autoSubMeasurements, [], 'L/R repeat drops the unsaved Auto Sub result');
+        assert.deepEqual(repeat.state.measurement.pendingRepeatMeasurements.map((item) => item.id), ['l', 'r']);
+
+        const failed = makeJobHarness();
+        failed.state.measurement.autoSubMeasurements = autoSub.slice();
+        failed.state.measurement.activeJobId = 'j6';
+        failed.state.measurement.activeMeasurementKind = 'single';
+        failed.fetchResponses.push({ ok: true, json: async () => ({ job: { id: 'j6', status: 'failed', message: 'Sweep failed.' } }) });
+        await assert.rejects(job.pollMeasurementJob('j6', 7), /Sweep failed/);
+        assert.equal(failed.state.measurement.autoSubMeasurements.length, 1, 'a failed sweep leaves the Auto Sub result alone');
+    }
+
     // 8. An L/R repeat cancel is labelled as such.
     {
         const h = makeJobHarness();

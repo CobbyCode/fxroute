@@ -1090,6 +1090,8 @@
         --hybrid-direct-y: 66%;
         --hybrid-speaker-y: 85%;
     }
+    /* The subwoofers stand above the moved-up listening area. */
+    .hybrid-room-view[data-hybrid-group="rear"] .hybrid-sub { top: 15%; }
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 

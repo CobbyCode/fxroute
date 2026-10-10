@@ -310,6 +310,9 @@
                 if (deps.getState().measurement.jobGeneration !== jobGeneration) return;
                 if (repeatMeasurements.length) {
                     deps.getState().measurement.pendingRepeatMeasurements = repeatMeasurements.map((measurement, index) => deps.normalizeMeasurementEntry(measurement, index));
+                    // An unsaved Auto Sub result would take precedence in the
+                    // graph and in "Save current" over this new pair.
+                    deps.getState().measurement.autoSubMeasurements = [];
                     deps.getState().measurement.currentMeasurement = deps.getState().measurement.pendingRepeatMeasurements[0] || null;
                     deps.getState().measurement.currentMeasurementName = String(job?.result?.base_name || '').trim();
                     deps.getState().measurement.currentMeasurementSaved = false;
@@ -328,6 +331,9 @@
                 if (resultMeasurement) {
                     try {
                         deps.getState().measurement.currentMeasurement = deps.normalizeMeasurementEntry(resultMeasurement, 0);
+                        // Same as the L/R repeat: the new sweep replaces an
+                        // unsaved Auto Sub result instead of hiding behind it.
+                        deps.getState().measurement.autoSubMeasurements = [];
                         deps.getState().measurement.currentMeasurementName = deps.getState().measurement.currentMeasurement.name || '';
                         deps.getState().measurement.currentMeasurementSaved = false;
                         deps.getState().measurement.reviewVisibilityById[deps.getState().measurement.currentMeasurement.id] = !!deps.getState().measurement.currentMeasurement.review_traces?.length;

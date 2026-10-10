@@ -4993,8 +4993,14 @@ select.url-input {
     --hybrid-direct-left: 23%;
     --hybrid-direct-right: 77%;
     --hybrid-listen-shift: 0%;
+    /* Distance of the Left and Right listening pills from the Main pill: a
+       sixth of a wide room, never closer than a pill plus a gap (48 + 6px). */
+    --hybrid-listen-spread: max(13%, 54px);
     position: relative;
     min-height: 470px;
+    /* The room is its own query container: the pills and speakers answer to
+       the room's width, which is not the viewport's (the wizard stacks). */
+    container: hybrid-room / inline-size;
     overflow: hidden;
     border: 1px solid var(--border);
     border-radius: var(--radius-xl);
@@ -5112,9 +5118,21 @@ select.url-input {
 .hybrid-room-view[data-hybrid-layout="sub"] .hybrid-mic-direct-right { display: none; }
 .hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-center,
 .hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-center { display: grid; }
-.hybrid-mic-left { left: 37%; top: calc(69% + var(--hybrid-listen-shift)); }
+/* The sub circles keep clear of the speakers and 1 m microphones.  Two subs
+   sit at 11% / 89% of the room; the front pair keeps half a speaker, a gap
+   and the sub's width (57px) from them, which only matters in a narrow room.
+   A single sub of a one-speaker layout stands at the wall instead of on the
+   speaker's microphone. */
+.hybrid-room-view[data-hybrid-group="front"]:has(.hybrid-sub-right:not(.hidden)) {
+    --hybrid-speaker-left: max(23%, calc(11% + 57px));
+    --hybrid-speaker-right: min(77%, calc(89% - 57px));
+    --hybrid-direct-left: var(--hybrid-speaker-left);
+    --hybrid-direct-right: var(--hybrid-speaker-right);
+}
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-sub-left.is-single { left: max(11%, 26px); }
+.hybrid-mic-left { left: calc(50% - var(--hybrid-listen-spread)); top: calc(69% + var(--hybrid-listen-shift)); }
 .hybrid-mic-mlp { left: 50%; top: calc(66% + var(--hybrid-listen-shift)); }
-.hybrid-mic-right { left: 63%; top: calc(69% + var(--hybrid-listen-shift)); }
+.hybrid-mic-right { left: calc(50% + var(--hybrid-listen-spread)); top: calc(69% + var(--hybrid-listen-shift)); }
 /* Side speakers stand at the walls beside the listener, rear speakers behind
    the seat; the listening area moves up to make room for them. */
 .hybrid-room-view[data-hybrid-group="side"] {
@@ -5133,6 +5151,13 @@ select.url-input {
     --hybrid-speaker-y: 87%;
     --hybrid-direct-y: 74%;
     --hybrid-listen-shift: -18%;
+}
+/* A side room under ~290px has no width for the three listening pills between
+   the speakers at the walls: Left and Right drop below the speakers onto the
+   seat (Main keeps its place, so the pills stay apart vertically). */
+@container hybrid-room (max-width: 290px) {
+    .hybrid-room-view[data-hybrid-group="side"] .hybrid-mic-left,
+    .hybrid-room-view[data-hybrid-group="side"] .hybrid-mic-right { top: calc(78% + var(--hybrid-listen-shift)); }
 }
 .hybrid-mic.is-target {
     border: 2px solid var(--success);
@@ -9411,6 +9436,8 @@ input[type="number"]::-webkit-outer-spin-button {
         --hybrid-direct-y: 66%;
         --hybrid-speaker-y: 85%;
     }
+    /* The subwoofers stand above the moved-up listening area. */
+    .hybrid-room-view[data-hybrid-group="rear"] .hybrid-sub { top: 15%; }
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 

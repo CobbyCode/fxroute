@@ -256,10 +256,11 @@ HYBRID = """
 }
 """
 
-# Speakers, subwoofers, 1 m microphones and the seat must not touch in the
-# side and rear groups (the listening microphones sit on the seat on purpose).
+# Speakers, subwoofers and microphones must not touch in any group (the
+# listening microphones sit on the seat on purpose, so seat pieces are only
+# compared with the speakers and subwoofers).
 ROOM_AUDIT = """
-([group, layout]) => {
+([group, layout, subs]) => {
     const room = document.querySelector('.hybrid-room-view');
     if (!document.getElementById('audit-no-transition')) {
         const style = document.createElement('style');
@@ -269,10 +270,18 @@ ROOM_AUDIT = """
     }
     room.setAttribute('data-hybrid-group', group);
     room.setAttribute('data-hybrid-layout', layout);
+    // The app marks the subs it shows: none, one single sub, or both.
+    room.querySelectorAll('.hybrid-sub').forEach((node) => {
+        const left = node.classList.contains('hybrid-sub-left');
+        node.classList.toggle('hidden', !(subs === 'two' || (subs === 'one' && left)));
+        node.classList.toggle('is-single', subs === 'one' && left);
+    });
     const kinds = [
         ['speaker', '.hybrid-speaker'], ['sub', '.hybrid-sub'], ['seat', '.hybrid-seat-back'],
         ['seat', '.hybrid-seat-arm'], ['direct-mic', '.hybrid-mic-direct-left'],
         ['direct-mic', '.hybrid-mic-direct-right'], ['direct-mic', '.hybrid-mic-direct-center'],
+        ['listen-mic', '.hybrid-mic-left'], ['listen-mic', '.hybrid-mic-mlp'],
+        ['listen-mic', '.hybrid-mic-right'],
     ];
     const items = [];
     for (const [kind, selector] of kinds) {
@@ -286,7 +295,9 @@ ROOM_AUDIT = """
     const touching = [];
     for (let i = 0; i < items.length; i += 1) {
         for (let j = i + 1; j < items.length; j += 1) {
-            if (items[i].kind === 'seat' && items[j].kind === 'seat') continue;
+            const pair = [items[i].kind, items[j].kind];
+            if (pair[0] === 'seat' && pair[1] === 'seat') continue;
+            if (pair.includes('seat') && pair.includes('listen-mic')) continue;
             const a = items[i].b, c = items[j].b;
             const w = Math.min(a.right, c.right) - Math.max(a.left, c.left);
             const h = Math.min(a.bottom, c.bottom) - Math.max(a.top, c.top);
@@ -298,6 +309,17 @@ ROOM_AUDIT = """
     return {touching, outside, room: Math.round(rb.width) + 'x' + Math.round(rb.height)};
 }
 """
+
+# The group / layout / subwoofer combinations the app can show: the front wall
+# (also the whole system) with a pair, and one speaker (Center) or no speaker,
+# each with no, one or two subs; the side and rear pairs.
+ROOM_COMBOS = (
+    ("front", "pair", "none"), ("front", "pair", "one"), ("front", "pair", "two"),
+    ("front", "sub", "one"), ("front", "sub", "two"),
+    ("center", "single", "none"), ("center", "single", "one"), ("center", "single", "two"),
+    ("side", "pair", "none"), ("side", "pair", "one"), ("side", "pair", "two"),
+    ("rear", "pair", "none"), ("rear", "pair", "one"), ("rear", "pair", "two"),
+)
 
 # The speaker row is filled by the app only for a Surround system with several
 # routed groups; the same markup is written here to audit its layout.
@@ -467,12 +489,13 @@ def _run():
                 check(f"[{width}px] hybrid Start button fully visible",
                       hyb["primary"]["fullyVisible"], hyb["primary"])
 
-                # Side and rear speaker groups: nothing sits on anything else.
-                for group in ("side", "rear"):
-                    room = page.evaluate(ROOM_AUDIT, [group, "pair"])
-                    check(f"[{width}px] {group} group: speakers, microphones and seat stay apart",
+                # Every group: no speaker, subwoofer or microphone sits on another.
+                for group, layout, subs in ROOM_COMBOS:
+                    room = page.evaluate(ROOM_AUDIT, [group, layout, subs])
+                    label = f"{group} {layout}, {subs} sub"
+                    check(f"[{width}px] {label}: speakers, subs and microphones stay apart",
                           not room["touching"], room)
-                    check(f"[{width}px] {group} group: everything stays inside the room",
+                    check(f"[{width}px] {label}: everything stays inside the room",
                           not room["outside"], room)
 
                 # The speaker row: one line, the locked selection stays readable.
