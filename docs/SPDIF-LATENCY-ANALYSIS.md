@@ -255,6 +255,17 @@ siehe Vorschlag (Queued-Watermark).
 > Schnellwechsel mit/ohne Last, 2048-Quantum-Prevention) sind verlustfrei mit
 > positiver Reserve; siehe Staging-Artefakte. Historische 3074er-Messwerte unten
 > bleiben für die alte Fassung gültig.
+>
+> Live-Verifikation 2818/768 am TCL (10.10.2026, `.104`, 180,30 s, 22 Kanäle,
+> RT-Recorder): 7 DD-Lücken (AC-3 Stereo/5.1 und PCM, DD→DD und PCM→DD inklusive
+> Layoutwechsel), darunter 2 verwaiste Payload-Präfixe (103/186 Frames, ~0,997),
+> alle im Helfer still (Peak 0,0) bei gültigem Decode danach (0,012–0,042); 1
+> CRC-Burst korrekt gemutet, 1 stilles Programm korrekt als encoded-still
+> bestätigt. Counter-Deltas: 0 late/underrun/faults, +1 Fehler (CRC), +4502
+> Bursts, Lock durchgehend an. Hörergebnis: kein Zip, keine Aussetzer. Links
+> vor/nachher identisch, Helfer-PID unverändert, AV Sync 2818 (58,71 ms).
+> Pro-Input-ERR 41 seit Deploy-Quantumwechsel stabil (kein Wachstum während
+> DD-Wechseln); DSP/Surround/Output-ERR 0.
 
 > Korrektur 10.10.2026: Reale TCL-Wechsel zeigen verwaiste AC-3-Payload-Präfixe
 > nach der Lücke. Deshalb löscht eine neu erkannte Präambel wieder das gesamte
