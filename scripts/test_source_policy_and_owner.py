@@ -228,6 +228,18 @@ class PlaybackOwnerTests(unittest.IsolatedAsyncioTestCase):
         save.assert_awaited_once()
         self.assertEqual(save.call_args.args[0]({"mode": "bluetooth-input"}), ("app-playback", None))
 
+    async def test_spotify_claim_already_owned_returns_line_input_to_app_playback(self):
+        self.main._set_playback_owner("spotify")
+        with mock.patch.object(self.main, "get_spotify_ui_state", new=mock.AsyncMock(return_value={})), mock.patch.object(
+            self.main, "_run_coordinated_transition", new=mock.AsyncMock()
+        ) as run, mock.patch.object(
+            self.main.source_transitions, "save_selection_if", new=mock.AsyncMock(return_value=None)
+        ) as save:
+            await self.main._claim_spotify_playback("spotify-claim")
+        run.assert_not_awaited()
+        save.assert_awaited_once()
+        self.assertEqual(save.call_args.args[0]({"mode": "bluetooth-input"}), ("app-playback", None))
+
     async def test_qobuz_claim_noop_when_already_committed(self):
         self.main._set_playback_owner("qobuz")
         with mock.patch.object(self.main, "get_qobuz_ui_state", new=mock.AsyncMock()) as get, mock.patch.object(
