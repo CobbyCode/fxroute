@@ -86,9 +86,10 @@ class PeqQRangeTests(unittest.TestCase):
                 [{"type": "bell", "frequency_hz": 100, "q": q, "gain_db": -3}], 0, 48000)
 
         def auto_sub_layout(q):
+            # Stereo compiled layout: two program inputs, route term 0.
             _auto_sub_validated_layout_output(
                 {"routes": [{"input": 0, "gain": 1.0}], "filters": [
-                    {"type": "bell", "frequency_hz": 100, "q": q, "gain_db": -3}]}, 0, 48000)
+                    {"type": "bell", "frequency_hz": 100, "q": q, "gain_db": -3}]}, 0, 48000, 2)
 
         for validate in (peq, native_band, output_filter, auto_sub_layout):
             with self.subTest(validator=validate.__name__):

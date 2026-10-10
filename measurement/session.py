@@ -277,7 +277,9 @@ class MeasurementSampleRateSession:
     @asynccontextmanager
     async def _entry_registration_lock(self, entry_epoch: int | None) -> AsyncIterator[None]:
         """Claim entry in routing-before-session lock order, then free routing."""
-        guard = getattr(_measurement_services(), "input_entry_guard", None)
+        # The guard is an optional service: exclude-only registration must
+        # still work when no services are configured.
+        guard = getattr(_services, "input_entry_guard", None)
         locked = False
         try:
             async with guard() if callable(guard) else nullcontext():
