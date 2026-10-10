@@ -32,7 +32,8 @@ int main(int argc,char **argv)
     int (*finished)(struct resample *)=dlsym(library,"fx_resample_finished");
     int (*error)(struct resample *)=dlsym(library,"fx_resample_error");
     void (*stats)(struct resample *,struct fx_resample_stats *)=dlsym(library,"fx_resample_stats");
-    assert(init&&finish&&finished&&error&&stats);
+    double (*match_delay)(struct resample *)=dlsym(library,"fx_resample_match_delay");
+    assert(init&&finish&&finished&&error&&stats&&match_delay);
     struct resample r={.channels=2,.i_rate=44100,.o_rate=48000,.quality=4};assert(!init(&r));
     FILE *source=fopen(argv[3],"rb"),*target=fopen(argv[4],"wb");assert(source&&target);
     fseek(source,0,SEEK_END);unsigned frames=ftell(source)/8;rewind(source);assert(frames==176400);
@@ -61,6 +62,7 @@ int main(int argc,char **argv)
         assert(!state.worker.first_output_ns&&!state.first_real_ns&&state.lead_frames>state.reserve_frames&&
                "A startup that never became ready shows no engine output, only extended silence");
         resample_reset(&r);
+        assert(!match_delay(&r));
         do{stats(&r,&state);usleep(1000);}while(state.worker.acknowledged!=state.worker.generation);
         assert(!state.worker.first_output_ns&&!state.first_real_ns&&!state.lead_frames&&!state.reserve_frames);
         assert(!error(&r));pid=child();assert(!kill(pid,SIGSTOP));
@@ -78,6 +80,13 @@ int main(int argc,char **argv)
             assert(after.lead_frames==before.lead_frames);break;
         }
         assert(!before.real_frames||after.lead_frames==before.lead_frames);
+        if(after.real_frames&&!eof) {
+            double full=(double)resample_delay(&r)+resample_phase(&r);
+            double fixed=(double)after.lead_frames*44100/48000;
+            assert(fabs(match_delay(&r)-fmax(0,full-fixed))<.001&&
+                   "Clock feedback must exclude readiness extensions as well as the minimum reserve");
+            assert(full>=fixed-512&&"Readiness extensions remain in full processing latency");
+        }
         if(after.real_frames&&!first_real){first_real=seconds()-start;assert(!pause_start||first_real>=1.05);}
         for(unsigned i=0;i<made;++i)for(unsigned c=0;c<2;++c)assert(fwrite(&output[c][i],4,1,target)==1);
         if(!strcmp(argv[2],"post-start")&&!paused_late&&after.real_frames>=12000){assert(!kill(pid,SIGSTOP));paused_late=1;}

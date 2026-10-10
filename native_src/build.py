@@ -100,7 +100,8 @@ def overlay(original):
     replace("\tuint8_t buffer[4096];\n\tstruct spa_result_node_params result;\n\tuint32_t count = 0;\n\tint res = 0;",
             "\tuint8_t buffer[8192];\n\tstruct spa_result_node_params result;\n\tuint32_t count = 0;\n\tint res = 0;")
     replace("fdelay = resample_delay(&this->resample) + resample_phase(&this->resample);",
-            "fdelay = (double)resample_delay(&this->resample) + resample_phase(&this->resample);")
+            "fdelay = this->resample_peaks ? (double)resample_delay(&this->resample) + resample_phase(&this->resample) :\n"
+            "\t\t\tfx_resample_match_delay(&this->resample);")
     replace("\t\tn_samples = SPA_MIN(n_samples, quant_samples);\n\t\tflush_in = true;",
             "\t\tn_samples = SPA_MIN(n_samples, quant_samples);\n\t\tflush_in = false;")
     replace("\tbool empty;\n};", "\tbool empty;\n\tbool end_of_input;\n};")

@@ -231,6 +231,31 @@ class NativeSrcTests(unittest.TestCase):
             for scenario in ("2","2-1","1-2","2-1-2"):
                 subprocess.run([executable,str(LIBRARY),scenario],check=True,timeout=12)
 
+    def test_bluetooth_clock_feedback_excludes_fixed_src_startup_latency(self):
+        spa = ROOT / "native_src/build/sources/pipewire/pipewire-1.6.8/spa"
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}):
+            path = Path(directory)
+            policy = path / "fxroute/src-policy.json"
+            policy.parent.mkdir()
+            executable = path / "bluetooth-feedback"
+            # Only the receive-socket helpers need BlueZ development headers.
+            decode = (spa / "plugins/bluez5/decode-buffer.h").read_text()
+            buffer_code = decode.split("struct spa_bt_recvmsg_data {", 1)[0]
+            (path / "decode-buffer.h").write_text(
+                buffer_code.replace("#include <bluetooth/bluetooth.h>\n", "") + "\n#endif\n")
+            subprocess.run(["cc", "-std=gnu11", "-I", str(spa / "include"),
+                            "-I", str(path),
+                            "-I", str(spa / "plugins/bluez5"),
+                            str(ROOT / "scripts/src_bluetooth_feedback.c"),
+                            "-ldl", "-lm", "-o", str(executable)], check=True)
+            for mode in ("low", "standard", "high"):
+                policy.write_text(json.dumps({"mode": mode}))
+                for rate in (44100, 48000, 96000):
+                    with self.subTest(mode=mode, rate=rate):
+                        result = subprocess.run([str(executable), str(LIBRARY), str(rate)],
+                                                text=True, capture_output=True, timeout=12)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_startup_waits_for_pcm_times_out_through_backpressure_and_never_reprimes(self):
         includes=ROOT / "native_src/build/sources/pipewire/pipewire-1.6.8/spa/include"
         upstream=includes.parent / "plugins/audioconvert"

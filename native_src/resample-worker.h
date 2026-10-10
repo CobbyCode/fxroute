@@ -21,6 +21,7 @@ int fx_resample_init(struct resample *);
 void fx_resample_finish(struct resample *);
 int fx_resample_finished(struct resample *);
 int fx_resample_error(struct resample *);
+double fx_resample_match_delay(struct resample *);
 void fx_resample_stats(struct resample *,struct fx_resample_stats *);
 void fx_resample_note_callback(struct resample *,uint64_t);
 const char *fx_resample_profile(struct resample *);

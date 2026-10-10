@@ -25,7 +25,7 @@ struct composition {
     uint32_t flush;
     uint64_t accepted, nominal_pulled, first_input_ns;
     _Atomic uint64_t real, lead, reserve, first_real_ns;
-    double rate, fraction, prime, rate_min, rate_max;
+    double rate, fraction, prime, startup_input_delay, rate_min, rate_max;
     uint64_t rate_updates, max_callback_ns, callbacks;
     unsigned eof, flushed, done, total_underruns;
     _Atomic unsigned underruns;
@@ -87,6 +87,14 @@ static double timeline_delay(struct resample *r)
     double delay=outstanding+((double)resample_delay(&c->match)+resample_phase(&c->match))*(double)r->i_rate/r->o_rate;
     return delay>0?delay:0;
 }
+double fx_resample_match_delay(struct resample *r)
+{
+    struct composition *c=r->data;
+    /* Startup padding is fixed processing latency, not excess source data.
+     * Feeding it to a device servo makes Bluetooth drop its receive buffer. */
+    if(c->worker&&c->prime)return 0;
+    return fmax(0,timeline_delay(r)-c->startup_input_delay);
+}
 static uint32_t delay_frames(struct resample *r) { return floor(timeline_delay(r)); }
 static float delay_phase(struct resample *r) { double d=timeline_delay(r);return d-floor(d); }
 static void reset_composition(struct resample *r)
@@ -100,6 +108,7 @@ static void reset_composition(struct resample *r)
     c->eof=c->flushed=c->done=c->underruns=0;c->error=0;
     c->startup_armed=0;c->startup_start_ns=0;
     c->accepted=c->nominal_pulled=c->real=c->lead=c->reserve=0;c->fraction=0;
+    c->startup_input_delay=0;
     c->first_input_ns=0;c->first_real_ns=0;
     c->prime=c->worker?ceil(.750*r->o_rate):0;
 }
@@ -195,6 +204,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
         unsigned made=capacity<remaining?capacity:remaining;
         for(unsigned i=0;i<r->channels;++i)memset(dst[i],0,made*4);
         c->prime=fmax(0,c->prime-made/c->rate);c->lead+=made;c->reserve+=made;*output=made;
+        c->startup_input_delay+=made*(double)r->i_rate/(r->o_rate*c->rate);
         if(c->prime==0&&!c->startup_armed){c->startup_armed=1;c->startup_start_ns=startup_now_ns();}
 #ifdef FX_SRC_VERIFY
         fx_verify_account(*input,made,c->rate,c->eof,c->prime!=0);
@@ -216,6 +226,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
             if(startup_expired(c))return;
             for(unsigned i=0;i<r->channels;++i)memset(dst[i],0,capacity*4);
             c->lead+=capacity;*output=capacity;
+            c->startup_input_delay+=capacity*(double)r->i_rate/(r->o_rate*c->rate);
 #ifdef FX_SRC_VERIFY
             fx_verify_account(*input,capacity,c->rate,c->eof,c->prime!=0);
 #endif

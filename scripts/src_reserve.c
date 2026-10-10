@@ -11,7 +11,7 @@
 static void run(struct resample *r, const char *scenario, unsigned length,
     void (*stats)(struct resample *,struct fx_resample_stats *),
     void (*finish)(struct resample *), int (*finished)(struct resample *),
-    int (*error)(struct resample *))
+    int (*error)(struct resample *), double (*match_delay)(struct resample *))
 {
     float source[2][512]={{0}},output[2][512];
     const void *input[]={source[0],source[1]};void *dest[]={output[0],output[1]};
@@ -40,6 +40,12 @@ static void run(struct resample *r, const char *scenario, unsigned length,
             if(!eof)assert(submitted>=72000&&"Clock scaling must not shorten nominal input reserve");
             started=1;
         }
+        if(after.real_frames&&!eof) {
+            double full=(double)resample_delay(r)+resample_phase(r);
+            /* Integrate padding at each clock rate, not at the current rate. */
+            assert(fabs(match_delay(r)-fmax(0,full-reserve*2))<.001);
+            assert(full>=reserve*2-256&&"Full timeline latency must retain startup padding");
+        }
         usleep(256*1000000/(48000*rate));
     }
     assert(finished(r)&&submitted==length);
@@ -58,10 +64,11 @@ int main(int argc,char **argv)
     void (*finish)(struct resample *)=dlsym(lib,"fx_resample_finish");
     int (*finished)(struct resample *)=dlsym(lib,"fx_resample_finished");
     int (*error)(struct resample *)=dlsym(lib,"fx_resample_error");
-    assert(init&&stats&&finish&&finished&&error);
+    double (*match_delay)(struct resample *)=dlsym(lib,"fx_resample_match_delay");
+    assert(init&&stats&&finish&&finished&&error&&match_delay);
     struct resample r={.channels=2,.i_rate=96000,.o_rate=48000,.quality=4};assert(!init(&r));
-    run(&r,argv[2],96000,stats,finish,finished,error);
-    resample_reset(&r);run(&r,argv[2],128,stats,finish,finished,error);
-    resample_reset(&r);run(&r,argv[2],0,stats,finish,finished,error);
+    run(&r,argv[2],96000,stats,finish,finished,error,match_delay);
+    resample_reset(&r);assert(!match_delay(&r));run(&r,argv[2],128,stats,finish,finished,error,match_delay);
+    resample_reset(&r);assert(!match_delay(&r));run(&r,argv[2],0,stats,finish,finished,error,match_delay);
     resample_free(&r);dlclose(lib);return 0;
 }
