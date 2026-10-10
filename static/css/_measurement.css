@@ -13,6 +13,11 @@
     max-height: calc(100dvh - 2rem);
     overflow: auto;
 }
+/* The generic .manage-dialog width steps (up to 900px and from 2560px, in
+   _responsive.css) come later in the cascade and cap this dialog at 620px.
+   Two classes win; the steps of this dialog below 980px resolve to the full
+   overlay width. */
+.manage-dialog.measurement-dialog { width: min(1240px, 100%); }
 
 
 .measurement-layout {

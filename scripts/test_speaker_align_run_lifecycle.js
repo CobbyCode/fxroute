@@ -31,10 +31,12 @@ function fixture() {
     const elements = Object.fromEntries(['LeftBtn', 'RightBtn', 'CancelBtn', 'Group', 'Status', 'Results']
         .map(key => [`measurementSpeakerAlign${key}`, element()]));
     const toasts = [];
-    const context = { console: { ...console, warn() {}, error() {} }, window: {} };
+    // measurement_ui.js binds to the global object, like in the page.
+    const context = { console: { ...console, warn() {}, error() {} } };
+    context.window = context;
     vm.createContext(context);
     const shell = fs.readFileSync(require.resolve('../static/index.html'), 'utf8');
-    for (const match of shell.matchAll(/src="\/static\/(speaker_align|measurement_flows)\.js\?[^"]+"/g)) {
+    for (const match of shell.matchAll(/src="\/static\/(measurement_ui|speaker_align|measurement_flows)\.js\?[^"]+"/g)) {
         vm.runInContext(fs.readFileSync(require.resolve(`../static/${match[1]}.js`), 'utf8'), context);
     }
     const flows = context.window.FXRouteMeasurementFlows;

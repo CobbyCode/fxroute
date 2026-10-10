@@ -946,7 +946,9 @@ function adoptSpeakerAlignMeasurements(job) {
     measurementState.autoSubMeasurements = [];
     measurementState.pendingRepeatMeasurements = pending;
     measurementState.currentMeasurement = pending[0];
-    measurementState.currentMeasurementName = `Speaker Align ${speakerSideLabel(job.side)}`;
+    // A name typed into the field is kept; the side stays in the entries' channel.
+    measurementState.currentMeasurementName = ui.getTypedMeasurementName(measurementState)
+        || `Speaker Align ${speakerSideLabel(job.side)}`;
     measurementState.currentMeasurementSaved = false;
     measurementState.reviewVisibilityById = measurementState.reviewVisibilityById || {};
     pending.forEach((measurement) => {
@@ -1626,13 +1628,14 @@ function buildHybridModelEntry(profile, scope, side, series = false) {
 
 // The model entries become the pending result of the normal flow.  An unsaved
 // Auto Sub result is dropped like a Speaker Align result drops it: it would
-// take precedence in the graph and in "Save current" over these entries.
+// take precedence in the graph and in "Save current" over these entries.  A
+// name typed into the field is kept; `name` is only the proposal.
 function adoptHybridModelEntries(entries, name) {
     const measurement = deps.getState().measurement;
     measurement.autoSubMeasurements = [];
     measurement.pendingRepeatMeasurements = entries;
     measurement.currentMeasurement = entries[0];
-    measurement.currentMeasurementName = name;
+    measurement.currentMeasurementName = ui.getTypedMeasurementName(measurement) || name;
     measurement.currentMeasurementSaved = false;
 }
 

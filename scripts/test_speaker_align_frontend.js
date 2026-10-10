@@ -66,10 +66,12 @@ async function main() {
             gain_spread_db: 0.2, before_gain_spread_db: 0.4, gain_tolerance_db: 1.0,
             way_isolation_db: { right_low: 19.0, right_high: null } },
         measurements: { before: take('Before (planning)', 'before'), after: take('After (verification)', 'after') } };
-    const context = { console, window: {} };
+    // measurement_ui.js binds to the global object, like in the page.
+    const context = { console };
+    context.window = context;
     vm.createContext(context);
     const shell = fs.readFileSync(require.resolve('../static/index.html'), 'utf8');
-    for (const match of shell.matchAll(/src="\/static\/(speaker_align|measurement_flows)\.js\?[^\"]+"/g)) {
+    for (const match of shell.matchAll(/src="\/static\/(measurement_ui|speaker_align|measurement_flows)\.js\?[^\"]+"/g)) {
         vm.runInContext(fs.readFileSync(require.resolve(`../static/${match[1]}.js`), 'utf8'), context);
     }
     const flows = context.window.FXRouteMeasurementFlows;
@@ -165,6 +167,25 @@ async function main() {
     assert.equal(flows.hideSpeakerAlignTakes, undefined, 'no Speaker Align special case for saved runs');
     state.measurement.measurements = [];
     state.measurement.visibilityById = {};
+
+    // A name typed into the field is kept by the result; a name the app
+    // proposed earlier is not a typed one and is replaced.
+    for (const [shown, typed, expected] of [
+        ['Seat A', 'Seat A', 'Seat A'],
+        ['Demo Measurement 4', '', 'Speaker Align Right'],
+        ['Sweep 2', 'Seat A', 'Speaker Align Right'],
+        ['', '', 'Speaker Align Right'],
+    ]) {
+        state.measurement.pendingRepeatMeasurements = [];
+        state.measurement.currentMeasurement = null;
+        state.measurement.currentMeasurementName = shown;
+        state.measurement.typedMeasurementName = typed;
+        await flows.startSpeakerAlign('right');
+        assert.equal(state.measurement.currentMeasurementName, expected, `shown "${shown}", typed "${typed}"`);
+        assert.equal(state.measurement.pendingRepeatMeasurements.length, 2);
+    }
+    state.measurement.currentMeasurementName = 'Speaker Align Right';
+    state.measurement.typedMeasurementName = '';
 
     // Trial and unconfirmed outcomes read as such in the compact caption.
     assert.match(Speaker.renderSpeakerAlignResult({ ...result, committed_revision: null, dry_run: true }, 'right'),

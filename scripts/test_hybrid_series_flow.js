@@ -100,7 +100,8 @@ function makeSeries({ groups = ['front', 'center', 'side', 'rear'], selected = '
         FXRouteUiHelpers: require('../static/ui_helpers.js'),
         FXRouteMeasurementUI: { MEASUREMENT_JOB_SUCCESS_STATES: new Set(['completed']),
             MEASUREMENT_JOB_FAILED_STATES: new Set(['failed']), MEASUREMENT_JOB_CANCELLED_STATES: new Set(['cancelled']),
-            hybridSpeakerName: () => 'speaker' },
+            hybridSpeakerName: () => 'speaker',
+            getTypedMeasurementName: require('../static/measurement_ui.js').getTypedMeasurementName },
         FXRouteHybridMeasurement: Hybrid };
     ctx.window = ctx;
     vm.createContext(ctx);
@@ -339,6 +340,29 @@ async function runToEnd(Flows, { stopOnError = false } = {}) {
         assert.deepEqual(state.measurement.autoSubMeasurements, []);
         assert.equal(state.measurement.pendingRepeatMeasurements.length, 1);
         assert.deepEqual(calls.assist, ['convolver']);
+    }
+
+    // A name typed into the field is kept by a single group result and by a
+    // series; the series entries still carry their group in the saved name.
+    {
+        for (const scope of ['center', 'all']) {
+            const { Flows, state } = makeSeries();
+            Flows.openHybridMeasurementWizard();
+            Flows.selectHybridWizardScope(scope);
+            await runToEnd(Flows);
+            state.measurement.currentMeasurementName = 'Seat A';
+            state.measurement.typedMeasurementName = 'Seat A';
+            Flows.openHybridProfileInConvolver();
+            assert.equal(state.measurement.currentMeasurementName, 'Seat A', scope);
+        }
+        const { Flows, state } = makeSeries();
+        Flows.openHybridMeasurementWizard();
+        Flows.selectHybridWizardScope('all');
+        await runToEnd(Flows);
+        state.measurement.currentMeasurementName = 'Demo Measurement 4';
+        state.measurement.typedMeasurementName = '';
+        Flows.openHybridProfileInConvolver();
+        assert.equal(state.measurement.currentMeasurementName, 'Advanced', 'a proposed name is replaced');
     }
 
     // The chips follow the group labels (routing changes them under the same

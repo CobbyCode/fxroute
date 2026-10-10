@@ -357,6 +357,18 @@ DIALOG_WIDTH = """
 }
 """
 
+# The main measurement dialog is capped by the same steps: up to 1240px, and
+# the full overlay width below that (it was 620px from 761px to 900px).
+MAIN_DIALOG_WIDTH = """
+() => {
+    const dialog = document.querySelector('.measurement-dialog');
+    const overlay = dialog.parentElement;
+    const style = getComputedStyle(overlay);
+    const inner = overlay.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    return {dialog: dialog.getBoundingClientRect().width, inner};
+}
+"""
+
 PEQ_ROW = """
 () => {
     const row = document.querySelector('.effects-peq-add-row');
@@ -491,6 +503,9 @@ def _run():
                 # The hybrid wizard.
                 page.click("#effects-measure-open")
                 page.wait_for_selector("#measurement-panel", state="visible")
+                main = page.evaluate(MAIN_DIALOG_WIDTH)
+                check(f"[{width}px] measurement dialog takes the width the viewport allows",
+                      abs(main["dialog"] - min(1240, main["inner"])) <= 1, main)
                 page.click("#measurement-sweep-toggle")
                 page.wait_for_timeout(150)
                 page.click("#measurement-hybrid-open")

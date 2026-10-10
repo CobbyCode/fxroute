@@ -37,7 +37,8 @@ function makeFlows({ area, topology, state }) {
         measurementHybridActive: element(), measurementHybridStatus: element(), measurementHybridPrimaryBtn: element(),
         measurementHybridBackBtn: element() };
     const ctx = { console, Math, JSON, Object, Array, Promise, String, Number, Boolean, Date, setTimeout, clearTimeout,
-        FormData, window: {}, FXRouteMeasurementUI: {}, FXRouteHybridMeasurement: Hybrid, hybridSpeakerName: () => 'speaker' };
+        FormData, window: {}, FXRouteHybridMeasurement: Hybrid, hybridSpeakerName: () => 'speaker',
+        FXRouteMeasurementUI: { getTypedMeasurementName: require('../static/measurement_ui.js').getTypedMeasurementName } };
     ctx.window = ctx;
     vm.createContext(ctx);
     vm.runInContext(fs.readFileSync(path.join(root, 'static', 'measurement_flows.js'), 'utf8'), ctx);
@@ -152,6 +153,35 @@ function model(channel) {
     assert.deepEqual(state.measurement.pendingRepeatMeasurements.map(item => [item.name, item.channel]),
         [['Advanced Rear L/R + Sub L', 'left'], ['Advanced Rear L/R + Sub R', 'right']]);
     assert.equal(state.measurement.currentMeasurementName, 'Advanced Rear L/R + Sub');
+}
+
+// A name typed into the field is kept by the model entries; a proposed one is
+// not a typed name and is replaced.
+{
+    const area = { bank_id: 'global', group: 'rear', label: 'Global · Rear L/R + Sub', channel_mode: 'stereo' };
+    for (const [shown, typed, expected] of [
+        ['Seat A', 'Seat A', 'Seat A'],
+        [' Seat A ', 'Seat A', 'Seat A'],
+        ['Demo Measurement 4', '', 'Advanced Rear L/R + Sub'],
+        ['Sweep 2', 'Seat A', 'Advanced Rear L/R + Sub'],
+        ['', '', 'Advanced Rear L/R + Sub'],
+    ]) {
+        const state = catalogState('dual-mono');
+        state.measurement.currentMeasurementName = shown;
+        state.measurement.typedMeasurementName = typed;
+        const { Flows } = makeFlows({ area, state });
+        const sequence = Hybrid.buildSequence(Flows.getCurrentHybridScope());
+        const integration = { status: 'ok', validationBandHz: [20, 500], magnitudeRmsErrorDb: 1, phaseRmsErrorDeg: 5,
+            complexResidualRms: 0.1, comparedPoints: 10, limitation: 'x' };
+        Object.assign(Flows.getHybridWizardState(), { open: true, mode: sequence.mode, scope: sequence.scope,
+            sequence: sequence.steps, stepIndex: sequence.steps.length, profile: { mode: sequence.mode, scope: sequence.scope,
+                integration, models: { left: model('left'), right: model('right') } } });
+        Flows.openHybridProfileInConvolver();
+        assert.equal(state.measurement.currentMeasurementName, expected, `shown "${shown}", typed "${typed}"`);
+        // The entries keep their own names; only the field proposal differs.
+        assert.deepEqual(state.measurement.pendingRepeatMeasurements.map(item => item.name),
+            ['Advanced Rear L/R + Sub L', 'Advanced Rear L/R + Sub R']);
+    }
 }
 
 // The wizard refuses to continue when the area changed underneath it.
