@@ -24,7 +24,6 @@ from streaming.spotify.mpris import (
     detect_backend,
     detect_running_backend,
     player_name,
-    resolve_player_name,
     spotify_installed,
     spotifyd_standby,
 )
@@ -137,19 +136,8 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
 
 class SpotifyBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_running_backend_prefers_desktop_when_only_desktop(self):
-        with mock.patch("streaming.spotify.mpris.list_players", new=_players(["spotify"])), \
-             mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=True):
+        with mock.patch("streaming.spotify.mpris.list_players", new=_players(["spotify"])):
             self.assertEqual(await detect_running_backend(), "desktop")
-
-    async def test_lone_spotify_player_is_spotifyd_without_desktop_client(self):
-        # spotifyd 0.4.2 publishes MPRIS as "spotify" (no instance name).
-        with mock.patch("streaming.spotify.mpris.list_players", new=_players(["spotify"])), \
-             mock.patch("streaming.spotify.mpris._spotify_desktop_installed", return_value=False), \
-             mock.patch("streaming.spotify.mpris._spotifyd_installed", return_value=True):
-            self.assertEqual(await detect_running_backend(), "spotifyd")
-            self.assertEqual(await detect_backend(), "spotifyd")
-            # The control target is the visible player, not the absent spotifyd.* name.
-            self.assertEqual(await resolve_player_name("spotifyd"), "spotify")
 
     async def test_running_backend_prefers_spotifyd_when_only_spotifyd(self):
         with mock.patch("streaming.spotify.mpris.list_players", new=_players(["spotifyd"])):

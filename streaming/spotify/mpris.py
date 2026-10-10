@@ -102,9 +102,6 @@ async def resolve_player_name(backend: str | None) -> str:
     for player in players:
         if is_spotifyd_player(player):
             return player
-    if SPOTIFY_DESKTOP_PLAYER in players and not _spotify_desktop_installed():
-        # spotifyd 0.4.2 on the test host publishes its MPRIS player as "spotify".
-        return SPOTIFY_DESKTOP_PLAYER
     return SPOTIFYD_PLAYER
 
 
@@ -227,12 +224,6 @@ async def detect_running_backend(timeout: float = PLAYER_LIST_TIMEOUT_SECONDS) -
     """
     players = await list_players(timeout)
     if SPOTIFY_DESKTOP_PLAYER in players:
-        # Without a desktop client installed and no spotifyd instance name
-        # visible, a lone "spotify" MPRIS player is the spotifyd daemon
-        # (observed with spotifyd 0.4.2).
-        spotifyd_named = any(is_spotifyd_player(player) for player in players)
-        if not spotifyd_named and not _spotify_desktop_installed() and _spotifyd_installed():
-            return "spotifyd"
         return "desktop"
     if any(is_spotifyd_player(player) for player in players):
         return "spotifyd"
