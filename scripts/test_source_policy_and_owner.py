@@ -177,6 +177,57 @@ class PlaybackOwnerTests(unittest.IsolatedAsyncioTestCase):
         run.assert_awaited_once()
         self.assertEqual(self.main.playback_state.current_playback_owner, "qobuz")
 
+    async def test_qobuz_claim_returns_line_input_selection_to_app_playback(self):
+        # A Connect-started Qobuz renderer is App playback: the footer must not
+        # keep a line input (Bluetooth/external/STDIN) selected after the claim.
+        playing = {
+            "available": True, "status": "Playing", "title": "T", "artist": "A",
+            "album": "B", "trackId": "123", "artUrl": "http://x/c.jpg", "sample_rate": 44100,
+        }
+        committed = type("Result", (), {"committed": True, "transition_id": "t1"})()
+        with mock.patch.object(self.main, "get_qobuz_ui_state", new=mock.AsyncMock(return_value=playing)), mock.patch.object(
+            self.main, "_run_coordinated_transition", new=mock.AsyncMock(return_value=committed)
+        ), mock.patch.object(
+            self.main, "broadcast_qobuz_state", new=mock.AsyncMock(return_value=playing)
+        ), mock.patch.object(
+            self.main.source_transitions, "save_selection_if", new=mock.AsyncMock(return_value=None)
+        ) as save:
+            await self.main._claim_qobuz_playback("qbzd-playing")
+        save.assert_awaited_once()
+        decide = save.call_args.args[0]
+        self.assertEqual(decide({"mode": "bluetooth-input"}), ("app-playback", None))
+        self.assertEqual(decide({"mode": "external-input", "selected_input_key": "tv"}), ("app-playback", None))
+        self.assertEqual(decide({"mode": "stdin-input"}), ("app-playback", None))
+        self.assertIsNone(decide({"mode": "app-playback"}))
+
+    async def test_spotify_claim_returns_line_input_selection_to_app_playback(self):
+        playing = {"available": True, "status": "Playing", "title": "T", "artist": "A", "album": "B", "trackId": "spotify:track:1"}
+        committed = type("Result", (), {"committed": True, "transition_id": "t2"})()
+        with mock.patch.object(self.main, "get_spotify_ui_state", new=mock.AsyncMock(return_value=playing)), mock.patch.object(
+            self.main, "_run_coordinated_transition", new=mock.AsyncMock(return_value=committed)
+        ), mock.patch.object(
+            self.main, "broadcast_spotify_state", new=mock.AsyncMock(return_value=playing)
+        ), mock.patch.object(
+            self.main.source_transitions, "save_selection_if", new=mock.AsyncMock(return_value=None)
+        ) as save:
+            await self.main._claim_spotify_playback("spotify-claim")
+        save.assert_awaited_once()
+        self.assertEqual(save.call_args.args[0]({"mode": "bluetooth-input"}), ("app-playback", None))
+
+    async def test_qobuz_claim_already_owned_returns_line_input_to_app_playback(self):
+        # Owner persisted from an earlier Qobuz session: the claim is a no-op,
+        # but a Bluetooth selection must still return to App playback.
+        self.main._set_playback_owner("qobuz")
+        with mock.patch.object(self.main, "get_qobuz_ui_state", new=mock.AsyncMock(return_value={})), mock.patch.object(
+            self.main, "_run_coordinated_transition", new=mock.AsyncMock()
+        ) as run, mock.patch.object(
+            self.main.source_transitions, "save_selection_if", new=mock.AsyncMock(return_value=None)
+        ) as save:
+            await self.main._claim_qobuz_playback("qbzd-playing")
+        run.assert_not_awaited()
+        save.assert_awaited_once()
+        self.assertEqual(save.call_args.args[0]({"mode": "bluetooth-input"}), ("app-playback", None))
+
     async def test_qobuz_claim_noop_when_already_committed(self):
         self.main._set_playback_owner("qobuz")
         with mock.patch.object(self.main, "get_qobuz_ui_state", new=mock.AsyncMock()) as get, mock.patch.object(

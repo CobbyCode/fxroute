@@ -2432,6 +2432,26 @@ def _qobuz_target_rate(qobuz_state: Mapping[str, Any]) -> int:
     return samplerate.playback_target_rate(44100)
 
 
+_LINE_INPUT_MODES = frozenset({SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT, SOURCE_MODE_STDIN_INPUT})
+
+
+async def _leave_line_input_for_streaming_claim() -> None:
+    """Show App playback once a Connect renderer owns playback.
+
+    A line input (Bluetooth, external, STDIN) that stays selected keeps the
+    footer on that input while the streamed source plays. The change runs under
+    the source-transition lock and never pauses the renderer: App playback is
+    not a line source.
+    """
+    try:
+        await source_transitions.save_selection_if(
+            lambda selection: (SOURCE_MODE_APP_PLAYBACK, None)
+            if selection.get("mode") in _LINE_INPUT_MODES else None
+        )
+    except Exception as exc:  # noqa: BLE001 - the owner claim is already committed
+        logger.warning("Streaming claim could not return to App playback: %s", exc)
+
+
 async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
     """Claim FXRoute playback ownership for an already-playing qbzd renderer.
 
@@ -2446,6 +2466,7 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
     claim_intent_generation = playback_state.playback_intent_generation
     claim_source_intent = playback_state.capture_source_intent()
     if playback_state.current_playback_owner == "qobuz":
+        await _leave_line_input_for_streaming_claim()
         return await get_qobuz_ui_state()
     qobuz_state = await get_qobuz_ui_state()
     if not _is_qobuz_playback_active(qobuz_state):
@@ -2494,6 +2515,7 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         return await get_qobuz_ui_state()
     await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
     connect_state.set_device_active(True)
+    await _leave_line_input_for_streaming_claim()
     await _qobuz_pin_unity()
     return await broadcast_qobuz_state()
 
@@ -2512,6 +2534,7 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
     claim_intent_generation = playback_state.playback_intent_generation
     claim_source_intent = playback_state.capture_source_intent()
     if playback_state.current_playback_owner == "spotify":
+        await _leave_line_input_for_streaming_claim()
         return await get_spotify_ui_state()
     data = await get_spotify_ui_state()
     if not _is_spotify_playback_active(data):
@@ -2560,6 +2583,7 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
     if not playback_state.source_intent_is_current(claim_source_intent):
         return await get_spotify_ui_state()
     await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
+    await _leave_line_input_for_streaming_claim()
     return await broadcast_spotify_state()
 
 
