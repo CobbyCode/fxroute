@@ -452,7 +452,7 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
                 "active_rate": active_rate,
                 "force_rate": active_rate,
             }
-        ), patch.object(main, "_run_coordinated_transition", new=run):
+        ), patch.object(main, "_player_is_running", return_value=True), patch.object(main, "_run_coordinated_transition", new=run):
             await main._transition_sample_rate_policy(
                 {"mode": "fixed", "rate": target_rate}, detail="test-policy"
             )

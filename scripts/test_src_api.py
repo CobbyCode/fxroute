@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
+from playback.player import MPVError
 from audio import src_policy
 from audio.samplerate import alignment
 from playback.queue import PlaybackQueue
@@ -221,6 +222,146 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.player.state["position"], 123.5)
         self.assertTrue(self.player.state["paused"])
 
+    async def test_src_change_recovers_a_dead_player_without_dead_ipc(self):
+        self.configure_playback(native=True)
+        self.player.running = False
+        read_property = self.player.get_property
+        def live_property(name):
+            if not self.player.running:
+                raise MPVError("MPV is not running")
+            return read_property(name)
+        with patch.object(self.player, "get_property", side_effect=live_property):
+            result = await self.post("low")
+        self.assertEqual(result["mode"], "low")
+        self.assertEqual(src_policy.load_policy()["mode"], "low")
+        self.assertTrue(self.player.running)
+        self.assertTrue(self.player.state["playing"])
+        self.assertEqual(self.player.state["position"], 123.5)
+        self.assertEqual(self.queue.index, 1)
+        self.assertFalse(self.muted)
+
+    async def test_player_death_during_position_read_uses_cached_position(self):
+        self.configure_playback(paused=True)
+        read_property = self.player.get_property
+        failed = False
+        def live_property(name):
+            nonlocal failed
+            if name == "time-pos" and not failed:
+                failed = True
+                self.player.running = False
+                raise MPVError("IPC connection reset")
+            return read_property(name)
+        with patch.object(self.player, "get_property", side_effect=live_property):
+            await self.post("high")
+        self.assertTrue(self.player.running)
+        self.assertTrue(self.player.state["paused"])
+        self.assertEqual(self.player.state["position"], 123.5)
+
+    async def test_live_player_position_read_failure_rejects_without_mutation(self):
+        self.configure_playback()
+        with patch.object(self.player, "get_property", side_effect=MPVError("IPC timed out")):
+            with self.assertRaises(main.HTTPException) as caught:
+                await self.post("high")
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(src_policy.load_policy()["mode"], "standard")
+        self.assertTrue(self.player.state["playing"])
+        self.assertFalse(self.muted)
+
+    async def test_same_rate_player_death_during_snapshot_reloads_at_cached_position(self):
+        self.configure_playback(paused=True)
+        read_property = self.player.get_property
+        failed = False
+        def live_property(name):
+            nonlocal failed
+            if name == "time-pos" and not failed:
+                failed = True
+                self.player.running = False
+                raise MPVError("IPC connection reset")
+            return read_property(name)
+        request = SimpleNamespace(json=AsyncMock(return_value={"mode": "fixed", "rate": 48000}))
+        with patch.object(self.player, "get_property", side_effect=live_property):
+            await main.save_audio_samplerate_policy(request)
+        self.assertTrue(self.player.running)
+        self.assertTrue(self.player.state["paused"])
+        self.assertEqual(self.player.state["current_file"], "/music/current.flac")
+        self.assertEqual(self.player.state["position"], 123.5)
+
+    async def test_radio_policy_restarts_player_before_live_rate_resolution(self):
+        self.configure_playback(source="radio")
+        self.player.running = False
+        request = SimpleNamespace(json=AsyncMock(return_value={"mode": "fixed", "rate": 48000}))
+        await main.save_audio_samplerate_policy(request)
+        self.assertTrue(self.player.running)
+        self.assertTrue(self.player.state["playing"])
+        self.assertEqual(self.player.state["current_file"], "/music/current.flac")
+        self.assertFalse(self.muted)
+
+    async def test_same_rate_player_death_during_output_snapshot_reloads_media(self):
+        self.configure_playback(paused=True, native=True)
+        def overview_after_exit(*args):
+            self.player.running = False
+            return self.overview
+        self.adapter._deps = replace(self.adapter._deps, get_audio_output_overview=overview_after_exit)
+        request = SimpleNamespace(json=AsyncMock(return_value={"mode": "fixed", "rate": 48000}))
+        await main.save_audio_samplerate_policy(request)
+        self.assertTrue(self.player.running)
+        self.assertTrue(self.player.state["paused"])
+        self.assertEqual(self.player.playlist, ["/music/previous.flac", "/music/current.flac"])
+        self.assertEqual(self.player.state["position"], 123.5)
+        self.assertFalse(self.coordinator.gate.failure_latched)
+        self.assertFalse(self.muted)
+
+    async def test_radio_death_after_rate_staging_reloads_into_replacement_player(self):
+        self.configure_playback(source="radio")
+        async def helper_after_exit(request):
+            self.player.stop_playback()
+            self.player.running = False
+            return {"dsp_reinitialized": True}
+        with patch.object(self.adapter, "establish_effects_and_helper", side_effect=helper_after_exit):
+            await self.post("high")
+        self.assertTrue(self.player.running)
+        self.assertEqual(self.player.state["current_file"], "/music/current.flac")
+        self.assertTrue(self.player.state["playing"])
+        self.assertFalse(self.coordinator.gate.failure_latched)
+        self.assertFalse(self.muted)
+
+    async def test_dead_radio_carrier_request_keeps_48000_without_loading_retained_media(self):
+        self.configure_playback(source="radio")
+        self.player.running = False
+        main.samplerate.persist_sample_rate_policy({"mode": "auto", "rate": None})
+        rate_targets = []
+        async def establish(request):
+            rate_targets.append(request.target_rate)
+        request = TransitionRequest(operation="sample-rate-policy", source="radio", target_rate=48000,
+                                    input_rate_hz=48000, rate_change=True, reload_source=False,
+                                    should_play=False, sample_rate_policy={"mode": "auto", "rate": None})
+        with patch.object(self.adapter, "establish_target_rate", side_effect=establish):
+            result = await self.coordinator.execute(request)
+        self.assertEqual(rate_targets, [48000])
+        self.assertEqual(result.target_rate, 48000)
+        self.assertFalse(self.player.running)
+        self.assertEqual(main.samplerate.load_sample_rate_policy(), {"mode": "auto", "rate": None})
+        self.assertFalse(self.coordinator.gate.failure_latched)
+        self.assertFalse(self.muted)
+
+    async def test_same_rate_policy_restarts_and_reloads_a_dead_player(self):
+        self.configure_playback(native=True)
+        self.player.running = False
+        self.player.state.update(current_file="/music/uncommitted.flac", file_loaded=False)
+        read_property = self.player.get_property
+        def live_property(name):
+            if not self.player.running:
+                raise MPVError("MPV is not running")
+            return read_property(name)
+        request = SimpleNamespace(json=AsyncMock(return_value={"mode": "fixed", "rate": 48000}))
+        with patch.object(self.player, "get_property", side_effect=live_property):
+            await main.save_audio_samplerate_policy(request)
+        self.assertTrue(self.player.running)
+        self.assertEqual(self.player.state["current_file"], "/music/current.flac")
+        self.assertTrue(self.player.state["playing"])
+        self.assertEqual(self.queue.index, 1)
+        self.assertFalse(self.muted)
+
     async def test_stopped_playback_stays_stopped(self):
         self.configure_playback(loaded=False)
         await self.post("low")
@@ -337,6 +478,19 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.player.state["playing"])
         self.assertEqual(self.player.state["position"], 123.5)
         self.assertFalse(self.coordinator.gate.failure_latched)
+
+    async def test_failed_radio_src_change_reloads_media_after_rollback_restart(self):
+        self.configure_playback(source="radio")
+        with patch.object(self.adapter, "establish_effects_and_helper", AsyncMock(side_effect=[RuntimeError("new graph failed"), {}])):
+            with self.assertRaises(main.HTTPException) as error:
+                await self.post("high")
+        self.assertIn("new graph failed", str(error.exception.detail))
+        self.assertEqual(src_policy.load_policy()["mode"], "standard")
+        self.assertTrue(self.player.running)
+        self.assertEqual(self.player.state["current_file"], "/music/current.flac")
+        self.assertTrue(self.player.state["playing"])
+        self.assertFalse(self.coordinator.gate.failure_latched)
+        self.assertFalse(self.muted)
 
     async def test_failed_auto_handoff_restores_the_original_unpinned_graph(self):
         self.configure_playback()

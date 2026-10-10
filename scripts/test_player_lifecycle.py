@@ -377,6 +377,19 @@ class RestartedPlayerStateTests(unittest.TestCase):
         self.assertIsNone(wrapper.state["current_file"])
         self.assertTrue(wrapper._running)
 
+    def test_start_replaces_a_crashed_process_despite_stale_start_intent(self):
+        wrapper = MPVWrapper()
+        wrapper._running = True
+        old = unittest.mock.Mock(returncode=-11)
+        old.poll.return_value = -11
+        wrapper.process = old
+        wrapper._state.update(current_file="/music/old.flac", playing=True)
+        wrapper._state_snapshot = wrapper._state.copy()
+        self._start_with_mocks(wrapper)
+        self.assertIsNot(wrapper.process, old)
+        self.assertTrue(wrapper._running)
+        self.assertIsNone(wrapper.state["current_file"])
+
 
 class PlayerAvailabilityAdapterTests(unittest.TestCase):
     """main._player_is_running must follow the real player, not stale state."""

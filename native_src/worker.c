@@ -3,7 +3,9 @@
 #define _GNU_SOURCE
 #endif
 #include <stdatomic.h>
+#include <dlfcn.h>
 #include <errno.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -20,6 +22,37 @@
 #include "worker.h"
 
 #define BLOCK 4096
+static char sox_binary[PATH_MAX];
+static int sox_path_error;
+
+/* Bind the mapped generation, not the mutable pathname passed to dlopen. */
+__attribute__((constructor)) static void resolve_sox_binary(void)
+{
+    Dl_info info;
+    sox_path_error=ENOENT;
+    if(!dladdr((void *)resolve_sox_binary,&info))return;
+    FILE *maps=fopen("/proc/self/maps","r");
+    if(!maps){sox_path_error=errno;return;}
+    char *line=NULL;size_t capacity=0;
+    while(getline(&line,&capacity,maps)>=0) {
+        unsigned long start,end;int offset=0;
+        if(sscanf(line,"%lx-%lx %*s %*s %*s %*s %n",&start,&end,&offset)!=2||!offset)continue;
+        unsigned long address=(unsigned long)info.dli_fbase;
+        if(address<start||address>=end)continue;
+        line[strcspn(line,"\n")]=0;
+        if(realpath(line+offset,sox_binary))sox_path_error=0;
+        else sox_path_error=errno;
+        break;
+    }
+    free(line);fclose(maps);
+    if(sox_path_error)return;
+    char *name=strrchr(sox_binary,'/');
+    if(!name||(size_t)(name+1-sox_binary)+sizeof("sox")>sizeof(sox_binary)) {
+        sox_path_error=ENAMETOOLONG;
+        return;
+    }
+    strcpy(name+1,"sox");
+}
 struct ring { float *data; _Atomic uint64_t read, write; };
 struct fx_worker {
     enum fx_profile profile;
@@ -145,6 +178,7 @@ struct child { pid_t pid; int in,out,err,ended,status; };
 static void close_fd(int *fd) { if(*fd>=0)close(*fd); *fd=-1; }
 static int spawn_sox(struct fx_worker *w,struct child *child)
 {
+    if(sox_path_error)return sox_path_error;
     int input[2],output[2],error[2];
     if(pipe2(input,O_CLOEXEC)<0)return errno;
     if(pipe2(output,O_CLOEXEC)<0){close(input[0]);close(input[1]);return errno;}
@@ -156,7 +190,7 @@ static int spawn_sox(struct fx_worker *w,struct child *child)
     int fds[]={input[0],input[1],output[0],output[1],error[0],error[1]};
     for(unsigned i=0;i<6;++i)posix_spawn_file_actions_addclose(&actions,fds[i]);
     char ir[16],ore[16],ch[16]; snprintf(ir,sizeof(ir),"%u",w->ir); snprintf(ore,sizeof(ore),"%u",w->ore); snprintf(ch,sizeof(ch),"%u",w->channels);
-    const char *binary=FXROUTE_SOX_BINARY;
+    const char *binary=sox_binary;
     char *argv[40]={(char *)binary,"--buffer","512","-D","-L","-t","raw","-r",ir,"-e","floating-point","-b","32","-c",ch,"-",
         "-t","raw","-r",ore,"-e","floating-point","-b","32","-","rate"};
     unsigned n=26;

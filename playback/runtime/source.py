@@ -69,6 +69,16 @@ class _RuntimeSourceMixin:
     _staged_target_url: str | None
     _quieted_external_source: str | None
 
+    async def _ensure_player_available(self) -> bool:
+        """Ensure availability under coordinator ownership; report a restart."""
+        if self._deps.player_is_running():
+            return False
+        ensure = getattr(self._deps, "ensure_player_running", None)
+        if ensure is None or not await self._deps.drain_worker(ensure):
+            raise RuntimeError("MPV player is not available")
+        self._staged_target_url = None
+        return True
+
     async def refresh_transition_request(self, request: TransitionRequest) -> TransitionRequest | str:
         """Refresh retained policy/transport intent after acquiring ownership."""
         if request.operation == "sample-rate-policy" and self._deps.sample_rate_policy_request:
@@ -269,8 +279,7 @@ class _RuntimeSourceMixin:
         ):
             if not request.target_url:
                 raise RuntimeError("Local playback fallback has no target URL")
-            if not self._deps.player_is_running():
-                raise RuntimeError("MPV player is not available")
+            await self._ensure_player_available()
             set_volume = getattr(self._player, "set_volume", None)
             if callable(set_volume):
                 await self._deps.drain_worker(set_volume, 0)
@@ -299,8 +308,7 @@ class _RuntimeSourceMixin:
             return request.target_rate
         if not request.target_url:
             return request.target_rate
-        if not self._deps.player_is_running():
-            raise RuntimeError("MPV player is not available")
+        await self._ensure_player_available()
 
         previous_rate = await self._deps.drain_worker(
             self._deps.get_player_audio_samplerate
@@ -409,8 +417,9 @@ class _RuntimeSourceMixin:
             return
         if source_policy.is_external_source(request.source):
             return
-        if not self._deps.player_is_running():
-            raise RuntimeError("MPV player is not available")
+        if await self._ensure_player_available():
+            # A replacement process owns no media, even for a same-target request.
+            request = replace(request, reload_source=bool(request.target_url))
 
         if not request.reload_source and not request.should_play:
             if not request.target_url:

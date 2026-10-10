@@ -800,6 +800,15 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                         active_request = refreshed
                 snapshot = await self.runtime.read_transition_snapshot(active_request)
                 if (
+                    active_request.operation == "sample-rate-policy"
+                    and active_request.input_rate_hz is None
+                    and source_policy.is_mpv_source(active_request.source)
+                    and active_request.target_url
+                    and snapshot.get("player_running") is False
+                ):
+                    # The player can exit while the snapshot probes the graph.
+                    active_request = replace(active_request, reload_source=True)
+                if (
                     not active_request.audio_overview
                     and isinstance(snapshot, Mapping)
                     and snapshot.get("audio_overview")

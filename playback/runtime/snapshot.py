@@ -74,11 +74,22 @@ class _RuntimeSnapshotMixin:
         self._staged_qobuz_track_id = None
         self._qobuz_stream_rate = None
         state = dict(self._player.state if self._player else {})
+        player_running = self._deps.player_is_running()
+        if not player_running:
+            track_url = (self._deps.get_current_track_info() or {}).get("url")
+            if track_url and state.get("current_file") != track_url:
+                state.update(current_file=track_url, position=0.0)
         if (request.operation == "sample-rate-policy" and source_policy.restores_position(request.source)
-                and state.get("current_file")):
+                and state.get("current_file") and player_running):
             get_property = getattr(self._player, "get_property", None)
             if callable(get_property):
-                position = await self._deps.drain_worker(get_property, "time-pos")
+                try:
+                    position = await self._deps.drain_worker(get_property, "time-pos")
+                except Exception as exc:
+                    if self._deps.player_is_running():
+                        raise RuntimeError(f"Cannot read playback position: {exc}") from exc
+                    logger.warning("Player exited during position snapshot; using cached position")
+                    position = None
                 if isinstance(position, (int, float)) and position >= 0:
                     state["position"] = float(position)
         # Both builders run bounded PipeWire/BlueZ subprocess pipelines; keep
@@ -137,6 +148,7 @@ class _RuntimeSnapshotMixin:
             change = prepare_change(output["key"], selected_tier, request.target_rate, tiers)
             await self._deps.drain_worker(change.capture)
             snapshot["channel_tier_change"] = change
+        snapshot["player_running"] = self._deps.player_is_running()
         return snapshot
 
     def target_source_staged(self, request: TransitionRequest) -> bool:

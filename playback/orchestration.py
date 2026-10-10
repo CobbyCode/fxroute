@@ -182,6 +182,7 @@ class PlaybackOrchestrationDeps:
     # Coordinator skips the source check (legacy/test wiring).
     get_source_generation: Callable[[], int | None] | None = None
     get_qobuz_ui_state: Callable[..., Awaitable[dict]] | None = None
+    player_is_running: Callable[[], bool] | None = None
 
 
 class PlaybackOrchestrator:
@@ -228,6 +229,10 @@ class PlaybackOrchestrator:
         player = self._deps.get_runtime_player()
         local_state = dict(player.state if player else {})
         local_track = dict(state.current_track_info or {})
+        is_running = getattr(self._deps, "player_is_running", None)
+        if is_running is not None and not is_running():
+            # A failed staged load may leave an uncommitted path in the observer cache.
+            local_state["current_file"] = local_track.get("url") or local_state.get("current_file")
         spotify = await self._deps.get_spotify_ui_state()
         local_active = self._deps.is_local_playback_active(local_state)
         spotify_active = self._deps.is_spotify_playback_active(spotify)
@@ -471,11 +476,13 @@ class PlaybackOrchestrator:
         if not isinstance(target_rate, int) or target_rate <= 0:
             raise RuntimeError("current hardware sample rate is unavailable")
         rate_change = await asyncio.to_thread(self.coordinator_rate_change, target_rate)
+        is_running = getattr(self._deps, "player_is_running", None)
+        player_missing = bool(is_running is not None and not is_running())
         return TransitionRequest(
             operation="sample-rate-policy", source=source, target_rate=target_rate,
             target_url=context.get("target_url"), target_track=dict(context.get("target_track") or {}),
             should_play=bool(context.get("should_play")), rate_change=rate_change,
-            reload_source=bool((rate_change or src_mode is not None) and source_policy.is_known_source(source) and context.get("target_url")),
+            reload_source=bool((rate_change or src_mode is not None or player_missing) and source_policy.is_known_source(source) and context.get("target_url")),
             detail=detail, output_mode_target=dict(overview), sample_rate_policy=dict(policy), src_mode=src_mode,
             **(self._deps.get_player_queue_fields() if source == "local" else {}),
         )

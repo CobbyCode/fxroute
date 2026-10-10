@@ -212,14 +212,14 @@ def main():
     for source in inputs:
         obj = build / (source.stem + ".o")
         subprocess.run([os.environ.get("CC", "cc"), "-std=gnu11", "-O2", "-g", "-fPIC", "-D_GNU_SOURCE",
-                        "-DRESAMPLE_DISABLE_PRECOMP", f'-DFXROUTE_SOX_BINARY="{generation / "sox"}"',
+                         "-DRESAMPLE_DISABLE_PRECOMP",
                         f'-DFXROUTE_SRC_BUILD_ID="{generation_id}"',
                         "-I", str(ROOT), "-I", str(upstream), "-I", str(pw / "spa/include"), *flags,
                         "-c", str(source), "-o", str(obj)], check=True)
         objects.append(str(obj))
     library = generation / "libspa-fxroute-src.so"
     subprocess.run([os.environ.get("CC", "cc"), "-shared", "-Wl,-z,defs", *objects,
-                    "-l:libsoxr.so.0", "-lpthread", "-lm", "-o", str(library)], check=True)
+                    "-l:libsoxr.so.0", "-ldl", "-lpthread", "-lm", "-o", str(library)], check=True)
     manifest = {"generation": generation_id, "sox_version": "16.2.1", "sox_source_sha256": SOX_SHA, "pipewire_source_sha256": PW_SHA,
                 "sox_binary_sha256": sha(generation / "sox"), "converter_sha256": sha(library),
                 "vulkan": False, "openmp": False, "startup_reserve_ms": 750, "fifo_frames": 65536,

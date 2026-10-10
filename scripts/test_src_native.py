@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -88,6 +89,55 @@ class NativeSrcTests(unittest.TestCase):
         with patch.dict(os.environ, {"SOX_OPTS": "-v 0.5"}):
             self.test_pinned_sox_worker_retains_all_pcm_under_output_backpressure()
 
+    def run_reset_lifecycle(self, scenario):
+        build = ROOT / "native_src/build"
+        includes = build / "sources/pipewire/pipewire-1.6.8/spa/include"
+        upstream = includes.parent / "plugins/audioconvert"
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}):
+            path = Path(directory)
+            policy = path / "fxroute/src-policy.json"
+            policy.parent.mkdir()
+            policy.write_text('{"mode":"standard"}')
+            executable = path / "reset-lifecycle"
+            subprocess.run(["cc", "-std=gnu11", "-I", str(includes), "-I", str(upstream),
+                            "-I", str(ROOT / "native_src"), str(ROOT / "scripts/src_reset_lifecycle.c"),
+                            "-ldl", "-o", str(executable)], check=True)
+            library = LIBRARY
+            environment = dict(os.environ)
+            if scenario in {"relocated", "missing-engine", "activation-race"}:
+                generation = path / "generation"
+                generation.mkdir()
+                if scenario != "missing-engine":
+                    shutil.copy2(build / "sox", generation / "sox")
+                shutil.copy2(LIBRARY, generation / LIBRARY.name)
+                library = path / LIBRARY.name
+                library.symlink_to(generation / LIBRARY.name)
+                if scenario == "activation-race":
+                    other = path / "next-generation"
+                    other.mkdir()
+                    shutil.copy2(build / "sox", other / "sox")
+                    shutil.copy2(LIBRARY, other / LIBRARY.name)
+                    shim = path / "activate.so"
+                    subprocess.run(["cc", "-shared", "-fPIC", str(ROOT / "scripts/src_load_activation.c"),
+                                    "-ldl", "-o", str(shim)], check=True)
+                    environment.update(LD_PRELOAD=str(shim), FX_SRC_TEST_ALIAS=str(library),
+                                       FX_SRC_TEST_NEXT=str(other / LIBRARY.name))
+            result = subprocess.run([str(executable), str(library), scenario],
+                                    text=True, capture_output=True, timeout=10, env=environment)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_reset_after_free_or_failed_init_is_safe_and_reinitializable(self):
+        self.run_reset_lifecycle("reset")
+
+    def test_relocated_plugin_uses_its_own_immutable_engine_generation(self):
+        self.run_reset_lifecycle("relocated")
+
+    def test_missing_engine_fails_initialization_without_crashing_on_flush(self):
+        self.run_reset_lifecycle("missing-engine")
+
+    def test_activation_between_mapping_and_constructor_keeps_the_loaded_engine(self):
+        self.run_reset_lifecycle("activation-race")
+
     def test_peak_node_props_do_not_read_worker_composition_memory(self):
         includes = ROOT / "native_src/build/sources/pipewire/pipewire-1.6.8/spa/include"
         with tempfile.TemporaryDirectory() as directory:
@@ -129,6 +179,7 @@ class NativeSrcTests(unittest.TestCase):
                 subprocess.run([*flags,"-c",str(source),"-o",str(path / (name+".o"))],check=True)
             objects=[str(p) for p in build.glob("*.o") if p.name not in ("resample-worker.o","audioconvert.o")]
             library=path / "race-src.so"
+            shutil.copy2(build / "sox", path / "sox")
             subprocess.run(["cc","-fsanitize=thread","-shared",*objects,str(path / "composition.o"),str(path / "audioconvert.o"),
                             "-l:libsoxr.so.0","-lpthread","-lm","-o",str(library)],check=True)
             executable=path / "stats-race"
@@ -160,6 +211,7 @@ class NativeSrcTests(unittest.TestCase):
             subprocess.run([*flags,"-c",str(ROOT / "native_src/resample-worker.c"),"-o",str(path / "composition.o")],check=True)
             objects=[str(p) for p in build.glob("*.o") if p.name!="resample-worker.o"]
             library=path / "bounds-src.so"
+            shutil.copy2(build / "sox", path / "sox")
             subprocess.run(["cc","-fsanitize=address","-shared",*objects,str(path / "composition.o"),
                             "-l:libsoxr.so.0","-lpthread","-lm","-o",str(library)],check=True)
             executable=path / "channel-bounds"
@@ -231,6 +283,7 @@ class NativeSrcTests(unittest.TestCase):
             for name,source in (("oracle",ROOT / "scripts/src_clock_oracle.c"),("composition",ROOT / "native_src/resample-worker.c")):
                 subprocess.run([*flags,"-DFX_SRC_VERIFY","-c",str(source),"-o",str(path / (name+".o"))],check=True)
             library=path / "clock-src.so"
+            shutil.copy2(build / "sox", path / "sox")
             objects=[str(p) for p in build.glob("*.o") if p.name!="resample-worker.o"]
             subprocess.run(["cc","-shared","-Wl,-z,defs",*objects,str(path / "oracle.o"),str(path / "composition.o"),
                             "-l:libsoxr.so.0","-lpthread","-lm","-o",str(library)],check=True)

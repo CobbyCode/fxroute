@@ -29,6 +29,7 @@ class _RuntimeOutputModeMixin:
     """Attributes provided by the composing adapter instance."""
     _deps: PlaybackRuntimeDependencies
     _dsp_runtime: Any
+    _staged_target_url: str | None
 
     @asynccontextmanager
     async def transition_configuration(self, request: TransitionRequest):
@@ -95,6 +96,7 @@ class _RuntimeOutputModeMixin:
         try:
             return await self._deps.restart_src_graph(snapshot["src_graph"])
         finally:
+            self._staged_target_url = None
             self.invalidate_gate_sink_resolution()
 
     async def commit_sample_rate_policy(self, request: TransitionRequest) -> dict[str, Any]:

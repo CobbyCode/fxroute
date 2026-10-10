@@ -92,6 +92,8 @@ static float delay_phase(struct resample *r) { double d=timeline_delay(r);return
 static void reset_composition(struct resample *r)
 {
     struct composition *c=r->data;
+    /* SPA can flush after a failed setup or after releasing the converter. */
+    if(!c)return;
     if(c->worker)fx_worker_reset(c->worker);
     resample_reset(&c->match);
     c->buffered=c->flush=0;

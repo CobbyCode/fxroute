@@ -101,3 +101,4 @@ class PlaybackRuntimeDependencies:
     restart_src_graph: Callable[[dict], Awaitable[dict]] | None = None
     sample_rate_policy_request: Callable[..., Awaitable[Any]] | None = None
     canonical_volume_write_lock: Callable[[], Any] | None = None
+    ensure_player_running: Callable[[], bool] | None = None

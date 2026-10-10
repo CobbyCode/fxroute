@@ -1197,6 +1197,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         set_playback_owner=_set_runtime_playback_owner,
         queue=lambda: playback_queue.queue,
         player_is_running=lambda *a, **k: _player_is_running(*a, **k),
+        ensure_player_running=lambda: _ensure_player_running(),
         load_player_paused=lambda *a, **k: _load_player_paused(*a, **k),
         wait_for_player_current_file=lambda *a, **k: media_readiness.wait_for_player_current_file(*a, get_player=lambda: runtime.player_instance, **k),
         wait_for_player_audio_samplerate=lambda *a, **k: media_readiness.wait_for_player_audio_samplerate(*a, get_player=lambda: runtime.player_instance, drain_worker=_drain_worker, **k),
@@ -3510,6 +3511,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
 def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrchestrationDeps:
     """Bind transition/recovery orchestration to live application services."""
     return playback_orchestration.PlaybackOrchestrationDeps(
+        player_is_running=lambda: _player_is_running(),
         get_coordinator=lambda: playback_transition_coordinator,
         set_coordinator=lambda value: globals().__setitem__("playback_transition_coordinator", value),
         make_transition_coordinator=lambda: PlaybackTransitionCoordinator(

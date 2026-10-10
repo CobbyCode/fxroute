@@ -122,13 +122,12 @@ class MPVWrapper:
 
     def start(self):
         """Start the mpv subprocess with IPC server."""
-        if self._running:
-            logger.warning("MPV already running")
-            return
         with self._start_lock:
-            if self._running:
+            if self.is_running():
                 logger.warning("MPV already running")
                 return
+            if self.process is not None or self._listener_thread is not None:
+                self.stop()
             self._start_locked()
 
     def _forget_previous_process_state(self) -> None:
