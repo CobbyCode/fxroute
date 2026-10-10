@@ -398,8 +398,10 @@ class SourcePushTests(unittest.IsolatedAsyncioTestCase):
 
     def test_stdin_service_is_wired_to_the_publish_hook(self):
         source = inspect.getsource(main.lifespan)
-        self.assertIn("on_state_changed=lambda: source_transitions.publish_stdin_state()", source)
+        self.assertIn("on_state_changed=lambda: _on_stdin_state_changed()", source)
         self.assertIn("await source_transitions.reapply_persisted()", source)
+        hook_source = inspect.getsource(main._on_stdin_state_changed)
+        self.assertIn("await source_transitions.publish_stdin_state()", hook_source)
 
 
 class SourcePushCoalescingTests(unittest.TestCase):

@@ -510,6 +510,7 @@ import dsp.orchestration as dsp_orchestration
 import dsp.preset_loading as preset_loading
 import playback.orchestration as playback_orchestration
 from audio import pw_link
+from audio.source_native_rate import resolve_active_source_native_rate
 from audio.input_links import ingress_links_present, input_links_present
 from audio.output_ports import hardware_link_target, hardware_playback_port_fallback_from_mode
 from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
@@ -609,7 +610,9 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_MODES,
     SOURCE_MODE_APP_PLAYBACK,
+    SOURCE_MODE_BLUETOOTH_INPUT,
     SOURCE_MODE_EXTERNAL_INPUT,
+    SOURCE_MODE_STDIN_INPUT,
     apply_persisted_audio_output_selection,
     configure_source_availability,
     configure_stdin_input_status,
@@ -980,6 +983,13 @@ bluetooth_input = BluetoothInputMonitor(BluetoothInputDependencies(
         samplerate._load_audio_source_selection().get("mode") or SOURCE_MODE_APP_PLAYBACK
     ),
     get_source_transition_lock=lambda: _source_transition_lock(),
+    get_samplerate_status=lambda: get_samplerate_status(),
+    get_pw_dump=lambda: _read_pw_dump(),
+    sample_rate_policy_is_auto=lambda: samplerate.load_sample_rate_policy().get("mode") == "auto",
+    measurement_owns_graph=lambda: _measurement_session_owns_live_rate(),
+    playback_transition_is_active=lambda: _playback_transition_is_active(),
+    request_native_rate_follow=lambda reason: _follow_active_source_native_rate(
+        {"mode": SOURCE_MODE_BLUETOOTH_INPUT}, reason=reason),
 ))
 
 # The monitors observe source availability and own the loss confirmation;
@@ -1412,6 +1422,8 @@ source_transitions = SourceTransitions(SourceTransitionDependencies(
     sync_output_mode=lambda previous, overview: _restore_input_output_mode(previous, overview),
     capture_output_mode_state=lambda: get_output_service().ensure_state(),
     restore_output_mode_state=lambda previous, overview, state: _restore_input_output_mode(previous, overview, saved_state=state),
+    request_source_rate_follow=lambda committed: _follow_active_source_native_rate(
+        committed, reason="source-mode-native-rate"),
 ))
 
 # External presence reports (HTTP, e.g. Home Assistant); a report is a
@@ -3195,7 +3207,7 @@ async def lifespan(app: FastAPI):
         try:
             runtime.stdin_input = StdinInputService(StdinInputDependencies(
                 sink_factory=_build_stdin_sink,
-                on_state_changed=lambda: source_transitions.publish_stdin_state(),
+                on_state_changed=lambda: _on_stdin_state_changed(),
                 adapter_error=pcm_adapter_error,
             ))
             configure_stdin_input_status(lambda: runtime.stdin_input.snapshot()
@@ -3565,6 +3577,12 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         list_spotify_sink_inputs=lambda: media_readiness.list_spotify_sink_inputs(),
         sync_plan_runtime=lambda *a, **k: _sync_plan_runtime(*a, **k),
         get_source_generation=lambda: playback_state.source_generation,
+        get_source_mode=lambda: samplerate._load_audio_source_selection().get("mode"),
+        get_bluetooth_overview=lambda: get_audio_source_overview(),
+        get_pw_dump=lambda: _read_pw_dump(),
+        get_stdin_snapshot=lambda: runtime.stdin_input.snapshot() if runtime.stdin_input else {},
+        get_external_entry=lambda: _selected_external_entry_for_rate(),
+        get_external_helper_rate=lambda: _surround_input.snapshot().get("sample_rate") if _surround_input is not None else None,
     )
 
 
@@ -3581,6 +3599,95 @@ _coordinator_rate_change = playback_orchestration.configured().coordinator_rate_
 _playback_transition_is_active = playback_orchestration.configured().transition_is_active
 _run_coordinated_transition = playback_orchestration.configured().run_coordinated_transition
 _playback_transition_context_is_current = playback_orchestration.configured().playback_transition_context_is_current
+
+
+def _read_pw_dump() -> str:
+    """Read the live PipeWire graph dump; empty string on any failure."""
+    try:
+        result = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout or ""
+
+
+def _selected_external_entry_for_rate() -> dict | None:
+    """Selected external input entry for native-rate resolution (worker thread)."""
+    try:
+        overview = get_audio_source_overview()
+    except Exception:
+        return None
+    entry = overview.get("selected_input") or overview.get("current_input") or {}
+    return dict(entry) if isinstance(entry, dict) and entry else None
+
+
+async def _follow_active_source_native_rate(committed: dict, *, reason: str) -> None:
+    """Move an auto-policy graph to the committed source's native rate.
+
+    Wired as ``request_source_rate_follow`` into the source transitions: runs
+    after a committed source switch, off the source-transition lock. Skips
+    stale commits (a newer switch already landed), fixed policies,
+    measurement-owned graphs, in-flight playback transitions and the owned
+    digital-carrier clock (48 kHz wins there). Builds the request through the
+    orchestrator so line-native and playback rates share one policy path, and
+    only transitions on a real rate change.
+    """
+    try:
+        live = await asyncio.to_thread(samplerate._load_audio_source_selection)
+    except Exception:
+        return
+    if not isinstance(committed, dict) or live.get("mode") != committed.get("mode"):
+        return
+    if committed.get("mode") == SOURCE_MODE_EXTERNAL_INPUT:
+        selected = committed.get("selected_input") or {}
+        selected_key = selected.get("key") if isinstance(selected, dict) else None
+        if selected_key and selected_key != live.get("selected_input_key"):
+            return
+    try:
+        policy = samplerate.load_sample_rate_policy()
+    except Exception:
+        return
+    if policy.get("mode") != "auto":
+        return
+    if _measurement_session_owns_live_rate() or _playback_transition_is_active():
+        return
+    if _surround_carrier_owned:
+        return
+    try:
+        request = await playback_orchestration.configured().sample_rate_policy_request(
+            policy, detail=reason)
+    except Exception as exc:
+        logger.warning("Native-rate follow (%s) could not build a request: %s", reason, exc)
+        return
+    if not request.rate_change:
+        return
+    try:
+        await _transition_sample_rate_policy(policy, detail=reason)
+    except (ValueError, PlaybackTransitionFailure, RuntimeError) as exc:
+        logger.warning("Native-rate follow (%s) failed: %s", reason, exc)
+
+
+async def _on_stdin_state_changed() -> None:
+    """STDIN hook: publish the live state, then follow a new session rate."""
+    await source_transitions.publish_stdin_state()
+    try:
+        live = await asyncio.to_thread(samplerate._load_audio_source_selection)
+    except Exception:
+        return
+    if live.get("mode") != SOURCE_MODE_STDIN_INPUT:
+        return
+    snapshot = runtime.stdin_input.snapshot() if runtime.stdin_input else {}
+    native = resolve_active_source_native_rate("stdin-input", stdin_snapshot=snapshot)
+    if not isinstance(native, int) or native <= 0:
+        return
+    try:
+        status = await asyncio.to_thread(get_samplerate_status)
+    except Exception:
+        return
+    if status.get("active_rate") == native and status.get("force_rate") in {None, 0, native}:
+        return
+    await _follow_active_source_native_rate({"mode": SOURCE_MODE_STDIN_INPUT}, reason="stdin-native-rate")
 
 
 # Response compression for HTML/CSS/JS/JSON. The path filter is the outermost

@@ -58,6 +58,11 @@ class SourceTransitionDependencies:
     # Deferred bluetoothctl actions recorded by the Bluetooth sync; run
     # after the source-transition lock is released.
     finish_bluetoothctl_actions: Callable[[], Awaitable[None]] | None = None
+    # Optional native-rate follow after a committed source change: the auto
+    # sample-rate policy belongs to the active audio source, not to the
+    # previous graph rate. Runs after the lock is released (like the
+    # bluetoothctl actions) and must never fail the committed switch.
+    request_source_rate_follow: Callable[[dict], Awaitable[None]] | None = None
     sync_output_mode: Callable[[dict, dict], Awaitable[dict]] | None = None
     capture_output_mode_state: Callable[[], dict] | None = None
     restore_output_mode_state: Callable[[dict, dict, dict], Awaitable[dict]] | None = None
@@ -142,6 +147,15 @@ class SourceTransitions:
         if finish is not None:
             await finish()
 
+    async def _follow_source_rate(self, committed: dict | None) -> None:
+        follow = self._deps.request_source_rate_follow
+        if follow is None or not isinstance(committed, dict):
+            return
+        try:
+            await follow(committed)
+        except Exception:
+            logger.warning("Source native-rate follow failed", exc_info=True)
+
     async def save_selection(self, mode: str, input_key: str | None) -> dict:
         """Client switch: one committed change under the lock, never half-done.
 
@@ -151,11 +165,14 @@ class SourceTransitions:
         the lock is released: their commands can hang on a vanished BlueZ
         daemon and must not stall the next source transition.
         """
+        committed: dict | None = None
         try:
             async with self._deps.get_lock():
-                return await finish_then_cancel(self.apply_selection(mode, input_key), what="Source transition")
+                committed = await finish_then_cancel(self.apply_selection(mode, input_key), what="Source transition")
+                return committed
         finally:
             await self._finish_bluetoothctl_actions()
+            await self._follow_source_rate(committed)
 
     async def save_selection_if(self, decide: Callable[[dict], tuple[str, str | None] | None]) -> dict | None:
         """Automatic switch: decide on the committed selection under the lock.
@@ -164,14 +181,17 @@ class SourceTransitions:
         input key) to commit, or None to decline; the commit then runs
         exactly like save_selection.
         """
+        committed: dict | None = None
         try:
             async with self._deps.get_lock():
                 target = decide(self._deps.load_selection())
                 if target is None:
                     return None
-                return await finish_then_cancel(self.apply_selection(*target), what="Source transition")
+                committed = await finish_then_cancel(self.apply_selection(*target), what="Source transition")
+                return committed
         finally:
             await self._finish_bluetoothctl_actions()
+            await self._follow_source_rate(committed)
 
     async def change_input_config(
         self,
@@ -188,12 +208,15 @@ class SourceTransitions:
         back to App playback instead. On a routing failure ``restore`` puts
         the previous configuration back and the routing follows it.
         """
+        committed: dict | None = None
         try:
             async with self._deps.get_lock():
-                return await finish_then_cancel(
+                committed = await finish_then_cancel(
                     self._apply_input_config(mutate, restore, deselect_key), what="Input configuration change")
+                return committed
         finally:
             await self._finish_bluetoothctl_actions()
+            await self._follow_source_rate(committed)
 
     async def _apply_input_config(
         self,

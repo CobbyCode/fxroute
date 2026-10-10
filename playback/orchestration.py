@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 import playback.source_policy as source_policy
 import audio.samplerate as samplerate
+from audio.source_native_rate import resolve_active_source_native_rate
 from audio.output_routing import output_route_pairs
 from audio.output_ports import (
     HARDWARE_CHANNEL_ORDER,
@@ -183,6 +184,15 @@ class PlaybackOrchestrationDeps:
     get_source_generation: Callable[[], int | None] | None = None
     get_qobuz_ui_state: Callable[..., Awaitable[dict]] | None = None
     player_is_running: Callable[[], bool] | None = None
+    # Active line-source native-rate readers for the auto policy. All
+    # optional; without them a line source keeps the previous graph rate.
+    # Blocking readers run in a worker thread by the caller.
+    get_source_mode: Callable[[], str | None] | None = None
+    get_bluetooth_overview: Callable[[], Mapping[str, Any]] | None = None
+    get_pw_dump: Callable[[], str] | None = None
+    get_stdin_snapshot: Callable[[], Mapping[str, Any]] | None = None
+    get_external_entry: Callable[[], Mapping[str, Any] | None] | None = None
+    get_external_helper_rate: Callable[[], int | None] | None = None
 
 
 class PlaybackOrchestrator:
@@ -205,6 +215,46 @@ class PlaybackOrchestrator:
 
     def coordinator_target_rate(self, source: str, track: Mapping[str, Any] | None = None) -> int | None:
         return samplerate.playback_target_rate(self.coordinator_source_rate(source, track))
+
+    def _read_opt(self, name: str) -> Any | None:
+        """Call an optional dep, returning None on any failure."""
+        reader = getattr(self._deps, name, None)
+        if not callable(reader):
+            return None
+        try:
+            return reader()
+        except Exception:
+            return None
+
+    async def _line_source_native_rate(self, policy: Mapping[str, Any]) -> int | None:
+        """Native rate of the committed line source under an auto policy.
+
+        Returns None for app-playback, fixed policies, unknown modes and any
+        unreadable input, so the caller keeps its playback-derived rate.
+        Blocking readers run off the event loop.
+        """
+        if (policy or {}).get("mode") == "fixed":
+            return None
+        mode = self._read_opt("get_source_mode")
+        if mode not in {"bluetooth-input", "external-input", "stdin-input"}:
+            return None
+        bluetooth_overview, pw_dump, stdin_snapshot, external_entry, helper_rate = await asyncio.gather(
+            asyncio.to_thread(self._read_opt, "get_bluetooth_overview"),
+            asyncio.to_thread(self._read_opt, "get_pw_dump"),
+            asyncio.to_thread(self._read_opt, "get_stdin_snapshot"),
+            asyncio.to_thread(self._read_opt, "get_external_entry"),
+            asyncio.to_thread(self._read_opt, "get_external_helper_rate"),
+        )
+        try:
+            return resolve_active_source_native_rate(
+                mode, bluetooth_overview=bluetooth_overview if isinstance(bluetooth_overview, Mapping) else None,
+                pw_dump=pw_dump if isinstance(pw_dump, str) else None,
+                stdin_snapshot=stdin_snapshot if isinstance(stdin_snapshot, Mapping) else None,
+                external_entry=external_entry if isinstance(external_entry, Mapping) else None,
+                helper_sample_rate=helper_rate if isinstance(helper_rate, int) else None,
+            )
+        except Exception:
+            return None
 
     def sample_rate_policy_is_auto(self) -> bool:
         return samplerate.load_sample_rate_policy().get("mode") == "auto"
@@ -466,6 +516,9 @@ class PlaybackOrchestrator:
             )
             if isinstance(live_rate, int) and live_rate > 0:
                 source_rate = live_rate
+        line_native = await self._line_source_native_rate(policy)
+        if isinstance(line_native, int) and line_native > 0:
+            source_rate = line_native
         # Tier switches are injected centrally by the coordinator
         # (rate-to-tier is unambiguous per device profile), so every
         # rate-targeted operation funnels through one reprobe path.

@@ -49,6 +49,15 @@ class BluetoothInputDependencies:
     sync_peak_monitor_for_source_mode_state: SourceModePeakSync
     get_persisted_source_mode: Callable[[], str] | None = None
     get_source_transition_lock: Callable[[], asyncio.Lock] | None = None
+    # Native-rate follow under the auto policy (all optional; without them a
+    # mid-stream codec/device rate change keeps the previous graph rate).
+    # Blocking readers run in a worker thread by the monitor.
+    get_samplerate_status: Callable[[], dict[str, Any]] | None = None
+    get_pw_dump: Callable[[], str] | None = None
+    sample_rate_policy_is_auto: Callable[[], bool] | None = None
+    measurement_owns_graph: Callable[[], bool] | None = None
+    playback_transition_is_active: Callable[[], bool] | None = None
+    request_native_rate_follow: Callable[[str], Awaitable[None]] | None = None
 
 
 class BluetoothInputMonitor:
@@ -73,6 +82,10 @@ class BluetoothInputMonitor:
         self._last_reconnect_at: float | None = None
         # Observed once per monitor tick; the source overview reads confirmed().
         self.availability = UnavailabilityConfirmation()
+        # Stable native-rate signature for the auto-policy mid-stream follow
+        # (codec/device change while staying in bluetooth-input mode).
+        self._native_rate_signature: tuple[Any, ...] | None = None
+        self._native_rate_readbacks = 0
 
     async def _disconnect_source(self, source_name: str | None) -> None:
         normalized = (source_name or "").strip()
@@ -386,6 +399,70 @@ class BluetoothInputMonitor:
         await self._act(await asyncio.to_thread(get_audio_source_overview))
         await self.finish_bluetoothctl_actions()
 
+    def _reset_native_rate_follow(self) -> None:
+        self._native_rate_signature = None
+        self._native_rate_readbacks = 0
+
+    async def _maybe_follow_native_rate(self, overview: dict[str, Any]) -> None:
+        """Follow a stable mid-stream Bluetooth rate change under auto policy.
+
+        A codec or device change keeps bluetooth-input mode while the decoded
+        PCM rate moves (e.g. 48000 -> 44100). The source switch already
+        followed the rate at entry; this covers the change afterwards. Fires
+        only on two consecutive ticks with the same native/hardware mismatch,
+        never while a transition or measurement owns the graph, and never
+        fails the monitor tick.
+        """
+        try:
+            if self._deps.request_native_rate_follow is None:
+                return
+            if overview.get("mode") != SOURCE_MODE_BLUETOOTH_INPUT:
+                self._reset_native_rate_follow()
+                return
+            is_auto = self._deps.sample_rate_policy_is_auto
+            if is_auto is not None and not is_auto():
+                self._reset_native_rate_follow()
+                return
+            owns = self._deps.measurement_owns_graph
+            if owns is not None and owns():
+                return
+            active = self._deps.playback_transition_is_active
+            if active is not None and active():
+                return
+            bluetooth = overview.get("bluetooth") or {}
+            if bluetooth.get("state") != "streaming":
+                self._reset_native_rate_follow()
+                return
+            source_name = str(bluetooth.get("source_name") or "").strip()
+            if not source_name or self._deps.get_pw_dump is None or self._deps.get_samplerate_status is None:
+                self._reset_native_rate_follow()
+                return
+            dump = await asyncio.to_thread(self._deps.get_pw_dump)
+            from audio.source_native_rate import parse_bluetooth_node_rate
+            native = parse_bluetooth_node_rate(dump, source_name)
+            if not isinstance(native, int) or native <= 0:
+                self._reset_native_rate_follow()
+                return
+            status = await asyncio.to_thread(self._deps.get_samplerate_status)
+            if not isinstance(status, dict):
+                self._reset_native_rate_follow()
+                return
+            if status.get("active_rate") == native and status.get("force_rate") in {None, 0, native}:
+                self._reset_native_rate_follow()
+                return
+            signature = (source_name, native, status.get("active_rate"), status.get("force_rate"))
+            if signature == self._native_rate_signature:
+                self._native_rate_readbacks += 1
+            else:
+                self._native_rate_signature = signature
+                self._native_rate_readbacks = 1
+            if self._native_rate_readbacks < 2:
+                return
+            self._reset_native_rate_follow()
+            await self._deps.request_native_rate_follow("bluetooth-native-rate")
+        except Exception:
+            logger.debug("Bluetooth native-rate follow check failed", exc_info=True)
+
     async def _act(self, overview: dict[str, Any]) -> None:
         # The overview only falls back from Bluetooth input once this
         # monitor's observations confirm the loss (self.availability), so
@@ -398,6 +475,7 @@ class BluetoothInputMonitor:
                 return
             overview = await self.sync(overview)
             await self._deps.sync_peak_monitor_for_source_mode_state(overview)
+            await self._maybe_follow_native_rate(overview)
         elif self.input_source_name:
             await self.disable()
             await self._deps.sync_peak_monitor_for_source_mode_state(overview)
