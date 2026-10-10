@@ -36,11 +36,11 @@
         const bankLabel = (mod && typeof mod.roleLabel === 'function')
             ? mod.roleLabel(String(target.bank_id || 'global'))
             : String(target.bank_id || 'global');
-        // Surround Global is measured per speaker group together with the subs.
+        // Surround Global and grouped All Banks measure speakers with the subs.
         const groupLabel = target.global_group ? mod?.SURROUND_GROUP_LABELS?.[target.global_group] : '';
         // All Banks records the joint A/B side it was heard on.
         const sideLabel = target.bank_id === 'all' && target.active_side ? target.active_side : '';
-        const label = groupLabel ? `${bankLabel} · ${groupLabel}` : sideLabel ? `${bankLabel} · ${sideLabel}` : bankLabel;
+        const label = [bankLabel, sideLabel, groupLabel].filter(Boolean).join(' · ');
         const mode = String(target.mode || '');
         const stale = !!measurement.measurement_target_stale;
         return {
@@ -48,7 +48,7 @@
             mode,
             stale,
             title: mode
-                ? `${label} · ${(mod && typeof mod.modeLabel === 'function' ? mod.modeLabel(mode) : mode)} · measured ${groupLabel ? 'with the subs' : label === 'Global' ? 'whole system' : target.bank_id === 'all' ? 'whole system as listened' : 'area only'}`
+                ? `${label} · ${(mod && typeof mod.modeLabel === 'function' ? mod.modeLabel(mode) : mode)} · measured ${groupLabel ? 'with the subs' + (target.bank_id === 'all' ? ' as listened' : '') : label === 'Global' ? 'whole system' : target.bank_id === 'all' ? 'whole system as listened' : 'area only'}`
                 : label,
         };
     }

@@ -29,6 +29,8 @@ const throughBank = (id) => ({ id, measurement_target: { bank_id: 'rear', mode: 
 assert.equal(reasonFor({}), '');
 assert.equal(reasonFor({ current: [throughBank('a'), { id: 'legacy' }] }), '');
 assert.match(reasonFor({ current: [throughAll('a')] }), /measured through All Banks/);
+assert.match(reasonFor({ current: [{ id: 'grouped', measurement_target: {
+    bank_id: 'all', mode: 'surround', global_group: 'rear', active_side: 'B' } }] }), /measured through All Banks/);
 // A visible saved All Banks result blocks too; a hidden one does not.
 assert.match(reasonFor({ saved: [throughBank('b'), throughAll('c')], visible: { b: true, c: true } }), /All Banks/);
 assert.equal(reasonFor({ saved: [throughAll('c')], visible: { c: false } }), '');

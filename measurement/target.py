@@ -51,7 +51,7 @@ __all__ = [
 SCHEMA = "fxroute.measurement-target"
 VERSION = 1
 GLOBAL_BANK_ID = "global"
-# All Banks measures the whole system as currently listened: no bank is owned,
+# All Banks measures the system or a Surround group as currently listened: no bank is owned,
 # so a result can be saved and inspected but never committed as a correction.
 ALL_BANKS_ID = "all"
 # A host-reference or electrical capture taps the DSP ingress monitor, i.e.
@@ -119,9 +119,9 @@ def freeze_measurement_target(
 ) -> dict:
     """Freeze the measurement target from committed output state.
 
-    Surround Global is measured per speaker ``group`` (front, center, side,
-    rear): the target covers that group's speakers plus every sub, so the
-    sweep sees the speaker together with its bass-management share.
+    Surround Global requires a speaker ``group`` (front, center, side, rear).
+    All Banks optionally uses the same scope; without a group it measures
+    the whole system. A group covers its speakers plus every sub.
 
     ``fingerprint`` is the service-computed processing fingerprint for the
     same device and rate.  ``plan``, the compiled plan behind it, adds the
@@ -152,12 +152,14 @@ def freeze_measurement_target(
             raise ValueError("All Banks needs at least one routed speaker")
         definition = {**definition, "roles": list(topology.roles)}
     surround_global = mode == "surround" and bank_id == GLOBAL_BANK_ID
-    if group is not None and not surround_global:
-        raise ValueError("A speaker group applies to the Surround Global bank only")
-    if surround_global:
+    group_supported = mode == "surround" and bank_id in (GLOBAL_BANK_ID, ALL_BANKS_ID)
+    if group is not None and not group_supported:
+        raise ValueError("A speaker group applies to Surround Global or All Banks only")
+    grouped = surround_global or (group_supported and group is not None)
+    if grouped:
         if group not in routed_groups(topology.roles):
             raise ValueError(
-                "Surround Global is measured per speaker group; select a routed one "
+                "Surround measurement is per speaker group; select a routed one "
                 f"(got {group!r})")
         definition = {**definition, "roles": [
             role for role in topology.roles if role in SUB_ROLES or surround_group(role) == group]}
@@ -180,11 +182,12 @@ def freeze_measurement_target(
         "sample_rate_hz": sample_rate_hz,
         "channels": channels,
         "roles": list(topology.roles),
-        "measured_roles": (list(measured) if surround_global
+        "measured_roles": (list(measured) if grouped
                            else list(topology.roles) if bank_id in (GLOBAL_BANK_ID, ALL_BANKS_ID) else list(measured)),
         "reference_tap": REFERENCE_TAP_INGRESS,
     }
-    if surround_global:
+    if grouped:
+        # Keep the existing scope field for both Surround aggregate targets.
         target["global_group"] = group
     if all_banks:
         # The listened A/B side and preset of every bank; a mixed state has no single preset.

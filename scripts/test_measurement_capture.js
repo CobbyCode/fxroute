@@ -3,6 +3,7 @@
 // Capture start keeps payloads, state transitions and flush-before-sweep order.
 const assert = require('node:assert/strict');
 const capture = require('../static/measurement_capture.js');
+const outputState = require('../static/output_state.js');
 
 class FormStub {
     constructor() { this.fields = []; }
@@ -61,6 +62,31 @@ function makeHarness({ area = { sides: ['left', 'right', 'stereo'], bank_id: 'ma
 }
 
 async function main() {
+    // All Banks scopes come from the real catalog, not a prebuilt mock area.
+    {
+        const catalog = { active_mode: 'surround', modes: { surround: { selected_bank: 'all',
+            topology: { mode: 'surround', roles: ['main_l', 'main_r', 'center', 'rear_l', 'rear_r', 'sub1'],
+                sub_roles: ['sub1'] }, banks: {}, all_banks: { active_side: 'B' } } } };
+        for (const [group, side, expectedChannel] of [
+            ['rear', 'left', 'left'], ['rear', 'stereo', 'stereo'], ['rear', 'right', 'right'],
+            ['center', 'right', 'stereo'], ['', 'stereo', 'stereo'],
+        ]) {
+            const area = outputState.measurementArea(catalog, undefined, group);
+            const { state, calls } = makeHarness({ area });
+            state.measurement.sweepSide = side;
+            await capture.startHostMeasurement(1);
+            const form = calls.find(c => c[0] === 'fetch')[2];
+            assert.equal(form.get('measurement_bank'), 'all');
+            assert.equal(form.get('measurement_group'), group || undefined);
+            assert.equal(form.get('channel'), expectedChannel);
+        }
+        const { calls } = makeHarness({ area: outputState.measurementArea(catalog, undefined, 'rear') });
+        await capture.startLrRepeatMeasurement(1);
+        const form = calls.find(c => c[0] === 'fetch')[2];
+        assert.equal(form.get('measurement_bank'), 'all');
+        assert.equal(form.get('measurement_group'), 'rear');
+    }
+
     // 1. Single sweep flushes subwoofer saves before the POST and sends area/bank/ref/calibration.
     {
         const { state, calls } = makeHarness();

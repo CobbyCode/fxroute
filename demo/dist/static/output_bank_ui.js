@@ -204,8 +204,8 @@
     }
 
     function renderSweepGroupRow() {
-        /* Only Measure narrows Global to a speaker group, one chip per routed
-         * group; a single group leaves nothing to pick.
+        /* Measure narrows Global or All Banks to a configured speaker group.
+         * All Banks also keeps a Whole system chip.
          * Chips are only rebuilt when the routed groups change: replacing the
          * clicked button would read as an outside click and close the menu. */
         const row = deps.getElements().measurementSweepGroupRow;
@@ -213,7 +213,9 @@
         if (!row || !mod) return;
         const catalog = (deps.getState().outputSystem || {}).catalog;
         const measurement = deps.getState().measurement || {};
-        const choice = catalog ? mod.globalGroupChoice(catalog, measurement.globalGroup) : null;
+        const allBanks = catalog?.modes?.[catalog.active_mode]?.selected_bank === 'all';
+        const choice = catalog ? mod.globalGroupChoice(catalog,
+            allBanks ? measurement.allBanksGroup : measurement.globalGroup) : null;
         const shown = !!choice && choice.options.length > 1;
         row.classList.toggle('hidden', !shown);
         const groups = shown ? choice.options.map(option => option.id).join(',') : '';
@@ -234,8 +236,10 @@
 
     function selectEffectsGroup(group) {
         const measurement = deps.getState().measurement;
-        if (!measurement || measurement.globalGroup === group) return;
-        measurement.globalGroup = group;
+        const catalog = (deps.getState().outputSystem || {}).catalog;
+        const field = catalog?.modes?.[catalog.active_mode]?.selected_bank === 'all' ? 'allBanksGroup' : 'globalGroup';
+        if (!measurement || measurement[field] === group) return;
+        measurement[field] = group;
         renderEffectsBankSelector();
     }
 

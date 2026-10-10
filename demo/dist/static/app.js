@@ -770,6 +770,7 @@ let state = {
         selectedReferenceInputChannelRight: '',
         sweepSide: 'stereo',
         globalGroup: '',
+        allBanksGroup: '',
         cancelRequested: false,
         repeatJobActive: false,
         displaySmoothing: '1/6-oct',
@@ -3282,7 +3283,9 @@ function measurementAreaFromCatalog() {
     const mod = outputSystemModule();
     const catalog = (state.outputSystem || {}).catalog;
     if (!mod || !catalog || typeof mod.measurementArea !== 'function') return null;
-    return mod.measurementArea(catalog, undefined, state.measurement.globalGroup);
+    const allBanks = catalog.modes?.[catalog.active_mode]?.selected_bank === 'all';
+    return mod.measurementArea(catalog, undefined,
+        allBanks ? state.measurement.allBanksGroup : state.measurement.globalGroup);
 }
 
 function measurementRepeatBlockedReason() {

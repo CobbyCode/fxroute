@@ -82,9 +82,9 @@ class GlobalGroupTargetTests(unittest.TestCase):
             with self.subTest(group=group), self.assertRaisesRegex(ValueError, "per speaker group"):
                 freeze(state, group)
         stereo = validate_output_state(default_output_state())
-        with self.assertRaisesRegex(ValueError, "Surround Global bank only"):
+        with self.assertRaisesRegex(ValueError, "Surround Global or All Banks only"):
             freeze(stereo, "front")
-        with self.assertRaisesRegex(ValueError, "Surround Global bank only"):
+        with self.assertRaisesRegex(ValueError, "Surround Global or All Banks only"):
             freeze_measurement_target(state, bank_id="rear", output_key="A", channels=16,
                                       sample_rate_hz=48000, fingerprint="fp", group="rear")
         self.assertNotIn("global_group", freeze_measurement_target(

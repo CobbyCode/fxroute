@@ -92,10 +92,10 @@ class SurroundMeasurementTests(unittest.TestCase):
         return compile_processing_plan(state, output_key="device", channels=16, sample_rate_hz=48000,
                                        preset_loader=lambda _: {"chain": []})
 
-    def route(self, bank="all", *, layout=None, scope="active_chain", mode="surround", channel="stereo"):
+    def route(self, bank="all", *, layout=None, scope="active_chain", mode="surround", channel="stereo", group=None):
         layout = self.layout if layout is None else layout
         target = freeze_measurement_target(self.state, bank_id=bank, output_key="device", channels=16,
-                                          sample_rate_hz=48000, fingerprint="frozen-plan", plan=self.plan)
+                                          sample_rate_hz=48000, fingerprint="frozen-plan", plan=self.plan, group=group)
         mask = target_output_mask(target, roles=target["roles"]) if layout is self.layout else 0
         fixture = PipeWireFixture(layout, mode, mask)
         routing = MeasurementRouting(fixture)
@@ -151,6 +151,26 @@ class SurroundMeasurementTests(unittest.TestCase):
                                     (f"{PLAY}:output_FR", "fxroute_dsp:input_6"),
                                     (f"{PLAY}:output_FL", "fxroute_dsp:input_7"),
                                     (f"{PLAY}:output_FR", "fxroute_dsp:input_8")})
+
+    def test_all_banks_group_sweeps_excite_only_the_selected_positions(self):
+        for group, extra in (
+                ("front", set()),
+                ("center", {(f"{PLAY}:output_FL", "fxroute_dsp:input_3")}),
+                ("side", {(f"{PLAY}:output_FL", "fxroute_dsp:input_5"),
+                          (f"{PLAY}:output_FR", "fxroute_dsp:input_6")}),
+                ("rear", {(f"{PLAY}:output_FL", "fxroute_dsp:input_7"),
+                          (f"{PLAY}:output_FR", "fxroute_dsp:input_8")})):
+            with self.subTest(group=group):
+                fixture, routing, route = self.route(group=group)
+                self.link(fixture, routing, route)
+                self.assert_links(fixture, extra)
+
+    def test_all_banks_center_group_keeps_the_requested_reference_side(self):
+        for channel, side in (("left", "FL"), ("right", "FR")):
+            with self.subTest(channel=channel):
+                fixture, routing, route = self.route(group="center", channel=channel)
+                self.link(fixture, routing, route)
+                self.assert_links(fixture, {(f"{PLAY}:output_{side}", "fxroute_dsp:input_3")})
 
     def test_fold_down_sends_add_no_sweep_excitation(self):
         roles = ["main_l", "main_r", "rear_l", "rear_r", "sub1", "sub2"]

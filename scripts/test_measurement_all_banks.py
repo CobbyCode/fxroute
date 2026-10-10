@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""All Banks measures the whole system as listened and is never importable.
+"""All Banks measures the system or a Surround group as listened, without import.
 
-The frozen target covers every routed speaker with nothing muted, records each
-bank's listened preset and the joint A/B side, and the commit gate refuses it
-with its own message; the sweep itself needs no mask.
+Whole-system targets mute nothing; group targets keep only their speakers and
+subs audible. Both record every bank's listened preset and the joint A/B side,
+can be saved, and are rejected by the filter commit gate.
 """
 
 import sys
@@ -20,7 +20,7 @@ from audio.output_state import (default_output_state, set_bank_preset, set_mode_
 from dsp.processing_plan import compile_processing_plan
 from measurement.store import MeasurementStore
 from measurement.target import (freeze_measurement_target, require_commit_target, target_input_mask,
-                                target_output_mask, targets_compatible)
+                                target_output_mask, targets_compatible, sweep_output_masks)
 
 SURROUND = ["main_l", "main_r", "center", "rear_l", "rear_r", "sub1", "sub2"]
 
@@ -40,6 +40,72 @@ def plan_for(state):
 
 
 class AllBanksTargetTests(unittest.TestCase):
+    def test_group_result_can_be_saved_and_reloaded_without_importing_a_filter(self):
+        target = freeze(state_for("surround", SURROUND), "all", group="rear")
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                "os.environ", {"XDG_CONFIG_HOME": directory, "XDG_STATE_HOME": directory}):
+            store = MeasurementStore(home=Path(directory))
+            saved = store.save_measurement({"id": "all-group-save", "name": "Rear as listened", "channel": "left",
+                "measurement_target": target, "traces": [{"kind": "sweep-response", "role": "trusted",
+                    "points": [[20, 0], [100, 1], [1000, 0], [10000, -1]]}]})
+            loaded = store.get_measurement(saved["id"])
+            self.assertEqual(loaded["measurement_target"], target)
+            self.assertEqual(loaded["channel"], "left")
+            with self.assertRaisesRegex(ValueError, "through All Banks"):
+                require_commit_target(loaded["measurement_target"], target, mode="surround", bank_id="rear")
+
+    def test_group_targets_cover_only_the_group_and_subs(self):
+        roles = ["main_l", "main_r", "center", "side_l", "side_r", "rear_l", "rear_r", "sub1", "sub2"]
+        state = state_for("surround", roles)
+        for group, measured, mask, input_mask in (
+                ("front", ["main_l", "main_r", "sub1", "sub2"], 0b001111100, 0),
+                ("center", ["center", "sub1", "sub2"], 0b001111011, 3),
+                ("side", ["side_l", "side_r", "sub1", "sub2"], 0b001100111, 3),
+                ("rear", ["rear_l", "rear_r", "sub1", "sub2"], 0b000011111, 3)):
+            with self.subTest(group=group):
+                target = freeze(state, "all", group=group, plan=plan_for(state))
+                self.assertEqual(target["bank_id"], "all")
+                self.assertEqual(target["global_group"], group)
+                self.assertEqual(target["measured_roles"], measured)
+                self.assertEqual(target_output_mask(target, roles=roles), mask)
+                self.assertEqual(target_input_mask(target), input_mask)
+                self.assertNotIn("commit_fingerprint", target)
+                with self.assertRaisesRegex(ValueError, "through All Banks"):
+                    require_commit_target(target, target, mode="surround", bank_id="global", group=group)
+
+    def test_group_repeat_masks_keep_subs_on_both_sides(self):
+        target = freeze(state_for("surround", SURROUND), "all", group="rear")
+        self.assertEqual(sweep_output_masks(target, roles=SURROUND), {"left": 0b0010111, "right": 0b0001111})
+        center = freeze(state_for("surround", SURROUND), "all", group="center")
+        self.assertEqual(sweep_output_masks(center, roles=SURROUND), {"left": 0b0011011, "right": 0b0011011})
+
+    def test_group_selection_preserves_every_banks_listened_state(self):
+        state = state_for("surround", SURROUND)
+        state = set_bank_preset(state, "surround", "main", preset_b="Front B", active_side="B")
+        grouped = freeze(state, "all", group="rear")
+        whole = freeze(state, "all")
+        for field in ("active_side", "preset", "bank_presets"):
+            self.assertEqual(grouped[field], whole[field])
+        self.assertEqual(grouped["bank_presets"]["main_l"], "Front B")
+        self.assertEqual(grouped["bank_presets"]["rear_l"], "Neutral")
+
+    def test_unrouted_and_non_surround_group_requests_are_rejected(self):
+        state = state_for("surround", SURROUND)
+        for group in ("side", "lfe", "bogus"):
+            with self.subTest(group=group), self.assertRaisesRegex(ValueError, "routed"):
+                freeze(state, "all", group=group)
+        for mode in ("stereo", "stereo-sub"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "Surround"):
+                freeze(state_for(mode, ["main_l", "main_r"]), "all", group="front")
+
+    def test_groups_and_whole_system_are_distinct_identities(self):
+        state = state_for("surround", SURROUND)
+        rear = freeze(state, "all", group="rear")
+        self.assertFalse(targets_compatible(rear, freeze(state, "all")))
+        self.assertFalse(targets_compatible(rear, freeze(state, "all", group="front")))
+        self.assertFalse(targets_compatible(rear, freeze(state, "global", group="rear")))
+        self.assertTrue(targets_compatible(rear, freeze(state, "all", group="rear")))
+
     def test_every_routed_speaker_is_measured_and_nothing_is_muted(self):
         for mode, roles in (("surround", SURROUND), ("stereo-sub", ["main_l", "main_r", "sub_l", "sub_r"])):
             with self.subTest(mode=mode):
@@ -81,6 +147,48 @@ class AllBanksTargetTests(unittest.TestCase):
 
 
 class AllBanksJobTests(unittest.IsolatedAsyncioTestCase):
+    async def test_group_jobs_apply_and_clear_masks_even_on_failure(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory, patch.dict(
+                    "os.environ", {"XDG_CONFIG_HOME": directory, "XDG_STATE_HOME": directory}):
+                state = state_for("surround", SURROUND)
+                events = []
+                store = MeasurementStore(home=Path(directory))
+
+                async def apply(mask, **options):
+                    events.append(("apply", mask, options))
+
+                async def clear(mask, **options):
+                    events.append(("clear", mask, options))
+
+                def capture(job):
+                    if fail:
+                        raise RuntimeError("capture failed")
+                    return {"message": "Measurement finished."}
+
+                store.output_mask_apply, store.output_mask_clear = apply, clear
+                store.measurement_target_provider = lambda bank, rate, group=None: freeze(
+                    state, bank, group=group)
+                store._execute_capture_job = capture
+
+                async def setup(**kwargs):
+                    now = store._utc_now()
+                    return {"job": {"id": "measurement-job-all-group", "status": "queued", "created_at": now,
+                                    "updated_at": now, "input": {"measurement_sample_rate": 48000, "id": "mic"},
+                                    "input_channels": {"mic": 1}, "measurement_scope": "active_chain", "scope_note": "",
+                                    "calibration": {"filename": "", "applied": False}, "result": None, "error": None},
+                            "channel": kwargs.get("channel", "stereo")}
+
+                store._prepare_measurement_job_setup = setup
+                await store.start_measurement(input_id="mic", channel="left", measurement_bank="all",
+                                              measurement_group="rear")
+                await store._job_tasks["measurement-job-all-group"]
+                job = store.get_job("measurement-job-all-group")
+                self.assertEqual(job["status"], "failed" if fail else "completed")
+                self.assertEqual(job["measurement_target"]["global_group"], "rear")
+                self.assertEqual(events, [("apply", 0b111, {"input_mask": 3}),
+                                          ("clear", 0b111, {"input_mask": 3})])
+
     async def test_the_job_freezes_the_whole_system_and_masks_nothing(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
                 "os.environ", {"XDG_CONFIG_HOME": directory, "XDG_STATE_HOME": directory}):

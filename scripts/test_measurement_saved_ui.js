@@ -57,6 +57,13 @@ assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: { schema: 'f
 });
 assert.equal(savedUi.measurementAreaBadge({ measurement_target: { schema: 'fxroute.measurement-target',
     mode: 'surround', bank_id: 'all', active_side: null } }).label, 'All Banks');
+assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: { ...groupTarget,
+    bank_id: 'all', active_side: 'B' } }), {
+    label: 'All Banks · B · Rear L/R', mode: 'surround', stale: false,
+    title: 'All Banks · B · Rear L/R · Surround · measured with the subs as listened',
+});
+assert.equal(savedUi.measurementAreaBadge({ measurement_target: { ...groupTarget,
+    bank_id: 'all', active_side: null } }).label, 'All Banks · Rear L/R');
 savedUi.renderMeasurementPanelSavedListSection({ measurementState: state.measurement, measurements: saved });
 let html = elements.measurementList.innerHTML;
 assert.match(html, /<details class="measurement-saved-group" open>/);
