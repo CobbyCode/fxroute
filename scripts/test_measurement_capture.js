@@ -77,7 +77,7 @@ async function main() {
             await capture.startHostMeasurement(1);
             const form = calls.find(c => c[0] === 'fetch')[2];
             assert.equal(form.get('measurement_bank'), 'all');
-            assert.equal(form.get('measurement_group'), group || undefined);
+            assert.equal(form.get('measurement_group'), group || 'front');
             assert.equal(form.get('channel'), expectedChannel);
         }
         const { calls } = makeHarness({ area: outputState.measurementArea(catalog, undefined, 'rear') });

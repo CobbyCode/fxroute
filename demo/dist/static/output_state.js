@@ -246,7 +246,7 @@ function resolveGlobalGroup(modeConfig, group) {
     return options.find(option => option.id === group) || options[0] || null;
 }
 
-// Global measures a routed group; All Banks also offers the whole system.
+// Global and All Banks use the same routed speaker-group selection.
 // Null in every concrete bank and other output mode.
 function globalGroupChoice(catalog, group) {
     const mode = catalog && catalog.active_mode;
@@ -254,11 +254,6 @@ function globalGroupChoice(catalog, group) {
     const selected = String(modeConfig?.selected_bank || 'global');
     if (mode !== 'surround' || !['global', 'all'].includes(selected)) return null;
     const options = globalGroupOptions(modeConfig);
-    if (selected === 'all') {
-        if (!(modeConfig.topology?.roles || []).length) return null;
-        return { options: [{ id: '', short: 'Whole system', label: 'Whole system as listened' }, ...options],
-            selected: options.find(option => option.id === group)?.id || '' };
-    }
     return options.length ? { options, selected: resolveGlobalGroup(modeConfig, group).id } : null;
 }
 
@@ -273,8 +268,8 @@ function measurementArea(catalog, bankId, group) {
     const modeConfig = (catalog && catalog.modes && catalog.modes[mode]) || {};
     const selected = String(bankId || modeConfig.selected_bank || 'global');
     const bank = modeConfig.banks?.[selected];
-    const groupOption = mode !== 'surround' ? null : selected === 'global' ? resolveGlobalGroup(modeConfig, group)
-        : selected === 'all' ? globalGroupOptions(modeConfig).find(option => option.id === group) : null;
+    const groupedBank = mode === 'surround' && ['global', 'all'].includes(selected);
+    const groupOption = groupedBank ? resolveGlobalGroup(modeConfig, group) : null;
     // All Banks measures the system or a group as currently listened (every bank on
     // its A/B side). It owns no bank, so a result can be saved but not imported.
     const allBanks = selected === 'all';
@@ -283,7 +278,7 @@ function measurementArea(catalog, bankId, group) {
     const aggregateLabel = allBanks ? `All Banks${listened ? ` · ${listened}` : ''}` : 'Global';
     const label = groupOption ? `${aggregateLabel} · ${groupOption.label}`
         : allBanks ? aggregateLabel : bank?.label || roleLabel(selected);
-    const available = !(allBanks && !routed) && !(mode === 'surround' && selected === 'global' && !groupOption);
+    const available = !(allBanks && !routed) && !(groupedBank && !groupOption);
     const channel_mode = groupOption ? groupOption.channel_mode : bank?.channel_mode || 'stereo';
     // A stereo area (an L/R pair bank or Global) can be swept per side or
     // together; a mono area has no sides and always sweeps both inputs at
@@ -297,7 +292,7 @@ function measurementArea(catalog, bankId, group) {
         : repeat_supported ? '' : channel_mode === 'stereo'
             ? `${label}: use a single sweep or Auto Sub Optimize.` : `${label} is a mono target. Use a single sweep.`;
     const groupNote = groupOption
-        ? 'Only selected speakers and subs play.' + (allBanks ? ' Every bank stays on its A/B side; not importable.' : '')
+        ? 'Only selected speakers and subs play.'
         : allBanks ? 'Whole system as listened (every bank on its A/B side); not importable.' : '';
     return {
         bank_id: selected,

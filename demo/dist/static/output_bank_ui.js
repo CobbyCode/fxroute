@@ -205,7 +205,6 @@
 
     function renderSweepGroupRow() {
         /* Measure narrows Global or All Banks to a configured speaker group.
-         * All Banks also keeps a Whole system chip.
          * Chips are only rebuilt when the routed groups change: replacing the
          * clicked button would read as an outside click and close the menu. */
         const row = deps.getElements().measurementSweepGroupRow;

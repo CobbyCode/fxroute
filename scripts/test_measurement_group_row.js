@@ -120,9 +120,10 @@ function chips(row) {
     assert.deepEqual(chips(row).filter(chip => chip.pressed).map(chip => chip.id), ['front']);
 }
 
-// Nothing to choose, or not Surround Global: the row is hidden and empty.
+// Nothing to choose, or a concrete bank: the row is hidden and empty.
 for (const [label, catalog] of [
     ['one routed group', catalogFor({ roles: ['main_l', 'main_r', 'sub1'] })],
+    ['one routed All Banks group', catalogFor({ roles: ['main_l', 'main_r', 'sub1'], selectedBank: 'all' })],
     ['area bank selected', catalogFor({ roles: ALL_ROLES, selectedBank: 'rear' })],
     ['other output mode', catalogFor({ roles: ['main_l', 'main_r', 'sub_l', 'sub_r'], mode: 'stereo-sub' })],
     ['no catalog yet', null],
@@ -134,15 +135,15 @@ for (const [label, catalog] of [
     assert.equal(row.innerHTML, '', label);
 }
 
-// All Banks adds Whole system without changing the configured group chips.
+// All Banks uses the same configured group chips and scope text as Global.
 {
     const { row, state, elements } = setup(catalogFor({ roles: ALL_ROLES, selectedBank: 'all' }), { globalGroup: 'rear' });
     elements.effectsBankSelect = { innerHTML: '', value: '', closest: () => ({ classList: classList() }) };
     BankUI.renderSweepGroupRow();
     assert.equal(row.classList.contains('hidden'), false);
     assert.deepEqual(chips(row).map(chip => [chip.id, chip.text]),
-        [['', 'Whole system'], ['front', 'Front'], ['center', 'Center'], ['rear', 'Rear']]);
-    assert.deepEqual(chips(row).filter(chip => chip.pressed).map(chip => chip.id), ['']);
+        [['front', 'Front'], ['center', 'Center'], ['rear', 'Rear']]);
+    assert.deepEqual(chips(row).filter(chip => chip.pressed).map(chip => chip.id), ['front']);
     const before = [...row.buttons];
     BankUI.selectEffectsGroup('front');
     assert.equal(state.measurement.allBanksGroup, 'front');
@@ -154,25 +155,43 @@ for (const [label, catalog] of [
     assert.deepEqual([area.bank_id, area.group, area.label, area.importable],
         ['all', 'front', 'All Banks · B · Front L/R + Sub', false]);
     assert.equal(area.polarity_supported, false);
-    assert.match(area.note, /A\/B.*not importable/);
+    assert.equal(area.note, 'Only selected speakers and subs play.');
     BankUI.selectEffectsGroup('');
-    assert.deepEqual(chips(row).filter(chip => chip.pressed).map(chip => chip.id), ['']);
+    assert.deepEqual(chips(row).filter(chip => chip.pressed).map(chip => chip.id), ['front']);
     assert.equal(state.measurement.globalGroup, 'rear');
-    assert.equal(OutputState.measurementArea(state.outputSystem.catalog, undefined, '').group, undefined);
+    assert.equal(OutputState.measurementArea(state.outputSystem.catalog, undefined, '').group, 'front');
 }
 
-// Whole system stays available even with one group; vanished groups fall back to it.
+// Like Global, one group needs no row and vanished groups fall back to the first.
 {
     const { row, state } = setup(catalogFor({ roles: ['main_l', 'main_r', 'sub1'], selectedBank: 'all' }),
         { allBanksGroup: 'rear' });
     BankUI.renderSweepGroupRow();
-    assert.deepEqual(chips(row).map(chip => chip.id), ['', 'front']);
-    assert.deepEqual(chips(row).filter(chip => chip.pressed).map(chip => chip.id), ['']);
-    assert.equal(OutputState.measurementArea(state.outputSystem.catalog, undefined, 'rear').group, undefined);
+    assert.equal(row.classList.contains('hidden'), true);
+    assert.deepEqual(chips(row), []);
+    assert.equal(OutputState.measurementArea(state.outputSystem.catalog, undefined, 'rear').group, 'front');
     state.outputSystem.catalog = catalogFor({ roles: [], selectedBank: 'all' });
     BankUI.renderSweepGroupRow();
     assert.equal(row.classList.contains('hidden'), true);
     assert.equal(OutputState.measurementArea(state.outputSystem.catalog).available, false);
+    state.outputSystem.catalog = catalogFor({ roles: ['sub1'], selectedBank: 'all' });
+    assert.equal(OutputState.measurementArea(state.outputSystem.catalog).available, false, 'a group needs a speaker');
+}
+
+// Both banks expose the same group defaults, fallbacks, sides and descriptions.
+for (const roles of [ALL_ROLES, ['center', 'sub1'], ['side_l', 'side_r', 'sub1'],
+    ['rear_l', 'rear_r'], ['left_low', 'right_low', 'rear_l', 'rear_r', 'sub1']]) {
+    for (const wanted of [undefined, '', 'front', 'center', 'side', 'rear', 'missing']) {
+        const catalog = catalogFor({ roles, selectedBank: 'all' });
+        const all = OutputState.measurementArea(catalog, undefined, wanted);
+        const choice = OutputState.globalGroupChoice(catalog, wanted);
+        catalog.modes.surround.selected_bank = 'global';
+        const global = OutputState.measurementArea(catalog, undefined, wanted);
+        assert.deepEqual(choice, OutputState.globalGroupChoice(catalog, wanted));
+        for (const field of ['group', 'channel', 'channel_mode', 'available', 'sides', 'side_labels', 'note', 'repeat_supported']) {
+            assert.deepEqual(all[field], global[field], field);
+        }
+    }
 }
 
 // While a sweep starts the chips are disabled, like the side chips.
@@ -286,7 +305,7 @@ function syncSideRow(area, sweepSide = 'stereo') {
     const state = { outputSystem: { catalog }, measurement: { globalGroup: 'rear', allBanksGroup: '' } };
     const area = () => new Function('state', 'outputSystemModule', `${match[0]}; return measurementAreaFromCatalog();`)(
         state, () => OutputState);
-    assert.equal(area().group, undefined);
+    assert.equal(area().group, 'front');
     state.measurement.allBanksGroup = 'center';
     assert.equal(area().group, 'center');
     catalog.modes.surround.selected_bank = 'global';
