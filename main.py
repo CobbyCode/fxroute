@@ -561,6 +561,7 @@ from playback.spotify_watch import (
 from playback.qobuz_watch import (
     QobuzPlayerWatch,
     QobuzWatchDependencies,
+    read_claim_state as read_qobuz_claim_state,
 )
 from playback.qbzd_volume_watch import (
     QobuzVolumeWatch,
@@ -1027,7 +1028,8 @@ qobuz_player_watch = QobuzPlayerWatch(QobuzWatchDependencies(
     get_playback_state=lambda: playback_state,
     broadcast_qobuz_state=lambda *args, **kwargs: broadcast_qobuz_state(*args, **kwargs),
     is_qobuz_playback_active=lambda *args, **kwargs: _is_qobuz_playback_active(*args, **kwargs),
-    claim_qobuz_playback=lambda *args, **kwargs: _claim_qobuz_playback(*args, **kwargs),
+    claim_qobuz_playback=lambda detail: _claim_qobuz_playback(detail, observed_playing=True),
+    read_qobuz_state=read_qobuz_claim_state,
 ))
 qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "qobuz" and connect_state.is_device_active() is not False,
@@ -2435,24 +2437,31 @@ def _qobuz_target_rate(qobuz_state: Mapping[str, Any]) -> int:
 _LINE_INPUT_MODES = frozenset({SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT, SOURCE_MODE_STDIN_INPUT})
 
 
-async def _leave_line_input_for_streaming_claim() -> None:
-    """Show App playback once a Connect renderer owns playback.
+async def _leave_line_input_for_streaming_claim() -> bool:
+    """Retire line routing before a claim; the caller holds the source lock."""
+    selection = samplerate._load_audio_source_selection()
+    if selection.get("mode") not in _LINE_INPUT_MODES:
+        return False
+    logger.info("Connect claim leaving line input: mode=%s owner=%s",
+                selection.get("mode"), playback_state.current_playback_owner)
+    await source_transitions.apply_selection(SOURCE_MODE_APP_PLAYBACK, None)
+    return True
 
-    A line input (Bluetooth, external, STDIN) that stays selected keeps the
-    footer on that input while the streamed source plays. The change runs under
-    the source-transition lock and never pauses the renderer: App playback is
-    not a line source.
-    """
+
+async def _claim_qobuz_playback(detail: str = "qobuz-claim", *, observed_playing: bool = False) -> dict:
+    intent = playback_state.playback_intent_generation
+    source_intent = playback_state.capture_source_intent()
     try:
-        await source_transitions.save_selection_if(
-            lambda selection: (SOURCE_MODE_APP_PLAYBACK, None)
-            if selection.get("mode") in _LINE_INPUT_MODES else None
-        )
-    except Exception as exc:  # noqa: BLE001 - the owner claim is already committed
-        logger.warning("Streaming claim could not return to App playback: %s", exc)
+        async with _source_transition_lock():
+            if (intent != playback_state.playback_intent_generation
+                    or not playback_state.source_intent_is_current(source_intent)):
+                return await get_qobuz_ui_state()
+            return await finish_then_cancel(_claim_qobuz_playback_locked(detail, observed_playing=observed_playing), what="Qobuz Connect claim")
+    finally:
+        await bluetooth_input.finish_bluetoothctl_actions()
 
 
-async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
+async def _claim_qobuz_playback_locked(detail: str, *, observed_playing: bool = False) -> dict:
     """Claim FXRoute playback ownership for an already-playing qbzd renderer.
 
     Runs a single Coordinator transition that pauses the previous source(s),
@@ -2463,14 +2472,17 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
     the read-only derived owner is only a fallback for display and must never
     suppress the commit that makes the owner persist across a pause.
     """
+    qobuz_state = await get_qobuz_ui_state()
+    # A line monitor may pause the observed renderer while the claim waits
+    # for its source lock. Source/intent guards above reject manual changes.
+    line_takeover = observed_playing and playback_state.source_mode in _LINE_INPUT_MODES
+    if not _is_qobuz_playback_active(qobuz_state) and not line_takeover:
+        return qobuz_state
+    left_line = await _leave_line_input_for_streaming_claim()
     claim_intent_generation = playback_state.playback_intent_generation
     claim_source_intent = playback_state.capture_source_intent()
-    if playback_state.current_playback_owner == "qobuz":
-        await _leave_line_input_for_streaming_claim()
+    if playback_state.current_playback_owner == "qobuz" and not left_line:
         return await get_qobuz_ui_state()
-    qobuz_state = await get_qobuz_ui_state()
-    if not _is_qobuz_playback_active(qobuz_state):
-        return qobuz_state
 
     async def skip_if_owner_committed() -> bool:
         # Same re-validation contract as the Spotify claim: the guard above
@@ -2478,14 +2490,14 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         # FXRoute-initiated Qobuz start must be re-checked inside the lock.
         # A source switch invalidates the claim the same way.
         if (
-            playback_state.current_playback_owner == "qobuz"
+            (playback_state.current_playback_owner == "qobuz" and not left_line)
             or playback_state.playback_intent_generation != claim_intent_generation
             or not playback_state.source_intent_is_current(claim_source_intent)
         ):
             return True
         # As for Spotify: the Playing edge may come from a failed transition's
         # own qbzd start, whose cleanup paused qbzd again.
-        return not _is_qobuz_playback_active(await get_qobuz_ui_state())
+        return not left_line and not _is_qobuz_playback_active(await get_qobuz_ui_state())
 
     track = _qobuz_target_track_from_state(qobuz_state)
     target_rate = _qobuz_target_rate(qobuz_state)
@@ -2515,12 +2527,24 @@ async def _claim_qobuz_playback(detail: str = "qobuz-claim") -> dict:
         return await get_qobuz_ui_state()
     await _publish_committed_playback_owner("qobuz", getattr(result, "transition_id", None))
     connect_state.set_device_active(True)
-    await _leave_line_input_for_streaming_claim()
     await _qobuz_pin_unity()
     return await broadcast_qobuz_state()
 
 
 async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
+    intent = playback_state.playback_intent_generation
+    source_intent = playback_state.capture_source_intent()
+    try:
+        async with _source_transition_lock():
+            if (intent != playback_state.playback_intent_generation
+                    or not playback_state.source_intent_is_current(source_intent)):
+                return await get_spotify_ui_state()
+            return await finish_then_cancel(_claim_spotify_playback_locked(detail), what="Spotify Connect claim")
+    finally:
+        await bluetooth_input.finish_bluetoothctl_actions()
+
+
+async def _claim_spotify_playback_locked(detail: str) -> dict:
     """Claim FXRoute playback ownership for an already-playing Spotify renderer.
 
     Triggered by the MPRIS watcher on a real Playing event (Spotify Connect
@@ -2531,14 +2555,14 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
     suppress the commit that makes the owner persist across a pause.
     """
     spotifyd_volume_watch.reset_session()
-    claim_intent_generation = playback_state.playback_intent_generation
-    claim_source_intent = playback_state.capture_source_intent()
-    if playback_state.current_playback_owner == "spotify":
-        await _leave_line_input_for_streaming_claim()
-        return await get_spotify_ui_state()
     data = await get_spotify_ui_state()
     if not _is_spotify_playback_active(data):
         return data
+    left_line = await _leave_line_input_for_streaming_claim()
+    claim_intent_generation = playback_state.playback_intent_generation
+    claim_source_intent = playback_state.capture_source_intent()
+    if playback_state.current_playback_owner == "spotify" and not left_line:
+        return await get_spotify_ui_state()
 
     async def skip_if_owner_committed() -> bool:
         # The guard above runs before the transition lock, so a claim queued
@@ -2548,7 +2572,7 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
         # owner synchronously before the queued claim can acquire it.
         # A source switch invalidates the claim the same way.
         if (
-            playback_state.current_playback_owner == "spotify"
+            (playback_state.current_playback_owner == "spotify" and not left_line)
             or playback_state.playback_intent_generation != claim_intent_generation
             or not playback_state.source_intent_is_current(claim_source_intent)
         ):
@@ -2557,7 +2581,7 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
         # transition's own Spotify start, whose cleanup paused Spotify again.
         # Only a renderer that still plays is claimed; otherwise every failed
         # claim would queue the next one.
-        return not _is_spotify_playback_active(await get_spotify_ui_state())
+        return not left_line and not _is_spotify_playback_active(await get_spotify_ui_state())
 
     target_rate = _coordinator_target_rate("spotify")
     rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
@@ -2583,7 +2607,6 @@ async def _claim_spotify_playback(detail: str = "spotify-claim") -> dict:
     if not playback_state.source_intent_is_current(claim_source_intent):
         return await get_spotify_ui_state()
     await _publish_committed_playback_owner("spotify", getattr(result, "transition_id", None))
-    await _leave_line_input_for_streaming_claim()
     return await broadcast_spotify_state()
 
 
@@ -5890,11 +5913,17 @@ async def _set_surround_carrier_owned(enabled: bool, card: int | None = None) ->
         if card is not None:
             await _select_surround_clock(card, digital=True)
     elif _surround_carrier_owned:
-        # Unmanaged first, so the clock guard cannot take the clock back.
+        # Retire ownership before any await, including the clock guard window.
         released_card, _surround_clock_card = _surround_clock_card, None
-        await _select_surround_clock(released_card, digital=False)
-        await _transition_sample_rate_policy(samplerate.load_sample_rate_policy(), detail="digital-input-clock-release")
         _surround_carrier_owned = False
+        try:
+            await _select_surround_clock(released_card, digital=False)
+            await _transition_sample_rate_policy(samplerate.load_sample_rate_policy(), detail="digital-input-clock-release")
+        except BaseException:
+            _surround_carrier_owned = True
+            _surround_clock_card = released_card
+            await _select_surround_clock(released_card, digital=True)
+            raise
 
 
 def _input_digital_card(overview: dict) -> int | None:

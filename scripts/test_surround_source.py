@@ -147,6 +147,35 @@ class SourceOrderTests(unittest.IsolatedAsyncioTestCase):
         await native.exit_active_measurement(previous)
         self.assertEqual(len([a for a, _ in links if a.startswith("fxroute_surround_input:")]), 8)
 
+    async def test_clock_release_retires_owner_before_rate_restore_awaits(self):
+        import main
+        seen = []
+
+        async def restore(policy, **kwargs):
+            seen.append(main._wanted_digital_clock(3))
+            self.assertFalse(main._surround_carrier_owned)
+
+        with patch.object(main, "_surround_carrier_owned", True), patch.object(
+            main, "_surround_clock_card", 3
+        ), patch.object(main, "get_samplerate_status", return_value={"active_rate": 48000}), patch.object(
+            main, "_select_surround_clock", AsyncMock()
+        ), patch.object(main, "_transition_sample_rate_policy", side_effect=restore):
+            await main._set_surround_carrier_owned(False)
+            self.assertFalse(main._surround_carrier_owned)
+        self.assertEqual(seen, [False], "clock guard must not reacquire a released carrier")
+
+    async def test_clock_release_failure_restores_carrier_ownership(self):
+        import main
+        with patch.object(main, "_surround_carrier_owned", True), patch.object(
+            main, "_surround_clock_card", 3
+        ), patch.object(main, "get_samplerate_status", return_value={"active_rate": 48000}), patch.object(
+            main, "_select_surround_clock", AsyncMock()
+        ), patch.object(main, "_transition_sample_rate_policy", AsyncMock(side_effect=RuntimeError("rate failed"))):
+            with self.assertRaisesRegex(RuntimeError, "rate failed"):
+                await main._set_surround_carrier_owned(False)
+            self.assertTrue(main._surround_carrier_owned)
+            self.assertEqual(main._surround_clock_card, 3)
+
     async def test_carrier_rate_override_does_not_persist_the_playback_policy(self):
         class Adapter(_RuntimeSourceMixin, _RuntimeOutputModeMixin):
             pass

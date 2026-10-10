@@ -227,6 +227,10 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
 
         class _Deps:
             @staticmethod
+            def player_is_running():
+                return False
+
+            @staticmethod
             def get_samplerate_status():
                 seen.append(("status", threading.current_thread() is MAIN_THREAD))
                 return {"active_rate": 44100, "force_rate": 44100}

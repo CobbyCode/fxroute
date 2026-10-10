@@ -57,7 +57,7 @@ async def _run_until(watch, calls, *, claims_count=None, passes=None):
             return False
         return True
 
-    with mock.patch.object(qobuz_watch, "POLL_INTERVAL_SECONDS", 0.0):
+    with mock.patch.object(qobuz_watch, "POLL_INTERVAL_SECONDS", 0.0), mock.patch.object(qobuz_watch, "LINE_POLL_INTERVAL_SECONDS", 0.0):
         while not done() and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0)
         task.cancel()
@@ -65,6 +65,7 @@ async def _run_until(watch, calls, *, claims_count=None, passes=None):
             await task
         except asyncio.CancelledError:
             pass
+        await watch.stop()
 
 
 class QobuzClaimWatcherTests(unittest.IsolatedAsyncioTestCase):
@@ -120,6 +121,92 @@ class QobuzClaimWatcherTests(unittest.IsolatedAsyncioTestCase):
         # The four states were fully consumed; the duplicate Playing pass did
         # not produce an extra claim.
         self.assertGreaterEqual(calls["seen"], 4)
+
+    async def test_source_switch_reclaims_when_pause_was_between_polls(self):
+        from types import SimpleNamespace
+        playback = SimpleNamespace(source_generation=0)
+        watch, calls = make_watch([{"available": True, "status": "Playing"}])
+        watch._deps.get_playback_state = lambda: playback
+        original = watch._deps.broadcast_qobuz_state
+
+        async def broadcast():
+            if calls["seen"] == 1:
+                playback.source_generation += 1
+            return await original()
+
+        watch._deps.broadcast_qobuz_state = broadcast
+        await _run_until(watch, calls, passes=3)
+        self.assertEqual(len(calls["claims"]), 2, "a retained Playing sample must not hide a new source takeover")
+
+    async def test_playing_line_selection_retries_takeover_without_visible_edge(self):
+        from types import SimpleNamespace
+        watch, calls = make_watch([{"available": True, "status": "Playing"}])
+        playback = SimpleNamespace(source_generation=1, source_mode="external-input")
+        watch._deps.get_playback_state = lambda: playback
+        await _run_until(watch, calls, passes=3)
+        self.assertEqual(len(calls["claims"]), 3, "line routing cannot remain selected over a Playing renderer")
+
+    async def test_claim_precedes_peak_broadcast_on_playing_edge(self):
+        from types import SimpleNamespace
+        events = []
+        watch, calls = make_watch([{"available": True, "status": "Playing"}])
+        watch._deps.get_playback_state = lambda: SimpleNamespace(source_generation=0)
+        watch._deps.read_qobuz_state = mock.AsyncMock(return_value={"available": True, "status": "Playing"})
+        original = watch._deps.broadcast_qobuz_state
+
+        async def broadcast(state=None):
+            events.append("broadcast")
+            return await original()
+
+        async def claim(detail):
+            events.append("claim")
+            calls["claims"].append(detail)
+
+        watch._deps.broadcast_qobuz_state = broadcast
+        watch._deps.claim_qobuz_playback = claim
+        await _run_until(watch, calls, passes=1)
+        self.assertEqual(events[:2], ["claim", "broadcast"], "peak setup must not delay source ownership")
+
+    async def test_slow_peak_broadcast_does_not_block_next_transport_observation(self):
+        from types import SimpleNamespace
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        watch, calls = make_watch([{"available": True, "status": "Playing"}])
+        reads = []
+        watch._deps.get_playback_state = lambda: SimpleNamespace(source_generation=0, source_mode="app-playback")
+
+        async def read():
+            reads.append(True)
+            return {"available": True, "status": "Playing"}
+
+        async def broadcast(state):
+            entered.set()
+            await release.wait()
+
+        watch._deps.read_qobuz_state = read
+        watch._deps.broadcast_qobuz_state = broadcast
+        with mock.patch.object(qobuz_watch, "POLL_INTERVAL_SECONDS", 0.0), mock.patch.object(qobuz_watch, "LINE_POLL_INTERVAL_SECONDS", 0.0):
+            task = asyncio.create_task(watch.run_watch_loop())
+            try:
+                await entered.wait()
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                self.assertGreater(len(reads), 2, "meter setup must not starve Connect transport reads")
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await watch.stop()
+
+    async def test_transport_reader_uses_only_daemon_playback_facts(self):
+        from streaming.qobuz import backend
+        from playback.qobuz_watch import read_claim_state
+        with mock.patch.object(backend, "qbzd_installed", return_value=True), mock.patch.object(
+            backend, "get_json", new=mock.AsyncMock(return_value={"state": "Playing", "track_id": 42})
+        ) as read:
+            state = await read_claim_state()
+        self.assertTrue(_is_playing(state))
+        self.assertEqual(read.await_args.args[1], "/api/playback")
 
     async def test_paused_and_stopped_never_claim(self):
         watch, calls = make_watch(
