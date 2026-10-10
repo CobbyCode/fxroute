@@ -129,6 +129,9 @@ assert.match(index, /<span id="measurement-speaker-align-status" class="measurem
 // note from the page shell, live progress while running.
 assert.match(index, /<span id="measurement-sweep-status" class="measurement-repeat-help" aria-live="polite">[^<]+<\/span>/);
 assert.match(index, /<span id="measurement-auto-sub-status" class="measurement-repeat-help" aria-live="polite">[^<]+<\/span>/);
+assert.match(index, /<span id="measurement-calibration-status" class="measurement-repeat-help" aria-live="polite">Adjust audio levels and timing\.<\/span>/);
+assert.ok(index.indexOf('id="measurement-calibration-toggle"') < index.indexOf('id="measurement-calibration-status"'),
+    'the calibration note sits right of its button, like the sweep and auto-sub notes');
 assert.match(index, /class="effects-actions-row spl-calibration-noise-row">\s*<button id="spl-calibration-noise"[^>]*>Start noise<\/button>\s*<span id="spl-calibration-auto-status"/);
 assert.doesNotMatch(flows, /Aligns each way of the selected speaker/);
 assert.doesNotMatch(app, /Aligns each way of the selected speaker/);
