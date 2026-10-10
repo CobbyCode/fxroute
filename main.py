@@ -1572,7 +1572,9 @@ def _spotify_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]
 
 
 def _transition_error_http(exc: PlaybackTransitionFailure) -> HTTPException:
-    return HTTPException(status_code=500, detail=exc.as_status())
+    # 503 only for a transient source that did not come up; other failures stay 500.
+    status = 503 if getattr(exc, "transient", False) else 500
+    return HTTPException(status_code=status, detail=exc.as_status())
 
 
 def _mark_playback_intent_changed() -> None:

@@ -23,6 +23,14 @@ class UnsupportedTransitionRateError(ValueError):
     """
 
 
+class SourceNotReady(RuntimeError):
+    """An external source did not reach its playing state (transient).
+
+    Raised by the source start stage; the API maps a transition failure caused
+    by it to HTTP 503 (temporarily unavailable) instead of an internal 500.
+    """
+
+
 class PlaybackTransitionFailure(RuntimeError):
     """A transition failed before its readback contract was committed."""
 
@@ -33,11 +41,13 @@ class PlaybackTransitionFailure(RuntimeError):
         transition_id: str,
         stage: str,
         failure_latched: bool = True,
+        transient: bool = False,
     ) -> None:
         super().__init__(message)
         self.transition_id = transition_id
         self.stage = stage
         self.failure_latched = failure_latched
+        self.transient = transient
 
     def as_status(self) -> dict[str, Any]:
         return {

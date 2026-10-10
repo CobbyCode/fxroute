@@ -26,6 +26,7 @@ from streaming.spotify.provider import (
 )
 from streaming.qobuz.provider import navigation_has_no_target
 from playback.transition import TransitionRequest
+from playback.transition.models import SourceNotReady
 
 from .deps import PlaybackRuntimeDependencies
 from .helpers import RADIO_EXPECTED_SAMPLE_RATE_HZ, SOURCE_HANDOFF_SETTLE_MS
@@ -661,7 +662,7 @@ class _RuntimeSourceMixin:
                 await self._deps.spotify_pause()
                 data = {"status": "Paused"}
             if request.should_play and data.get("status") not in {"Playing", "playing"}:
-                raise RuntimeError(f"Spotify did not enter Playing state: {data}")
+                raise SourceNotReady(f"Spotify did not enter Playing state: {data}")
             return
         if request.source == "qobuz":
             if request.should_play:

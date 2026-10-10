@@ -14,7 +14,7 @@ import asyncio
 import logging
 from typing import Any, Mapping
 
-from .models import PlaybackTransitionFailure, TransitionRequest
+from .models import PlaybackTransitionFailure, SourceNotReady, TransitionRequest
 from .protocol import TransitionRuntime
 from .stages import _TransitionStages
 import playback.source_policy as source_policy
@@ -558,6 +558,7 @@ class _TransitionCleanupMixin:
             transition_id=transition_id,
             stage=stages.stage,
             failure_latched=bool(failure_latched),
+            transient=isinstance(failure, SourceNotReady),
         )
         self.last_error = error.as_status()
         stages.log("failed")
