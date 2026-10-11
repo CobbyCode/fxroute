@@ -137,6 +137,84 @@ class SrcPolicyTests(unittest.TestCase):
             self.assertFalse(status["available"])
             self.assertIn("mpv", status["error"])
 
+    def test_inactive_unbound_stream_does_not_block_playback_src_selection(self):
+        from types import SimpleNamespace
+        self.policy.persist_policy("high")
+        for state in ("idle", "suspended"):
+            with self.subTest(state=state):
+                dump = [
+                    {"id": 48, "type": "PipeWire:Interface:Node", "info": {
+                        "state": "running", "props": {
+                            "node.name": "mpv", "media.class": "Stream/Output/Audio",
+                            "audio.adapt.converter": self.policy.FACTORY},
+                        "params": {"Props": [{"params": ["fxroute.src.mode", "high",
+                            "fxroute.src.input-rate", 44100, "fxroute.src.output-rate", 44100,
+                            "fxroute.src.nominal-bypass", True, "fxroute.src.error", 0]}]}}},
+                    {"id": 185, "type": "PipeWire:Interface:Node", "info": {
+                        "state": state, "props": {
+                            "node.name": "spotify", "media.class": "Stream/Output/Audio"},
+                        "params": {"Props": [{"params": ["resample.quality", 4]}]}}},
+                ]
+                with (patch.object(self.policy.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(dump))),
+                      patch.object(self.policy, "runtime_error", return_value=None)):
+                    status = self.policy.status()
+                self.assertTrue(status["available"], status["error"])
+                self.assertIsNone(status["error"])
+                self.assertEqual(status["mode"], "high")
+                inactive = next(node for node in status["effective_nodes"] if node["name"] == "spotify")
+                self.assertFalse(inactive["bound"])
+                self.assertFalse(inactive["expected"])
+                self.assertIsNone(inactive["mode"])
+
+    def test_inactive_bound_adapter_still_reports_mode_generation_and_engine_errors(self):
+        runtime = self.policy.RUNTIME
+        runtime.mkdir(parents=True)
+        (runtime / "manifest.json").write_text('{"generation":"current"}')
+        for state in ("idle", "suspended"):
+            for mode, generation, error in (("high", "current", 0),
+                                             ("standard", "old", 0),
+                                             ("standard", "current", 32)):
+                with self.subTest(state=state, mode=mode, generation=generation, error=error):
+                    node = {"name": "mpv", "state": state, "bound": True, "expected": False,
+                            "mode": mode, "generation": generation, "error": error}
+                    with (patch.object(self.policy, "nodes", return_value=[node]),
+                          patch.object(self.policy, "runtime_error", return_value=None)):
+                        status = self.policy.status()
+                    self.assertFalse(status["available"])
+                    self.assertIsNotNone(status["error"])
+
+    def test_unbound_stream_with_unknown_or_failed_state_still_requires_binding(self):
+        from types import SimpleNamespace
+        for state in (None, "creating", "error", "unknown"):
+            with self.subTest(state=state):
+                dump = [{"id": 42, "type": "PipeWire:Interface:Node", "info": {
+                    "state": state, "props": {
+                        "node.name": "foreign-stream", "media.class": "Stream/Output/Audio"}}}]
+                with (patch.object(self.policy.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(dump))),
+                      patch.object(self.policy, "runtime_error", return_value=None)):
+                    status = self.policy.status()
+                self.assertTrue(status["effective_nodes"][0]["expected"])
+                self.assertFalse(status["available"])
+
+    def test_live_graph_check_allows_inactive_diagnostics_but_rejects_wrong_bound_mode(self):
+        import test_src_product_live as live
+        src = {"mode": "standard", "available": True, "effective_nodes": [
+            {"name": "mpv", "state": "running", "bound": True, "expected": True,
+             "mode": "standard", "error": 0},
+            {"name": "spotify", "state": "idle", "bound": False, "expected": False,
+             "mode": None, "error": 0},
+        ]}
+        outputs = {"selected_output": {"target_name": "alsa_output.test"}}
+        with (patch.object(live, "http", side_effect=lambda path: src if path == "/api/audio/src" else outputs),
+              patch.object(live.subprocess, "check_output",
+                           return_value="fxroute_dsp:output_FL -> alsa_output.test:playback_FL")):
+            observed, sink = live.graph("standard")
+            self.assertEqual(sink, "alsa_output.test")
+            self.assertEqual(len(observed["effective_nodes"]), 2)
+            src["effective_nodes"][0]["mode"] = "high"
+            with self.assertRaises(AssertionError):
+                live.graph("standard")
+
     def test_plugin_is_discoverable_without_client_environment_injection(self):
         runtime = self.root / "native_src/build"
         runtime.mkdir(parents=True)

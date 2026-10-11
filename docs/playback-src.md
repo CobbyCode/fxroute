@@ -108,8 +108,11 @@ receive it explicitly. Common rules are installed under PipeWire client,
 daemon and Pulse drop-ins and WirePlumber ALSA/BlueZ rules. Existing provider
 ingress-target routing is unchanged.
 
-Readback reports unbound adapters, missing parameters on running adapters and
-an older runtime generation as adapter errors. Idle, configured-but-not-started adapters can
+Readback reports unbound hardware or active stream adapters, missing parameters
+on running adapters and an older runtime generation as adapter errors. Unbound
+idle or suspended streams remain visible in diagnostics, but do not block SRC
+selection for ongoing playback. Bound adapters still report mode, generation and
+engine failures even when inactive. Idle, configured-but-not-started adapters can
 remain `unconfigured`; passive graph-only split loopbacks and MIDI nodes are not
 native audio boundaries. With no device or stream observed there is nothing to
 bind. Selecting an SRC quality reconstructs the adapters with the installed

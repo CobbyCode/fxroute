@@ -207,6 +207,39 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.player.state["position"], 123.5)
         self.assertTrue(self.player.state["playing"])
 
+    async def test_inactive_foreign_stream_allows_src_commit_with_auto_stereo_sub(self):
+        self.configure_playback(source="tidal")
+        main.samplerate.persist_sample_rate_policy({"mode": "auto", "rate": None})
+        self.force_rate = 44100
+        self.overview["output_mode"].update(mode="stereo-sub", crossover_enabled=False,
+                                          effective_output_rate=44100)
+        active_nodes = src_policy.nodes.side_effect
+        inactive = {"name": "spotify", "state": "idle", "bound": False, "expected": False,
+                    "mode": None, "generation": None, "error": 0}
+        status = lambda: {"active_rate": 44100, "force_rate": self.force_rate,
+                          "default_rate": 48000, "policy": {"mode": "auto", "rate": None}}
+        with (patch.object(src_policy, "nodes", side_effect=lambda: active_nodes() + [inactive]),
+              patch.object(main, "get_samplerate_status", side_effect=status),
+              patch.object(alignment, "get_samplerate_status", side_effect=status),
+              patch.object(main.samplerate, "playback_target_rate", return_value=44100)):
+            for mode in ("low", "standard", "high"):
+                with self.subTest(mode=mode):
+                    result = await self.post(mode)
+                    self.assertEqual(result["mode"], mode)
+                    self.assertTrue(result["available"], result["error"])
+                    self.assertEqual(src_policy.load_policy(), {"mode": mode})
+                    self.assertTrue(self.player.state["playing"])
+                    self.assertFalse(self.player.state["paused"])
+                    self.assertEqual(self.player.state["position"], 123.5)
+                    self.assertEqual(self.player.state["current_file"], "/music/current.flac")
+                    self.assertEqual(self.queue.index, 1)
+                    self.assertEqual(len(self.queue.tracks), 2)
+                    self.assertEqual(main.samplerate.load_sample_rate_policy(), {"mode": "auto", "rate": None})
+                    self.assertEqual(self.overview["output_mode"]["mode"], "stereo-sub")
+                    self.assertFalse(self.overview["output_mode"]["crossover_enabled"])
+                    self.assertFalse(self.coordinator.gate.failure_latched)
+                    self.assertFalse(self.muted)
+
     async def test_restore_uses_live_position_instead_of_delayed_observer_cache(self):
         self.configure_playback(paused=True)
         self.player.state["position"] = 124.25

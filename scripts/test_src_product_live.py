@@ -84,7 +84,8 @@ def paused_position(timeout=5):
 def graph(mode):
     src = http("/api/audio/src")
     assert src["available"] and src["mode"] == mode, src
-    configured = [n for n in src["effective_nodes"] if n["mode"] != "unconfigured"]
+    configured = [n for n in src["effective_nodes"]
+                  if (n.get("bound") or n.get("expected")) and n["mode"] != "unconfigured"]
     assert configured and all(n["mode"] == mode and not n["error"] for n in configured), configured
     outputs = http("/api/audio/outputs")
     sink = (outputs.get("selected_output") or {}).get("target_name")

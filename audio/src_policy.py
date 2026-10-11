@@ -186,9 +186,12 @@ def nodes() -> list[dict]:
         bound = props.get("audio.adapt.converter") == FACTORY or "fxroute.src.mode" in params
         graph_loopback = (props.get("node.virtual") is True and props.get("node.passive") is True
                           and str(props.get("node.link-group", "")).startswith("loopback-"))
-        expected = ((props.get("device.api") in {"alsa", "bluez5"} and props.get("media.class") in {"Audio/Sink", "Audio/Source"})
-                    or (props.get("media.class") == "Stream/Output/Audio" and not graph_loopback))
-        if bound or expected:
+        hardware = (props.get("device.api") in {"alsa", "bluez5"}
+                    and props.get("media.class") in {"Audio/Sink", "Audio/Source"})
+        stream = props.get("media.class") == "Stream/Output/Audio" and not graph_loopback
+        # Inactive foreign clients do not participate in playback SRC readiness.
+        expected = hardware or (stream and info.get("state") not in {"idle", "suspended"})
+        if bound or hardware or stream:
             observed.append({"id": item["id"], "name": props.get("node.name"),
                              "state": info.get("state"), "mode": params.get("fxroute.src.mode"),
                              "bound": bound, "expected": expected,
@@ -212,7 +215,8 @@ def status() -> dict:
         observed = nodes()
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         error = error or f"Cannot inspect common SRC adapters: {exc}"
-    mismatches = [n["name"] for n in observed if n["mode"] not in {"unconfigured", "peaks", selected}
+    mismatches = [n["name"] for n in observed
+                  if ((n.get("bound") or n.get("expected")) and n["mode"] not in {"unconfigured", "peaks", selected})
                   or (n.get("expected") and not n.get("bound"))
                   or (n["state"] == "running" and n["mode"] == "unconfigured")]
     try:
