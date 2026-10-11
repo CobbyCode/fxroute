@@ -3521,6 +3521,12 @@ function familyLabel(family) {
     return mod.familyLabel(family);
 }
 
+function polarityLabel(value) {
+    // Crossover tile UI owns the polarity names next to the Type names.
+    const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
+    return mod.polarityLabel(value);
+}
+
 function collectCrossoverWayMutation() {
     // Crossover tile UI lives in static/crossover_ui.js
     // (window.FXRouteCrossoverUI). Thin wrapper keeps existing

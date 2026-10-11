@@ -979,6 +979,17 @@
                     saveSubwooferDebounced(0);
                 });
             }
+            // Polarity names live in the crossover module next to the Type
+            // names: desktop spells them out (Normal/Inverted), phone widths
+            // keep the short names (N/I). Relabel once here so a narrow first
+            // paint is correct even before the crossover tile wires.
+            const crossoverUI = (root && root.FXRouteCrossoverUI) || null;
+            if (crossoverUI && typeof crossoverUI.relabelPolaritySelects === 'function') {
+                crossoverUI.relabelPolaritySelects();
+            }
+            if (crossoverUI && typeof crossoverUI.watchCompactLabels === 'function') {
+                crossoverUI.watchCompactLabels();
+            }
             if (deps.getElements().effectsSubwooferPreview) {
                 let draggingCrossover = false;
                 const splitPreview = () => deps.getElements().effectsSubwooferCard?.classList.contains('is-crossover-split') === true;

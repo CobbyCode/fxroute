@@ -2023,9 +2023,11 @@
         min-height: 0;
         font-weight: 500;
     }
-    /* Short select values (LR, 24, On, N) sit centered in the control: the
+    /* Short select values (LR, 24, On, N/I) sit centered in the control: the
        left padding mirrors the chevron reserve, so the text box is
-       symmetric. Stepper values keep their own layout. */
+       symmetric. Polarity keeps N/I here through the compact labels while
+       wider screens spell out Normal/Inverted. Stepper values keep their
+       own layout. */
     #tab-effects .effects-subwoofer-control-group select {
         width: 100%;
         padding-left: var(--arrow-reserve);

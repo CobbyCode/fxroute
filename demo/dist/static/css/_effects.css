@@ -693,8 +693,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     display: grid;
     /* Level and Alignment share the two flexible tracks, so the two steppers
        come out exactly as wide as each other and stay flush in their column;
-       Polarity spans both tracks below, centered on its own single-letter
-       values. A three-across row cannot work: two value fields that keep
+       Polarity sits below in the first column and spells its values out
+       (Normal/Inverted; phone widths keep N/I through the compact labels).
+       A three-across row cannot work: two value fields that keep
        their digit floor plus the polarity select are wider than this card on
        every desktop size, which is what used to clip the alignment value.
        Sub 1 / Sub 2 share the class and stay symmetric; headings and

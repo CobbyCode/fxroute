@@ -315,6 +315,11 @@
     const COMPACT_LABEL_QUERY = '(max-width: 520px)';
     const FAMILY_LABELS = { off: 'Off', 'linkwitz-riley': 'Linkwitz-Riley', butterworth: 'Butterworth', bessel: 'Bessel' };
     const COMPACT_FAMILY_LABELS = { ...FAMILY_LABELS, 'linkwitz-riley': 'LR', butterworth: 'BW' };
+    // Polarity follows the same rule: desktop spells the values out
+    // (Normal/Inverted), phone widths keep the short names (N/I) so the
+    // closed select never clips in the 9rem control column.
+    const POLARITY_LABELS = { normal: 'Normal', invert: 'Inverted' };
+    const COMPACT_POLARITY_LABELS = { normal: 'N', invert: 'I' };
     let compactLabelQuery;
 
     function compactLabelMedia() {
@@ -330,6 +335,11 @@
         return labels[family] || family;
     }
 
+    function polarityLabel(value) {
+        const labels = compactLabelMedia()?.matches ? COMPACT_POLARITY_LABELS : POLARITY_LABELS;
+        return labels[value] || POLARITY_LABELS[value] || value;
+    }
+
     // Both tiles render their Type options through familyLabel, so crossing
     // the breakpoint relabels them in place; values and selection stay as-is.
     function relabelTypeSelects() {
@@ -339,11 +349,30 @@
         }
     }
 
+    // All three polarity selects (crossover trim, Sub 1, Sub 2) share one
+    // class, so crossing the breakpoint relabels closed value and dropdown
+    // options in place; values (normal/invert) and selection stay as-is.
+    function relabelPolaritySelects() {
+        if (typeof document === 'undefined') return;
+        for (const option of document.querySelectorAll('select.effects-subwoofer-polarity-select option')) {
+            option.textContent = polarityLabel(option.value);
+        }
+    }
+
+    function relabelCompactLabels() {
+        relabelTypeSelects();
+        relabelPolaritySelects();
+    }
+
     function watchCompactLabels() {
         const query = compactLabelMedia();
         if (!query) return;
-        if (query.addEventListener) query.addEventListener('change', relabelTypeSelects);
-        else if (query.addListener) query.addListener(relabelTypeSelects);
+        // A narrow first paint starts from the full names in the page shell,
+        // so relabel once at wiring time instead of waiting for the first
+        // viewport change.
+        relabelPolaritySelects();
+        if (query.addEventListener) query.addEventListener('change', relabelCompactLabels);
+        else if (query.addListener) query.addListener(relabelCompactLabels);
     }
 
     function collectCrossoverWayMutation() {
@@ -616,6 +645,9 @@
         fetchCrossoverResponse,
         renderCrossoverTile,
         familyLabel,
+        polarityLabel,
+        relabelPolaritySelects,
+        watchCompactLabels,
         renderSummary,
         collectCrossoverWayMutation,
         saveCrossoverWay,
