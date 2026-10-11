@@ -5329,13 +5329,14 @@ def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: i
                         if args.get(name) is not None})
         return lambda state: set_output_processing(state, mode, role, **options)
     if kind == "set_level_calibration":
-        args = strict({"mode", "values"})
+        args = strict({"mode", "values", "state_revision", "measurement_job_id"})
         mode = _require_state_mode(args.get("mode"))
         values = args.get("values")
         if not isinstance(values, dict) or not values:
             raise HTTPException(status_code=400, detail="values must map roles to level calibration slots")
 
         def update_level_calibration(state):
+            level_match_api.validate_result(args, state)
             result = state
             for role, slots in values.items():
                 result = set_output_processing(result, mode, _require_role(role), level_cal_db=slots)
@@ -6379,7 +6380,12 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
 
     try:
         # A measurement job may have taken the graph during the awaits above.
+        mutation = body.get("mutation") or {}
+        if mutation.get("kind") == "set_level_calibration":
+            level_match_api.validate_result(mutation, service.load())
         committed = service.commit_unowned(candidate, expected_revision=expected_revision)
+        if mutation.get("kind") == "set_level_calibration":
+            level_match_api.mark_result_applied(mutation)
     except StateConflictError as exc:
         raise HTTPException(status_code=409, detail={
             "code": "revision-conflict", "message": str(exc),

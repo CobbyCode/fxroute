@@ -3,6 +3,8 @@
 """Lossless legacy snapshots and signal-preserving migration of four old modes."""
 
 import copy
+import json
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -15,6 +17,7 @@ from audio.output_state import (default_bass_management, default_output_state,
 from audio.output_state_migration import (drop_foreign_bank_presets, migrate_legacy_output_state,
                                           upgrade_output_state)
 from audio.output_topology import derive_topology
+from audio.output_state_store import OutputStateStore
 
 
 TAGS = {"Room": "global", "MainEQ": "main", "MainIR": "main", "LowEQ": "low",
@@ -159,6 +162,90 @@ class OutputStateMigrationTests(unittest.TestCase):
                 self.migrate({"mode": "stereo"}, routing)
         with self.assertRaises(ValueError):
             self.migrate({"mode": "future"})
+
+
+class VersionOneUpgradeTests(unittest.TestCase):
+    def historical(self, active_mode, subs):
+        state = default_output_state()
+        state = set_mode_routing(state, "stereo", "A", ["main_r", "main_l"])
+        state = set_crossover(state, "stereo-sub", True)
+        state = set_mode_routing(state, "stereo-sub", "A",
+                                ["left_low", "right_low", "left_high", "right_high", *subs])
+        modes = {"stereo": state["modes"]["stereo"], "crossover": state["modes"]["stereo-sub"]}
+        for role in ("main_l", "main_r"):
+            modes["crossover"]["banks"].pop(role, None)
+            modes["crossover"]["processing"].pop(role, None)
+        for index, config in enumerate(modes.values()):
+            config.pop("crossover_enabled")
+            config.pop("av_sync")
+            config["bass_management"] = {"frequency_hz": 95, "main_highpass_enabled": False}
+            for role, processing in config["processing"].items():
+                processing.pop("level_cal_db")
+                processing.update(level_db=-3.5-index, alignment_ms=2.25+index, polarity="invert")
+            config["banks"]["global"] = {"preset": "Room B", "preset_a": "Room A", "preset_b": "Room B"}
+        return {"schema": "fxroute.output-state", "version": 1, "revision": 12,
+                "active_mode": active_mode, "modes": modes, "legacy": {"original": True}}
+
+    def test_store_load_upgrades_real_v1_shapes_without_writing_or_losing_settings(self):
+        for active in ("stereo", "crossover"):
+            for subs in (["sub1"], ["sub1", "sub2"], ["sub_l", "sub_r"], []):
+                with self.subTest(active=active, subs=subs), tempfile.TemporaryDirectory() as directory:
+                    payload = self.historical(active, subs)
+                    original = copy.deepcopy(payload)
+                    path = Path(directory) / "output-state.json"
+                    path.write_text(json.dumps(payload))
+                    before = path.read_bytes()
+                    store = OutputStateStore(path)
+                    result = store.load()
+                    self.assertEqual(result["version"], VERSION)
+                    self.assertEqual(result["revision"], 12)
+                    self.assertEqual(result["legacy"]["output_state_v1"], original)
+                    self.assertEqual(payload, original)
+                    self.assertEqual(path.read_bytes(), before)
+                    for old_mode, old_config in original["modes"].items():
+                        new_mode = "stereo-sub" if old_mode == "crossover" and subs else "stereo"
+                        # If both old modes resolve to one mode, the active mode wins.
+                        if not subs and old_mode != active:
+                            continue
+                        config = result["modes"][new_mode]
+                        self.assertEqual(config["routing"], old_config["routing"])
+                        self.assertEqual(config["banks"], old_config["banks"])
+                        self.assertEqual(config["crossover_enabled"], old_mode == "crossover")
+                        for role, processing in old_config["processing"].items():
+                            self.assertEqual(config["processing"][role],
+                                             {**processing, "level_cal_db": {"global": 0.0, "bank": 0.0}})
+                    self.assertEqual(upgrade_output_state(result), result)
+                    committed = store.commit(result, expected_revision=12)
+                    self.assertEqual(store.load(), committed)
+
+    def test_v2_through_v6_upgrade_neutral_slots_and_preserve_existing_calibration(self):
+        for version in range(2, VERSION + 1):
+            with self.subTest(version=version):
+                state = default_output_state()
+                state["version"] = version
+                if version < 4:
+                    state.pop("input_modes")
+                    state["modes"].pop("surround")
+                for config in state["modes"].values():
+                    if version < 6:
+                        config.pop("av_sync")
+                    if version < 5:
+                        for processing in config["processing"].values():
+                            processing.pop("level_cal_db")
+                    else:
+                        for processing in config["processing"].values():
+                            processing["level_cal_db"] = {"global": -2.0, "bank": -1.0}
+                    if version == 2:
+                        config["bass_management"] = {"frequency_hz": 80, "main_highpass_enabled": True}
+                before = copy.deepcopy(state)
+                result = upgrade_output_state(state)
+                self.assertEqual(state, before)
+                for mode in before["modes"]:
+                    for role in before["modes"][mode]["processing"]:
+                        self.assertEqual(result["modes"][mode]["processing"][role]["level_cal_db"],
+                                         {"global": 0.0, "bank": 0.0} if version < 5 else
+                                         {"global": -2.0, "bank": -1.0})
+                self.assertEqual(upgrade_output_state(result), result)
 
 
 class VersionTwoUpgradeTests(unittest.TestCase):

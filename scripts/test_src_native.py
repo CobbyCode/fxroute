@@ -305,6 +305,41 @@ class NativeSrcTests(unittest.TestCase):
                 for key in ("lead","reserve","first_output_ns","first_real_ns"):
                     self.assertEqual(lifetime[key],metrics[key],(scenario,key))
 
+    def test_high_rate_startup_preserves_all_pcm_and_times_out_before_reserve_completion(self):
+        build = ROOT / "native_src/build"
+        includes = build / "sources/pipewire/pipewire-1.6.8/spa/include"
+        upstream = includes.parent / "plugins/audioconvert"
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}):
+            path = Path(directory)
+            policy = path / "fxroute/src-policy.json"
+            policy.parent.mkdir()
+            policy.write_text('{"mode":"high"}')
+            executable = path / "high-rate-startup"
+            subprocess.run(["cc", "-std=gnu11", "-O2", "-I", str(includes), "-I", str(upstream),
+                            "-I", str(ROOT / "native_src"), str(ROOT / "scripts/src_high_rate_startup.c"),
+                            "-ldl", "-o", str(executable)], check=True)
+            for ir, ore in ((384000, 192000), (192000, 96000), (44100, 384000), (384000, 44100),
+                            (44100, 768000), (768000, 44100)):
+                with self.subTest(input_rate=ir, output_rate=ore):
+                    source, reference, actual = (path / name for name in ("input.f32", "reference.f32", "actual.f32"))
+                    source.write_bytes(array.array("f", (0.03 * math.sin(2 * math.pi * (697 + 300*c) * i / ir)
+                                                        for i in range(ir * 2) for c in range(2))).tobytes())
+                    subprocess.run([str(build / "sox"), "--buffer", "512", "-D", "-L", "-t", "raw", "-r", str(ir),
+                                    "-e", "floating-point", "-b", "32", "-c", "2", str(source), "-t", "raw", "-r", str(ore),
+                                    "-e", "floating-point", "-b", "32", str(reference), "rate", "-E", "-z", "-a", "-B",
+                                    "99.5", "-A", "99.5", "-f", str(ore)], check=True, capture_output=True,
+                                   env={k: v for k, v in os.environ.items() if k != "SOX_OPTS"})
+                    result = subprocess.run([str(executable), str(LIBRARY), str(ir), str(ore), str(source), str(actual), "paced"],
+                                            capture_output=True, text=True, timeout=12)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    metrics = json.loads(re.search(r"HIGH_RATE_STARTUP (\{.*\})", result.stdout)[1])
+                    rendered = actual.read_bytes()
+                    self.assertFalse(any(rendered[:metrics["lead"] * 8]))
+                    self.assertEqual(rendered[metrics["lead"] * 8:], reference.read_bytes())
+            result = subprocess.run([str(executable), str(LIBRARY), "384000", "192000", str(source), str(actual), "timeout"],
+                                    capture_output=True, text=True, timeout=6)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_reserve_conserves_nominal_input_progress_through_drift_eof_and_reset(self):
         includes=ROOT / "native_src/build/sources/pipewire/pipewire-1.6.8/spa/include"
         upstream=includes.parent / "plugins/audioconvert"

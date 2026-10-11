@@ -25,6 +25,7 @@
         sleep: (ms) => new Promise((resolve) => root.setTimeout(resolve, ms)),
     };
     let busy = false;
+    let starting = false;
     let resetting = false;
     let jobId = '';
     let generation = 0;
@@ -83,9 +84,9 @@
         const waiting = !!lastStatus && lastStatus.requires_reference && !lastStatus.reference_ready;
         if (elements.levelMatchStart) {
             elements.levelMatchStart.textContent = measuring ? 'Cancel' : 'Match levels';
-            elements.levelMatchStart.disabled = !measuring && (!currentArea() || waiting || blocked || resetting);
+            elements.levelMatchStart.disabled = !measuring && (!currentArea() || waiting || blocked || resetting || starting);
         }
-        if (elements.levelMatchReset) elements.levelMatchReset.disabled = measuring || resetting || blocked || !currentArea();
+        if (elements.levelMatchReset) elements.levelMatchReset.disabled = measuring || starting || resetting || blocked || !currentArea();
         if (!measuring) {
             if (!currentArea()) setActionLine('Select a speaker bank for level matching.');
             else if (waiting) setActionLine('Measure Front L/R first to set the level reference.');
@@ -169,6 +170,7 @@
         while (token === generation) {
             const response = await deps.fetch(`/api/measurements/level-match/jobs/${encodeURIComponent(id)}`);
             const data = await response.json().catch(() => ({}));
+            if (token !== generation) return null;
             if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Level Matching job lost');
             const job = data.job || {};
             if (job.status !== 'running') return job;
@@ -180,19 +182,26 @@
 
     async function startLevelMatch() {
         const area = currentArea();
-        if (!area || busy) return;
+        if (!area || busy || starting) return;
         const token = ++generation;
         busy = true;
+        starting = true;
         setStatus();
         renderControls();
         try {
             const response = await deps.fetch('/api/measurements/level-match/start', { method: 'POST', body: buildForm(area) });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Failed to start Level Matching');
-            jobId = String(data.job?.id || '');
+            const id = String(data.job?.id || '');
+            if (token !== generation) {
+                if (id) await requestCancel(id);
+                return;
+            }
+            starting = false;
+            jobId = id;
             setActionLine(progressText(data.job));
             const job = await pollJob(jobId, token);
-            if (!job) return;
+            if (!job || token !== generation) return;
             if (job.status === 'cancelled') {
                 setStatus('Level Matching cancelled. Nothing was changed.');
             } else if (job.status !== 'completed') {
@@ -200,18 +209,23 @@
             } else {
                 setActionLine('Applying…');
                 const applied = await deps.applyMutation('set_level_calibration',
-                    { mode: job.result.mode, values: job.result.values }, false, { quiet: true });
+                    { mode: job.result.mode, state_revision: job.result.state_revision,
+                        measurement_job_id: job.id, values: job.result.values }, false, { quiet: true });
+                if (token !== generation) return;
                 setStatus(applied
                     ? 'Level Calibration applied. Re-measuring overwrites it.'
                     : 'The measurement finished but the levels could not be applied.');
             }
         } catch (error) {
-            setStatus(error.message);
+            if (token === generation) setStatus(error.message);
         } finally {
+            starting = false;
             if (token === generation) {
                 busy = false;
                 jobId = '';
                 await refresh();
+            } else {
+                renderControls();
             }
         }
     }
@@ -229,7 +243,7 @@
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Failed to reset Level Matching');
             const applied = await deps.applyMutation('set_level_calibration',
-                { mode: data.mode, values: data.values }, false, { quiet: true });
+                { mode: data.mode, state_revision: data.state_revision, values: data.values }, false, { quiet: true });
             setStatus(applied
                 ? 'Level Calibration reset to 0 dB.'
                 : 'The stored levels were cleared but 0 dB could not be applied. Press Reset again.');
@@ -241,11 +255,21 @@
         }
     }
 
+    async function requestCancel(id) {
+        const response = await deps.fetch(`/api/measurements/level-match/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+        if (!response.ok) throw new Error('Level Matching could not be cancelled');
+    }
+
     async function cancelLevelMatch() {
-        if (!busy || !jobId) return;
+        if (!busy) return;
+        generation += 1;
+        busy = false;
+        const id = jobId;
+        jobId = '';
         setActionLine('Cancelling…');
+        renderControls();
         try {
-            await deps.fetch(`/api/measurements/level-match/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+            if (id) await requestCancel(id);
         } catch (error) {
             setStatus(error.message);
         }

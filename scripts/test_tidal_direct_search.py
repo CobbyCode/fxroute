@@ -63,7 +63,7 @@ window.fetch = (url, opts) => {
         const data = {
             tracks: type === 'tracks' ? [{ id: query, title, artist: 'Test artist', album: 'Test album', duration: 180 }] : [],
             artists: [],
-            albums: [],
+            albums: type === 'albums' ? [{ id: query, title, artist: 'Test artist', track_count: 2 }] : [],
             playlists: [],
         };
         const delay = query === 'que' ? 450 : 20;
@@ -126,13 +126,23 @@ def _run():
             check("newer results remain visible after stale response", "Search results for \"queen\"" in body_text)
             check("stale result does not overwrite newer result", "Queen result" in body_text and "Que result" not in body_text)
 
+            check("new searches default to Albums", all(item["type"] == "albums" for item in fetches))
+            page.click("#tidal-search-type-tracks")
+            page.wait_for_function("window.__tidalSearchFetches.at(-1).type === 'tracks'")
+            page.wait_for_selector("#tidal-search-type-tracks.is-active")
+            check("Tracks tab requests and renders tracks", "Queen result" in page.locator("#tidal-browse-body").inner_text())
+            page.fill("#tidal-search-input", "new album")
+            page.wait_for_function("window.__tidalSearchFetches.at(-1).query === 'new album'")
+            page.wait_for_selector("#tidal-search-type-albums.is-active")
+            check("a new query resets the type to Albums", page.evaluate("window.__tidalSearchFetches.at(-1).type") == "albums")
+            before_clear = len(page.evaluate("window.__tidalSearchFetches"))
             page.fill("#tidal-search-input", "")
             page.wait_for_selector("#tidal-fav-results")
             page.wait_for_timeout(200)
             body_text = page.locator("#tidal-browse-body").inner_text()
             check("clearing returns to the existing browse surface", page.locator("#tidal-fav-results").count() == 1)
             check("clearing removes search results", "Search results for" not in body_text and page.locator("#tidal-search-items").count() == 0)
-            check("clearing does not issue another search", len(page.evaluate("window.__tidalSearchFetches")) == 2)
+            check("clearing does not issue another search", len(page.evaluate("window.__tidalSearchFetches")) == before_clear)
 
             page.fill("#tidal-search-input", "reconnect")
             page.wait_for_timeout(100)

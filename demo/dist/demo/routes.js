@@ -3171,6 +3171,16 @@
                     try { settings.level_cal_db = mergeLevelCal(settings.level_cal_db, mutation.level_cal_db); } catch (error) { return fail(error.message); }
                 }
             } else if (mutation.kind === 'set_level_calibration') {
+                if (!Number.isInteger(mutation.state_revision) || mutation.state_revision !== outputStateStore.revision) {
+                    return { error: 'Level Matching configuration changed; measure again', status: 409 };
+                }
+                if (mutation.measurement_job_id) {
+                    const job = levelMatchJobs[mutation.measurement_job_id];
+                    if (!job || job.cancel_requested || job.result.state_revision !== mutation.state_revision
+                        || job.result.mode !== mode || JSON.stringify(job.result.values) !== JSON.stringify(mutation.values)) {
+                        return { error: 'Level Matching configuration changed; measure again', status: 409 };
+                    }
+                }
                 if (!mutation.values || typeof mutation.values !== 'object' || !Object.keys(mutation.values).length) {
                     return fail('values must map roles to level calibration slots');
                 }
@@ -3856,7 +3866,7 @@
             const id = 'demo_levelmatch_' + (++levelMatchSeq);
             levelMatchJobs[id] = { id, status: 'completed', mode: scope.mode, bank_id: String(body.bank_id), slot: scope.slot,
                 progress: { step: scope.units.length, total: scope.units.length, label: scope.units[scope.units.length - 1] },
-                result: { mode: scope.mode, values: levelMatchDerive(scope.mode), measured_roles: scope.members.slice().sort(), state_revision: 0 },
+                result: { mode: scope.mode, values: levelMatchDerive(scope.mode), measured_roles: scope.members.slice().sort(), state_revision: outputStateStore.revision },
                 error: null, cancel_requested: false };
             return j({ status: 'ok', job: levelMatchJobs[id] });
         }
@@ -3873,7 +3883,7 @@
             } else {
                 for (const role of scope.members) values[role] = { global: 0, bank: 0 };
             }
-            return j({ status: 'ok', mode: scope.mode, bank_id: String(body.bank_id), values });
+            return j({ status: 'ok', mode: scope.mode, bank_id: String(body.bank_id), state_revision: outputStateStore.revision, values });
         }
         const levelMatchJob = p.match(/^\/api\/measurements\/level-match\/jobs\/([^/]+)$/);
         if (levelMatchJob) {
@@ -3883,6 +3893,7 @@
         const levelMatchCancel = p.match(/^\/api\/measurements\/level-match\/jobs\/([^/]+)\/cancel$/);
         if (levelMatchCancel && post) {
             const job = levelMatchJobs[levelMatchCancel[1]];
+            if (job) job.cancel_requested = true;
             return job ? j({ status: 'ok', job }) : err('Level Matching job not found', 404);
         }
         if (p === '/api/measurements/polarity-check') {

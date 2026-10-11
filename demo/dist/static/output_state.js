@@ -428,10 +428,14 @@ async function applyMutation(fetchImpl, catalog, getCatalog, mutation) {
         const detail = data && data.detail;
         throw new Error(typeof detail === 'string' ? detail : `Output state apply failed (${resp.status})`);
     };
+    const measured = mutation.kind === 'set_level_calibration';
+    if (measured && (!Number.isInteger(mutation.state_revision) || mutation.state_revision < 0)) {
+        throw new Error('Level Matching requires its original revision; measure again');
+    }
     try {
-        return await attempt(catalog.revision);
+        return await attempt(measured ? mutation.state_revision : catalog.revision);
     } catch (error) {
-        if (error && error.status === 409 && error.catalog) {
+        if (!measured && error && error.status === 409 && error.catalog) {
             const fresh = error.catalog;
             const resp = await fetchImpl('/api/audio/output-state/apply', {
                 method: 'POST',

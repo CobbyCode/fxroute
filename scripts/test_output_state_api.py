@@ -182,6 +182,67 @@ class AudioStateApiTests(unittest.TestCase):
                             "expected_revision": 1, "mutation": mutation})))
                     self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_level_result_cannot_rebase_its_original_revision(self):
+        seed_sub_state(self.service)
+        self.service.apply(lambda state: state, expected_revision=1)
+        before = Path(self.directory, "output-state.json").read_bytes()
+        with audio_context(self.service):
+            with self.assertRaises(main.HTTPException) as caught:
+                asyncio.run(main.apply_audio_output_state(FakeRequest({
+                    "expected_revision": 2,
+                    "mutation": {"kind": "set_level_calibration", "mode": "stereo-sub",
+                                 "state_revision": 1, "measurement_job_id": "old-job",
+                                 "values": {"main_l": {"global": -4}}},
+                })))
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(Path(self.directory, "output-state.json").read_bytes(), before)
+
+    def test_level_result_revalidates_context_after_async_prepare(self):
+        seed_sub_state(self.service)
+        before = Path(self.directory, "output-state.json").read_bytes()
+        from fastapi import HTTPException
+        with audio_context(self.service), mock.patch.object(main.level_match_api, "validate_result",
+                side_effect=[None, HTTPException(status_code=409, detail="Measure again")]) as validate:
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(main.apply_audio_output_state(FakeRequest({
+                    "expected_revision": 1, "mutation": {"kind": "set_level_calibration", "mode": "stereo-sub",
+                    "state_revision": 1, "measurement_job_id": "job-1", "values": {"main_l": {"global": -4}}}})))
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(validate.call_count, 2)
+        self.assertEqual(Path(self.directory, "output-state.json").read_bytes(), before)
+
+    def test_level_result_atomic_commit_preserves_a_concurrent_clients_winner(self):
+        seed_sub_state(self.service)
+        original = self.service.commit_unowned
+        winner = None
+        def racing_commit(candidate, *, expected_revision):
+            nonlocal winner
+            winner = self.service.load()
+            winner["modes"]["stereo-sub"]["processing"]["main_l"]["level_db"] = -9
+            winner = self.service.commit(winner, expected_revision=expected_revision)
+            return original(candidate, expected_revision=expected_revision)
+        with audio_context(self.service), mock.patch.object(main.level_match_api, "validate_result"), \
+                mock.patch.object(self.service, "commit_unowned", side_effect=racing_commit):
+            with self.assertRaises(main.HTTPException) as caught:
+                asyncio.run(main.apply_audio_output_state(FakeRequest({
+                    "expected_revision": 1, "mutation": {"kind": "set_level_calibration", "mode": "stereo-sub",
+                    "state_revision": 1, "measurement_job_id": "job-1", "values": {"main_l": {"global": -4}}}})))
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(self.service.load(), winner)
+
+    def test_level_result_requires_original_revision_even_without_job_id(self):
+        seed_sub_state(self.service)
+        before = Path(self.directory, "output-state.json").read_bytes()
+        with audio_context(self.service):
+            with self.assertRaises(main.HTTPException) as caught:
+                asyncio.run(main.apply_audio_output_state(FakeRequest({
+                    "expected_revision": 1,
+                    "mutation": {"kind": "set_level_calibration", "mode": "stereo-sub",
+                                 "values": {"main_l": {"global": -4}}},
+                })))
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(Path(self.directory, "output-state.json").read_bytes(), before)
+
     def test_removed_legacy_routes_are_unknown(self):
         routes = {getattr(route, "path", "") for route in main.app.routes}
         self.assertNotIn("/api/audio/output-mode", routes)

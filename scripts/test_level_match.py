@@ -314,6 +314,37 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
                          [["main_l"], ["main_r"]])
         self.assertEqual(set(self.table.entries("stereo")), {"global:main_l", "global:main_r"})
 
+    async def test_commit_context_rejects_changed_device_gain_revision_and_values(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): -18.0, ("main_r",): -20.0})
+        job = await self.run_job("main")
+        mutation = {"mode": "stereo", "state_revision": self.state["revision"],
+                    "measurement_job_id": job["id"], "values": job["result"]["values"]}
+        api.validate_result(mutation, self.state)
+        for changed in ({**self.state, "revision": self.state["revision"] + 1},
+                        {**self.state, "active_mode": "stereo-sub"}):
+            with self.assertRaises(HTTPException) as caught:
+                api.validate_result(mutation, changed)
+            self.assertEqual(caught.exception.status_code, 409)
+        with patch.object(speaker_sweep.measurement_session, "_resolve_measurement_start_sample_rate", lambda: 96000):
+            with self.assertRaises(HTTPException) as caught:
+                api.validate_result(mutation, self.state)
+            self.assertEqual(caught.exception.status_code, 409)
+        self.capture_volume = 70.0
+        with self.assertRaises(HTTPException):
+            api.validate_result(mutation, self.state)
+        self.capture_volume = 40.0
+        original = self.store.measurement_target_provider
+        self.store.measurement_target_provider = lambda *args: {**original(*args), "device_key": "other"}
+        with self.assertRaises(HTTPException):
+            api.validate_result(mutation, self.state)
+        self.store.measurement_target_provider = original
+        with self.assertRaises(HTTPException):
+            api.validate_result({**mutation, "values": {"main_l": {"global": -12}}}, self.state)
+        api.mark_result_applied(mutation)
+        with self.assertRaises(HTTPException):
+            api.validate_result(mutation, self.state)
+
     async def test_global_and_all_banks_share_crossover_results_and_clear_old_bank_trims(self):
         roles = ["left_low", "right_low", "left_high", "right_high", "sub1"]
         state = mode_state("stereo-sub", roles, crossover=True)

@@ -238,6 +238,11 @@ def upgrade_output_state(payload: dict) -> dict:
         candidate = default_output_state()
         config["crossover_enabled"] = enabled
         config['av_sync'] = default_av_sync()
+        processing = config.get("processing")
+        if not isinstance(processing, dict) or any(not isinstance(item, dict) for item in processing.values()):
+            raise ValueError("Invalid version-one output processing")
+        for settings in processing.values():
+            settings.setdefault("level_cal_db", default_level_cal())
         config["bass_management"] = _defaulted_bass_management(config.get("bass_management"))
         candidate["modes"]["stereo-sub"] = config
         validate_output_state(candidate)

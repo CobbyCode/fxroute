@@ -182,6 +182,8 @@ async def _run(job: dict[str, Any], target: dict, scope: dict) -> None:
         if dependencies.get_output_state()["revision"] != state["revision"]:
             raise RuntimeError("Level Matching output state changed; run again")
         table.save_entries(mode, merged)
+        job["_commit_target"] = target
+        job["_commit_fingerprint"] = fingerprint
         job["result"] = {"mode": mode, "values": derived,
                          "measured_roles": sorted({entry["role"] for entry in fresh.values()}),
                          "state_revision": state["revision"]}
@@ -194,6 +196,54 @@ async def _run(job: dict[str, Any], target: dict, scope: dict) -> None:
         job["error"] = str(exc)
     finally:
         job["finished_at"] = speaker_sweep.now()
+
+
+def validate_result(mutation: dict, state: dict) -> None:
+    """Validate a completed result immediately before the revision-checked commit."""
+    revision = mutation.get("state_revision")
+    if type(revision) is not int or revision < 0:
+        raise HTTPException(status_code=400, detail="Level Matching requires its original state_revision")
+    message = "Level Matching configuration changed; measure again"
+    if revision != state["revision"] or mutation.get("mode") != state["active_mode"]:
+        raise HTTPException(status_code=409, detail=message)
+    job_id = mutation.get("measurement_job_id")
+    if not job_id:
+        # Reset is revision-bound too, but has no completed capture.
+        values = mutation.get("values")
+        if (not isinstance(values, dict) or not values
+                or any(not isinstance(slots, dict) or not slots
+                       or any(type(value) not in (int, float) or value != 0 for value in slots.values())
+                       for slots in values.values())):
+            raise HTTPException(status_code=400, detail="Level Matching requires a completed measurement job")
+        return
+    job = _slot.job
+    if (job is None or job["id"] != job_id or job["status"] != "completed"
+            or job["cancel_requested"] or job.get("_applied")
+            or job["result"]["state_revision"] != revision
+            or job["result"]["mode"] != mutation.get("mode")
+            or job["result"]["values"] != mutation.get("values")):
+        raise HTTPException(status_code=409, detail=message)
+    target = job.get("_commit_target")
+    if not isinstance(target, dict):
+        raise HTTPException(status_code=409, detail=message)
+    try:
+        current = speaker_sweep.freeze_area_target(_dependencies().get_store(), "all")
+    except (HTTPException, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=message) from exc
+    if any(current.get(key) != target.get(key) for key in
+           ("revision", "mode", "device_key", "channels", "sample_rate_hz", "processing_fingerprint", "roles")):
+        raise HTTPException(status_code=409, detail=message)
+    fingerprint = job.get("_commit_fingerprint")
+    capture_volume, system_volume = _observed_volumes(fingerprint["mic_node"])
+    live_fingerprint = {**fingerprint, "capture_volume_percent": capture_volume,
+                        "system_volume_percent": system_volume}
+    if not level_match.fingerprints_match(fingerprint, live_fingerprint):
+        raise HTTPException(status_code=409, detail=message)
+
+
+def mark_result_applied(mutation: dict) -> None:
+    if _slot.job is not None and _slot.job["id"] == mutation.get("measurement_job_id"):
+        _slot.job["_applied"] = True
 
 
 @router.get("/api/measurements/level-match")
@@ -250,7 +300,7 @@ async def reset_level_match(bank_id: str = Form(...)):
     mode = target["mode"]
     table.save_entries(mode, level_match.drop_family(table.entries(mode), scope["family"])
                        if mode == "surround" else {})
-    return {"status": "ok", "mode": mode, "bank_id": bank_id,
+    return {"status": "ok", "mode": mode, "bank_id": bank_id, "state_revision": target["revision"],
             "values": level_match.zero_slot_values(mode, target["roles"], scope)}
 
 

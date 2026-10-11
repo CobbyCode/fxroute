@@ -159,6 +159,20 @@ async function applyFlow() {
             return true;
         });
 
+    const calibrationPosts = [];
+    const calibrationFetch = async (url, options) => {
+        calibrationPosts.push(JSON.parse(options.body));
+        return calibrationPosts.length === 1
+            ? { ok: false, status: 409, json: async () => ({ detail: { message: 'Measure again', revision: 11 } }) }
+            : { ok: true, status: 200, json: async () => ({ revision: 12 }) };
+    };
+    await assert.rejects(OutputState.applyMutation(calibrationFetch, { ...catalog(), revision: 11 },
+        async () => ({ ...catalog(), revision: 11 }), { kind: 'set_level_calibration', mode: 'stereo',
+            state_revision: 10, measurement_job_id: 'job-1', values: { main_l: { global: -4 } } }),
+        error => error.status === 409);
+    assert.equal(calibrationPosts.length, 1, 'Measurement results must never rebase');
+    assert.equal(calibrationPosts[0].expected_revision, 10, 'Apply uses the measurement revision');
+
     const locked = async () => ({ ok: false, status: 423, json: async () => ({}) });
     await assert.rejects(OutputState.applyMutation(locked, current, getCatalog, { kind: 'switch_mode', mode: 'stereo-sub' }),
         /423/);

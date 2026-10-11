@@ -14,13 +14,16 @@
 #endif
 
 #define BUFFER 16384
-#define STARTUP_WAIT_NS 3000000000ULL
+#define STARTUP_WAIT_NS 3750000000ULL
+#define MAX_RATE 768000U
 static uint64_t startup_now_ns(void)
 { struct timespec now; clock_gettime(CLOCK_MONOTONIC,&now); return (uint64_t)now.tv_sec*1000000000+now.tv_nsec; }
 struct composition {
     struct fx_worker *worker;
     struct resample match;
-    float **buffer;
+    float **buffer, **startup;
+    unsigned startup_size, startup_read;
+    _Atomic uint32_t startup_count;
     _Atomic uint32_t buffered;
     uint32_t flush;
     uint64_t accepted, nominal_pulled, first_input_ns;
@@ -29,8 +32,6 @@ struct composition {
     uint64_t rate_updates, max_callback_ns, callbacks;
     unsigned eof, flushed, done, total_underruns;
     _Atomic unsigned underruns;
-    uint64_t startup_start_ns;
-    unsigned startup_armed;
     enum fx_profile profile;
     _Atomic int error;
 };
@@ -52,7 +53,8 @@ static void free_composition(struct resample *r)
     if(c->worker)fx_worker_destroy(c->worker);
     if(c->match.free)resample_free(&c->match);
     if(c->buffer)for(unsigned i=0;i<r->channels;++i)free(c->buffer[i]);
-    free(c->buffer);free(c);r->data=NULL;
+    if(c->startup)for(unsigned i=0;i<r->channels;++i)free(c->startup[i]);
+    free(c->startup);free(c->buffer);free(c);r->data=NULL;
 }
 static uint32_t input_length(struct resample *r,uint32_t output)
 {
@@ -83,7 +85,7 @@ static double timeline_delay(struct resample *r)
 {
     struct composition *c=r->data;
     if(c->prime)return .750*r->i_rate;
-    double outstanding=c->accepted-(c->nominal_pulled-c->buffered)*(double)r->i_rate/r->o_rate;
+    double outstanding=c->accepted-(c->nominal_pulled-c->buffered-c->startup_count)*(double)r->i_rate/r->o_rate;
     double delay=outstanding+((double)resample_delay(&c->match)+resample_phase(&c->match))*(double)r->i_rate/r->o_rate;
     return delay>0?delay:0;
 }
@@ -106,7 +108,7 @@ static void reset_composition(struct resample *r)
     resample_reset(&c->match);
     c->buffered=c->flush=0;
     c->eof=c->flushed=c->done=c->underruns=0;c->error=0;
-    c->startup_armed=0;c->startup_start_ns=0;
+    c->startup_count=0;c->startup_read=0;
     c->accepted=c->nominal_pulled=c->real=c->lead=c->reserve=0;c->fraction=0;
     c->startup_input_delay=0;
     c->first_input_ns=0;c->first_real_ns=0;
@@ -138,7 +140,7 @@ void fx_resample_stats(struct resample *r,struct fx_resample_stats *stats)
      * published after the value it is checked against. */
     stats->reserve_frames=c->reserve;stats->lead_frames=c->lead;
     stats->real_frames=c->real;stats->first_real_ns=c->first_real_ns;stats->underruns=c->underruns;
-    stats->buffered=c->buffered;
+    stats->buffered=c->buffered+c->startup_count;
 }
 void fx_resample_note_callback(struct resample *r,uint64_t ns)
 {
@@ -157,27 +159,53 @@ static void add_real(struct composition *c,unsigned made)
  * error and is not a queue underrun. */
 static int startup_expired(struct composition *c)
 {
-    if(!c->worker||c->eof||c->error||!c->startup_armed||c->real||fx_worker_error(c->worker)||
-       startup_now_ns()-c->startup_start_ns<=STARTUP_WAIT_NS)return 0;
+    if(!c->worker||c->eof||c->error||!c->first_input_ns||c->real||fx_worker_error(c->worker)||
+       startup_now_ns()-c->first_input_ns<=STARTUP_WAIT_NS)return 0;
     c->error=ETIMEDOUT;
     return 1;
+}
+/* Retain nominal PCM while startup silence is emitted. All storage is
+ * allocated at setup; two bounded pulls handle wrap without realtime allocation. */
+static void collect_startup(struct resample *r)
+{
+    struct composition *c=r->data;
+    for(unsigned pass=0;pass<2;++pass) {
+        unsigned count=c->startup_count,room=c->startup_size-count;
+        if(!room)break;
+        unsigned write=(c->startup_read+count)%c->startup_size;
+        unsigned wanted=c->startup_size-write;if(wanted>room)wanted=room;
+        float *pointers[FX_WORKER_MAX_CHANNELS];
+        for(unsigned i=0;i<r->channels;++i)pointers[i]=c->startup[i]+write;
+        unsigned pulled=fx_worker_pull(c->worker,pointers,wanted);
+        c->startup_count+=pulled;c->nominal_pulled+=pulled;
+        if(pulled<wanted)break;
+    }
 }
 static void process_composition(struct resample *r,const void * SPA_RESTRICT src[],uint32_t *input,
     void * SPA_RESTRICT dst[],uint32_t *output)
 {
     struct composition *c=r->data;
     unsigned offered=*input,capacity=*output;*input=*output=0;
+    if(startup_expired(c))return;
+    if(c->worker&&!c->real)collect_startup(r);
     if(c->done||c->error||(!capacity&&(c->worker||c->eof))) {
-        startup_expired(c);
         return;
     }
     if(!c->eof) {
-        if(offered&&!c->first_input_ns)c->first_input_ns=startup_now_ns();
         unsigned take=offered;
         if(c->worker) {
             unsigned wanted=input_length(r,capacity);if(take>wanted)take=wanted;
             take=fx_worker_push(c->worker,(const float *const *)src,take);
-            unsigned available=output_length(r,take);if(capacity>available)capacity=available;
+            unsigned available=output_length(r,take);
+            /* Existing nominal PCM must drain even when the input queue is full.
+             * Fractional input debt is carried into the next callback, not dropped. */
+            if(!c->prime) {
+                unsigned queued=c->buffered+c->startup_count+fx_worker_available(c->worker);
+                if(queued>BUFFER)queued=BUFFER;
+                unsigned ready=resample_out_len(&c->match,queued);
+                if(ready>available)available=ready;
+            }
+            if(capacity>available)capacity=available;
             c->fraction-=take;
         } else {
             unsigned made=capacity;
@@ -188,6 +216,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
 #endif
             *output=made;add_real(c,made);c->nominal_pulled+=take;
         }
+        if(take&&!c->first_input_ns)c->first_input_ns=startup_now_ns();
         *input=take;c->accepted+=take;
         if(!c->worker)return;
         if(!capacity){
@@ -205,7 +234,6 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
         for(unsigned i=0;i<r->channels;++i)memset(dst[i],0,made*4);
         c->prime=fmax(0,c->prime-made/c->rate);c->lead+=made;c->reserve+=made;*output=made;
         c->startup_input_delay+=made*(double)r->i_rate/(r->o_rate*c->rate);
-        if(c->prime==0&&!c->startup_armed){c->startup_armed=1;c->startup_start_ns=startup_now_ns();}
 #ifdef FX_SRC_VERIFY
         fx_verify_account(*input,made,c->rate,c->eof,c->prime!=0);
 #endif
@@ -213,15 +241,29 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
         return;
     }
     unsigned need=resample_in_len(&c->match,capacity);
+    /* Engine output arrives in bursts. Do not spend the reserve on the first
+     * short burst; retain a nominal reserve before releasing real PCM. */
+    unsigned ready_frames=(double)r->i_rate/r->o_rate>4.0 ? (3ULL*r->o_rate+3)/4 : need;
+    unsigned startup_ready=!c->worker||c->real||c->eof||
+        c->buffered+c->startup_count+fx_worker_available(c->worker)>=ready_frames;
     if(c->worker&&c->buffered<need) {
         unsigned wanted=need-c->buffered;if(wanted>BUFFER-c->buffered)wanted=BUFFER-c->buffered;
         /* A worker exists only for r->channels <= FX_WORKER_MAX_CHANNELS. */
         float *pointers[FX_WORKER_MAX_CHANNELS];for(unsigned i=0;i<r->channels;++i)pointers[i]=c->buffer[i]+c->buffered;
-        unsigned pulled=fx_worker_pull(c->worker,pointers,wanted);
+        unsigned from_start=c->startup_count;if(from_start>wanted)from_start=wanted;
+        unsigned first=c->startup_size-c->startup_read;if(first>from_start)first=from_start;
+        for(unsigned i=0;i<r->channels;++i) {
+            memcpy(pointers[i],c->startup[i]+c->startup_read,first*4);
+            memcpy(pointers[i]+first,c->startup[i],(from_start-first)*4);
+            pointers[i]+=from_start;
+        }
+        if(c->startup_size)c->startup_read=(c->startup_read+from_start)%c->startup_size;
+        c->startup_count-=from_start;c->buffered+=from_start;
+        unsigned pulled=fx_worker_pull(c->worker,pointers,wanted-from_start);
         c->buffered+=pulled;c->nominal_pulled+=pulled;
     }
     int nominal_done=c->eof&&(!c->worker||fx_worker_finished(c->worker));
-    if(c->buffered<need&&!nominal_done&&!c->eof) {
+    if((c->buffered<need||!startup_ready)&&!nominal_done&&!c->eof) {
         if(c->worker&&c->real==0&&!fx_worker_error(c->worker)) {
             if(startup_expired(c))return;
             for(unsigned i=0;i<r->channels;++i)memset(dst[i],0,capacity*4);
@@ -272,11 +314,12 @@ int fx_resample_init(struct resample *r)
     enum fx_profile profile;
     int result=fx_src_load_profile(&profile);if(result<0)return result;
     struct composition *c=calloc(1,sizeof(*c));if(!c)return -ENOMEM;
+    atomic_init(&c->startup_count,0);
     atomic_init(&c->buffered,0);atomic_init(&c->real,0);atomic_init(&c->lead,0);
     atomic_init(&c->reserve,0);atomic_init(&c->first_real_ns,0);
     atomic_init(&c->underruns,0);atomic_init(&c->error,0);
     /* Cross-thread diagnostics must not add locks to graph processing. */
-    if(!atomic_is_lock_free(&c->buffered)||!atomic_is_lock_free(&c->real)||!atomic_is_lock_free(&c->lead)||
+    if(!atomic_is_lock_free(&c->startup_count)||!atomic_is_lock_free(&c->buffered)||!atomic_is_lock_free(&c->real)||!atomic_is_lock_free(&c->lead)||
        !atomic_is_lock_free(&c->reserve)||!atomic_is_lock_free(&c->first_real_ns)||
        !atomic_is_lock_free(&c->underruns)||!atomic_is_lock_free(&c->error)){free(c);return -ENOTSUP;}
 #ifdef FX_SRC_VERIFY
@@ -293,6 +336,11 @@ int fx_resample_init(struct resample *r)
     for(unsigned i=0;i<r->channels;++i){c->buffer[i]=calloc(BUFFER,4);if(!c->buffer[i])goto fail;}
     c->rate=c->rate_min=c->rate_max=1;
     if(r->i_rate!=r->o_rate) {
+        if(!r->i_rate||!r->o_rate||r->i_rate>MAX_RATE||r->o_rate>MAX_RATE||
+           r->channels>FX_WORKER_MAX_CHANNELS)goto fail;
+        c->startup_size=(3ULL*r->o_rate+3)/4+BUFFER;
+        c->startup=calloc(r->channels,sizeof(float *));if(!c->startup)goto fail;
+        for(unsigned i=0;i<r->channels;++i){c->startup[i]=calloc(c->startup_size,4);if(!c->startup[i])goto fail;}
         c->worker=fx_worker_create(profile,r->channels,r->i_rate,r->o_rate,65536);if(!c->worker)goto fail;
         /* Initialization is outside the graph process callback. */
         struct fx_worker_stats stats;

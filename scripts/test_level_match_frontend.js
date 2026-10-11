@@ -37,7 +37,7 @@ function element() {
     };
 }
 
-function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: true, body: { mode: 'stereo', values: { main_l: { bank: 0 }, main_r: { bank: 0 } } } }, blocked = false }) {
+function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: true, body: { mode: 'stereo', state_revision: 10, values: { main_l: { bank: 0 }, main_r: { bank: 0 } } } }, blocked = false }) {
     const elements = {
         levelMatchOpen: element(), levelMatchPanel: element(), levelMatchClose: element(),
         levelMatchArea: element(), levelMatchStart: element(), levelMatchReset: element(), levelMatchActionStatus: element(),
@@ -73,6 +73,29 @@ function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: tru
 }
 
 (async () => {
+    // Cancellation before the start reply must cancel the late job, not poll or apply it.
+    for (const action of ['closeLevelMatch', 'cancelLevelMatch']) {
+        const h = harness({ area: { bank_id: 'main', available: true }, status: {}, jobs: [] });
+        let reply;
+        const urls = [];
+        levelMatch.init({ fetch: async (url) => {
+            urls.push(url);
+            if (url.endsWith('/start')) return new Promise(resolve => { reply = resolve; });
+            if (url.endsWith('/cancel')) return { ok: true, json: async () => ({}) };
+            if (url.includes('/jobs/')) return { ok: true, json: async () => ({ job: { id: 'job-1', status: 'completed',
+                result: { mode: 'stereo', state_revision: 10, values: { main_l: { global: -4 } } } } }) };
+            return { ok: true, json: async () => ({ entries: [] }) };
+        } });
+        const pending = levelMatch.startLevelMatch();
+        await levelMatch[action]();
+        reply({ ok: true, json: async () => ({ job: { id: 'job-1', status: 'running' } }) });
+        await pending;
+        assert.equal(urls.filter(url => url.endsWith('/cancel')).length, 1);
+        assert.equal(urls.filter(url => url.includes('/jobs/') && !url.endsWith('/cancel')).length, 0);
+        assert.deepEqual(h.mutations, []);
+        assert.equal(h.elements.levelMatchStart.disabled, false);
+    }
+
     // An older success or error must not replace a newer area's status, including close/reopen.
     for (const staleError of [false, true]) {
         const h = harness({ area: { bank_id: 'main', available: true }, status: {}, jobs: [] });
@@ -115,7 +138,7 @@ function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: tru
     {
         const status = { mode: 'stereo', requires_reference: false, reference_ready: true, units: ['left', 'right'],
             entries: [{ role: 'main_l', slot: 'bank', valid: true, trim_db: -2.5 }, { role: 'main_r', slot: 'bank', valid: false, trim_db: null }] };
-        const done = { id: 'job-1', status: 'completed', result: { mode: 'stereo', values: { main_l: { bank: -2.5 }, main_r: { bank: 0 } } } };
+        const done = { id: 'job-1', status: 'completed', result: { mode: 'stereo', state_revision: 10, values: { main_l: { bank: -2.5 }, main_r: { bank: 0 } } } };
         const { elements, calls, mutations } = harness({ area: { bank_id: 'main', label: 'Main L/R', available: true }, status, jobs: [done] });
         await levelMatch.openLevelMatch();
         assert.match(elements.levelMatchArea.textContent, /Output mode/);
@@ -130,7 +153,7 @@ function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: tru
         assert.equal(start.options.body.get('input_id'), 'mic-1');
         assert.equal(start.options.body.get('mic_input_channel'), '2');
         assert.equal(start.options.body.get('calibration_ref'), 'cal-9');
-        assert.deepEqual(mutations, [{ kind: 'set_level_calibration', fields: { mode: 'stereo', values: { main_l: { bank: -2.5 }, main_r: { bank: 0 } } } }]);
+        assert.deepEqual(mutations, [{ kind: 'set_level_calibration', fields: { mode: 'stereo', state_revision: 10, measurement_job_id: 'job-1', values: { main_l: { bank: -2.5 }, main_r: { bank: 0 } } } }]);
         assert.match(elements.levelMatchStatus.textContent, /Level Calibration applied/);
         assert.equal(elements.levelMatchStart.textContent, 'Match levels');
     }
@@ -182,7 +205,7 @@ function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: tru
     // A rejected commit is reported, not claimed as applied.
     {
         const status = { mode: 'stereo', requires_reference: false, reference_ready: true, units: ['left', 'right'], entries: [] };
-        const done = { id: 'job-1', status: 'completed', result: { mode: 'stereo', values: { main_l: { bank: -1 } } } };
+        const done = { id: 'job-1', status: 'completed', result: { mode: 'stereo', state_revision: 10, values: { main_l: { bank: -1 } } } };
         const { elements } = harness({ area: { bank_id: 'main', label: 'Main L/R', available: true }, status, jobs: [done], applied: { ok: false } });
         await levelMatch.openLevelMatch();
         await levelMatch.startLevelMatch();
@@ -211,7 +234,7 @@ function harness({ area, status, jobs, applied = { ok: true }, reset = { ok: tru
         const reset = calls.find((call) => call.url === '/api/measurements/level-match/reset');
         assert.equal(reset.options.method, 'POST');
         assert.equal(reset.options.body.get('bank_id'), 'main');
-        assert.deepEqual(mutations, [{ kind: 'set_level_calibration', fields: { mode: 'stereo', values: { main_l: { bank: 0 }, main_r: { bank: 0 } } } }]);
+        assert.deepEqual(mutations, [{ kind: 'set_level_calibration', fields: { mode: 'stereo', state_revision: 10, values: { main_l: { bank: 0 }, main_r: { bank: 0 } } } }]);
         assert.match(elements.levelMatchStatus.textContent, /reset to 0 dB/);
         assert.equal(elements.levelMatchReset.disabled, false);
         assert.equal(elements.levelMatchStart.disabled, false);

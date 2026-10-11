@@ -138,12 +138,17 @@ and restarts affected audio services before allowing runtime deletion.
 Unequal-rate adapters keep a **750 ms minimum** nominal startup reserve and use
 **65,536-frame** input/output queues. Before the first real output only, the
 adapter extends credited startup silence until a full native matcher input
-quantum is buffered; it never re-primes after real output begins. A later
+quantum is buffered; downsampling ratios above 4:1 also retain 750 ms of
+nominal PCM to cover engine burst spacing. It never re-primes after real output
+begins. A preallocated startup FIFO (750 ms at the output rate plus 16,384
+frames) drains the worker during reserve production without dropping PCM.
+Unequal-rate adapters accept rates up to 768 kHz; allocation is outside the
+realtime callback. A later
 shortage with a healthy engine is concealed with counted silence and the
 stream keeps running; only engine failure (a worker error) is terminal.
-The 3 s wait allowance starts once the 750 ms minimum
-has been emitted (about 3,750 ms total under realtime pacing), checked
-even under FIFO backpressure; worker failure still fails immediately and reset
+The 3,750 ms startup deadline starts with the first accepted input frame,
+including callbacks with no output capacity and FIFO backpressure. Worker
+failure still fails immediately and reset
 clears the deadline. These are prototype-derived, provisional
 values, not a promised latency target. Equal-rate playback has no nominal
 reserve. These values have not been tuned from a quality preference and should
