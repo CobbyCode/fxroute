@@ -597,12 +597,15 @@ async function main() {
         'typing must not trigger an immediate TIDAL search');
 
     // Once the pause expires, the search replaces the browse body with results.
+    // A new search defaults to Albums (Albums -> Tracks -> Artists -> Playlists).
     await new Promise((resolve) => setTimeout(resolve, 350));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(fetchCalls.some((c) => c.url.startsWith('/api/streaming/tidal/search?q=daft%20punk')),
         'debounced search must hit the TIDAL search endpoint');
-    const resultCount = createdEls.filter((el) => el.className === 'streaming-result').length;
-    assert.equal(resultCount, 2, 'search must render all track result rows');
+    assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/search?q=daft%20punk&types=albums&limit=25'),
+        'a new search must default to the Albums result type');
+    const albumCount = createdEls.filter((el) => el.className === 'album-card').length;
+    assert.ok(albumCount >= 1, 'a new search must render album result tiles by default');
     assert.ok(sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('Search results for'),
         'search must switch to the dedicated result state');
     assert.ok(!sandbox.document.getElementById('tidal-browse-body').innerHTML.includes('tidal-fav-results'),
@@ -611,6 +614,14 @@ async function main() {
         'normal track search results must not show permanent checkboxes');
     assert.ok(!body.innerHTML.includes('tidal-select-all'),
         'selection actions must stay hidden until selection mode is activated');
+
+    // Track results are one tab away: switching reuses the executed query.
+    body.querySelector('#tidal-search-type-tracks').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/search?q=daft%20punk&types=tracks&limit=25'),
+        'switching to tracks must automatically search the saved query');
+    const resultCount = createdEls.filter((el) => el.className === 'streaming-result').length;
+    assert.equal(resultCount, 2, 'track search must render all track result rows');
 
     // A normal track click uses all currently displayed tracks as a temporary queue.
     const resultRows = createdEls.filter((el) => el.className === 'streaming-result');
@@ -639,12 +650,26 @@ async function main() {
     }, 'a plain row click must still play with the full visible queue');
 
     // Switching result types reuses the executed query without a second Search click.
-    for (const type of ['artists', 'tracks', 'albums', 'playlists']) {
+    for (const type of ['albums', 'tracks', 'artists', 'playlists']) {
         body.querySelector('#tidal-search-type-' + type).click();
         await new Promise((resolve) => setTimeout(resolve, 0));
         assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/search?q=daft%20punk&types=' + type + '&limit=25'),
             'switching to ' + type + ' must automatically search the saved query');
     }
+
+    // A new search always resets to Albums, even from another result type.
+    body.querySelector('#tidal-search-type-tracks').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    input.value = 'daft punk remix';
+    input.dispatch('input');
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(fetchCalls.some((c) => c.url === '/api/streaming/tidal/search?q=daft%20punk%20remix&types=albums&limit=25'),
+        'typing a new query must reset the search to the Albums result type');
+    input.value = 'daft punk';
+    input.dispatch('input');
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Returning from a detail opened by search restores the executed search view.
     body.querySelector('#tidal-search-type-albums').click();
@@ -1120,10 +1145,13 @@ async function main() {
     assert.ok(!saveRow().classList.contains('hidden'), 'favoriting must never clear the playlist selection');
 
     // Search results: the same + language, selection carried over (s2 active).
+    // A fresh search defaults to Albums; switch to Tracks for the row checks.
     const rowBase = trackRows().length;
     const input = content.querySelector('#tidal-search-input');
     input.value = 'found';
     input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sandbox.document.getElementById('tidal-browse-body').querySelector('#tidal-search-type-tracks').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const searchRows = trackRows().slice(rowBase);
     assert.equal(searchRows.length, 2, 'search must render two track rows');
@@ -1165,6 +1193,8 @@ async function main() {
     const input = content.querySelector('#tidal-search-input');
     input.value = 'found';
     input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sandbox.document.getElementById('tidal-browse-body').querySelector('#tidal-search-type-tracks').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     trackRows().find((row) => row.innerHTML.includes('data-streaming-add="s1"')).querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
     // Album detail: the same + renders inside the shared track row.
@@ -1219,6 +1249,8 @@ async function main() {
     input.value = 'found';
     input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
     await new Promise((resolve) => setTimeout(resolve, 0));
+    sandbox.document.getElementById('tidal-browse-body').querySelector('#tidal-search-type-tracks').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     trackRows().find((row) => row.innerHTML.includes('data-streaming-add="s1"')).querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
 
     fetchCalls.length = 0;
@@ -1252,6 +1284,8 @@ async function main() {
     const input = content.querySelector('#tidal-search-input');
     input.value = 'found';
     input.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sandbox.document.getElementById('tidal-browse-body').querySelector('#tidal-search-type-tracks').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     trackRows()[0].querySelectorAll('.streaming-add[data-streaming-add]')[0].click();
 

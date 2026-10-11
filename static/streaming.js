@@ -123,7 +123,7 @@
             viewStack: [],      // previous detail views so Back returns through nested details
             searchQuery: '',
             searchExecuted: false,
-            searchResultType: 'tracks',
+            searchResultType: 'albums',
             searchResults: null,
             searchRequestId: 0,
             searchDebounceTimer: null,
@@ -1354,17 +1354,18 @@
             state.tidal.searchRequestId += 1;
             state.tidal.searchQuery = query;
             state.tidal.searchExecuted = true;
+            state.tidal.searchResultType = 'albums';
             state.tidal.searchResults = null;
             state.tidal.searchInFlight = false;
             const body = root.querySelector('#tidal-browse-body');
             if (body) body.innerHTML = contentState('loading', immediate ? 'Searching…' : 'Waiting to search…');
             if (immediate) {
-                void executeTidalSearch(state.tidal.searchResultType);
+                void executeTidalSearch('albums');
                 return;
             }
             state.tidal.searchDebounceTimer = setTimeout(() => {
                 state.tidal.searchDebounceTimer = null;
-                void executeTidalSearch(state.tidal.searchResultType);
+                void executeTidalSearch('albums');
             }, TIDAL_SEARCH_DEBOUNCE_MS);
         };
         input.addEventListener('input', () => { syncClear(); startSearch(false); });
@@ -1453,7 +1454,7 @@
         renderTidalBrowseSection(state.tidal.browseCategory);
     }
 
-    const TIDAL_SEARCH_TYPES = ['artists', 'tracks', 'albums', 'playlists'];
+    const TIDAL_SEARCH_TYPES = ['albums', 'tracks', 'artists', 'playlists'];
     const TIDAL_SEARCH_TYPE_LABELS = { artists: 'Artists', tracks: 'Tracks', albums: 'Albums', playlists: 'Playlists' };
 
     async function executeTidalSearch(type) {

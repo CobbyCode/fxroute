@@ -186,7 +186,7 @@ assert.ok(js.includes('function renderTidalSearchResults'),
     'executed searches must have a dedicated result view');
 assert.ok(js.includes('Search results for &quot;'),
     'executed searches must show the query in a result heading');
-assert.ok(js.includes("const TIDAL_SEARCH_TYPES = ['artists', 'tracks', 'albums', 'playlists'];"),
+assert.ok(js.includes("const TIDAL_SEARCH_TYPES = ['albums', 'tracks', 'artists', 'playlists'];"),
     'search result types must have the requested order');
 assert.ok(js.includes('tidal-search-result-types'),
     'search result type controls must be distinct from the browse categories');
@@ -392,7 +392,7 @@ assert.ok(js.includes("TIDAL_BROWSE_LABELS = { tracks: 'Tracks', albums: 'Albums
     'Tracks, Albums, Artists and Playlists must be the four labelled browse tabs');
 assert.ok(js.includes('data-browse="\' + cat + \'"'),
     'the browse tabs must carry their category in data-browse');
-assert.ok(js.includes("const TIDAL_SEARCH_TYPES = ['artists', 'tracks', 'albums', 'playlists'];"),
+assert.ok(js.includes("const TIDAL_SEARCH_TYPES = ['albums', 'tracks', 'artists', 'playlists'];"),
     'the search result view must keep the track/album/artist/playlist search types');
 assert.ok(js.includes('/api/streaming/tidal/favorites?type=') && js.includes('/api/streaming/tidal/playlists'),
     'favorite albums and real playlists must be fetched from distinct endpoints');
