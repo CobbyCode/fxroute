@@ -34,6 +34,7 @@ AUDIT_FILES = (
     "playback/runtime/output_mode.py",
     "playback/runtime/adapter.py",
     "playback/queue.py",
+    "playback/stream_queue.py",
     "measurement/autosub/deps.py",
     "measurement/autosub/candidates.py",
     "measurement/autosub/scoring.py",

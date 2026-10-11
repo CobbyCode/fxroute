@@ -26,11 +26,12 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, AsyncContextManager, Awaitable, Callable, Optional
 
 from fastapi import HTTPException
 from http_errors import bad_request
 import playback.source_policy as source_policy
+from playback.stream_queue import StreamQueuePrefetch
 from playback.transition import PlaybackTransitionFailure, TransitionRequest
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,12 @@ class PlaybackQueueDependencies:
     # Coordinator-level discard is the only guard (legacy/test wiring).
     capture_source_intent: Callable[[], Any] | None = None
     ensure_source_intent_current: Callable[[Any], None] | None = None
+    # Rolling streaming playlist appends share the manual transport boundary.
+    stream_transport_guard: Callable[[], AsyncContextManager] | None = None
+    stream_prefetch_epoch: Callable[[], int | None] | None = None
+    get_playback_owner: Callable[[], str | None] | None = None
+    create_background_task: Callable[..., Any] | None = None
+    mark_playback_intent_changed: Callable[[], None] | None = None
 
 
 def can_use_native_local_queue(tracks: list[dict]) -> bool:
@@ -198,6 +205,7 @@ class PlaybackQueue:
         self.loop: bool = False
         self.shuffle: bool = False
         self.single_track_loop: bool = False
+        self.stream_prefetch = StreamQueuePrefetch(self)
 
     @property
     def _player(self) -> Any:
@@ -205,6 +213,7 @@ class PlaybackQueue:
 
     def commit(self, candidate: QueueCandidate) -> None:
         """Publish a prepared queue candidate to the committed state."""
+        self.stream_prefetch.invalidate()
         self.tracks = [dict(item) for item in candidate.queue]
         self.original = [dict(item) for item in candidate.original]
         self.index = candidate.index
@@ -213,8 +222,10 @@ class PlaybackQueue:
         self.shuffle = candidate.shuffle
         self.single_track_loop = candidate.single_track_loop
 
-    def reset(self) -> None:
+    def reset(self, *, guarded: bool = False) -> None:
         """Clear the committed queue, trimming a native MPV playlist first."""
+        self.stream_prefetch.reconcile_current(guarded=guarded)
+        self.stream_prefetch.invalidate(trim=True, guarded=guarded)
         was_native = self.mode == "native_mpv"
         if was_native:
             self.reduce_native_playlist_to_current()
@@ -252,6 +263,8 @@ class PlaybackQueue:
         old_mode = self.mode
 
         def _kept(entry: dict) -> bool:
+            if isinstance(entry, dict) and entry.get("source", "local") != "local":
+                return True
             entry_id = str(entry.get("id") or "").strip() if isinstance(entry, dict) else ""
             return not entry_id or entry_id in valid
 
@@ -517,6 +530,10 @@ class PlaybackQueue:
             rate_updated = True
         if queue_candidate is not None:
             self.commit(queue_candidate)
+        else:
+            self.stream_prefetch.invalidate()
+        if source == "tidal" and 0 <= index < len(self.tracks):
+            self.tracks[index] = dict(next_track)
         if rate_updated and 0 <= index < len(self.tracks):
             self.tracks[index]["sample_rate_hz"] = result.target_rate
         if queue_candidate is None:
@@ -544,6 +561,7 @@ class PlaybackQueue:
             No navigation was possible and no authoritative queue state was
             changed.
         """
+        self.stream_prefetch.reconcile_current()
         if len(self.tracks) <= 1:
             return "unavailable"
         next_index = self.index + 1
@@ -566,6 +584,7 @@ class PlaybackQueue:
         )
 
     async def rewind(self, *, transition_reason: str = "queue rewind") -> bool:
+        self.stream_prefetch.reconcile_current()
         if len(self.tracks) <= 1:
             return False
         prev_index = self.index - 1
@@ -666,10 +685,15 @@ class PlaybackQueue:
     async def set_shuffle(self, enabled: bool) -> bool:
         if self._deps.transition_is_active():
             raise HTTPException(status_code=409, detail="A playback transition is in progress")
+        self.stream_prefetch.reconcile_current()
         shuffle_source_intent = self._capture_source_intent()
         if len(self.tracks) <= 1:
             self.shuffle = False
             return False
+        if self.mode != "native_mpv":
+            # MPV may start the successor during playlist-clear. Determine the
+            # shuffle anchor only after the retained native entry is verified.
+            self.stream_prefetch.invalidate(trim=True)
         current_index = self.index if 0 <= self.index < len(self.tracks) else 0
         current_track = dict(self.tracks[current_index])
         current_track_id = current_track.get("id")
@@ -765,23 +789,27 @@ class PlaybackQueue:
         self.tracks = target_queue
         self.index = target_index
         self.shuffle = bool(enabled)
+        self.stream_prefetch.schedule()
         return True
 
     def set_loop(self, enabled: bool) -> bool:
         if self._deps.transition_is_active():
             raise HTTPException(status_code=409, detail="A playback transition is in progress")
+        self.stream_prefetch.reconcile_current()
         has_local_track = bool(self._deps.get_current_track_info() and self._deps.get_current_track_info().get("source") in {"local", "tidal"})
         if not has_local_track:
             self.loop = False
             self.single_track_loop = False
             return False
         if len(self.tracks) > 1:
+            self.stream_prefetch.invalidate(trim=True)
             self.loop = bool(enabled)
             self.single_track_loop = False
             if self.mode == "native_mpv" and self._deps.player_is_running():
                 set_loop_playlist = getattr(self._player, "set_loop_playlist", None)
                 if callable(set_loop_playlist):
                     set_loop_playlist(self.loop)
+            self.stream_prefetch.schedule()
             return True
         self.single_track_loop = bool(enabled)
         self.loop = False
@@ -821,7 +849,7 @@ class PlaybackQueue:
 
         return self._deps.build_playback_payload(player_state)
 
-    def sync_index_from_mpv(self, state: dict) -> tuple[int, dict] | None:
+    def sync_index_from_mpv(self, state: dict, *, guarded: bool = False) -> tuple[int, dict] | None:
         """Mirror MPV's native playlist position into the committed index.
 
         Once a homogeneous queue has been committed, MPV owns natural playlist
@@ -831,14 +859,18 @@ class PlaybackQueue:
         for the app-context bookkeeping).
         """
         if (
-            self.mode != "native_mpv"
-            or len(self.tracks) <= 1
-            or self._deps.transition_is_active()
+            len(self.tracks) <= 1
+            or (not guarded and self._deps.transition_is_active())
             or state.get("ended")
-            or state.get("paused")
+            or (state.get("paused") and self.mode == "native_mpv")
             or not state.get("current_file")
         ):
             return None
+        if self.mode != "native_mpv":
+            synced = self.stream_prefetch.sync_index(state)
+            if synced is not None:
+                self.index = synced[0]
+            return synced
         # MPV's playlist-pos is the native (possibly shuffled) playlist
         # position, not FXRoute's stable queue index. The current URL is the
         # authoritative cross-context identity; only use playlist-pos when it

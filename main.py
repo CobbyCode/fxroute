@@ -1290,6 +1290,11 @@ playback_queue.configure_playback_queue(playback_queue.PlaybackQueueDependencies
     resolve_stream_url=lambda track: _resolve_tidal_stream_url(track),
     capture_source_intent=lambda: _capture_source_intent(),
     ensure_source_intent_current=lambda captured: _ensure_source_intent_current(captured),
+    stream_transport_guard=lambda: _manual_transport_guard(),
+    stream_prefetch_epoch=lambda: _capture_playback_transition_epoch(),
+    get_playback_owner=lambda: playback_state.current_playback_owner,
+    create_background_task=lambda coro, **kwargs: _create_lifecycle_background_task(coro, **kwargs),
+    mark_playback_intent_changed=lambda: _mark_playback_intent_changed(),
 ))
 
 # Bind the native TIDAL provider's now-playing reflection to the FXRoute
@@ -1585,29 +1590,8 @@ def _mark_playback_intent_changed() -> None:
 
 
 def _schedule_tidal_prefetch() -> None:
-    """Fire-and-forget a background DASH download for the next TIDAL queue track.
-
-    Called after every coordinator commit that establishes a new current track.
-    Runs the existing :func:`~streaming.tidal.playback.resolve_stream_for_id`
-    in a thread-pool worker so the DASH ``.mp4`` is already cached when a
-    subsequent Next or automatic queue advance fires the normal play path.
-    Errors are intentionally not surfaced — prefetch is a pure optimisation.
-    """
-    import threading
-
-    tracks = playback_queue.queue.tracks
-    index = playback_queue.queue.index
-    if index < 0 or index + 1 >= len(tracks):
-        return
-    next_track = dict(tracks[index + 1])
-    if str(next_track.get("source") or "") != "tidal":
-        return
-    next_id = str(next_track.get("id") or "")
-    if not next_id:
-        return
-    from streaming.tidal.playback import prefetch_stream
-
-    threading.Thread(target=prefetch_stream, args=(next_id,), daemon=True).start()
+    """Prepare the next TIDAL stream in MPV before the current track ends."""
+    playback_queue.queue.stream_prefetch.schedule()
 
 
 def _capture_source_intent() -> PlaybackCommitIntent:
@@ -1703,8 +1687,7 @@ def _commit_coordinated_track(
     # run between the coordinator commit and this boundary (the boundary
     # is published synchronously in the same caller step).
     _publish_playback_context_commit(commit_token)
-    # Optimistically warm the DASH cache for the next TIDAL queue track so a
-    # subsequent Next or automatic queue advance hits a ready cache file.
+    # A cache hit alone is not gapless: MPV needs its successor before EOF.
     if source == "tidal":
         _schedule_tidal_prefetch()
 
@@ -2797,6 +2780,15 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
     # attempt replaces the token and the stale EOF becomes a no-op.
     if state.get("ended") and not state.get("current_file"):
         await _wait_playback_transition_settled()
+        live_state = runtime.player_instance.state if runtime.player_instance else {}
+        live_seq = live_state.get("_seq")
+        if (live_state.get("current_file")
+                or (isinstance(seq, int) and (
+                    seq < playback_state.latest_player_state_seq_seen
+                    or (isinstance(live_seq, int) and seq < live_seq)))):
+            # MPV can cross a native boundary while this callback waits. The
+            # prepared mapping may already be retired by a queue mutation.
+            return
         current_commit_id = _current_playback_commit_id()
         if event_commit_id != current_commit_id:
             logger.debug(
@@ -2806,6 +2798,11 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
                 event_commit_id,
                 current_commit_id,
             )
+            return
+        if playback_queue.queue.stream_prefetch.has_prepared and state.get("idle_active") is False:
+            # MPV briefly clears path at native playlist boundaries before
+            # opening the prepared successor. Only idle-active confirms that
+            # it exhausted the playlist; do not replace a track already opening.
             return
 
     # Once a homogeneous queue has been committed, MPV owns natural playlist
@@ -2824,6 +2821,11 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
             or previous_track.get("url") != track.get("url")
         ):
             _mark_playback_intent_changed()
+
+    # Also re-arm after guarded rate/output transitions reload the same path.
+    # The queue deduplicates by playback epoch and current queue identity.
+    if (playback_state.current_track_info or {}).get("source") == "tidal":
+        _schedule_tidal_prefetch()
 
     if (
         not queue_advancing
@@ -4074,7 +4076,6 @@ async def play_track(req: PlayRequest):
 
     target_url = str(track_info.get("url") or "")
     native_queue_fields = playback_queue.queue.native_request_fields(queue_candidate) if source == "local" else {}
-    native_trim_required = playback_queue.queue.mode == "native_mpv" and queue_candidate.mode != "native_mpv"
     same_target = previous_state.get("current_file") == target_url and not previous_state.get("ended")
     target_rate = _coordinator_target_rate(source, track_info)
     rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
@@ -4109,7 +4110,14 @@ async def play_track(req: PlayRequest):
         # 409 so the caller retries against the new source routing.
         _raise_for_uncommitted_transition(result, what="playback")
     _ensure_source_intent_current(source_intent)
+    # A successor can finish preparing during the awaited rate read. Evaluate
+    # its ownership now, before queue.commit() invalidates the prepared state.
+    native_trim_required = (
+        playback_queue.queue.mode == "native_mpv"
+        or playback_queue.queue.stream_prefetch.has_native_entries
+    ) and queue_candidate.mode != "native_mpv"
     if native_trim_required:
+        retained_stream_entry = None
         # The committed queue lived in MPV's native playlist.  The new target
         # is an app-side source (single track or mixed-rate): trim MPV's
         # playlist to the current file only after the transition committed,
@@ -4117,13 +4125,22 @@ async def play_track(req: PlayRequest):
         # committed-queue entries and a failed play leaves the native
         # transport queue intact.
         try:
-            playback_queue.queue.reduce_native_playlist_to_current()
+            if playback_queue.queue.stream_prefetch.has_native_entries:
+                retained_stream_entry = playback_queue.queue.stream_prefetch.trim_to_current()
+            else:
+                playback_queue.queue.reduce_native_playlist_to_current()
             playback_queue.queue.reset_mpv_loop_state()
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Failed to trim native playlist after committed play transition",
                 exc_info=True,
             )
+            if playback_queue.queue.stream_prefetch.has_native_entries:
+                # Do not commit away the only owner of an unretired successor
+                # or report single-track success while MPV can still play it.
+                raise HTTPException(status_code=503, detail="MPV successor cleanup was not confirmed") from exc
+        if retained_stream_entry is not None and retained_stream_entry["filename"] != target_url:
+            raise HTTPException(status_code=409, detail="Playback advanced during the play request; retry")
     if source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
         track_info["sample_rate_hz"] = result.target_rate
 
@@ -4155,6 +4172,7 @@ async def pause_playback():
     async with _manual_transport_guard():
         await _drain_worker(runtime.player_instance.pause)
         new_state = runtime.player_instance.state
+        playback_queue.queue.stream_prefetch.reconcile_current(guarded=True)
         _mark_player_state_authoritative(new_state)
         _mark_playback_intent_changed()
     return {
@@ -4264,6 +4282,7 @@ async def toggle_playback():
             async with _manual_transport_guard(expected_epoch=toggle_epoch):
                 await _drain_worker(runtime.player_instance.pause)
                 new_state = runtime.player_instance.state
+                playback_queue.queue.stream_prefetch.reconcile_current(guarded=True)
                 _mark_player_state_authoritative(new_state)
                 _mark_playback_intent_changed()
             return {
@@ -4283,6 +4302,7 @@ async def toggle_playback():
                 await _drain_worker(runtime.player_instance.set_pause, False)
                 new_state = runtime.player_instance.state
                 _ensure_source_intent_current(source_intent)
+                playback_queue.queue.stream_prefetch.reconcile_current(guarded=True)
                 _mark_player_state_authoritative(new_state)
                 _mark_playback_intent_changed()
             return {
@@ -4369,6 +4389,9 @@ async def stop_playback():
         raise HTTPException(status_code=409, detail="A playback transition is in progress")
     async with _manual_transport_guard():
         owner = playback_state.current_playback_owner
+        # Retain an already-started successor for replay before clearing its
+        # owner/context, and retire pending entries before any awaited work.
+        playback_queue.queue.reset(guarded=True)
         _mark_playback_intent_changed()
         if owner == "spotify":
             # Update the cached provider state before clearing the owner so
@@ -4392,7 +4415,6 @@ async def stop_playback():
         playback_state.current_track_info = None
         playback_state.current_playback_owner = None
         await radio_reconnect.reset()
-        playback_queue.queue.reset()
         playback_queue.queue.reset_mpv_loop_state()
         await _drain_worker(runtime.player_instance.stop_playback)
         _mark_player_state_authoritative(runtime.player_instance.state)

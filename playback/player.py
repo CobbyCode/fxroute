@@ -80,6 +80,7 @@ class MPVWrapper:
         self.lock = threading.RLock()
         self._start_lock = threading.Lock()
         self._running = False
+        self.process_generation = 0
         self._state = {
             "playing": False,
             "paused": False,
@@ -88,7 +89,9 @@ class MPVWrapper:
             "volume": 100,
             "current_file": None,
             "file_loaded": False,
+            "idle_active": True,
             "playlist_pos": None,
+            "playlist_entry_id": None,
             "ended": False,
             "error": None,
             "end_reason": None,
@@ -141,6 +144,7 @@ class MPVWrapper:
         confirmed").  A new process owns no file until it loads one.
         """
         with self.lock:
+            self.process_generation += 1
             self._state.update(
                 playing=False,
                 paused=False,
@@ -148,7 +152,9 @@ class MPVWrapper:
                 duration=0.0,
                 current_file=None,
                 file_loaded=False,
+                idle_active=True,
                 playlist_pos=None,
+                playlist_entry_id=None,
                 ended=False,
                 error=None,
                 end_reason=None,
@@ -226,6 +232,7 @@ class MPVWrapper:
             "--no-video",
             "--quiet",
             "--network-timeout=15",
+            "--prefetch-playlist=yes",
             "--audio-device=pipewire/fxroute_dsp_sink",
             "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_delay_max=5",
         ]
@@ -505,6 +512,9 @@ class MPVWrapper:
 
             elif name == "idle-active":
                 idle_active = bool(data)
+                if self._state.get("idle_active") != idle_active:
+                    self._state["idle_active"] = idle_active
+                    changed = True
                 if idle_active and self._state.get("current_file") is not None:
                     if self._state.get("playing") and self._last_end_reason not in {"eof", "error"}:
                         logger.warning(
@@ -533,6 +543,12 @@ class MPVWrapper:
                     if self._state.get("playing") != next_playing:
                         self._state["playing"] = next_playing
                         changed = True
+
+        elif event_name == "start-file":
+            entry_id = event.get("playlist_entry_id")
+            if isinstance(entry_id, int) and self._state.get("playlist_entry_id") != entry_id:
+                self._state["playlist_entry_id"] = entry_id
+                changed = True
 
         elif event_name == "file-loaded":
             # mpv's canonical "file is loaded" event.  It fires for every file
@@ -579,7 +595,9 @@ class MPVWrapper:
             self._state["playing"] = not bool(start_paused)
             self._state["paused"] = bool(start_paused)
             self._state["current_file"] = path
+            self._state["playlist_entry_id"] = None
             self._state["file_loaded"] = False
+            self._state["idle_active"] = False
             self._state["position"] = 0.0
             self._state["duration"] = 0.0
             self._state["ended"] = False
@@ -618,7 +636,9 @@ class MPVWrapper:
             self._state["duration"] = 0.0
             self._state["current_file"] = None
             self._state["file_loaded"] = False
+            self._state["idle_active"] = True
             self._state["playlist_pos"] = None
+            self._state["playlist_entry_id"] = None
             self._state["ended"] = False
             self._state["end_reason"] = None
             self._state["end_entry_id"] = None
