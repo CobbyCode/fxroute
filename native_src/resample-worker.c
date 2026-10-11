@@ -234,7 +234,17 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
             return;
         }
         ++c->underruns;++c->total_underruns;
-        { int worker_error=c->worker?fx_worker_error(c->worker):0; c->error=worker_error?worker_error:EPIPE; }
+        { int worker_error=c->worker?fx_worker_error(c->worker):0;
+          if(worker_error){c->error=worker_error;return;} }
+        /* Transient supply shortfall with a healthy worker (stalled engine,
+         * scheduling jitter, catch-up callbacks): conceal with silence and
+         * keep the stream alive instead of wedging it permanently. */
+        for(unsigned i=0;i<r->channels;++i)memset(dst[i],0,capacity*4);
+        *output=capacity;
+#ifdef FX_SRC_VERIFY
+        fx_verify_account(*input,capacity,c->rate,c->eof,0);
+#endif
+        if(!c->eof)c->fraction+=capacity*(double)r->i_rate/(r->o_rate*c->rate);
         return;
     }
     if(nominal_done&&!c->flushed){c->flush=resample_delay(&c->match);c->flushed=1;}

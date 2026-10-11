@@ -154,6 +154,22 @@ class NativeSrcTests(unittest.TestCase):
             self.assertEqual(metrics["rate_min"],1)
             self.assertEqual(metrics["rate_max"],1)
 
+    def test_stalled_engine_survives_with_counted_silence(self):
+        includes = ROOT / "native_src/build/sources/pipewire/pipewire-1.6.8/spa/include"
+        upstream = includes.parent / "plugins/audioconvert"
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}):
+            path = Path(directory)
+            policy = path / "fxroute/src-policy.json"
+            policy.parent.mkdir()
+            policy.write_text('{"mode":"high"}')
+            executable = str(path / "stall-survival")
+            subprocess.run(["cc", "-std=gnu11", "-I", str(includes), "-I", str(upstream),
+                            "-I", str(ROOT / "native_src"), str(ROOT / "scripts/src_stall_survival.c"),
+                            "-ldl", "-o", executable], check=True)
+            result = subprocess.run([executable, str(LIBRARY)], text=True, capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("STALL-SURVIVAL-OK", result.stdout)
+
     def test_child_death_publishes_error_outside_the_realtime_callback(self):
         includes=ROOT / "native_src/build/sources/pipewire/pipewire-1.6.8/spa/include"
         with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,{"XDG_CONFIG_HOME":directory}):
@@ -279,8 +295,12 @@ class NativeSrcTests(unittest.TestCase):
                 self.assertFalse(any(rendered[:prefix]),scenario)
                 if scenario!="post-start":self.assertEqual(rendered[prefix:],reference.read_bytes(),scenario)
                 # Lifetime underruns count queue starvation only, never the startup timeout.
+                # A post-start stall is concealed with counted silence, never terminal.
                 lifetime=json.loads(re.search(r"FXSRC_WORKER_STATS (\{.*\})",result.stderr)[1])
-                self.assertEqual(lifetime["underruns"],1 if scenario=="post-start" else 0,scenario)
+                if scenario == "post-start":
+                    self.assertGreaterEqual(lifetime["underruns"], 1, scenario)
+                else:
+                    self.assertEqual(lifetime["underruns"], 0, scenario)
                 # The teardown diagnostics carry the same write-once startup telemetry.
                 for key in ("lead","reserve","first_output_ns","first_real_ns"):
                     self.assertEqual(lifetime[key],metrics[key],(scenario,key))

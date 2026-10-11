@@ -67,7 +67,7 @@ int main(int argc,char **argv)
         assert(!state.worker.first_output_ns&&!state.first_real_ns&&!state.lead_frames&&!state.reserve_frames);
         assert(!error(&r));pid=child();assert(!kill(pid,SIGSTOP));
     }
-    double start=seconds(),first_real=0;unsigned submitted=0,eof=0,resumed=!pause_start,paused_late=0;
+    double start=seconds(),first_real=0,stall_start=0;unsigned submitted=0,eof=0,resumed=!pause_start,paused_late=0,resumed_late=0;
     struct fx_resample_stats before={0},after={0};
     while(!finished(&r)&&seconds()-start<10) {
         if(pause_start&&!resumed&&seconds()-start>=1.05){assert(!kill(pid,SIGCONT));resumed=1;}
@@ -75,9 +75,15 @@ int main(int argc,char **argv)
         const void *src[]={planes+submitted,planes+frames+submitted};
         unsigned take=frames-submitted;if(take>512)take=512;unsigned made=512;
         stats(&r,&before);resample_process(&r,src,&take,dst,&made);submitted+=take;stats(&r,&after);
+        if(!strcmp(argv[2],"post-start")&&paused_late&&!resumed_late&&seconds()-stall_start>=3.0) {
+            /* A stalled healthy engine is concealed with counted silence and
+             * resumes real output; only a dead engine may fail. */
+            assert(!error(&r)&&after.underruns>=5);
+            assert(after.lead_frames==before.lead_frames);
+            assert(!kill(pid,SIGCONT));resumed_late=1;
+        }
         if(error(&r)) {
-            assert(!strcmp(argv[2],"post-start")&&paused_late&&error(&r)==EPIPE);
-            assert(after.lead_frames==before.lead_frames);break;
+            assert(0&&"post-start stalls must be concealed with silence, never terminal");
         }
         assert(!before.real_frames||after.lead_frames==before.lead_frames);
         if(after.real_frames&&!eof) {
@@ -89,10 +95,10 @@ int main(int argc,char **argv)
         }
         if(after.real_frames&&!first_real){first_real=seconds()-start;assert(!pause_start||first_real>=1.05);}
         for(unsigned i=0;i<made;++i)for(unsigned c=0;c<2;++c)assert(fwrite(&output[c][i],4,1,target)==1);
-        if(!strcmp(argv[2],"post-start")&&!paused_late&&after.real_frames>=12000){assert(!kill(pid,SIGSTOP));paused_late=1;}
+        if(!strcmp(argv[2],"post-start")&&!paused_late&&after.real_frames>=12000){assert(!kill(pid,SIGSTOP));paused_late=1;stall_start=seconds();}
         usleep(10666);
     }
-    if(!strcmp(argv[2],"post-start"))assert(error(&r)==EPIPE&&first_real);
+    if(!strcmp(argv[2],"post-start"))assert(!error(&r)&&first_real&&resumed_late&&after.underruns>=5&&finished(&r));
     else assert(finished(&r)&&submitted==frames&&!error(&r)&&after.worker.delivered==192000&&after.lead_frames>36000);
     /* Product telemetry: starvation after real output keeps both latencies,
      * a delayed engine shows up in first_output_ns, and first_real_ns agrees

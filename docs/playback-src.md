@@ -138,8 +138,10 @@ and restarts affected audio services before allowing runtime deletion.
 Unequal-rate adapters keep a **750 ms minimum** nominal startup reserve and use
 **65,536-frame** input/output queues. Before the first real output only, the
 adapter extends credited startup silence until a full native matcher input
-quantum is buffered; it never re-primes after real output begins and later
-shortages remain errors. The 3 s wait allowance starts once the 750 ms minimum
+quantum is buffered; it never re-primes after real output begins. A later
+shortage with a healthy engine is concealed with counted silence and the
+stream keeps running; only engine failure (a worker error) is terminal.
+The 3 s wait allowance starts once the 750 ms minimum
 has been emitted (about 3,750 ms total under realtime pacing), checked
 even under FIFO backpressure; worker failure still fails immediately and reset
 clears the deadline. These are prototype-derived, provisional
@@ -183,9 +185,11 @@ describe the current generation, and a reset clears them:
 Within one generation each latency is published before the frame counter that
 depends on it, and `reserve` never exceeds `lead`. A startup that never became
 ready shows `first_output_ns` 0, `lead` above `reserve` and `error` 110
-(`ETIMEDOUT`). Starvation after real output shows both latencies set and
-`error` 32 (`EPIPE`); `underruns` counts only such queue starvation over the
-converter's lifetime. `max_callback_ms` is the converter process callback's
+(`ETIMEDOUT`). Starvation after real output with a healthy engine is concealed:
+both latencies stay set, `error` stays 0 and `underruns` counts each concealed
+quantum over the converter's lifetime. A nonzero `error` (for example 32 for a
+dead engine) still means terminal engine failure, never a survived stall.
+`max_callback_ms` is the converter process callback's
 maximum wall time. These values are telemetry, not tuned sizing targets.
 
 ## Verification (2026-10-03)
