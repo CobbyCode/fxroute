@@ -41,7 +41,8 @@ spl.init({
     fetchEffects: async () => {},
     openModal: () => {},
     closeModal: () => {},
-    setTimeout: (callback) => {
+    setTimeout: (callback, ms) => {
+        if (ms !== 1000) return setTimeout(callback, ms);
         countdownLabels.push(button.textContent);
         callback();
     },
@@ -81,20 +82,23 @@ assert.match(splSource, /function toggleSplCalibrationNoise\(\) \{/);
     assert.equal(autoStatus.textContent, 'Measuring SPL…');
     assert.equal(status.textContent, '');
 
-    await spl.toggleSplCalibrationNoise();
+    const cancellation = spl.toggleSplCalibrationNoise();
+    await new Promise((resolve) => setImmediate(resolve));
     const noiseCalls = fetchCalls.filter((call) => call.url.endsWith('/noise'));
     assert.equal(noiseCalls.length, 1);
     assert.equal(JSON.parse(noiseCalls[0].options.body).enabled, false);
-    assert.equal(button.textContent, 'Start noise');
-    assert.equal(button.disabled, false);
-    assert.equal(status.textContent, 'Automatic SPL measurement cancelled.');
-    assert.equal(autoStatus.textContent, 'Automatic SPL measurement: UMIK-1 detected');
+    assert.equal(button.disabled, true, 'cancel must drain the running capture');
 
     resolveAutomatic({
         ok: false,
         json: async () => ({ detail: 'SPL calibration was stopped' }),
     });
     await automaticRequest;
+    await cancellation;
+    assert.equal(fetchCalls.filter((call) => call.url.endsWith('/noise')).length, 2);
+    assert.equal(button.disabled, false);
+    assert.equal(status.textContent, 'Automatic SPL measurement cancelled.');
+    assert.equal(autoStatus.textContent, 'Automatic SPL measurement: UMIK-1 detected');
     assert.equal(button.textContent, 'Start noise', 'late automatic response must not leave idle state');
 
     assert.doesNotMatch(backendSource, /uniquely identified supported UMIK USB capture device/);

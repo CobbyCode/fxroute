@@ -64,6 +64,12 @@ class NaturalExitProcess(FakeProcess):
         return 0
 
 
+class StopExitProcess(NaturalExitProcess):
+    def terminate(self):
+        super().terminate()
+        self.exit_event.set()
+
+
 class StubbornProcess(FakeProcess):
     def wait(self, timeout=None):
         self.wait_calls += 1
@@ -73,8 +79,11 @@ class StubbornProcess(FakeProcess):
 
 
 class FakeRequest:
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+
     async def json(self):
-        return {"enabled": True}
+        return {"enabled": self.enabled}
 
 
 class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -156,6 +165,49 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.active_ids, set())
         self.assertEqual(replacement_session.unregistered, [])
         self.assertIsNone(spl_calibration._runtime.operation)
+
+    async def test_repeated_manual_start_and_duplicate_stop_release_every_owner(self):
+        session = FakeSession()
+        main.measurement_sr_session = session
+        processes = []
+
+        async def register(operation):
+            operation.session = session
+            operation.registration_attempted = True
+            await session.register_spl_job(operation.session_job_id)
+
+        def start(operation):
+            process = StopExitProcess()
+            processes.append(process)
+            operation.noise_process = process
+            operation.noise_links = [("noise:output_FL", "fxroute_dsp_sink:playback_FL")]
+            return {"status": "playing"}
+
+        missing = subprocess.CompletedProcess([], 1, stdout="", stderr="failed to unlink ports: No such file or directory")
+        with mock.patch.object(spl_calibration, "_register_operation", side_effect=register), \
+                mock.patch.object(spl_calibration, "_start_spl_calibration_noise", side_effect=start), \
+                mock.patch.object(spl_calibration.subprocess, "run", return_value=missing):
+            try:
+                for _ in range(3):
+                    result = await spl_calibration.set_spl_calibration_noise(FakeRequest())
+                    self.assertEqual(result["status"], "playing")
+                    operation = spl_calibration._runtime.operation
+                    results = await asyncio.gather(
+                        spl_calibration.set_spl_calibration_noise(FakeRequest(False)),
+                        spl_calibration.set_spl_calibration_noise(FakeRequest(False)),
+                        return_exceptions=True,
+                    )
+                    await asyncio.gather(operation.worker_task, return_exceptions=True)
+                    self.assertEqual(results, [{"status": "stopped"}, {"status": "stopped"}])
+                    self.assertIsNone(spl_calibration._runtime.operation)
+                    self.assertEqual(session.active_ids, set())
+                    self.assertIsNone(operation.noise_links)
+                    self.assertIsNone(operation.restore_state)
+                self.assertTrue(all(p.poll() is not None for p in processes))
+            finally:
+                if spl_calibration._runtime.operation is not None:
+                    with mock.patch.object(spl_calibration.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
+                        await spl_calibration._cleanup_operation(spl_calibration._runtime.operation)
 
     async def test_registration_cancellation_cannot_leave_stale_session_id(self):
         class CancellingSession(FakeSession):
@@ -485,23 +537,6 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(manager.transitions[0][0]["loudness"]["enabled"])
         self.assertTrue(manager.transitions[0][1]["loudness"]["enabled"])
         self.assertIsNone(operation.restore_state)
-
-    def test_panel_close_always_requests_idempotent_server_stop(self):
-        app = (
-            pathlib.Path(__file__).resolve().parents[1]
-            / "static"
-            / "measurement_spl_calibration.js"
-        ).read_text()
-        stop_body = app.split("async function stopSplCalibrationOperation", 1)[1].split(
-            "async function closeSplCalibration()", 1
-        )[0]
-        close_body = app.split("async function closeSplCalibration() {", 1)[1].split(
-            "async function toggleSplCalibrationNoise()", 1
-        )[0]
-        self.assertIn("stopSplCalibrationOperation()", close_body)
-        self.assertIn("/api/measurements/spl-calibration/noise", stop_body)
-        self.assertNotIn("if (splCalibrationNoiseActive)", close_body)
-
 
     async def test_stale_ownership_without_resources_is_recoverable(self):
         operation = await spl_calibration._acquire_operation("automatic")

@@ -915,27 +915,6 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
             return
         operation.completed.clear()
         cleanup_failed = False
-        if operation.noise_links:
-            remaining_links = []
-            for source, target in operation.noise_links:
-                try:
-                    result = await asyncio.to_thread(
-                        subprocess.run,
-                        ["pw-link", "-d", source, target],
-                        capture_output=True,
-                        text=True,
-                        timeout=3,
-                        check=False,
-                    )
-                    if result.returncode != 0 and "does not exist" not in (result.stderr or "").lower():
-                        logger.error("Failed to remove SPL calibration noise link: %s", result.stderr)
-                        remaining_links.append((source, target))
-                        cleanup_failed = True
-                except BaseException:
-                    logger.exception("Failed to remove SPL calibration noise link")
-                    remaining_links.append((source, target))
-                    cleanup_failed = True
-            operation.noise_links = remaining_links or None
         for label, process in (
             ("capture", operation.recorder),
             ("noise", operation.noise_process),
@@ -950,6 +929,34 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
                 operation.recorder = None
             else:
                 operation.noise_process = None
+                if process is not None:
+                    # PipeWire removes the node and all its links on exit.
+                    operation.noise_links = None
+
+        if operation.noise_links:
+            remaining_links = []
+            for source, target in operation.noise_links:
+                try:
+                    result = await asyncio.to_thread(
+                        subprocess.run,
+                        ["pw-link", "-d", source, target],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        check=False,
+                        env=c_locale_env(),
+                    )
+                    stderr = (result.stderr or "").lower()
+                    missing = "does not exist" in stderr or "no such file or directory" in stderr
+                    if result.returncode != 0 and not missing:
+                        logger.error("Failed to remove SPL calibration noise link: %s", result.stderr)
+                        remaining_links.append((source, target))
+                        cleanup_failed = True
+                except BaseException:
+                    logger.exception("Failed to remove SPL calibration noise link")
+                    remaining_links.append((source, target))
+                    cleanup_failed = True
+            operation.noise_links = remaining_links or None
 
         try:
             await asyncio.to_thread(_restore_spl_calibration_audio, operation)

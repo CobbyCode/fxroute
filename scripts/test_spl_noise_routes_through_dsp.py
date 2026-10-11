@@ -252,9 +252,7 @@ class SplNoiseRoutingTests(unittest.TestCase):
                 _start_spl_calibration_noise(op)
             asyncio.run(spl_calibration._cleanup_operation(op))
 
-        self.assertEqual(removed, [
-            (f"{noise_node}:output_FL", f"{SPL_NOISE_SINK_NAME}:playback_FL"),
-        ])
+        self.assertEqual(removed, [], "Reaped pw-play already removed its node and links")
         self.assertIsNone(op.noise_links)
 
 
@@ -311,6 +309,37 @@ class SplNoiseCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(spl_calibration.subprocess, "run", side_effect=run_command):
             await spl_calibration._cleanup_operation(op)
+        self.assertIsNone(op.noise_links)
+
+    async def test_cleanup_tolerates_pipewire_enoent_and_releases_owner(self):
+        op = operation()
+        previous_operation = spl_calibration._runtime.operation
+        spl_calibration._runtime.operation = op
+        self.addCleanup(setattr, spl_calibration._runtime, "operation", previous_operation)
+        op.noise_links = [
+            ("fxroute-spl-noise-1234abcd:output_FL", f"{SPL_NOISE_SINK_NAME}:playback_FL"),
+        ]
+        with patch.object(spl_calibration.subprocess, "run", return_value=FakeRunResult(
+            returncode=1, stderr="failed to unlink ports: No such file or directory\n",
+        )):
+            await spl_calibration._cleanup_operation(op)
+
+        self.assertIsNone(op.noise_links)
+        self.assertIsNone(spl_calibration._runtime.operation)
+
+    async def test_reaped_noise_has_no_owned_links_even_when_unlink_is_unavailable(self):
+        op = operation()
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(spl_calibration._terminate_and_reap, process)
+        op.noise_process = process
+        op.noise_links = [
+            ("fxroute-spl-noise-1234abcd:output_FL", f"{SPL_NOISE_SINK_NAME}:playback_FL"),
+        ]
+        with patch.object(spl_calibration.subprocess, "run", side_effect=OSError("pw-link unavailable")):
+            await spl_calibration._cleanup_operation(op)
+
+        self.assertIsNotNone(process.poll())
+        self.assertIsNone(op.noise_process)
         self.assertIsNone(op.noise_links)
 
     async def test_failed_link_removal_remains_owned_for_retry(self):

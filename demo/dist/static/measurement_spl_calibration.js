@@ -14,10 +14,16 @@
         openModal: (panel, options) => root.FXRouteModal?.open(panel, options),
         closeModal: (panel) => root.FXRouteModal?.close(panel),
         setTimeout: (callback, ms) => root.setTimeout(callback, ms),
+        clearTimeout: (timer) => root.clearTimeout(timer),
     };
     let splCalibrationNoiseActive = false;
     let splCalibrationAutomaticAvailable = false;
     let splCalibrationAutomaticRunning = false;
+    let splCalibrationStopFailed = false;
+    let splCalibrationStartRequest = null;
+    let splCalibrationStopRequest = null;
+    let splCalibrationApplying = false;
+    let splCalibrationApplyController = null;
     let splCalibrationOperationGeneration = 0;
     let splCalibrationModeText = '';
 
@@ -51,8 +57,9 @@
 
     function resetSplCalibrationNoiseButton() {
         if (!deps.getElements().splCalibrationNoise) return;
-        deps.getElements().splCalibrationNoise.disabled = false;
-        deps.getElements().splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
+        deps.getElements().splCalibrationNoise.disabled = !!splCalibrationStopRequest || splCalibrationApplying;
+        deps.getElements().splCalibrationNoise.textContent = splCalibrationStopFailed
+            ? 'Retry stop' : (splCalibrationNoiseActive ? 'Stop noise' : 'Start noise');
     }
 
     async function runSplCalibrationNoiseCountdown(generation) {
@@ -64,27 +71,88 @@
         return generation === splCalibrationOperationGeneration;
     }
 
+    async function requestSplCalibration(url, options = {}, controller = new root.AbortController()) {
+        let timer;
+        try {
+            return await Promise.race([
+                deps.fetch(url, Object.assign({}, options, { signal: controller.signal })).then(async (response) => {
+                    const data = await response.json().catch((error) => {
+                        if (response.ok) throw error;
+                        return {};
+                    });
+                    return { response, data };
+                }),
+                new Promise((_, reject) => {
+                    timer = deps.setTimeout(() => {
+                        controller.abort();
+                        reject(new Error('SPL request timed out. Retry stop.'));
+                    }, 45000);
+                }),
+            ]);
+        } finally {
+            deps.clearTimeout(timer);
+        }
+    }
+
+    async function requestSplCalibrationStart(url, options) {
+        const request = requestSplCalibration(url, options);
+        splCalibrationStartRequest = request;
+        try {
+            return await request;
+        } finally {
+            if (splCalibrationStartRequest === request) {
+                splCalibrationStartRequest = null;
+            }
+        }
+    }
+
+    async function requestSplCalibrationStop() {
+        const { response, data } = await requestSplCalibration('/api/measurements/spl-calibration/noise', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: false }),
+        });
+        if (!response.ok) {
+            throw new Error(data.detail || 'Failed to stop SPL calibration');
+        }
+    }
+
     async function stopSplCalibrationOperation(statusText = '') {
-        const generation = ++splCalibrationOperationGeneration;
+        if (splCalibrationStopRequest) return splCalibrationStopRequest;
+        ++splCalibrationOperationGeneration;
         splCalibrationAutomaticRunning = false;
         if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.disabled = true;
+        const startRequest = splCalibrationStartRequest;
+        const stopRequest = (async () => {
+            if (startRequest) {
+                // Interrupt a running capture, then cover a start arriving after that stop.
+                await requestSplCalibrationStop().catch(() => null);
+                const failure = await startRequest.then(() => null, (error) => error);
+                await requestSplCalibrationStop();
+                if (failure) throw failure;
+                return;
+            }
+            await requestSplCalibrationStop();
+        })();
+        splCalibrationStopRequest = stopRequest;
         try {
-            const response = await deps.fetch('/api/measurements/spl-calibration/noise', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: false }),
-            });
-            if (!response.ok) throw new Error('Failed to stop SPL calibration');
-        } finally {
-            if (generation !== splCalibrationOperationGeneration) return;
+            await stopRequest;
             splCalibrationNoiseActive = false;
-            resetSplCalibrationNoiseButton();
+            splCalibrationStopFailed = false;
             setSplCalibrationActionLine();
             if (statusText) setSplCalibrationStatus(statusText);
+        } catch (error) {
+            splCalibrationStopFailed = true;
+            setSplCalibrationActionLine('Cleanup pending. Retry stop.');
+            throw error;
+        } finally {
+            splCalibrationStopRequest = null;
+            resetSplCalibrationNoiseButton();
         }
     }
 
     async function openSplCalibration() {
+        const generation = splCalibrationOperationGeneration;
         setSplCalibrationStatus();
         deps.getElements().splCalibrationPanel?.classList.remove('hidden');
         deps.openModal(deps.getElements().splCalibrationPanel, {
@@ -92,33 +160,48 @@
             onEscape: () => { void closeSplCalibration(); },
         });
         try {
-            const response = await deps.fetch('/api/measurements/spl-calibration');
-            const data = await response.json();
+            const { response, data } = await requestSplCalibration('/api/measurements/spl-calibration');
+            if (generation !== splCalibrationOperationGeneration) return;
             if (!response.ok) throw new Error(data.detail || 'Failed to load SPL calibration');
             splCalibrationNoiseActive = !!data.noise_active;
+            splCalibrationStopFailed = !!data.operation_active && !data.noise_active;
             splCalibrationAutomaticAvailable = !!data.automatic?.available;
-            if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.textContent = splCalibrationNoiseActive ? 'Stop noise' : 'Start noise';
+            resetSplCalibrationNoiseButton();
             splCalibrationModeText = splCalibrationModeLabel(data);
             setSplCalibrationActionLine();
         } catch (error) {
-            setSplCalibrationStatus(error.message);
+            if (generation === splCalibrationOperationGeneration) setSplCalibrationStatus(error.message);
         }
     }
 
     async function closeSplCalibration() {
-        await stopSplCalibrationOperation().catch(() => null);
+        splCalibrationApplyController?.abort();
+        splCalibrationApplyController = null;
+        splCalibrationApplying = false;
+        if (deps.getElements().splCalibrationSave) deps.getElements().splCalibrationSave.disabled = false;
+        try {
+            await stopSplCalibrationOperation();
+        } catch (error) {
+            setSplCalibrationStatus(error.message);
+            return;
+        }
         deps.getElements().splCalibrationPanel?.classList.add('hidden');
         deps.closeModal(deps.getElements().splCalibrationPanel);
     }
 
     async function toggleSplCalibrationNoise() {
+        if (splCalibrationApplying) return;
+        if (splCalibrationStopRequest) {
+            await splCalibrationStopRequest.catch((error) => setSplCalibrationStatus(error.message));
+            return;
+        }
         if (splCalibrationAutomaticRunning) {
             await stopSplCalibrationOperation('Automatic SPL measurement cancelled.').catch((error) => {
                 setSplCalibrationStatus(error.message);
             });
             return;
         }
-        const next = !splCalibrationNoiseActive;
+        const next = !splCalibrationNoiseActive && !splCalibrationStopFailed;
         if (!next) {
             await stopSplCalibrationOperation('Noise stopped. Volume restored.').catch((error) => {
                 setSplCalibrationStatus(error.message);
@@ -137,8 +220,7 @@
                     deps.getElements().splCalibrationNoise.textContent = 'Cancel measurement';
                 }
                 setSplCalibrationActionLine('Measuring SPL…');
-                const response = await deps.fetch('/api/measurements/spl-calibration/automatic', { method: 'POST' });
-                const data = await response.json();
+                const { response, data } = await requestSplCalibrationStart('/api/measurements/spl-calibration/automatic', { method: 'POST' });
                 if (generation !== splCalibrationOperationGeneration) return;
                 if (!response.ok) throw new Error(data.detail || 'Automatic UMIK SPL measurement failed');
                 if (deps.getElements().splCalibrationMeasured) {
@@ -150,12 +232,11 @@
                 setSplCalibrationStatus(`${data.microphone_model} measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · Loudness offset ${formatSignedDb(data.required_adjustment_db)}. Save / Apply to use it.`);
                 return;
             }
-            const response = await deps.fetch('/api/measurements/spl-calibration/noise', {
+            const { response, data } = await requestSplCalibrationStart('/api/measurements/spl-calibration/noise', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ enabled: true }),
             });
-            const data = await response.json();
             if (generation !== splCalibrationOperationGeneration) return;
             if (!response.ok) throw new Error(data.detail || 'Calibration noise failed');
             splCalibrationNoiseActive = true;
@@ -163,6 +244,19 @@
             setSplCalibrationActionLine('Noise playing. Read the C/Slow meter after about 1 s, average over about 3 s.');
         } catch (error) {
             if (generation === splCalibrationOperationGeneration) {
+                // A lost start response does not prove the server stayed idle.
+                splCalibrationStopFailed = true;
+                try {
+                    const { response, data } = await requestSplCalibration('/api/measurements/spl-calibration');
+                    if (generation !== splCalibrationOperationGeneration) return;
+                    if (response.ok) {
+                        splCalibrationNoiseActive = !!data.noise_active;
+                        splCalibrationStopFailed = !!data.operation_active && !data.noise_active;
+                    }
+                } catch (_) {
+                    // Keep a stop retry available while server state is unknown.
+                }
+                if (generation !== splCalibrationOperationGeneration) return;
                 setSplCalibrationActionLine();
                 setSplCalibrationStatus(error.message);
             }
@@ -175,18 +269,28 @@
     }
 
     async function saveSplCalibration() {
+        if (splCalibrationApplying) return;
         const measured = Number(deps.getElements().splCalibrationMeasured?.value);
         if (!Number.isFinite(measured)) {
             setSplCalibrationStatus('Enter the measured C/Slow SPL value.');
             return;
         }
+        splCalibrationApplying = true;
+        const controller = new root.AbortController();
+        splCalibrationApplyController = controller;
+        resetSplCalibrationNoiseButton();
+        if (deps.getElements().splCalibrationSave) deps.getElements().splCalibrationSave.disabled = true;
+        let generation;
         try {
-            const response = await deps.fetch('/api/measurements/spl-calibration/apply', {
+            await stopSplCalibrationOperation();
+            if (controller.signal.aborted) return;
+            generation = splCalibrationOperationGeneration;
+            const { response, data } = await requestSplCalibration('/api/measurements/spl-calibration/apply', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ measured_spl_db: measured }),
-            });
-            const data = await response.json();
+            }, controller);
+            if (generation !== splCalibrationOperationGeneration) return;
             if (!response.ok) throw new Error(data.detail || 'Failed to apply SPL calibration');
             splCalibrationNoiseActive = false;
             if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.textContent = 'Start noise';
@@ -197,7 +301,14 @@
                 : `${offsetText}. Only affects playback with Loudness on.`);
             await deps.fetchEffects();
         } catch (error) {
-            setSplCalibrationStatus(error.message);
+            if (splCalibrationApplyController === controller && (generation === undefined || generation === splCalibrationOperationGeneration)) setSplCalibrationStatus(error.message);
+        } finally {
+            if (splCalibrationApplyController === controller) {
+                splCalibrationApplyController = null;
+                splCalibrationApplying = false;
+                resetSplCalibrationNoiseButton();
+                if (deps.getElements().splCalibrationSave) deps.getElements().splCalibrationSave.disabled = false;
+            }
         }
     }
 
