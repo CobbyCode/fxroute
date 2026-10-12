@@ -1312,6 +1312,7 @@ static uint64_t stage_latency(const fxdsp *d, const dsp_stage *stage, unsigned c
 
 static void update_latency(fxdsp *d, int bypassed) {
     uint64_t algorithmic[FXDSP_MAX_CHANNELS] = {0}, intentional[FXDSP_MAX_CHANNELS] = {0};
+    uint64_t adaptive[FXDSP_MAX_CHANNELS] = {0};
     unsigned unknown[FXDSP_MAX_CHANNELS] = {0};
     fxdsp_latency s = {0};
     s.rate = d->rate; s.outputs = d->outputs; s.inputs = d->inputs; s.reference = d->avsync_reference;
@@ -1322,7 +1323,10 @@ static void update_latency(fxdsp *d, int bypassed) {
         const dsp_stage *stage = &d->stages[st];
         for (unsigned c = 0; c < d->inputs; c++) {
             if (!stage_runs_on_pair(stage, channel_pair(d, c))) continue;
-            algorithmic[c] += stage_latency(d, stage, c);
+            uint64_t latency = stage_latency(d, stage, c);
+            algorithmic[c] += latency;
+            /* The upmixer reports the path the programme selected in this block. */
+            if (stage->kind == STAGE_UPMIXER) adaptive[c] += latency;
             if (stage->kind == STAGE_DELAY) intentional[c] += stage->delay[c];
             if (stage->kind == STAGE_CONVOLVER) {
                 intentional[c] += latency_frames(d, stage->conv_intent_ms[channel_side(d, c)]);
@@ -1344,6 +1348,7 @@ static void update_latency(fxdsp *d, int bypassed) {
         source_sync_state *state=&d->source_sync[c];
         fxdsp_output_latency *row=&s.source[c];
         row->dsp=algorithmic[c]; row->intentional=intentional[c]; row->unknown=unknown[c];
+        row->adaptive=adaptive[c];
         row->basis_known=state->basis_known;
         if (used[c] && state->basis_known) {
             source_delta[c]=(int64_t)(s.input+algorithmic[c])-(int64_t)latency_frames(d,state->basis_ms);
@@ -1379,6 +1384,7 @@ static void update_latency(fxdsp *d, int bypassed) {
             if (send->gain == 0) continue;
             if (!found) {
                 row->dsp = algorithmic[send->in]; row->intentional = intentional[send->in]; found = 1;
+                row->adaptive = adaptive[send->in];
                 primary_balance[o]=s.source[send->in].balance;
             } else if (row->dsp+primary_balance[o] != algorithmic[send->in]+s.source[send->in].balance || row->intentional != intentional[send->in]) row->mixed = 1;
             if(s.source[send->in].balance>largest_source_balance[o]) largest_source_balance[o]=s.source[send->in].balance;

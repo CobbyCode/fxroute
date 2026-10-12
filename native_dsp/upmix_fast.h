@@ -10,9 +10,9 @@
  *
  * Works on the eight Surround program positions FL FR FC LFE SL SR BL BR.
  * FL/FR carry the stereo programme; Center and the Side/Rear pairs are
- * derived from them. LFE is never touched. Every channel passes through the
- * same fixed delay, so inter-channel timing is identical with the upmixer
- * engaged, disengaged or bypassed.
+ * derived from them. LFE is never touched. On a stereo programme every
+ * channel passes through the same delay, so inter-channel timing is identical
+ * whatever the steering does.
  *
  * The matrix steers from the band-limited inter-channel correlation and
  * balance of L/R: correlated, centred material feeds Center and is taken out
@@ -30,7 +30,11 @@
  * and keeps it disengaged until those channels have stayed quiet for a while.
  * Detection uses a smoothed level with hysteresis, so single glitches and
  * levels around the threshold do not switch it; the matrix returns after a
- * fixed 10 seconds without such content.
+ * fixed 10 seconds without such content. Such content is not upmixed and
+ * does not pay for it: while the detection holds, the input passes straight
+ * through, sample exact and without delay, and the matrix does not run. The
+ * two paths are crossfaded, so entering the direct path skips one delay of
+ * programme and returning to the matrix repeats one.
  *
  * All state is allocated at creation; process performs no allocation,
  * locking or I/O. */
@@ -50,7 +54,9 @@ int fx_upmix_fast_strength_valid(float strength);
 /* Steering strengths 0 (this share off) .. 10 (strong); out-of-range values are clamped.
  * Center and Surround are independent: either may be 0 while the other steers. */
 void fx_upmix_fast_set_strength(fx_upmix_fast *upmixer, float center, float surround);
-/* Frames every channel is delayed by. */
+/* Frames every channel is delayed by on the path selected right now: the
+ * matrix delay, or 0 while multichannel content passes straight through. Call
+ * it from the thread that runs process. */
 size_t fx_upmix_fast_latency(const fx_upmix_fast *upmixer);
 /* Current engagement (0 = pass-through, 1 = full upmix) for tests and diagnostics. */
 float fx_upmix_fast_engagement(const fx_upmix_fast *upmixer);

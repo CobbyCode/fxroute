@@ -122,11 +122,21 @@ def ir_latency(params: dict) -> dict:
             'intentional_ms': [frame * 1000.0 / params['rate'] for frame in value['intentional_frames']], 'known': True}
 
 
+def _rendered_dsp(row: dict):
+    """DSP frames the rendering fixes, without the share that follows the programme."""
+    dsp, adaptive = row.get('dsp'), row.get('adaptive', 0)
+    return dsp - adaptive if type(dsp) is int and type(adaptive) is int else dsp
+
+
 def latency_signature(snapshot: dict) -> tuple:
-    """Audible timing identity; excludes measurement-owned align/gain/mute changes."""
+    """Audible timing identity; excludes measurement-owned align/gain/mute changes.
+
+    The upmixer's delay comes and goes with the programme on every path alike,
+    so it is no change of the rendering.
+    """
     return (snapshot.get('rate'), snapshot.get('input'), snapshot.get('bypassed'),
-            tuple((row.get('dsp'), row.get('intentional'), row.get('balance'), row.get('unknown'), row.get('mixed'))
+            tuple((_rendered_dsp(row), row.get('intentional'), row.get('balance'), row.get('unknown'), row.get('mixed'))
                   for row in snapshot.get('outputs', [])),
-            tuple((row.get('dsp'), row.get('intentional'), row.get('balance'), row.get('unknown'))
+            tuple((_rendered_dsp(row), row.get('intentional'), row.get('balance'), row.get('unknown'))
                   for row in snapshot.get('sources', [])),
             snapshot.get('balance_limited'), snapshot.get('balance_unavailable'))

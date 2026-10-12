@@ -124,7 +124,8 @@ Wichtig für die Latenzbilanz:
 
 - Der **Upmixer** läuft als einzige Stufe auf dem 8-Positionen-Surround-Bus
   (`fxdsp_process_tapped`, `dsp.c:1211-1285`) und verzögert **alle** Kanäle
-  gleich.
+  gleich. Seine Latenz gilt nur für ein Stereo-Programm: natives
+  Mehrkanalmaterial umgeht ihn ohne Verzögerung (Nachtrag in 4).
 - **Convolver, Crystalizer, Autogain und LV2** laufen pro Kanal bzw. pro
   Effekt-Paar (`run_jobs`, `dsp.c:899,1231,1243`). In Surround existiert ein
   `pair_mask` pro Stufe (`pairs`, `dsp.c:87,653`), d. h. ein gruppen-gebundenes
@@ -152,11 +153,11 @@ Least-Squares-/Kreuzkorrelations-Lag bestätigt (siehe 4.2/4.3).
 
 | Komponente | Konfiguration | @48 kHz | @44,1 kHz | Charakter |
 |---|---|---:|---:|---|
-| Upmixer **Fast** | immer | **64** (1,333 ms) | **58** (1,315 ms) | fest, ratenabhängig |
-| Upmixer **HQ** | FFT 1024 | **1023** (21,31 ms) | 1023 (23,20 ms) | konfigurationsabhängig |
-| Upmixer **HQ** | FFT 2048 | **2047** (42,65 ms) | 2047 (46,42 ms) | konfigurationsabhängig |
-| Upmixer **HQ** | FFT 4096 | **4095** (85,31 ms) | 4095 (92,86 ms) | konfigurationsabhängig |
-| Upmixer **HQ** | FFT 8192 | **8191** (170,65 ms) | 8191 (185,74 ms) | AV-Sync-Erweiterung; nativer Impulstest |
+| Upmixer **Fast** | Stereo-Programm | **64** (1,333 ms) | **58** (1,315 ms) | ratenabhängig; Mehrkanal: 0 |
+| Upmixer **HQ** | FFT 1024, Stereo-Programm | **1023** (21,31 ms) | 1023 (23,20 ms) | konfigurationsabhängig; Mehrkanal: 0 |
+| Upmixer **HQ** | FFT 2048, Stereo-Programm | **2047** (42,65 ms) | 2047 (46,42 ms) | konfigurationsabhängig; Mehrkanal: 0 |
+| Upmixer **HQ** | FFT 4096, Stereo-Programm | **4095** (85,31 ms) | 4095 (92,86 ms) | konfigurationsabhängig; Mehrkanal: 0 |
+| Upmixer **HQ** | FFT 8192, Stereo-Programm | **8191** (170,65 ms) | 8191 (185,74 ms) | AV-Sync-Erweiterung; nativer Impulstest; Mehrkanal: 0 |
 | **Loudness** (LSP `loud_comp_stereo`) ✓ | `fftSize` = S | **S** (256…16384) | **S** | konfigurationsabhängig; Default 4096 → 85,33 / 92,88 ms |
 | **Protection Limiter** (LSP `sc_limiter_stereo`) | Lookahead L ms | **floor(L·rate/1000)** (5 ms → 240) | 5 ms → 220 | Port korrekt |
 | **Crystalizer** (nativ) ✓ | immer | **1904** (39,667 ms) | **1839** (41,70 ms) | fest pro Rate (Formel 4.4) |
@@ -181,6 +182,17 @@ Least-Squares-/Kreuzkorrelations-Lag bestätigt (siehe 4.2/4.3).
 - Fast-Upmixer (`upmix_fast.c:98-103,128`):
   `half = 2·round(32·rate/48000)`; Latenz = `half`.
 - HQ-Upmixer (`upmix_hq.c:227`): Latenz = `fft_size − 1`.
+- **Nachtrag (Upmixer-Bypass):** Beide Upmixer-Latenzen gelten nur, solange
+  die Stufe ein Stereo-Programm verarbeitet. Solange die gemeinsame
+  Mehrkanalerkennung hält (Signal in FC/LFE/SL/SR/BL/BR, danach 10 s Hold),
+  nimmt das Signal den direkten Pfad (`fx_upmix_path` in `upmix_common.h`):
+  Eingang = Ausgang, 0 Frames, keine Matrix/keine FFT. Der Wechsel wird
+  überblendet (30 ms, höchstens die Verzögerung selbst); das Programm springt
+  dabei um die Upmixer-Latenz vor (Stereo → Mehrkanal) bzw. wiederholt sie
+  (zurück). `fx_upmix_*_latency` und damit `stage_latency` melden den jeweils
+  gewählten Pfad; der Readback führt diesen programmabhängigen Anteil je
+  Zeile zusätzlich als `adaptive`, und `latency_signature` klammert ihn aus,
+  weil er alle Kanäle gleich trifft und kein Wechsel des Renderings ist.
 - Loudness: Latenz = die gewählte FFT-Größe in Samples
   (Mapping `fftSize → fft 0…6` im `control("fft", …)`, `manager.py:1195`). Der
   Plug-in-Port ist **nicht** zu verwenden (4.3).
@@ -1317,5 +1329,8 @@ Reproduzierbare native Prüfung: `sh native_dsp/test_av_sync.sh`. Sie prüft
 Snapshots und echte Impulspositionen bei 44,1/48/96 kHz, Stereo/Sub,
 Loudness-Livewechsel, Direct, Eingangsguthaben und Surround-Recompile nach einer
 Teilkalibrierung. `test_upmix_hq.c` prüft außerdem alle acht Kanäle sample-genau
-für FFT 8192. Diese elektronischen Prüfungen ersetzen keine neue akustische
+für FFT 8192. Den Upmixer-Bypass für Mehrkanalmaterial prüfen `test_upmix_fast.c`
+und `test_upmix_hq.c` (Kanalzahl, direkter Pfad, Latenz, Wechsel in beide
+Richtungen) sowie `test_upmixer_delay_follows_the_programme` in
+`test_av_sync.c` (Readback und Impulsposition, mit und ohne AV-Sync-Ziel). Diese elektronischen Prüfungen ersetzen keine neue akustische
 Abnahme am Hörplatz und keine physische Messung der DAC-/TV-Latenz.

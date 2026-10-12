@@ -57,6 +57,7 @@ struct fx_upmix_hq {
     unsigned rate, size, hop, bins, mask;
     unsigned center_out, side_out, rear_out;
     unsigned position, phase;
+    fx_upmix_path path;
     double center_scale, center_exponent, surround_scale, surround_exponent;
     double stats_alpha, attack_alpha, release_alpha, norm;
     double energy;
@@ -135,16 +136,23 @@ static void free_all(fx_upmix_hq *u) {
     free(u);
 }
 
-static void set_state_defaults(fx_upmix_hq *u) {
+/* Statistics, gains and overlap-add tails of the transform; the input history stays. */
+static void clear_spectral_state(fx_upmix_hq *u) {
     size_t bins = u->bins;
-    for (unsigned c = 0; c < FX_UPMIX_HQ_CHANNELS; c++) memset(u->history[c], 0, sizeof(float) * u->size);
     for (unsigned i = 0; i < SIGNALS; i++) memset(u->accumulator[i], 0, sizeof(double) * u->size);
     memset(u->power_left, 0, sizeof(double) * bins); memset(u->power_right, 0, sizeof(double) * bins);
     memset(u->cross_re, 0, sizeof(double) * bins); memset(u->cross_im, 0, sizeof(double) * bins);
     memset(u->center_mix, 0, sizeof(double) * bins); memset(u->surround_mix, 0, sizeof(double) * bins);
     u->energy = 0.0;
+    u->phase = 0;
+}
+
+static void set_state_defaults(fx_upmix_hq *u) {
+    for (unsigned c = 0; c < FX_UPMIX_HQ_CHANNELS; c++) memset(u->history[c], 0, sizeof(float) * u->size);
+    clear_spectral_state(u);
     fx_upmix_detector_reset(&u->detector);
-    u->position = u->phase = 0;
+    fx_upmix_path_reset(&u->path);
+    u->position = 0;
 }
 
 fx_upmix_hq *fx_upmix_hq_create(unsigned rate, unsigned fft_size, unsigned center_out, unsigned side_out, unsigned rear_out) {
@@ -156,6 +164,7 @@ fx_upmix_hq *fx_upmix_hq_create(unsigned rate, unsigned fft_size, unsigned cente
     size = fft_size; bins = size / 2U + 1U;
     u->rate = rate; u->size = size; u->bins = bins; u->mask = size - 1U; u->hop = size / OVERLAP;
     u->center_out = center_out ? 1U : 0U; u->side_out = side_out ? 1U : 0U; u->rear_out = rear_out ? 1U : 0U;
+    fx_upmix_path_init(&u->path, rate, size - 1U);
 #define ALLOC(field, count, type) do { u->field = calloc((count), sizeof(type)); if (!u->field) { free_all(u); return NULL; } } while (0)
     ALLOC(bit_reverse, size, unsigned); ALLOC(twiddle_cos, size, double); ALLOC(twiddle_sin, size, double);
     ALLOC(window, size, double); ALLOC(synthesis, size, double); ALLOC(work_re, size, double); ALLOC(work_im, size, double);
@@ -224,7 +233,7 @@ void fx_upmix_hq_set_strength(fx_upmix_hq *upmixer, float center, float surround
     fx_upmix_strength_response(surround, FX_UPMIX_SURROUND_SCALE_MAX, &upmixer->surround_scale, &upmixer->surround_exponent);
 }
 
-size_t fx_upmix_hq_latency(const fx_upmix_hq *upmixer) { return upmixer ? upmixer->size - 1U : 0; }
+size_t fx_upmix_hq_latency(const fx_upmix_hq *upmixer) { return upmixer ? fx_upmix_path_latency(&upmixer->path, upmixer->size - 1U) : 0; }
 
 float fx_upmix_hq_engagement(const fx_upmix_hq *upmixer) { return upmixer ? (float)upmixer->detector.engage : 0.0F; }
 
@@ -412,24 +421,38 @@ static void run_frame(fx_upmix_hq *u) {
 void fx_upmix_hq_process(fx_upmix_hq *u, const float *const *input, float *const *output, size_t frames) {
     for (size_t n = 0; n < frames; n++) {
         double extra_power = 0.0, engage;
+        float dry[FX_UPMIX_HQ_CHANNELS];
         unsigned slot = u->position;
+        /* The transform rests once the direct path has taken over completely. */
+        int spectral = !fx_upmix_path_direct_only(&u->path);
         for (unsigned channel = 0; channel < FX_UPMIX_HQ_CHANNELS; channel++) {
             float value = input[channel] ? input[channel][n] : 0.0F;
             if (!isfinite(value)) value = 0.0F;
-            u->history[channel][slot] = value;
+            dry[channel] = u->history[channel][slot] = value;
             if (channel >= 2U) extra_power += (double)value * value;
         }
         u->position = (slot + 1U) & u->mask;
-        if (++u->phase >= u->hop) { u->phase = 0; run_frame(u); fx_upmix_detector_flush(&u->detector); }
+        if (++u->phase >= u->hop) { u->phase = 0; if (spectral) run_frame(u); fx_upmix_detector_flush(&u->detector); }
         fx_upmix_detector_step(&u->detector, extra_power);
         fx_upmix_detector_engage(&u->detector);
         engage = u->detector.engage;
+        /* Back to a stereo programme the transform starts over on the history kept meanwhile. */
+        if (fx_upmix_path_step(&u->path, &u->detector)) clear_spectral_state(u);
+        if (fx_upmix_path_direct_only(&u->path)) {
+            for (unsigned channel = 0; channel < FX_UPMIX_HQ_CHANNELS; channel++) output[channel][n] = dry[channel];
+            continue;
+        }
         for (unsigned channel = 0; channel < FX_UPMIX_HQ_CHANNELS; channel++) output[channel][n] = u->history[channel][u->position];
         for (unsigned s = 0; s < SIGNALS; s++) {
             double *accumulated = &u->accumulator[s][u->position];
             double result = (double)output[SIGNAL_CHANNEL[s]][n] + engage * *accumulated;
             output[SIGNAL_CHANNEL[s]][n] = isfinite(result) ? (float)result : 0.0F;
             *accumulated = 0.0;
+        }
+        if (u->path.blend) {
+            double weight = fx_upmix_path_weight(&u->path);
+            for (unsigned channel = 0; channel < FX_UPMIX_HQ_CHANNELS; channel++)
+                output[channel][n] = (float)((double)output[channel][n] + weight * ((double)dry[channel] - output[channel][n]));
         }
     }
 }

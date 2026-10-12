@@ -48,6 +48,7 @@ struct fx_upmix_fast {
     double center_scale, center_exponent, surround_scale, surround_exponent;
     double stats_coeff, attack_coeff, release_coeff;
     fx_upmix_detector detector;
+    fx_upmix_path path;
     unsigned position, control_phase;
     float history[FX_UPMIX_FAST_CHANNELS][HISTORY];
     float side_history[HISTORY];
@@ -72,15 +73,22 @@ static double run_biquad(biquad *filter, double value) {
     return output;
 }
 
-static void set_state_defaults(fx_upmix_fast *u) {
-    memset(u->history, 0, sizeof u->history);
-    memset(u->side_history, 0, sizeof u->side_history);
+/* Side chain, statistics and gains of the matrix; the signal history stays. */
+static void clear_steering_state(fx_upmix_fast *u) {
     for (unsigned channel = 0; channel < 2U; channel++)
         for (unsigned stage = 0; stage < 2U; stage++) u->sidechain[channel][stage].z1 = u->sidechain[channel][stage].z2 = 0.0;
     u->power_left = u->power_right = u->cross = 0.0;
     u->center_target = u->surround_target = u->center_mix = u->surround_mix = 0.0;
+    u->control_phase = 0;
+}
+
+static void set_state_defaults(fx_upmix_fast *u) {
+    memset(u->history, 0, sizeof u->history);
+    memset(u->side_history, 0, sizeof u->side_history);
+    clear_steering_state(u);
     fx_upmix_detector_reset(&u->detector);
-    u->position = u->control_phase = 0;
+    fx_upmix_path_reset(&u->path);
+    u->position = 0;
 }
 
 fx_upmix_fast *fx_upmix_fast_create(unsigned rate, unsigned center_out, unsigned side_out, unsigned rear_out) {
@@ -106,6 +114,7 @@ fx_upmix_fast *fx_upmix_fast_create(unsigned rate, unsigned center_out, unsigned
     u->attack_coeff = fx_upmix_time_coeff(ATTACK_SECONDS, rate);
     u->release_coeff = fx_upmix_time_coeff(RELEASE_SECONDS, rate);
     fx_upmix_detector_init(&u->detector, rate);
+    fx_upmix_path_init(&u->path, rate, half);
     set_state_defaults(u);
     fx_upmix_fast_set_strength(u, 6.0F, 6.0F);
     return u;
@@ -125,7 +134,7 @@ void fx_upmix_fast_set_strength(fx_upmix_fast *upmixer, float center, float surr
     fx_upmix_strength_response(surround, FX_UPMIX_SURROUND_SCALE_MAX, &upmixer->surround_scale, &upmixer->surround_exponent);
 }
 
-size_t fx_upmix_fast_latency(const fx_upmix_fast *upmixer) { return upmixer ? upmixer->half : 0; }
+size_t fx_upmix_fast_latency(const fx_upmix_fast *upmixer) { return upmixer ? fx_upmix_path_latency(&upmixer->path, upmixer->half) : 0; }
 
 float fx_upmix_fast_engagement(const fx_upmix_fast *upmixer) { return upmixer ? (float)upmixer->detector.engage : 0.0F; }
 
@@ -154,6 +163,8 @@ void fx_upmix_fast_process(fx_upmix_fast *u, const float *const *input, float *c
         unsigned position = u->position, aligned = (position - u->half) & HISTORY_MASK;
         float sample[FX_UPMIX_FAST_CHANNELS];
         double extra_power = 0.0;
+        /* The matrix rests once the direct path has taken over completely. */
+        int matrix = !fx_upmix_path_direct_only(&u->path);
         for (unsigned channel = 0; channel < FX_UPMIX_FAST_CHANNELS; channel++) {
             float value = input[channel] ? input[channel][n] : 0.0F;
             if (!isfinite(value)) value = 0.0F;
@@ -162,7 +173,7 @@ void fx_upmix_fast_process(fx_upmix_fast *u, const float *const *input, float *c
             if (channel >= 2U) extra_power += (double)value * value;
         }
         fx_upmix_detector_step(&u->detector, extra_power);
-        {
+        if (matrix) {
             double left = run_biquad(&u->sidechain[0][1], run_biquad(&u->sidechain[0][0], sample[0]));
             double right = run_biquad(&u->sidechain[1][1], run_biquad(&u->sidechain[1][0], sample[1]));
             u->power_left += u->stats_coeff * (left * left - u->power_left);
@@ -172,7 +183,7 @@ void fx_upmix_fast_process(fx_upmix_fast *u, const float *const *input, float *c
         u->side_history[position] = (float)((sample[0] - sample[1]) * SQRT_HALF);
         if (++u->control_phase >= CONTROL_FRAMES) {
             u->control_phase = 0;
-            update_targets(u);
+            if (matrix) update_targets(u);
             fx_upmix_flush_tiny(&u->power_left); fx_upmix_flush_tiny(&u->power_right); fx_upmix_flush_tiny(&u->cross);
             fx_upmix_flush_tiny(&u->center_mix); fx_upmix_flush_tiny(&u->surround_mix); fx_upmix_detector_flush(&u->detector);
             for (unsigned channel = 0; channel < 2U; channel++)
@@ -180,10 +191,16 @@ void fx_upmix_fast_process(fx_upmix_fast *u, const float *const *input, float *c
                     fx_upmix_flush_tiny(&u->sidechain[channel][stage].z1); fx_upmix_flush_tiny(&u->sidechain[channel][stage].z2);
                 }
         }
-        u->center_mix += (u->center_target > u->center_mix ? u->attack_coeff : u->release_coeff) * (u->center_target - u->center_mix);
-        u->surround_mix += (u->surround_target > u->surround_mix ? u->attack_coeff : u->release_coeff) * (u->surround_target - u->surround_mix);
+        if (matrix) {
+            u->center_mix += (u->center_target > u->center_mix ? u->attack_coeff : u->release_coeff) * (u->center_target - u->center_mix);
+            u->surround_mix += (u->surround_target > u->surround_mix ? u->attack_coeff : u->release_coeff) * (u->surround_target - u->surround_mix);
+        }
         fx_upmix_detector_engage(&u->detector);
-        {
+        /* Back to a stereo programme the matrix starts over on the history kept meanwhile. */
+        if (fx_upmix_path_step(&u->path, &u->detector)) clear_steering_state(u);
+        if (fx_upmix_path_direct_only(&u->path)) {
+            for (unsigned channel = 0; channel < FX_UPMIX_FAST_CHANNELS; channel++) output[channel][n] = sample[channel];
+        } else {
             double side_hilbert = 0.0;
             for (unsigned tap = 0; tap < u->taps; tap++) {
                 unsigned offset = 2U * tap + 1U;
@@ -205,6 +222,11 @@ void fx_upmix_fast_process(fx_upmix_fast *u, const float *const *input, float *c
             if (u->center_out) result[2] += engage * send * mid;
             result[4] += engage * side_gain * surround_left; result[5] += engage * side_gain * surround_right;
             result[6] += engage * rear_gain * surround_left; result[7] += engage * rear_gain * surround_right;
+            if (u->path.blend) {
+                double weight = fx_upmix_path_weight(&u->path);
+                for (unsigned channel = 0; channel < FX_UPMIX_FAST_CHANNELS; channel++)
+                    result[channel] += weight * ((double)sample[channel] - result[channel]);
+            }
             for (unsigned channel = 0; channel < FX_UPMIX_FAST_CHANNELS; channel++)
                 output[channel][n] = isfinite(result[channel]) ? (float)result[channel] : 0.0F;
         }

@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define RATE 48000U
 #define PI 3.14159265358979323846
@@ -166,19 +167,23 @@ static void test_fft_sizes_and_rates_are_validated_and_latency_is_fft_size_minus
     fx_upmix_hq_destroy(NULL);
 }
 
-/* A hard-panned impulse carries no steering, so the engaged upmixer must hand it back sample exact. */
-static void test_every_channel_is_delayed_by_exactly_the_latency(void) {
+/* A hard-panned impulse carries no steering, so the engaged upmixer must hand it back sample exact.
+ * The other channels get an impulse below the multichannel detection: on the spectral path they
+ * share the delay of the front. */
+static void test_every_channel_of_the_spectral_path_is_delayed_by_exactly_the_latency(void) {
     for (unsigned size = 0; size < 4U; size++) {
         fx_upmix_hq *u = fx_upmix_hq_create(RATE, FFT_SIZES[size], 1, 1, 1);
         size_t latency = fx_upmix_hq_latency(u), frames = 3U * FFT_SIZES[size];
         bus in = bus_new(frames), out = bus_new(frames);
         for (unsigned channel = 0; channel < CH; channel++) {
+            float impulse = channel < 2U ? 0.5F : 0.001F;
             fx_upmix_hq_reset(u);
-            in.c[channel][100] = 0.5F;
+            in.c[channel][100] = impulse;
             run(u, &in, &out, 509U);
+            assert(fx_upmix_hq_latency(u) == latency);
             for (unsigned other = 0; other < CH; other++)
                 for (size_t n = 0; n < frames; n++) {
-                    float expected = other == channel && n == 100U + latency ? 0.5F : 0.0F;
+                    float expected = other == channel && n == 100U + latency ? impulse : 0.0F;
                     assert(out.c[other][n] == expected);
                 }
             in.c[channel][100] = 0.0F;
@@ -649,23 +654,204 @@ static void test_any_extra_channel_disengages_within_milliseconds_and_the_hold_i
     }
 }
 
-/* While disengaged every channel is its delayed input: the spectral path keeps running but adds nothing. */
-static void test_a_disengaged_upmixer_is_a_pure_delay(void) {
-    size_t frames = 6U * RATE;
-    fx_upmix_hq *u = fx_upmix_hq_create(RATE, 2048U, 1, 1, 1);
-    bus in = bus_new(frames), out = bus_new(frames);
-    size_t latency = fx_upmix_hq_latency(u);
-    fx_upmix_hq_set_strength(u, 10.0F, 10.0F);
-    for (size_t n = 0; n < frames; n++) {
+/* Channel layouts as masks over FL FR FC LFE SL SR BL BR: 2.0, 2.1, 3.0, 4.0, 5.0, 5.1, 7.1. */
+static const unsigned LAYOUTS[] = {0x03U, 0x0BU, 0x07U, 0xC3U, 0x37U, 0x3FU, 0xFFU};
+
+/* A stereo image in FL/FR and independent signals in the other channels of the layout. */
+static void fill_layout(bus *b, unsigned layout) {
+    for (size_t n = 0; n < b->frames; n++) {
         float common = noise(0.1F);
-        in.c[0][n] = common + noise(0.06F); in.c[1][n] = common + noise(0.06F);
-        in.c[2][n] = noise(0.01F); in.c[6][n] = noise(0.01F);
+        b->c[0][n] = common + noise(0.06F); b->c[1][n] = common + noise(0.06F);
+        for (unsigned channel = 2U; channel < CH; channel++) b->c[channel][n] = layout >> channel & 1U ? noise(0.05F) : 0.0F;
     }
-    run(u, &in, &out, 509U);
-    assert(fx_upmix_hq_engagement(u) == 0.0F);
-    for (unsigned channel = 0; channel < CH; channel++)
-        assert(max_abs_diff(out.c[channel] + latency + 2U * RATE, in.c[channel] + 2U * RATE, 3U * RATE) < 1e-6);
+}
+
+/* Only a two-channel programme is upmixed. Anything that carries more channels passes straight
+ * through: no delay, no transform, every channel the input itself. */
+static void test_only_a_two_channel_programme_is_upmixed_and_delayed(void) {
+    for (unsigned size = 0; size < 4U; size++)
+        for (unsigned layout = 0; layout < sizeof LAYOUTS / sizeof LAYOUTS[0]; layout++) {
+            fx_upmix_hq *u = fx_upmix_hq_create(RATE, FFT_SIZES[size], 1, 1, 1);
+            size_t frames = RATE, settled = RATE / 10U, tail = 3U * RATE / 4U;
+            bus in = bus_new(frames), out = bus_new(frames);
+            fx_upmix_hq_set_strength(u, 10.0F, 10.0F);
+            fill_layout(&in, LAYOUTS[layout]);
+            run(u, &in, &out, 509U);
+            if (LAYOUTS[layout] == 0x03U) {
+                assert(fx_upmix_hq_latency(u) == FFT_SIZES[size] - 1U);
+                assert(fx_upmix_hq_engagement(u) == 1.0F);
+                assert(mean_square(out.c[2], tail, frames - tail) > 0.5 * mean_square(in.c[0], tail, frames - tail));
+            } else {
+                assert(fx_upmix_hq_latency(u) == 0U);
+                for (unsigned channel = 0; channel < CH; channel++)
+                    assert(memcmp(out.c[channel] + settled, in.c[channel] + settled, (frames - settled) * sizeof(float)) == 0);
+            }
+            fx_upmix_hq_destroy(u); bus_free(&in); bus_free(&out);
+        }
+}
+
+/* The direct path fades in over the switch time (30 ms, at most the delay), and the delayed path
+ * is gone before it could play the same onset a second time: the Center level drops once the
+ * fade is over, so any rest of the delayed path would show as the old level coming back. */
+static void test_a_multichannel_onset_fades_in_once_and_is_not_repeated(void) {
+    for (unsigned size = 0; size < 4U; size++) {
+        fx_upmix_hq *u = fx_upmix_hq_create(RATE, FFT_SIZES[size], 1, 1, 1);
+        size_t delay = FFT_SIZES[size] - 1U, fade = delay < 1440U ? delay : 1440U, onset = 1000U, frames = onset + 3U * FFT_SIZES[size];
+        bus in = bus_new(frames), out = bus_new(frames);
+        for (size_t n = onset; n < frames; n++) in.c[2][n] = n < onset + fade ? 0.5F : 0.25F;
+        run(u, &in, &out, 509U);
+        assert(fx_upmix_hq_latency(u) == 0U);
+        for (size_t n = 0; n < onset; n++) assert(out.c[2][n] == 0.0F);
+        /* A raised cosine: no corner at the start, no jump on the way, half way at half the level. */
+        assert(out.c[2][onset] < 2.0F / (float)(fade * fade));
+        for (size_t n = onset; n < onset + fade; n++) {
+            float step = out.c[2][n] - out.c[2][n - 1U];
+            assert(step >= 0.0F && step < 1.0F / (float)fade);
+        }
+        assert(fabsf(out.c[2][onset + fade / 2U - 1U] - 0.25F) < 0.01F);
+        for (size_t n = onset + fade; n < frames; n++) assert(out.c[2][n] == 0.25F);
+        for (unsigned channel = 0; channel < CH; channel++)
+            if (channel != 2U) assert(mean_square(out.c[channel], 0, frames) == 0.0);
+        fx_upmix_hq_destroy(u); bus_free(&in); bus_free(&out);
+    }
+}
+
+static void render_content(const content *c, bus *in) {
+    for (size_t n = 0; n < in->frames; n++) {
+        float frame[CH];
+        content_frame(c, n, frame);
+        for (unsigned channel = 0; channel < CH; channel++) in->c[channel][n] = frame[channel];
+    }
+}
+
+/* Processes frames [begin, end) of whole buses. */
+static void run_span(fx_upmix_hq *u, const bus *in, bus *out, size_t begin, size_t end) {
+    bus in_part = *in, out_part = *out;
+    in_part.frames = out_part.frames = end - begin;
+    for (unsigned channel = 0; channel < CH; channel++) { in_part.c[channel] = in->c[channel] + begin; out_part.c[channel] = out->c[channel] + begin; }
+    run(u, &in_part, &out_part, 400U);
+}
+
+/* Stereo, a Center signal from 2 s to 5 s, stereo again: the path and the reported latency follow
+ * the programme by themselves, back after the 10 s hold. With both strengths at 0 the spectral
+ * path is an exact delay, so every sample is the direct input, the delayed input or, during a
+ * crossfade, something between the two. */
+static void test_stereo_to_multichannel_and_back_switches_the_path_and_the_latency(void) {
+    content c = {.channel = 2U, .level = 0.1F, .from = SECONDS(2), .to = SECONDS(5)};
+    size_t frames = SECONDS(20), delay = 1023U, fade = SECONDS(0.030);
+    for (unsigned variant = 0; variant < 2U; variant++) {
+        fx_upmix_hq *u = fx_upmix_hq_create(LONG_RATE, 1024U, 1, 1, 1);
+        bus in = bus_new(frames), out = bus_new(frames);
+        size_t direct_from = SECONDS(2) + 2U + fade, direct_to = SECONDS(15), spectral_again = SECONDS(15.6);
+        float strength = variant ? 10.0F : 0.0F;
+        fx_upmix_hq_set_strength(u, strength, strength);
+        render_content(&c, &in);
+        run_span(u, &in, &out, 0, SECONDS(2));
+        assert(fx_upmix_hq_latency(u) == delay && fx_upmix_hq_engagement(u) == 1.0F);
+        run_span(u, &in, &out, SECONDS(2), SECONDS(2.05));
+        assert(fx_upmix_hq_latency(u) == 0U && fx_upmix_hq_engagement(u) < 0.05F);
+        run_span(u, &in, &out, SECONDS(2.05), SECONDS(15));           /* about 9.8 s after the Center fell silent */
+        assert(fx_upmix_hq_latency(u) == 0U && fx_upmix_hq_engagement(u) == 0.0F);
+        run_span(u, &in, &out, SECONDS(15), SECONDS(15.5));
+        assert(fx_upmix_hq_latency(u) == delay);
+        run_span(u, &in, &out, SECONDS(15.5), frames);
+        assert(fx_upmix_hq_latency(u) == delay && fx_upmix_hq_engagement(u) > 0.9F);
+        for (unsigned channel = 0; channel < CH; channel++)
+            assert(memcmp(out.c[channel] + direct_from, in.c[channel] + direct_from, (direct_to - direct_from) * sizeof(float)) == 0);
+        if (variant) {
+            /* The upmix works before the switch and resumes after the return. */
+            assert(mean_square(out.c[2], SECONDS(1), SECONDS(1)) > 0.5 * mean_square(in.c[0], SECONDS(1), SECONDS(1)));
+            assert(mean_square(out.c[2], SECONDS(18.5), SECONDS(1.5)) > 0.5 * mean_square(in.c[0], SECONDS(18.5), SECONDS(1.5)));
+        } else {
+            for (unsigned channel = 0; channel < CH; channel++) {
+                for (size_t n = delay; n < SECONDS(2); n++) assert(out.c[channel][n] == in.c[channel][n - delay]);
+                for (size_t n = spectral_again; n < frames; n++) assert(out.c[channel][n] == in.c[channel][n - delay]);
+                for (size_t n = delay; n < frames; n++) {
+                    float now = in.c[channel][n], before = in.c[channel][n - delay];
+                    assert(out.c[channel][n] >= (now < before ? now : before) && out.c[channel][n] <= (now > before ? now : before));
+                }
+            }
+        }
+        fx_upmix_hq_destroy(u); bus_free(&in); bus_free(&out);
+    }
+}
+
+/* The return to the spectral path is the same raised cosine backwards. A slow ramp in FL/FR
+ * makes the two paths differ by a constant, so the share of the direct path can be read off the
+ * output. The Center signal ends after 1 s; the hold runs out about 10.2 s later. */
+static void test_the_return_fades_back_to_the_spectral_path(void) {
+    size_t frames = SECONDS(13);
+    fx_upmix_hq *u = fx_upmix_hq_create(LONG_RATE, 1024U, 1, 1, 1);
+    bus in = bus_new(frames), out = bus_new(frames);
+    size_t delay = fx_upmix_hq_latency(u), fade = SECONDS(0.030), middle = SECONDS(11), start;
+    double threshold;
+    fx_upmix_hq_set_strength(u, 0.0F, 0.0F);
+    for (size_t n = 0; n < frames; n++) {
+        in.c[0][n] = in.c[1][n] = (float)(-0.4 + 0.8 * (double)n / (double)frames);
+        if (n < SECONDS(1)) in.c[2][n] = 0.1F * (float)sin(2.0 * PI * 1000.0 * (double)n / LONG_RATE);
+    }
+    run_span(u, &in, &out, 0, frames);
+    assert(fx_upmix_hq_latency(u) == delay);
+    /* The first frame past the middle of the fade (between the two blend steps around it) locates its start. */
+    assert(fade % 2U == 0U);
+    threshold = 0.5 - 0.25 * sin(PI / (double)fade);
+    while (middle < frames && ((double)out.c[0][middle] - in.c[0][middle - delay]) >= threshold * ((double)in.c[0][middle] - in.c[0][middle - delay])) middle++;
+    assert(middle > SECONDS(11.1) && middle < SECONDS(11.4));
+    start = middle - fade / 2U;
+    for (size_t n = SECONDS(2); n < start; n++) assert(out.c[0][n] == in.c[0][n]);
+    for (size_t k = 0; k + 1U < fade; k++) {
+        double direct = in.c[0][start + k], delayed = in.c[0][start + k - delay];
+        double share = ((double)out.c[0][start + k] - delayed) / (direct - delayed);
+        assert(fabs(share - (0.5 - 0.5 * cos(PI * (double)(fade - 1U - k) / (double)fade))) < 0.01);
+    }
+    for (size_t n = start + fade - 1U; n < frames; n++) assert(out.c[0][n] == in.c[0][n - delay]);
     fx_upmix_hq_destroy(u); bus_free(&in); bus_free(&out);
+}
+
+/* The transform starts over when the stereo programme returns: nothing it held when the
+ * multichannel content took over comes back 10 s later. The stereo programme ends 20 ms into
+ * the Center signal, so everything is silent long before the return. */
+static void test_the_return_to_the_spectral_path_replays_nothing_from_before_the_switch(void) {
+    content c = {.channel = 2U, .level = 0.1F, .from = SECONDS(2), .to = SECONDS(5), .stereo_to = SECONDS(2.02)};
+    size_t frames = SECONDS(20);
+    fx_upmix_hq *u = fx_upmix_hq_create(LONG_RATE, 1024U, 1, 1, 1);
+    bus in = bus_new(frames), out = bus_new(frames);
+    fx_upmix_hq_set_strength(u, 10.0F, 10.0F);
+    render_content(&c, &in);
+    run_span(u, &in, &out, 0, frames);
+    assert(fx_upmix_hq_latency(u) == 1023U && fx_upmix_hq_engagement(u) > 0.9F);
+    assert(mean_square(out.c[2], SECONDS(1), SECONDS(1)) > 0.5 * mean_square(in.c[0], SECONDS(1), SECONDS(1)));
+    for (unsigned channel = 0; channel < CH; channel++) assert(mean_square(out.c[channel], SECONDS(6), frames - SECONDS(6)) == 0.0);
+    fx_upmix_hq_destroy(u); bus_free(&in); bus_free(&out);
+}
+
+/* CPU seconds for 20 s of a stereo or a 5.1 programme at the largest transform. */
+static double process_seconds(int multichannel) {
+    enum { BLOCK = 512 };
+    static float input[CH][BLOCK], output[CH][BLOCK];
+    const float *ip[CH]; float *op[CH];
+    fx_upmix_hq *u = fx_upmix_hq_create(RATE, 8192U, 1, 1, 1);
+    clock_t begin;
+    double spent;
+    for (unsigned channel = 0; channel < CH; channel++) { ip[channel] = input[channel]; op[channel] = output[channel]; }
+    for (size_t k = 0; k < BLOCK; k++) {
+        float common = noise(0.1F);
+        input[0][k] = common + noise(0.06F); input[1][k] = common + noise(0.06F);
+        for (unsigned channel = 2U; channel < 6U; channel++) input[channel][k] = multichannel ? noise(0.05F) : 0.0F;
+    }
+    for (size_t done = 0; done < RATE; done += BLOCK) fx_upmix_hq_process(u, ip, op, BLOCK);
+    begin = clock();
+    for (size_t done = 0; done < 20U * RATE; done += BLOCK) fx_upmix_hq_process(u, ip, op, BLOCK);
+    spent = (double)(clock() - begin) / CLOCKS_PER_SEC;
+    assert(fx_upmix_hq_latency(u) == (multichannel ? 0U : 8191U));
+    fx_upmix_hq_destroy(u);
+    return spent;
+}
+
+/* A bypassed upmixer copies its input; the transforms of every hop are not run. */
+static void test_the_direct_path_runs_no_transform(void) {
+    double spectral = process_seconds(0), direct = process_seconds(1);
+    assert(direct * 4.0 < spectral);
 }
 
 /* Recursive states decay into denormals while idle, and every sample then runs slow on x86. The
@@ -718,6 +904,8 @@ static void test_result_does_not_depend_on_the_block_size(void) {
     size_t sizes[] = {1U, 7U, 509U, 1024U, 4096U};
     bus in = bus_new(2U * RATE), reference = bus_new(2U * RATE), out = bus_new(2U * RATE);
     for (size_t n = 0; n < 2U * RATE; n++) { float common = noise(0.1F); in.c[0][n] = common + noise(0.05F); in.c[1][n] = common + noise(0.05F); }
+    /* A Center signal in the second half: the switch to the direct path is part of the result. */
+    for (size_t n = RATE; n < 2U * RATE; n++) in.c[2][n] = noise(0.05F);
     for (unsigned i = 0; i < 5U; i++) {
         fx_upmix_hq *u = fx_upmix_hq_create(RATE, 1024U, 1, 1, 1);
         fx_upmix_hq_set_strength(u, 8.0F, 7.0F);
@@ -734,7 +922,12 @@ static void test_non_finite_input_never_reaches_the_output(void) {
     const float *ip[CH]; float *op[CH];
     for (size_t n = 0; n < 16384U; n++) { in.c[0][n] = noise(0.1F); in.c[1][n] = noise(0.1F); }
     in.c[0][1000] = NAN; in.c[1][1200] = INFINITY; in.c[2][1400] = -INFINITY;
+    /* The same on the direct path a Center signal selects from frame 8000 on. */
+    for (size_t n = 8000U; n < 16384U; n++) in.c[2][n] = noise(0.05F);
+    in.c[0][12000] = NAN; in.c[4][12500] = INFINITY; in.c[1][13000] = -INFINITY;
     run(u, &in, &out, 509U);
+    assert(fx_upmix_hq_latency(u) == 0U);
+    assert(out.c[0][12000] == 0.0F && out.c[4][12500] == 0.0F && out.c[1][13000] == 0.0F);
     for (unsigned channel = 0; channel < CH; channel++)
         for (size_t n = 0; n < 16384U; n++) assert(isfinite(out.c[channel][n]));
     /* Missing input buffers read as silence. */
@@ -763,9 +956,15 @@ static void test_loud_and_very_quiet_programmes_stay_finite_and_bounded(void) {
 static void test_silence_stays_silent_and_reset_restores_a_fresh_instance(void) {
     fx_upmix_hq *used = fx_upmix_hq_create(RATE, 1024U, 1, 1, 1), *fresh = fx_upmix_hq_create(RATE, 1024U, 1, 1, 1);
     bus loud = bus_new(RATE), quiet = bus_new(RATE), out = bus_new(RATE), second = bus_new(RATE), fresh_out = bus_new(RATE);
+    bus surround = bus_new(RATE);
     for (size_t n = 0; n < RATE; n++) { float common = noise(0.1F); loud.c[0][n] = common + noise(0.06F); loud.c[1][n] = common + noise(0.06F); }
+    fill_layout(&surround, 0x3FU);
     run(used, &loud, &out, 509U);
+    /* A reset also leaves the direct path a multichannel programme selected. */
+    run(used, &surround, &out, 509U);
+    assert(fx_upmix_hq_latency(used) == 0U);
     fx_upmix_hq_reset(used);
+    assert(fx_upmix_hq_latency(used) == 1023U);
     run(used, &quiet, &out, 509U);
     for (unsigned channel = 0; channel < CH; channel++) assert(mean_square(out.c[channel], 0, RATE) == 0.0);
     fx_upmix_hq_reset(used);
@@ -773,7 +972,7 @@ static void test_silence_stays_silent_and_reset_restores_a_fresh_instance(void) 
     run(fresh, &loud, &fresh_out, 509U);
     for (unsigned channel = 0; channel < CH; channel++) assert(memcmp(second.c[channel], fresh_out.c[channel], RATE * sizeof(float)) == 0);
     fx_upmix_hq_destroy(used); fx_upmix_hq_destroy(fresh);
-    bus_free(&loud); bus_free(&quiet); bus_free(&out); bus_free(&second); bus_free(&fresh_out);
+    bus_free(&loud); bus_free(&quiet); bus_free(&out); bus_free(&second); bus_free(&fresh_out); bus_free(&surround);
 }
 
 static void test_other_rates_keep_the_contract(void) {
@@ -801,7 +1000,7 @@ static void test_strength_validation_is_shared_with_the_matrix(void) {
 
 int main(void) {
     test_fft_sizes_and_rates_are_validated_and_latency_is_fft_size_minus_one();
-    test_every_channel_is_delayed_by_exactly_the_latency();
+    test_every_channel_of_the_spectral_path_is_delayed_by_exactly_the_latency();
     test_derived_channels_are_aligned_with_the_delayed_front();
     test_mono_goes_to_center_and_leaves_the_front();
     test_without_a_center_output_the_centre_image_stays_in_front();
@@ -819,7 +1018,12 @@ int main(void) {
     test_strength_change_to_zero_while_running_is_smooth_and_settles_to_silence();
     test_strength_change_while_running_is_smooth();
     test_any_extra_channel_disengages_within_milliseconds_and_the_hold_is_ten_seconds();
-    test_a_disengaged_upmixer_is_a_pure_delay();
+    test_only_a_two_channel_programme_is_upmixed_and_delayed();
+    test_a_multichannel_onset_fades_in_once_and_is_not_repeated();
+    test_stereo_to_multichannel_and_back_switches_the_path_and_the_latency();
+    test_the_return_fades_back_to_the_spectral_path();
+    test_the_return_to_the_spectral_path_replays_nothing_from_before_the_switch();
+    test_the_direct_path_runs_no_transform();
     test_long_idle_and_disengaged_states_run_without_denormals();
     test_lfe_is_never_synthesised();
     test_no_destination_means_pure_delayed_pass_through();

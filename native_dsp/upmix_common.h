@@ -3,8 +3,9 @@
 #define FXROUTE_UPMIX_COMMON_H
 
 /* Pieces shared by the Fast and HQ stereo-to-Surround upmixers: the strength
- * scale, the real-multichannel detection with its engage/disengage smoothing
- * and a few numeric helpers. Header-only so both kernels stay libm-only. */
+ * scale, the real-multichannel detection with its engage/disengage smoothing,
+ * the direct path it selects and a few numeric helpers. Header-only so both
+ * kernels stay libm-only. */
 #include <math.h>
 #include <stddef.h>
 
@@ -113,5 +114,46 @@ static inline void fx_upmix_detector_flush(fx_upmix_detector *d) {
     fx_upmix_flush_tiny(&d->engage);
     fx_upmix_flush_tiny(&d->activity);
 }
+
+/* Path selection. A stereo programme takes the upmix path with its delay. Real
+ * multichannel content needs no upmix and must not pay for one: while the
+ * detector holds it takes the direct path, the input itself without delay or
+ * processing. blend runs from 0 (upmix path only) to frames (direct path
+ * only). The crossfade is never longer than the delay, so the upmix path is
+ * gone before it could repeat an onset the direct path already played.
+ * Entering the direct path skips one delay of programme, returning repeats one. */
+#define FX_UPMIX_SWITCH_SECONDS 0.030
+
+typedef struct { unsigned direct, blend, frames; } fx_upmix_path;
+
+static inline void fx_upmix_path_reset(fx_upmix_path *p) { p->direct = p->blend = 0; }
+
+static inline void fx_upmix_path_init(fx_upmix_path *p, unsigned rate, size_t delay) {
+    size_t frames = (size_t)llround(FX_UPMIX_SWITCH_SECONDS * rate);
+    if (frames > delay) frames = delay;
+    p->frames = frames ? (unsigned)frames : 1U;
+    fx_upmix_path_reset(p);
+}
+
+/* The direct path has taken over completely: the upmix path rests. */
+static inline int fx_upmix_path_direct_only(const fx_upmix_path *p) { return p->blend == p->frames; }
+
+/* One frame, after the detector step. Returns 1 in the frame that selects the
+ * upmix path again: the hold outlasts the crossfade, so that path has rested
+ * and has to start over. */
+static inline int fx_upmix_path_step(fx_upmix_path *p, const fx_upmix_detector *d) {
+    unsigned multichannel = d->hold_left ? 1U : 0U;
+    int restart = p->direct && !multichannel;
+    p->direct = multichannel;
+    if (multichannel) { if (p->blend < p->frames) p->blend++; }
+    else if (p->blend) p->blend--;
+    return restart;
+}
+
+/* Share of the direct path in the output: a raised cosine over the blend. */
+static inline double fx_upmix_path_weight(const fx_upmix_path *p) { return 0.5 - 0.5 * cos(FX_UPMIX_PI * p->blend / p->frames); }
+
+/* Frames of delay on the selected path. */
+static inline size_t fx_upmix_path_latency(const fx_upmix_path *p, size_t delay) { return p->direct ? 0 : delay; }
 
 #endif

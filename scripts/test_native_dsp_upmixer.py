@@ -50,16 +50,22 @@ class NativeUpmixerTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.manager = DSPManager(Path(self.directory.name) / "presets", Path(self.directory.name) / "irs")
 
-    def render(self, roles, extras, left, right, text_filter=None):
-        """Compile for the routing, run the offline engine and return outputs by role name."""
+    def render(self, roles, extras, left, right, text_filter=None, others=None):
+        """Compile for the routing, run the offline engine and return outputs by role name.
+
+        ``others`` maps a program position above Front L/R (2 = FC .. 7 = BR) to its samples.
+        """
         layout = layout_from_plan(self.surround.plan(self.surround.state(roles)), resolve_ir=lambda name: {})
         text = self.manager.compile_engine_text(layout, preset_name="Neutral", sample_rate_hz=RATE,
                                                 extras_override=extras)
         if text_filter:
             text = text_filter(text)
         frames = array.array("f")
-        for l, r in zip(left, right):
-            frames.extend([l, r, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        for index, (l, r) in enumerate(zip(left, right)):
+            frame = [l, r, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            for position, samples in (others or {}).items():
+                frame[position] = samples[index]
+            frames.extend(frame)
         path = Path(self.directory.name)
         (path / "config").write_text(text)
         (path / "input").write_bytes(frames.tobytes())
@@ -229,6 +235,41 @@ class NativeUpmixerTests(unittest.TestCase):
             shifted = neither[name][fft - 1:frames - 4096]
             reference = off[name][:frames - 4096 - fft + 1]
             self.assertLess(max(abs(a - b) for a, b in zip(shifted, reference)), 1e-5, name)
+
+    # --- multichannel programme -------------------------------------------
+
+    def test_multichannel_programme_passes_both_engines_without_their_delay(self):
+        # A programme that already carries Center, LFE and surround channels is not upmixed and
+        # not delayed: every speaker feed is the one the same routing gives without the upmixer.
+        # The runs start differently (the direct path fades in), and the float state of the
+        # crossover then keeps them about 1e-5 apart; one frame of delay would show as 0.1 and more.
+        frames = 2 * RATE
+        left, right = self.noise(frames, 21), self.noise(frames, 22)
+        layouts = {"5.1": (2, 3, 4, 5), "7.1": (2, 3, 4, 5, 6, 7), "3.0": (2,)}
+        for label, positions in layouts.items():
+            others = {position: self.noise(frames, 30 + position, 0.05) for position in positions}
+            off = self.render(surround_support.ROLES, OFF, left, right, others=others)
+            for extras in (ON, hq(10, 10, 1024), hq(10, 10, 8192)):
+                params = extras["upmixer"]["params"]
+                with self.subTest(layout=label, mode=params["mode"], fft=params.get("fftSize")):
+                    on = self.render(surround_support.ROLES, extras, left, right, others=others)
+                    self.assertGreater(power(off["center"], RATE, RATE), 0.0)
+                    for name in off:
+                        worst = max(abs(a - b) for a, b in zip(on[name][RATE // 2:], off[name][RATE // 2:]))
+                        self.assertLess(worst, 1e-3, name)
+
+    def test_stereo_programme_keeps_the_upmix_and_its_delay_on_the_same_routing(self):
+        # The counterpart: without the extra channels the same configs upmix and delay.
+        frames = 2 * RATE
+        mono = self.noise(frames, 21)
+        for extras, latency in ((ON, LATENCY), (hq(10, 10, 1024), 1023)):
+            with self.subTest(mode=extras["upmixer"]["params"]["mode"]):
+                on = self.render(surround_support.ROLES, extras, mono, mono)
+                self.assertGreater(power(on["center"], RATE, RATE), 1.5 * power(mono, RATE, RATE))
+                # The centre carries the mono programme, one upmixer delay late.
+                best = max(range(latency - 3, latency + 4), key=lambda lag: sum(
+                    on["center"][RATE + lag + n] * mono[RATE + n] for n in range(4096)))
+                self.assertEqual(best, latency)
 
     def test_hq_stage_rejects_bad_parameters_and_defaults_the_fft_size(self):
         silence = [0.0] * 4800

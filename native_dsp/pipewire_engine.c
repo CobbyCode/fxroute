@@ -143,17 +143,18 @@ static void reply_latency(struct engine *engine, const struct sockaddr_un *clien
         used += (size_t)snprintf(reply + used, sizeof reply - used,
             "%s{\"dsp\":%" PRIu64 ",\"intentional\":%" PRIu64 ",\"align\":%" PRIu64
             ",\"balance\":%" PRIu64 ",\"sync\":%" PRIu64 ",\"total\":%" PRIu64
-            ",\"basis_known\":%" PRIu64 ",\"unknown\":%" PRIu64 ",\"mixed\":%" PRIu64 "}",
+            ",\"basis_known\":%" PRIu64 ",\"unknown\":%" PRIu64 ",\"mixed\":%" PRIu64
+            ",\"adaptive\":%" PRIu64 "}",
             o ? "," : "", r->dsp, r->intentional, r->align, r->balance, r->sync, r->total,
-            r->basis_known, r->unknown, r->mixed);
+            r->basis_known, r->unknown, r->mixed, r->adaptive);
     }
     used += (size_t)snprintf(reply + used, sizeof reply - used, "],\"sources\":[");
     for (unsigned c=0; c<s.inputs; c++) {
         const fxdsp_output_latency *r=&s.source[c];
         used += (size_t)snprintf(reply + used, sizeof reply - used,
             "%s{\"dsp\":%" PRIu64 ",\"balance\":%" PRIu64 ",\"basis_known\":%" PRIu64
-            ",\"intentional\":%" PRIu64 ",\"unknown\":%" PRIu64 "}",
-            c ? "," : "", r->dsp, r->balance, r->basis_known, r->intentional, r->unknown);
+            ",\"intentional\":%" PRIu64 ",\"unknown\":%" PRIu64 ",\"adaptive\":%" PRIu64 "}",
+            c ? "," : "", r->dsp, r->balance, r->basis_known, r->intentional, r->unknown, r->adaptive);
     }
     used += (size_t)snprintf(reply + used, sizeof reply - used, "]}\n");
     (void)sendto(engine->control_fd, reply, used, 0, (const struct sockaddr *)client, client_size);

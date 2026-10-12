@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import default_output_state, set_av_sync, validate_output_state, switch_mode
 from audio.output_state_migration import upgrade_output_state
-from dsp.latency import capture_basis, ir_latency
+from dsp.latency import capture_basis, ir_latency, latency_signature
 from dsp.manager import DSPManager, build_wav_bytes, parse_wav_frames
 from dsp.native_config import layout_from_plan
 
@@ -122,6 +122,29 @@ class AVSyncTests(unittest.TestCase):
                                 {'position': 'LFE', 'dsp': 0, 'balance': 6144, 'roles': ['sub1']}]}
         result = capture_basis(state, snapshot, origin='calibrated', roles=['sub1'])
         self.assertEqual(result['modes']['surround']['av_sync']['source_basis'], {'FL': 128})
+
+    def test_upmixer_path_change_is_not_a_change_of_the_rendering(self):
+        def snapshot(upmixer, preset=4096):
+            return {'ready': True, 'rate': 48000, 'input': 2818, 'bypassed': 0,
+                    'outputs': [{'dsp': preset + upmixer, 'adaptive': upmixer, 'intentional': 0,
+                                 'balance': 0, 'unknown': 0, 'mixed': 0}],
+                    'sources': [{'dsp': preset + upmixer, 'adaptive': upmixer, 'intentional': 0,
+                                 'balance': 0, 'unknown': 0}]}
+        # Stereo programme (HQ 8192, Fast) against multichannel content on the direct path.
+        self.assertEqual(latency_signature(snapshot(8191)), latency_signature(snapshot(0)))
+        self.assertEqual(latency_signature(snapshot(64)), latency_signature(snapshot(0)))
+        # Everything the rendering fixes still counts, on either path.
+        self.assertNotEqual(latency_signature(snapshot(0, preset=6144)), latency_signature(snapshot(0)))
+        self.assertNotEqual(latency_signature(snapshot(8191, preset=6144)), latency_signature(snapshot(0)))
+        for section in ('outputs', 'sources'):
+            changed = snapshot(8191)
+            changed[section][0]['dsp'] += 1024
+            self.assertNotEqual(latency_signature(changed), latency_signature(snapshot(8191)), section)
+        # A readback without the share compares as it always did.
+        plain = snapshot(0)
+        for section in ('outputs', 'sources'):
+            del plain[section][0]['adaptive']
+        self.assertEqual(latency_signature(plain), latency_signature(snapshot(0)))
 
     def test_odd_pcm24_data_is_padded_before_latency_metadata(self):
         with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:

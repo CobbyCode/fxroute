@@ -257,6 +257,88 @@ static void test_unknown_convolver_does_not_derive_a_drop_to_zero(void) {
     unlink(wav_path);
 }
 
+/* Blocks of a stereo programme, with a Center signal when multichannel; returns the last readback. */
+static fxdsp_latency programme(fxdsp *d, int multichannel, unsigned blocks) {
+    float stereo[1024], center[1024], silence[1024] = {0}, output[8][1024];
+    const float *in[8]; float *out[8];
+    fxdsp_latency latency;
+    for (unsigned n = 0; n < 1024; n++) { stereo[n] = 0.1f * sinf(0.05f * (float)n); center[n] = multichannel ? 0.1f : 0.0f; }
+    for (unsigned c = 0; c < 8; c++) { in[c] = c < 2 ? stereo : c == 2 ? center : silence; out[c] = output[c]; }
+    for (unsigned block = 0; block < blocks; block++) fxdsp_process(d, in, out, 1024);
+    assert(fxdsp_read_latency(d, &latency));
+    return latency;
+}
+
+/* Frames after which a Front L impulse leaves output 0, the Center carrying signal when multichannel. */
+static size_t front_impulse_delay(fxdsp *d, int multichannel) {
+    float input[8][1024] = {{0}}, output[8][1024], peak = 0;
+    const float *in[8]; float *out[8];
+    size_t position = 0;
+    for (unsigned c = 0; c < 8; c++) { in[c] = input[c]; out[c] = output[c]; }
+    for (unsigned n = 0; n < 1024; n++) input[2][n] = multichannel ? 0.1f : 0.0f;
+    input[0][100] = 0.5f;
+    for (size_t offset = 0; offset < 16 * 1024; offset += 1024) {
+        fxdsp_process(d, in, out, 1024);
+        for (size_t n = 0; n < 1024; n++)
+            if (fabsf(output[0][n]) > peak) { peak = fabsf(output[0][n]); position = offset + n; }
+        input[0][100] = 0;
+    }
+    assert(peak > 0.4f);
+    return position - 100;
+}
+
+static void assert_upmixer_share(const fxdsp_latency *s, uint64_t share, uint64_t actual) {
+    for (unsigned o = 0; o < s->outputs; o++) {
+        assert(s->output[o].dsp == share && s->output[o].adaptive == share);
+        assert(s->output[o].balance == 0 && s->output[o].total == actual);
+    }
+    for (unsigned c = 0; c < 3; c++)
+        assert(s->source[c].dsp == share && s->source[c].adaptive == share && s->source[c].balance == 0);
+    assert(s->minimum == share && s->actual == actual);
+}
+
+/* The upmixer's delay belongs to a stereo programme. Multichannel content bypasses it, the
+ * readback follows the path the programme selected, and a target above the delay keeps the
+ * total: the common delay takes the difference. */
+static void test_upmixer_delay_follows_the_programme(void) {
+    const struct { const char *engine; uint64_t delay; } cases[] = {
+        {"param mode fast\n", 64}, {"param mode hq\nparam fft_size 1024\n", 1023},
+        {"param mode hq\nparam fft_size 8192\n", 8191}};
+    for (unsigned i = 0; i < 3; i++) for (unsigned target = 0; target < 2; target++) {
+        char text[2048];
+        uint64_t delay = cases[i].delay, wanted = target ? 12000 : 0;
+        snprintf(text, sizeof text, "rate 48000\ninputs 8\nsurround 1\noutputs 3\n"
+            "matrix 0 0 1\nmatrix 1 1 1\nmatrix 2 2 1\n"
+            "stage_begin 0 global-upmixer native upmixer\n%sparam center 6\nparam surround 6\n"
+            "param center_out 1\nparam side_out 0\nparam rear_out 0\nstage_end\n"
+            "output 0 0 0 normal\noutput 1 0 0 normal\noutput 2 0 0 normal\navsync %u 0\n"
+            "source_basis 0 0\nsource_basis 1 0\nsource_basis 2 0\n"
+            "latency_basis 0 0\nlatency_basis 1 0\nlatency_basis 2 0\n", cases[i].engine, target * 250);
+        fxdsp *d = load(text);
+        fxdsp_latency s = programme(d, 0, 8);
+        assert_upmixer_share(&s, delay, wanted ? wanted : delay);
+        s = programme(d, 1, 2);                               /* a Center signal appears */
+        assert_upmixer_share(&s, 0, wanted);
+        s = programme(d, 0, 422);                             /* 9 s of stereo: inside the hold */
+        assert_upmixer_share(&s, 0, wanted);
+        s = programme(d, 0, 94);                              /* 11 s: the upmixer is back */
+        assert_upmixer_share(&s, delay, wanted ? wanted : delay);
+        fxdsp_set_effect_bypass(d, 1);
+        s = programme(d, 0, 1);
+        assert(s.bypassed);
+        assert_upmixer_share(&s, 0, wanted);
+        fxdsp_free(d);
+        /* The audio agrees with the readback on either path. */
+        d = load(text);
+        assert(front_impulse_delay(d, 0) == (wanted ? wanted : delay));
+        fxdsp_free(d);
+        d = load(text);
+        programme(d, 1, 4);
+        assert(front_impulse_delay(d, 1) == wanted);
+        fxdsp_free(d);
+    }
+}
+
 static void test_oversized_finite_stage_metadata_is_rejected_before_loading_ir(void) {
     char path[]="/tmp/fxroute-av-sync-invalid-XXXXXX", error[256];
     int fd=mkstemp(path); assert(fd>=0);
@@ -279,6 +361,7 @@ int main(void) {
     test_loudness_uses_fft_not_stale_port_and_delays_are_intentional();
     test_group_changes_are_balanced_before_bass_bus_mixing();
     test_source_balance_shares_capacity_with_output_alignment();
+    test_upmixer_delay_follows_the_programme();
     test_oversized_finite_stage_metadata_is_rejected_before_loading_ir();
     test_unknown_convolver_does_not_derive_a_drop_to_zero();
     puts("AV Sync native tests passed");

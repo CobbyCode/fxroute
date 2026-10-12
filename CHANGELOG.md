@@ -18,6 +18,8 @@ commit assigns them a version.
   and stereo AC-3 stay stereo.
 - An upmixer derives Center and the surround channels from a stereo
   programme, with a low-latency Fast matrix and a per-frequency HQ engine.
+  Multichannel content bypasses it: no processing and no added delay, with
+  an automatic, crossfaded switch in both directions.
 - **Global exists in Surround as a group-scoped preset.** One whole-system
   preset whose PEQ and convolver plugins each carry the speaker group they
   correct (Front L/R, Center, Side L/R, Rear L/R). A tagged plugin runs on

@@ -10,9 +10,12 @@
 
 typedef struct fxdsp fxdsp;
 
-/* Coherent audio-thread snapshot. Every numeric latency is in stream frames. */
+/* Coherent audio-thread snapshot. Every numeric latency is in stream frames.
+ * adaptive is the share of dsp that follows the programme instead of the
+ * configuration: the upmixer's delay, gone while multichannel content
+ * bypasses it. */
 typedef struct {
-    uint64_t dsp, intentional, align, balance, sync, total, basis_known, unknown, mixed;
+    uint64_t dsp, intentional, align, balance, sync, total, basis_known, unknown, mixed, adaptive;
 } fxdsp_output_latency;
 typedef struct {
     uint64_t rate, outputs, reference, enabled, bypassed, input, inputs;

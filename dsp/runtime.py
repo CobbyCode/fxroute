@@ -578,7 +578,8 @@ class DSPRuntime:
             payload[f'{key}_ms'] = value * 1000.0 / rate
         for index, row in enumerate(rows):
             row['role'] = str(config.layout[index].get('name', ''))
-            for key in ('dsp', 'intentional', 'align', 'balance', 'sync', 'total'):
+            row.setdefault('adaptive', 0)
+            for key in ('dsp', 'intentional', 'align', 'balance', 'sync', 'total', 'adaptive'):
                 value = row.get(key)
                 if type(value) is not int or value < 0:
                     raise RuntimeError('Native output latency contains invalid frames')
@@ -595,7 +596,8 @@ class DSPRuntime:
                                                 + [send for group in channel.get('crossover_groups', [])
                                                    for send in group['routes']]))]
             row['active'] = bool(row['roles'])
-            for key in ('dsp', 'balance'):
+            row.setdefault('adaptive', 0)
+            for key in ('dsp', 'balance', 'adaptive'):
                 if type(row.get(key)) is not int or row[key] < 0:
                     raise RuntimeError('Native source latency contains invalid frames')
                 row[f'{key}_ms'] = row[key] * 1000.0 / rate

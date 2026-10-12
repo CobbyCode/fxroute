@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dsp.runtime import DSPRuntime, DSPRuntimeConfig
-from dsp.latency import capture_basis
+from dsp.latency import capture_basis, latency_signature
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -267,6 +267,51 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('sub1', sources['FC']['roles'])
         adopted = capture_basis(state, result, origin='adopted')
         self.assertIn('LFE', adopted['modes']['surround']['av_sync']['source_basis'])
+
+    async def test_readback_reports_the_upmixer_share_of_the_dsp_latency(self):
+        from audio.output_state import default_output_state, set_mode_routing, switch_mode
+        from dsp.processing_plan import compile_processing_plan
+        from dsp.native_config import layout_from_plan
+        state = switch_mode(default_output_state(), 'surround')
+        state = set_mode_routing(state, 'surround', 'dev', ['main_l', 'main_r', 'center', 'sub1'])
+        plan = compile_processing_plan(state, output_key='dev', channels=4, sample_rate_hz=48000,
+                                       preset_loader=lambda name: {'chain': []})
+        layout = layout_from_plan(plan, resolve_ir=lambda name: None)
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        runtime._config = DSPRuntimeConfig.from_plan(plan, layout=layout, output_key='dev', sample_rate_hz=48000,
+                                                    hardware_ports=['a', 'b', 'c', 'd'], plan_fingerprint='surround')
+
+        def raw(upmixer, *, named=True):
+            share = {'adaptive': upmixer} if named else {}
+            return {'ready': True, 'rate': 48000, 'input': 2818, 'target': 0, 'minimum': 2818 + upmixer,
+                    'maximum': 26818, 'common': 0, 'actual': 2818 + upmixer,
+                    'outputs': [{'dsp': upmixer, 'intentional': 0, 'align': 0, 'balance': 0, 'sync': 0,
+                                 'total': 2818 + upmixer, **share} for _ in layout],
+                    'sources': [{'dsp': upmixer, 'balance': 0, **share} for _ in range(8)]}
+        answer = {}
+        async def control(command, *, reply):
+            return json.dumps(answer['value'])
+        runtime._control_unlocked = control
+        answer['value'] = raw(8191)
+        stereo = await runtime.read_latency()
+        answer['value'] = raw(0)
+        multichannel = await runtime.read_latency()
+        for row in stereo['outputs'] + stereo['sources']:
+            self.assertEqual(row['adaptive'], 8191)
+            self.assertAlmostEqual(row['adaptive_ms'], 8191 * 1000 / 48000)
+        for row in multichannel['outputs'] + multichannel['sources']:
+            self.assertEqual((row['adaptive'], row['adaptive_ms'], row['dsp_ms']), (0, 0.0, 0.0))
+        self.assertAlmostEqual(stereo['actual_ms'] - multichannel['actual_ms'], 8191 * 1000 / 48000)
+        self.assertEqual(latency_signature(stereo), latency_signature(multichannel))
+        # An engine reply that does not name the share has none.
+        answer['value'] = raw(0, named=False)
+        for row in (await runtime.read_latency())['outputs']:
+            self.assertEqual((row['adaptive'], row['adaptive_ms']), (0, 0.0))
+        answer['value'] = raw(0)
+        answer['value']['outputs'][0]['adaptive'] = -1
+        with self.assertRaisesRegex(RuntimeError, 'invalid frames'):
+            await runtime.read_latency()
 
     async def test_latency_json_is_accepted_by_the_real_control_client(self):
         runtime = DSPRuntime(object())

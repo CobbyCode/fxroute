@@ -12,7 +12,8 @@
  * positions FL FR FC LFE SL SR BL BR, FL/FR carry the stereo programme, Center
  * and the Side/Rear pairs are derived, LFE is never touched, strengths run
  * 0..10 as steering strengths, the destination flags select what the routing
- * has and the multichannel detection with its fixed 10 s return is shared.
+ * has, and the multichannel detection with its fixed 10 s return and the
+ * direct path it selects are shared.
  *
  * The steering is decided per frequency bin. Every hop an STFT (Hann, 75 %
  * overlap) of FL/FR yields smoothed inter-channel statistics per bin. A
@@ -24,10 +25,15 @@
  * and only magnitude gains touch the front path. With both pairs present the
  * more diffuse a bin is, the more of it goes to the rear pair.
  *
- * Every channel passes through the same fixed delay of fft_size - 1 frames
- * (the STFT latency), so inter-channel timing is identical with the upmixer
- * engaged, disengaged or bypassed. All state is allocated at creation;
- * process performs no allocation, locking or I/O. */
+ * On a stereo programme every channel passes through the same delay of
+ * fft_size - 1 frames (the STFT latency), so inter-channel timing is identical
+ * whatever the steering does. Real multichannel content is not upmixed and
+ * does not pay for it: while the shared detection holds, the input passes
+ * straight through, sample exact and without delay, and no transform runs.
+ * The two paths are crossfaded, so entering the direct path skips one delay
+ * of programme and returning to the spectral path (once the hold has run out)
+ * repeats one. All state is allocated at creation; process performs no
+ * allocation, locking or I/O. */
 #define FX_UPMIX_HQ_CHANNELS 8U
 
 typedef struct fx_upmix_hq fx_upmix_hq;
@@ -43,7 +49,9 @@ void fx_upmix_hq_reset(fx_upmix_hq *upmixer);
 /* Steering strengths 0 (this share off) .. 10 (strong); out-of-range values are clamped.
  * Center and Surround are independent: either may be 0 while the other steers. */
 void fx_upmix_hq_set_strength(fx_upmix_hq *upmixer, float center, float surround);
-/* Frames every channel is delayed by. */
+/* Frames every channel is delayed by on the path selected right now:
+ * fft_size - 1 on the spectral path, or 0 while multichannel content passes
+ * straight through. Call it from the thread that runs process. */
 size_t fx_upmix_hq_latency(const fx_upmix_hq *upmixer);
 /* Current engagement (0 = pass-through, 1 = full upmix) for tests and diagnostics. */
 float fx_upmix_hq_engagement(const fx_upmix_hq *upmixer);
