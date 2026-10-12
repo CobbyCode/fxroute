@@ -25,6 +25,7 @@
         formatTransitionErrorDetail: (detail, fallback) => fallback,
         measurementBankSumsBothInputs: () => false,
         renderCrossoverTile: () => {},
+        refreshCalibrationOverview: () => {},
         repaintCrossoverGraph: () => {},
         setupUploadArea: () => {},
         getActiveEditing: () => new Set(),
@@ -745,13 +746,11 @@ function renderEffects() {
     const fx = deps.getState().dsp;
     const presets = fx.presets || [];
     const presetNames = presets.map(p => p.name);
-    deps.getElements().effectsInfo.textContent = fx.available
-        ? `${fx.preset_count} presets`
-        : 'DSP is not available';
     if (fx.combineDraft) {
         fx.combineDraft = root.FXRouteBankUI.normalizeEffectsCombineDraft(fx.combineDraft, presetNames);
     }
     if (!fx.available) {
+        deps.getElements().effectsInfo.textContent = 'DSP is not available';
         deps.getElements().effectsDeleteBtn.disabled = true;
         if (deps.getElements().effectsToggleImportBtn) deps.getElements().effectsToggleImportBtn.disabled = true;
         if (deps.getElements().effectsRewDualCreatePresetBtn) deps.getElements().effectsRewDualCreatePresetBtn.disabled = true;
@@ -772,6 +771,8 @@ function renderEffects() {
     root.FXRouteBankUI.renderEffectsCompare();
     root.FXRouteBankUI.renderEffectsCombine();
     deps.renderCrossoverTile();
+    // The info line of the A/B card shows the calibration overview.
+    deps.refreshCalibrationOverview();
 }
 
 async function switchEffectsPreset() {

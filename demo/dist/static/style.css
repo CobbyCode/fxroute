@@ -6292,6 +6292,126 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     padding-top: 0.5rem;
 }
 
+/* Calibration overview: the A/B card's info line. One row each for the
+   speaker trims and the sub gains, above the system-wide delay and SPL. */
+.effects-cal {
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--border);
+    line-height: 1.3;
+}
+
+.effects-cal-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 1.1rem;
+}
+
+.effects-cal-group {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    min-width: 0;
+}
+
+.effects-cal-label {
+    flex: none;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+/* The leading labels form one column, so the values of all rows line up. */
+.effects-cal-group:first-child > .effects-cal-label {
+    min-width: 2.45rem;
+}
+
+/* A wide Surround wraps its chips behind the label, in lines of even length.
+   The line height is the only vertical spacing, between rows and wrapped lines alike. */
+.effects-cal-values {
+    min-width: 0;
+    font-size: 0.76rem;
+    line-height: 1.95;
+    text-wrap: balance;
+}
+
+.effects-cal-tail {
+    white-space: nowrap;
+}
+
+.effects-cal-chip,
+.effects-cal-badge,
+.effects-cal-value,
+.effects-cal-note {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.effects-cal-chip,
+.effects-cal-badge {
+    display: inline-block;
+    line-height: 1.3;
+}
+
+.effects-cal-chip {
+    padding: 0.1rem 0.28rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+}
+
+.effects-cal-key {
+    margin-right: 0.16rem;
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.effects-cal-chip.is-zero,
+.effects-cal-unit,
+.effects-cal-pending {
+    color: var(--text-muted);
+}
+
+.effects-cal-unit {
+    font-size: 0.7rem;
+}
+
+.effects-cal-badge {
+    padding: 0.1rem 0.5rem;
+    border: 1px solid rgba(110, 231, 183, 0.34);
+    border-radius: 999px;
+    background: rgba(110, 231, 183, 0.1);
+    color: #bff9de;
+    font-weight: 600;
+}
+
+.effects-cal-value {
+    color: var(--text-primary);
+}
+
+.effects-cal-note,
+.effects-cal-tag {
+    margin-left: 0.3rem;
+}
+
+.effects-cal-note {
+    color: var(--text-secondary);
+}
+
+.effects-cal-tag {
+    padding: 0 0.4rem;
+    border: 1px dashed var(--border-strong);
+    border-radius: 999px;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+}
+
 .effects-filter-import-area {
     min-height: 112px;
 }

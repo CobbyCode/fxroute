@@ -3845,6 +3845,9 @@
         if (p === '/api/measurements/spl-calibration/apply' && post) {
             const result = S.splApplyCalibration(body.measured_spl_db);
             if (result.error) return err(result.error, 400);
+            // Like the backend, the applied calibration lives in the loudness extras.
+            dspExtras.loudness.params.calibration = result.calibration;
+            syncDspToState();
             return j(result);
         }
         if (p === '/api/measurements/level-match') {

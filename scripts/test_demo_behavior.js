@@ -1186,6 +1186,8 @@ const radio = state.getPlayback();
     assert.equal(splApply.status, 'ok');
     assert.equal(splApply.required_adjustment_db, 0.4);
     assert.equal(splApply.calibrated, true);
+    const splExtras = (await (await demoFetch('/api/dsp/presets')).json()).global_extras.loudness.params.calibration;
+    assert.equal(splExtras.measuredSplDb, 82.6, 'the applied calibration is served with the loudness extras, like the backend');
 
     // A finished sweep job only reports its result.  A run reaches the saved
     // list through "Save current", like in the real store: an Advanced series

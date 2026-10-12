@@ -65,7 +65,11 @@ PREPARE_JS = """
     document.getElementById('effects-compare-row').style.display = 'flex';
     document.getElementById('effects-compare-active').textContent = 'Listening: A · Neutral';
     document.getElementById('effects-compare-chain').textContent = 'Chain: Single preset';
-    document.getElementById('effects-info').textContent = '20 presets';
+    document.getElementById('effects-info').innerHTML = FXRouteCalibrationOverview.overviewHtml(
+        FXRouteCalibrationOverview.summarize({ active_mode: 'stereo', modes: { stereo: {
+            topology: { roles: ['main_l', 'main_r'], sub_roles: [] },
+            processing: { main_l: { level_cal_db: { global: -1.5, bank: 0 } }, main_r: { level_cal_db: { global: 0, bank: 0 } } },
+        } } }, null, { latency: { ready: true, actual_ms: 5 } }));
     document.getElementById('effects-status').innerHTML = '';
     document.getElementById('effects-upmixer-row').classList.remove('hidden');
     document.getElementById('effects-upmixer-center-wrap').classList.remove('hidden');

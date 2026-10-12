@@ -146,6 +146,7 @@ window.FXRouteEffectsUI?.init({
     formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
     renderCrossoverTile: () => renderCrossoverTile(),
+    refreshCalibrationOverview: () => window.FXRouteCalibrationOverview.refresh(),
     repaintCrossoverGraph: () => repaintCrossoverGraph(),
     setupUploadArea: (areaId, fileInputId, onFile) => LibraryUI.setupUploadArea(areaId, fileInputId, onFile),
     getActiveEditing: () => _activeEditing,
@@ -351,7 +352,10 @@ window.FXRouteOutputSystemController?.init({
     ensureOutputBoxes: () => ensureOutputSystemBoxes(),
     renderOutputSection: () => renderOutputSystemSection(),
     renderBankSelector: () => window.FXRouteBankUI.renderEffectsBankSelector(),
-    renderCompare: () => window.FXRouteBankUI.renderEffectsCompare(),
+    renderCompare: () => {
+        window.FXRouteBankUI.renderEffectsCompare();
+        window.FXRouteCalibrationOverview.refresh();
+    },
     syncCrossover: (enabled) => {
         if (enabled) {
             void fetchCrossoverResponse();
@@ -612,6 +616,12 @@ window.FXRouteMeasurementSplCalibration?.init({
     fetchEffects: () => EffectsUI.fetchEffects(),
     openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
     closeModal: (panel) => window.FXRouteModal?.close(panel),
+});
+window.FXRouteCalibrationOverview?.init({
+    getElements: () => elements,
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    isVisible: () => window.__visibleTab === 'effects',
 });
 window.FXRouteAvSync?.init({
     getElements: () => elements,
@@ -3689,6 +3699,7 @@ function switchTab(tabId) {
     window.FXRouteStreaming?.onTabVisible(tabId);
     if (tabId === 'effects') {
         requestSubwooferPreviewRedrawFromState();
+        window.FXRouteCalibrationOverview.refresh();
     }
     if (tabId !== 'measurement') {
         void postRuntimeDebugSnapshot('ui-after-click-playback', { clickedTab: tabId });
