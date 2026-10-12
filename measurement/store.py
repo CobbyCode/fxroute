@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import math
@@ -155,6 +156,10 @@ class MeasurementStore:
         # bank, revision, fingerprint, reference tap) and returns it.  Without
         # it the store behaves exactly as before the frozen-target era.
         self.measurement_target_provider: Callable[[str, int], dict[str, Any]] | None = None
+        # Optional application hook: the rate the selected output runs at right
+        # now.  Without it an unavailable stored measurement rate falls back as
+        # before, to 48 kHz or the lowest supported rate.
+        self.running_sample_rate_provider: Callable[[], int | None] | None = None
         self.config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (self.home / ".config"))
         self.state_root = Path(os.environ.get("XDG_STATE_HOME") or (self.home / ".local" / "state"))
         self.measurements_dir = self.config_root / "fxroute" / "measurements"
@@ -313,6 +318,7 @@ class MeasurementStore:
         settings = self._read_settings().get("measure", {})
         selection = resolve_measurement_input_selection(inputs, settings if isinstance(settings, dict) else {})
         selected_id = selection.get("input_id")
+        running_rate = functools.cache(self._running_sample_rate)
         annotated: list[dict[str, Any]] = []
         for item in inputs:
             source_sample_rate = item.get("sample_rate")
@@ -322,6 +328,7 @@ class MeasurementStore:
             measurement_rate = resolve_measurement_sample_rate(
                 {"supported_rates": supported_rates},
                 settings if isinstance(settings, dict) and item.get("id") == selected_id else {},
+                running_rate,
             )
             annotated.append({
                 **item,
@@ -1925,7 +1932,21 @@ class MeasurementStore:
         settings = self._read_settings().get("measure", {})
         selected = resolve_measurement_input_selection(inputs, settings if isinstance(settings, dict) else {})
         input_item = next((item for item in inputs if item.get("id") == selected.get("input_id")), None)
-        return resolve_measurement_sample_rate(input_item or {}, settings if isinstance(settings, dict) else {})
+        return resolve_measurement_sample_rate(
+            input_item or {}, settings if isinstance(settings, dict) else {}, self._running_sample_rate,
+        )
+
+    def _running_sample_rate(self) -> int | None:
+        """Rate the hardware runs at right now (None without a provider or a reading)."""
+        provider = self.running_sample_rate_provider
+        if provider is None:
+            return None
+        try:
+            rate = provider()
+        except Exception as exc:
+            logger.warning("Running sample rate unavailable for the measurement rate: %s", exc)
+            return None
+        return rate if type(rate) is int and rate > 0 else None
 
     def _load_wav_array(self, capture_path: Path) -> tuple[int, np.ndarray]:
         with wave.open(str(capture_path), "rb") as handle:
@@ -2937,7 +2958,11 @@ def _normalize_supported_measurement_rates(value: Any) -> list[int]:
     return [rate for rate in SAMPLE_RATE_CANDIDATES if rate in {int(item) for item in value if str(item).isdigit()}]
 
 
-def resolve_measurement_sample_rate(input_item: dict[str, Any], settings: dict[str, Any]) -> int:
+def resolve_measurement_sample_rate(
+    input_item: dict[str, Any],
+    settings: dict[str, Any],
+    running_rate: Callable[[], int | None] | None = None,
+) -> int:
     supported = _normalize_supported_measurement_rates(input_item.get("supported_rates"))
     if not supported:
         source_rate = input_item.get("sample_rate")
@@ -2949,6 +2974,11 @@ def resolve_measurement_sample_rate(input_item: dict[str, Any], settings: dict[s
         requested = MEASUREMENT_DEFAULT_SAMPLE_RATE
     if requested in supported:
         return requested
+    # The stored rate is not available on this input: stay on the rate the
+    # hardware already runs at, so the measurement needs no rate change.
+    running = running_rate() if running_rate is not None else None
+    if running in supported:
+        return running
     if MEASUREMENT_DEFAULT_SAMPLE_RATE in supported:
         return MEASUREMENT_DEFAULT_SAMPLE_RATE
     return supported[0]

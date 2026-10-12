@@ -58,6 +58,12 @@ commit assigns them a version.
   rate change, and closing the Measure window returns the device to the tier
   of the playback rate. An input that claims the 48 kHz carrier in the
   meantime keeps it.
+- A measurement whose saved rate the microphone input does not offer now
+  stays on the rate the output already runs at, when the input supports it,
+  instead of dropping to the lowest supported rate. On a Scarlett at Fixed
+  96 kHz with its own input as the microphone the sweep runs at 96 kHz
+  without a rate change, not at 88.2 kHz. 48 kHz and the lowest supported
+  rate remain the fallbacks after that.
 
 ## 1.0-beta12 (2026-10-01)
 

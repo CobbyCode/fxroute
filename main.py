@@ -3161,6 +3161,7 @@ async def lifespan(app: FastAPI):
             measurement_store.output_mask_apply = getattr(runtime.dsp_runtime, "apply_output_mask", None)
             measurement_store.output_mask_clear = getattr(runtime.dsp_runtime, "clear_output_mask", None)
             measurement_store.measurement_target_provider = _freeze_measurement_target
+            measurement_store.running_sample_rate_provider = _running_output_sample_rate
         runtime_loop = asyncio.get_running_loop()
 
         def _sync_measurement_control(method_name):
@@ -5173,6 +5174,12 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int, group: str | N
         state, bank_id=bank, output_key=output_key, channels=channel_count,
         sample_rate_hz=sample_rate_hz, fingerprint=service.fingerprint_plan(plan), plan=plan,
         group=group)
+
+
+def _running_output_sample_rate() -> int | None:
+    """Sample rate the selected output runs at right now (None when unknown)."""
+    rate = get_samplerate_status().get("active_rate")
+    return rate if isinstance(rate, int) and rate > 0 else None
 
 
 def _live_measurement_sample_rate() -> int:
