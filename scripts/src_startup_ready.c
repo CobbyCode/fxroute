@@ -33,8 +33,10 @@ int main(int argc,char **argv)
     int (*error)(struct resample *)=dlsym(library,"fx_resample_error");
     void (*stats)(struct resample *,struct fx_resample_stats *)=dlsym(library,"fx_resample_stats");
     double (*match_delay)(struct resample *)=dlsym(library,"fx_resample_match_delay");
-    assert(init&&finish&&finished&&error&&stats&&match_delay);
+    uint64_t (*latency_ns)(struct resample *)=dlsym(library,"fx_resample_latency_ns");
+    assert(init&&finish&&finished&&error&&stats&&match_delay&&latency_ns);
     struct resample r={.channels=2,.i_rate=44100,.o_rate=48000,.quality=4};assert(!init(&r));
+    assert(latency_ns(&r)==750000000);
     FILE *source=fopen(argv[3],"rb"),*target=fopen(argv[4],"wb");assert(source&&target);
     fseek(source,0,SEEK_END);unsigned frames=ftell(source)/8;rewind(source);assert(frames==176400);
     float *raw=calloc(frames*2,4),*planes=calloc(frames*2,4);assert(raw&&planes);
@@ -63,6 +65,7 @@ int main(int argc,char **argv)
                "A startup that never became ready shows no engine output, only extended silence");
         resample_reset(&r);
         assert(!match_delay(&r));
+        assert(latency_ns(&r)==750000000);
         do{stats(&r,&state);usleep(1000);}while(state.worker.acknowledged!=state.worker.generation);
         assert(!state.worker.first_output_ns&&!state.first_real_ns&&!state.lead_frames&&!state.reserve_frames);
         assert(!error(&r));pid=child();assert(!kill(pid,SIGSTOP));
@@ -87,6 +90,8 @@ int main(int argc,char **argv)
         }
         assert(!before.real_frames||after.lead_frames==before.lead_frames);
         if(after.real_frames&&!eof) {
+            assert(llabs((long long)latency_ns(&r)-llround(after.lead_frames*1e9/48000))<=1&&
+                   "AV latency must retain the actual startup padding after real PCM starts");
             double full=(double)resample_delay(&r)+resample_phase(&r);
             double fixed=(double)after.lead_frames*44100/48000;
             assert(fabs(match_delay(&r)-fmax(0,full-fixed))<.001&&
@@ -107,7 +112,7 @@ int main(int argc,char **argv)
     assert(after.worker.first_output_ns&&after.first_real_ns>=after.worker.first_output_ns&&after.first_real_ns>=700000000);
     assert(fabs(after.first_real_ns/1e9-first_real)<.05);
     if(pause_start)assert(after.worker.first_output_ns>=1000000000&&after.lead_frames>after.reserve_frames);
-    fprintf(stdout,"STARTUP_READY {\"lead\":%lu,\"reserve\":%lu,\"first_output_ns\":%lu,\"first_real_ns\":%lu,\"first_real_s\":%.6f}\n",
-            after.lead_frames,after.reserve_frames,after.worker.first_output_ns,after.first_real_ns,first_real);
+    fprintf(stdout,"STARTUP_READY {\"lead\":%lu,\"reserve\":%lu,\"first_output_ns\":%lu,\"first_real_ns\":%lu,\"first_real_s\":%.6f,\"latency_ns\":%lu}\n",
+            after.lead_frames,after.reserve_frames,after.worker.first_output_ns,after.first_real_ns,first_real,latency_ns(&r));
     fclose(target);resample_free(&r);dlclose(library);free(planes);return 0;
 }

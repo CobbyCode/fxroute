@@ -13,6 +13,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 from audio.digital_input import DigitalInput
+from audio.src_latency import graph_src_latency
+from dsp.runtime import DSPRuntime, DSPRuntimeConfig
+from test_av_sync_src import node
 from test_output_state_api import audio_context, FakeRequest, make_manager, make_service
 
 
@@ -58,6 +61,38 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertAlmostEqual(main._deterministic_input_latency_ms(), 2818 / 48)
             engine.snapshot = lambda: {'surround_input': False}
             self.assertEqual(main._deterministic_input_latency_ms(), 0)
+
+    async def test_src_and_digital_helper_credits_are_added_without_replacing_each_other(self):
+        helper = DigitalInput()
+        helper.process = SimpleNamespace(returncode=None, pid=123)
+        engine = SimpleNamespace(snapshot=lambda: {'active': True, 'helper_pid': 123, 'surround_input': True, 'config': {'sample_rate': 48000}})
+        reader = SimpleNamespace(read=lambda **kwargs: 750)
+        with patch.object(main.runtime, 'dsp_runtime', engine), patch.object(main, '_surround_input', helper), \
+                patch.object(main, '_src_latency_reader', reader, create=True):
+            provider = getattr(main, '_electronic_input_latency_ms', None)
+            self.assertIsNotNone(provider, 'SRC credit is not wired into the native input latency provider')
+            self.assertAlmostEqual(await provider(), 808.7083333333334)
+
+    async def test_running_engine_without_links_cannot_certify_zero_src_credit(self):
+        native = DSPRuntime(object())
+        native._process = SimpleNamespace(returncode=None, pid=123)
+        native._config = DSPRuntimeConfig('stereo', 'test', 48000, ('FL', 'FR'),
+                                          ({'name': 'main_l'}, {'name': 'main_r'}))
+        reader = SimpleNamespace(read=lambda owner=None, **options: graph_src_latency([node(3, 'fxroute_dsp')], **options))
+        with patch.object(main.runtime, 'dsp_runtime', native), \
+                patch.object(main, '_src_latency_reader', reader), \
+                patch.object(main, '_measurement_session_owns_live_rate', return_value=False):
+            self.assertFalse(native.snapshot()['active'])
+            with self.assertRaisesRegex(RuntimeError, 'path|unavailable'):
+                await main._electronic_input_latency_ms()
+
+    async def test_stopped_engine_with_retained_config_can_bootstrap_without_graph(self):
+        native = DSPRuntime(object())
+        native._config = DSPRuntimeConfig('stereo', 'test', 48000, ('FL', 'FR'),
+                                          ({'name': 'main_l'}, {'name': 'main_r'}))
+        reader = SimpleNamespace(read=lambda owner=None, **options: graph_src_latency([], **options))
+        with patch.object(main.runtime, 'dsp_runtime', native), patch.object(main, '_src_latency_reader', reader):
+            self.assertEqual(await main._electronic_input_latency_ms(), 0)
 
     def test_helper_snapshot_exposes_worker_reserve_and_losses(self):
         helper = DigitalInput()

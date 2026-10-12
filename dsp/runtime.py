@@ -17,6 +17,7 @@ import shlex
 import shutil
 import copy
 import hashlib
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
@@ -476,6 +477,7 @@ class DSPRuntime:
         self._links: list[PipeWireLink] = []
         self._lock = asyncio.Lock()
         self._measurement_scope_lock = asyncio.Lock()
+        self._measurement_active = False
         self._control_lock = asyncio.Lock()
         # Serializes the whole ownership decision (state read, validation,
         # engine command with its acknowledgement, state write) across the
@@ -504,32 +506,63 @@ class DSPRuntime:
         self._measurement_mapped_ingress: tuple[tuple[str, str], ...] = ()
         self._latency_snapshot: dict = {}
         self._latency_tracking = False
-        self._input_latency_provider: Callable[[], float] | None = None
+        self._input_latency_provider: Callable[[], float | Awaitable[float]] | None = None
         self._last_input_latency_ms: float | None = None
         self._measurement_latency_signature: tuple | None = None
         self._measurement_latency_snapshot: dict = {}
         self._measurement_latency_owner: asyncio.Task | None = None
         self._measurement_peak_capture_id: str | None = None
 
-    def configure_latency_tracking(self, *, input_latency_provider: Callable[[], float]) -> None:
+    def configure_latency_tracking(self, *, input_latency_provider: Callable[[], float | Awaitable[float]]) -> None:
         self._latency_tracking = True
         self._input_latency_provider = input_latency_provider
+
+    async def _input_latency_ms(self) -> float:
+        value = self._input_latency_provider() if self._input_latency_provider else 0.0
+        if inspect.isawaitable(value):
+            value = await value
+        value = float(value)
+        if not math.isfinite(value) or not 0 <= value <= 20000:
+            raise RuntimeError('Input latency is unavailable')
+        return value
+
+    def _latency_ingress_owner(self) -> tuple:
+        return self._surround_input, self._mapped_ingress, self._measurement_active
+
+    def _latency_owner(self) -> tuple:
+        return self._process, self._config, self._latency_ingress_owner(), self.sync_in_progress
+
+    def _latency_owner_matches(self, owner: tuple) -> bool:
+        process, config, ingress_owner, was_syncing = owner
+        return (self._process is process and self._config is config
+                and self._latency_ingress_owner() == ingress_owner
+                and (not self.sync_in_progress or was_syncing))
 
     async def update_input_latency(self) -> None:
         if not self._latency_tracking or not self._engine_running():
             return
-        value = float(self._input_latency_provider()) if self._input_latency_provider else 0.0
-        if not math.isfinite(value) or not 0 <= value <= 20000:
-            raise RuntimeError('Input latency is unavailable')
-        if value != self._last_input_latency_ms:
-            await self._control(f'input latency {value:.9g}', reply=True)
-            self._last_input_latency_ms = value
+        owner = self._latency_owner()
+        value = await self._input_latency_ms()
+        async with self._control_lock:
+            if not self._latency_owner_matches(owner) or not self._engine_running():
+                return
+            if value != self._last_input_latency_ms:
+                self._last_input_latency_ms = None
+                await self._control_unlocked(f'input latency {value:.9g}', reply=True)
+                if self._latency_owner_matches(owner) and self._engine_running():
+                    self._last_input_latency_ms = value
 
     async def read_latency(self) -> dict:
-        if not self._engine_running() or self._config is None:
+        if not self._engine_running() or self._config is None or self.sync_in_progress:
             return {'ready': False}
+        owner = self._latency_owner()
         config = self._config
-        payload = json.loads(await self._control('latency get', reply=True))
+        async with self._control_lock:
+            if not self._latency_owner_matches(owner) or not self._engine_running():
+                raise RuntimeError('Native latency rendering changed during control wait')
+            payload = json.loads(await self._control_unlocked('latency get', reply=True))
+            if not self._latency_owner_matches(owner) or not self._engine_running():
+                raise RuntimeError('Native latency rendering changed during readback')
         if not isinstance(payload, dict) or not payload.get('ready'):
             self._latency_snapshot = {'ready': False}
             return copy.deepcopy(self._latency_snapshot)
@@ -574,12 +607,17 @@ class DSPRuntime:
         return copy.deepcopy(payload)
 
     async def settled_latency(self) -> dict:
+        owner = self._latency_owner()
         expected_bypass = self._effect_bypass
         await self.update_input_latency()
+        if not self._latency_owner_matches(owner) or self.sync_in_progress:
+            raise RuntimeError('Native latency rendering changed during graph read')
         expected_input = (round(self._last_input_latency_ms * self._config.sample_rate / 1000)
                           if self._last_input_latency_ms is not None and self._config else None)
         for _ in range(20):
             value = await self.read_latency()
+            if not self._latency_owner_matches(owner) or self.sync_in_progress:
+                raise RuntimeError('Native latency rendering changed during readback')
             if (value.get('ready') and bool(value.get('bypassed')) == expected_bypass
                     and (expected_input is None or value.get('input') == expected_input)):
                 return value
@@ -601,6 +639,8 @@ class DSPRuntime:
             raise RuntimeError('Measurement latency readback is unavailable')
         self._measurement_latency_signature = latency_signature(snapshot)
         self._measurement_latency_snapshot = copy.deepcopy(snapshot)
+        if self._measurement_ingress_restore:
+            self._measurement_ingress_restore['sweep_input'] = snapshot['input']
         self._measurement_latency_owner = asyncio.current_task()
 
     def validate_measurement_latency(self, snapshot: dict) -> None:
@@ -849,7 +889,8 @@ class DSPRuntime:
                  "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
                  "latency_tracking": self._latency_tracking,
                 "av_sync": copy.deepcopy(self._latency_snapshot),
-                "measurement_latency": copy.deepcopy(self._measurement_latency_snapshot),
+                 "measurement_latency": copy.deepcopy(self._measurement_latency_snapshot),
+                  "measurement_active": self._measurement_active,
                 "stderr_tail": self.stderr_tail()[:2048]}
 
     async def set_exact_sub_mute(self, enabled: bool, *, mask: int | None = None) -> bool:
@@ -984,6 +1025,7 @@ class DSPRuntime:
 
     async def enter_raw_measurement(self) -> bool:
         await self._measurement_scope_lock.acquire()
+        self._measurement_active = True
         transition = None
         try:
             await run_to_completion(self._suspend_surround_input())
@@ -1003,6 +1045,7 @@ class DSPRuntime:
             try:
                 await restore_after(exc, restore(), what='Raw measurement entry restore')
             finally:
+                self._measurement_active = False
                 self._measurement_scope_lock.release()
             raise
 
@@ -1030,10 +1073,12 @@ class DSPRuntime:
                 if bypass_restored:
                     await run_to_completion(self._confirm_measurement_ingress_restore())
             finally:
+                self._measurement_active = False
                 self._measurement_scope_lock.release()
 
     async def enter_active_measurement(self) -> bool:
         await self._measurement_scope_lock.acquire()
+        self._measurement_active = True
         try:
             await run_to_completion(self._suspend_surround_input())
             if self._latency_tracking:
@@ -1042,6 +1087,7 @@ class DSPRuntime:
             try:
                 await restore_after(exc, self._resume_surround_input(), what='Active measurement entry restore')
             finally:
+                self._measurement_active = False
                 self._measurement_scope_lock.release()
             raise
         return self._effect_bypass
@@ -1055,6 +1101,7 @@ class DSPRuntime:
             await run_to_completion(self._resume_surround_input())
             await run_to_completion(self._confirm_measurement_ingress_restore())
         finally:
+            self._measurement_active = False
             self._measurement_scope_lock.release()
 
     async def _suspend_surround_input(self) -> None:
@@ -1434,7 +1481,7 @@ class DSPRuntime:
         self._latency_snapshot = {}
         self._last_input_latency_ms = None
         if self._latency_tracking:
-            input_ms = float(self._input_latency_provider()) if self._input_latency_provider else 0.0
+            input_ms = await self._input_latency_ms()
             text += f'input_latency {input_ms:.9g}\n'
         await self._stop_orphan_helpers()
         fd, config_name = tempfile.mkstemp(prefix="fxroute-dsp-", suffix=".conf")

@@ -69,8 +69,11 @@ def overlay(original):
     replace("resample_native_init(&this->resample)", "fx_resample_init(&this->resample)")
     replace("\tstruct spa_plugin_loader *loader;",
             "\tstruct spa_plugin_loader *loader;\n\tstruct spa_loop_utils *src_loop_utils;\n"
-            "\tstruct spa_source *src_error_event;\n\t_Atomic int src_seen_error;")
+            "\tstruct spa_source *src_error_event;\n\t_Atomic int src_seen_error;\n"
+            "\t_Atomic uint64_t src_seen_latency;")
     replace("static void emit_port_info(struct impl *this, struct port *port, bool full)",
+            "static void recalc_latencies(struct impl *this, enum spa_direction direction);\n\n"
+            "static void emit_info(struct impl *this, bool full);\n\n"
             "static void src_error_event(void *data, uint64_t count)\n{\n"
             "\tstruct impl *this = data;\n"
             "\tif (!this->resample_peaks && this->resample.data && fx_resample_error(&this->resample)) {\n"
@@ -82,13 +85,16 @@ def overlay(original):
             "\t\t\tfx_resample_error(&this->resample), this->resample.channels, this->resample.i_rate, this->resample.o_rate,\n"
             "\t\t\ts.worker.accepted, s.worker.produced, s.worker.delivered, s.worker.max_input, s.worker.max_output,\n"
             "\t\t\ts.lead_frames, s.reserve_frames, s.real_frames, s.buffered, s.worker.first_output_ns, s.first_real_ns);\n\t}\n"
+            "\tif (!this->resample_peaks && this->resample.data) {\n"
+            "\t\tthis->latency.ns = fx_resample_latency_ns(&this->resample);\n"
+            "\t\trecalc_latencies(this, SPA_DIRECTION_INPUT);\n\t\trecalc_latencies(this, SPA_DIRECTION_OUTPUT);\n\t}\n"
             "\tthis->params[IDX_Props].user++;\n"
-            "\tthis->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;\n\temit_node_info(this, false);\n}\n\n"
+            "\tthis->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;\n\temit_info(this, false);\n}\n\n"
             "static void emit_port_info(struct impl *this, struct port *port, bool full)")
     replace("\tthis->data_loop = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_DataLoop);",
             "\tthis->data_loop = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_DataLoop);\n"
             "\tthis->src_loop_utils = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_LoopUtils);\n"
-            "\tatomic_init(&this->src_seen_error, 0);")
+            "\tatomic_init(&this->src_seen_error, 0);\n\tatomic_init(&this->src_seen_latency, 0);")
     replace("\tthis->props.filter_graph_disabled = filter_graph_disabled;\n\n\treturn 0;\n}",
             "\tthis->props.filter_graph_disabled = filter_graph_disabled;\n"
             "\tif (this->src_loop_utils) {\n"
@@ -131,7 +137,8 @@ def overlay(original):
             "\telse if (n_samples == 0 && this->resample_peaks) {")
     replace("\treturn res;\n}\n\nstatic int calc_width",
             "\tif (res >= 0 && !this->resample_peaks) {\n"
-            "\t\tthis->latency.ns = this->resample.i_rate != this->resample.o_rate ? 750000000 : 0;\n"
+            "\t\tthis->latency.ns = fx_resample_latency_ns(&this->resample);\n"
+            "\t\tatomic_store(&this->src_seen_latency, this->latency.ns);\n"
             "\t\trecalc_latencies(this, SPA_DIRECTION_INPUT);\n\t\trecalc_latencies(this, SPA_DIRECTION_OUTPUT);\n"
             "\t}\n"
             "\tif (res >= 0) {\n\t\tatomic_store(&this->src_seen_error, 0);\n\t\tthis->params[IDX_Props].user++;\n"
@@ -147,8 +154,12 @@ def overlay(original):
              "\t\tint error = fx_resample_error(&this->resample);\n"
              "\t\tif (error && atomic_exchange(&this->src_seen_error, error) != error &&\n"
              "\t\t    spa_loop_utils_signal_event(this->src_loop_utils, this->src_error_event) < 0)\n"
-             "\t\t\tatomic_store(&this->src_seen_error, 0);\n\t}\n"
-             "\treturn result;\n}\n\nstatic const struct spa_node_methods impl_node = {")
+              "\t\t\tatomic_store(&this->src_seen_error, 0);\n\t}\n"
+              "\tif (!this->resample_peaks && this->resample.data && this->src_error_event) {\n"
+              "\t\tuint64_t latency = fx_resample_latency_ns(&this->resample);\n"
+              "\t\tif (atomic_exchange(&this->src_seen_latency, latency) != latency)\n"
+              "\t\t\tspa_loop_utils_signal_event(this->src_loop_utils, this->src_error_event);\n\t}\n"
+              "\treturn result;\n}\n\nstatic const struct spa_node_methods impl_node = {")
     replace('\t\tspa_pod_builder_string(b, "resample.quality");',
             '\t\tspa_pod_builder_string(b, "fxroute.src.mode");\n'
             '\t\tspa_pod_builder_string(b, this->resample_peaks ? "peaks" : fx_resample_profile(&this->resample));\n'
@@ -161,8 +172,10 @@ def overlay(original):
             '\t\tspa_pod_builder_string(b, "fxroute.src.nominal-bypass");\n'
             '\t\tspa_pod_builder_bool(b, this->resample.i_rate == this->resample.o_rate);\n'
             '\t\tspa_pod_builder_string(b, "fxroute.src.error");\n'
-            '\t\tspa_pod_builder_int(b, !this->resample_peaks && this->resample.data ? fx_resample_error(&this->resample) : 0);\n'
-            '\t\tspa_pod_builder_string(b, "resample.quality");')
+             '\t\tspa_pod_builder_int(b, !this->resample_peaks && this->resample.data ? fx_resample_error(&this->resample) : 0);\n'
+             '\t\tspa_pod_builder_string(b, "fxroute.src.latency-ns");\n'
+             '\t\tspa_pod_builder_long(b, this->resample_peaks ? 0 : fx_resample_latency_ns(&this->resample));\n'
+             '\t\tspa_pod_builder_string(b, "resample.quality");')
     return '#include <stdatomic.h>\n#include "resample-worker.h"\n#ifndef FXROUTE_SRC_BUILD_ID\n#define FXROUTE_SRC_BUILD_ID "unversioned"\n#endif\n' + text
 
 

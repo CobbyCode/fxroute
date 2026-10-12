@@ -22,9 +22,11 @@ def calibrated_state(state: dict, runtime: dict, *, restored: bool, expected_byp
     if restored and ingress is not None:
         # Injected sweeps bypass program ingress. Certify only its exact,
         # settled pre-suspension destination, not arbitrary input drift.
+        retained_input = ingress.get('sweep_input', 0) if isinstance(ingress, dict) else None
         if (sweep.get('ingress_restored') is not True
                 or not isinstance(ingress, dict) or type(ingress.get('input')) is not int
-                or ingress['input'] < 0 or sweep.get('input') != 0
+                or type(retained_input) is not int or not 0 <= retained_input <= ingress['input']
+                or sweep.get('input') != retained_input
                 or type(ingress.get('surround_input')) is not bool
                 or not isinstance(ingress.get('mapped_ingress'), list)
                 or not (ingress['surround_input'] or ingress['mapped_ingress'])

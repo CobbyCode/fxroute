@@ -49,6 +49,10 @@ class NativeSrcTests(unittest.TestCase):
                 path.write_text(text)
                 self.assertLess(self.lib.fx_src_load_profile(C.byref(value)), 0, text)
 
+    def test_converter_exposes_fixed_timeline_latency_separately_from_worker_startup(self):
+        self.assertTrue(hasattr(self.lib, 'fx_resample_latency_ns'),
+                        'Fixed SRC timeline latency is not published')
+
     def test_pinned_sox_worker_retains_all_pcm_under_output_backpressure(self):
         samples = array.array("f", (0.02 * math.sin(2 * math.pi * (911 + channel * 271) * frame / 44100)
                                     for frame in range(44100) for channel in range(2)))
@@ -179,6 +183,14 @@ class NativeSrcTests(unittest.TestCase):
             subprocess.run([executable,str(LIBRARY)],check=True,timeout=5)
             subprocess.run([executable,str(LIBRARY),"drain"],check=True,timeout=5)
 
+    def test_readiness_extension_notifies_ports_and_updates_propagated_latency(self):
+        includes=ROOT / 'native_src/build/sources/pipewire/pipewire-1.6.8/spa/include'
+        with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,{'XDG_CONFIG_HOME':directory}):
+            executable=str(Path(directory) / 'latency-props')
+            subprocess.run(['cc','-std=gnu11','-I',str(includes),str(ROOT / 'scripts/src_failure_props.c'),
+                            '-ldl','-lpthread','-o',executable],check=True)
+            subprocess.run([executable,str(LIBRARY),'latency'],check=True,timeout=8)
+
     def run_stats_race(self,*scenario,timeout=10):
         build=ROOT / "native_src/build"
         includes=build / "sources/pipewire/pipewire-1.6.8/spa/include"
@@ -291,6 +303,7 @@ class NativeSrcTests(unittest.TestCase):
                 result=subprocess.run([str(executable),str(LIBRARY),scenario,str(source),str(actual)],
                                       check=True,text=True,capture_output=True,timeout=16)
                 metrics=json.loads(re.search(r"STARTUP_READY (\{.*\})",result.stdout)[1])
+                self.assertAlmostEqual(metrics['latency_ns'] / 1e6, metrics['lead'] / 48, places=5)
                 rendered=actual.read_bytes();prefix=metrics["lead"]*8
                 self.assertFalse(any(rendered[:prefix]),scenario)
                 if scenario!="post-start":self.assertEqual(rendered[prefix:],reference.read_bytes(),scenario)

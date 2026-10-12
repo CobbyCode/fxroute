@@ -198,8 +198,9 @@ def nodes() -> list[dict]:
                              "generation": params.get("fxroute.src.generation"),
                              "input_rate": params.get("fxroute.src.input-rate"),
                              "output_rate": params.get("fxroute.src.output-rate"),
-                             "nominal_bypass": params.get("fxroute.src.nominal-bypass"),
-                             "error": params.get("fxroute.src.error", 0)})
+                              "nominal_bypass": params.get("fxroute.src.nominal-bypass"),
+                              "latency_ns": params.get("fxroute.src.latency-ns"),
+                              "error": params.get("fxroute.src.error", 0)})
     return observed
 
 

@@ -28,6 +28,7 @@ struct composition {
     uint32_t flush;
     uint64_t accepted, nominal_pulled, first_input_ns;
     _Atomic uint64_t real, lead, reserve, first_real_ns;
+    _Atomic uint64_t fixed_latency_ns;
     double rate, fraction, prime, startup_input_delay, rate_min, rate_max;
     uint64_t rate_updates, max_callback_ns, callbacks;
     unsigned eof, flushed, done, total_underruns;
@@ -97,6 +98,11 @@ double fx_resample_match_delay(struct resample *r)
     if(c->worker&&c->prime)return 0;
     return fmax(0,timeline_delay(r)-c->startup_input_delay);
 }
+uint64_t fx_resample_latency_ns(struct resample *r)
+{
+    struct composition *c=r->data;
+    return c ? atomic_load(&c->fixed_latency_ns) : 0;
+}
 static uint32_t delay_frames(struct resample *r) { return floor(timeline_delay(r)); }
 static float delay_phase(struct resample *r) { double d=timeline_delay(r);return d-floor(d); }
 static void reset_composition(struct resample *r)
@@ -113,6 +119,7 @@ static void reset_composition(struct resample *r)
     c->startup_input_delay=0;
     c->first_input_ns=0;c->first_real_ns=0;
     c->prime=c->worker?ceil(.750*r->o_rate):0;
+    c->fixed_latency_ns=c->worker?750000000:0;
 }
 void fx_resample_finish(struct resample *r)
 {
@@ -150,9 +157,14 @@ void fx_resample_note_callback(struct resample *r,uint64_t ns)
 }
 /* First real output latency, written once on the processing thread before
  * the real frames are published. */
-static void add_real(struct composition *c,unsigned made)
+static void add_real(struct composition *c,unsigned made,unsigned input_rate)
 {
-    if(made&&!c->first_real_ns){uint64_t ns=c->first_input_ns?startup_now_ns()-c->first_input_ns:0;c->first_real_ns=ns?ns:1;}
+    if(made&&!c->first_real_ns){
+        /* Engine lookahead is covered by the reserve; retain only the actual
+         * timeline padding, including readiness extensions, after startup. */
+        c->fixed_latency_ns=(uint64_t)llround(c->startup_input_delay*1e9/input_rate);
+        uint64_t ns=c->first_input_ns?startup_now_ns()-c->first_input_ns:0;c->first_real_ns=ns?ns:1;
+    }
     c->real+=made;
 }
 /* Startup timeout is its own terminal error: it never replaces an existing
@@ -214,7 +226,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
             fx_verify_match(c->rate,src,offered,capacity,take,made,dst);
             fx_verify_account(take,made,c->rate,0,0);
 #endif
-            *output=made;add_real(c,made);c->nominal_pulled+=take;
+            *output=made;add_real(c,made,r->i_rate);c->nominal_pulled+=take;
         }
         if(take&&!c->first_input_ns)c->first_input_ns=startup_now_ns();
         *input=take;c->accepted+=take;
@@ -305,7 +317,7 @@ static void process_composition(struct resample *r,const void * SPA_RESTRICT src
     if(take>c->buffered){c->error=EPROTO;return;}
     c->buffered-=take;
     for(unsigned i=0;i<r->channels;++i)memmove(c->buffer[i],c->buffer[i]+take,c->buffered*4);
-    add_real(c,made);*output=made;
+    add_real(c,made,r->i_rate);*output=made;
     if(!c->eof)c->fraction+=made*(double)r->i_rate/(r->o_rate*c->rate);
     if(nominal_done&&!c->flush&&!c->buffered&&!made)c->done=1;
 }
@@ -317,11 +329,13 @@ int fx_resample_init(struct resample *r)
     atomic_init(&c->startup_count,0);
     atomic_init(&c->buffered,0);atomic_init(&c->real,0);atomic_init(&c->lead,0);
     atomic_init(&c->reserve,0);atomic_init(&c->first_real_ns,0);
+    atomic_init(&c->fixed_latency_ns,0);
     atomic_init(&c->underruns,0);atomic_init(&c->error,0);
     /* Cross-thread diagnostics must not add locks to graph processing. */
     if(!atomic_is_lock_free(&c->startup_count)||!atomic_is_lock_free(&c->buffered)||!atomic_is_lock_free(&c->real)||!atomic_is_lock_free(&c->lead)||
        !atomic_is_lock_free(&c->reserve)||!atomic_is_lock_free(&c->first_real_ns)||
-       !atomic_is_lock_free(&c->underruns)||!atomic_is_lock_free(&c->error)){free(c);return -ENOTSUP;}
+        !atomic_is_lock_free(&c->underruns)||!atomic_is_lock_free(&c->error)||
+        !atomic_is_lock_free(&c->fixed_latency_ns)){free(c);return -ENOTSUP;}
 #ifdef FX_SRC_VERIFY
     fx_verify_init(r);
 #endif
@@ -348,6 +362,7 @@ int fx_resample_init(struct resample *r)
             if(stats.acknowledged==stats.generation)break;usleep(1000);}
         if(stats.acknowledged!=stats.generation||stats.error)goto fail;
         c->prime=ceil(.750*r->o_rate);
+        c->fixed_latency_ns=750000000;
     }
     return 0;
 fail:

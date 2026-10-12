@@ -11,6 +11,7 @@
 
 static int seen;
 static int peaks;
+static int seen_latency;
 static void result(void *data, int seq, int res, uint32_t type, const void *result)
 {
     (void)data;(void)seq;assert(res>=0);
@@ -26,6 +27,9 @@ static void result(void *data, int seq, int res, uint32_t type, const void *resu
         if(!strcmp(key,"fxroute.src.mode")) {
             assert(spa_pod_parser_get_string(&parser,&mode)>=0);
             assert(!peaks||!strcmp(mode,"peaks"));seen=1;
+        } else if(!strcmp(key,"fxroute.src.latency-ns")) {
+            int64_t latency;assert(spa_pod_parser_get_long(&parser,&latency)>=0);
+            assert(latency==(peaks?0:750000000));seen_latency=1;
         } else {
             struct spa_pod *value;assert(spa_pod_parser_get(&parser,SPA_POD_Pod(&value),NULL)>=0);
         }
@@ -53,7 +57,7 @@ int main(int argc,char **argv)
     }
     struct spa_command cmd=SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
     assert(spa_node_send_command(node,&cmd)==0);
-    assert(spa_node_enum_params(node,1,SPA_PARAM_Props,0,1,NULL)==0);assert(seen);
+    assert(spa_node_enum_params(node,1,SPA_PARAM_Props,0,1,NULL)==0);assert(seen&&seen_latency);
     spa_hook_remove(&hook);spa_handle_clear(handle);free(handle);dlclose(lib);
     return 0;
 }

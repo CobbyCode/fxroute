@@ -498,6 +498,7 @@ from playback.state import PlaybackState
 import playback.source_policy as source_policy
 import audio.samplerate as samplerate
 from audio import alsa_ctl, src_policy
+from audio.src_latency import SrcLatencyReader
 from library.core import (
     LibraryScanner,
 )
@@ -3144,7 +3145,7 @@ async def lifespan(app: FastAPI):
         runtime.dsp_runtime = DSPRuntime(dsp_manager)
         configure_latency = getattr(runtime.dsp_runtime, 'configure_latency_tracking', None)
         if callable(configure_latency):
-            configure_latency(input_latency_provider=_deterministic_input_latency_ms)
+            configure_latency(input_latency_provider=_electronic_input_latency_ms)
             _create_lifecycle_background_task(
                 runtime.dsp_runtime.latency_watch_loop(on_ready=_adopt_av_sync_basis),
                 name='av-sync-latency-watch')
@@ -5850,6 +5851,29 @@ def _deterministic_input_latency_ms() -> float:
     if _surround_input is None:
         raise RuntimeError('Routed digital ingress latency is unavailable')
     return _surround_input.deterministic_latency_ms()
+
+
+_src_latency_reader = SrcLatencyReader()
+
+
+async def _electronic_input_latency_ms() -> float:
+    helper_ms = _deterministic_input_latency_ms()
+    dsp = runtime.dsp_runtime
+    snapshot = dsp.snapshot() if dsp is not None else {}
+    if not snapshot.get('config') or snapshot.get('helper_pid') is None:
+        return helper_ms
+    if snapshot.get('surround_input'):
+        ingress_nodes = ('fxroute_surround_input',)
+    elif snapshot.get('mapped_ingress'):
+        ingress_nodes = tuple({edge[0].rsplit(':', 1)[0] for edge in snapshot['mapped_ingress']})
+    else:
+        ingress_nodes = ('fxroute_dsp_sink',)
+    external_ingress = bool(snapshot.get('surround_input') or snapshot.get('mapped_ingress'))
+    measurement = _measurement_session_owns_live_rate() or snapshot.get('measurement_active', False)
+    src_ms = await asyncio.to_thread(_src_latency_reader.read,
+        include_ingress=external_ingress or not measurement, ingress_nodes=ingress_nodes,
+        owner=(snapshot['helper_pid'], snapshot['config'].get('plan_fingerprint')))
+    return helper_ms + src_ms
 
 
 async def _select_surround_clock(card: int | None, *, digital: bool) -> None:

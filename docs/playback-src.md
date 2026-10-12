@@ -170,6 +170,29 @@ verification; a configured rule alone is not a playback pass.
 
 ## Diagnostics
 
+Each adapter also publishes `fxroute.src.latency-ns` in its Props. This is the
+fixed nominal-time offset retained by its startup padding: 750 ms initially
+for unequal rates, updated to the actual padding if startup readiness extends
+it, and zero for equal-rate bypass. It remains credited after real PCM begins;
+only reset starts a new generation. The non-realtime event updates Props and
+PipeWire latency propagation when the offset changes. Engine first-output wall
+time and clock-servo backlog are separate quantities, not extra fixed delays.
+
+AV Sync reads each linked adapter's own offset once, not the same propagated
+latency at every port. Its existing input credit combines the common SRC offset
+on the owned input/hardware paths with the digital helper's 2818/48 ms offset.
+Different simultaneous SRC path offsets or failed/missing evidence make timing
+unavailable. Measurement ignores preserved app ingress and keeps the hardware
+credit. `/api/audio/src` exposes the adapter evidence as `latency_ns`.
+
+Impulses at 0.5, 1.5 and 2.5 seconds through the built runtime on the audio host
+all retained a 750 ms offset for Low, Standard and High at 44.1→96 and 96→48 kHz;
+96→96 kHz retained zero. At these rates the impulse peak had no additional
+sample offset after removal of startup padding. This does not turn the
+minimum-phase Standard filter's frequency-dependent phase into a separate
+constant group delay. The measured engine first-output times differed by mode
+and ratio (about 0.1–612 ms), but were covered by the reserve.
+
 Each converter writes one `FXSRC_WORKER_STATS` JSON line to its host's stderr
 when it is destroyed, and one `FXSRC_ERROR_STATS` line from a non-realtime loop
 event when it fails. The process callback only updates lock-free counters and

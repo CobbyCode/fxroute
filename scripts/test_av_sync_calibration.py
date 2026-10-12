@@ -116,7 +116,7 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
         snapshot.update(copy.deepcopy(getattr(self, 'live_ingress', {})))
         return snapshot
 
-    async def capture_external_ingress(self, *, kind='decoded', raw=True, fail_restore=False):
+    async def capture_external_ingress(self, *, kind='decoded', raw=True, fail_restore=False, hardware_ms=0):
         from test_measurement_external_ingress import IngressFixture
         from dsp.runtime import CommandResult, PipeWireLink
         from measurement.job_runner import MeasurementJobRunner
@@ -129,7 +129,7 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
         native._links = [PipeWireLink(f'fxroute_dsp:output_{index}', f'dev:playback_AUX{index - 1}')
                          for index in range(1, 5)]
         ingress.links = {(link.source, link.target) for link in native._links}
-        native.configure_latency_tracking(input_latency_provider=lambda: 2818 / 48 if native._surround_input else 0)
+        native.configure_latency_tracking(input_latency_provider=lambda: hardware_ms + (2818 / 48 if native._surround_input else 0))
         frames = 0
         restore_started = False
         restore_readbacks = 0
@@ -175,7 +175,7 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(native._surround_input)
             self.assertEqual(native._mapped_ingress, ())
             captured = await native.finish_measurement_latency(job)
-            self.assertEqual(captured['input'], 0)
+            self.assertEqual(captured['input'], round(hardware_ms * 48))
             self.assertEqual(captured['bypassed'], int(raw))
             restore_started = fail_restore
             return captured
@@ -252,11 +252,20 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(committed['revision'], self.fixture.base['revision'] + 1)
         self.assertEqual(committed['modes']['stereo-sub']['av_sync']['basis']['sub1'], 128)
 
+    async def test_external_calibration_retains_hardware_src_without_recrediting_ingress(self):
+        await self.capture_external_ingress(hardware_ms=750)
+        self.assertEqual(self.sweep['input'], 36000)
+        self.assertEqual(self.live['input'], 38818)
+        owner = self.make_timed_owner()
+        committed = await owner.commit_staged()
+        self.assertTrue(owner.committed)
+        self.assertEqual(committed['modes']['stereo-sub']['av_sync']['basis']['sub1'], 878)
+
     async def test_active_capture_retains_actual_sweep_and_original_ingress_timing(self):
         native = await self.capture_external_ingress(raw=False)
         self.assertEqual(self.live['input'], 2818)
         self.assertEqual(self.sweep['ingress_restore'], {
-            'input': 2818, 'surround_input': True, 'mapped_ingress': []})
+            'input': 2818, 'surround_input': True, 'mapped_ingress': [], 'sweep_input': 0})
         self.sweep['ingress_restore']['input'] = 1
         self.assertEqual(native.snapshot()['measurement_latency']['ingress_restore']['input'], 2818)
 

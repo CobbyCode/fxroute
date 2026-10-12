@@ -16,6 +16,171 @@ from dsp.latency import capture_basis
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_src_credit_updates_the_native_total_control(self):
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        commands = []
+        async def provider():
+            await asyncio.sleep(0)
+            return 750
+        async def control(command, *, reply):
+            commands.append(command)
+            return 'ok'
+        runtime.configure_latency_tracking(input_latency_provider=provider)
+        runtime._control_unlocked = control
+        await runtime.update_input_latency()
+        self.assertEqual(commands, ['input latency 750'])
+        self.assertEqual(runtime._last_input_latency_ms, 750)
+
+    async def test_graph_read_cannot_send_credit_to_a_replacement_engine(self):
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        commands = []
+        async def provider():
+            runtime._process = SimpleNamespace(returncode=None)
+            return 750
+        async def control(command, *, reply):
+            commands.append(command)
+        runtime.configure_latency_tracking(input_latency_provider=provider)
+        runtime._control_unlocked = control
+        await runtime.update_input_latency()
+        self.assertEqual(commands, [], 'Obsolete graph evidence must not reach a new engine')
+
+    async def test_graph_read_cannot_credit_the_previous_ingress_owner(self):
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        commands = []
+        async def provider():
+            runtime._surround_input = True
+            return 750
+        async def control(command, *, reply):
+            commands.append(command)
+        runtime.configure_latency_tracking(input_latency_provider=provider)
+        runtime._control_unlocked = control
+        await runtime.update_input_latency()
+        self.assertEqual(commands, [])
+
+    async def test_control_lock_wait_cannot_credit_a_replacement_engine(self):
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        sampled = asyncio.Event()
+        commands = []
+        async def provider():
+            sampled.set()
+            return 750
+        async def control(command, *, reply):
+            commands.append(command)
+            return 'ok'
+        runtime._control_unlocked = control
+        runtime.configure_latency_tracking(input_latency_provider=provider)
+        await runtime._control_lock.acquire()
+        task = asyncio.create_task(runtime.update_input_latency())
+        try:
+            await sampled.wait()
+            runtime._process = SimpleNamespace(returncode=None)
+        finally:
+            runtime._control_lock.release()
+        await task
+        self.assertEqual(commands, [], 'A queued credit belongs to the sampled engine')
+        self.assertIsNone(runtime._last_input_latency_ms)
+
+    async def test_changed_ingress_during_ack_cannot_cache_obsolete_credit(self):
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        async def control(command, *, reply):
+            await asyncio.sleep(0)
+            runtime._surround_input = True
+            return 'ok'
+        runtime._control_unlocked = control
+        runtime.configure_latency_tracking(input_latency_provider=lambda: 750)
+        await runtime.update_input_latency()
+        self.assertIsNone(runtime._last_input_latency_ms)
+
+    async def test_stale_ack_invalidates_populated_cache_and_refreshes_new_ingress(self):
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        runtime._last_input_latency_ms = 0
+        applied_ms = 0
+        commands = []
+        async def control(command, *, reply):
+            nonlocal applied_ms
+            commands.append(command)
+            applied_ms = float(command.split()[-1])
+            if applied_ms == 750:
+                await asyncio.sleep(0)
+                runtime._surround_input = True
+            return 'ok'
+        runtime._control_unlocked = control
+        runtime.configure_latency_tracking(input_latency_provider=lambda: 0 if runtime._surround_input else 750)
+        await runtime.update_input_latency()
+        await runtime.update_input_latency()
+        self.assertEqual(commands, ['input latency 750', 'input latency 0'])
+        self.assertEqual(applied_ms, 0)
+        self.assertEqual(runtime._last_input_latency_ms, 0)
+
+    async def test_readback_wait_cannot_read_a_replacement_engine(self):
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        runtime._config = DSPRuntimeConfig('stereo', 'test', 48000, ('FL', 'FR'),
+                                           ({'name': 'main_l'}, {'name': 'main_r'}))
+        commands = []
+        async def control(command, *, reply):
+            commands.append(command)
+            return '{"ready":false}'
+        runtime._control_unlocked = control
+        await runtime._control_lock.acquire()
+        task = asyncio.create_task(runtime.read_latency())
+        try:
+            await asyncio.sleep(0)
+            runtime._process = SimpleNamespace(returncode=None)
+        finally:
+            runtime._control_lock.release()
+        with self.assertRaisesRegex(RuntimeError, 'changed'):
+            await task
+        self.assertEqual(commands, [])
+        self.assertEqual(runtime.snapshot()['av_sync'], {})
+
+    async def test_readback_reply_cannot_cache_previous_ingress_evidence(self):
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        runtime._config = DSPRuntimeConfig('stereo', 'test', 48000, ('FL', 'FR'),
+                                           ({'name': 'main_l'}, {'name': 'main_r'}))
+        async def control(command, *, reply):
+            await asyncio.sleep(0)
+            runtime._mapped_ingress = (('capture:FL', 'fxroute_dsp:input_1'),)
+            return '{"ready":false}'
+        runtime._control = control
+        runtime._control_unlocked = control
+        with self.assertRaisesRegex(RuntimeError, 'changed'):
+            await runtime.read_latency()
+        self.assertEqual(runtime.snapshot()['av_sync'], {})
+
+    async def test_settled_latency_rejects_ingress_changed_during_readback(self):
+        runtime = DSPRuntime(object())
+        async def read():
+            await asyncio.sleep(0)
+            runtime._surround_input = True
+            return {'ready': True, 'bypassed': False}
+        runtime.read_latency = read
+        with self.assertRaisesRegex(RuntimeError, 'changed'):
+            await runtime.settled_latency()
+
+    async def test_settled_latency_rejects_an_engine_stopped_during_graph_read(self):
+        runtime = DSPRuntime(object())
+        runtime._process = SimpleNamespace(returncode=None)
+        async def provider():
+            runtime._process = None
+            return 750
+        async def control(command, *, reply):
+            return 'ok'
+        async def read():
+            return {'ready': True, 'bypassed': False}
+        runtime._control = control
+        runtime.read_latency = read
+        runtime.configure_latency_tracking(input_latency_provider=provider)
+        with self.assertRaisesRegex(RuntimeError, 'changed|unavailable'):
+            await runtime.settled_latency()
+
     async def test_raw_child_certifies_only_excited_unmuted_roles_and_sources(self):
         runtime = DSPRuntime(object())
         runtime._latency_tracking = True
@@ -74,6 +239,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(runtime._surround_input)
                 self.assertEqual(runtime._mapped_ingress, (('capture', 'input'),))
                 self.assertFalse(runtime._measurement_scope_lock.locked())
+                self.assertFalse(runtime.snapshot()['measurement_active'])
 
     async def test_post_crossover_and_group_sources_are_active_in_real_surround_layout(self):
         from audio.output_state import default_output_state, set_mode_routing, switch_mode
@@ -94,7 +260,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                'sources': [{'dsp': 0, 'balance': 0} for _ in range(8)]}
         async def control(command, *, reply):
             return json.dumps(raw)
-        runtime._control = control
+        runtime._control_unlocked = control
         result = await runtime.read_latency()
         sources = {row['position']: row for row in result['sources']}
         self.assertIn('sub1', sources['LFE']['roles'])
@@ -163,7 +329,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         async def control(command, *, reply=False):
             self.assertEqual(command, 'latency get')
             return json.dumps(raw)
-        runtime._control = control
+        runtime._control_unlocked = control
         result = await runtime.read_latency()
         self.assertEqual(result['actual_ms'], 300)
         self.assertAlmostEqual(result['input_ms'], 170.666666667)

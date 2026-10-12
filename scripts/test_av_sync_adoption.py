@@ -3,14 +3,20 @@
 """Legacy timing is adopted only from a verified normal activation."""
 import copy
 import importlib
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 from test_output_state_api import make_manager, make_service
+from test_av_sync_src import graph
+from audio.src_latency import graph_src_latency
+from dsp.runtime import DSPRuntime, PipeWireLink
 
 try:
     adoption = importlib.import_module('dsp.av_sync_service')
@@ -75,6 +81,50 @@ class AdoptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(committed['modes']['stereo']['av_sync']['basis_origin'], 'adopted')
         self.assertFalse(await self.adopt())
         self.assertEqual(self.stages, 1)
+
+    async def test_guarded_adoption_retains_the_live_app_src_credit(self):
+        native = DSPRuntime(self.manager)
+        native._process = SimpleNamespace(returncode=None, pid=123)
+        native._config = self.target.config
+        native._config_text = self.target.text
+        native._links = [PipeWireLink('fxroute_dsp:output_1', 'A:playback_FL')]
+        native._output_gain_db = -12
+        native.verify = self.verify
+        native.configure_latency_tracking(input_latency_provider=main._electronic_input_latency_ms)
+        frames = 0
+        async def control(command, *, reply):
+            nonlocal frames
+            if command.startswith('input latency '):
+                frames = round(float(command.split()[-1]) * 48)
+                return 'ok'
+            if command == 'latency get':
+                payload = copy.deepcopy(self.latency)
+                payload.update(input=frames, target=0, minimum=frames + 6480,
+                               maximum=960000, common=0, actual=frames + 6480)
+                for row, align in zip(payload['outputs'], (336, 0)):
+                    row.update(align=align, sync=0, total=frames + 6144 + align)
+                return json.dumps(payload)
+            return 'ok'
+        async def render(config, text, *, initial_output_gain_db):
+            native._config = config
+            native._config_text = text
+            native._last_input_latency_ms = None
+        native._control_unlocked = control
+        native._run_sync = render
+        reader = SimpleNamespace(read=lambda owner=None, **options: graph_src_latency(graph(), **options))
+        with patch.object(main.runtime, 'dsp_runtime', native), \
+                patch.object(main, '_src_latency_reader', reader), \
+                patch.object(main, '_measurement_session_owns_live_rate', return_value=False):
+            latency = await native.settled_latency()
+            self.assertEqual(latency['input_ms'], 750)
+            adopted = await adoption.adopt_latency_basis(
+                service=self.service, native=native, build_target=self.build_target,
+                latency=latency, measurement_active=lambda: False)
+            self.assertTrue(adopted)
+            self.assertEqual((await native.settled_latency())['input_ms'], 750)
+            self.assertEqual(self.service.load()['modes']['stereo']['av_sync']['basis_origin'], 'adopted')
+            self.assertEqual(self.service.load()['modes']['stereo']['processing'],
+                             self.state['modes']['stereo']['processing'])
 
     async def test_stale_rendering_broken_links_and_measurement_do_not_adopt(self):
         for reason in ('stale', 'links', 'measurement'):
