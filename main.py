@@ -2,12 +2,18 @@
 
 """Main FastAPI application for FXRoute."""
 
+import os
+
+# Keep OpenBLAS single-threaded; set before numpy loads it.  uvloop starts
+# child processes with fork(), OpenBLAS stops its worker threads in every
+# fork, and a threaded BLAS call running at that moment never returns.
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
 import copy
 import cmath
 import json
 import logging
 import math
-import os
 import re
 import shutil
 import time

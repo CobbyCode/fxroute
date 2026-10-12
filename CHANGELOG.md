@@ -64,6 +64,15 @@ commit assigns them a version.
   96 kHz with its own input as the microphone the sweep runs at 96 kHz
   without a rate change, not at 88.2 kHz. 48 kHz and the lowest supported
   rate remain the fallbacks after that.
+- A sweep analysis at 88.2 kHz or above could stay in "Processing
+  measurement…" for good and hold the measurement session until the service
+  was restarted. Only at those rates are the timing search's dot products
+  long enough for OpenBLAS to spread them over its worker threads. OpenBLAS
+  stops these workers whenever the process forks, which the event loop does
+  for every child process it starts, and a threaded call running at that
+  moment never returned. The service now runs OpenBLAS with one thread, so
+  there are no workers to lose. 48 kHz measurements never used the workers
+  and are unaffected.
 
 ## 1.0-beta12 (2026-10-01)
 
