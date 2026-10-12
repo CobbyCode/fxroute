@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse
 
 import audio.samplerate as samplerate
 import audio.samplerate_orchestration as samplerate_orchestration
+from audio.device_profiles import required_tier_switch
 from http_errors import bad_request, internal_error
 from measurement.store import (
     MEASUREMENT_DEFAULT_SAMPLE_RATE,
@@ -124,6 +125,10 @@ class MeasurementServices:
     # root marks its input routing stale and re-asserts it outside the
     # session lock.
     post_release_input_resync: Callable[[], Awaitable[None]] | None = None
+    # Called after a release whose restore rate runs on another channel tier
+    # of the selected output. The reprobe belongs to the coordinator and needs
+    # the session lock, so the composition root runs it after the release.
+    post_release_policy_rate_restore: Callable[[], Awaitable[None]] | None = None
     # Routing must be idle before taking the session lock: carrier repair
     # also needs that lock. Release routing once entry claims ownership.
     input_entry_guard: Callable[[], AsyncContextManager[None]] | None = None
@@ -193,6 +198,19 @@ def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,
 def _player() -> Any:
     """Resolve the player instance late-bound through the injected accessor."""
     return _measurement_services().get_player()
+
+
+async def _restore_rate_needs_tier_switch(target_rate: int) -> bool:
+    """Whether the selected output runs ``target_rate`` only on another channel tier."""
+    if not isinstance(target_rate, int) or target_rate <= 0:
+        return False
+    try:
+        overview = await asyncio.to_thread(_measurement_services().get_audio_output_overview)
+    except Exception as exc:
+        logger.warning("Measurement release could not read the output channel tier: %s", exc)
+        return False
+    selected = overview.get("selected_output") or overview.get("current_output") or {}
+    return required_tier_switch(selected, target_rate) is not None
 
 
 _playback_state_before_measurement: dict[str, Any] | None = None
@@ -577,6 +595,7 @@ class MeasurementSampleRateSession:
         target_rate = playback_target_rate or restore_value
         force_rate_owned = True
         coordinator_attempted = False
+        tier_restore_deferred = False
         playback_restore_via_coordinator = bool(
             playback_source in {"local", "radio", "spotify", "tidal", "qobuz"}
             and playback_target_rate
@@ -678,6 +697,21 @@ class MeasurementSampleRateSession:
                     playback_source,
                     playback_target_rate,
                 )
+            elif (
+                self._rate_changed
+                and not coordinator_attempted
+                and await _restore_rate_needs_tier_switch(target_rate)
+            ):
+                # A pin on the measurement tier could never settle at this
+                # rate; the post-release policy transition reprobes the tier.
+                tier_restore_deferred = True
+                force_rate_owned = False
+                logger.info(
+                    "Measurement sample-rate session restore deferred to the channel-tier reprobe: "
+                    "measurement_rate=%s target_rate=%s",
+                    self.measurement_rate,
+                    target_rate,
+                )
             elif self._rate_changed and not coordinator_attempted:
                 current_force_rate = await asyncio.to_thread(_get_current_pipewire_force_rate)
                 if current_force_rate == self.measurement_rate:
@@ -710,7 +744,7 @@ class MeasurementSampleRateSession:
                     )
 
                 rate_ready = True
-                if coordinator_attempted:
+                if coordinator_attempted or tier_restore_deferred:
                     rate_ready = False
                 elif playback_target_rate and force_rate_owned:
                     if playback_source == "radio":
@@ -778,6 +812,12 @@ class MeasurementSampleRateSession:
                     await mark_input_stale()
                 except Exception as exc:
                     logger.warning("Measurement release input-resync hook failed: %s", exc)
+            restore_policy_rate = getattr(services, "post_release_policy_rate_restore", None)
+            if tier_restore_deferred and callable(restore_policy_rate):
+                try:
+                    await restore_policy_rate()
+                except Exception as exc:
+                    logger.warning("Measurement release policy-rate restore hook failed: %s", exc)
             logger.info(
                 "Measurement sample-rate session released: generation=%s next_generation=%s restore_rate=%s",
                 completed_generation,

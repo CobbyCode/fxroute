@@ -586,6 +586,12 @@ class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         },
     }
 
+    PROFILE_14 = {
+        **PROFILE_18,
+        "supported_rates": [88200, 96000],
+        "device_profile": {**PROFILE_18["device_profile"], "active_tier": "14ch"},
+    }
+
     async def test_tier_reprobe_precedes_rate_and_replaces_old_capabilities(self):
         from test_playback_transition_coordinator import FakeRuntime
         from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
@@ -618,6 +624,63 @@ class TierCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(runtime.events.index("quiet"), runtime.events.index("tier"))
         self.assertLess(runtime.events.index("tier"), runtime.events.index("rate"))
         self.assertFalse(runtime.muted)
+
+    async def test_measurement_entry_reprobes_into_the_measurement_rate_tier(self):
+        from test_playback_transition_coordinator import FakeRuntime
+        from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
+
+        class TierRuntime(FakeRuntime):
+            async def apply_channel_tier(self, request, snapshot):
+                self.events.append("tier")
+                if not self.muted or not self.paused:
+                    raise AssertionError("Tier changed before source and hardware were quiet")
+                assert (request.channel_tier or {})["tier"]["id"] == "18ch", request.channel_tier
+                return {"selected_output": {"supported_rates": [44100, 48000]}}
+
+        runtime = TierRuntime()
+        runtime.rate = 96000
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        # Fixed 96 kHz keeps the device on its 14-channel tier, which cannot
+        # run the 48 kHz measurement rate.
+        result = await coordinator.execute(TransitionRequest(
+            operation="measurement-entry", source="tidal", target_rate=48000,
+            target_url="/cache/tidal.mp4", should_play=False, rate_change=True,
+            reload_source=False,
+            audio_overview={"selected_output": dict(self.PROFILE_14)},
+        ))
+        self.assertTrue(result.committed)
+        self.assertLess(runtime.events.index("quiet"), runtime.events.index("tier"))
+        self.assertLess(runtime.events.index("tier"), runtime.events.index("rate"))
+        self.assertEqual(runtime.rate, 48000)
+
+    async def test_measurement_restore_reprobes_back_into_the_playback_rate_tier(self):
+        from test_playback_transition_coordinator import FakeRuntime
+        from playback.transition import PlaybackTransitionCoordinator
+
+        profile = dict(self.PROFILE_18)
+
+        class TierRuntime(FakeRuntime):
+            async def read_transition_snapshot(self, request):
+                snapshot = await super().read_transition_snapshot(request)
+                snapshot["audio_overview"] = {"selected_output": profile}
+                return snapshot
+
+            async def apply_channel_tier(self, request, snapshot):
+                self.events.append("tier")
+                assert (request.channel_tier or {})["tier"]["id"] == "14ch", request.channel_tier
+                return {"selected_output": {"supported_rates": [88200, 96000]}}
+
+        runtime = TierRuntime()
+        runtime.rate = 48000
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        result = await coordinator.restore_measurement(
+            source="tidal", target_rate=96000, target_url="/cache/tidal.mp4",
+            target_track={"source": "tidal", "url": "/cache/tidal.mp4"},
+            should_play=False,
+        )
+        self.assertTrue(result.committed)
+        self.assertLess(runtime.events.index("tier"), runtime.events.index("rate"))
+        self.assertEqual(runtime.rate, 96000)
 
     async def test_same_tier_rate_needs_no_reprobe(self):
         from test_playback_transition_coordinator import FakeRuntime
@@ -854,7 +917,7 @@ class TierApplySnapshotTests(unittest.IsolatedAsyncioTestCase):
                 self._deps = deps
                 self.applied = None
 
-            async def _change_tier_hardware(self, change, *, rollback=False):
+            async def _change_tier_hardware(self, change, *, rollback=False, session_owned=False):
                 self.applied = change
                 return {"selected_output": {}}
 
@@ -888,6 +951,71 @@ class TierApplySnapshotTests(unittest.IsolatedAsyncioTestCase):
             await runtime.apply_channel_tier(self._request(), snapshot)
         self.assertTrue(any("rollback will be unavailable" in message for message in logs.output))
         self.assertIsNotNone(runtime.applied, "the unstoraged change must still drive the hardware stage")
+
+
+class TierSessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    """The measurement session reprobes under its own lock; other switches stay locked."""
+
+    TIER = {"id": "18ch", "channels": 18, "rates": [44100, 48000], "probe_rate": 48000}
+
+    def setUp(self):
+        self.lock = asyncio.Lock()
+        self.steps = []
+
+    def _runtime(self):
+        from playback.runtime.channel_tier import _RuntimeChannelTierMixin
+
+        class TierRuntime(_RuntimeChannelTierMixin):
+            def __init__(self, deps):
+                self._deps = deps
+                self._dsp_runtime = None
+                self._configuration_locks_held = False
+
+            def invalidate_gate_sink_resolution(self):
+                pass
+
+        async def drain_worker(step):
+            step()
+
+        return TierRuntime(SimpleNamespace(
+            audio_configuration_lock=lambda: self.lock,
+            measurement_audio_graph_owned=lambda: True,
+            drain_worker=drain_worker,
+            get_audio_output_overview=lambda: {"selected_output": {}},
+        ))
+
+    def _change(self):
+        return SimpleNamespace(
+            tier=dict(self.TIER), target_rate=48000,
+            apply=lambda: self.steps.append("apply"),
+            rollback=lambda: self.steps.append("rollback"),
+        )
+
+    def _request(self, operation):
+        return SimpleNamespace(operation=operation, target_rate=48000,
+                               channel_tier={"tier": dict(self.TIER)})
+
+    async def test_measurement_transitions_reprobe_under_the_held_session_lock(self):
+        runtime = self._runtime()
+        change = self._change()
+        # The session holds the audio configuration lock across its own entry
+        # and restore and owns the graph: re-acquiring would deadlock,
+        # refusing would leave the rate on a tier that cannot run it.
+        async with self.lock:
+            for operation in ("measurement-entry", "measurement-restore"):
+                await asyncio.wait_for(runtime.apply_channel_tier(
+                    self._request(operation), {"channel_tier_change": change}), timeout=2)
+            await asyncio.wait_for(runtime._change_tier_hardware(
+                change, rollback=True, session_owned=True), timeout=2)
+        self.assertEqual(self.steps, ["apply", "apply", "rollback"])
+
+    async def test_other_operations_stay_locked_while_measurement_owns_the_graph(self):
+        runtime = self._runtime()
+        with self.assertRaisesRegex(RuntimeError, "channel-tier switch is locked"):
+            await runtime.apply_channel_tier(
+                self._request("sample-rate-policy"), {"channel_tier_change": self._change()})
+        self.assertEqual(self.steps, [])
+        self.assertFalse(self.lock.locked())
 
 
 class TierAdapterMultiPassTests(unittest.IsolatedAsyncioTestCase):
@@ -1058,6 +1186,24 @@ class TierAdapterMultiPassTests(unittest.IsolatedAsyncioTestCase):
                          (self.old_key, 18, 48000, self.MULTI_PROFILE))
         from audio.samplerate.persistence import _load_audio_output_selection
         self.assertEqual(_load_audio_output_selection()["selected_key"], self.old_key)
+
+    async def test_rollback_of_a_non_policy_operation_keeps_the_persisted_policy(self):
+        from dataclasses import replace
+        from audio.samplerate.persistence import load_sample_rate_policy, persist_sample_rate_policy
+
+        persist_sample_rate_policy({"mode": "fixed", "rate": 48000})
+        runtime = self._runtime()
+        # Only a policy transition snapshots the policy; a measurement entry
+        # that fails after its reprobe must not rewrite the user's fixed rate.
+        snapshot = {"player": {}}
+        request = replace(self._request("14ch", 96000), operation="measurement-entry",
+                          sample_rate_policy={})
+        await runtime.apply_channel_tier(request, snapshot)
+        self.assertEqual((self.channels, self.rate), (14, 96000))
+        self.assertTrue(await runtime.rollback_channel_tier(request, snapshot, "test-tid"))
+        self.assertEqual((self.channels, self.rate), (18, 48000))
+        self.assertEqual(load_sample_rate_policy(), {"mode": "fixed", "rate": 48000})
+        self.assertEqual(runtime.rates, [48000])
 
     def _record_source_stages(self, runtime):
         started, reconciled = [], []

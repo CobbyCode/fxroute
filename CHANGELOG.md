@@ -50,6 +50,14 @@ commit assigns them a version.
   code: the bank-group test checks that All Banks is measured as the whole
   system, and the two measurement-start harnesses wire
   `requireMeasurableArea` instead of the import-only bank gate.
+- Starting a measurement on a rate-tiered interface (Scarlett 16i16, 18i16,
+  18i20 4th Gen) no longer fails with an internal server error when the
+  measurement rate belongs to another channel tier than the playback rate,
+  for example Fixed 96 kHz with a 48 kHz USB microphone. The measurement
+  entry now re-probes into the tier of the measurement rate like every other
+  rate change, and closing the Measure window returns the device to the tier
+  of the playback rate. An input that claims the 48 kHz carrier in the
+  meantime keeps it.
 
 ## 1.0-beta12 (2026-10-01)
 

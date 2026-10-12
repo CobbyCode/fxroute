@@ -181,5 +181,147 @@ class ReleaseHookTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.active)
 
 
+class ReleaseTierRestoreTests(unittest.IsolatedAsyncioTestCase):
+    """A fixed rate on another channel tier is restored after the release.
+
+    Without a playback snapshot the release pins the restore rate directly.
+    On a profiled output that rate may only run on another tier, where a pin
+    can never settle: the release leaves the measurement rate in place and
+    hands the reprobe to the composition root.
+    """
+
+    TIERS = [
+        {"id": "18ch", "channels": 18, "rates": [44100, 48000]},
+        {"id": "14ch", "channels": 14, "rates": [88200, 96000]},
+    ]
+
+    def setUp(self):
+        self._snapshot = measurement_session._playback_state_before_measurement
+        measurement_session._playback_state_before_measurement = None
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        measurement_session._playback_state_before_measurement = self._snapshot
+
+    async def _release(self, *, policy_rate, active_tier="18ch"):
+        self.force_writes = []
+        self.hook_calls = []
+        self.sync = AsyncMock(return_value=True)
+
+        async def hook():
+            self.hook_calls.append(True)
+
+        services = SimpleNamespace(
+            get_current_track_info=lambda: None,
+            begin_playback_transition_attempt=lambda: 0,
+            end_playback_transition_attempt=lambda: None,
+            get_playback_transition_coordinator=lambda: None,
+            get_current_pipewire_force_rate=lambda: 48000,
+            set_pipewire_force_rate=self.force_writes.append,
+            ensure_playback_samplerate_force=None,
+            wait_for_samplerate_alignment=None,
+            get_dsp_orchestrator=lambda: SimpleNamespace(sync_runtime_at_rate=self.sync),
+            get_samplerate_status=lambda: {"force_rate": 48000, "active_rate": 48000, "clock_rate": 44100},
+            get_audio_output_overview=lambda: {"selected_output": {
+                "key": "alsa_output.scarlett",
+                "device_profile": {"active_tier": active_tier, "tiers": [dict(tier) for tier in self.TIERS]},
+            }},
+            stdin_measurement_release=AsyncMock(),
+            post_release_policy_rate_restore=hook,
+        )
+        session = MeasurementSampleRateSession()
+        session.active = True
+        session.close_requested = True
+        session.measurement_rate = 48000
+        session._rate_changed = True
+        saved_services = measurement_session._services
+        saved_policy = measurement_session.samplerate.load_sample_rate_policy
+        measurement_session._services = services
+        measurement_session.samplerate.load_sample_rate_policy = lambda: {"mode": "fixed", "rate": policy_rate}
+        try:
+            await session._release()
+        finally:
+            measurement_session._services = saved_services
+            measurement_session.samplerate.load_sample_rate_policy = saved_policy
+        self.assertFalse(session.active)
+
+    async def test_rate_on_another_tier_is_left_to_the_post_release_reprobe(self):
+        await self._release(policy_rate=96000)
+        self.assertEqual(self.force_writes, [])
+        self.sync.assert_not_awaited()
+        self.assertEqual(self.hook_calls, [True])
+
+    async def test_rate_on_the_measurement_tier_is_pinned_directly(self):
+        await self._release(policy_rate=44100)
+        self.assertEqual(self.force_writes, [44100])
+        self.sync.assert_awaited_once()
+        self.assertEqual(self.hook_calls, [])
+
+    async def test_composed_release_hook_marks_the_restore_pending(self):
+        with patch.object(main, "_policy_rate_restore_pending", False):
+            await main._make_measurement_services().post_release_policy_rate_restore()
+            self.assertTrue(main._policy_rate_restore_pending)
+
+    async def _run_pending_restore(self, *, rate_change=True, session_owned=False, ingress_pending=False,
+                                   transition_active=False, carrier_owned=False):
+        policy = {"mode": "fixed", "rate": 96000}
+        transition = AsyncMock()
+        orchestrator = SimpleNamespace(sample_rate_policy_request=AsyncMock(
+            return_value=SimpleNamespace(rate_change=rate_change)))
+        with patch.object(main, "_policy_rate_restore_pending", True), \
+                patch.object(main, "_ingress_resync_pending", ingress_pending), \
+                patch.object(main, "_surround_carrier_owned", carrier_owned), \
+                patch.object(main, "_measurement_session_owns_live_rate", return_value=session_owned), \
+                patch.object(main, "_playback_transition_is_active", return_value=transition_active), \
+                patch.object(main, "_source_transition_lock", return_value=asyncio.Lock()), \
+                patch.object(main.samplerate, "load_sample_rate_policy", return_value=policy), \
+                patch.object(main.playback_orchestration, "configured", return_value=orchestrator), \
+                patch.object(main, "_transition_sample_rate_policy", transition):
+            await main._restore_pending_policy_rate()
+            return transition, main._policy_rate_restore_pending, policy
+
+    async def test_pending_restore_transitions_the_policy_once(self):
+        transition, pending, policy = await self._run_pending_restore()
+        transition.assert_awaited_once_with(policy, detail="measurement-release")
+        self.assertFalse(pending)
+
+    async def test_pending_restore_without_a_rate_change_does_nothing(self):
+        transition, pending, _policy = await self._run_pending_restore(rate_change=False)
+        transition.assert_not_awaited()
+        self.assertFalse(pending)
+
+    async def test_pending_restore_waits_for_a_busy_graph(self):
+        # The input routing is re-asserted first: it may claim the carrier.
+        for busy in ({"session_owned": True}, {"ingress_pending": True}, {"transition_active": True}):
+            transition, pending, _policy = await self._run_pending_restore(**busy)
+            transition.assert_not_awaited()
+            self.assertTrue(pending, busy)
+
+    async def test_pending_restore_leaves_the_carrier_rate_alone(self):
+        transition, pending, _policy = await self._run_pending_restore(carrier_owned=True)
+        transition.assert_not_awaited()
+        self.assertFalse(pending)
+
+    async def test_guard_loop_restores_the_policy_rate_after_the_input_resync(self):
+        order = []
+
+        async def resync():
+            order.append("resync")
+
+        async def restore():
+            order.append("restore")
+
+        async def stop(_seconds):
+            raise asyncio.CancelledError
+
+        with patch.object(main, "_resync_pending_ingress", resync), \
+                patch.object(main, "_restore_pending_policy_rate", restore), \
+                patch.object(main, "_settle_digital_clocks", AsyncMock()), \
+                patch.object(main.asyncio, "sleep", stop):
+            with self.assertRaises(asyncio.CancelledError):
+                await main._digital_clock_guard_loop()
+        self.assertEqual(order, ["resync", "restore"])
+
+
 if __name__ == "__main__":
     unittest.main()

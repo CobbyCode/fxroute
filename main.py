@@ -1147,6 +1147,7 @@ def _make_measurement_services() -> MeasurementServices:
         stdin_measurement_acquire=lambda: runtime.stdin_input.set_measurement_active(True) if runtime.stdin_input else _noop_async(),
         stdin_measurement_release=lambda: runtime.stdin_input.set_measurement_active(False) if runtime.stdin_input else _noop_async(),
         post_release_input_resync=lambda: _mark_ingress_resync_pending(),
+        post_release_policy_rate_restore=lambda: _mark_policy_rate_restore_pending(),
         input_entry_guard=lambda: external_input.measurement_entry_guard(),
     )
 
@@ -5843,6 +5844,12 @@ _surround_clock_card: int | None = None
 # loop re-asserts the routing once the graph is free again.
 _ingress_resync_pending = False
 
+# Set when a measurement release left the output on the measurement rate's
+# channel tier although the policy rate runs on another one. The reprobe
+# needs the session lock, so the digital guard loop runs it after the input
+# routing was re-asserted.
+_policy_rate_restore_pending = False
+
 
 def _deterministic_input_latency_ms() -> float:
     dsp = runtime.dsp_runtime
@@ -5918,6 +5925,10 @@ async def _digital_clock_guard_loop() -> None:
             await _resync_pending_ingress()
         except Exception as exc:
             logger.warning("External-input resync check failed: %s", exc)
+        try:
+            await _restore_pending_policy_rate()
+        except Exception as exc:
+            logger.warning("Policy-rate restore after measurement failed: %s", exc)
         try:
             await _settle_digital_clocks()
         except Exception as exc:
@@ -6034,6 +6045,40 @@ async def _resync_pending_ingress() -> None:
     except Exception as exc:
         _ingress_resync_pending = True
         logger.warning("External-input routing resync failed: %s", exc)
+
+
+async def _mark_policy_rate_restore_pending() -> None:
+    """Remember that a measurement left the output off the policy rate's tier."""
+    global _policy_rate_restore_pending
+    _policy_rate_restore_pending = True
+
+
+async def _restore_pending_policy_rate() -> None:
+    """Return the output to the channel tier of the policy rate after a measurement.
+
+    The session release restores rates only; a rate on another tier needs the
+    coordinator's reprobe. Runs from the digital guard loop after the input
+    routing was re-asserted, never under the measurement session lock: an
+    input that claims the carrier keeps it, and its later release applies the
+    policy itself. Waits for a busy graph and only transitions on a real rate
+    change.
+    """
+    global _policy_rate_restore_pending
+    if not _policy_rate_restore_pending:
+        return
+    if (_measurement_session_owns_live_rate() or _ingress_resync_pending
+            or _playback_transition_is_active()):
+        return
+    _policy_rate_restore_pending = False
+    async with _source_transition_lock():
+        if _surround_carrier_owned or _measurement_session_owns_live_rate():
+            return
+        policy = samplerate.load_sample_rate_policy()
+        request = await playback_orchestration.configured().sample_rate_policy_request(
+            policy, detail="measurement-release")
+        if not request.rate_change:
+            return
+        await _transition_sample_rate_policy(policy, detail="measurement-release")
 
 
 async def _hold_external_input_carrier(entry: dict) -> None:

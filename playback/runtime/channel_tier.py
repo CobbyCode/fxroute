@@ -13,12 +13,21 @@ import playback.source_policy as source_policy
 
 logger = logging.getLogger(__name__)
 
+# The measurement session runs these transitions itself, under its own lock
+# (the audio configuration lock) and while it owns the graph.
+_SESSION_OWNED_OPERATIONS = frozenset({"measurement-entry", "measurement-restore"})
+
+
+def _session_owned(request) -> bool:
+    return getattr(request, "operation", None) in _SESSION_OWNED_OPERATIONS
+
 
 class _RuntimeChannelTierMixin:
-    async def _change_tier_hardware(self, change, *, rollback=False):
+    async def _change_tier_hardware(self, change, *, rollback=False, session_owned=False):
         lock_factory = self._deps.audio_configuration_lock
-        async with lock_factory() if lock_factory and not self._configuration_locks_held else nullcontext():
-            if not rollback and self._deps.measurement_audio_graph_owned():
+        take_lock = bool(lock_factory) and not session_owned and not self._configuration_locks_held
+        async with lock_factory() if take_lock else nullcontext():
+            if not rollback and not session_owned and self._deps.measurement_audio_graph_owned():
                 raise RuntimeError("Measurement is active; channel-tier switch is locked")
             if self._dsp_runtime is not None:
                 await self._dsp_runtime.stop()
@@ -37,7 +46,7 @@ class _RuntimeChannelTierMixin:
             and stored.tier == wanted_tier
             and stored.target_rate == wanted_rate
         ):
-            return await self._change_tier_hardware(stored)
+            return await self._change_tier_hardware(stored, session_owned=_session_owned(request))
         from audio.channel_tiers import prepare_change
         tiers = ((request.audio_overview or {}).get("selected_output") or {}).get(
             "device_profile", {}).get("tiers") or []
@@ -73,7 +82,7 @@ class _RuntimeChannelTierMixin:
             change.old_source_selection = None
             change.captured = True
             change.volume_monitor_recovery_owner = stored
-        return await self._change_tier_hardware(change)
+        return await self._change_tier_hardware(change, session_owned=_session_owned(request))
 
     async def _previous_source_request(self, old_graph, snapshot):
         """Describe the pre-transition source for the rollback.
@@ -131,9 +140,15 @@ class _RuntimeChannelTierMixin:
             return False
         if not change.started:
             return True
-        overview = await self._change_tier_hardware(change, rollback=True)
-        policy = snapshot.get("sample_rate_policy") or {"mode": "auto", "rate": None}
-        samplerate.persist_sample_rate_policy(policy)
+        overview = await self._change_tier_hardware(
+            change, rollback=True, session_owned=_session_owned(request))
+        policy = snapshot.get("sample_rate_policy")
+        if policy:
+            samplerate.persist_sample_rate_policy(policy)
+        else:
+            # Only a policy transition snapshots the policy it may replace;
+            # every other operation leaves the persisted one untouched.
+            policy = samplerate.load_sample_rate_policy()
         old_player = snapshot.get("player") or {}
         old_graph = replace(
             request, channel_tier={}, src_mode=None, target_rate=change.old_rate,

@@ -926,10 +926,12 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     # The freshly read capability can move the fitted rate onto
                     # yet another tier, so the fit and the rate-to-tier mapping
                     # are re-derived until they agree (bounded: one pass per
-                    # tier plus the settling pass).
+                    # tier plus the settling pass).  Measurement entry and
+                    # restore follow the same rule: the measurement rate only
+                    # runs on its own tier, and the restore returns to the tier
+                    # of the playback rate.
                     if (
-                        active_request.operation not in {"measurement-entry", "measurement-restore"}
-                        and isinstance(active_request.target_rate, int)
+                        isinstance(active_request.target_rate, int)
                         and active_request.target_rate > 0
                     ):
                         for _ in range(_MAX_TIER_REPROBE_PASSES):
