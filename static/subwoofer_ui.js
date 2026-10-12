@@ -679,7 +679,7 @@
             ctx.stroke();
         });
         ctx.fillStyle = 'rgba(229,231,235,0.54)';
-        ctx.font = '500 10px system-ui, sans-serif';
+        ctx.font = '500 10px Geist, system-ui, sans-serif';
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
         dbLabels.forEach((db) => {
@@ -715,7 +715,7 @@
             drawCurve(shape, false, '#6ee7b7', alpha);
             if (highpass ?? settings.main_highpass_enabled) drawCurve(shape, true, '#93c5fd', alpha);
         }
-        ctx.font = '600 11px system-ui, sans-serif';
+        ctx.font = '600 11px Geist, system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         shapes.forEach(({ shape, alpha }, index) => {

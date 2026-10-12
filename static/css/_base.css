@@ -31,7 +31,7 @@ html {
 /* Visually hidden skip link, revealed on keyboard focus. */
 .skip-link {
     position: absolute;
-    top: -40px;
+    top: -5rem;
     left: 0.75rem;
     z-index: var(--z-skip-link);
     padding: 0.6rem 0.9rem;

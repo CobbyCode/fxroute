@@ -4154,7 +4154,7 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = '#a7f3d0';
-    ctx.font = '12px sans-serif';
+    ctx.font = '12px Geist, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     ctx.fillText(`${curve.shortLabel || curve.label} target`, bounds.left + 8, bounds.top + bounds.height - 8);
@@ -4180,7 +4180,7 @@ function drawMeasurementConvolverRangeOverlay(ctx, bounds) {
     });
     ctx.setLineDash([]);
     ctx.fillStyle = 'rgba(191, 219, 254, 0.95)';
-    ctx.font = '12px sans-serif';
+    ctx.font = '12px Geist, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillText(`${Math.round(conv.rangeStartHz)}–${Math.round(conv.rangeEndHz)} Hz`, (startX + endX) / 2, bounds.top + 8);
@@ -4266,7 +4266,7 @@ function getMeasurementIrLayout(graphEntries = [], bounds) {
 }
 
 function drawSpeakerAlignTimelineLabel(ctx, text, x, y, color, align = 'left') {
-    ctx.font = '11px sans-serif';
+    ctx.font = '11px Geist, sans-serif';
     const width = ctx.measureText(text).width + 8;
     const left = align === 'right' ? x - width : x;
     ctx.fillStyle = 'rgba(12,18,28,0.82)';
@@ -4298,7 +4298,7 @@ function drawSpeakerAlignTimeline(ctx, bounds, view) {
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = 'rgba(236,236,240,0.72)';
-        ctx.font = '12px sans-serif';
+        ctx.font = '12px Geist, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText(`${tickText(timeMs)} ms`, x, bounds.top + bounds.height + 10);
@@ -4361,7 +4361,7 @@ function drawSpeakerAlignTimeline(ctx, bounds, view) {
             const text = `${way.label}${reference} ${SpeakerAlign.signedMs(way.arrivalMs)} ms`;
             const x = toX(way.arrivalMs);
             const y = top + laneHeight - 11 - (wayIndex * 17);
-            ctx.font = '11px sans-serif';
+            ctx.font = '11px Geist, sans-serif';
             const fitsRight = x + 4 + ctx.measureText(text).width + 8 <= bounds.left + bounds.width;
             drawSpeakerAlignTimelineLabel(ctx, text, fitsRight ? x + 4 : x - 4, y, way.color,
                 fitsRight ? 'left' : 'right');
@@ -4395,7 +4395,7 @@ function drawMeasurementIrOverlay(ctx, bounds, graphEntries) {
         ctx.lineTo(bounds.left + bounds.width, y);
         ctx.stroke();
         ctx.fillStyle = amplitude === 0 ? '#d1fae5' : 'rgba(236,236,240,0.72)';
-        ctx.font = '12px sans-serif';
+        ctx.font = '12px Geist, sans-serif';
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
         ctx.fillText(amplitude === 0 ? '0' : amplitude.toFixed(1), bounds.left - 10, y);
@@ -4409,7 +4409,7 @@ function drawMeasurementIrOverlay(ctx, bounds, graphEntries) {
         ctx.lineTo(x, bounds.top + bounds.height);
         ctx.stroke();
         ctx.fillStyle = 'rgba(236,236,240,0.72)';
-        ctx.font = '12px sans-serif';
+        ctx.font = '12px Geist, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText(`${timeMs} ms`, x, bounds.top + bounds.height + 10);
