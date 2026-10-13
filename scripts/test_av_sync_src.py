@@ -122,6 +122,61 @@ class SrcLatencyTests(unittest.TestCase):
                 patch.object(src.time, 'monotonic', return_value=1.2), self.assertRaises(RuntimeError):
             reader.read()
 
+    def test_links_renegotiating_after_a_rate_switch_are_settling_not_unavailable(self):
+        for state in ('init', 'negotiating', 'allocating'):
+            value = graph()
+            for row in value[6:10]:
+                row['info']['state'] = state
+            with self.subTest(state=state, path='ingress'), self.assertRaises(src.SrcGraphSettling):
+                src.graph_src_latency(value)
+            for row in value[6:8]:
+                row['info']['state'] = 'active'
+            with self.subTest(state=state, path='output'), self.assertRaises(src.SrcGraphSettling):
+                src.graph_src_latency(value, include_ingress=False)
+
+    def test_only_links_of_the_owned_path_count_as_settling(self):
+        suspended_player = graph()
+        for row in suspended_player[4:6]:
+            row['info']['state'] = 'init'
+        self.assertEqual(src.graph_src_latency(suspended_player), 0)
+        recorder_only = graph()[:8] + [node(6, 'recorder', 'Stream/Input/Audio'), link(3, 6, 'init')]
+        other_ingress = graph() + [node(5, 'digital-helper'), link(5, 3, 'init')]
+        for value, kwargs in ((recorder_only, {}), (other_ingress, {'ingress_nodes': ('missing-helper',)})):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(RuntimeError, 'unavailable') as raised:
+                src.graph_src_latency(value, **kwargs)
+            self.assertNotIsInstance(raised.exception, src.SrcGraphSettling)
+
+    def test_reader_waits_out_a_settling_graph_and_never_caches_it(self):
+        settling = graph()
+        for row in settling[6:10]:
+            row['info']['state'] = 'init'
+        outputs = [subprocess.CompletedProcess([], 0, json.dumps(settling), ''),
+                   subprocess.CompletedProcess([], 0, json.dumps(graph()), '')]
+        reader = src.SrcLatencyReader()
+        cached_while_settling = []
+        with patch.object(src.subprocess, 'run', side_effect=outputs) as run, \
+                patch.object(src.time, 'monotonic', side_effect=[0, .3]), \
+                patch.object(src.time, 'sleep', side_effect=lambda _: cached_while_settling.append(reader._cache)):
+            self.assertEqual(reader.read(), 750)
+            # The sync read that follows inside the cache window gets the settled graph.
+            self.assertEqual(reader.read(), 750)
+            self.assertEqual(run.call_count, 2)
+        self.assertEqual(cached_while_settling, [None])
+
+    def test_reader_fails_closed_when_the_graph_never_settles(self):
+        settling = graph()
+        for row in settling[8:10]:
+            row['info']['state'] = 'negotiating'
+        output = subprocess.CompletedProcess([], 0, json.dumps(settling), '')
+        reader = src.SrcLatencyReader()
+        with patch.object(src.subprocess, 'run', return_value=output) as run, \
+                patch.object(src.time, 'monotonic', return_value=0), patch.object(src.time, 'sleep') as sleep, \
+                self.assertRaises(src.SrcGraphSettling):
+            reader.read()
+        self.assertEqual(run.call_count, src.SETTLE_READS)
+        self.assertEqual(sleep.call_count, src.SETTLE_READS - 1)
+        self.assertIsNone(reader._cache)
+
     def test_new_ingress_selection_does_not_reuse_a_pre_link_graph(self):
         app_graph = graph()
         external_graph = graph() + [node(5, 'digital-helper'), link(5, 3)]
