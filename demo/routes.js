@@ -278,7 +278,7 @@
     // The real store's scope note: the sweep is a host-local measurement
     // through the active output and the selected microphone, independent of
     // the active DSP preset. The demo serves the same wording.
-    const DEMO_MEASUREMENT_SCOPE_NOTE = 'FXRoute measures with a host-local sweep through the active PipeWire output and selected microphone input. The result is a practical response trace for comparison and PEQ drafting, independent of the active DSP preset.';
+    const DEMO_MEASUREMENT_SCOPE_NOTE = 'FXRoute measures with a host-local sweep through its DSP engine, the active PipeWire output and the selected microphone input. The sweep runs through the DSP processing active for it, and the result includes that processing: a normal sweep passes the complete active chain (Global preset and output extras, crossover, the measured bank\'s preset, output trims), while Auto Sub Optimize and Speaker Align bypass the presets and output extras and keep crossover, trims and routing. The result is a practical response trace for comparison and PEQ drafting.';
     function captureInputForOutputKey(key) {
         return key === SCARLETT_OUTPUT_KEY ? MULTICHANNEL_CAPTURE_INPUT : STEREO_CAPTURE_INPUT;
     }
