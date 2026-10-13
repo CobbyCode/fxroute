@@ -257,6 +257,51 @@ static void test_unknown_convolver_does_not_derive_a_drop_to_zero(void) {
     unlink(wav_path);
 }
 
+/* A unit impulse followed by silence, mono float32 at the given rate. */
+static void write_impulse_ir(char *path, unsigned rate) {
+    enum { FRAMES = 256 };
+    unsigned char header[44] = {'R','I','F','F',0,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,3,0,1,0};
+    const uint32_t fields[] = {rate, rate * 4U};
+    float samples[FRAMES] = {1.0f};
+    int fd = mkstemp(path); assert(fd >= 0);
+    header[4] = (unsigned char)((36 + sizeof samples) & 0xff); header[5] = (unsigned char)((36 + sizeof samples) >> 8);
+    for (unsigned f = 0; f < 2; f++) for (unsigned b = 0; b < 4; b++) header[24 + 4 * f + b] = (unsigned char)(fields[f] >> (8 * b));
+    header[32] = 4; header[34] = 32;
+    memcpy(header + 36, "data", 4);
+    header[40] = (unsigned char)(sizeof samples & 0xff); header[41] = (unsigned char)(sizeof samples >> 8);
+    assert(write(fd, header, sizeof header) == sizeof header);
+    assert(write(fd, samples, sizeof samples) == sizeof samples);
+    close(fd);
+}
+
+/* A resampled IR carries a lead-in of 32 periods of the lower rate. The readback counts it as
+ * convolver latency, the audio agrees, and an output without a convolver is balanced against it. */
+static void test_resampled_convolver_lead_in_is_reported_and_balanced(void) {
+    const struct { unsigned file_rate, rate; uint64_t lead; } cases[] = {
+        {48000, 48000, 0}, {48000, 96000, 64}, {48000, 192000, 128}, {44100, 48000, 35},
+        {96000, 48000, 32}, {96000, 44100, 32}};
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) for (unsigned stage = 0; stage < 2; stage++) {
+        char wav_path[] = "/tmp/fxroute-av-sync-lead-XXXXXX", text[2048];
+        uint64_t lead = cases[i].lead;
+        write_impulse_ir(wav_path, cases[i].file_rate);
+        snprintf(text, sizeof text,
+            "rate %u\ninputs 2\noutputs 2\nmatrix 0 0 1\nmatrix 1 1 1\n%s%s%s"
+            "output 0 0 0 normal\noutput 1 0 0 normal\navsync 0 0\n"
+            "latency_basis 0 0\nlatency_basis 1 0\n%s", cases[i].rate,
+            stage ? "stage_begin 0 fir native convolver\nparam path " : "oconv 0 0 0 -100 0 0 ",
+            wav_path, stage ? "\nlatency 0 0 0 0 1\nstage_end\n" : "\n",
+            stage ? "" : "olatency 0 0 0 1\n");
+        fxdsp *d = load(text);
+        fxdsp_latency s = assert_impulse_matches_readback(d);
+        assert(!s.balance_unavailable && !s.output[0].unknown);
+        assert(s.output[0].dsp == lead && s.output[0].balance == 0);
+        assert(s.output[1].dsp == (stage ? lead : 0) && s.output[1].balance == (stage ? 0 : lead));
+        assert(s.output[0].total == lead && s.output[1].total == lead);
+        fxdsp_free(d);
+        unlink(wav_path);
+    }
+}
+
 /* Blocks of a stereo programme, with a Center signal when multichannel; returns the last readback. */
 static fxdsp_latency programme(fxdsp *d, int multichannel, unsigned blocks) {
     float stereo[1024], center[1024], silence[1024] = {0}, output[8][1024];
@@ -364,6 +409,7 @@ int main(void) {
     test_upmixer_delay_follows_the_programme();
     test_oversized_finite_stage_metadata_is_rejected_before_loading_ir();
     test_unknown_convolver_does_not_derive_a_drop_to_zero();
+    test_resampled_convolver_lead_in_is_reported_and_balanced();
     puts("AV Sync native tests passed");
     return 0;
 }

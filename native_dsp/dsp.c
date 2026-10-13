@@ -44,6 +44,9 @@
 #define STAGE_DELAY_MAX_MS 500.0f
 #define PEQ_STAGE_DELAY_MAX_MS 10000.0f
 #define OUTPUT_DELAY_MAX_MS 500.0f
+/* Zero run before and after a resampled IR, in periods of the lower of the
+ * file and the engine rate. */
+#define IR_RESAMPLE_LEAD_PERIODS 32.0
 
 typedef struct { unsigned in, out; float gain; int post_crossover; unsigned group; } route;
 typedef struct { float b0, b1, b2, a1, a2, z1, z2; } biquad;
@@ -57,7 +60,7 @@ typedef struct {
     float gain, polarity;
     size_t delay, delay_pos, delay_size;
     size_t sync;
-    float basis_ms, conv_latency_ms, conv_intent_ms;
+    float basis_ms, conv_latency_ms, conv_intent_ms, conv_lead_ms;
     unsigned basis_known, conv_latency_known;
     float *delay_line;
     biquad filters[MAX_BIQUADS];
@@ -96,7 +99,7 @@ typedef struct {
     /* Effect pairs a convolver or LV2 stage runs on (bit n = pair n); every
      * other pair passes through. Only Surround presets restrict it. */
     unsigned pair_mask;
-    float conv_latency_ms[2], conv_intent_ms[2];
+    float conv_latency_ms[2], conv_intent_ms[2], conv_lead_ms;
     unsigned conv_latency_known;
     fx_autogain_reference reference;
     convolution conv[FXDSP_MAX_CHANNELS];
@@ -219,7 +222,9 @@ static void fail(char *error, size_t size, const char *message) {
 static uint16_t u16le(const unsigned char *p) { return (uint16_t)(p[0] | p[1] << 8); }
 static uint32_t u32le(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
 
-static int load_wav(const char *path, unsigned wanted_channel, float **samples, size_t *count, unsigned wanted_rate) {
+/* lead_ms receives the latency the loader added in front of the IR: zero at
+ * the file's own rate, the resampling lead-in otherwise. */
+static int load_wav(const char *path, unsigned wanted_channel, float **samples, size_t *count, unsigned wanted_rate, double *lead_ms) {
     FILE *file = fopen(path, "rb");
     unsigned char header[12], chunk[8], fmt[40];
     uint16_t format = 0, channels = 0, bits = 0;
@@ -253,16 +258,33 @@ static int load_wav(const char *path, unsigned wanted_channel, float **samples, 
         }
     }
     fclose(file); file = NULL;
+    *lead_ms = 0.0;
     if (rate != wanted_rate) {
         double ratio = (double)wanted_rate / rate;
-        double converted_frames = ceil(frames * ratio);
-        size_t output_frames;
-        float *resampled;
+        /* The converter emits nothing ahead of input sample 0.  An IR whose
+         * onset is its first sample (minimum phase) would lose the leading
+         * half of the interpolation kernel there: measured -2.7 dB at twice
+         * and -4.4 dB at four times the file rate, more inside every cut.
+         * A zero lead-in keeps that pre-ringing.  It is the same for every
+         * channel and phase type, so the timing between channels and the
+         * delay written into an IR stay as they are, and the caller reports
+         * it as convolver latency.  The same run of zeros after the IR keeps
+         * the post-ringing of its last samples and adds no latency. */
+        double lead_frames = ceil(IR_RESAMPLE_LEAD_PERIODS * (rate > wanted_rate ? (double)rate / wanted_rate : 1.0));
+        double converted_frames = ceil((frames + 2.0 * lead_frames) * ratio);
+        size_t lead, output_frames, fade;
+        float *padded, *resampled;
         SRC_DATA conversion = {0};
-        if (frames > LONG_MAX || !isfinite(converted_frames) || converted_frames < 1.0 ||
+        if (frames + 2.0 * lead_frames >= (double)LONG_MAX || !isfinite(converted_frames) || converted_frames < 1.0 ||
             converted_frames >= (double)LONG_MAX || converted_frames >= (double)(SIZE_MAX / sizeof *resampled)) {
             free(result); goto bad;
         }
+        lead = (size_t)lead_frames;
+        padded = calloc(frames + 2U * lead, sizeof *padded);
+        if (!padded) { free(result); goto bad; }
+        memcpy(padded + lead, result, frames * sizeof *result);
+        free(result); result = padded; frames += 2U * lead;
+        *lead_ms = lead * 1000.0 / rate;
         output_frames = (size_t)converted_frames + 1U;
         resampled = calloc(output_frames, sizeof *resampled);
         if (!resampled) { free(result); goto bad; }
@@ -273,6 +295,12 @@ static int load_wav(const char *path, unsigned wanted_channel, float **samples, 
             free(resampled); free(result); goto bad;
         }
         free(result); result = resampled; frames = (size_t)conversion.output_frames_gen;
+        /* The pre-ringing is still cut where the lead-in begins.  Fading the
+         * lead-in in instead leaves at most 0.05 dB of ripple (0.18 dB with
+         * a hard start, inside a -20 dB cut). */
+        fade = (size_t)llround(lead * ratio);
+        if (fade > frames) fade = frames;
+        for (size_t i = 0; i < fade; i++) result[i] *= (float)(0.5 - 0.5 * cos(PI * (i + 0.5) / fade));
         /* libsamplerate's SINC converters scale the resampled signal by
          * approximately the conversion ratio (measured: |H(997 Hz)| x1.99 at
          * 96 kHz, x3.98 at 192 kHz, x0.916 at 44.1 kHz against a 48 kHz
@@ -553,12 +581,13 @@ static int initialize_stage(fxdsp *d, dsp_stage *stage, char *error, size_t erro
     if (stage->kind == STAGE_CONVOLVER) {
         if (!stage->argument[0]) { fail(error, error_size, "convolver stage requires path"); return -1; }
         for (channel = 0; channel < d->inputs; channel++) {
-            float *taps = NULL; size_t count = 0;
+            float *taps = NULL; size_t count = 0; double lead_ms = 0.0;
             if (!stage_runs_on_pair(stage, channel_pair(d, channel))) continue;
-            if (load_wav(stage->argument, channel_side(d, channel), &taps, &count, d->rate) &&
-                load_wav(stage->argument, 0, &taps, &count, d->rate)) {
+            if (load_wav(stage->argument, channel_side(d, channel), &taps, &count, d->rate, &lead_ms) &&
+                load_wav(stage->argument, 0, &taps, &count, d->rate, &lead_ms)) {
                 fail(error, error_size, "cannot load convolver path"); return -1;
             }
+            stage->conv_lead_ms = (float)lead_ms;
             if (prepare_convolution(d, &stage->conv[channel], taps, count)) {
                 free(taps); fail(error, error_size, "out of memory"); return -1;
             }
@@ -769,10 +798,11 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
     for(out=0;out<d->outputs;out++) {
         output_state *s=&d->out[out];
         if(!s->has_conv) continue;
-        float *taps=NULL; size_t count=0;
-        if(load_wav(s->conv_path,s->conv_channel,&taps,&count,d->rate)||prepare_convolution(d,&s->conv,taps,count)) {
+        float *taps=NULL; size_t count=0; double lead_ms=0.0;
+        if(load_wav(s->conv_path,s->conv_channel,&taps,&count,d->rate,&lead_ms)||prepare_convolution(d,&s->conv,taps,count)) {
             free(taps); fail(error,error_size,"cannot load output convolver path"); goto bad;
         }
+        s->conv_lead_ms=(float)lead_ms;
         free(taps);
     }
     for(out=0;out<(d->inputs>d->outputs?d->inputs:d->outputs);out++) for(unsigned b=0;b<2;b++){d->scratch[b][out]=calloc(PROCESS_BLOCK,sizeof(float));if(!d->scratch[b][out]){fail(error,error_size,"out of memory");goto bad;}}
@@ -1284,7 +1314,7 @@ static uint64_t stage_latency(const fxdsp *d, const dsp_stage *stage, unsigned c
         return stage->upmixer_hq ? fx_upmix_hq_latency(stage->upmixer_hq) : fx_upmix_fast_latency(stage->upmixer);
     if (stage->kind == STAGE_CRYSTALIZER) return fx_crystalizer_latency(stage->crystalizer[channel]);
     if (stage->kind == STAGE_CONVOLVER)
-        return latency_frames(d, stage->conv_latency_ms[channel_side(d, channel)]);
+        return latency_frames(d, (double)stage->conv_latency_ms[channel_side(d, channel)] + stage->conv_lead_ms);
     if (stage->kind != STAGE_LV2) return 0;
     /* Loudness's latency port is stale; the measured offset is the FFT size. */
     if (strstr(stage->argument, "/loud_comp_stereo")) {
@@ -1391,7 +1421,7 @@ static void update_latency(fxdsp *d, int bypassed) {
             row->unknown |= unknown[send->in];
         }
         if (out->has_conv) {
-            row->dsp += latency_frames(d, out->conv_latency_ms);
+            row->dsp += latency_frames(d, (double)out->conv_latency_ms + out->conv_lead_ms);
             row->intentional += latency_frames(d, out->conv_intent_ms);
             row->unknown |= !out->conv_latency_known;
         }

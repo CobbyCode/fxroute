@@ -333,9 +333,14 @@ Impulsmessung, `.104`, Offline-Engine (`/tmp/fxcry.py`):
   kompensiert, es entsteht **kein weiterer Offset**.
 - Messung: 1-Tap-IR → 0; 256-Tap-IR, Tap bei 0 → 0; 4096-Tap-IR, Tap bei 2048 →
   2048. Die Engine trägt also nur die **im IR selbst liegende Verzögerung** bei.
-- IRs werden in `load_wav` (`dsp.c:216-282`) per `libsamplerate` (SINC_BEST) auf
+- IRs werden in `load_wav` (`dsp.c:227-315`) per `libsamplerate` (SINC_BEST) auf
   die Stream-Rate umgerechnet und mit `/ratio` normiert. Die Dauer bleibt
   erhalten, die Sample-Latenz skaliert mit der Stream-Rate.
+- Ein umgerechnetes IR erhält einen eingeblendeten Null-Vorlauf von
+  32 Perioden der niedrigeren der beiden Raten (0,67 ms bei 48 kHz, 0,73 ms
+  bei 44,1 kHz). Ohne ihn ginge der Vorschwinger eines Einsatzes im ersten
+  Sample verloren (Minimalphase: -2,7 dB bei doppelter Rate). Die Engine
+  meldet den Vorlauf als Convolver-Latenz; bei identischer Rate entfällt er.
 - Der IR-Pfad ist ein **Shape-Merkmal**: `param path` (`manager.py:1157`) →
   jede IR-Änderung baut die Engine neu (8.2).
 

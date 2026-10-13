@@ -118,11 +118,13 @@ stage_end
     samples = array.array("f", [0]) * 600
     samples[0] = 1
     output, _ = run(tmp_path, config, samples)
-    significant = [index for index, value in enumerate(output) if abs(value) > 0.01]
-    assert significant[-1] in range(478, 483)
+    # A resampled IR starts after a lead-in of 32 periods of the lower rate,
+    # so both taps keep their place on the 44.1 kHz time axis behind it.
+    peaks = sorted(sorted(range(len(output)), key=lambda index: -abs(output[index]))[:2])
+    assert peaks == [round(32 * 48000 / 44100), round((441 + 32) * 48000 / 44100)]
     # The resampled IR is normalized by the conversion ratio (48/44.1), so
     # the convolution DC gain equals the source IR's DC gain of 1.0.
-    assert abs(sum(output) - (44100.0 / 48000.0)) < 0.03
+    assert abs(sum(output) - 1.0) < 0.01
 
 
 def test_32768_tap_ir_scales_for_realtime_use(tmp_path):

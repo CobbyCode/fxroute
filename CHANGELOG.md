@@ -102,6 +102,22 @@ commit assigns them a version.
   moment never returned. The service now runs OpenBLAS with one thread, so
   there are no workers to lose. 48 kHz measurements never used the workers
   and are unaffected.
+- A minimum-phase convolver filter lost level whenever playback ran at
+  another sample rate than the filter's own: about 2.7 dB at twice and
+  4.4 dB at four times the rate, more inside every cut (a -8 dB cut acted
+  like -15 dB at 96 kHz), and 0.5 dB for a 44.1 kHz filter at 48 kHz. In a
+  **Minimum phase aligned** pair only the undelayed side lost it, which
+  shifted the channel balance by the same amount. The engine resampled a
+  filter from its first sample on, and the resampler emits nothing ahead of
+  that sample, so the pre-ringing of an onset in the first sample was cut
+  off. Imported filters (for example REW exports at 44.1 or 48 kHz) and FIRs
+  created in FXRoute were affected alike; linear-phase and hybrid filters
+  were not, because their energy sits in the middle. Every resampled filter
+  now carries a faded lead-in of 32 sample periods of the lower of the two
+  rates (0.67 ms at 48 kHz, 0.73 ms at 44.1 kHz). The engine reports it as
+  convolver latency, so AV Sync and the balance between outputs account for
+  it. A filter at the engine's own rate is loaded unchanged, and the level
+  normalization of resampled filters is as before.
 
 ## 1.0-beta12 (2026-10-01)
 
