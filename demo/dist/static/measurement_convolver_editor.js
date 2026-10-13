@@ -21,7 +21,7 @@
         scheduleMeasurementGraphRender: () => {},
         collectEffectsExtras: () => ({}),
         appendBankBindingFields: () => {},
-        measurementCommitSourceId: () => '',
+        measurementCommitSourceTargets: () => [],
         requireConcreteFilterBank: () => false,
         // Why the visible results cannot become a filter ('' when they can).
         measurementImportBlockedReason: () => '',
@@ -569,7 +569,7 @@
             formData.append('left_file', leftBlob, `${filenameBase}-L.wav`);
             formData.append('right_file', rightBlob, `${filenameBase}-R.wav`);
             deps.appendBankBindingFields(formData);
-            formData.append('source_measurement_id', deps.measurementCommitSourceId());
+            formData.append('source_measurement_targets', JSON.stringify(deps.measurementCommitSourceTargets()));
             const resp = await deps.fetch('/api/dsp/presets/import-filter-dual', { method: 'POST', body: formData });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Convolver preset creation failed'));
@@ -585,7 +585,7 @@
         appendMeasurementConvolverExtras(formData);
         formData.append('file', blob, `${filenameBase}-${side === 'right' ? 'R' : 'L'}.wav`);
         deps.appendBankBindingFields(formData);
-        formData.append('source_measurement_id', deps.measurementCommitSourceId());
+        formData.append('source_measurement_targets', JSON.stringify(deps.measurementCommitSourceTargets()));
         const resp = await deps.fetch('/api/dsp/presets/create-with-ir', { method: 'POST', body: formData });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Convolver preset creation failed'));

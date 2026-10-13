@@ -46,7 +46,7 @@ class RepeatPlanContextTests(unittest.IsolatedAsyncioTestCase):
         }
         self.store.measurement_target_provider = lambda bank_id, sample_rate_hz: freeze_measurement_target(
             self.state, bank_id=bank_id, output_key="device", channels=18,
-            sample_rate_hz=sample_rate_hz, fingerprint="committed-surround-plan", plan=self.plan)
+            sample_rate_hz=sample_rate_hz, fingerprint="committed-surround-plan")
         self.setup = patch.object(self.store, "_prepare_measurement_job_setup", new=AsyncMock(return_value={
             "job": {"id": "repeat-test", "created_at": "2026-10-04T20:00:00Z",
                     "measurement_scope": "active_chain", "input": {"sample_rate": 48000}},

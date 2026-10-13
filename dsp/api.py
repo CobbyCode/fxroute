@@ -84,9 +84,9 @@ class DspApiDeps:
     # Returns {"live_applied": bool, "live_reason": str | None}; never raises
     # (the assignment stays committed when the sync fails). Absent in tests.
     sync_v2_head_live: Optional[Callable[[], Awaitable[dict]]] = None
-    # Gates a generated-correction commit on the source measurement's frozen
-    # target still matching live processing; raises ValueError on mismatch.
-    verify_measurement_commit: Optional[Callable[[str, dict], None]] = None
+    # Gates a generated-correction commit on its source measurements' frozen
+    # targets fitting the bank it is committed into; raises ValueError otherwise.
+    verify_measurement_commit: Optional[Callable[[list, dict], None]] = None
 
 
 @dataclass
@@ -351,26 +351,35 @@ async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) ->
             "live_reason": live.get("live_reason")}
 
 
-def _verify_measurement_commit(source_measurement_id: object, binding: dict | None) -> None:
-    """Gate a generated PEQ/FIR commit on its source measurement still matching.
+def _verify_measurement_commit(source_targets: object, binding: dict | None) -> None:
+    """Gate a generated PEQ/FIR commit on its source measurements fitting the bank.
 
+    ``source_targets`` are the frozen targets of the measurements the client
+    built the preset from, saved or not: a list, JSON-encoded in form posts.
     A commit without a bank binding is not a commit into an area, and a client
-    that sends no source measurement (imports, manual presets) is left to the
-    pre-existing path; both stay unchanged.  A mismatch is a conflict, not bad
-    input: the preset may still be created elsewhere from the same measurement
-    once the area or its processing is restored.
+    that names no source (imports, manual presets) is left unchecked.  A
+    mismatch is a conflict, not bad input: the preset may still be created in
+    the area its measurement was taken for.
     """
+    if isinstance(source_targets, FieldInfo):
+        source_targets = None
+    if isinstance(source_targets, str):
+        try:
+            source_targets = json.loads(source_targets or "null")
+        except ValueError:
+            # Rejected below like any other non-list.
+            pass
+    if source_targets is not None and not isinstance(source_targets, list):
+        raise HTTPException(status_code=400, detail="source_measurement_targets must be a JSON list")
     verifier = _deps().verify_measurement_commit
-    measurement_id = str(source_measurement_id or "").strip()
-    if verifier is None or binding is None or not measurement_id:
+    if verifier is None or binding is None or not source_targets:
         return
     try:
-        verifier(measurement_id, binding)
+        verifier(source_targets, binding)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail={
             "code": "measurement-target-mismatch",
             "message": str(exc),
-            "source_measurement_id": measurement_id,
             "assigned": False,
         }) from exc
 
@@ -754,7 +763,7 @@ async def create_convolver_preset(
     bank_id: str = Form(""),
     bank_group: str = Form(""),
     expected_revision: int = Form(-1),
-    source_measurement_id: str = Form(""),
+    source_measurement_targets: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
     binding = _parse_bank_binding(
@@ -765,7 +774,7 @@ async def create_convolver_preset(
         canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
-    _verify_measurement_commit(source_measurement_id, binding)
+    _verify_measurement_commit(source_measurement_targets, binding)
 
     try:
         # Resolve legacy form values under mutation ownership. Native presets
@@ -1053,7 +1062,7 @@ async def create_convolver_preset_with_ir(
     bank_id: str = Form(""),
     bank_group: str = Form(""),
     expected_revision: int = Form(-1),
-    source_measurement_id: str = Form(""),
+    source_measurement_targets: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
@@ -1065,7 +1074,7 @@ async def create_convolver_preset_with_ir(
         canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a conflict.
-    _verify_measurement_commit(source_measurement_id, binding)
+    _verify_measurement_commit(source_measurement_targets, binding)
 
     tmp_path = None
     try:
@@ -1152,7 +1161,7 @@ async def create_peq_preset(request: Request):
     binding = _parse_bank_binding(
         bank_mode=body.get("bank_mode"), bank_id=body.get("bank_id"),
         expected_revision=body.get("expected_revision"), bank_group=body.get("bank_group"))
-    source_measurement_id = body.get("source_measurement_id", body.get("sourceMeasurementId"))
+    source_measurement_targets = body.get("source_measurement_targets", body.get("sourceMeasurementTargets"))
 
     if not preset_name:
         raise HTTPException(status_code=400, detail="presetName is required")
@@ -1163,7 +1172,7 @@ async def create_peq_preset(request: Request):
         canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
-    _verify_measurement_commit(source_measurement_id, binding)
+    _verify_measurement_commit(source_measurement_targets, binding)
 
     try:
         async with _deps().dsp_mutation_lock():
@@ -1294,7 +1303,7 @@ async def import_dual_filter_preset(
     bank_id: str = Form(""),
     bank_group: str = Form(""),
     expected_revision: int = Form(-1),
-    source_measurement_id: str = Form(""),
+    source_measurement_targets: str = Form(""),
 ):
     dsp_mgr = _deps().require_dsp_manager()
 
@@ -1343,7 +1352,7 @@ async def import_dual_filter_preset(
         canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
-    _verify_measurement_commit(source_measurement_id, binding)
+    _verify_measurement_commit(source_measurement_targets, binding)
 
     tmp_paths = []
     try:

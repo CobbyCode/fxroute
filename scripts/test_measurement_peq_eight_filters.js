@@ -71,7 +71,8 @@ async function main() {
     const requests = [];
     const toasts = [];
     let nextResponse = null;
-    const state = { measurement: { currentMeasurement: { id: 'measurement-1' } }, dsp: {} };
+    const sourceTarget = { schema: 'fxroute.measurement-target', mode: 'stereo', bank_id: 'main' };
+    const state = { measurement: { currentMeasurement: { id: 'measurement-1', measurement_target: sourceTarget } }, dsp: {} };
     const context = {
         MeasurementUI,
         FXRouteMeasurementUI: MeasurementUI,
@@ -106,10 +107,13 @@ async function main() {
         showToast: (message, kind) => toasts.push({ message, kind }),
         escapeHtml: (value) => String(value),
         measurementArea: () => ({ available: true, channel_mode: 'stereo' }) });
-    context.window = { FXRouteBankUI: BankUIModule };
+    context.window = { FXRouteBankUI: BankUIModule, FXRouteAutoSubTarget: require('../static/autosub_target.js') };
     const appFunctions = [
         'getMeasurementActiveEditor',
-        'measurementCommitSourceId',
+        'getVisibleMeasurementEntries',
+        'getCurrentMeasurementEntry',
+        'getCurrentMeasurementEntries',
+        'measurementCommitSourceTargets',
         'ensureOutputSystemBoxes',
         'outputSystemModule',
         'measurementAreaFromCatalog',
@@ -159,7 +163,7 @@ async function main() {
         normalizePeqEqMode: context.normalizePeqEqMode,
         collectEffectsExtras: context.collectEffectsExtras,
         bankBindingJson: () => context.bankBindingJson(),
-        measurementCommitSourceId: () => context.measurementCommitSourceId(),
+        measurementCommitSourceTargets: () => context.measurementCommitSourceTargets(),
         measurementPeqParams: (...args) => context.measurementPeqParams(...args),
         formatTransitionErrorDetail: (...args) => context.formatTransitionErrorDetail(...args),
         fetchEffects: context.fetchEffects,
@@ -199,18 +203,29 @@ async function main() {
     const payload = JSON.parse(presetPosts[0].options.body);
     assert.deepEqual(payload.peq.params.leftBands, expectedBands, 'left preset bands must be complete and ordered');
     assert.deepEqual(payload.peq.params.rightBands, expectedBands, 'right preset bands must be complete and ordered');
-    // The commit gate needs to know which measurement the bands came from.
-    assert.equal(payload.source_measurement_id, 'measurement-1', 'the source measurement id must travel with the commit');
+    // The commit gate checks the bank the bands were measured for.
+    assert.deepEqual(payload.source_measurement_targets, [sourceTarget], 'the source targets must travel with the commit');
 
-    // Every measurement-derived commit names its source measurement, and only
+    // Every measurement-derived commit names its source targets, and only
     // the measurement flows do: the effects-panel PEQ create stays unbound.
-    const convolverCommitSites = convolverSource.split("'source_measurement_id', deps.measurementCommitSourceId()").length - 1;
-    assert.equal(convolverCommitSites, 2, 'both measurement convolver commits must name their source measurement');
-    assert.match(peqSource, /source_measurement_id: deps\.measurementCommitSourceId\(\),/, 'the measurement PEQ commit must name its source measurement');
-    assert.equal(context.measurementCommitSourceId(), 'measurement-1', 'a loaded measurement supplies its stored id');
+    const convolverCommitSites = convolverSource.split("'source_measurement_targets', JSON.stringify(deps.measurementCommitSourceTargets())").length - 1;
+    assert.equal(convolverCommitSites, 2, 'both measurement convolver commits must name their source targets');
+    assert.match(peqSource, /source_measurement_targets: deps\.measurementCommitSourceTargets\(\),/, 'the measurement PEQ commit must name its source targets');
+    assert.deepEqual(plain(context.measurementCommitSourceTargets()), [sourceTarget], 'an unsaved result supplies its own target');
+    const savedTarget = { ...sourceTarget, bank_id: 'global' };
+    state.measurement.measurements = [
+        { id: 'saved', measurement_target: savedTarget },
+        { id: 'hidden', measurement_target: sourceTarget },
+        { id: 'old', traces: [] },
+        { id: 'sub', measurement_kind: 'auto_sub' },
+    ];
+    state.measurement.visibilityById = { saved: true, old: true, sub: true };
+    assert.deepEqual(plain(context.measurementCommitSourceTargets()), [savedTarget, null],
+        'visible saved results are the sources; one without a target is named so it is rejected, Auto Sub is left out');
+    state.measurement.measurements = [];
     state.measurement.currentMeasurement = null;
-    assert.equal(context.measurementCommitSourceId(), '', 'an unsaved measurement keeps the pre-gate path');
-    state.measurement.currentMeasurement = { id: 'measurement-1' };
+    assert.deepEqual(plain(context.measurementCommitSourceTargets()), [], 'no measurement, no source');
+    state.measurement.currentMeasurement = { id: 'measurement-1', measurement_target: sourceTarget };
 
     // A rejected commit carries a structured detail (the measurement-target
     // gate answers with {code, message}); the feedback must show its message
@@ -223,14 +238,14 @@ async function main() {
         json: async () => ({
             detail: {
                 code: 'measurement-target-mismatch',
-                message: 'Measurement target no longer matches live processing: processing \'fp-1\' != \'fp-2\'',
+                message: 'Measurement was captured for stereo area \'main\', but this commit targets stereo area \'global\'',
             },
         }),
     };
     await context.createMeasurementPeqPresetFromDraft();
     assert.equal(
         toasts.at(-1).message,
-        'Measurement target no longer matches live processing: processing \'fp-1\' != \'fp-2\'',
+        'Measurement was captured for stereo area \'main\', but this commit targets stereo area \'global\'',
         'a structured commit conflict must surface its message',
     );
     assert.equal(toasts.at(-1).kind, 'error');

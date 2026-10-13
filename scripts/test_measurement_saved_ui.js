@@ -16,8 +16,7 @@ const measurements = [
     { id: 'mid', name: 'Left & <mid>', created_at: '2026-09-20T10:00:00Z', channel: 'left',
         input_device: { label: 'Mic A' }, input_channels: { mic: 1, electrical_reference: 3 },
         traces: [{ points: [[20, 0], [1000, 2]] }],
-        measurement_target: { schema: 'fxroute.measurement-target', bank_id: 'left_mid', mode: 'stereo-sub' },
-        measurement_target_stale: true },
+        measurement_target: { schema: 'fxroute.measurement-target', bank_id: 'left_mid', mode: 'stereo-sub' } },
     { id: 'legacy', name: 'Old sweep', created_at: '2026-09-19T10:00:00Z', channel: 'right',
         input_device: { label: 'Mic B' }, traces: [{ points: [[20, 0], [1000, 1]] }] },
 ];
@@ -41,25 +40,25 @@ assert.deepEqual(saved.map((item) => item.id), ['mid', 'legacy']);
 assert.deepEqual(savedUi.measurementAreaBadge(current), null);
 assert.deepEqual(savedUi.measurementAreaBadge(measurements[2]), null);
 assert.deepEqual(savedUi.measurementAreaBadge(measurements[1]), {
-    label: 'Mid L', mode: 'stereo-sub', stale: true,
+    label: 'Mid L', mode: 'stereo-sub',
     title: 'Mid L · Stereo + Sub · measured area only',
 });
 const groupTarget = { schema: 'fxroute.measurement-target', mode: 'surround', bank_id: 'global',
     global_group: 'rear' };
 assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: groupTarget }), {
-    label: 'Global · Rear L/R', mode: 'surround', stale: false,
+    label: 'Global · Rear L/R', mode: 'surround',
     title: 'Global · Rear L/R · Surround · measured with the subs',
 });
 assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: { schema: 'fxroute.measurement-target',
     mode: 'surround', bank_id: 'all', active_side: 'B' } }), {
-    label: 'All Banks · B', mode: 'surround', stale: false,
+    label: 'All Banks · B', mode: 'surround',
     title: 'All Banks · B · Surround · measured whole system as listened',
 });
 assert.equal(savedUi.measurementAreaBadge({ measurement_target: { schema: 'fxroute.measurement-target',
     mode: 'surround', bank_id: 'all', active_side: null } }).label, 'All Banks');
 assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: { ...groupTarget,
     bank_id: 'all', active_side: 'B' } }), {
-    label: 'All Banks · B · Rear L/R', mode: 'surround', stale: false,
+    label: 'All Banks · B · Rear L/R', mode: 'surround',
     title: 'All Banks · B · Rear L/R · Surround · measured with the subs as listened',
 });
 assert.equal(savedUi.measurementAreaBadge({ measurement_target: { ...groupTarget,
@@ -73,9 +72,9 @@ assert.match(html, /data-measurement-toggle="legacy" >/);
 // Hints use the app-wide data-tooltip attribute (the native title tooltip is
 // gone: it cannot follow the dark theme and every such control already
 // carried a matching aria-label for its accessible name).
-assert.match(html, /measurement-area-badge is-stale" data-tooltip="Mid L · Stereo \+ Sub · measured area only">Mid L<\/span>/);
+assert.match(html, /measurement-area-badge" data-tooltip="Mid L · Stereo \+ Sub · measured area only">Mid L<\/span>/);
 assert.doesNotMatch(html, /title="/, "no native title tooltips may remain");
-assert.equal((html.match(/measurement-area-badge is-stale/g) || []).length, 1);
+assert.equal((html.match(/class="measurement-area-badge"/g) || []).length, 1);
 assert.match(html, /background:#60a5fa/);
 assert.match(html, /Left &amp; &lt;mid&gt;/);
 assert.match(html, /Mic In 1 · Ref In 3/);

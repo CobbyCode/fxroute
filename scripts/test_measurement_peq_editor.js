@@ -32,7 +32,7 @@ editor.init({
     showToast: (message, kind) => calls.push(['toast', message, kind]),
     requireConcreteFilterBank: () => true,
     bankBindingJson: () => ({ bank_id: 'main' }),
-    measurementCommitSourceId: () => 'measurement-1',
+    measurementCommitSourceTargets: () => [{ bank_id: 'main' }],
     measurementPeqParams: (leftBands, rightBands, mode) => ({ leftBands, rightBands, mode }),
     fetch: async (url, options) => {
         calls.push(['post', url, JSON.parse(options.body)]);
@@ -70,7 +70,7 @@ async function main() {
     await editor.createMeasurementPeqPresetFromDraft();
     assert.equal(calls.filter((call) => call[0] === 'post').length, 1);
     const posted = calls.find((call) => call[0] === 'post')[2];
-    assert.equal(posted.source_measurement_id, 'measurement-1');
+    assert.deepEqual(posted.source_measurement_targets, [{ bank_id: 'main' }]);
     assert.equal(posted.bank_id, 'main');
     resolvePost({ ok: true, json: async () => ({ preset: { name: 'Room PEQ' } }) });
     await creating;

@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import (default_output_state, set_bank_preset, set_mode_routing, switch_mode,
                                 validate_output_state)
-from dsp.processing_plan import compile_processing_plan
 from measurement.store import MeasurementStore
 from measurement.target import (freeze_measurement_target, require_commit_target, target_input_mask,
                                 target_output_mask, targets_compatible, sweep_output_masks)
@@ -34,11 +33,6 @@ def freeze(state, bank_id, **extra):
                                      sample_rate_hz=48000, fingerprint="fp", **extra)
 
 
-def plan_for(state):
-    return compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
-                                   preset_loader=lambda name: {"chain": [], "metadata": {}})
-
-
 class AllBanksTargetTests(unittest.TestCase):
     def test_group_result_can_be_saved_and_reloaded_without_importing_a_filter(self):
         target = freeze(state_for("surround", SURROUND), "all", group="rear")
@@ -52,7 +46,8 @@ class AllBanksTargetTests(unittest.TestCase):
             self.assertEqual(loaded["measurement_target"], target)
             self.assertEqual(loaded["channel"], "left")
             with self.assertRaisesRegex(ValueError, "through All Banks"):
-                require_commit_target(loaded["measurement_target"], target, mode="surround", bank_id="rear")
+                require_commit_target(loaded["measurement_target"], target["measured_roles"],
+                                      mode="surround", bank_id="rear")
 
     def test_group_targets_cover_only_the_group_and_subs(self):
         roles = ["main_l", "main_r", "center", "side_l", "side_r", "rear_l", "rear_r", "sub1", "sub2"]
@@ -63,15 +58,14 @@ class AllBanksTargetTests(unittest.TestCase):
                 ("side", ["side_l", "side_r", "sub1", "sub2"], 0b001100111, 3),
                 ("rear", ["rear_l", "rear_r", "sub1", "sub2"], 0b000011111, 3)):
             with self.subTest(group=group):
-                target = freeze(state, "all", group=group, plan=plan_for(state))
+                target = freeze(state, "all", group=group)
                 self.assertEqual(target["bank_id"], "all")
                 self.assertEqual(target["global_group"], group)
                 self.assertEqual(target["measured_roles"], measured)
                 self.assertEqual(target_output_mask(target, roles=roles), mask)
                 self.assertEqual(target_input_mask(target), input_mask)
-                self.assertNotIn("commit_fingerprint", target)
                 with self.assertRaisesRegex(ValueError, "through All Banks"):
-                    require_commit_target(target, target, mode="surround", bank_id="global", group=group)
+                    require_commit_target(target, measured, mode="surround", bank_id="global", group=group)
 
     def test_group_repeat_masks_keep_subs_on_both_sides(self):
         target = freeze(state_for("surround", SURROUND), "all", group="rear")
@@ -109,13 +103,12 @@ class AllBanksTargetTests(unittest.TestCase):
     def test_every_routed_speaker_is_measured_and_nothing_is_muted(self):
         for mode, roles in (("surround", SURROUND), ("stereo-sub", ["main_l", "main_r", "sub_l", "sub_r"])):
             with self.subTest(mode=mode):
-                target = freeze(state_for(mode, roles), "all", plan=plan_for(state_for(mode, roles)))
+                target = freeze(state_for(mode, roles), "all")
                 self.assertEqual((target["bank_id"], target["mode"]), ("all", mode))
                 self.assertEqual(target["measured_roles"], roles)
                 self.assertEqual(target_output_mask(target, roles=target["roles"]), 0)
                 self.assertEqual(target_input_mask(target), 0)
                 self.assertNotIn("global_group", target)
-                self.assertNotIn("commit_fingerprint", target)
 
     def test_the_listened_state_of_every_bank_is_recorded(self):
         state = state_for("surround", SURROUND)
@@ -136,7 +129,7 @@ class AllBanksTargetTests(unittest.TestCase):
         target = freeze(state, "all")
         for bank in ("all", "global", "main"):
             with self.subTest(bank=bank), self.assertRaisesRegex(ValueError, "All Banks cannot be imported|through All Banks"):
-                require_commit_target(target, target, mode="surround", bank_id=bank)
+                require_commit_target(target, target["measured_roles"], mode="surround", bank_id=bank)
 
     def test_it_never_merges_with_a_bank_or_global_measurement(self):
         state = state_for("stereo-sub", ["main_l", "main_r", "sub_l", "sub_r"])

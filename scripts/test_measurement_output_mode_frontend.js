@@ -370,7 +370,7 @@ async function main() {
     };
     const badge = committed.context.measurementAreaBadge({ measurement_target: badgeTarget });
     assert.deepEqual({ ...badge }, {
-        label: 'Low L', mode: 'stereo-sub', stale: false,
+        label: 'Low L', mode: 'stereo-sub',
         title: 'Low L · Stereo + Sub · measured area only',
     });
     assert.equal(
@@ -383,13 +383,6 @@ async function main() {
     );
     assert.equal(committed.context.measurementAreaBadge({}), null);
     assert.equal(committed.context.measurementAreaBadge(undefined), null);
-    assert.equal(
-        committed.context.measurementAreaBadge({
-            measurement_target: { ...badgeTarget, bank_id: 'left_mid' },
-            measurement_target_stale: true,
-        }).stale, true,
-        'a result whose processing moved on is marked stale',
-    );
 
     // A still-debounced subwoofer edit is committed exactly once through the
     // real save queue, and the measurement endpoint is reached only after

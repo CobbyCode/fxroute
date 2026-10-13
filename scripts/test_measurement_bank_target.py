@@ -31,6 +31,7 @@ from measurement.target import (
     GLOBAL_BANK_ID,
     LEGACY_TARGET,
     REFERENCE_TAP_INGRESS,
+    area_measured_roles,
     attach_measurement_target,
     freeze_measurement_target,
     measurement_target_from_context,
@@ -137,12 +138,16 @@ class TargetFixture:
                                         sample_rate_hz=sample_rate_hz)
 
     def freeze(self, state, bank_id, *, channels=8, output_key="A", sample_rate_hz=48000):
-        # Same inputs as main._freeze_measurement_target: fingerprint and plan.
-        plan = self.service.compile_plan(state, output_key=output_key, channels=channels,
-                                         sample_rate_hz=sample_rate_hz)
+        # Same inputs as main._freeze_measurement_target.
         return freeze_measurement_target(
             state, bank_id=bank_id, output_key=output_key, channels=channels,
-            sample_rate_hz=sample_rate_hz, fingerprint=self.service.fingerprint_plan(plan), plan=plan)
+            sample_rate_hz=sample_rate_hz,
+            fingerprint=self.fingerprint(state, channels, output_key, sample_rate_hz))
+
+    @staticmethod
+    def roles(state, bank_id, *, channels=8, output_key="A", group=None):
+        """Roles the commit area plays, as main._verify_measurement_commit resolves them."""
+        return area_measured_roles(state, bank_id=bank_id, output_key=output_key, channels=channels, group=group)
 
     @staticmethod
     def raw_freeze(state, bank_id, **overrides):
@@ -218,22 +223,20 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
         self.assertEqual(target["bank_id"], "left_mid")
         self.assertEqual(target["processing_fingerprint"], self.fingerprint(crossover_state(), channels=8))
 
-    def test_editing_selection_keeps_the_target_but_processing_edits_break_it(self):
+    def test_editing_selection_and_processing_edits_keep_the_target_committable(self):
         # A pure editing-selection change (another bank selected) leaves the
-        # compiled fingerprint unchanged: the same capture still applies.
+        # compiled fingerprint unchanged.
         state = crossover_state()
         frozen = self.freeze(state, "left_mid")
         selected = select_bank(state, "stereo-sub", "A", 8, "left_mid")
         live = self.freeze(selected, "left_mid")
         self.assertEqual(frozen["processing_fingerprint"], live["processing_fingerprint"])
-        require_commit_target(frozen, live, mode="stereo-sub", bank_id="left_mid")
+        require_commit_target(frozen, self.roles(selected, "left_mid"), mode="stereo-sub", bank_id="left_mid")
 
-        # A processing edit on the measured output breaks it; the differing
-        # field is named. (The bank's own preset is what a commit replaces.)
+        # A processing edit changes the fingerprint but never blocks the commit.
         edited = set_output_processing(selected, "stereo-sub", "left_mid", level_db=-2.0)
-        with self.assertRaisesRegex(ValueError, "processing '.*' != '.*"):
-            require_commit_target(frozen, self.freeze(edited, "left_mid"),
-                                  mode="stereo-sub", bank_id="left_mid")
+        self.assertNotEqual(frozen["processing_fingerprint"], self.freeze(edited, "left_mid")["processing_fingerprint"])
+        require_commit_target(frozen, self.roles(edited, "left_mid"), mode="stereo-sub", bank_id="left_mid")
 
     def test_merge_compatibility_rejects_mixed_areas_and_accepts_revision_drift(self):
         state = crossover_state()
@@ -349,101 +352,83 @@ class CommitTargetTests(TargetFixture, unittest.TestCase):
         self.addCleanup(self.environment.stop)
         self.store = MeasurementStore(home=self.root)
 
-    def test_matching_area_and_processing_is_accepted(self):
-        target = self.freeze(crossover_state(), "left_mid")
-        require_commit_target(target, copy.deepcopy(target), mode="stereo-sub", bank_id="left_mid")
+    def test_matching_area_is_accepted(self):
+        state = crossover_state()
+        target = self.freeze(state, "left_mid")
+        require_commit_target(target, self.roles(state, "left_mid"), mode="stereo-sub", bank_id="left_mid")
+
+    def test_area_roles_match_what_a_freeze_records_without_compiling(self):
+        state = crossover_state()
+        with patch.object(self.service, "compile_plan", side_effect=AssertionError("compile")):
+            for bank_id in (GLOBAL_BANK_ID, "mid", "left_mid", "sub1", "all"):
+                with self.subTest(bank_id=bank_id):
+                    self.assertEqual(self.roles(state, bank_id),
+                                     self.raw_freeze(state, bank_id)["measured_roles"])
+        with self.assertRaisesRegex(ValueError, "not stored in output mode"):
+            self.roles(state, "no-such-bank")
 
     def test_commit_into_another_area_is_rejected(self):
-        target = self.freeze(crossover_state(), "left_mid")
-        live = self.freeze(crossover_state(), "left_high")
+        state = crossover_state()
+        target = self.freeze(state, "left_mid")
         with self.assertRaisesRegex(ValueError, "captured for stereo-sub area 'left_mid'"):
-            require_commit_target(target, live, mode="stereo-sub", bank_id="left_high")
+            require_commit_target(target, self.roles(state, "left_high"), mode="stereo-sub", bank_id="left_high")
         with self.assertRaisesRegex(ValueError, "captured for stereo-sub area 'left_mid'"):
-            require_commit_target(target, copy.deepcopy(target), mode="stereo-sub", bank_id="left_high")
+            require_commit_target(target, target["measured_roles"], mode="stereo-sub", bank_id="left_high")
+        with self.assertRaisesRegex(ValueError, "captured for stereo-sub area 'left_mid'"):
+            require_commit_target(target, target["measured_roles"], mode="stereo", bank_id="left_mid")
 
-    def test_processing_and_device_changes_are_rejected_with_details(self):
-        target = self.freeze(crossover_state(), "left_mid")
-        for field, value, label in (
-            ("commit_fingerprint", "other-fingerprint", "processing"),
-            ("device_key", "device-b", "output device"),
-            ("sample_rate_hz", 44100, "sample rate"),
-            ("reference_tap", "later", "reference tap"),
-            ("measured_roles", ["left_high"], "measured roles"),
-        ):
-            live = copy.deepcopy(target)
-            live[field] = value
-            with self.subTest(field=field), self.assertRaisesRegex(ValueError, label):
-                require_commit_target(target, live, mode="stereo-sub", bank_id="left_mid")
+    def test_rate_processing_device_and_tap_changes_are_accepted(self):
+        state = crossover_state()
+        target = self.freeze(state, "left_mid")
+        target.update(sample_rate_hz=96000, processing_fingerprint="other-fingerprint",
+                      device_key="device-b", reference_tap="later", revision=9, preset="Room EQ")
+        require_commit_target(target, self.roles(state, "left_mid"), mode="stereo-sub", bank_id="left_mid")
 
-    def test_second_preset_from_one_measurement_is_accepted(self):
+    def test_another_channel_shape_is_rejected(self):
         state = crossover_state()
         target = self.freeze(state, "mid")
-        # The first commit assigns its preset to the listened slot; a second
-        # variant from the same measurement, or an A/B switch there, still fits.
-        first = set_bank_preset(state, "stereo-sub", "mid", preset="Room EQ")
-        live = self.freeze(first, "mid")
-        self.assertNotEqual(live["processing_fingerprint"], target["processing_fingerprint"])
-        require_commit_target(target, live, mode="stereo-sub", bank_id="mid")
-        compared = set_bank_preset(first, "stereo-sub", "mid", preset_b="Direct", active_side="B")
-        require_commit_target(target, self.freeze(compared, "mid"), mode="stereo-sub", bank_id="mid")
+        roles = self.roles(state, "mid")
+        self.assertEqual(roles, ["left_mid", "right_mid"])
+        require_commit_target(target, list(reversed(roles)), mode="stereo-sub", bank_id="mid")
+        # One channel of a pair bank, e.g. a single speaker way.
+        single = copy.deepcopy(target)
+        single["measured_roles"] = ["left_mid"]
+        with self.assertRaisesRegex(ValueError, r"covers \['left_mid'\], but stereo-sub area 'mid' plays"):
+            require_commit_target(single, roles, mode="stereo-sub", bank_id="mid")
+        for measured in ([], None, "left_mid"):
+            broken = copy.deepcopy(target)
+            broken["measured_roles"] = measured
+            with self.subTest(measured=measured), self.assertRaisesRegex(ValueError, "covers"):
+                require_commit_target(broken, roles, mode="stereo-sub", bank_id="mid")
+        for played in ([], None, ["left_mid"]):
+            with self.subTest(played=played), self.assertRaisesRegex(ValueError, "covers"):
+                require_commit_target(target, played, mode="stereo-sub", bank_id="mid")
 
-    def test_other_bank_edits_do_not_invalidate_an_area_measurement(self):
+    def test_state_edits_leave_an_area_measurement_committable(self):
         state = crossover_state()
         target = self.freeze(state, "mid")
-        for bank_id in ("low", "high", "sub1", "sub2"):
+        # Earlier commits from the same measurement, other banks, Global and
+        # the measured ways' own trim and crossover are all processing.
+        state = set_bank_preset(state, "stereo-sub", "mid", preset="Room EQ")
+        for bank_id in ("low", "high", "sub1", "sub2", "global"):
             state = set_bank_preset(state, "stereo-sub", bank_id, preset="Room EQ")
-        state = set_output_processing(state, "stereo-sub", "sub1", level_db=-4.0)
-        require_commit_target(target, self.freeze(state, "mid"), mode="stereo-sub", bank_id="mid")
+        state = set_output_processing(state, "stereo-sub", "left_mid", level_db=-2.0)
+        state = set_output_processing(state, "stereo-sub", "right_mid", lowpass=crossover_filter(3000))
+        self.assertNotEqual(self.freeze(state, "mid")["processing_fingerprint"], target["processing_fingerprint"])
+        require_commit_target(target, self.roles(state, "mid"), mode="stereo-sub", bank_id="mid")
 
-    def test_upstream_and_measured_output_changes_still_invalidate(self):
-        state = crossover_state()
-        target = self.freeze(state, "mid")
-        for label, changed in (
-            ("global", set_bank_preset(state, "stereo-sub", "global", preset="Room EQ")),
-            ("trim", set_output_processing(state, "stereo-sub", "left_mid", level_db=-2.0)),
-            ("crossover", set_output_processing(state, "stereo-sub", "right_mid",
-                                                lowpass=crossover_filter(3000))),
-        ):
-            with self.subTest(label), self.assertRaisesRegex(ValueError, "processing"):
-                require_commit_target(target, self.freeze(changed, "mid"),
-                                      mode="stereo-sub", bank_id="mid")
-
-    def test_global_measurement_ignores_only_the_global_chain(self):
-        state = crossover_state()
-        target = self.freeze(state, GLOBAL_BANK_ID)
-        committed = set_bank_preset(state, "stereo-sub", "global", preset="Room EQ")
-        require_commit_target(target, self.freeze(committed, GLOBAL_BANK_ID),
-                              mode="stereo-sub", bank_id=GLOBAL_BANK_ID)
-        area = set_bank_preset(state, "stereo-sub", "sub1", preset="Room EQ")
-        with self.assertRaisesRegex(ValueError, "processing"):
-            require_commit_target(target, self.freeze(area, GLOBAL_BANK_ID),
-                                  mode="stereo-sub", bank_id=GLOBAL_BANK_ID)
-
-    def test_targets_without_a_commit_fingerprint_compare_the_whole_plan(self):
-        state = crossover_state()
-        target = self.freeze(state, "mid")
-        del target["commit_fingerprint"]
-        require_commit_target(target, self.freeze(state, "mid"), mode="stereo-sub", bank_id="mid")
-        live = self.freeze(set_bank_preset(state, "stereo-sub", "sub1", preset="Room EQ"), "mid")
-        with self.assertRaisesRegex(ValueError, "processing"):
-            require_commit_target(target, live, mode="stereo-sub", bank_id="mid")
-
-    def test_legacy_and_unavailable_contexts(self):
-        # A measurement from before the frozen-target era stays committable.
-        require_commit_target(LEGACY_TARGET, {}, mode="stereo-sub", bank_id="left_mid")
-        with self.assertRaisesRegex(ValueError, "no frozen target"):
-            require_commit_target({}, {}, mode="stereo-sub", bank_id="left_mid")
-        target = self.freeze(crossover_state(), "left_mid")
-        for live in ({}, LEGACY_TARGET, None):
-            with self.subTest(live=live), self.assertRaisesRegex(ValueError, "unavailable"):
-                require_commit_target(target, live, mode="stereo-sub", bank_id="left_mid")
+    def test_results_without_a_frozen_target_are_rejected(self):
+        roles = self.roles(crossover_state(), "left_mid")
+        for source in (LEGACY_TARGET, {}, None, {"schema": "other"}):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "no frozen target; measure again"):
+                require_commit_target(source, roles, mode="stereo-sub", bank_id="left_mid")
 
     def test_stored_measurement_lookup_keeps_its_target(self):
         target = self.freeze(crossover_state(), "left_mid")
         self.store.save_measurement(measurement_payload("saved-mid", channel="left", target=target))
         stored = self.store.get_measurement("saved-mid")
         self.assertEqual(stored["measurement_target"], target)
-        require_commit_target(stored["measurement_target"], copy.deepcopy(target),
+        require_commit_target(stored["measurement_target"], target["measured_roles"],
                               mode="stereo-sub", bank_id="left_mid")
         with self.assertRaises(KeyError):
             self.store.get_measurement("missing")

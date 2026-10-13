@@ -140,7 +140,7 @@ async function main() {
             toneEffectEnabled: false, toneEffectMode: 'crystalizer',
         }),
         appendBankBindingFields: (form) => form.append('bank_id', 'main'),
-        measurementCommitSourceId: () => 'measurement-1',
+        measurementCommitSourceTargets: () => [{ bank_id: 'main' }, null],
         requireConcreteFilterBank: () => true,
         measurementBankSumsBothInputs: () => false,
         fetchEffects: async () => { calls.push('effects'); },
@@ -161,7 +161,7 @@ async function main() {
     assert.equal(calls.filter((c) => c[0] === 'fetch').length, 1, 'concurrent create is gated');
     const fields = calls.find((c) => c[0] === 'fetch')[2];
     assert.equal(fields.get('preset_name').value, 'Room Conv');
-    assert.equal(fields.get('source_measurement_id').value, 'measurement-1');
+    assert.deepEqual(JSON.parse(fields.get('source_measurement_targets').value), [{ bank_id: 'main' }, null]);
     assert.equal(fields.get('bank_id').value, 'main');
     assert.ok(fields.get('left_file'), 'both-mode create sends L/R IR files');
     assert.ok(fields.get('right_file'), 'both-mode create sends L/R IR files');

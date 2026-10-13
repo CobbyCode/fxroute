@@ -18,9 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import (default_output_state, set_crossover, set_mode_routing, switch_mode,
                                 validate_output_state)
-from dsp.processing_plan import compile_processing_plan
 from measurement.store import MeasurementStore
-from measurement.target import (freeze_measurement_target, require_commit_target, sweep_output_masks,
+from measurement.target import (area_measured_roles, freeze_measurement_target, require_commit_target,
+                                sweep_output_masks,
                                 target_input_mask, target_output_mask, targets_compatible)
 
 QUAD_SUBS = ["main_l", "main_r", "rear_l", "rear_r", "sub1", "sub2"]
@@ -33,11 +33,6 @@ def surround_state(roles=QUAD_SUBS, rear_preset="Neutral"):
     if "rear_l" in banks:
         banks["rear_l"]["preset"] = banks["rear_l"]["preset_a"] = rear_preset
     return validate_output_state(state)
-
-
-def plan_for(state):
-    return compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
-                                   preset_loader=lambda name: {"chain": [], "metadata": {}})
 
 
 def freeze(state, group, **extra):
@@ -101,32 +96,26 @@ class GlobalGroupTargetTests(unittest.TestCase):
         self.assertFalse(targets_compatible(freeze(state, "rear"), freeze(state, "side")))
         self.assertTrue(targets_compatible(freeze(state, "rear"), freeze(state, "rear")))
 
-    def test_commit_identity_follows_only_the_measured_group(self):
-        base, other_group, same_group = surround_state(), surround_state(), surround_state(rear_preset="Rear EQ")
-        other_group["modes"]["surround"]["banks"]["main_l"]["preset"] = "Front EQ"
-        other_group["modes"]["surround"]["banks"]["main_l"]["preset_a"] = "Front EQ"
-        other_group = validate_output_state(other_group)
-
-        def commit_fingerprint(state):
-            return freeze(state, "rear", plan=plan_for(state))["commit_fingerprint"]
-
-        self.assertEqual(commit_fingerprint(base), commit_fingerprint(other_group))
-        self.assertNotEqual(commit_fingerprint(base), commit_fingerprint(same_group))
-
     def test_commit_gate_compares_the_binding_group(self):
         state = surround_state()
-        target = freeze(state, "rear", plan=plan_for(state))
-        live = freeze(state, "rear", plan=plan_for(state))
+        target = freeze(state, "rear")
+        live = area_measured_roles(state, bank_id="global", output_key="A", channels=16, group="rear")
+        self.assertEqual(live, target["measured_roles"])
         require_commit_target(target, live, mode="surround", bank_id="global", group="rear")
+        # Another group's roles are another channel shape.
+        front = area_measured_roles(state, bank_id="global", output_key="A", channels=16, group="front")
+        with self.assertRaisesRegex(ValueError, "covers"):
+            require_commit_target(target, front, mode="surround", bank_id="global", group="rear")
         for group in ("front", None):
             with self.subTest(group=group), self.assertRaisesRegex(ValueError, "speaker group"):
                 require_commit_target(target, live, mode="surround", bank_id="global", group=group)
         stereo = validate_output_state(default_output_state())
         stereo_target = freeze_measurement_target(stereo, bank_id="global", output_key="A", channels=16,
                                                   sample_rate_hz=48000, fingerprint="fp")
-        require_commit_target(stereo_target, stereo_target, mode="stereo", bank_id="global")
+        stereo_roles = stereo_target["measured_roles"]
+        require_commit_target(stereo_target, stereo_roles, mode="stereo", bank_id="global")
         with self.assertRaisesRegex(ValueError, "speaker group"):
-            require_commit_target(stereo_target, stereo_target, mode="stereo", bank_id="global", group="rear")
+            require_commit_target(stereo_target, stereo_roles, mode="stereo", bank_id="global", group="rear")
 
 
 class FakeMaskRuntime:

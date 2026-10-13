@@ -84,7 +84,7 @@ assert.match(app, /data-sweep-side/, 'side chips drive the single sweep');
 assert.match(savedUi, /function measurementAreaBadge\(measurement\) \{/);
 assert.match(savedUi, /target\.schema !== 'fxroute\.measurement-target'\) return null;/);
 assert.match(savedUi, /target\.legacy \|\| target\.schema/);
-assert.match(savedUi, /measurement-area-badge\$\{areaBadge\.stale \? ' is-stale' : ''\}/);
+assert.match(savedUi, /class="measurement-area-badge" data-tooltip=/);
 assert.match(panelUi, /Measured area: \$\{areaBadge\.title\}/);
 // A summed-sub bank is mono on the preset side: per-side PEQ takes and a
 // Both convolver take cannot compile there, so the UI disables them.

@@ -95,7 +95,7 @@ class SurroundMeasurementTests(unittest.TestCase):
     def route(self, bank="all", *, layout=None, scope="active_chain", mode="surround", channel="stereo", group=None):
         layout = self.layout if layout is None else layout
         target = freeze_measurement_target(self.state, bank_id=bank, output_key="device", channels=16,
-                                          sample_rate_hz=48000, fingerprint="frozen-plan", plan=self.plan, group=group)
+                                          sample_rate_hz=48000, fingerprint="frozen-plan", group=group)
         mask = target_output_mask(target, roles=target["roles"]) if layout is self.layout else 0
         fixture = PipeWireFixture(layout, mode, mask)
         routing = MeasurementRouting(fixture)

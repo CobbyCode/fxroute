@@ -18,8 +18,6 @@ This module is pure: no files, no hardware, no runtime, no global state.
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 from collections.abc import Sequence
 
 from audio.output_routing import device_key
@@ -36,6 +34,7 @@ __all__ = [
     "GLOBAL_BANK_ID",
     "LEGACY_TARGET",
     "REFERENCE_TAP_INGRESS",
+    "area_measured_roles",
     "attach_measurement_target",
     "freeze_measurement_target",
     "measurement_target_from_context",
@@ -79,57 +78,13 @@ def _fingerprint_token(value: object) -> str:
     return value
 
 
-def commit_context(plan: dict, *, bank_id: str, measured_roles: Sequence[str]) -> dict:
-    """Processing a correction committed into the measured bank depends on.
+def _measurement_area(validated: dict, *, bank_id: object, output_key: object, channels: object,
+                      group: str | None):
+    """Resolve the outputs a measurement of this bank addresses.
 
-    The measured roles' rendered outputs and everything upstream of them,
-    without the measured bank's own chain: a generated preset replaces that
-    chain, so an earlier commit from the same measurement or an A/B switch
-    in that bank leaves the measurement valid. Roles an area sweep mutes are
-    left out, so edits in other banks do not invalidate it either.
+    Returns ``(topology, measured, grouped)``: the roles the bank owns on the
+    given outputs, narrowed to a speaker group plus every sub when ``grouped``.
     """
-    measured = set(measured_roles)
-    measures_global = bank_id == GLOBAL_BANK_ID
-    roles = [output["role"] for output in plan["outputs"]]
-    context = {key: plan[key] for key in ("mode", "device_key", "sample_rate_hz", "crossover_enabled", "order")}
-    if not measures_global:
-        context["global"] = plan["global"]
-    context["outputs"] = [{key: value for key, value in output.items() if measures_global or key != "bank"}
-                          for output in plan["outputs"] if output["role"] in measured]
-    context["physical_routes"] = [{"role": roles[edge["output"]], "channel": edge["channel"]}
-                                  for edge in plan["physical_routes"] if roles[edge["output"]] in measured]
-    return context
-
-
-def _context_token(context: dict) -> str:
-    canonical = json.dumps(context, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def freeze_measurement_target(
-    state: dict,
-    *,
-    bank_id: str,
-    output_key: str,
-    channels: int,
-    sample_rate_hz: int,
-    fingerprint: str,
-    plan: dict | None = None,
-    group: str | None = None,
-) -> dict:
-    """Freeze the measurement target from committed output state.
-
-    Surround Global requires a speaker ``group`` (front, center, side, rear).
-    All Banks optionally uses the same scope; without a group it measures
-    the whole system. A group covers its speakers plus every sub.
-
-    ``fingerprint`` is the service-computed processing fingerprint for the
-    same device and rate.  ``plan``, the compiled plan behind it, adds the
-    commit fingerprint (see commit_context).  The result is a detached,
-    JSON-serializable document; later state edits never change a frozen
-    target.
-    """
-    validated = validate_output_state(state)
     mode = validated["active_mode"]
     config = validated["modes"][mode]
     if not isinstance(bank_id, str):
@@ -142,8 +97,6 @@ def freeze_measurement_target(
     if not isinstance(output_key, str) or not output_key.strip():
         raise ValueError("Output device key must be a non-empty string")
     _bounded_int(channels, "Measurement channel count", MAX_CHANNELS)
-    _bounded_int(sample_rate_hz, "Measurement sample rate", FXROUTE_MAX_PROCESSING_RATE)
-    fingerprint = _fingerprint_token(fingerprint)
     topology = derive_topology(mode, routing_for_device(validated, mode, output_key, channels), channels=channels,
                                crossover_enabled=effective_crossover_enabled(validated, mode, channels))
     topology.require_activatable()
@@ -167,6 +120,53 @@ def freeze_measurement_target(
     measured = ([bank_id] if bank_id in topology.roles else definition["roles"])
     if bank_id != GLOBAL_BANK_ID and not set(measured) <= set(topology.roles):
         raise ValueError(f"Bank {bank_id} is not an active role on the selected outputs")
+    return topology, measured, grouped
+
+
+def _covered_roles(topology, bank_id: str, measured: Sequence[str], grouped: bool) -> list[str]:
+    whole_system = bank_id in (GLOBAL_BANK_ID, ALL_BANKS_ID) and not grouped
+    return list(topology.roles) if whole_system else list(measured)
+
+
+def area_measured_roles(state: dict, *, bank_id: str, output_key: str, channels: int,
+                        group: str | None = None) -> list[str]:
+    """Roles a measurement of this bank covers on the given outputs.
+
+    The ``measured_roles`` a target frozen now would record.  No processing is
+    compiled, so the answer depends on routing and bank layout only.
+    """
+    topology, measured, grouped = _measurement_area(
+        validate_output_state(state), bank_id=bank_id, output_key=output_key, channels=channels, group=group)
+    return _covered_roles(topology, bank_id, measured, grouped)
+
+
+def freeze_measurement_target(
+    state: dict,
+    *,
+    bank_id: str,
+    output_key: str,
+    channels: int,
+    sample_rate_hz: int,
+    fingerprint: str,
+    group: str | None = None,
+) -> dict:
+    """Freeze the measurement target from committed output state.
+
+    Surround Global requires a speaker ``group`` (front, center, side, rear).
+    All Banks optionally uses the same scope; without a group it measures
+    the whole system. A group covers its speakers plus every sub.
+
+    ``fingerprint`` is the service-computed processing fingerprint for the
+    same device and rate.  The result is a detached, JSON-serializable
+    document; later state edits never change a frozen target.
+    """
+    validated = validate_output_state(state)
+    mode = validated["active_mode"]
+    topology, measured, grouped = _measurement_area(
+        validated, bank_id=bank_id, output_key=output_key, channels=channels, group=group)
+    all_banks = bank_id == ALL_BANKS_ID
+    _bounded_int(sample_rate_hz, "Measurement sample rate", FXROUTE_MAX_PROCESSING_RATE)
+    fingerprint = _fingerprint_token(fingerprint)
     banks = validated["modes"][mode]["banks"]
     all_summary = summarize_all_banks([banks[role] for role in topology.roles]) if all_banks else None
     target = {
@@ -182,8 +182,7 @@ def freeze_measurement_target(
         "sample_rate_hz": sample_rate_hz,
         "channels": channels,
         "roles": list(topology.roles),
-        "measured_roles": (list(measured) if grouped
-                           else list(topology.roles) if bank_id in (GLOBAL_BANK_ID, ALL_BANKS_ID) else list(measured)),
+        "measured_roles": _covered_roles(topology, bank_id, measured, grouped),
         "reference_tap": REFERENCE_TAP_INGRESS,
     }
     if grouped:
@@ -193,9 +192,6 @@ def freeze_measurement_target(
         # The listened A/B side and preset of every bank; a mixed state has no single preset.
         target["active_side"] = all_summary["active_side"]
         target["bank_presets"] = {role: banks[role]["preset"] for role in topology.roles}
-    if plan is not None and not all_banks:
-        target["commit_fingerprint"] = _context_token(
-            commit_context(plan, bank_id=bank_id, measured_roles=target["measured_roles"]))
     if bank_id not in (GLOBAL_BANK_ID, ALL_BANKS_ID) and len(measured) == 1 and measured[0] in SUB_ROLES:
         # An isolated sub has no broadband plateau at 120 Hz..8 kHz.
         # Freeze its rendered band, including per-side bass and way filters.
@@ -323,40 +319,25 @@ def sweep_output_masks(target: dict, *, roles: Sequence[str]) -> dict[str, int]:
     return masks
 
 
-# Live facts a stored target must still agree with before a correction that
-# was derived from it may be committed anywhere.
-_LIVE_FIELDS = (
-    ("device_key", "output device"),
-    ("sample_rate_hz", "sample rate"),
-    ("processing_fingerprint", "processing"),
-    ("reference_tap", "reference tap"),
-    ("measured_roles", "measured roles"),
-    ("global_group", "speaker group"),
-)
-# Targets carrying a commit fingerprint compare only the processing a commit
-# into the measured bank depends on (see commit_context).
-_COMMIT_FIELDS = tuple(("commit_fingerprint", label) if field == "processing_fingerprint" else (field, label)
-                       for field, label in _LIVE_FIELDS)
+def _role_set(roles: object) -> set[str]:
+    return {role for role in roles if isinstance(role, str)} if isinstance(roles, list) else set()
 
 
-def require_commit_target(target: dict, live: dict, *, mode: str, bank_id: str,
+def require_commit_target(target: object, roles: object, *, mode: str, bank_id: str,
                           group: str | None = None) -> None:
-    """Reject a generated-correction commit whose measurement no longer applies.
+    """Reject a generated-correction commit into an area its measurement does not fit.
 
-    ``target`` is the frozen target stored with the source measurement and
-    ``live`` is the same area frozen from the current committed state.  A
-    legacy result (no frozen context) is accepted unchanged, and so is a commit
-    into the measurement's own area while its processing is untouched; anything
-    else is rejected with the differing fields named, so a correction measured
-    through one area or one revision can never be committed as if it were
-    measured through another.  A target with a commit fingerprint ignores the
-    measured bank's own chain and unmeasured roles, so one measurement can
-    feed several presets (A/B variants); older targets compare the whole plan.
+    ``target`` is the frozen target of a source measurement; ``roles`` are the
+    roles the area the preset is committed into plays now (see
+    area_measured_roles).  The measurement must have been taken for that mode,
+    bank and speaker group and must cover exactly those roles, so a correction
+    measured through one area or channel shape can never be committed as if it
+    were measured through another.  Sample rate, processing, output device and
+    reference tap are not compared: a measurement stays committable after they
+    change.  A result without a frozen target is rejected.
     """
-    if isinstance(target, dict) and target.get("legacy"):
-        return
-    if not isinstance(target, dict) or target.get("schema") != SCHEMA:
-        raise ValueError("Source measurement carries no frozen target")
+    if not isinstance(target, dict) or target.get("schema") != SCHEMA or target.get("legacy"):
+        raise ValueError("Source measurement carries no frozen target; measure again")
     if target.get("bank_id") == ALL_BANKS_ID:
         raise ValueError("A measurement taken through All Banks cannot be imported or committed into a bank")
     if target.get("mode") != mode or target.get("bank_id") != bank_id:
@@ -369,17 +350,11 @@ def require_commit_target(target: dict, live: dict, *, mode: str, bank_id: str,
             f"Measurement was captured for speaker group {target.get('global_group')!r}, "
             f"but this commit targets {group!r}"
         )
-    if not isinstance(live, dict) or live.get("schema") != SCHEMA or live.get("legacy"):
-        raise ValueError("Live measurement context is unavailable")
-    fields = _COMMIT_FIELDS if target.get("commit_fingerprint") is not None else _LIVE_FIELDS
-    mismatches = [
-        f"{label} {target.get(field)!r} != {live.get(field)!r}"
-        for field, label in fields
-        if target.get(field) != live.get(field)
-    ]
-    if mismatches:
+    measured, played = _role_set(target.get("measured_roles")), _role_set(roles)
+    if not measured or measured != played:
         raise ValueError(
-            "Measurement target no longer matches live processing: " + "; ".join(mismatches)
+            f"Measurement covers {sorted(measured)!r}, but {mode} area {bank_id!r} "
+            f"plays {sorted(played)!r}"
         )
 
 

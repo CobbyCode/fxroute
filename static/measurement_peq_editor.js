@@ -29,7 +29,7 @@
         normalizePeqEqMode: (mode) => mode,
         collectEffectsExtras: () => ({}),
         bankBindingJson: () => ({}),
-        measurementCommitSourceId: () => '',
+        measurementCommitSourceTargets: () => [],
         measurementPeqParams: () => ({}),
         formatTransitionErrorDetail: (_detail, fallback) => fallback,
         fetchEffects: async () => {},
@@ -349,7 +349,7 @@
                     loadAfterCreate: false,
                     ...deps.collectEffectsExtras(),
                     ...deps.bankBindingJson(),
-                    source_measurement_id: deps.measurementCommitSourceId(),
+                    source_measurement_targets: deps.measurementCommitSourceTargets(),
                     peq: {
                         enabled: true,
                         params: deps.measurementPeqParams(leftBands, rightBands, eqMode),

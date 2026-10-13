@@ -361,11 +361,6 @@
     max-width: 100%;
 }
 
-.measurement-area-badge.is-stale {
-    border-color: var(--warning);
-    color: var(--warning);
-}
-
 .speaker-align-table-wrap {
     max-width: 100%;
     overflow-x: auto;

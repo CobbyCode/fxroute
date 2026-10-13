@@ -595,8 +595,8 @@ from measurement.store import (
 )
 from measurement.target import (
     ALL_BANKS_ID,
+    area_measured_roles,
     freeze_measurement_target,
-    measurement_target_from_context,
     require_commit_target,
 )
 from dsp.peak_monitor import DSPPeakMonitor, PeakMonitorCoordinator, PeakMonitorCoordinatorDeps, resolve_capture_rate
@@ -3505,8 +3505,7 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         schedule_peak_monitor_refresh=lambda reason: dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason),
         get_output_service=lambda: get_output_service(),
         sync_v2_head_live=lambda: _sync_v2_head_after_bank_assign(),
-        verify_measurement_commit=lambda measurement_id, binding: _verify_measurement_commit(
-            measurement_id, binding),
+        verify_measurement_commit=lambda targets, binding: _verify_measurement_commit(targets, binding),
     )
 
 
@@ -5164,13 +5163,11 @@ def _output_state_device(overview: dict) -> tuple[str, int | None]:
     return key, count
 
 
-def _freeze_measurement_target(bank_id: str, sample_rate_hz: int, group: str | None = None) -> dict:
-    """Freeze the measurement target for the currently selected output device.
+def _measurement_area(bank_id: str) -> tuple[dict, str, str, int]:
+    """Committed state, bank, output key and channel count a measurement of ``bank_id`` uses.
 
-    Uses the committed output state and the same processing fingerprint the
-    transition coordinator verifies, so a stored result can never claim
-    processing the sweep did not run through.  An empty bank id follows the
-    current editing selection (the area selector's Global default).
+    An empty bank id follows the current editing selection (the area
+    selector's Global default).
     """
     service = get_output_service()
     state = service.ensure_state()
@@ -5186,12 +5183,23 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int, group: str | N
         bank = raw_bank
     else:
         bank = resolve_bank(state["modes"][state["active_mode"]], raw_bank, topology["roles"])["id"]
+    return state, bank, output_key, channel_count
+
+
+def _freeze_measurement_target(bank_id: str, sample_rate_hz: int, group: str | None = None) -> dict:
+    """Freeze the measurement target for the currently selected output device.
+
+    Uses the committed output state and the same processing fingerprint the
+    transition coordinator verifies, so a stored result can never claim
+    processing the sweep did not run through.
+    """
+    state, bank, output_key, channel_count = _measurement_area(bank_id)
+    service = get_output_service()
     plan = service.compile_plan(state, output_key=output_key, channels=channel_count,
                                 sample_rate_hz=sample_rate_hz)
     return freeze_measurement_target(
         state, bank_id=bank, output_key=output_key, channels=channel_count,
-        sample_rate_hz=sample_rate_hz, fingerprint=service.fingerprint_plan(plan), plan=plan,
-        group=group)
+        sample_rate_hz=sample_rate_hz, fingerprint=service.fingerprint_plan(plan), group=group)
 
 
 def _running_output_sample_rate() -> int | None:
@@ -5229,36 +5237,22 @@ def _live_measurement_sample_rate() -> int:
     return rate if rate > 0 else 48_000
 
 
-def _verify_measurement_commit(measurement_id: str, binding: dict) -> None:
-    """Gate a generated PEQ/FIR commit on its source measurement still fitting.
+def _verify_measurement_commit(targets: list, binding: dict) -> None:
+    """Gate a generated PEQ/FIR commit on its source measurements fitting the bank.
 
-    The stored target must still describe both the area the preset is committed
-    into and the processing the committed state compiles to.  A measurement
-    from before the frozen-target era carries no context and is accepted
-    unchanged, as is any commit whose area and processing are untouched.
-    Single-role targets frozen before stereo-pair banks existed stay
-    fail-closed: their measured_roles cover one channel only, so committing
-    them into a pair bank is rejected rather than applied to both channels.
+    ``targets`` are the frozen targets of the measurements the preset was built
+    from, saved or not.  Each must have been measured for the mode, bank and
+    speaker group the preset is committed into and must cover the roles that
+    area plays on the selected outputs.  Sample rate, processing, output device
+    and reference tap are not compared, and no processing is compiled.
     """
-    store = measurement_store
-    if store is None:
-        raise ValueError("Measurement store is not available")
-    try:
-        measurement = store.get_measurement(measurement_id)
-    except KeyError as exc:
-        raise ValueError(f"Source measurement {measurement_id} is no longer available") from exc
-    target = measurement_target_from_context(measurement)
-    if target.get("legacy"):
-        return
-    rate = _live_measurement_sample_rate()
-    group = target.get("global_group")
-    live = (_freeze_measurement_target(target["bank_id"], rate, group) if group
-            else _freeze_measurement_target(target["bank_id"], rate))
-    require_commit_target(
-        target, live,
-        mode=str(binding.get("mode") or ""), bank_id=str(binding.get("bank_id") or ""),
-        group=binding.get("bank_group"),
-    )
+    mode = str(binding.get("mode") or "")
+    bank_id = str(binding.get("bank_id") or "")
+    group = binding.get("bank_group")
+    state, bank, output_key, channel_count = _measurement_area(bank_id)
+    roles = area_measured_roles(state, bank_id=bank, output_key=output_key, channels=channel_count, group=group)
+    for target in targets:
+        require_commit_target(target, roles, mode=mode, bank_id=bank_id, group=group)
 
 
 def _require_state_mode(value) -> str:
