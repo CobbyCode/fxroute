@@ -1,10 +1,24 @@
 # Changelog
 
-## Unreleased
+## 1.0-beta14 (2026-10-13)
 
-Work on `main` after the `1.0-beta12` stand. No public artifact carries
-this yet; the entries below are not part of any release until a release
-commit assigns them a version.
+First stand since `1.0-beta12`: the Surround rebuild (third output mode
+with S/PDIF Dolby Digital / DTS decoding, fold-down, group bass
+management, group-scoped Global presets and measurement), common
+sample-rate conversion, input auto-select, Custom Input Mapping,
+multichannel STDIN, Level Matching and Polarity Check, central AV Sync,
+the Fast/HQ upmixer, and gapless TIDAL playback. Distribution: web demo
+on GitHub Pages, Raspberry Pi 4/5 images via GitHub Release, x86_64
+Ubuntu 26.04 ISO via SourceForge. Khadas/VIM1S stays internal and gets
+no public image.
+
+### Release provenance
+
+- Source stand: `main` @ `0a0f6346` plus the VERSION/CHANGELOG bump.
+  No Armbian, installer-image, or live-converter changes this cycle;
+  `install.sh`/`uninstall.sh` ship the SRC converter plugin handling and
+  the surround ingress helper build.
+- The web demo snapshot follows this stand (`demo/dist` parity is green).
 
 ### Surround
 
@@ -44,6 +58,104 @@ commit assigns them a version.
 - **Speaker Auto Alignment** stays unavailable in Surround because the Global
   bank is group-scoped there, not a whole-speaker bank.
 
+### Sample-rate conversion
+
+- **SRC Quality** is independent of the Sample Rate policy: **Low** uses
+  libsoxr VHQ, **Standard** (default) uses pinned CPU-only SoX 16.2.1, and
+  **High** uses the approved extended profile from that same binary. One
+  common PipeWire converter applies the choice across provider and input
+  boundaries. Changing it uses the same automatic playback handoff as a
+  Sample Rate change (track, queue and position restored, radio
+  reconnected); measurements and active input sessions block a change.
+  Unequal-rate playback keeps a provisional 750 ms minimum startup
+  reserve, with a bounded 3,750 ms startup wait for the first usable
+  output under load.
+- Under the **Auto** policy the graph follows the active source's native
+  rate; a rate the output does not support plays at the highest supported
+  rate below it. Inactive unbound streams no longer block the SRC
+  selection, and transient engine stalls are survived with counted
+  silence.
+
+### Sources and inputs
+
+- **Input auto-select**: the **Auto** button next to the footer source
+  switcher arms the shown external or STDIN input. FXRoute watches every
+  armed input and switches to it as soon as it carries a signal, pausing
+  app playback like a manual switch, and returns to the previous selection
+  once the signal has ended for good (60 s without signal, 10 s for a
+  removed input, 10 s after the last STDIN writer). A manual selection
+  ends the automatic one; the **App** button returns to app playback
+  directly. An external presence heartbeat
+  (`POST /api/audio/input-presence`) is OR-ed with the local detection.
+  Auto-select pauses while a measurement owns the graph.
+- **Custom Mapping** maps a device's physical input channels to the
+  FXRoute channels as one named external input per device (Front L/R
+  required; split mono inputs are offered). It behaves like any other
+  external input, including the footer switcher, Auto and the per-input
+  output mode; in Surround the mapped channels feed the programme
+  channels directly.
+- **Multichannel STDIN**: `--left`/`--right` pick a stereo pair out of a
+  wider stream and `--channel-map` names the programme channel of every
+  pipe channel, with WAV/ALSA/PipeWire-order defaults for 1, 2, 4, 6 and
+  8 channels. Stereo modes play the front pair; Surround feeds every
+  mapped channel to its programme channel.
+- External PCM and digital audio are decoded in every output mode: Stereo
+  and Stereo + Sub play a complete stereo downmix (Center and each
+  surround side at −3 dB, LFE at half gain per side, one shared
+  layout-dependent headroom normalization), Surround plays the discrete
+  decoder channels. The ingress runs at 48 kHz with a fixed 2818-frame
+  delay and a forced 768-frame quantum; AV Sync credits that delay.
+- **Output Routing** is hidden on two-output devices (fixed Stereo), and
+  dormant crossover-path assignments survive a Crossover Off switch and
+  return with it. The output mode is remembered per input.
+
+### Upmixer (Surround)
+
+- **Fast** (low-latency adaptive matrix) and **HQ** (per-frequency
+  spectral engine with an FFT size of 1024–8192) derive Center and the
+  surround channels from a stereo programme, with **Center** and
+  **Surround** steering strengths from 0 to 10 (Loudness strength uses
+  the same 0–10 scale). The upmixer only fills routed destinations and
+  creates no LFE; the derived channels run through the normal bass
+  management.
+- Real multichannel content bypasses the upmixer completely — no
+  processing and no added delay — with an automatic, crossfaded switch in
+  both directions and a 10 s return hold. AV Sync shows the delay of the
+  path in use and credits it toward its target.
+
+### TIDAL and streaming
+
+- Consecutive TIDAL album tracks at the same sample rate now play
+  gaplessly: the same-rate successor is resolved during playback and
+  appended to the native player, which owns the boundary without pause,
+  replace-load or mute. Different-rate successors keep the coordinated
+  navigation as before.
+- TIDAL search result tabs list Albums first and new searches open on
+  Albums; Discover Similar returns to the entry context.
+- Transient Spotify source stalls are reported as 503 with spotifyd-only
+  MPRIS detection, a committed streaming claim returns a line input to
+  App playback, and Connect source handoffs are serialized so line
+  monitoring cannot interrupt playback.
+
+### Calibration
+
+- **Level Matching** stores cut-only calibration per output mode (not per
+  preset or bank): logical Left/Right in Stereo/Crossover with every way
+  of a speaker playing together, and one shared family in Surround with
+  Front as the reference. Subwoofer banks keep only SPL Calibration —
+  Auto Sub Optimize owns sub level and polarity. A take the sweep never
+  reached is refused before anything is stored, and **Reset to 0 dB**
+  drops the family's raw levels and commits 0 dB to its slots.
+- **Polarity Check** diagnoses speaker wiring only and changes no
+  setting. It runs per speaker bank (not Global, All Banks or sub banks)
+  and reads the first high-frequency pulse.
+- **AV Sync** sets the total electronic audio delay per output mode, not
+  an extra delay: the engine credits input latency, fixed SRC buffering,
+  DSP processing, intentional delays and speaker alignment, then adds
+  only the remaining common delay. The dialog shows the achievable delay
+  at the Front/Main reference speaker and its current range; alignment
+  and compensation share a 500 ms capacity.
+
 ### Measurement
 
 - The Convolver assistant no longer has a **Sample Rate** selector. A
@@ -64,6 +176,18 @@ commit assigns them a version.
   96 kHz). An input limited to 48 kHz measures at 48 kHz under either policy.
   An input without 48 kHz uses the running rate when it supports it, then
   its lowest rate.
+- Creating a PEQ or Convolver preset from a measurement commits it only
+  into the bank the sources were measured for: their frozen mode, bank and
+  speaker group must be the ones the preset is committed into, and their
+  measured roles must be the roles that bank plays on the selected
+  outputs. Sample rate, processing, output device and reference tap are no
+  longer compared. An All Banks result can be saved and inspected but never
+  committed, and a result without a frozen target (Auto Sub results carry
+  none by design) is refused and has to be measured again.
+- The A/B compare card summarises the calibration of the active output
+  mode: the Level Matching trim of each routed speaker, the sub gains, the
+  effective AV Sync delay, and the SPL calibration (or the 83 dB reference
+  marked *default* until calibrated).
 
 ### Fixes
 
@@ -118,6 +242,22 @@ commit assigns them a version.
   convolver latency, so AV Sync and the balance between outputs account for
   it. A filter at the engine's own rate is loaded unchanged, and the level
   normalization of resampled filters is as before.
+
+### Installer and maintenance
+
+- `install.sh` builds the surround ingress helper (`fxroute-surround-input`,
+  FFmpeg 5+) and the common SRC converter plugin (SoX/libsoxr build
+  dependencies per package manager); the uninstaller removes the owned
+  SRC plugin and its PipeWire/WirePlumber bindings again.
+- The native engine runs convolver/crystalizer channels and output banks
+  on a graph-owned worker pool with vectorized convolution MACs, and
+  reuses engine-owned workers across live graph swaps.
+
+Public release artifact names (to be built from tag `v1.0-beta14`):
+
+- `fxroute-1.0-beta14-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta14-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta14-x86_64-ubuntu26.04.iso` (SourceForge, + `.sha256`)
 
 ## 1.0-beta12 (2026-10-01)
 

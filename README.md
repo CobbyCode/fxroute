@@ -30,9 +30,9 @@ The demo is the real FXRoute frontend — same UI — with simulated backend sta
 - Internet radio with a curated station catalog, personal stations, and Radio Browser search; live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
 - Automatic PCM, Dolby Digital and DTS Core recognition on external input pairs in every output mode: discrete Surround playback or a complete stereo downmix, plus an upmixer that derives Center and the surround channels from a stereo programme
 - Spotify control for a local desktop client or spotifyd (Spotify Connect pairing, no FXRoute login), including Lossless-aware playback through a current desktop client
-- Qobuz Connect player control and a full TIDAL catalog browser with native playback through FXRoute's audio engine
-- Bluetooth and external line input as selectable sources when the host audio stack supports them
-- STDIN pipe input for raw PCM from shell pipelines (`decoder | fxroute stdin …`)
+- Qobuz Connect player control and a full TIDAL catalog browser with native playback through FXRoute's audio engine, gapless across same-rate album tracks
+- Bluetooth and external line input as selectable sources when the host audio stack supports them; a per-device **Custom Mapping** maps physical input channels to FXRoute channels, and **Auto** switches to an armed input on signal and returns when it ends
+- STDIN pipe input for raw PCM from shell pipelines (`decoder | fxroute stdin …`), mono to multichannel with stereo-pair selection and channel maps
 
 **DSP and output**
 
@@ -41,7 +41,7 @@ The demo is the real FXRoute frontend — same UI — with simulated backend sta
 - Crossover derived from the routing as a 2-, 3-, or 4-way system with per-way type, slope, level, alignment, and polarity; the subwoofer configuration (**Mono sub**, **Dual-mono subs**, **Stereo subs**) is derived from the routed sub roles
 - Presets per **filter bank** (Global, the way pairs, the subs) with A/B compare, preset combining, and filter imports; in **Surround** the Global bank is group-scoped, so one preset carries per-group PEQ and convolver plugins for **Front L/R**, **Center**, **Side L/R**, and **Rear L/R**; two always-available presets: **Direct** (bypasses everything) and **Neutral** (clean chain, the default)
 - Global output helpers that apply on top of any preset: protection limiter, headroom, autogain, loudness contouring, bass enhancer, and tone effect
-- Auto or fixed sample rate (up to 384 kHz, device permitting), with rate-driven channel tiers on interfaces that have them
+- Auto or fixed sample rate (up to 384 kHz, device permitting), with rate-driven channel tiers on interfaces that have them, plus selectable SRC quality (**Low** / **Standard** / **High**)
 
 **Measure and correct**
 
@@ -49,8 +49,8 @@ The demo is the real FXRoute frontend — same UI — with simulated backend sta
 - An **electrical reference** input on the capture interface for precise arrival timing, and an electrical-reference or acoustic-only timing verdict on every run
 - **Speaker Auto Alignment** per speaker for a multi-way crossover: proposes per-way delay and gain, then verifies acoustically before committing
 - **Auto Sub Optimize** scans delay, polarity, and level around the current subwoofer settings for the derived sub layout and applies the verified winner
-- SPL calibration with UMIK-1/UMIK-2/Dayton UMM-6 support or a manual meter
-- Correction tools on the measurement graph: a 12-filter PEQ sketchpad, custom house curves, and FIR convolver preset creation in linear, minimum-phase, and aligned modes
+- SPL calibration with UMIK-1/UMIK-2/Dayton UMM-6 support or a manual meter, cut-only Level Matching per speaker, a diagnostic Polarity Check, and per-mode AV Sync targets with automatic latency compensation
+- Correction tools on the measurement graph: a 12-filter PEQ sketchpad, custom house curves, and FIR convolver preset creation in linear, minimum-phase, and aligned modes, committable only into the bank the sources were measured for
 
 **System**
 
