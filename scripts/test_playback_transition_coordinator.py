@@ -763,6 +763,79 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("prepare", runtime.events)
         self.assertFalse(coordinator.gate.closed)
 
+    async def test_restore_survives_the_stream_release_of_its_own_rate_change(self):
+        # The quiet stage releases the old stream for the rate change.  The
+        # live-state gate sees a player without a file afterwards and must
+        # not read that as a user change.
+        runtime = FakeRuntime(muted=False)
+        seen = []
+
+        async def quiet(request):
+            await FakeRuntime.quiet_old_source(runtime, request)
+            runtime.current_file = None
+            return True
+
+        async def validate(_request, snapshot):
+            released = bool(snapshot.get("source_released"))
+            seen.append(released)
+            return runtime.current_file is not None or released
+
+        runtime.quiet_old_source = quiet
+        runtime.validate_measurement_restore_intent = validate
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        result = await coordinator.restore_measurement(
+            source="local",
+            target_rate=96_000,
+            target_url="/music/current.flac",
+            target_track={"source": "local", "url": "/music/current.flac"},
+            should_play=False,
+            rate_change=True,
+            reload_source=True,
+            restore_position=20.0,
+            restore_intent={"source": "local", "url": "/music/current.flac"},
+        )
+
+        self.assertTrue(result.committed)
+        self.assertEqual(seen, [False, True])
+        self.assertEqual(runtime.rate, 96_000)
+        self.assertEqual(runtime.current_file, "/music/current.flac")
+        self.assertEqual(runtime.position, 20.0)
+        self.assertTrue(runtime.paused)
+
+    async def test_restore_is_discarded_when_the_intent_changed_during_the_quiet_stage(self):
+        for released in (True, None):
+            with self.subTest(released=released):
+                runtime = FakeRuntime(muted=False)
+                answers = iter((True, False))
+
+                async def quiet(request):
+                    await FakeRuntime.quiet_old_source(runtime, request)
+                    return released
+
+                async def validate(_request, _snapshot):
+                    return next(answers)
+
+                runtime.quiet_old_source = quiet
+                runtime.validate_measurement_restore_intent = validate
+                coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+                result = await coordinator.restore_measurement(
+                    source="local",
+                    target_rate=96_000,
+                    target_url="/music/current.flac",
+                    target_track={"source": "local", "url": "/music/current.flac"},
+                    should_play=True,
+                    rate_change=True,
+                    reload_source=True,
+                    restore_intent={"source": "local", "url": "/music/current.flac"},
+                )
+
+                self.assertFalse(result.committed)
+                self.assertTrue(result.state["skipped"])
+                self.assertIn("quiet", runtime.events)
+                self.assertNotIn("rate", runtime.events)
+                self.assertNotIn("prepare", runtime.events)
+                self.assertFalse(coordinator.gate.closed)
+
     async def test_local_unknown_rate_is_committed_from_same_transition(self):
         runtime = FakeRuntime(muted=False)
         coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)

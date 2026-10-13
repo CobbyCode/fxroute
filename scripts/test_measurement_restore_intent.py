@@ -12,7 +12,10 @@ pre-measurement playback context):
   intersect the captured ones and a playing/paused status;
 - a changed track (the user started something new during the measurement),
   an ended player, a bumped generation, or a stopped/unknown Spotify state
-  must veto the restore so it can never overwrite the newer user playback.
+  must veto the restore so it can never overwrite the newer user playback;
+- once the restore itself released the player's stream for its rate change,
+  the empty player is no veto, while a changed track or a bumped generation
+  still is.
 
 Only the gate predicate is pinned here (pure function of playback state,
 player double and a stubbed MPRIS read); the restore sequence itself stays
@@ -54,7 +57,7 @@ class RestoreIntentGateTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _local_matches(
-        self, *, track: dict, player_state: dict, generation: int = GENERATION
+        self, *, track: dict, player_state: dict, generation: int = GENERATION, **gate
     ) -> bool:
         track_patch, player_patch, generation_patch = self._patch_live_state(
             track=track, player_state=player_state, generation=generation
@@ -67,6 +70,7 @@ class RestoreIntentGateTests(unittest.IsolatedAsyncioTestCase):
                 expected_file=LOCAL_FILE,
                 expected_spotify_identities=set(),
                 intent_generation=GENERATION,
+                **gate,
             )
 
     async def test_unchanged_local_playback_may_be_restored(self):
@@ -101,6 +105,36 @@ class RestoreIntentGateTests(unittest.IsolatedAsyncioTestCase):
                 generation=GENERATION + 1,
             ),
             "a newer playback intent invalidates the captured generation",
+        )
+
+    async def test_stream_released_by_the_restore_is_no_veto(self):
+        released_player = {"current_file": None, "ended": False}
+        self.assertFalse(
+            await self._local_matches(track=LOCAL_TRACK, player_state=released_player),
+            "a player without the file blocks a restore that did not release it",
+        )
+        self.assertTrue(
+            await self._local_matches(
+                track=LOCAL_TRACK, player_state=released_player, source_released=True
+            )
+        )
+
+    async def test_released_stream_keeps_the_track_and_generation_vetoes(self):
+        released_player = {"current_file": None, "ended": False}
+        self.assertFalse(
+            await self._local_matches(
+                track={"source": "local", "id": "t2", "url": "/music/t2.flac"},
+                player_state=released_player,
+                source_released=True,
+            )
+        )
+        self.assertFalse(
+            await self._local_matches(
+                track=LOCAL_TRACK,
+                player_state=released_player,
+                generation=GENERATION + 1,
+                source_released=True,
+            )
         )
 
     async def test_spotify_match_allows_restore(self):

@@ -464,6 +464,8 @@ class _RuntimeSnapshotMixin:
         expected_id = intent.get("id")
         if expected_id in {None, ""}:
             expected_id = None
+        # Set by the coordinator once this restore released the old stream.
+        released = {"source_released": True} if (_snapshot or {}).get("source_released") else {}
         return await self._deps.measurement_restore_intent_matches_live_state(
             expected_source=expected_source,
             expected_id=expected_id,
@@ -471,4 +473,5 @@ class _RuntimeSnapshotMixin:
             expected_file=intent.get("current_file"),
             expected_spotify_identities=expected_spotify_identities,
             intent_generation=intent.get("intent_generation"),
+            **released,
         )

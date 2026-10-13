@@ -1877,8 +1877,14 @@ def _local_intent_matches_live_state(
     expected_url: str | None,
     expected_file: str | None,
     intent_generation: Any,
+    source_released: bool = False,
 ) -> bool:
-    """Return whether the live MPV/local context still matches a captured intent."""
+    """Return whether the live MPV/local context still matches a captured intent.
+
+    ``source_released`` says the restore itself already released the player's
+    stream for its rate change, so the player holds no file any more; the
+    committed track and the intent generation still veto a user change.
+    """
     live_track = playback_state.current_track_info or {}
     if str(live_track.get("source") or "") != expected_source:
         return False
@@ -1887,12 +1893,13 @@ def _local_intent_matches_live_state(
     if expected_url and live_track.get("url") != expected_url:
         return False
 
-    state = dict(runtime.player_instance.state if runtime.player_instance else {})
-    current_file = state.get("current_file")
-    if not current_file or state.get("ended"):
-        return False
-    if expected_file and current_file != expected_file:
-        return False
+    if not source_released:
+        state = dict(runtime.player_instance.state if runtime.player_instance else {})
+        current_file = state.get("current_file")
+        if not current_file or state.get("ended"):
+            return False
+        if expected_file and current_file != expected_file:
+            return False
     return _measurement_restore_intent_generation_matches(intent_generation)
 
 
@@ -1911,6 +1918,7 @@ async def _measurement_restore_intent_matches_live_state(
     expected_file: str | None,
     expected_spotify_identities: set[str],
     intent_generation: Any,
+    source_released: bool = False,
 ) -> bool:
     if expected_source == "spotify":
         return await _spotify_intent_matches_live_state(
@@ -1923,6 +1931,7 @@ async def _measurement_restore_intent_matches_live_state(
         expected_url=expected_url,
         expected_file=expected_file,
         intent_generation=intent_generation,
+        source_released=source_released,
     )
 
 

@@ -85,6 +85,14 @@ commit assigns them a version.
   96 kHz with its own input as the microphone the sweep runs at 96 kHz
   without a rate change, not at 88.2 kHz. The lowest supported rate remains
   the fallback after that.
+- After a measurement that changed the sample rate, a source played by the
+  built-in player (local file, radio) was not restored: music stayed off, a
+  paused track was unloaded, and with Sample Rate on **Auto** the device
+  stayed on the idle rate instead of returning to the playback rate. The
+  restore releases the old stream for its rate change and then took the
+  player without a file for a playback change by the user. It now accounts
+  for its own release; starting or stopping something during the Measure
+  window still prevents the restore.
 - A sweep analysis at 88.2 kHz or above could stay in "Processing
   measurement…" for good and hold the measurement session until the service
   was restarted. Only at those rates are the timing search's dot products

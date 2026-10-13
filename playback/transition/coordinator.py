@@ -856,7 +856,9 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                         lambda: self._close_gate(stages.transition_id, audible_output=audible_output),
                     )
 
-                await self._stage(stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(active_request))
+                source_released = await self._stage(
+                    stages, "quiet-old-source", lambda: self.runtime.quiet_old_source(active_request)
+                )
 
                 if active_request.src_mode is not None:
                     overview = await self._stage(
@@ -870,7 +872,13 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     active_request.operation == "measurement-restore"
                     and active_request.restore_intent
                     and callable(restore_validator)
-                    and not await restore_validator(active_request, snapshot)
+                    # A rate change makes the quiet stage release the old
+                    # stream itself; the player no longer holding the file is
+                    # then no sign of a changed intent.
+                    and not await restore_validator(
+                        active_request,
+                        {**snapshot, "source_released": True} if source_released is True else snapshot,
+                    )
                 ):
                     return await self._skip_measurement_restore(
                         stages, active_request, "intent-changed-after-quiet"

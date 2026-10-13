@@ -109,7 +109,8 @@ class _RuntimeSourceMixin:
                  "sample_rate_hz": state.get("sample_rate")}
         return replace(request, target_url=track_id, target_track=track)
 
-    async def quiet_old_source(self, request: TransitionRequest) -> None:
+    async def quiet_old_source(self, request: TransitionRequest) -> bool | None:
+        """Quiet the old source; True when its MPV stream was released for a rate change."""
         if request.graph_only:
             # A graph-only reconciliation must not pause, reload, or otherwise
             # disturb the source.  The coordinator still owns the output gate.
@@ -243,6 +244,8 @@ class _RuntimeSourceMixin:
             released = await self._deps.wait_for_pipewire_mpv_release()
             if not released:
                 await asyncio.sleep(SOURCE_HANDOFF_SETTLE_MS / 1000)
+            return True
+        return None
 
     async def resolve_target_rate(self, request: TransitionRequest) -> int | None:
         """Resolve a post-load source rate while the output gate is closed."""

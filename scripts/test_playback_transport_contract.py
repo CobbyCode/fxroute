@@ -304,6 +304,63 @@ class QuietSourceContractTests(unittest.IsolatedAsyncioTestCase):
         player.set_volume.assert_called_once_with(0)
         player.set_pause.assert_called_once_with(True)
 
+    async def test_measurement_restore_reports_the_stream_it_released(self):
+        state = {"current_file": "/music/current.flac", "playing": False, "paused": True}
+
+        def stop_playback():
+            state["current_file"] = None
+
+        player = SimpleNamespace(
+            state=state,
+            set_volume=Mock(),
+            set_pause=Mock(),
+            stop_playback=Mock(side_effect=stop_playback),
+        )
+        track = {"source": "local", "id": "t1", "url": "/music/current.flac"}
+        generation = main.playback_state.playback_intent_generation
+        intent = dict(track, current_file="/music/current.flac", intent_generation=generation)
+
+        def restore(rate_change):
+            return TransitionRequest(
+                operation="measurement-restore",
+                source="local",
+                target_rate=96000,
+                target_url="/music/current.flac",
+                target_track=track,
+                should_play=False,
+                rate_change=rate_change,
+                reload_source=rate_change,
+                restore_intent=intent,
+            )
+
+        with patch.object(main.runtime, "player_instance", player), patch.object(
+            main.playback_state, "current_track_info", dict(track)
+        ), patch.object(main, "get_spotify_ui_state", new=AsyncMock(return_value={"status": "Paused"})), patch.object(
+            main, "_player_is_running", return_value=True
+        ), patch.object(
+            media_readiness, "wait_for_pipewire_mpv_release", new=AsyncMock(return_value=True)
+        ):
+            runtime = make_transition_runtime()
+            # Same rate: the stream stays, nothing is reported.
+            self.assertIsNone(await runtime.quiet_old_source(restore(False)))
+            player.stop_playback.assert_not_called()
+            self.assertTrue(await runtime.validate_measurement_restore_intent(restore(False), {}))
+
+            # Rate change: the stream is released and reported.
+            request = restore(True)
+            self.assertIs(await runtime.quiet_old_source(request), True)
+            player.stop_playback.assert_called_once_with()
+            self.assertIsNone(state["current_file"])
+            self.assertFalse(await runtime.validate_measurement_restore_intent(request, {}))
+            self.assertTrue(
+                await runtime.validate_measurement_restore_intent(request, {"source_released": True})
+            )
+            # A newer playback intent still vetoes the restore.
+            with patch.object(main.playback_state, "playback_intent_generation", generation + 1):
+                self.assertFalse(
+                    await runtime.validate_measurement_restore_intent(request, {"source_released": True})
+                )
+
     async def test_local_source_change_quiets_playing_spotify(self):
         player = SimpleNamespace(
             state={"current_file": "/music/new.flac", "playing": True, "paused": False},
