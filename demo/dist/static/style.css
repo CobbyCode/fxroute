@@ -10175,6 +10175,18 @@ input[type="number"]::-webkit-outer-spin-button {
     .effects-subwoofer-derived-delays {
         grid-column: 1 / -1;
     }
+
+    /* Combine keeps its three preset columns inside the two-column card
+       grid, where they are too narrow for "Preset 3 optional" on one line.
+       The wrapped label raises the row and the Preset 1 and 2 selects grew
+       into it (.url-input carries flex: 1). Labels stay on the top line,
+       the selects keep their natural height on a shared bottom line. */
+    .effects-combine-grid .field-group {
+        justify-content: space-between;
+    }
+    .effects-combine-grid .compare-select {
+        flex: 0 0 auto;
+    }
 }
 
 /* Narrow tablet: before the three channel columns could ever run into each

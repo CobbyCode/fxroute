@@ -249,6 +249,30 @@ class SafeAreaTests(unittest.TestCase):
         self.assertIn("bottom: max(3px, env(safe-area-inset-bottom))", CSS)
 
 
+class CombineTabletRowTests(unittest.TestCase):
+    """Combine: a wrapped "Preset 3 optional" label must not stretch the selects."""
+
+    TABLET = "@media (min-width: 761px) and (max-width: 1100px)"
+
+    def test_selects_keep_their_natural_height(self):
+        tablet = _media_block(RESPONSIVE, self.TABLET)
+        self.assertRegex(
+            tablet, r"\.effects-combine-grid \.compare-select\s*\{\s*flex:\s*0 0 auto;"
+        )
+
+    def test_labels_top_and_selects_bottom_share_their_lines(self):
+        tablet = _media_block(RESPONSIVE, self.TABLET)
+        self.assertRegex(
+            tablet, r"\.effects-combine-grid \.field-group\s*\{\s*justify-content:\s*space-between;"
+        )
+
+    def test_desktop_and_phone_rules_are_untouched(self):
+        outside = RESPONSIVE.replace(_media_block(RESPONSIVE, self.TABLET), "")
+        self.assertNotIn(".effects-combine-grid .compare-select", outside)
+        self.assertNotIn(".effects-combine-grid .field-group", outside)
+        self.assertIn(".effects-combine-grid .compare-select", CSS)
+
+
 class DeliberateBehaviorGuardTests(unittest.TestCase):
     """Item 10 stays as designed: meter hidden on very small phones."""
 

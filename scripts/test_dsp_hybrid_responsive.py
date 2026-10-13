@@ -14,7 +14,9 @@ from coming back:
    render ("-40.00", "20000"), because a number input clips silently,
 5. the Advanced room view keeps the speakers, the 1 m microphones and the
    seat apart for the side and rear speaker groups at every width, and the
-   speaker choice row stays on one line with its selected chip readable.
+   speaker choice row stays on one line with its selected chip readable,
+6. the three Combine preset selects are equally high and share one line; a
+   wrapped "Preset 3 optional" label stretched Preset 1 and 2 on a tablet.
 
 Runs the real rendered page (static server + stubbed audio API) in headless
 Chromium and skips cleanly when playwright is unavailable.
@@ -389,6 +391,22 @@ PEQ_ROW = """
 }
 """
 
+# The Combine tile: three preset selects, side by side above the phone
+# layout. `oneRow` is false where they stack and the line checks do not apply.
+COMBINE_ROW = """
+() => {
+    const selects = [...document.querySelectorAll('.effects-combine-grid select')];
+    const boxes = selects.map(select => select.getBoundingClientRect());
+    const labels = selects.map(select => select.parentElement.querySelector('label').getBoundingClientRect());
+    return {heights: boxes.map(box => box.height),
+            tops: boxes.map(box => box.top),
+            labelTops: labels.map(box => box.top),
+            floor: parseFloat(getComputedStyle(selects[0]).minHeight),
+            oneRow: new Set(boxes.map(box => Math.round(box.left))).size === selects.length,
+            whiteSpace: selects.map(select => getComputedStyle(select).whiteSpace)};
+}
+"""
+
 
 def _show_effects(page):
     page.evaluate("() => { switchTab('effects'); }")
@@ -485,6 +503,20 @@ def _run():
                 for pair in data["pairs"]:
                     check(f"[{width}px] Level/Alignment equally wide in {pair['group']}",
                           abs(pair["level"] - pair["align"]) <= 1, pair)
+
+                # The Combine preset selects: one height, one line, one text line.
+                combine = page.evaluate(COMBINE_ROW)
+                heights = combine["heights"]
+                check(f"[{width}px] Combine has three preset selects", len(heights) == 3, combine)
+                check(f"[{width}px] Combine selects are equally high and not stretched",
+                      max(heights) - min(heights) <= 1 and max(heights) <= combine["floor"] + 1, combine)
+                check(f"[{width}px] Combine select text stays on one line",
+                      all(value in ("pre", "nowrap") for value in combine["whiteSpace"]), combine)
+                if combine["oneRow"]:
+                    check(f"[{width}px] Combine selects share one line",
+                          max(combine["tops"]) - min(combine["tops"]) <= 1, combine)
+                    check(f"[{width}px] Combine labels share one line",
+                          max(combine["labelTops"]) - min(combine["labelTops"]) <= 1, combine)
 
                 # The PEQ add row: no overflow, no overlap, intact mode select.
                 page.evaluate("""() => document.querySelectorAll('.effects-disclosure-body')
