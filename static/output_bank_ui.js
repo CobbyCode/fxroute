@@ -530,6 +530,25 @@
         return `<a href="${deps.escapeHtml(deps.presetFileUrl(cleanName))}" data-tooltip="${deps.escapeHtml(cleanName)}">${deps.escapeHtml(displayName)}</a>`;
     }
 
+    // Under Listening/Chain: the active preset of every bank in the chain.
+    function renderEffectsBankPresets() {
+        const target = deps.getElements().effectsCompareBanks;
+        if (!target) return;
+        const catalog = deps.getState().outputSystem?.catalog;
+        const mod = outputState();
+        const entries = catalog && typeof mod?.activePresetOverview === 'function' ? mod.activePresetOverview(catalog) : [];
+        const selected = catalog?.modes?.[catalog.active_mode]?.selected_bank;
+        const html = entries.map((entry) => {
+            const name = entry.preset || 'Per-channel';
+            const selectedClass = entry.ids.includes(selected) ? ' is-selected' : '';
+            return `<span class="effects-compare-bank${selectedClass}" data-tooltip="${deps.escapeHtml(`${entry.label}: ${name}`)}">`
+                + `<span class="effects-compare-bank-key">${deps.escapeHtml(entry.label)}</span> `
+                + `<span class="effects-compare-bank-preset">${deps.escapeHtml(mod.compactPresetName(name))}</span></span>`;
+        }).join(' ');
+        // Unchanged markup stays in place, so an open tooltip is not rebuilt on every push.
+        if (target.innerHTML !== html) target.innerHTML = html;
+    }
+
     function renderEffectsCompare() {
         const fx = deps.getState().dsp;
         const presetEntries = fx.presets || [];
@@ -600,6 +619,7 @@
             if (deps.getElements().effectsCompareChain) deps.getElements().effectsCompareChain.textContent =
                 aggregateBanks.map(([id, bank]) => aggregateLabel(id, bank)).join(' · ') || 'No area banks';
         }
+        renderEffectsBankPresets();
         if (deps.getElements().effectsCompareToggle) deps.getElements().effectsCompareToggle.textContent = aggregate
             ? `Switch all to ${effectiveActiveSide === 'A' ? 'B' : 'A'}` : 'Compare A/B';
         syncEffectsDeleteButton();

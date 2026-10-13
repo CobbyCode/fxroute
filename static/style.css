@@ -6140,6 +6140,52 @@ select option:checked {
     overflow-wrap: anywhere;
 }
 
+/* Active preset of every bank in the chain: one chip per bank, wrapped in
+   lines of even length like the calibration overview. The badge styles its
+   spans as full-width lines, so the chip parts are named with the container. */
+.effects-compare-banks {
+    width: 100%;
+    margin-top: 0.3rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid rgba(110, 231, 183, 0.16);
+    font-size: 0.74rem;
+    line-height: 1.95;
+    text-wrap: balance;
+}
+
+.effects-compare-banks:empty {
+    display: none;
+}
+
+.effects-compare-banks .effects-compare-bank {
+    display: inline-block;
+    width: auto;
+    max-width: 100%;
+    padding: 0.1rem 0.28rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.effects-compare-banks .effects-compare-bank.is-selected {
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.34);
+}
+
+.effects-compare-banks .effects-compare-bank-key,
+.effects-compare-banks .effects-compare-bank-preset {
+    display: inline;
+    width: auto;
+}
+
+.effects-compare-banks .effects-compare-bank-key {
+    color: var(--text-secondary);
+    font-size: 0.66rem;
+}
+
 .effects-compare-active-badge.is-side-a {
     background: rgba(110, 231, 183, 0.1);
     border-color: rgba(110, 231, 183, 0.34);

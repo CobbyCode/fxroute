@@ -398,6 +398,48 @@ function compareState(catalog) {
     };
 }
 
+// Long preset names keep their start and their last word: generated names
+// tell the filter kind first and differ at the end.
+function compactPresetName(name, maxChars = 20) {
+    const clean = String(name || '').trim();
+    if (clean.length <= maxChars) return clean;
+    const words = clean.split(/\s+/);
+    const tail = words[words.length - 1];
+    let head = '';
+    for (const word of words.slice(0, -1)) {
+        const next = head ? `${head} ${word}` : word;
+        if (next.length + 1 + tail.length > maxChars) break;
+        head = next;
+    }
+    if (head) return `${head}…${tail}`;
+    return `${clean.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+}
+
+// Active preset of every bank in the active mode's chain, Global first.
+// Numbered banks in a row on the same preset share one entry ("Sub 1/2");
+// a bank whose channels listen to different presets has no single preset.
+function activePresetOverview(catalog) {
+    const mode = catalog?.active_mode;
+    const banks = catalog?.modes?.[mode]?.banks;
+    if (!banks) return [];
+    const ids = Object.keys(banks).sort((a, b) => (b === 'global') - (a === 'global'));
+    const entries = [];
+    for (const id of ids) {
+        const bank = banks[id] || {};
+        const label = bank.label || roleLabel(id, mode);
+        const preset = typeof bank.preset === 'string' && bank.preset ? bank.preset : null;
+        const numbered = /^(.*\D)(\d+)$/.exec(label);
+        const previous = entries[entries.length - 1];
+        if (numbered && preset && previous && previous.family === numbered[1] && previous.preset === preset) {
+            previous.ids.push(id);
+            previous.label = `${previous.label}/${numbered[2]}`;
+            continue;
+        }
+        entries.push({ ids: [id], label, preset, family: numbered ? numbered[1] : null });
+    }
+    return entries.map(({ ids: members, label, preset }) => ({ ids: members, label, preset }));
+}
+
 function buildMutation(kind, fields) {
     if (!MUTATION_KINDS.includes(kind)) throw new Error(`Unknown mutation kind: ${kind}`);
     return { kind, ...(fields || {}) };
@@ -534,6 +576,8 @@ function renderBankSelector(select, catalog, mode) {
         presetsForBank,
         peqParams,
         compareState,
+        compactPresetName,
+        activePresetOverview,
         buildMutation,
         fetchCatalog,
         applyMutation,

@@ -1277,6 +1277,7 @@ const elements = {
     measurementList: document.getElementById('measurement-list'),
     effectsCompareActive: document.getElementById('effects-compare-active'),
     effectsCompareChain: document.getElementById('effects-compare-chain'),
+    effectsCompareBanks: document.getElementById('effects-compare-banks'),
     effectsCompareRow: document.getElementById('effects-compare-row'),
     effectsToggleImportBtn: document.getElementById('effects-toggle-import'),
     effectsImportPanel: document.getElementById('effects-import-panel'),
