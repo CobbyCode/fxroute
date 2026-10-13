@@ -9,6 +9,8 @@
 
     const ui = root.FXRouteMeasurementUI || {};
     const dsp = root.FXRouteMeasurementDsp || {};
+    // FIR rate for a measurement that records no rate of its own.
+    const MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE = 48000;
     let deps = {
         getState: () => ({ measurement: {}, dsp: {} }),
         getElements: () => ({}),
@@ -17,7 +19,6 @@
         showToast: () => {},
         renderMeasurementPanel: () => {},
         scheduleMeasurementGraphRender: () => {},
-        saveMeasurementSetupSettings: () => {},
         collectEffectsExtras: () => ({}),
         appendBankBindingFields: () => {},
         measurementCommitSourceId: () => '',
@@ -157,7 +158,6 @@
         const conv = ensureMeasurementConvolverState();
         const previousPhaseMode = conv.phaseMode;
         const previousIrLength = String(conv.irLength ?? '');
-        const previousSampleRate = String(deps.getState().measurement?.measurementSampleRate ?? '');
         if (field === 'targetCurve') {
             const nextTarget = getMeasurementConvolverCurveOptions().some((curve) => curve.key === value) ? value : conv.targetCurve;
             if (nextTarget !== conv.targetCurve) {
@@ -199,13 +199,6 @@
                 conv.dipGuard = nextDipGuard;
                 clearMeasurementConvolverDraftForSettingsChange('Dip guard changed. Take L/R again.');
             }
-        }
-        if (field === 'sampleRate') {
-            deps.getState().measurement.measurementSampleRate = String(value || '48000');
-            if (String(deps.getState().measurement.measurementSampleRate) !== previousSampleRate) {
-                clearMeasurementConvolverDraftForSettingsChange('Sample rate changed. Take L/R again.');
-            }
-            void deps.saveMeasurementSetupSettings({ measurementSampleRate: Number(deps.getState().measurement.measurementSampleRate) });
         }
         if (field === 'phaseMode') conv.phaseMode = ui.measurementConvolverPhaseModes.includes(String(value)) ? String(value) : conv.phaseMode;
         if (field === 'irLength') conv.irLength = ui.measurementConvolverTapOptions.includes(Number(value)) ? String(value) : conv.irLength;
@@ -373,9 +366,17 @@
         deps.setTimeout(() => deps.getElements().measurementConvolverFeedback?.classList.remove('is-visible'), 2600);
     }
 
-    function getMeasurementConvolverSampleRate() {
-        const selected = Number(deps.getState().measurement?.measurementSampleRate);
-        return Number.isFinite(selected) && selected > 0 ? selected : 48000;
+    // A FIR is written at the rate its measurement ran at. Entries without an
+    // analysis rate fall back to the rate frozen with their target, then to
+    // the rate of their output context.
+    function getMeasurementConvolverSampleRate(measurement = {}) {
+        const candidates = [
+            getMeasurementAnalysisSampleRate(measurement),
+            measurement?.measurement_target?.sample_rate_hz,
+            measurement?.audio_output_context?.sample_rate_hz,
+        ];
+        const sampleRate = candidates.map(Number).find((value) => Number.isFinite(value) && value > 0);
+        return sampleRate || MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE;
     }
 
     function getMeasurementConvolverTypeOption(type = 'linear_4096') {
@@ -534,7 +535,7 @@
         if (!deps.requireConcreteFilterBank()) throw new Error('Select a filter bank for import or measurement.');
         const blocked = deps.measurementImportBlockedReason();
         if (blocked) throw new Error(blocked);
-        const sampleRate = Number(options.sampleRate) || getMeasurementConvolverSampleRate();
+        const sampleRate = Number(options.sampleRate) || MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE;
         const length = Number(options.irLength) || getMeasurementConvolverFirLength();
         const phaseMode = ui.measurementConvolverPhaseModes.includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
         const algorithmicFrames = ['linear', 'hybrid_aligned'].includes(phaseMode) ? Math.floor(length / 2) : 0;
@@ -655,7 +656,7 @@
                     dipGuard: conv.dipGuard,
                     safetyMarginDb: conv.safetyMarginDb,
                     autoGainDb: analysis.autoGainDb,
-                    sampleRate: getMeasurementConvolverSampleRate(),
+                    sampleRate: getMeasurementConvolverSampleRate(sourceMeasurement),
                     quality: conv.quality,
                     phaseMode: conv.phaseMode,
                     irLength: getMeasurementConvolverFirLength(),
@@ -719,9 +720,14 @@
         }
         if (mode === 'both') {
             const [leftMeta, rightMeta] = drafts.map((draft) => draft?.metadata || {});
-            const sameGeneration = ['sampleRate', 'quality', 'phaseMode', 'irLength'].every((key) => String(leftMeta[key] || '') === String(rightMeta[key] || ''));
+            if (String(leftMeta.sampleRate || '') !== String(rightMeta.sampleRate || '')) {
+                showMeasurementConvolverFeedback('L/R measurements use different sample rates');
+                deps.showToast('Left and Right measurements ran at different sample rates. Use two measurements taken at the same rate.', 'warning');
+                return;
+            }
+            const sameGeneration = ['quality', 'phaseMode', 'irLength'].every((key) => String(leftMeta[key] || '') === String(rightMeta[key] || ''));
             if (!sameGeneration) {
-                showMeasurementConvolverFeedback('Retake L/R with matching Convolver type and sample rate');
+                showMeasurementConvolverFeedback('Retake L/R with matching Convolver type');
                 deps.showToast('Left and Right convolver drafts use different FIR settings. Retake Both for a matched comparison preset.', 'warning');
                 return;
             }
@@ -755,7 +761,7 @@
         try {
             const draftMetadata = drafts[0]?.metadata || {};
             const generationOptions = {
-                sampleRate: draftMetadata.sampleRate || getMeasurementConvolverSampleRate(),
+                sampleRate: draftMetadata.sampleRate || MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE,
                 quality: draftMetadata.quality || conv.quality,
                 phaseMode: draftMetadata.phaseMode || conv.phaseMode,
                 irLength: draftMetadata.irLength || getMeasurementConvolverFirLength(),

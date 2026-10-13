@@ -30,7 +30,6 @@ function makeContext() {
         measurement: {
             activeEditor: 'none',
             houseCurveOptions: [],
-            measurementSampleRate: '48000',
             convolverAssistant: {
                 targetCurve: 'neutral',
                 rangeStartHz: 20,
@@ -58,7 +57,6 @@ function makeContext() {
         showToast: () => {},
         renderMeasurementPanel: () => {},
         scheduleMeasurementGraphRender: () => {},
-        saveMeasurementSetupSettings: () => {},
     });
     const context = {
         state,

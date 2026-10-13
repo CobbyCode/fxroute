@@ -4,9 +4,9 @@
   1. 2.2 sub level -80 dB round-trip: AutoSub mutes inactive 2.2 subs to
      -80 (backend/runtime accept -80..12). The frontend clamp (-24) showed
      -24 and re-saved -24 (+56 dB unmute). Frontend now keeps -80.
-  2. Convolver draft invalidation: changing sampleRate or irLength (incl.
-     the legacy quality path) after Take L/R left a stale draft; Create
-     silently used the old rate/taps. Both changes now invalidate the draft.
+  2. Convolver draft invalidation: changing irLength (incl. the legacy
+     quality path) after Take L/R left a stale draft; Create silently used
+     the old taps. The change now invalidates the draft.
   3. Headroom range: backend accepts whole dB -9..0, UI offered only -1..-6,
      so stored 0/-7/-8/-9 rendered as -3 and re-saved as -3. UI now spans
      the backend contract.
@@ -55,15 +55,13 @@ def _check_sub_mute_minus80() -> None:
 def _check_convolver_invalidation() -> None:
     text = (ROOT / "static" / "measurement_convolver_editor.js").read_text()
     assert "const previousIrLength = String(conv.irLength" in text
-    assert "const previousSampleRate = String(deps.getState().measurement?.measurementSampleRate" in text
-    assert "Sample rate changed. Take L/R again." in text
     assert "Convolver taps changed. Take L/R again." in text
     # Taps check must run after the legacy quality remap (which sets irLength
     # without passing through the irLength branch).
     taps_pos = text.index("Convolver taps changed. Take L/R again.")
     quality_pos = text.index("if (field === 'quality') {")
     assert quality_pos < taps_pos, "taps check must cover the quality remap path"
-    print("convolver sampleRate/irLength invalidate stale draft: ok")
+    print("convolver irLength invalidates stale draft: ok")
 
 
 def _check_headroom_range() -> None:

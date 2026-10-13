@@ -209,7 +209,7 @@ window.fetch = (url, opts) => {
         if (opts?.method === 'PATCH') {
             window.__measurementCalls.push({ type: 'settings', payload: JSON.parse(opts.body) });
         }
-        return json({ measurement_settings: { measurementSampleRate: 48000 } });
+        return json({ measurement_settings: {} });
     }
     if (u.includes('/api/measurements/inputs')) {
         return json({

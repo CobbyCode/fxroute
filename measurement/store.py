@@ -21,6 +21,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from audio.custom_input_mapping import card_base
 from audio.tool_env import c_locale_env
 from measurement.reference_channels import resolve_reference_channels
 from measurement.audio import MeasurementAudioAdapter
@@ -157,9 +158,14 @@ class MeasurementStore:
         # it the store behaves exactly as before the frozen-target era.
         self.measurement_target_provider: Callable[[str, int], dict[str, Any]] | None = None
         # Optional application hook: the rate the selected output runs at right
-        # now.  Without it an unavailable stored measurement rate falls back as
-        # before, to 48 kHz or the lowest supported rate.
+        # now.  Without it an input that does not offer 48 kHz measures at the
+        # lowest rate it supports.
         self.running_sample_rate_provider: Callable[[], int | None] | None = None
+        # Optional application hook: the device a measurement entry can move
+        # to another rate tier and the rates of all its tiers, as
+        # {"device", "rates"}, or None.  Without it only the rates an input
+        # offers right now count.
+        self.tier_rates_provider: Callable[[], dict[str, Any] | None] | None = None
         self.config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (self.home / ".config"))
         self.state_root = Path(os.environ.get("XDG_STATE_HOME") or (self.home / ".local" / "state"))
         self.measurements_dir = self.config_root / "fxroute" / "measurements"
@@ -315,10 +321,8 @@ class MeasurementStore:
         }
 
     def _measurement_inputs_with_sample_rate(self, inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        settings = self._read_settings().get("measure", {})
-        selection = resolve_measurement_input_selection(inputs, settings if isinstance(settings, dict) else {})
-        selected_id = selection.get("input_id")
         running_rate = functools.cache(self._running_sample_rate)
+        tier_reach = functools.cache(self._tier_reach)
         annotated: list[dict[str, Any]] = []
         for item in inputs:
             source_sample_rate = item.get("sample_rate")
@@ -327,8 +331,8 @@ class MeasurementStore:
                 supported_rates = [source_sample_rate]
             measurement_rate = resolve_measurement_sample_rate(
                 {"supported_rates": supported_rates},
-                settings if isinstance(settings, dict) and item.get("id") == selected_id else {},
                 running_rate,
+                lambda item=item: _input_tier_rates(item, tier_reach()),
             )
             annotated.append({
                 **item,
@@ -1931,9 +1935,9 @@ class MeasurementStore:
         inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
         settings = self._read_settings().get("measure", {})
         selected = resolve_measurement_input_selection(inputs, settings if isinstance(settings, dict) else {})
-        input_item = next((item for item in inputs if item.get("id") == selected.get("input_id")), None)
+        input_item = next((item for item in inputs if item.get("id") == selected.get("input_id")), None) or {}
         return resolve_measurement_sample_rate(
-            input_item or {}, settings if isinstance(settings, dict) else {}, self._running_sample_rate,
+            input_item, self._running_sample_rate, lambda: _input_tier_rates(input_item, self._tier_reach()),
         )
 
     def _running_sample_rate(self) -> int | None:
@@ -1947,6 +1951,18 @@ class MeasurementStore:
             logger.warning("Running sample rate unavailable for the measurement rate: %s", exc)
             return None
         return rate if type(rate) is int and rate > 0 else None
+
+    def _tier_reach(self) -> dict[str, Any] | None:
+        """Device a measurement entry can move to another rate tier (None without one)."""
+        provider = self.tier_rates_provider
+        if provider is None:
+            return None
+        try:
+            reach = provider()
+        except Exception as exc:
+            logger.warning("Rate tiers unavailable for the measurement rate: %s", exc)
+            return None
+        return reach if isinstance(reach, dict) else None
 
     def _load_wav_array(self, capture_path: Path) -> tuple[int, np.ndarray]:
         with wave.open(str(capture_path), "rb") as handle:
@@ -2958,29 +2974,37 @@ def _normalize_supported_measurement_rates(value: Any) -> list[int]:
     return [rate for rate in SAMPLE_RATE_CANDIDATES if rate in {int(item) for item in value if str(item).isdigit()}]
 
 
+def _input_tier_rates(input_item: dict[str, Any], reach: dict[str, Any] | None) -> list[int]:
+    """Rates a measurement entry can move this input to: the tiers of its own device."""
+    device = card_base(input_item.get("node_name"))
+    if not reach or not device or device != reach.get("device"):
+        return []
+    return _normalize_supported_measurement_rates(reach.get("rates"))
+
+
 def resolve_measurement_sample_rate(
     input_item: dict[str, Any],
-    settings: dict[str, Any],
     running_rate: Callable[[], int | None] | None = None,
+    tier_rates: Callable[[], list[int]] | None = None,
 ) -> int:
+    """Rate a measurement on ``input_item`` runs at.
+
+    48 kHz whenever the input offers it, right now or on a tier the
+    measurement entry moves its device to (``tier_rates``).  Otherwise the
+    rate the hardware already runs at, so the measurement needs no rate
+    change, then the lowest rate the input offers.
+    """
     supported = _normalize_supported_measurement_rates(input_item.get("supported_rates"))
     if not supported:
         source_rate = input_item.get("sample_rate")
         supported = [int(source_rate)] if isinstance(source_rate, int) and source_rate > 0 else [MEASUREMENT_DEFAULT_SAMPLE_RATE]
-    requested = settings.get("measurementSampleRate")
-    try:
-        requested = int(requested)
-    except (TypeError, ValueError):
-        requested = MEASUREMENT_DEFAULT_SAMPLE_RATE
-    if requested in supported:
-        return requested
-    # The stored rate is not available on this input: stay on the rate the
-    # hardware already runs at, so the measurement needs no rate change.
+    if MEASUREMENT_DEFAULT_SAMPLE_RATE in supported:
+        return MEASUREMENT_DEFAULT_SAMPLE_RATE
+    if tier_rates is not None and MEASUREMENT_DEFAULT_SAMPLE_RATE in tier_rates():
+        return MEASUREMENT_DEFAULT_SAMPLE_RATE
     running = running_rate() if running_rate is not None else None
     if running in supported:
         return running
-    if MEASUREMENT_DEFAULT_SAMPLE_RATE in supported:
-        return MEASUREMENT_DEFAULT_SAMPLE_RATE
     return supported[0]
 
 
@@ -3080,12 +3104,6 @@ def measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[st
     reference_input_channel_right = measure_settings.get("selectedReferenceInputChannelRight")
     if reference_input_channel_right is None:
         reference_input_channel_right = measure_settings.get("reference_input_channel_right")
-    try:
-        measurement_rate = int(measure_settings.get("measurementSampleRate") or MEASUREMENT_DEFAULT_SAMPLE_RATE)
-    except (TypeError, ValueError):
-        measurement_rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
-    if measurement_rate <= 0:
-        measurement_rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
     return {
         "selectedInputId": str(measure_settings.get("selectedInputId") or ""),
         "selectedInputKey": str(measure_settings.get("selectedInputKey") or ""),
@@ -3098,5 +3116,4 @@ def measurement_setup_settings_from_payload(settings: dict[str, Any]) -> dict[st
         "selectedReferenceInputChannel": normalize_measurement_optional_input_channel(reference_input_channel),
         "selectedReferenceInputChannelLeft": normalize_measurement_optional_input_channel(reference_input_channel_left),
         "selectedReferenceInputChannelRight": normalize_measurement_optional_input_channel(reference_input_channel_right),
-        "measurementSampleRate": measurement_rate,
     }

@@ -29,7 +29,7 @@ const names = [
     'measurementPeqPresetName', 'measurementPeqTakeLeftBtn', 'measurementPeqTakeRightBtn',
     'measurementPeqTakeBothBtn', 'measurementPeqCreateBtn', 'measurementConvolverTarget',
     'measurementConvolverRangeStart', 'measurementConvolverRangeEnd', 'measurementConvolverMaxBoost',
-    'measurementConvolverMaxCut', 'measurementConvolverDipGuard', 'measurementConvolverSampleRate',
+    'measurementConvolverMaxCut', 'measurementConvolverDipGuard',
     'measurementConvolverPhaseMode', 'measurementConvolverIrLength', 'measurementConvolverSummary',
     'measurementConvolverPresetName', 'measurementConvolverWarnings', 'measurementConvolverTakeLeftBtn',
     'measurementConvolverTakeRightBtn', 'measurementConvolverTakeBothBtn', 'measurementConvolverCreateBtn',
@@ -83,7 +83,7 @@ const peq = { enabled: true, filters: [{ id: 'filter-1', type: 'bell', color: '#
 const conv = { targetCurve: 'neutral', rangeStartHz: 20, rangeEndHz: 250,
     maxBoostDb: 6, maxCutDb: -9, dipGuard: 'off', phaseMode: 'minimum', irLength: '8192', quality: 'minimum_8192',
     draft: { left: null, right: null, presetName: '', nameTouched: false, notice: '' } };
-const ctx = { measurementState: { measurementSampleRate: '48000' },
+const ctx = { measurementState: {},
     current: null, measurements: [], graphEntries: [], assistMode: 'peq', activeEditor: 'peq',
     graphView: 'freq', frequencyView: true, peq, conv, activePeqFilter: peq.filters[0] };
 

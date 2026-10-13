@@ -94,6 +94,11 @@ assert.match(app, /FXRouteMeasurementEditorsUI\.renderMeasurementPanelEditorsSec
 assert.match(app, /FXRouteMeasurementEditorsUI\.bindMeasurementEditorDelegation\(\);\s+window\.FXRouteMeasurementSavedUI\.bindMeasurementSavedListDelegation\(\);/);
 assert.match(peqEditor, /if \(mode !== 'both' && deps\.measurementBankSumsBothInputs\(\)\)/);
 assert.match(convolverEditor, /if \(mode === 'both' && deps\.measurementBankSumsBothInputs\(\)\)/);
+// The convolver assistant has no rate control and never touches the
+// measurement rate: a FIR takes the rate of its source measurement.
+assert.doesNotMatch(index, /measurement-convolver-sample-rate|data-measurement-convolver-field="sampleRate"/);
+assert.doesNotMatch(convolverEditor, /measurementSampleRate|saveMeasurementSetupSettings/);
+assert.match(convolverEditor, /sampleRate: getMeasurementConvolverSampleRate\(sourceMeasurement\),/);
 assert.match(index, /id="measurement-repeat-start"[^>]*>Start LR Repeat<\/button>/);
 assert.match(index, /id="measurement-repeat-note" class="measurement-repeat-help">Repeated L\/R sweeps for more precision\.<\/span>/);
 // A one-sided area (fed by one input only) must disable the repeat and explain

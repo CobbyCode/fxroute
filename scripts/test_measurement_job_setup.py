@@ -280,14 +280,14 @@ class MeasurementJobSetupTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "bank id"):
                 store._freeze_measurement_job_target(job, "", {**narrowed, "bank_id": ""})
 
-    async def test_selected_measurement_rate_is_stored_on_job(self):
+    async def test_measurement_rate_is_stored_on_job(self):
         with tempfile.TemporaryDirectory() as tempdir:
             store = MeasurementStore(home=Path(tempdir))
             store._discover_capture_inputs = lambda: [{
                 "id": "mic", "label": "Mic", "node_serial": "serial-1", "node_name": "capture_1",
                 "channels": 2, "sample_rate": 192_000, "supported_rates": [48_000, 96_000, 192_000], "available": True,
             }]
-            store._write_settings({"measure": {"selectedInputId": "mic", "measurementSampleRate": 48_000}})
+            store._write_settings({"measure": {"selectedInputId": "mic"}})
             setup = await store._prepare_measurement_job_setup(
                 input_id="mic", input_key="", mic_input_channel="1", reference_input_channel=None,
                 calibration_filename=None, calibration_bytes=None, calibration_ref=None,

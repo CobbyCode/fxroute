@@ -50,7 +50,6 @@ function extractFunction(name, from = convolverSource) {
 function makeContext() {
     const state = {
         measurement: {
-            measurementSampleRate: '48000',
             convolverAssistant: {
                 targetCurve: 'neutral',
                 rangeStartHz: 20,

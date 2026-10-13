@@ -12,12 +12,10 @@
         getDocument: () => root.document,
         renderMeasurementArea: () => {},
         isSelectFocused: () => false,
-        getSelectedMeasurementInput: () => null,
         getSelectedMeasurementInputChannelCount: () => 1,
         getMeasurementReferenceWarning: () => '',
         measurementModeReady: () => false,
         escapeHtml: (value) => String(value == null ? '' : value),
-        formatRateKhz: (rate) => String(rate),
         measurementAreaBadge: () => null,
         syncMeasurementSweepButton: () => {},
         getActiveMeasurementKind: () => '',
@@ -87,13 +85,6 @@
                 : availableInputs;
             elements.measurementInputSelect.innerHTML = inputs.map(input => `<option value="${deps.escapeHtml(input.id)}" ${input.id === measurementState.selectedInputId ? 'selected' : ''}>${deps.escapeHtml(input.label)}</option>`).join('');
             elements.measurementInputSelect.disabled = measurementState.inputsLoading || !measurementState.hostCaptureAvailable;
-        }
-        if (elements.measurementConvolverSampleRate && !deps.isSelectFocused(elements.measurementConvolverSampleRate)) {
-            const selectedInput = deps.getSelectedMeasurementInput();
-            const rates = selectedInput?.supportedRates?.length ? selectedInput.supportedRates : [48000];
-            elements.measurementConvolverSampleRate.innerHTML = rates.map(rate => `<option value="${deps.escapeHtml(rate)}">${deps.formatRateKhz(rate)}</option>`).join('');
-            elements.measurementConvolverSampleRate.value = String(measurementState.measurementSampleRate || 48000);
-            elements.measurementConvolverSampleRate.disabled = measurementState.startInFlight || !deps.measurementModeReady();
         }
         if (elements.measurementInputRefreshBtn) {
             elements.measurementInputRefreshBtn.disabled = measurementState.startInFlight || measurementState.inputsLoading;

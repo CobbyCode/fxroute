@@ -32,7 +32,7 @@ function element() {
 const names = [
     'measurementMain', 'measurementSetupCard', 'measurementSetupToggleBtn', 'measurementSetupStatus',
     'measurementModeNote', 'measurementInputGroup', 'measurementInputSelect',
-    'measurementConvolverSampleRate', 'measurementInputRefreshBtn', 'measurementInputChannelGrid',
+    'measurementInputRefreshBtn', 'measurementInputChannelGrid',
     'measurementReferenceSingleGroup', 'measurementReferenceLeftGroup', 'measurementReferenceRightGroup',
     'measurementMicInputChannelSelect', 'measurementReferenceInputChannelSelect',
     'measurementReferenceInputChannelLeftSelect', 'measurementReferenceInputChannelRightSelect',
@@ -57,20 +57,18 @@ panel.init({
     }),
     renderMeasurementArea: () => eventOrder.push('area'),
     isSelectFocused: (select) => focused.has(select),
-    getSelectedMeasurementInput: () => ({ supportedRates: [44100, 48000] }),
     getSelectedMeasurementInputChannelCount: () => 4,
     getMeasurementReferenceWarning: () => 'Reference conflict',
     measurementModeReady: () => true,
     escapeHtml: (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;'),
-    formatRateKhz: (rate) => `${rate / 1000} kHz`,
 });
 
 const measurementState = {
     setupOpen: true, startInFlight: false, modeNote: 'Host capture',
-    displaySmoothing: '1/6-oct', inputs: [{ id: 'mic', label: 'Mic & <line>', supportedRates: [44100, 48000] }],
+    displaySmoothing: '1/6-oct', inputs: [{ id: 'mic', label: 'Mic & <line>' }],
     selectedInputId: 'mic', selectedMicInputChannel: '2', selectedReferenceInputChannel: '3',
     selectedReferenceInputChannelLeft: '3', selectedReferenceInputChannelRight: '4',
-    hostCaptureAvailable: true, measurementSampleRate: '44100',
+    hostCaptureAvailable: true,
 };
 panel.renderMeasurementPanelSetupSection({ measurementState, frequencyView: true, graphView: 'freq' });
 assert.equal(elements.measurementSetupStatus.parentElement, elements.measurementSetupCard);
@@ -84,8 +82,6 @@ assert.equal(view.attributes['aria-pressed'], 'true');
 panel.renderMeasurementPanelInputsSection({ measurementState });
 assert.match(elements.measurementInputSelect.innerHTML, /Mic &amp; &lt;line>/);
 assert.equal(elements.measurementInputSelect.disabled, false);
-assert.match(elements.measurementConvolverSampleRate.innerHTML, /44\.1 kHz/);
-assert.equal(elements.measurementConvolverSampleRate.value, '44100');
 assert.equal(elements.measurementInputChannelGrid.classList.contains('is-split'), true);
 assert.equal(elements.measurementReferenceSingleGroup.classList.contains('hidden'), true);
 assert.equal(elements.measurementReferenceLeftGroup.classList.contains('hidden'), false);
@@ -93,7 +89,7 @@ assert.match(elements.measurementReferenceInputChannelRightSelect.innerHTML, /va
 assert.equal(elements.measurementReferenceWarning.textContent, 'Reference conflict');
 assert.equal(elements.measurementReferenceWarning.classList.contains('hidden'), false);
 
-const protectedSelects = [elements.measurementInputSelect, elements.measurementConvolverSampleRate,
+const protectedSelects = [elements.measurementInputSelect,
     elements.measurementMicInputChannelSelect, elements.measurementReferenceInputChannelLeftSelect];
 for (const select of protectedSelects) {
     focused.add(select);

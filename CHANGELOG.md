@@ -44,6 +44,27 @@ commit assigns them a version.
 - **Speaker Auto Alignment** stays unavailable in Surround because the Global
   bank is group-scoped there, not a whole-speaker bank.
 
+### Measurement
+
+- The Convolver assistant no longer has a **Sample Rate** selector. A
+  generated FIR is written at the sample rate of the measurement it is built
+  from; a saved run without a recorded analysis rate falls back to the rate
+  of its frozen target, then of its output context, then 48 kHz. The native
+  convolver resamples the IR to the engine rate on load as before, and the
+  tap count stays as selected. Left and Right taken from measurements at
+  different rates are refused.
+- The measurement rate no longer comes from a stored setting: the removed
+  selector was its only control, and a value stored earlier is ignored. A
+  sweep runs at 48 kHz whenever the measurement input offers it. With Sample
+  Rate on **Auto** this includes an input of a rate-tiered output interface
+  that sits on a higher tier: the measurement entry re-probes the device
+  into the tier that carries 48 kHz, so the rate no longer depends on what
+  played last. With a **Fixed** rate the device stays on its tier and its own
+  input measures at the rate it runs at (Fixed 96 kHz with a Scarlett input:
+  96 kHz). An input limited to 48 kHz measures at 48 kHz under either policy.
+  An input without 48 kHz uses the running rate when it supports it, then
+  its lowest rate.
+
 ### Fixes
 
 - Suite contracts that the surround measurement work left stale now match the
@@ -58,12 +79,12 @@ commit assigns them a version.
   rate change, and closing the Measure window returns the device to the tier
   of the playback rate. An input that claims the 48 kHz carrier in the
   meantime keeps it.
-- A measurement whose saved rate the microphone input does not offer now
-  stays on the rate the output already runs at, when the input supports it,
+- A measurement on a microphone input that does not offer 48 kHz now stays
+  on the rate the output already runs at, when the input supports it,
   instead of dropping to the lowest supported rate. On a Scarlett at Fixed
   96 kHz with its own input as the microphone the sweep runs at 96 kHz
-  without a rate change, not at 88.2 kHz. 48 kHz and the lowest supported
-  rate remain the fallbacks after that.
+  without a rate change, not at 88.2 kHz. The lowest supported rate remains
+  the fallback after that.
 - A sweep analysis at 88.2 kHz or above could stay in "Processing
   measurement…" for good and hold the measurement session until the service
   was restarted. Only at those rates are the timing search's dot products

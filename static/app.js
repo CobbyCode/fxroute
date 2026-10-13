@@ -399,12 +399,10 @@ window.FXRouteMeasurementPanelUI?.init({
     getElements: () => elements,
     renderMeasurementArea: () => renderMeasurementArea(),
     isSelectFocused: (select) => isSelectFocused(select),
-    getSelectedMeasurementInput: () => window.FXRouteMeasurementSetup.getSelectedMeasurementInput(),
     getSelectedMeasurementInputChannelCount: () => window.FXRouteMeasurementSetup.getSelectedMeasurementInputChannelCount(),
     getMeasurementReferenceWarning: () => window.FXRouteMeasurementSetup.getMeasurementReferenceWarning(),
     measurementModeReady: () => measurementModeReady(),
     escapeHtml: (value) => escapeHtml(value),
-    formatRateKhz: (rate) => formatRateKhz(rate),
     measurementAreaBadge: (measurement) => window.FXRouteMeasurementSavedUI.measurementAreaBadge(measurement),
     syncMeasurementSweepButton: () => window.FXRouteMeasurementJob.syncMeasurementSweepButton(),
     getActiveMeasurementKind: () => window.FXRouteMeasurementJob.getActiveMeasurementKind(),
@@ -534,7 +532,6 @@ window.FXRouteMeasurementConvolverEditor?.init({
     showToast: (message, kind) => showToast(message, kind),
     renderMeasurementPanel: () => renderMeasurementPanel(),
     scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
-    saveMeasurementSetupSettings: (patch) => window.FXRouteMeasurementSetup.saveMeasurementSetupSettings(patch),
     collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
     appendBankBindingFields: (formData) => window.FXRouteBankUI.appendBankBindingFields(formData),
     measurementCommitSourceId: () => measurementCommitSourceId(),
@@ -837,7 +834,6 @@ let state = {
         speakerAlignResult: null,
         speakerAlignResults: null,
         statusText: 'Sweep ready. Calibration file is optional.',
-        measurementSampleRate: '48000',
         assistMode: 'peq',
         convolverAssistant: {
             targetCurve: 'neutral',
@@ -1270,7 +1266,6 @@ const elements = {
     measurementConvolverMaxBoost: document.getElementById('measurement-convolver-max-boost'),
     measurementConvolverMaxCut: document.getElementById('measurement-convolver-max-cut'),
     measurementConvolverDipGuard: document.getElementById('measurement-convolver-dip-guard'),
-    measurementConvolverSampleRate: document.getElementById('measurement-convolver-sample-rate'),
     measurementConvolverPhaseMode: document.getElementById('measurement-convolver-phase-mode'),
     measurementConvolverIrLength: document.getElementById('measurement-convolver-ir-length'),
     measurementConvolverPresetName: document.getElementById('measurement-convolver-preset-name'),
@@ -5138,7 +5133,7 @@ function setupMeasurementActions() {
     if (elements.measurementCustomHouseCurveCreateBtn) {
         elements.measurementCustomHouseCurveCreateBtn.addEventListener('click', () => { void window.FXRouteMeasurementCalibration.createCustomHouseCurve(); });
     }
-    [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverMaxCut, elements.measurementConvolverDipGuard, elements.measurementConvolverSampleRate, elements.measurementConvolverPhaseMode, elements.measurementConvolverIrLength].forEach((input) => {
+    [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverMaxCut, elements.measurementConvolverDipGuard, elements.measurementConvolverPhaseMode, elements.measurementConvolverIrLength].forEach((input) => {
         if (!input) return;
         const commit = () => {
             setMeasurementActiveEditor('none');

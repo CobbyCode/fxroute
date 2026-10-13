@@ -49,9 +49,6 @@
         if (applies('selectedReferenceInputChannelRight') && Object.prototype.hasOwnProperty.call(settings, 'selectedReferenceInputChannelRight')) {
             deps.getState().measurement.selectedReferenceInputChannelRight = String(settings.selectedReferenceInputChannelRight || '');
         }
-        if (applies('measurementSampleRate') && Object.prototype.hasOwnProperty.call(settings, 'measurementSampleRate')) {
-            deps.getState().measurement.measurementSampleRate = String(settings.measurementSampleRate || '48000');
-        }
         normalizeMeasurementInputChannelSelections();
     }
 
@@ -108,8 +105,6 @@
                     label: String(input.label || input.id || `Input ${index + 1}`),
                     note: String(input.note || ''),
                     channels: Math.max(1, Number(input.channels || 1)),
-                    supportedRates: Array.isArray(input.supported_rates) ? input.supported_rates.map(Number).filter(rate => Number.isFinite(rate) && rate > 0) : [],
-                    measurementSampleRate: Number(input.measurement_sample_rate || input.sample_rate || 0),
                     nodeName: String(input.node_name || ''),
                     persistentId: String(input.persistent_id || ''),
                 }))
@@ -130,10 +125,6 @@
                 deps.getState().measurement.selectedInputKey = String(selection.persistent_id || previousInputKey || '');
                 deps.getState().measurement.selectedInputConfigured = !!selection.configured;
                 deps.getState().measurement.selectedInputUnavailable = !!selection.unavailable;
-            }
-            const selectedMeasurementInput = inputs.find(input => input.id === deps.getState().measurement.selectedInputId);
-            if (selectedMeasurementInput?.measurementSampleRate > 0) {
-                deps.getState().measurement.measurementSampleRate = String(selectedMeasurementInput.measurementSampleRate);
             }
             normalizeMeasurementInputChannelSelections();
             // A successful scan clears its own earlier load error; outcomes of

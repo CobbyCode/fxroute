@@ -64,7 +64,7 @@ class BackendOriginMiddlewareTests(unittest.TestCase):
     def test_foreign_origin_patch_is_rejected_before_measurement_handler(self):
         response = self.client.patch(
             "/api/measurements/settings",
-            json={"measurementSampleRate": 48000},
+            json={"selectedMicInputChannel": "1"},
             headers=FOREIGN_ORIGIN,
         )
         self.assert_cross_origin_rejected(response)

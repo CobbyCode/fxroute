@@ -504,6 +504,8 @@ from playback.state import PlaybackState
 import playback.source_policy as source_policy
 import audio.samplerate as samplerate
 from audio import alsa_ctl, src_policy
+from audio.custom_input_mapping import card_base
+from audio.device_profiles import device_rates
 from audio.src_latency import SrcLatencyReader
 from library.core import (
     LibraryScanner,
@@ -3168,6 +3170,7 @@ async def lifespan(app: FastAPI):
             measurement_store.output_mask_clear = getattr(runtime.dsp_runtime, "clear_output_mask", None)
             measurement_store.measurement_target_provider = _freeze_measurement_target
             measurement_store.running_sample_rate_provider = _running_output_sample_rate
+            measurement_store.tier_rates_provider = _measurement_tier_rates
         runtime_loop = asyncio.get_running_loop()
 
         def _sync_measurement_control(method_name):
@@ -5186,6 +5189,22 @@ def _running_output_sample_rate() -> int | None:
     """Sample rate the selected output runs at right now (None when unknown)."""
     rate = get_samplerate_status().get("active_rate")
     return rate if isinstance(rate, int) and rate > 0 else None
+
+
+def _measurement_tier_rates() -> dict | None:
+    """Device and tier rates a measurement may switch between (Auto policy only).
+
+    The measurement entry reprobes a rate-tiered selected output into the tier
+    of the measurement rate, which moves that device's own inputs with it.  A
+    Fixed policy keeps the device on the tier of its rate.
+    """
+    if samplerate.load_sample_rate_policy().get("mode") != "auto":
+        return None
+    overview = get_audio_output_overview()
+    selected = overview.get("selected_output") or overview.get("current_output") or {}
+    rates = device_rates((selected.get("device_profile") or {}).get("tiers") or [])
+    device = card_base(selected.get("key"))
+    return {"device": device, "rates": rates} if device and rates else None
 
 
 def _live_measurement_sample_rate() -> int:

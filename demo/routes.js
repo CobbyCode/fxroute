@@ -327,7 +327,6 @@
         selectedInputConfigured: true,
         selectedMicInputChannel: '1',
         ...measurementReferenceSettings(),
-        measurementSampleRate: 48000,
     };
     function setMeasurementCaptureInput(input, force) {
         if (!input || (!force && input.id === measurementSettings.selectedInputId)) return;
@@ -341,7 +340,6 @@
             // mic to input 1 and the reference to that device's defaults.
             selectedMicInputChannel: '1',
             ...measurementReferenceSettings(),
-            measurementSampleRate: Number(input.measurement_sample_rate) || 48000,
         };
     }
     let outputMode = {
@@ -3777,8 +3775,6 @@
             }
             const inputKey = pick('selectedInputKey', 'input_key');
             if (inputKey !== undefined) measurementSettings.selectedInputKey = String(inputKey || '');
-            const rate = pick('measurementSampleRate', 'measurement_sample_rate');
-            if (rate !== undefined) measurementSettings.measurementSampleRate = Number(rate) || 48000;
             return j({ status: 'ok', measurement_settings: { ...measurementSettings } });
         }
         // Calibration + house-curve files: the demo ships the .104 mic

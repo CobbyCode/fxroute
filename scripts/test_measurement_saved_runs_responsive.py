@@ -133,7 +133,7 @@ window.fetch = (url, opts) => {
         selected_output: { key: 'default', name: 'Default', active: true }, output_mode: { mode: 'stereo' } });
     if (u.includes('/api/status')) return json({ source: 'local', status: 'Stopped' });
     if (u.includes('/api/dsp/presets')) return json({ available: true, preset_count: 0, active_preset: 'Neutral', presets: [] });
-    if (u.includes('/api/measurements/settings')) return json({ measurement_settings: { measurementSampleRate: 48000 } });
+    if (u.includes('/api/measurements/settings')) return json({ measurement_settings: {} });
     if (u.includes('/api/measurements/inputs')) return json({
         inputs: [{ id: 'mic-1', label: DEVICE, channels: 18, persistent_id: 'mic-key', measurement_sample_rate: 48000 }],
         selection: { input_id: 'mic-1', persistent_id: 'mic-key', configured: true }, capture_available: true });

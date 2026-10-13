@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
 // Convolver draft metadata and invalidation stay exact across target, range,
-// rate, phase and tap changes; preset creation shares the in-flight gate.
+// phase and tap changes; preset creation shares the in-flight gate and writes
+// the IR at the rate of the measurement the draft was taken from.
 const assert = require('node:assert/strict');
 require('../static/measurement_dsp.js');
 require('../static/measurement_ui.js');
@@ -40,7 +41,6 @@ function makeState() {
     return {
         measurement: {
             houseCurveOptions: [],
-            measurementSampleRate: '48000',
             convolverAssistant: {
                 targetCurve: 'neutral',
                 rangeStartHz: 20,
@@ -71,7 +71,7 @@ class FormStub {
 }
 
 async function main() {
-    // 1. Invalidation keeps exact notices for target, range, rate, phase, taps.
+    // 1. Invalidation keeps exact notices for target, range, phase, taps.
     const cases = [
         ['targetCurve', 'harman', /Target curve changed/],
         ['rangeStartHz', 30, /Correction range changed/],
@@ -79,7 +79,6 @@ async function main() {
         ['maxBoostDb', 3, /Correction limits changed/],
         ['maxCutDb', -12, /Correction limits changed/],
         ['dipGuard', 'gentle', /Dip guard changed/],
-        ['sampleRate', '96000', /Sample rate changed/],
         ['phaseMode', 'linear', /Phase type changed/],
         ['irLength', '4096', /Convolver taps changed/],
         ['quality', 'minimum_4096', /Convolver taps changed/],
@@ -100,7 +99,6 @@ async function main() {
             showToast: () => {},
             renderMeasurementPanel: () => {},
             scheduleMeasurementGraphRender: () => {},
-            saveMeasurementSetupSettings: () => {},
         });
         editor.updateMeasurementConvolverField(field, value);
         const conv = state.measurement.convolverAssistant;
@@ -111,7 +109,12 @@ async function main() {
     }
 
     // 2. Preset creation uses staged metadata, shares the gate, clears draft.
+    // The drafts come from 96 kHz measurements: the IRs are written at 96 kHz
+    // with the staged tap count.
     const state = makeState();
+    for (const draft of [state.measurement.convolverAssistant.draft.left, state.measurement.convolverAssistant.draft.right]) {
+        draft.metadata.sampleRate = 96000;
+    }
     const calls = [];
     let sharedBusy = false;
     const elements = {
@@ -119,6 +122,7 @@ async function main() {
         measurementConvolverPresetName: { value: 'Room Conv' },
     };
     let resolvePost;
+    let visibleEntries = [];
     editor.init({
         getState: () => state,
         getElements: () => elements,
@@ -130,7 +134,6 @@ async function main() {
         showToast: (message, kind) => calls.push(['toast', message, kind]),
         renderMeasurementPanel: () => calls.push('render'),
         scheduleMeasurementGraphRender: () => {},
-        saveMeasurementSetupSettings: () => {},
         collectEffectsExtras: () => ({
             limiterEnabled: false, headroomEnabled: true, headroomGainDb: -3,
             autogainEnabled: false, autogainTargetDb: -12, bassEnabled: false, bassAmount: 0,
@@ -143,9 +146,9 @@ async function main() {
         fetchEffects: async () => { calls.push('effects'); },
         fetchOutputSystemCatalog: async () => { calls.push('catalog'); },
         formatTransitionErrorDetail: (detail, fallback) => detail?.message || fallback,
-        getVisibleMeasurementEntries: () => [],
+        getVisibleMeasurementEntries: () => visibleEntries,
         getCurrentMeasurementEntries: () => [],
-        getMeasurementDisplayTraces: () => [],
+        getMeasurementDisplayTraces: (measurement) => measurement.traces || [],
         smoothMeasurementTracePoints: (points) => points,
         waitForNextAnimationFrame: async () => {},
         isConvolverCreateInFlight: () => sharedBusy,
@@ -162,14 +165,70 @@ async function main() {
     assert.equal(fields.get('bank_id').value, 'main');
     assert.ok(fields.get('left_file'), 'both-mode create sends L/R IR files');
     assert.ok(fields.get('right_file'), 'both-mode create sends L/R IR files');
+    for (const key of ['left_file', 'right_file']) {
+        const wav = Buffer.from(await fields.get(key).value.arrayBuffer());
+        assert.equal(wav.readUInt32LE(24), 96000, `${key} is written at the measurement rate`);
+        assert.equal(wav.readUInt32LE(40) / 4, 8192, `${key} keeps the staged tap count`);
+    }
     resolvePost({ ok: true, json: async () => ({ preset: { name: 'Room Conv' }, ir: {} }) });
     await creating;
     assert.equal(sharedBusy, false);
     assert.equal(state.measurement.convolverAssistant.draft.left, null);
     assert.equal(state.measurement.convolverAssistant.draft.right, null);
     assert.equal((state.dsp.assistStack || []).length, 1);
-    assert.equal(state.dsp.assistStack[0].metadata.sampleRate, 48000, 'generation keeps staged metadata');
+    assert.equal(state.dsp.assistStack[0].metadata.sampleRate, 96000, 'generation keeps staged metadata');
     assert.equal(state.dsp.assistStack[0].metadata.irLength, '8192');
+
+    // 3. The FIR rate is the rate of the source measurement; entries without
+    // an analysis rate fall back to their frozen target, their output context
+    // and finally 48 kHz.
+    const rateOf = editor.getMeasurementConvolverSampleRate;
+    assert.equal(rateOf({ analysis: { sample_rate: 96000 }, measurement_target: { sample_rate_hz: 48000 }, audio_output_context: { sample_rate_hz: 44100 } }), 96000);
+    assert.equal(rateOf({ analysis: {}, measurement_target: { sample_rate_hz: 88200 }, audio_output_context: { sample_rate_hz: 44100 } }), 88200);
+    assert.equal(rateOf({ audio_output_context: { sample_rate_hz: 44100 } }), 44100);
+    assert.equal(rateOf({ analysis: { sample_rate: 0 }, measurement_target: { sample_rate_hz: null } }), 48000);
+    assert.equal(rateOf({}), 48000);
+    assert.equal(rateOf(null), 48000);
+
+    // 4. Take stages the rate of each source measurement.
+    const sourceMeasurement = (channel, sampleRate) => ({
+        id: `m-${channel}`, name: channel, channel,
+        analysis: { sample_rate: sampleRate },
+        traces: [{ points: [[30, -2], [60, 1], [120, -1], [200, 0]] }],
+    });
+    const drafts = state.measurement.convolverAssistant.draft;
+    visibleEntries = [sourceMeasurement('left', 96000), sourceMeasurement('right', 96000)];
+    editor.takeMeasurementConvolverToDraft('both');
+    assert.equal(drafts.left.metadata.sampleRate, 96000);
+    assert.equal(drafts.right.metadata.sampleRate, 96000);
+    assert.equal(drafts.left.metadata.irLength, 8192, 'the taps stay as selected');
+
+    // 5. Left and Right from measurements at different rates are not combined.
+    visibleEntries = [sourceMeasurement('right', 48000)];
+    editor.takeMeasurementConvolverToDraft('right');
+    assert.equal(drafts.left.metadata.sampleRate, 96000);
+    assert.equal(drafts.right.metadata.sampleRate, 48000);
+    calls.length = 0;
+    await editor.createMeasurementConvolverPresetFromDraft();
+    assert.equal(calls.filter((c) => c[0] === 'fetch').length, 0, 'mismatched L/R rates create nothing');
+    assert.ok(calls.some((c) => c[0] === 'toast' && /different sample rates/.test(c[1]) && c[2] === 'warning'));
+    assert.match(elements.measurementConvolverFeedback.textContent, /different sample rates/);
+    assert.ok(drafts.left && drafts.right, 'the drafts stay staged');
+    assert.equal(sharedBusy, false);
+
+    // 6. A single side from a 44.1 kHz measurement is written at 44.1 kHz.
+    drafts.left = null;
+    drafts.right.metadata.sampleRate = 44100;
+    const single = editor.createMeasurementConvolverPresetFromDraft();
+    await Promise.resolve();
+    await Promise.resolve();
+    const singleCall = calls.find((c) => c[0] === 'fetch');
+    assert.equal(singleCall[1], '/api/dsp/presets/create-with-ir');
+    const singleWav = Buffer.from(await singleCall[2].get('file').value.arrayBuffer());
+    assert.equal(singleWav.readUInt32LE(24), 44100);
+    assert.equal(singleWav.readUInt32LE(40) / 4, 8192);
+    resolvePost({ ok: true, json: async () => ({ preset: { name: 'Room Conv' }, ir: {} }) });
+    await single;
     console.log('measurement convolver editor: ok');
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

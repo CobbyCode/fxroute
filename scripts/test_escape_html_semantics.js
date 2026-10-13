@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
 // Structural + behavioural checks for escapeHtml semantics and the
-// sample-rate option render path.
+// capture-input option render path.
 //
 // escapeHtml must only collapse null/undefined to ''; every other value
-// (including numeric 0, which is falsy) is stringified and escaped, so a
-// sample rate of 0 can never silently render as an empty option value. The
-// sample-rate <option> values must go through escapeHtml like every other
+// (including numeric 0, which is falsy) is stringified and escaped, so an
+// id of 0 can never silently render as an empty option value. The
+// capture-input <option> values must go through escapeHtml like every other
 // interpolated attribute value in the render path.
 
 const assert = require('assert/strict');
@@ -27,7 +27,7 @@ assert.equal(escapeHtml(0), '0', 'numeric 0 must survive escaping');
 assert.equal(escapeHtml(null), '', 'null must collapse to empty');
 assert.equal(escapeHtml(undefined), '', 'undefined must collapse to empty');
 assert.equal(escapeHtml(''), '', 'empty string stays empty');
-assert.equal(escapeHtml(48000), '48000', 'sample rates stringify unchanged');
+assert.equal(escapeHtml(48000), '48000', 'numbers stringify unchanged');
 assert.equal(escapeHtml(false), 'false', 'booleans stringify, never collapse');
 assert.equal(
     escapeHtml('<script>&"\''),
@@ -36,23 +36,19 @@ assert.equal(
 );
 
 // Render through the panel module with the real escaping helper. A hostile
-// rate must be safe inside the option attribute; numeric zero stays visible.
+// id must be safe inside the option attribute; numeric zero stays visible.
 const panel = require('../static/measurement_panel_ui.js');
-const sampleRateSelect = { innerHTML: '', value: '', disabled: false };
-let supportedRates = ['<script>&"\''];
+const inputSelect = { innerHTML: '', value: '', disabled: false };
 panel.init({
-    getElements: () => ({ measurementConvolverSampleRate: sampleRateSelect }),
+    getElements: () => ({ measurementInputSelect: inputSelect }),
     isSelectFocused: () => false,
-    getSelectedMeasurementInput: () => ({ supportedRates }),
     getSelectedMeasurementInputChannelCount: () => 1,
     measurementModeReady: () => true,
     escapeHtml,
-    formatRateKhz: () => 'rate',
 });
-panel.renderMeasurementPanelInputsSection({ measurementState: { measurementSampleRate: '48000' } });
-assert.equal(sampleRateSelect.innerHTML, '<option value="&lt;script&gt;&amp;&quot;&#39;">rate</option>');
-supportedRates = [0];
-panel.renderMeasurementPanelInputsSection({ measurementState: { measurementSampleRate: '48000' } });
-assert.equal(sampleRateSelect.innerHTML, '<option value="0">rate</option>');
+panel.renderMeasurementPanelInputsSection({ measurementState: { inputs: [{ id: '<script>&"\'', label: 'mic' }] } });
+assert.equal(inputSelect.innerHTML, '<option value="&lt;script&gt;&amp;&quot;&#39;" >mic</option>');
+panel.renderMeasurementPanelInputsSection({ measurementState: { inputs: [{ id: 0, label: 'mic' }] } });
+assert.equal(inputSelect.innerHTML, '<option value="0" >mic</option>');
 
 console.log('PASS scripts/test_escape_html_semantics.js');

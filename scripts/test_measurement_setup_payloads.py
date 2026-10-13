@@ -63,7 +63,6 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                 "selectedReferenceInputChannel": "",
                 "selectedReferenceInputChannelLeft": "",
                 "selectedReferenceInputChannelRight": "",
-                "measurementSampleRate": 48000,
             },
         )
 
@@ -79,7 +78,6 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                     "selectedReferenceInputChannel": "",
                     "selectedReferenceInputChannelLeft": "",
                     "selectedReferenceInputChannelRight": "",
-                    "measurementSampleRate": 48000,
                 },
             )
 
@@ -101,9 +99,12 @@ class SetupSettingsFromPayloadTests(unittest.TestCase):
                     "selectedReferenceInputChannel": "2",
                     "selectedReferenceInputChannelLeft": "",
                     "selectedReferenceInputChannelRight": "",
-                    "measurementSampleRate": 48000,
                 },
         )
+
+    def test_rate_stored_by_the_removed_select_is_not_reported(self):
+        payload = {"measure": {"selectedInputId": "mic-1", "measurementSampleRate": 96000}}
+        self.assertNotIn("measurementSampleRate", measurement_setup_settings_from_payload(payload))
 
     def test_snake_case_reference_key_fallback(self):
         # reference_input_channel is only a fallback when
@@ -321,62 +322,54 @@ class MeasurementInputPersistenceTests(unittest.TestCase):
         self.assertEqual(selection["input_id"], "pw-source-70")
         self.assertFalse(selection["unavailable"])
 
-    def test_rate_options_follow_selected_input_capabilities(self):
-        input_item = {"supported_rates": [44100, 48000]}
-        self.assertEqual(resolve_measurement_sample_rate(input_item, {}), 48000)
-        self.assertEqual(resolve_measurement_sample_rate(input_item, {"measurementSampleRate": 44100}), 44100)
+    def test_48_khz_wins_whenever_the_input_offers_it(self):
+        for rates in ([44100, 48000], [48000], [44100, 48000, 96000, 192000], [48000, 88200, 96000]):
+            for running in (44100, 96000, None):
+                with self.subTest(rates=rates, running=running):
+                    self.assertEqual(
+                        resolve_measurement_sample_rate({"supported_rates": rates}, lambda: running), 48000)
 
-    def test_high_rate_device_still_defaults_to_48_khz(self):
-        input_item = {"supported_rates": [44100, 48000, 96000, 192000]}
-        self.assertEqual(resolve_measurement_sample_rate(input_item, {}), 48000)
-        self.assertEqual(resolve_measurement_sample_rate(input_item, {"measurementSampleRate": 48000}), 48000)
+    def test_input_without_rates_uses_its_source_rate_or_48_khz(self):
+        self.assertEqual(resolve_measurement_sample_rate({}), 48000)
+        self.assertEqual(resolve_measurement_sample_rate({"sample_rate": 96000}), 96000)
 
-    def test_unsupported_saved_rate_falls_back_to_48_or_first_supported(self):
-        self.assertEqual(resolve_measurement_sample_rate({"supported_rates": [48000, 96000]}, {"measurementSampleRate": 192000}), 48000)
-        self.assertEqual(resolve_measurement_sample_rate({"supported_rates": [96000]}, {}), 96000)
-
-    def test_unsupported_saved_rate_prefers_the_running_rate(self):
+    def test_input_without_48_khz_prefers_the_running_rate(self):
         hi_res_tier = {"supported_rates": [88200, 96000]}
-        saved = {"measurementSampleRate": 48000}
-        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, saved, lambda: 96000), 96000)
-        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, saved, lambda: 88200), 88200)
-        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, {}, lambda: 96000), 96000)
-        # The running rate also wins over the 48 kHz default.
+        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, lambda: 96000), 96000)
+        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, lambda: 88200), 88200)
+
+    def test_running_rate_the_input_cannot_run_falls_back_to_the_lowest_rate(self):
+        hi_res_tier = {"supported_rates": [88200, 96000]}
+        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, lambda: 192000), 88200)
+        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, lambda: None), 88200)
+        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier), 88200)
+        self.assertEqual(resolve_measurement_sample_rate({"supported_rates": [96000]}), 96000)
+
+    def test_48_khz_on_a_reachable_tier_wins_over_the_running_rate(self):
+        hi_res_tier = {"supported_rates": [88200, 96000]}
         self.assertEqual(
             resolve_measurement_sample_rate(
-                {"supported_rates": [44100, 48000]}, {"measurementSampleRate": 96000}, lambda: 44100),
-            44100,
-        )
-
-    def test_running_rate_the_input_cannot_run_keeps_the_previous_fallback(self):
-        hi_res_tier = {"supported_rates": [88200, 96000]}
-        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, {}, lambda: 192000), 88200)
-        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, {}, lambda: None), 88200)
-        self.assertEqual(
-            resolve_measurement_sample_rate(
-                {"supported_rates": [48000, 96000]}, {"measurementSampleRate": 192000}, lambda: 44100),
+                hi_res_tier, lambda: 96000, lambda: [44100, 48000, 88200, 96000, 176400, 192000]),
             48000,
         )
+        # Tiers without 48 kHz change nothing.
+        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, lambda: 96000, lambda: [88200, 96000]), 96000)
+        self.assertEqual(resolve_measurement_sample_rate(hi_res_tier, lambda: 96000, lambda: []), 96000)
 
-    def test_supported_saved_rate_never_reads_the_running_rate(self):
-        def running_rate():
-            raise AssertionError("running rate must not be read")
+    def test_offered_48_khz_reads_neither_the_running_rate_nor_the_tiers(self):
+        def unread():
+            raise AssertionError("must not be read")
 
-        self.assertEqual(resolve_measurement_sample_rate({"supported_rates": [44100, 48000]}, {}, running_rate), 48000)
-        self.assertEqual(
-            resolve_measurement_sample_rate(
-                {"supported_rates": [48000, 88200, 96000]}, {"measurementSampleRate": 88200}, running_rate),
-            88200,
-        )
+        self.assertEqual(resolve_measurement_sample_rate({"supported_rates": [44100, 48000]}, unread, unread), 48000)
 
 
-class RunningRateFallbackTests(unittest.TestCase):
-    """The store resolves the entry rate and the sweep rate against the running rate."""
+class StoreMeasurementRateTests(unittest.TestCase):
+    """The store resolves the entry rate and the sweep rate from the same rule."""
 
     SCARLETT = {
         "id": "pw-source-89",
         "device_serial": "SCARLETT-1",
-        "node_name": "alsa_input.usb-Focusrite_Scarlett.pro-input-0",
+        "node_name": "alsa_input.usb-Focusrite_Scarlett-00.pro-input-0",
         "available": True,
         "supported_rates": [88200, 96000],
     }
@@ -393,6 +386,7 @@ class RunningRateFallbackTests(unittest.TestCase):
         "available": True,
         "supported_rates": [48000],
     }
+    SCARLETT_TIERS = {"device": "usb-Focusrite_Scarlett-00", "rates": [44100, 48000, 88200, 96000, 176400, 192000]}
 
     def setUp(self):
         tempdir = tempfile.TemporaryDirectory()
@@ -400,28 +394,35 @@ class RunningRateFallbackTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"XDG_CONFIG_HOME": tempdir.name, "XDG_STATE_HOME": tempdir.name}):
             self.store = MeasurementStore(home=Path(tempdir.name))
         self.selected = self.SCARLETT
-        self.saved_rate = 48000
         self.store._discover_capture_inputs = lambda: [dict(self.SCARLETT), dict(self.ONBOARD), dict(self.UMIK)]
+        # A rate stored by the removed rate select is no longer read.
         self.store._read_settings = lambda: {"measure": {
             "selectedInputId": self.selected["id"],
             "selectedInputKey": measurement_input_persistent_id(self.selected),
-            "measurementSampleRate": self.saved_rate,
+            "measurementSampleRate": 88200,
         }}
         self.running = 96000
         self.reads = 0
+        self.tier_reads = 0
 
         def provider():
             self.reads += 1
             return self.running
 
+        def tiers():
+            self.tier_reads += 1
+            return dict(self.SCARLETT_TIERS)
+
         self.provider = provider
+        self.tiers = tiers
 
     def _sweep_rates(self):
         annotated = self.store._measurement_inputs_with_sample_rate(self.store._discover_capture_inputs())
         return {item["id"]: item["measurement_sample_rate"] for item in annotated}
 
-    def test_store_without_a_provider_keeps_the_previous_fallback(self):
+    def test_store_without_providers_uses_the_lowest_rate(self):
         self.assertIsNone(self.store.running_sample_rate_provider)
+        self.assertIsNone(self.store.tier_rates_provider)
         self.assertEqual(self.store._resolve_measurement_sample_rate(), 88200)
         self.assertEqual(self._sweep_rates()["pw-source-89"], 88200)
 
@@ -443,23 +444,26 @@ class RunningRateFallbackTests(unittest.TestCase):
             self.assertEqual(entry_rate, self.running)
             self.assertEqual(self._sweep_rates()["pw-source-89"], entry_rate)
 
-    def test_running_rate_outside_the_input_keeps_the_previous_fallback(self):
+    def test_running_rate_outside_the_input_uses_the_lowest_rate(self):
         self.store.running_sample_rate_provider = self.provider
         self.running = 44100
         self.assertEqual(self.store._resolve_measurement_sample_rate(), 88200)
         self.assertEqual(self._sweep_rates(), {"pw-source-89": 88200, "pw-source-60": 176400, "pw-source-70": 48000})
 
-    def test_supported_saved_rate_wins_without_reading_the_running_rate(self):
+    def test_input_offering_48_khz_reads_no_provider(self):
         self.store.running_sample_rate_provider = self.provider
+        self.store.tier_rates_provider = self.tiers
         self.selected = self.UMIK
         self.store._discover_capture_inputs = lambda: [dict(self.UMIK)]
         self.assertEqual(self.store._resolve_measurement_sample_rate(), 48000)
         self.assertEqual(self._sweep_rates(), {"pw-source-70": 48000})
-        self.saved_rate = 88200
-        self.selected = self.SCARLETT
-        self.store._discover_capture_inputs = lambda: [dict(self.SCARLETT)]
-        self.assertEqual(self.store._resolve_measurement_sample_rate(), 88200)
-        self.assertEqual(self.reads, 0)
+        self.assertEqual((self.reads, self.tier_reads), (0, 0))
+
+    def test_stored_rate_of_the_removed_select_is_ignored(self):
+        self.selected = dict(self.SCARLETT, supported_rates=[48000, 88200, 96000])
+        self.store._discover_capture_inputs = lambda: [dict(self.selected)]
+        self.assertEqual(self.store._resolve_measurement_sample_rate(), 48000)
+        self.assertEqual(self._sweep_rates(), {"pw-source-89": 48000})
 
     def test_one_listing_reads_the_running_rate_once(self):
         self.store.running_sample_rate_provider = self.provider
@@ -470,7 +474,7 @@ class RunningRateFallbackTests(unittest.TestCase):
         self.assertEqual(rates, {"pw-source-89": 88200, "pw-source-60": 192000, "pw-source-70": 48000})
         self.assertEqual(self.reads, 1)
 
-    def test_failing_provider_keeps_the_previous_fallback(self):
+    def test_failing_provider_uses_the_lowest_rate(self):
         def failing():
             raise RuntimeError("pw-metadata unavailable")
 
@@ -479,11 +483,105 @@ class RunningRateFallbackTests(unittest.TestCase):
             self.assertEqual(self.store._resolve_measurement_sample_rate(), 88200)
         self.assertIn("pw-metadata unavailable", logs.output[0])
 
-    def test_invalid_provider_reading_keeps_the_previous_fallback(self):
+    def test_invalid_provider_reading_uses_the_lowest_rate(self):
         for reading in (None, 0, -96000, "96000", 96000.0, True):
             self.store.running_sample_rate_provider = lambda: reading
             with self.subTest(reading=reading):
                 self.assertEqual(self.store._resolve_measurement_sample_rate(), 88200)
+
+    def test_reachable_tier_moves_the_devices_own_input_to_48_khz(self):
+        # Auto policy: the device sits on its 88.2/96 kHz tier, the entry moves
+        # it to the tier that carries 48 kHz.
+        self.store.running_sample_rate_provider = self.provider
+        self.store.tier_rates_provider = self.tiers
+        self.assertEqual(self.store._resolve_measurement_sample_rate(), 48000)
+        self.assertEqual(self._sweep_rates(), {"pw-source-89": 48000, "pw-source-60": 176400, "pw-source-70": 48000})
+
+    def test_one_listing_reads_the_tiers_once(self):
+        self.store.tier_rates_provider = self.tiers
+        self._sweep_rates()
+        self.assertEqual(self.tier_reads, 1)
+
+    def test_tiers_of_another_device_do_not_apply(self):
+        self.store.running_sample_rate_provider = self.provider
+        self.store.tier_rates_provider = lambda: {"device": "usb-Other_Interface-00", "rates": [44100, 48000]}
+        self.assertEqual(self.store._resolve_measurement_sample_rate(), 96000)
+        self.assertEqual(self._sweep_rates()["pw-source-89"], 96000)
+
+    def test_no_reachable_tier_keeps_the_running_rate(self):
+        # Fixed policy: the hook reports no tier to move to.
+        self.store.running_sample_rate_provider = self.provider
+        for reach in (None, {}, {"device": "usb-Focusrite_Scarlett-00", "rates": [88200, 96000]}, "auto"):
+            self.store.tier_rates_provider = lambda: reach
+            with self.subTest(reach=reach):
+                self.assertEqual(self.store._resolve_measurement_sample_rate(), 96000)
+
+    def test_failing_tier_provider_keeps_the_running_rate(self):
+        def failing():
+            raise RuntimeError("overview unavailable")
+
+        self.store.running_sample_rate_provider = self.provider
+        self.store.tier_rates_provider = failing
+        with self.assertLogs("measurement.store", level="WARNING") as logs:
+            self.assertEqual(self.store._resolve_measurement_sample_rate(), 96000)
+        self.assertIn("overview unavailable", logs.output[0])
+
+
+class RetiredMeasurementRateSettingTests(unittest.TestCase):
+    """The settings update no longer stores a measurement rate."""
+
+    def test_patch_with_a_measurement_rate_stores_none(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict("os.environ", {"XDG_CONFIG_HOME": tempdir, "XDG_STATE_HOME": tempdir}):
+                store = MeasurementStore(home=Path(tempdir))
+            services = mock.Mock(get_store=lambda: store)
+            with mock.patch.object(measurement_session, "_measurement_services", return_value=services):
+                result = measurement_session._update_measurement_setup_settings(
+                    {"selectedInputId": "mic-a", "measurementSampleRate": 96000, "measurement_sample_rate": 96000})
+            self.assertEqual(result["selectedInputId"], "mic-a")
+            self.assertNotIn("measurementSampleRate", result)
+            self.assertEqual(store.read_settings()["measure"], {"selectedInputId": "mic-a"})
+
+
+class MeasurementTierRatesTests(unittest.TestCase):
+    """The application hook reports the selected output's tiers under Auto only."""
+
+    OVERVIEW = {"selected_output": {
+        "key": "alsa_output.usb-Focusrite_Scarlett-00.pro-output-0",
+        "device_profile": {"active_tier": "14ch", "tiers": [
+            {"id": "18ch", "channels": 18, "rates": [44100, 48000]},
+            {"id": "14ch", "channels": 14, "rates": [88200, 96000]},
+        ]},
+    }}
+
+    def _tier_rates(self, policy, overview):
+        with mock.patch.object(main.samplerate, "load_sample_rate_policy", return_value=policy), \
+                mock.patch.object(main, "get_audio_output_overview", return_value=overview) as read:
+            return main._measurement_tier_rates(), read.call_count
+
+    def test_auto_policy_reports_the_selected_outputs_tiers(self):
+        reach, _ = self._tier_rates({"mode": "auto", "rate": None}, self.OVERVIEW)
+        self.assertEqual(reach, {"device": "usb-Focusrite_Scarlett-00", "rates": [44100, 48000, 88200, 96000]})
+
+    def test_fixed_policy_reports_nothing_and_reads_no_output(self):
+        reach, reads = self._tier_rates({"mode": "fixed", "rate": 96000}, self.OVERVIEW)
+        self.assertIsNone(reach)
+        self.assertEqual(reads, 0)
+
+    def test_output_without_tiers_reports_nothing(self):
+        plain = {"selected_output": {"key": "alsa_output.usb-Plain_DAC-00.analog-stereo", "device_profile": None}}
+        for overview in (plain, {"selected_output": None}, {}):
+            with self.subTest(overview=overview):
+                self.assertIsNone(self._tier_rates({"mode": "auto", "rate": None}, overview)[0])
+
+    def test_reported_tiers_match_the_devices_own_input(self):
+        reach, _ = self._tier_rates({"mode": "auto", "rate": None}, self.OVERVIEW)
+        store_module = sys.modules[MeasurementStore.__module__]
+        own = {"node_name": "alsa_input.usb-Focusrite_Scarlett-00.pro-input-0"}
+        other = {"node_name": "alsa_input.usb-miniDSP_Umik-1.analog-stereo"}
+        self.assertEqual(store_module._input_tier_rates(own, reach), [44100, 48000, 88200, 96000])
+        self.assertEqual(store_module._input_tier_rates(other, reach), [])
+        self.assertEqual(store_module._input_tier_rates({}, reach), [])
 
 
 class RunningOutputSampleRateTests(unittest.TestCase):

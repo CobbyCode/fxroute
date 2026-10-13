@@ -59,16 +59,12 @@ const UMIK = (id) => ({
     id,
     label: 'UMIK-1',
     channels: 1,
-    supportedRates: [48000],
-    measurementSampleRate: 48000,
     persistentId: 'device-serial:miniDSP-UMIK-123',
 });
 const OTHER = (id) => ({
     id,
     label: 'Other mic',
     channels: 2,
-    supportedRates: [48000],
-    measurementSampleRate: 48000,
     persistentId: 'device-serial:OTHER-456',
 });
 
@@ -89,7 +85,6 @@ function makeContext() {
             selectedInputUnavailable: false,
             selectedMicInputChannel: '1',
             selectedReferenceInputChannel: '',
-            measurementSampleRate: '48000',
             hostCaptureAvailable: false,
             captureAvailable: false,
             statusText: 'Sweep ready. Calibration file is optional.',
@@ -114,7 +109,6 @@ function makeContext() {
                             selectedInputConfigured: !!state.measurement.selectedInputKey,
                             selectedMicInputChannel: state.measurement.selectedMicInputChannel || '1',
                             selectedReferenceInputChannel: state.measurement.selectedReferenceInputChannel || '',
-                            measurementSampleRate: 48000,
                         },
                     }),
                 });

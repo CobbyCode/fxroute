@@ -71,7 +71,6 @@ const splitSettings = () => ({
     selectedReferenceInputChannel: '3',
     selectedReferenceInputChannelLeft: '3',
     selectedReferenceInputChannelRight: '4',
-    measurementSampleRate: 48000,
 });
 
 const referenceTriple = (context) => {

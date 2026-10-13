@@ -1433,14 +1433,6 @@ def _update_measurement_setup_settings(patch: dict[str, Any]) -> dict[str, Any]:
         if "selectedReferenceInputChannelRight" in patch or "reference_input_channel_right" in patch:
             raw_reference_right = patch.get("selectedReferenceInputChannelRight", patch.get("reference_input_channel_right"))
             measure_settings["selectedReferenceInputChannelRight"] = _normalize_measurement_optional_input_channel(raw_reference_right)
-        if "measurementSampleRate" in patch or "measurement_sample_rate" in patch:
-            try:
-                rate = int(patch.get("measurementSampleRate", patch.get("measurement_sample_rate")))
-            except (TypeError, ValueError):
-                rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
-            if rate <= 0:
-                rate = MEASUREMENT_DEFAULT_SAMPLE_RATE
-            measure_settings["measurementSampleRate"] = rate
 
     settings = measurement_store.update_settings(update)
     return _measurement_setup_settings_from_payload(settings)
