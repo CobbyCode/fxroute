@@ -21,7 +21,7 @@ async function main() {
     let files;
     editor.init({ requireConcreteFilterBank: () => true, measurementImportBlockedReason: () => '',
         getFormDataType: () => FormData, collectEffectsExtras: () => ({}),
-        appendBankBindingFields() {}, measurementCommitSourceTargets: () => [], fetchOutputSystemCatalog: async () => {},
+        appendBankBindingFields() {}, fetchOutputSystemCatalog: async () => {},
         getTimingSafetyLimitMs: () => 6,
         fetch: async (url, options) => {
             files = [options.body.get('left_file'), options.body.get('right_file')];

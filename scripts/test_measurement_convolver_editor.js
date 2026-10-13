@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
 // Convolver draft metadata and invalidation stay exact across target, range,
-// phase and tap changes; preset creation shares the in-flight gate and writes
-// the IR at the rate of the measurement the draft was taken from.
+// phase and tap changes; preset creation shares the in-flight gate, writes
+// the IR at the rate of the measurement the draft was taken from and names
+// only those measurements as its sources.
 const assert = require('node:assert/strict');
 require('../static/measurement_dsp.js');
 require('../static/measurement_ui.js');
+require('../static/autosub_target.js');
 const editor = require('../static/measurement_convolver_editor.js');
 
 function stagedDraft(overrides = {}) {
@@ -32,6 +34,7 @@ function stagedDraft(overrides = {}) {
             sourceMeasurementName: 'Left',
             sourceMeasurementCreatedAt: '',
             sourceChannel: 'left',
+            sourceMeasurementTargets: [{ bank_id: 'main' }],
         },
     };
     return { ...base, ...overrides, metadata: { ...base.metadata, ...(overrides.metadata || {}) } };
@@ -54,7 +57,7 @@ function makeState() {
                 quality: 'minimum_8192',
                 draft: {
                     left: stagedDraft(),
-                    right: { ...stagedDraft(), side: 'right', metadata: { ...stagedDraft().metadata, sourceMeasurementId: 'm-right', sourceChannel: 'right' } },
+                    right: { ...stagedDraft(), side: 'right', metadata: { ...stagedDraft().metadata, sourceMeasurementId: 'm-right', sourceChannel: 'right', sourceMeasurementTargets: [null] } },
                     presetName: 'staged',
                     nameTouched: true,
                     notice: '',
@@ -110,7 +113,8 @@ async function main() {
 
     // 2. Preset creation uses staged metadata, shares the gate, clears draft.
     // The drafts come from 96 kHz measurements: the IRs are written at 96 kHz
-    // with the staged tap count.
+    // with the staged tap count.  A curve shown after the take, even one that
+    // blocks a new take, is no source and does not hold Create back.
     const state = makeState();
     for (const draft of [state.measurement.convolverAssistant.draft.left, state.measurement.convolverAssistant.draft.right]) {
         draft.metadata.sampleRate = 96000;
@@ -122,7 +126,9 @@ async function main() {
         measurementConvolverPresetName: { value: 'Room Conv' },
     };
     let resolvePost;
-    let visibleEntries = [];
+    const tracePoints = [[30, -2], [60, 1], [120, -1], [200, 0]];
+    let visibleEntries = [{ id: 'comparison', channel: 'left', measurement_target: { bank_id: 'sub1' }, traces: [{ points: tracePoints }] }];
+    let takeBlocked = 'blocked reason';
     editor.init({
         getState: () => state,
         getElements: () => elements,
@@ -140,8 +146,8 @@ async function main() {
             toneEffectEnabled: false, toneEffectMode: 'crystalizer',
         }),
         appendBankBindingFields: (form) => form.append('bank_id', 'main'),
-        measurementCommitSourceTargets: () => [{ bank_id: 'main' }, null],
         requireConcreteFilterBank: () => true,
+        measurementImportBlockedReason: () => takeBlocked,
         measurementBankSumsBothInputs: () => false,
         fetchEffects: async () => { calls.push('effects'); },
         fetchOutputSystemCatalog: async () => { calls.push('catalog'); },
@@ -161,7 +167,8 @@ async function main() {
     assert.equal(calls.filter((c) => c[0] === 'fetch').length, 1, 'concurrent create is gated');
     const fields = calls.find((c) => c[0] === 'fetch')[2];
     assert.equal(fields.get('preset_name').value, 'Room Conv');
-    assert.deepEqual(JSON.parse(fields.get('source_measurement_targets').value), [{ bank_id: 'main' }, null]);
+    assert.deepEqual(JSON.parse(fields.get('source_measurement_targets').value), [{ bank_id: 'main' }, null],
+        'Create names the staged sources, left then right');
     assert.equal(fields.get('bank_id').value, 'main');
     assert.ok(fields.get('left_file'), 'both-mode create sends L/R IR files');
     assert.ok(fields.get('right_file'), 'both-mode create sends L/R IR files');
@@ -190,21 +197,37 @@ async function main() {
     assert.equal(rateOf({}), 48000);
     assert.equal(rateOf(null), 48000);
 
-    // 4. Take stages the rate of each source measurement.
-    const sourceMeasurement = (channel, sampleRate) => ({
+    // 4. Take stages the rate and the frozen target of each source measurement.
+    const sourceMeasurement = (channel, sampleRate, extra = {}) => ({
         id: `m-${channel}`, name: channel, channel,
         analysis: { sample_rate: sampleRate },
-        traces: [{ points: [[30, -2], [60, 1], [120, -1], [200, 0]] }],
+        measurement_target: { bank_id: 'main', sample_rate_hz: sampleRate },
+        traces: [{ points: tracePoints }],
+        ...extra,
     });
     const drafts = state.measurement.convolverAssistant.draft;
     visibleEntries = [sourceMeasurement('left', 96000), sourceMeasurement('right', 96000)];
     editor.takeMeasurementConvolverToDraft('both');
+    assert.equal(drafts.left, null, 'a blocked take stages nothing');
+    takeBlocked = '';
+    editor.takeMeasurementConvolverToDraft('both');
     assert.equal(drafts.left.metadata.sampleRate, 96000);
     assert.equal(drafts.right.metadata.sampleRate, 96000);
     assert.equal(drafts.left.metadata.irLength, 8192, 'the taps stay as selected');
+    assert.deepEqual(drafts.left.metadata.sourceMeasurementTargets, [visibleEntries[0].measurement_target]);
+    assert.deepEqual(drafts.right.metadata.sourceMeasurementTargets, [visibleEntries[1].measurement_target]);
+    // A result without a target is named so the backend rejects it; an Auto
+    // Sub result carries none by design and names nothing.
+    visibleEntries = [sourceMeasurement('left', 96000, { measurement_target: undefined })];
+    editor.takeMeasurementConvolverToDraft('left');
+    assert.deepEqual(drafts.left.metadata.sourceMeasurementTargets, [null]);
+    visibleEntries = [sourceMeasurement('left', 96000, { measurement_target: undefined, measurement_kind: 'auto_sub' })];
+    editor.takeMeasurementConvolverToDraft('left');
+    assert.deepEqual(drafts.left.metadata.sourceMeasurementTargets, []);
 
     // 5. Left and Right from measurements at different rates are not combined.
-    visibleEntries = [sourceMeasurement('right', 48000)];
+    const rightSource = sourceMeasurement('right', 48000);
+    visibleEntries = [rightSource];
     editor.takeMeasurementConvolverToDraft('right');
     assert.equal(drafts.left.metadata.sampleRate, 96000);
     assert.equal(drafts.right.metadata.sampleRate, 48000);
@@ -224,11 +247,33 @@ async function main() {
     await Promise.resolve();
     const singleCall = calls.find((c) => c[0] === 'fetch');
     assert.equal(singleCall[1], '/api/dsp/presets/create-with-ir');
+    assert.deepEqual(JSON.parse(singleCall[2].get('source_measurement_targets').value), [rightSource.measurement_target],
+        'a single side names only its own source');
     const singleWav = Buffer.from(await singleCall[2].get('file').value.arrayBuffer());
     assert.equal(singleWav.readUInt32LE(24), 44100);
     assert.equal(singleWav.readUInt32LE(40) / 4, 8192);
     resolvePost({ ok: true, json: async () => ({ preset: { name: 'Room Conv' }, ir: {} }) });
     await single;
+
+    // 7. Sides taken one after the other are both named at Create, whatever
+    // is shown by then: another curve, or nothing at all.
+    for (const shownAtCreate of [[sourceMeasurement('left', 48000, { id: 'comparison', measurement_target: { bank_id: 'sub1' } })], []]) {
+        const leftSource = sourceMeasurement('left', 48000);
+        visibleEntries = [leftSource];
+        editor.takeMeasurementConvolverToDraft('left');
+        visibleEntries = [rightSource];
+        editor.takeMeasurementConvolverToDraft('right');
+        visibleEntries = shownAtCreate;
+        calls.length = 0;
+        const pair = editor.createMeasurementConvolverPresetFromDraft();
+        await new Promise((resolve) => setImmediate(resolve));
+        const pairCall = calls.find((c) => c[0] === 'fetch');
+        assert.equal(pairCall[1], '/api/dsp/presets/import-filter-dual');
+        assert.deepEqual(JSON.parse(pairCall[2].get('source_measurement_targets').value),
+            [leftSource.measurement_target, rightSource.measurement_target]);
+        resolvePost({ ok: true, json: async () => ({ preset: { name: 'Room Conv' }, ir: {} }) });
+        await pair;
+    }
     console.log('measurement convolver editor: ok');
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

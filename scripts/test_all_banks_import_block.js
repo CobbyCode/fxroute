@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // A result measured through All Banks can be saved and inspected, but it never
-// becomes a filter: the app reports why, and the PEQ and convolver editors
-// refuse to take or create from it.
+// becomes a filter: the app reports why, the PEQ editor refuses to take or
+// create while one is shown, and the convolver editor refuses to take it.  A
+// convolver Create follows its draft: a result shown after the take is no
+// source, and the backend rejects a taken All Banks source.
 
 const assert = require('assert/strict');
 const fs = require('fs');
@@ -73,9 +75,10 @@ function init() {
     convolverEditor.takeMeasurementConvolverToDraft('both');
     assert.deepEqual(toasts.pop(), ['blocked reason', 'warning']);
     assert.ok(feedback.includes('blocked reason'));
+    assert.equal(convolverEditor.ensureMeasurementConvolverState().draft.left, null, 'a blocked take stages nothing');
     await convolverEditor.createMeasurementConvolverPresetFromDraft();
-    assert.deepEqual(toasts.pop(), ['blocked reason', 'warning']);
-    await assert.rejects(convolverEditor.createMeasurementConvolverPreset('both', [], 0, 'x'), /blocked reason/);
+    assert.deepEqual(toasts.pop(), ['Take L, R or Both into the convolver draft first', 'warning'],
+        'the convolver Create looks at its draft, not at the results shown');
     assert.deepEqual(creates, [], 'a blocked create must not reach the backend');
 
     // Nothing blocks an ordinary result: the take stages its bands.

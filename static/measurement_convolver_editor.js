@@ -21,9 +21,8 @@
         scheduleMeasurementGraphRender: () => {},
         collectEffectsExtras: () => ({}),
         appendBankBindingFields: () => {},
-        measurementCommitSourceTargets: () => [],
         requireConcreteFilterBank: () => false,
-        // Why the visible results cannot become a filter ('' when they can).
+        // Why the visible results cannot be taken into a draft ('' when they can).
         measurementImportBlockedReason: () => '',
         measurementBankSumsBothInputs: () => false,
         fetchEffects: async () => {},
@@ -379,6 +378,15 @@
         return sampleRate || MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE;
     }
 
+    // Frozen target of a taken measurement, as Create names it to the backend,
+    // which rejects a commit into a bank, speaker group or channel shape the
+    // measurement was not taken for. A result without a target is named so it
+    // is rejected; Auto Sub results are taken outside any bank and carry none.
+    function getMeasurementConvolverSourceTargets(measurement) {
+        if (!measurement || root.FXRouteAutoSubTarget?.isAutoSubMeasurement(measurement)) return [];
+        return [measurement.measurement_target || null];
+    }
+
     function getMeasurementConvolverTypeOption(type = 'linear_4096') {
         return ui.getMeasurementConvolverTypeOption(type);
     }
@@ -533,8 +541,6 @@
 
     async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, options = {}) {
         if (!deps.requireConcreteFilterBank()) throw new Error('Select a filter bank for import or measurement.');
-        const blocked = deps.measurementImportBlockedReason();
-        if (blocked) throw new Error(blocked);
         const sampleRate = Number(options.sampleRate) || MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE;
         const length = Number(options.irLength) || getMeasurementConvolverFirLength();
         const phaseMode = ui.measurementConvolverPhaseModes.includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
@@ -569,7 +575,7 @@
             formData.append('left_file', leftBlob, `${filenameBase}-L.wav`);
             formData.append('right_file', rightBlob, `${filenameBase}-R.wav`);
             deps.appendBankBindingFields(formData);
-            formData.append('source_measurement_targets', JSON.stringify(deps.measurementCommitSourceTargets()));
+            formData.append('source_measurement_targets', JSON.stringify(options.sourceTargets || []));
             const resp = await deps.fetch('/api/dsp/presets/import-filter-dual', { method: 'POST', body: formData });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Convolver preset creation failed'));
@@ -585,7 +591,7 @@
         appendMeasurementConvolverExtras(formData);
         formData.append('file', blob, `${filenameBase}-${side === 'right' ? 'R' : 'L'}.wav`);
         deps.appendBankBindingFields(formData);
-        formData.append('source_measurement_targets', JSON.stringify(deps.measurementCommitSourceTargets()));
+        formData.append('source_measurement_targets', JSON.stringify(options.sourceTargets || []));
         const resp = await deps.fetch('/api/dsp/presets/create-with-ir', { method: 'POST', body: formData });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Convolver preset creation failed'));
@@ -664,6 +670,7 @@
                     sourceMeasurementName: sourceMeasurement?.name || '',
                     sourceMeasurementCreatedAt: sourceMeasurement?.created_at || '',
                     sourceChannel: sourceMeasurement?.channel || side,
+                    sourceMeasurementTargets: getMeasurementConvolverSourceTargets(sourceMeasurement),
                 },
             };
         });
@@ -692,11 +699,6 @@
 
     async function createMeasurementConvolverPresetFromDraft() {
         if (!deps.requireConcreteFilterBank()) return;
-        const blocked = deps.measurementImportBlockedReason();
-        if (blocked) {
-            deps.showToast(blocked, 'warning');
-            return;
-        }
         if (deps.isConvolverCreateInFlight()) {
             deps.showToast('Convolver preset creation already in progress', 'warning');
             return;
@@ -770,6 +772,9 @@
                 leftTiming: leftDraft?.timing || null,
                 rightTiming: rightDraft?.timing || null,
                 timingSafetyLimitMs: deps.getTimingSafetyLimitMs(),
+                // Only the measurements the draft was taken from are checked;
+                // curves shown since then are not sources.
+                sourceTargets: drafts.flatMap((draft) => draft.metadata?.sourceMeasurementTargets || []),
             };
             const created = await createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, generationOptions);
             const item = {

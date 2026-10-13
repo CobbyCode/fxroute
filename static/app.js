@@ -511,7 +511,6 @@ window.FXRouteMeasurementPeqEditor?.init({
     normalizePeqEqMode: (mode) => EffectsUI.normalizePeqEqMode(mode),
     collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
     bankBindingJson: () => window.FXRouteBankUI.bankBindingJson(),
-    measurementCommitSourceTargets: () => measurementCommitSourceTargets(),
     measurementPeqParams: (left, right, mode) => window.FXRouteBankUI.measurementPeqParams(left, right, mode),
     formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
     fetchEffects: () => EffectsUI.fetchEffects(),
@@ -534,7 +533,6 @@ window.FXRouteMeasurementConvolverEditor?.init({
     scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
     collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
     appendBankBindingFields: (formData) => window.FXRouteBankUI.appendBankBindingFields(formData),
-    measurementCommitSourceTargets: () => measurementCommitSourceTargets(),
     requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
     measurementImportBlockedReason: () => measurementImportBlockedReason(),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
@@ -3962,20 +3960,6 @@ function measurementImportBlockedReason() {
     return throughAllBanks
         ? 'This result was measured through All Banks; it can be saved and inspected but not imported into a bank.'
         : '';
-}
-
-
-function measurementCommitSourceTargets() {
-    /* Frozen targets of the measurements a generated PEQ/FIR is built from:
-     * the visible saved results, else the unsaved one.  The backend rejects a
-     * commit into a bank, speaker group or channel shape they were not
-     * measured for.  Auto Sub results are taken outside any bank and have no
-     * target to check. */
-    const visibleSaved = getVisibleMeasurementEntries();
-    const sources = visibleSaved.length ? visibleSaved : getCurrentMeasurementEntries();
-    return sources
-        .filter(measurement => measurement && !window.FXRouteAutoSubTarget?.isAutoSubMeasurement(measurement))
-        .map(measurement => measurement.measurement_target || null);
 }
 
 
