@@ -155,13 +155,34 @@ class SrcLatencyTests(unittest.TestCase):
         reader = src.SrcLatencyReader()
         cached_while_settling = []
         with patch.object(src.subprocess, 'run', side_effect=outputs) as run, \
-                patch.object(src.time, 'monotonic', side_effect=[0, .3]), \
+                patch.object(src.time, 'monotonic', side_effect=[0, .1, .3]), \
                 patch.object(src.time, 'sleep', side_effect=lambda _: cached_while_settling.append(reader._cache)):
             self.assertEqual(reader.read(), 750)
             # The sync read that follows inside the cache window gets the settled graph.
             self.assertEqual(reader.read(), 750)
             self.assertEqual(run.call_count, 2)
         self.assertEqual(cached_while_settling, [None])
+
+    def test_cache_window_starts_at_the_read_that_settled(self):
+        settling = graph()
+        for row in settling[6:10]:
+            row['info']['state'] = 'init'
+        outputs = [json.dumps(settling), json.dumps(graph()), json.dumps(graph())]
+        clock = [0.0]
+        def slow_dump(*_args, **_kwargs):
+            clock[0] += .2
+            return subprocess.CompletedProcess([], 0, outputs.pop(0), '')
+        def pause(seconds):
+            clock[0] += seconds
+        reader = src.SrcLatencyReader()
+        with patch.object(src.subprocess, 'run', side_effect=slow_dump) as run, \
+                patch.object(src.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(src.time, 'sleep', side_effect=pause):
+            self.assertEqual(reader.read(), 750)
+            # The settled dump started at 0.25 s; 0.7 s is inside its window.
+            clock[0] = .7
+            self.assertEqual(reader.read(), 750)
+            self.assertEqual(run.call_count, 2)
 
     def test_reader_fails_closed_when_the_graph_never_settles(self):
         settling = graph()

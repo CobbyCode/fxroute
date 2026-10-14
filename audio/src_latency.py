@@ -139,6 +139,8 @@ class SrcLatencyReader:
                 if not reads_left:
                     raise
                 time.sleep(SETTLE_PAUSE_SECONDS)
+                # The cache window starts at the dump that is kept.
+                now = time.monotonic()
                 continue
             except RuntimeError:
                 self._cache = graph, now, scope
