@@ -88,8 +88,21 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
             return {"active_rate": self.live_rate, "force_rate": self.live_rate}
 
         patch = mock.patch.object(main, "get_samplerate_status", side_effect=rate_status)
-        patch.start()
+        status_read = patch.start()
         self.addCleanup(patch.stop)
+        real_to_thread = asyncio.to_thread
+
+        async def to_thread(func, /, *args, **kwargs):
+            # The edit reads the rate off the event loop; the worker thread
+            # has no task, so mark the edit's preparation point here.
+            task = asyncio.current_task()
+            if func is status_read and task is not None and task.get_name() == "output-edit":
+                self.output_prepared.set()
+            return await real_to_thread(func, *args, **kwargs)
+
+        thread_patch = mock.patch.object(asyncio, "to_thread", to_thread)
+        thread_patch.start()
+        self.addCleanup(thread_patch.stop)
 
     async def edit(self, level=-7):
         return await main.apply_audio_output_state(lifecycle.FakeRequest({
