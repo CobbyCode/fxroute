@@ -14,10 +14,11 @@ no public image.
 
 ### Release provenance
 
-- Source stand: `main` @ `0a0f6346` plus the VERSION/CHANGELOG bump.
-  No Armbian, installer-image, or live-converter changes this cycle;
-  `install.sh`/`uninstall.sh` ship the SRC converter plugin handling and
-  the surround ingress helper build.
+- Source stand: `main` @ `d2601a3c` — the `0a0f6346` documentation stand
+  plus the follow-up work recorded under *Presets and filter banks*,
+  *Measurement* and *Fixes*. No Armbian, installer-image, or
+  live-converter changes this cycle; `install.sh`/`uninstall.sh` ship the
+  SRC converter plugin handling and the surround ingress helper build.
 - The web demo snapshot follows this stand (`demo/dist` parity is green).
 
 ### Surround
@@ -123,6 +124,30 @@ no public image.
   both directions and a 10 s return hold. AV Sync shows the delay of the
   path in use and credits it toward its target.
 
+### Presets and filter banks
+
+- **Every filter bank owns its presets and IR files.** A preset name is
+  unique within its bank: area banks keep theirs in `presets/<bank>/` and
+  `irs/<bank>/`, and the **Global** bank has one library per output mode
+  (`presets/global/<mode>/`), so Stereo, Stereo + Sub and Surround no
+  longer share Global presets. A slot names a preset of its own bank, and
+  combining, deleting, downloading and importing address bank and output
+  mode explicitly. **Direct** and **Neutral** exist in every bank without
+  a file. Preset and IR files of an installation from before this change
+  sit in the former flat `presets/` and `irs/` folders and are no longer
+  read — recreate or re-import them; the old files stay on disk.
+- **The A/B card names what every bank listens to.** Below Listening and
+  Chain it lists one chip per bank of the active output mode, Global
+  first, with the preset that bank plays; numbered banks in a row on the
+  same preset share a chip (`Sub 1/2`), the selected bank's chip is
+  outlined, and a shortened name keeps its full text in the tooltip. With
+  **All Banks** selected the Preset A and Preset B slots list the preset
+  each switched area bank plays on that side instead of a picker: a bank
+  without a B reads *stays on A*, a mixed state marks the side each bank
+  listens to, and Global stays out because All Banks does not switch it.
+  The toggle reads **Compare A/B** in both cases, and the status names the
+  listened side only (`Listening: A · All Banks`, `Listening: Mixed A/B`).
+
 ### TIDAL and streaming
 
 - Consecutive TIDAL album tracks at the same sample rate now play
@@ -188,6 +213,12 @@ no public image.
   mode: the Level Matching trim of each routed speaker, the sub gains, the
   effective AV Sync delay, and the SPL calibration (or the 83 dB reference
   marked *default* until calibrated).
+- The note stored with every measurement no longer calls the result
+  independent of the active DSP preset. It states what a sweep runs
+  through: a normal sweep passes the complete active chain (Global preset
+  and output extras, crossover, the measured bank's preset, output trims),
+  while Auto Sub Optimize and Speaker Align bypass the presets and output
+  extras and keep crossover, trims and routing.
 
 ### Fixes
 
@@ -242,6 +273,13 @@ no public image.
   convolver latency, so AV Sync and the balance between outputs account for
   it. A filter at the engine's own rate is loaded unchanged, and the level
   normalization of resampled filters is as before.
+- The first sweep after a stream at another rate could fail with `Owned SRC
+  output path is unavailable` (HTTP 500). A rate switch suspends the graph
+  nodes, and a graph sampled while its links were still initializing had no
+  owned path and stayed cached for half a second, so the measurement failed
+  on a graph that was already rebuilding itself. Such a graph is now read
+  again after a short pause and never cached; a path that is missing for
+  good still fails at once.
 
 ### Installer and maintenance
 
