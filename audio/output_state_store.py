@@ -20,10 +20,12 @@ class OutputStateStore:
     def __init__(self, path: Path):
         self.path = Path(path)
 
-    def load(self) -> dict:
+    def load(self, *, required: bool = False) -> dict:
         try:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
+            if required:
+                raise
             return default_output_state()
         try:
             payload = json.loads(text)

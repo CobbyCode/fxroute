@@ -71,26 +71,32 @@ def create_release_adapter(
                 output_key=output_key, channels=channels,
                 hardware_ports=ports, live=resolve_live_device(),
                 owner="AutoSub")
-        state = service.load()
-        plan = service.compile_plan(
-            state, output_key=output_key, channels=channels,
-            sample_rate_hz=restore_rate_hz)
-        fingerprint = service.fingerprint_plan(plan)
-        layout = service.compile_layout(plan)
-        config = DSPRuntimeConfig.from_plan(
-            plan, layout=layout, output_key=output_key,
-            sample_rate_hz=restore_rate_hz, hardware_ports=list(ports),
-            plan_fingerprint=fingerprint)
-        text = dsp_manager.compile_engine_text(
-            [dict(entry) for entry in layout],
-            preset_name=plan["global"]["preset"], mode=plan["mode"],
-            sample_rate_hz=restore_rate_hz,
-            extras_override=plan["global"]["extras"])
         native_runtime = get_native_runtime()
         if native_runtime is None:
             raise RuntimeError("Native DSP runtime is unavailable for release rebuild")
-        await native_runtime.sync_rendered(PlannedSyncTarget(config, text))
-        return {"revision": state["revision"], "plan_fingerprint": fingerprint,
+
+        def render(state):
+            plan = service.compile_plan(state, output_key=output_key, channels=channels,
+                                        sample_rate_hz=restore_rate_hz)
+            layout = service.compile_layout(plan)
+            config = DSPRuntimeConfig.from_plan(
+                plan, layout=layout, output_key=output_key,
+                sample_rate_hz=restore_rate_hz, hardware_ports=list(ports),
+                plan_fingerprint=service.fingerprint_plan(plan))
+            text = dsp_manager.compile_engine_text(
+                [dict(entry) for entry in layout],
+                preset_name=plan["global"]["preset"], mode=plan["mode"],
+                sample_rate_hz=restore_rate_hz, extras_override=plan["global"]["extras"])
+            return (PlannedSyncTarget(config, text),)
+
+        state, (target,) = await service.render_for_activation(
+            render, preflight=native_runtime.preflight_rendered, output_key=output_key,
+            channels=channels, hardware_ports=ports)
+        await native_runtime.sync_rendered(target)
+        service.remember_applied(state, output_key=output_key, channels=channels,
+                                 hardware_ports=ports, sample_rate_hz=restore_rate_hz,
+                                 fingerprint=target.config.plan_fingerprint)
+        return {"revision": state["revision"], "plan_fingerprint": target.config.plan_fingerprint,
                 "sample_rate_hz": restore_rate_hz}
 
     return adapter

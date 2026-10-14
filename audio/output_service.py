@@ -18,14 +18,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from audio.output_state_migration import migrate_legacy_output_state
+from audio.output_state_migration import migrate_legacy_output_state, upgrade_output_state
 from audio.filter_banks import resolve_bank
 from audio.output_state_store import OutputStateStore, StateConflictError
+from audio.output_state import validate_output_state
+from common.atomic_write import atomic_write_text
 from dsp.native_config import layout_from_plan
 from dsp.processing_plan import compile_processing_plan
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "MeasurementActiveError",
@@ -58,6 +64,75 @@ class OutputService:
 
     def load(self) -> dict:
         return self._deps.store.load()
+
+    def load_for_activation(self) -> dict:
+        """Unwritten editing defaults are not a safe production recovery state."""
+        return self._deps.store.load(required=True)
+
+    def remember_applied(self, state: dict, *, output_key: str, channels: int,
+                         hardware_ports: list[str], sample_rate_hz: int,
+                         fingerprint: str | None = None) -> None:
+        """Checkpoint only a successfully applied production state, never a draft."""
+        payload = {"state": validate_output_state(state), "output_key": output_key,
+                   "channels": channels, "hardware_ports": list(hardware_ports),
+                   "sample_rate_hz": sample_rate_hz,
+                   "fingerprint": fingerprint or self.fingerprint(
+                       state, output_key=output_key, channels=channels, sample_rate_hz=sample_rate_hz)}
+        atomic_write_text(self._deps.store.path.with_name("output-state-applied.json"),
+                          json.dumps(payload, sort_keys=True, allow_nan=False) + "\n")
+
+    def load_applied(self, *, output_key: str, channels: int,
+                     hardware_ports: list[str]) -> dict:
+        """Load the last applied state only for the exact physical output context."""
+        return self._applied_record(output_key=output_key, channels=channels,
+                                    hardware_ports=hardware_ports)["state"]
+
+    def _applied_record(self, *, output_key: str, channels: int,
+                        hardware_ports: list[str]) -> dict:
+        payload = json.loads(self._deps.store.path.with_name(
+            "output-state-applied.json").read_text(encoding="utf-8"))
+        if (not isinstance(payload, dict) or payload.get("output_key") != output_key
+                or payload.get("channels") != channels
+                or payload.get("hardware_ports") != list(hardware_ports)):
+            raise ValueError("Last applied output state belongs to a different device or port layout")
+        payload["state"] = upgrade_output_state(payload["state"])
+        return payload
+
+    def applied_graph_matches(self, snapshot: dict, *, output_key: str, channels: int,
+                              hardware_ports: list[str], sample_rate_hz: int) -> bool:
+        """Only a confirmed production graph may survive failed recovery rendering."""
+        if not snapshot.get("active") or snapshot.get("measurement_active"):
+            return False
+        config = snapshot.get("config") or {}
+        try:
+            payload = self._applied_record(output_key=output_key, channels=channels,
+                                           hardware_ports=hardware_ports)
+            return bool(payload.get("fingerprint")
+                        and config.get("plan_fingerprint") == payload["fingerprint"]
+                        and config.get("sample_rate") == payload.get("sample_rate_hz") == sample_rate_hz
+                        and config.get("output_key") == output_key
+                        and config.get("hardware_ports") == hardware_ports)
+        except (OSError, ValueError, KeyError):
+            return False
+
+    async def render_for_activation(self, render, *, preflight, output_key: str,
+                                    channels: int, hardware_ports: list[str]) -> tuple:
+        """Select one fully renderable production state, including native preflight."""
+        errors = []
+        for recovering in (False, True):
+            try:
+                state = (self.load_applied(output_key=output_key, channels=channels,
+                                           hardware_ports=hardware_ports)
+                         if recovering else self.load_for_activation())
+                targets = await asyncio.to_thread(render, state)
+                for target in targets:
+                    await preflight(target)
+                if recovering:
+                    logger.warning("Restoring last applied v2 output state: head_error=%s", errors[0])
+                return state, targets
+            except Exception as exc:
+                errors.append(str(exc))
+        raise RuntimeError("No renderable v2 output state: " + "; ".join(errors))
 
     def ensure_state(self) -> dict:
         """Load persisted state, migrating legacy documents exactly once.

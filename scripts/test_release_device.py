@@ -129,6 +129,9 @@ class FakeRuntime:
     def __init__(self):
         self.targets = []
 
+    async def preflight_rendered(self, target):
+        pass
+
     async def sync_rendered(self, target):
         self.targets.append(target)
 

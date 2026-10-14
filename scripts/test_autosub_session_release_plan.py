@@ -249,6 +249,9 @@ class ReleaseAdapterRenderTests(unittest.IsolatedAsyncioTestCase):
         self.targets = []
 
         class FakeRuntime:
+            async def preflight_rendered(inner_self, target):
+                pass
+
             async def sync_rendered(inner_self, target):
                 self.targets.append(target)
 
@@ -278,7 +281,9 @@ class ReleaseAdapterRenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(target.config.plan_fingerprint,
                          self.expected_fingerprint(RESTORE_RATE))
         self.assertEqual(result["plan_fingerprint"],
-                         self.expected_fingerprint(RESTORE_RATE))
+                          self.expected_fingerprint(RESTORE_RATE))
+        self.assertEqual(self.service.load_applied(
+            output_key="dev", channels=4, hardware_ports=list(PORTS)), self.start)
 
     async def test_adapter_renders_current_load_after_a_later_commit(self):
         adapter = self.build_adapter()
@@ -290,7 +295,15 @@ class ReleaseAdapterRenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["revision"], committed["revision"])
         self.assertNotEqual(second["plan_fingerprint"], first["plan_fingerprint"])
         self.assertEqual(second["plan_fingerprint"],
-                         self.expected_fingerprint(RESTORE_RATE))
+                          self.expected_fingerprint(RESTORE_RATE))
+
+    async def test_missing_head_restores_checkpoint_not_unwritten_stereo_defaults(self):
+        adapter = self.build_adapter()
+        await adapter(RESTORE_RATE)
+        self.store.path.unlink()
+        await adapter(RESTORE_RATE)
+        self.assertEqual([row["name"] for row in self.targets[-1].config.layout],
+                         ["main_l", "main_r", "sub1"])
 
     async def test_adapter_validates_rate_context_and_runtime(self):
         adapter = self.build_adapter()
@@ -437,6 +450,9 @@ class ReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.targets = []
 
         class FakeRuntime:
+            async def preflight_rendered(inner_self, target):
+                pass
+
             async def sync_rendered(inner_self, target):
                 self.targets.append(target)
 

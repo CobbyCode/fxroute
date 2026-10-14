@@ -813,6 +813,9 @@ class ReleaseAdapterTests(SessionFixture, unittest.IsolatedAsyncioTestCase):
         seen = {}
 
         class NativeRuntime:
+            async def preflight_rendered(self, target):
+                pass
+
             async def sync_rendered(self, target):
                 seen["fingerprint"] = target.config.plan_fingerprint
 

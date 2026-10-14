@@ -460,6 +460,7 @@ class PlannedSyncTarget:
     """Prebuilt v2 sync target: plan-derived config plus rendered engine text."""
     config: DSPRuntimeConfig
     text: str
+    on_applied: Callable[[], None] | None = None
 
 class DSPRuntime:
     def __init__(self, manager: Any, *, binary: str | Path | None = None,
@@ -1398,6 +1399,8 @@ class DSPRuntime:
                 await self.ramp_output_gain_db(guard, ramp_return)
                 await self._settle_output_gain_db(ramp_return)
                 apply_candidate()
+                if new.on_applied:
+                    new.on_applied()
             except BaseException:
                 rollback_applied = False
                 try:
@@ -1411,6 +1414,8 @@ class DSPRuntime:
                     if before_rollback_ramp:
                         await before_rollback_ramp()
                     await self.ramp_output_gain_db(guard, rollback_return)
+                    if previous.on_applied:
+                        previous.on_applied()
                 except BaseException:
                     logger.exception("Native DSP guarded transition rollback failed")
                 finally:
@@ -1473,6 +1478,27 @@ class DSPRuntime:
             async with self._lock:
                 await self._run_sync(target.config, target.text,
                                      initial_output_gain_db=initial_output_gain_db)
+                if target.on_applied:
+                    target.on_applied()
+
+    async def fail_closed(self, error: str, *, output_key: str = "") -> None:
+        """Mute the hardware and retire any unsafe helper; retain a visible error."""
+        async with self._measurement_scope_lock:
+            async with self._lock:
+                try:
+                    if output_key:
+                        result = await self._run(("pactl", "set-sink-mute", output_key, "1"))
+                        if result.returncode:
+                            raise RuntimeError(result.stderr or "Cannot mute hardware output")
+                        result = await self._run(("pactl", "get-sink-mute", output_key))
+                        if result.returncode or result.stdout.strip().lower() != "mute: yes":
+                            raise RuntimeError("Hardware output mute could not be confirmed")
+                finally:
+                    try:
+                        await self.stop_verified()
+                        await self._remove_direct_source_links()
+                    finally:
+                        self._error = error
 
     async def _run_sync(self, config: DSPRuntimeConfig, text: str, *,
                         initial_output_gain_db: float = 0.0) -> None:
@@ -1486,22 +1512,7 @@ class DSPRuntime:
             input_ms = await self._input_latency_ms()
             text += f'input_latency {input_ms:.9g}\n'
         await self._stop_orphan_helpers()
-        fd, config_name = tempfile.mkstemp(prefix="fxroute-dsp-", suffix=".conf")
-        os.write(fd, text.encode("utf-8")); os.close(fd)
-        input_fd, input_name = tempfile.mkstemp(prefix="fxroute-dsp-input-", suffix=".f32")
-        output_fd, output_name = tempfile.mkstemp(prefix="fxroute-dsp-output-", suffix=".f32")
-        os.close(input_fd); os.close(output_fd)
-        try:
-            offline_binary = self.binary.with_name(f"{self.binary.name}-offline")
-            result = await self._run((str(offline_binary), config_name, input_name, output_name))
-            if result.returncode:
-                raise RuntimeError(result.stderr or result.stdout or "Native DSP preflight failed")
-        except Exception:
-            Path(config_name).unlink(missing_ok=True)
-            raise
-        finally:
-            Path(input_name).unlink(missing_ok=True)
-            Path(output_name).unlink(missing_ok=True)
+        config_name = await self._preflight_text(text)
 
         if self._can_hot_update(config):
             try:
@@ -1557,6 +1568,32 @@ class DSPRuntime:
             finally:
                 self._error = str(exc)
             raise
+
+    async def preflight_rendered(self, target: PlannedSyncTarget) -> None:
+        """Validate a target without touching the running helper or its links."""
+        path = await self._preflight_text(target.text)
+        Path(path).unlink(missing_ok=True)
+
+    async def _preflight_text(self, text: str) -> str:
+        if not self.binary.is_file():
+            raise RuntimeError(f"Native DSP binary is not available: {self.binary}")
+        fd, config_name = tempfile.mkstemp(prefix="fxroute-dsp-", suffix=".conf")
+        os.write(fd, text.encode("utf-8")); os.close(fd)
+        input_fd, input_name = tempfile.mkstemp(prefix="fxroute-dsp-input-", suffix=".f32")
+        output_fd, output_name = tempfile.mkstemp(prefix="fxroute-dsp-output-", suffix=".f32")
+        os.close(input_fd); os.close(output_fd)
+        try:
+            offline_binary = self.binary.with_name(f"{self.binary.name}-offline")
+            result = await self._run((str(offline_binary), config_name, input_name, output_name))
+            if result.returncode:
+                raise RuntimeError(result.stderr or result.stdout or "Native DSP preflight failed")
+            return config_name
+        except BaseException:
+            Path(config_name).unlink(missing_ok=True)
+            raise
+        finally:
+            Path(input_name).unlink(missing_ok=True)
+            Path(output_name).unlink(missing_ok=True)
 
     async def _wait_for_ports(self, config: DSPRuntimeConfig) -> None:
         expected = [f"{DSP_NODE_NAME}:input_{index + 1}" for index in range(config.input_count)]

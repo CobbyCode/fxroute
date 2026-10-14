@@ -104,9 +104,8 @@ class DspOrchestrationDeps:
     get_current_force_rate: Callable[[], Any] | None = None
     # V2 plan renderer for the live helper sync.  Takes the authoritative
     # rate plus the current overview (device/ports) and returns a prebuilt
-    # sync target, or None when the committed head cannot activate (then the
-    # legacy overview sync below keeps its previous behavior).  Injected by
-    # the composition root; absent in unit tests that cover the legacy path.
+    # sync target. Failure must raise, never authorize a legacy graph.
+    # Absent only in unit tests that cover the legacy path.
     try_render_v2_target: Callable[[int, dict], Awaitable[Any | None]] | None = None
 
 
@@ -319,14 +318,6 @@ class DspOrchestrator:
             if v2_target is not None:
                 await dsp_runtime.sync_rendered(v2_target)
                 return current_overview
-            if self._v2_renderer_present() and self._serving_v2_plan(dsp_runtime):
-                # The committed head cannot render (e.g. a hand-edited state
-                # file), but the helper still serves the last good v2 graph:
-                # keep it instead of wiping the topology back to legacy.
-                logger.error(
-                    "Committed output state cannot render; keeping running v2 graph "
-                    "instead of legacy fallback")
-                return current_overview
             await dsp_runtime.sync(current_overview)
             return current_overview
 
@@ -337,34 +328,14 @@ class DspOrchestrator:
             return await _sync_locked()
 
     async def _render_v2_target(self, rate: int, overview: dict) -> Any | None:
-        """Render the committed v2 head for one sync, or None to keep legacy.
-
-        A None renderer (tests), a renderer failure, or a head that cannot
-        activate all fall back to the legacy overview sync at the call site,
-        so unmigrated states keep their previous behavior byte for byte.
-        """
+        """Render v2 or propagate failure; only an absent renderer is legacy."""
         render = getattr(self._deps, "try_render_v2_target", None)
         if render is None:
             return None
-        try:
-            target = await render(rate, overview)
-        except Exception as exc:
-            logger.warning("V2 plan render for DSP sync failed, using legacy overview: %s", exc)
-            return None
+        target = await render(rate, overview)
+        if target is None:
+            raise RuntimeError("V2 output state cannot render; legacy fallback refused")
         return target
-
-    @staticmethod
-    def _serving_v2_plan(dsp_runtime: Any) -> bool:
-        """Return whether the running helper already serves a v2 plan graph."""
-        try:
-            snapshot = dsp_runtime.snapshot() or {}
-        except Exception:
-            return False
-        config = snapshot.get("config") or {}
-        return bool(snapshot.get("active") and config.get("plan_fingerprint"))
-
-    def _v2_renderer_present(self) -> bool:
-        return getattr(self._deps, "try_render_v2_target", None) is not None
 
     async def _sync_after_stale_settle(
         self,

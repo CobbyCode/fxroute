@@ -504,6 +504,9 @@ class SpeakerReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.targets = []
 
         class FakeRuntime:
+            async def preflight_rendered(inner_self, target):
+                pass
+
             async def sync_rendered(inner_self, target):
                 self.targets.append(target)
 
@@ -524,6 +527,8 @@ class SpeakerReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
         result = await self.build_adapter()(RESTORE_RATE)
         self.assertEqual(result["sample_rate_hz"], RESTORE_RATE)
         self.assertEqual(len(self.targets), 1)
+        self.assertEqual(self.service.load_applied(
+            output_key="dev", channels=2, hardware_ports=list(PORTS)), self.service.load())
 
     async def test_switched_ports_refuse_before_touching_runtime(self):
         adapter = self.build_adapter()
@@ -531,6 +536,12 @@ class SpeakerReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
                      "hardware_ports": ["playback_AUX0"]}
         with self.assertRaisesRegex(RuntimeError, "hardware_ports"):
             await adapter(RESTORE_RATE)
+        self.assertEqual(self.targets, [])
+
+    async def test_missing_head_without_checkpoint_refuses_unwritten_defaults(self):
+        self.store.path.unlink()
+        with self.assertRaises(RuntimeError):
+            await self.build_adapter()(RESTORE_RATE)
         self.assertEqual(self.targets, [])
 
 

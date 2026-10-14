@@ -221,6 +221,11 @@ class _RuntimeOutputModeMixin:
         if previous_target is not None and runtime is not None:
             await runtime.sync_rendered(previous_target)
             await self._verify_plan_rollback(request, previous_target)
+            service.remember_applied(v2["previous_state"], output_key=v2["output_key"],
+                                     channels=v2["channels"],
+                                     hardware_ports=list(previous_target.config.hardware_ports),
+                                     sample_rate_hz=previous_target.config.sample_rate,
+                                     fingerprint=previous_target.config.plan_fingerprint)
         else:
             logger.warning(
                 "Output-state rollback has no previous graph target; "

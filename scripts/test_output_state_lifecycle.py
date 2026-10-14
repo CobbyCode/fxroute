@@ -8,6 +8,7 @@ import copy
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -208,6 +209,25 @@ class SyncRenderedTests(unittest.TestCase):
                 ("fxroute_dsp:output_3", "A:playback_AUX2"),
                 ("fxroute_dsp:output_3", "A:playback_AUX3"),
             })
+            await runtime.stop()
+        asyncio.run(run())
+
+    def test_only_successfully_applied_targets_update_the_checkpoint(self):
+        async def run():
+            target = target_for(self.service, self.manager, self.state)
+            target = replace(target, on_applied=lambda: self.service.remember_applied(
+                self.state, output_key="A", channels=4, hardware_ports=PORTS, sample_rate_hz=48000))
+            checkpoint = Path(self.directory) / "output-state-applied.json"
+            self.assertFalse(checkpoint.exists())
+            failing = self.make_runtime(preflight_rc=1)
+            with self.assertRaises(RuntimeError):
+                await failing.sync_rendered(target)
+            self.assertFalse(checkpoint.exists())
+            runtime = self.make_runtime()
+            await runtime.sync_rendered(target)
+            self.assertEqual(self.service.load_applied(
+                output_key="A", channels=4, hardware_ports=PORTS), self.state)
+            await runtime.stop()
         asyncio.run(run())
 
     def test_guarded_rebuild_rolls_back_to_previous_target(self):
@@ -240,6 +260,7 @@ class SyncRenderedTests(unittest.TestCase):
             self.assertIn("output 2 -4 ", calls[0])
             self.assertNotIn("output 2 -4 ", calls[1])
             self.assertEqual(runtime.snapshot()["config"]["plan_fingerprint"], "fp-old")
+            await runtime.stop()
         asyncio.run(run())
 
 
@@ -279,15 +300,18 @@ class EffectsTransitionTargetTests(unittest.TestCase):
         self.assertIn("sc_limiter", new_target.text)
         self.assertNotIn("sc_limiter", old_target.text)
 
-    def test_unusable_overview_falls_back_to_none(self):
+    def test_unusable_overview_refuses_legacy_fallback(self):
         previous = self.manager.load_global_extras()
         with lifecycle_context(self.service, self.manager, self.runtime):
             with mock.patch.object(main, "get_audio_output_overview", return_value={}):
-                self.assertIsNone(asyncio.run(
-                    main._render_effects_transition_targets(previous, previous)))
+                self.runtime.fail_closed = mock.AsyncMock()
+                with self.assertRaises(RuntimeError):
+                    asyncio.run(main._render_effects_transition_targets(previous, previous))
 
 
 def lifecycle_context(service, manager, runtime):
+    if isinstance(runtime, mock.Mock):
+        runtime.preflight_rendered = mock.AsyncMock()
     stack = contextlib.ExitStack()
     stack.enter_context(mock.patch.multiple(
         main,

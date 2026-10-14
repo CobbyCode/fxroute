@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Regression: helper sync serves the committed v2 plan, legacy is fallback.
+"""Regression: helper sync never falls back from an unavailable v2 plan.
 
 Every playback helper (re)build -- startup, play/pause transitions,
 link-watch repairs -- goes through ``DspOrchestrator.sync_runtime``.  When
@@ -12,8 +12,7 @@ edit silently wipes the running DSP back to the legacy 80 Hz topology.
 Covered here, without importing the application composition root:
   v2 renderer returns a target -> ``sync_rendered`` wins, legacy ``sync``
       is never called (normal and stale-repair branches);
-  v2 renderer returns None (head cannot activate) -> legacy ``sync`` runs;
-  v2 renderer raises -> fail-open to legacy ``sync``.
+  v2 renderer returns None or raises -> error, never legacy ``sync``.
 """
 
 import asyncio
@@ -167,17 +166,19 @@ class V2SyncPreferenceTests(unittest.TestCase):
         self.assertIs(deps.runtime.rendered_calls[0], deps._v2_target)
         self.assertEqual(deps.runtime.sync_calls, [])
 
-    def test_v2_none_falls_back_to_legacy_sync(self):
+    def test_v2_none_never_authorizes_legacy_sync(self):
         deps = _FakeDeps(v2_target=None)
-        run_sync(deps)
+        with self.assertRaises(RuntimeError):
+            run_sync(deps)
         self.assertEqual(deps.runtime.rendered_calls, [])
-        self.assertEqual(len(deps.runtime.sync_calls), 1)
+        self.assertEqual(deps.runtime.sync_calls, [])
 
-    def test_v2_failure_falls_back_to_legacy_sync(self):
+    def test_v2_failure_never_authorizes_legacy_sync(self):
         deps = _FakeDeps(v2_target=object(), v2_raises=True)
-        run_sync(deps)
+        with self.assertRaises(RuntimeError):
+            run_sync(deps)
         self.assertEqual(deps.runtime.rendered_calls, [])
-        self.assertEqual(len(deps.runtime.sync_calls), 1)
+        self.assertEqual(deps.runtime.sync_calls, [])
 
     def test_stale_repair_branch_prefers_v2(self):
         async def run():
@@ -192,16 +193,17 @@ class V2SyncPreferenceTests(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_stale_repair_branch_falls_back_to_legacy(self):
+    def test_stale_repair_branch_never_falls_back_to_legacy(self):
         async def run():
             deps = _FakeDeps(v2_target=None)
             orchestrator = DspOrchestrator(deps)
             token = dict(deps.overview)
-            await orchestrator.sync_runtime(
-                token, reason="unit-repair", _rate_lock_held=True,
-                allow_unsettled_rate=True)
+            with self.assertRaises(RuntimeError):
+                await orchestrator.sync_runtime(
+                    token, reason="unit-repair", _rate_lock_held=True,
+                    allow_unsettled_rate=True)
             self.assertEqual(deps.runtime.rendered_calls, [])
-            self.assertEqual(len(deps.runtime.sync_calls), 1)
+            self.assertEqual(deps.runtime.sync_calls, [])
 
         asyncio.run(run())
 
@@ -214,36 +216,39 @@ class V2SyncPreferenceTests(unittest.TestCase):
             "active": True,
             "config": {"plan_fingerprint": "abc123", "output_key": "A"},
         }
-        run_sync(deps)
+        with self.assertRaises(RuntimeError):
+            run_sync(deps)
         self.assertEqual(deps.runtime.rendered_calls, [])
         self.assertEqual(deps.runtime.sync_calls, [])
 
-    def test_unrenderable_head_without_running_v2_uses_legacy(self):
+    def test_unrenderable_head_without_running_v2_refuses_legacy(self):
         deps = _FakeDeps(v2_target=None)
         deps.runtime.snapshot_value = {"active": True, "config": {}}
-        run_sync(deps)
+        with self.assertRaises(RuntimeError):
+            run_sync(deps)
         self.assertEqual(deps.runtime.rendered_calls, [])
-        self.assertEqual(len(deps.runtime.sync_calls), 1)
+        self.assertEqual(deps.runtime.sync_calls, [])
 
-    def test_unrenderable_head_with_idle_engine_uses_legacy(self):
+    def test_unrenderable_head_with_idle_engine_refuses_legacy(self):
         deps = _FakeDeps(v2_target=None)
         deps.runtime.snapshot_value = {
             "active": False,
             "config": {"plan_fingerprint": "abc123"},
         }
-        run_sync(deps)
+        with self.assertRaises(RuntimeError):
+            run_sync(deps)
         self.assertEqual(deps.runtime.rendered_calls, [])
-        self.assertEqual(len(deps.runtime.sync_calls), 1)
+        self.assertEqual(deps.runtime.sync_calls, [])
 
     def test_dead_engine_bypasses_sink_misalignment_deferral(self):
         # A dead helper pins nothing: the sync must rebuild at the
         # authoritative rate instead of deferring forever behind a rate pin.
-        deps = _FakeDeps(v2_target=None)
+        deps = _FakeDeps(v2_target=object())
         deps.status = {"active_rate": 44_100, "force_rate": 48_000}
         deps.runtime.snapshot_value = {"active": False, "config": {}}
         run_sync(deps)
-        self.assertEqual(deps.runtime.rendered_calls, [])
-        self.assertEqual(len(deps.runtime.sync_calls), 1)
+        self.assertEqual(len(deps.runtime.rendered_calls), 1)
+        self.assertEqual(deps.runtime.sync_calls, [])
 
     def test_live_engine_keeps_sink_misalignment_deferral(self):
         deps = _FakeDeps(v2_target=object())

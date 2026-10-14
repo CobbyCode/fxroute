@@ -25,7 +25,7 @@ import subprocess
 import playback.queue as playback_queue
 import playback.media_readiness as media_readiness
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
@@ -2111,52 +2111,27 @@ async def _apply_remote_volume_value(
 
 
 async def _render_effects_transition_targets(previous, candidate):
-    """Render old/new v2 plan targets for a global-extras transition.
+    """Render both extras snapshots on one recoverable v2 production state."""
+    overview = await asyncio.to_thread(get_audio_output_overview)
+    status = await asyncio.to_thread(get_samplerate_status)
+    rate = status.get("active_rate")
+    if type(rate) is not int or rate <= 0:
+        rate = status.get("force_rate")
+    return await _render_v2_recovery_targets(rate, overview, (candidate, previous))
 
-    Returns (new_target, old_target) for the committed head at the live
-    rate, or None when the head cannot activate (the caller keeps the
-    legacy overview rebuild).  Never raises.
-    """
-    try:
-        service = get_output_service()
-        overview = await asyncio.to_thread(get_audio_output_overview)
-        try:
-            output_key, channels = _output_state_device(overview)
-        except HTTPException:
-            return None
-        if not channels:
-            return None
-        status = get_samplerate_status()
-        rate = status.get("active_rate")
-        if not isinstance(rate, int) or rate <= 0:
-            rate = status.get("force_rate")
-        if not isinstance(rate, int) or rate <= 0:
-            return None
-        ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
-        if not ports:
-            return None
-        manager = _require_dsp_manager()
-        state = service.load()
-        plan = service.compile_plan(state, output_key=output_key, channels=channels,
-                                    sample_rate_hz=rate)
-        fingerprint = service.fingerprint_plan(plan)
-        new_target = _build_plan_target(
-            service, manager, plan, output_key=output_key, rate=rate,
-            hardware_ports=list(ports), fingerprint=fingerprint,
-            extras_override=candidate)
-        old_target = _build_plan_target(
-            service, manager, plan, output_key=output_key, rate=rate,
-            hardware_ports=list(ports), fingerprint=fingerprint,
-            extras_override=previous)
-        return new_target, old_target
-    except Exception as exc:
-        logger.info("Effects transition uses legacy rebuild (v2 head unavailable): %s", exc)
-        return None
+
+async def _temporary_effects_transition(previous, candidate):
+    """Apply temporary SPL helpers without replacing v2 routing or filters."""
+    async with _dsp_mutation_lock():
+        new_target, old_target = await _render_effects_transition_targets(previous, candidate)
+        await runtime.dsp_runtime.guarded_rebuild_rendered(
+            new_target, previous=old_target, guard_db=-18.0,
+            apply_candidate=lambda: None, apply_previous=lambda: None,
+            settle_seconds=dsp_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS)
 
 
 async def _guarded_effects_transition(previous, candidate, persist_all_presets):
     """Apply extras through a guarded DSP rebuild without touching the master."""
-    overview = get_audio_output_overview()
     result_holder = {}
     start = await _volume_state_for_manager(dsp_manager)
     candidate_loudness = (candidate.get("loudness") or {})
@@ -2174,24 +2149,12 @@ async def _guarded_effects_transition(previous, candidate, persist_all_presets):
             if persist_all_presets else
             dsp_manager.apply_global_extras_to_active_preset(candidate))
 
-    targets = await _render_effects_transition_targets(previous, candidate)
-    if targets is None:
-        await runtime.dsp_runtime.guarded_rebuild(
-            overview,
-            guard_db=guard_db,
-            apply_candidate=persist_candidate,
-            apply_previous=lambda: dsp_manager.save_global_extras(previous),
-            settle_seconds=settle,
-            candidate_extras=candidate,
-            previous_extras=previous,
-        )
-    else:
-        new_target, old_target = targets
-        await runtime.dsp_runtime.guarded_rebuild_rendered(
-            new_target, previous=old_target, guard_db=guard_db,
-            apply_candidate=persist_candidate,
-            apply_previous=lambda: dsp_manager.save_global_extras(previous),
-            settle_seconds=settle)
+    new_target, old_target = await _render_effects_transition_targets(previous, candidate)
+    await runtime.dsp_runtime.guarded_rebuild_rendered(
+        new_target, previous=old_target, guard_db=guard_db,
+        apply_candidate=persist_candidate,
+        apply_previous=lambda: dsp_manager.save_global_extras(previous),
+        settle_seconds=settle)
     result = result_holder["result"]
     result["runtime_applied"] = True
     return result
@@ -3203,27 +3166,8 @@ async def lifespan(app: FastAPI):
         dsp_manager.runtime_transition_callback = guarded_effects_transition
 
         def temporary_effects_transition(previous, candidate):
-            async def transition():
-                async with _dsp_mutation_lock():
-                    targets = await _render_effects_transition_targets(previous, candidate)
-                    if targets is None:
-                        await runtime.dsp_runtime.guarded_rebuild(
-                            get_audio_output_overview(),
-                            guard_db=-18.0,
-                            apply_candidate=lambda: None,
-                            apply_previous=lambda: None,
-                            settle_seconds=dsp_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS,
-                            candidate_extras=candidate,
-                            previous_extras=previous,
-                        )
-                    else:
-                        new_target, old_target = targets
-                        await runtime.dsp_runtime.guarded_rebuild_rendered(
-                            new_target, previous=old_target, guard_db=-18.0,
-                            apply_candidate=lambda: None,
-                            apply_previous=lambda: None,
-                            settle_seconds=dsp_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS)
-            asyncio.run_coroutine_threadsafe(transition(), runtime_loop).result()
+            asyncio.run_coroutine_threadsafe(
+                _temporary_effects_transition(previous, candidate), runtime_loop).result()
 
         dsp_manager.temporary_runtime_transition_callback = temporary_effects_transition
         try:
@@ -5435,55 +5379,59 @@ def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
 
 
 async def _try_render_v2_sync_target(rate: int, overview: dict):
-    """Render the committed v2 head for a runtime sync, or None for legacy.
+    """Render the head or last applied v2 state; failure never permits legacy."""
+    targets = await _render_v2_recovery_targets(rate, overview, (None,))
+    return targets[0]
 
-    Used by the DSP orchestrator so every helper (re)build -- startup,
-    playback transitions, link-watch repairs -- serves the authoritative
-    output state instead of the legacy overview graph.  Any failure (no
-    device, undiscovered ports, a draft that cannot activate) returns None
-    and the caller keeps the legacy overview sync, so unmigrated states are
-    byte-for-byte unchanged.
-    """
+
+async def _render_v2_recovery_targets(rate: int, overview: dict, extras_snapshots: tuple):
+    """Render one production state for all targets, preserving editable drafts."""
+    output_key = ""
+    ports = []
+    channels = None
+    service = get_output_service()
     try:
-        if not isinstance(rate, int) or rate <= 0:
-            return None
-        if not isinstance(overview, dict):
-            return None
-        service = get_output_service()
-        try:
-            output_key, channels = _output_state_device(overview)
-        except HTTPException:
-            return None
-        if not channels:
-            return None
+        output_key, channels = _output_state_device(overview)
         ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
-        if not ports:
-            return None
-        try:
-            state = service.load()
-        except ValueError:
-            return None
-        try:
-            plan = await asyncio.to_thread(
-                service.compile_plan, state, output_key=output_key,
-                channels=channels, sample_rate_hz=rate)
-        except (FileNotFoundError, ValueError):
-            return None
-        fingerprint = service.fingerprint_plan(plan)
+        if type(rate) is not int or rate <= 0:
+            raise ValueError("Output sample rate is unknown")
+        if not channels:
+            raise ValueError("Output channel capacity is unknown")
+        if len(ports) != channels:
+            raise ValueError("Output playback ports are undiscovered or incomplete")
         manager = _require_dsp_manager()
-        try:
-            target = await asyncio.to_thread(
-                _build_plan_target, service, manager, plan,
-                output_key=output_key, rate=rate,
-                hardware_ports=list(ports), fingerprint=fingerprint)
-        except (RuntimeError, ValueError):
-            return None
-        logger.info("DSP sync serving v2 plan: mode=%s rate=%s fingerprint=%s",
-                    plan.get("mode"), rate, (fingerprint or "")[:12])
-        return target
+        native = runtime.dsp_runtime
+        if native is None:
+            raise RuntimeError("Native DSP runtime is unavailable")
+
+        def render(state):
+            plan = service.compile_plan(state, output_key=output_key,
+                                        channels=channels, sample_rate_hz=rate)
+            fingerprint = service.fingerprint_plan(plan)
+            return tuple(_build_plan_target(
+                service, manager, plan, output_key=output_key, rate=rate,
+                hardware_ports=ports, fingerprint=fingerprint, extras_override=extras)
+                for extras in extras_snapshots)
+
+        state, targets = await service.render_for_activation(
+            render, preflight=native.preflight_rendered, output_key=output_key,
+            channels=channels, hardware_ports=ports)
+
+        def remember():
+            service.remember_applied(state, output_key=output_key, channels=channels,
+                                     hardware_ports=ports, sample_rate_hz=rate,
+                                     fingerprint=targets[0].config.plan_fingerprint)
+        return tuple(replace(target, on_applied=remember) for target in targets)
     except Exception as exc:
-        logger.warning("V2 plan render for DSP sync failed, using legacy overview: %s", exc)
-        return None
+        logger.error("V2 output render failed; legacy fallback refused: %s", exc)
+        native = runtime.dsp_runtime
+        snapshot = native.snapshot() if native is not None else {}
+        keep_running = service.applied_graph_matches(
+            snapshot, output_key=output_key, channels=channels,
+            hardware_ports=ports, sample_rate_hz=rate)
+        if native is not None and not keep_running:
+            await native.fail_closed(str(exc), output_key=output_key)
+        raise RuntimeError(f"V2 output unavailable; legacy fallback refused: {exc}") from exc
 
 
 def _level_match_capture_scope(job: dict, target: dict, scope: dict, state: dict, *, neutralize: bool):
@@ -5567,8 +5515,15 @@ async def _sync_v2_head_after_bank_assign() -> dict:
             return {"live_applied": False, "live_reason": "rate-unknown"}
         if runtime.dsp_runtime is None:
             return {"live_applied": False, "live_reason": "dsp-runtime-unavailable"}
+        service = get_output_service()
+        try:
+            intended_fingerprint = service.fingerprint(
+                service.load_for_activation(), output_key=output_key,
+                channels=channels, sample_rate_hz=rate)
+        except (FileNotFoundError, ValueError):
+            return {"live_applied": False, "live_reason": "not-activatable"}
         target = await _try_render_v2_sync_target(rate, overview)
-        if target is None:
+        if target.config.plan_fingerprint != intended_fingerprint:
             return {"live_applied": False, "live_reason": "not-activatable"}
         await runtime.dsp_runtime.sync_rendered(target)
         return {"live_applied": True, "live_reason": None}
@@ -6445,6 +6400,9 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
                 cause = cause.__cause__
             raise _transition_error_http(exc) from exc
         committed = service.load()
+        service.remember_applied(committed, output_key=output_key, channels=channels,
+                                 hardware_ports=list(ports), sample_rate_hz=target_rate,
+                                 fingerprint=new_fp)
         return {
             "status": "ok",
             "revision": committed["revision"],
@@ -6532,6 +6490,9 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
         # edit looks like the first audible change.
         try:
             await runtime.dsp_runtime.sync_rendered(staged_new_target)
+            service.remember_applied(committed, output_key=output_key, channels=channels,
+                                     hardware_ports=ports, sample_rate_hz=target_rate,
+                                     fingerprint=new_fp)
         except BaseException as exc:
             try:
                 service.revert(state, expected_revision=committed["revision"])
@@ -6557,6 +6518,9 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
             staged_new_target, previous=staged_old_target, guard_db=staged_guard,
             apply_candidate=lambda: None, apply_previous=lambda: None,
             settle_seconds=0.0)
+        service.remember_applied(committed, output_key=output_key, channels=channels,
+                                 hardware_ports=ports, sample_rate_hz=target_rate,
+                                 fingerprint=new_fp)
     except BaseException as exc:
         rolled_back = False
         try:

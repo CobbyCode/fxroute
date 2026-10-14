@@ -551,6 +551,27 @@ class MainTopologyBranchTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 500)
         self.assertEqual(self.service.load()["revision"], 1)
 
+    def test_failed_post_gate_verification_never_promotes_candidate_checkpoint(self):
+        base = self.service.load()
+        ports = [f"playback_AUX{i}" for i in range(4)]
+        self.service.remember_applied(base, output_key="A", channels=4,
+                                     hardware_ports=ports, sample_rate_hz=48000)
+        head = self.service.commit(set_crossover(base, "stereo-sub", True), expected_revision=1)
+        transition = make_transition_runtime()
+
+        async def fail_after_persist(request):
+            await transition.commit_output_mode_runtime(request)
+            await transition.rollback_output_mode_runtime(request, {})
+            raise PlaybackTransitionFailure("post-gate failure", transition_id="t", stage="post-gate")
+
+        with route_context(self.service, self.manager, fail_after_persist), \
+             mock.patch.object(main.runtime, "dsp_runtime", mock.MagicMock()):
+            with self.assertRaises(main.HTTPException):
+                asyncio.run(main.apply_audio_output_state(FakeRequest({
+                    "expected_revision": head["revision"],
+                    "mutation": {"kind": "set_crossover", "mode": "stereo-sub", "enabled": False}})))
+        self.assertEqual(self.service.load_applied(output_key="A", channels=4, hardware_ports=ports), base)
+
     def test_coordinator_conflict_maps_to_409(self):
         async def conflict(_request):
             failure = PlaybackTransitionFailure("conflict", transition_id="t",
@@ -626,7 +647,8 @@ class StabilizeStagedGraphTests(unittest.IsolatedAsyncioTestCase):
             apply_candidate()
 
         self.engine = mock.MagicMock(guarded_rebuild=AsyncMock(side_effect=rebuild),
-                                     guarded_rebuild_rendered=AsyncMock(side_effect=rebuild))
+                                     guarded_rebuild_rendered=AsyncMock(side_effect=rebuild),
+                                     preflight_rendered=AsyncMock())
         self.runtime = make_transition_runtime()
 
     def commit_head(self, state):
@@ -686,11 +708,27 @@ class StabilizeStagedGraphTests(unittest.IsolatedAsyncioTestCase):
         self.engine.guarded_rebuild.assert_not_awaited()
         self.engine.guarded_rebuild_rendered.assert_not_awaited()
 
-    async def test_transition_without_a_staged_graph_still_re_applies_the_extras(self):
+    async def test_unstaged_transition_without_recovery_refuses_legacy_rebuild(self):
         head = self.commit_head(set_crossover(self.surround_state(), "surround", True))
         candidate = set_crossover(head, "surround", False)
-        await self.stabilize(head, candidate, staged=False)
-        self.engine.guarded_rebuild.assert_awaited_once()
+        self.engine.fail_closed = AsyncMock()
+        with self.assertRaises(RuntimeError):
+            await self.stabilize(head, candidate, staged=False)
+        self.engine.guarded_rebuild.assert_not_awaited()
+        self.engine.guarded_rebuild_rendered.assert_not_awaited()
+
+    async def test_unstaged_transition_recovers_last_applied_surround_for_extras(self):
+        valid = self.surround_state()
+        self.service.remember_applied(valid, output_key=OUTPUT_KEY, channels=6,
+                                     hardware_ports=PORTS, sample_rate_hz=48000)
+        head = self.commit_head(set_crossover(valid, "surround", True))
+        candidate = set_crossover(head, "surround", False)
+        result, _ = await self.stabilize(head, candidate, staged=False)
+        self.assertTrue(result["stabilized"])
+        self.engine.guarded_rebuild.assert_not_awaited()
+        target = self.engine.guarded_rebuild_rendered.await_args.args[0]
+        self.assertEqual(target.config.output_mode, "surround")
+        self.assertEqual(target.config.input_count, 8)
 
 
 class LegacyFilesUntouchedTests(unittest.TestCase):

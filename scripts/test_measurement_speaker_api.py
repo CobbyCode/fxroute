@@ -273,6 +273,9 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
             async def verify(self):
                 return True
 
+            async def preflight_rendered(self, target):
+                pass
+
             async def sync_rendered(self, target):
                 runtime["fingerprint"] = target.config.plan_fingerprint
 
