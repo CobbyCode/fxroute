@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Strict per-bank preset picker: each bank lists exclusively its own
 // presets (plus built-ins); untagged legacy reads as Global stock, where it
-// historically lived. All Banks lists none (joint A/B switching only).
+// historically lived. Every output mode owns its Global presets. All Banks
+// lists none (joint A/B switching only).
 const assert = require('node:assert/strict');
 const ui = require('../static/output_state.js');
 
@@ -36,23 +37,35 @@ assert.deepEqual(ui.presetsForBank(presets, 'all'), []);
 assert.deepEqual(ui.presetsForBank(presets, ''), []);
 assert.deepEqual(ui.presetsForBank('not-an-array', 'low'), []);
 
-// Surround Global lists group-scoped presets, every other Global the stereo ones.
+// Every output mode lists its own Global presets and no other mode's.
 const layered = [
     { name: 'Direct' },
     { name: 'Neutral' },
-    { name: 'StereoRoom', bank: 'global' },
+    { name: 'StereoRoom', bank: 'global', mode: 'stereo' },
+    { name: 'SubRoom', bank: 'global', mode: 'stereo-sub' },
+    { name: 'OldRoom', bank: 'global' },
     { name: 'LegacyRoom' },
-    { name: 'SurroundRoom', bank: 'global', layout: 'surround' },
+    { name: 'SurroundRoom', bank: 'global', layout: 'surround', mode: 'surround' },
+    { name: 'OldSurround', bank: 'global', layout: 'surround' },
     { name: 'FrontOnly', bank: 'main' },
 ];
-assert.deepEqual(ui.presetsForBank(layered, 'global', 'surround').map(p => p.name),
-    ['Direct', 'Neutral', 'SurroundRoom']);
-for (const mode of ['stereo', 'stereo-sub', undefined]) {
-    assert.deepEqual(ui.presetsForBank(layered, 'global', mode).map(p => p.name),
-        ['Direct', 'Neutral', 'StereoRoom', 'LegacyRoom']);
+const globalNames = (mode) => ui.presetsForBank(layered, 'global', mode).map(p => p.name);
+assert.deepEqual(globalNames('surround'), ['Direct', 'Neutral', 'SurroundRoom', 'OldSurround']);
+// A Global preset from before the split belongs to Stereo; a file without
+// any bank tag has no owner until the backend migrates it.
+assert.deepEqual(globalNames('stereo'), ['Direct', 'Neutral', 'StereoRoom', 'OldRoom', 'LegacyRoom']);
+assert.deepEqual(globalNames(undefined), globalNames('stereo'));
+assert.deepEqual(globalNames('stereo-sub'), ['Direct', 'Neutral', 'SubRoom', 'LegacyRoom']);
+for (const [owner, name] of [['stereo', 'StereoRoom'], ['stereo-sub', 'SubRoom'], ['surround', 'SurroundRoom']]) {
+    for (const mode of ['stereo', 'stereo-sub', 'surround']) {
+        assert.equal(globalNames(mode).includes(name), mode === owner, `${name} in ${mode} Global`);
+    }
 }
 assert.deepEqual(ui.presetsForBank(layered, 'main', 'surround').map(p => p.name),
     ['Direct', 'Neutral', 'FrontOnly']);
+assert.equal(ui.presetMode({ name: 'x', bank: 'global', mode: 'stereo-sub' }), 'stereo-sub');
+assert.equal(ui.presetMode({ name: 'x', bank: 'global' }), 'stereo');
+assert.equal(ui.presetMode({ name: 'x', bank: 'global', layout: 'surround' }), 'surround');
 
 assert.equal(ui.isBuiltinBankPreset('Direct'), true);
 assert.equal(ui.isBuiltinBankPreset('Neutral'), true);

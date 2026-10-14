@@ -67,6 +67,7 @@ class FakeDspManager:
     def __init__(self):
         self.calls = []
         self.groups = []
+        self.modes = []
 
     def load_global_extras(self):
         return {}
@@ -77,24 +78,29 @@ class FakeDspManager:
     def get_status(self):
         return {"status": "ok", "active_preset": None}
 
-    def create_peq_preset(self, name, peq, extras=None, bank=None, group=None):
+    def create_peq_preset(self, name, peq, extras=None, bank=None, group=None, mode=None):
         self.calls.append(("create-peq", name, bank))
         self.groups.append(group)
+        self.modes.append(mode)
         return {"name": name, "chain": []}
 
-    def create_convolver_preset(self, name, ir_filename, extras=None, bank=None, group=None):
+    def create_convolver_preset(self, name, ir_filename, extras=None, bank=None, group=None, mode=None):
         self.calls.append(("create-convolver", name, bank))
         self.groups.append(group)
+        self.modes.append(mode)
         return {"name": name, "chain": []}
 
-    def create_convolver_preset_with_upload(self, name, path, filename, extras=None, bank=None, group=None):
+    def create_convolver_preset_with_upload(self, name, path, filename, extras=None, bank=None, group=None,
+                                            mode=None):
         self.calls.append(("create-with-ir", name, bank))
         self.groups.append(group)
+        self.modes.append(mode)
         return {"ir": {"name": filename}, "preset": {"name": name, "chain": []}}
 
-    def create_convolver_preset_with_dual_uploads(self, name, *args, bank=None, group=None, **kwargs):
+    def create_convolver_preset_with_dual_uploads(self, name, *args, bank=None, group=None, mode=None, **kwargs):
         self.calls.append(("import-filter-dual", name, bank))
         self.groups.append(group)
+        self.modes.append(mode)
         return {"preset": {"name": name, "chain": []}}
 
 
@@ -257,6 +263,8 @@ class MeasurementCommitGateTests(unittest.IsolatedAsyncioTestCase):
             await dsp_api.import_dual_filter_preset(
                 preset_name="C", left_file=FakeUploadFile("l.wav"), right_file=FakeUploadFile("r.wav"), **fields)
         self.assertEqual(self.manager.groups, ["front", "front", "front"])
+        # The bank's output mode travels along: it makes a Global preset that mode's own.
+        self.assertEqual(self.manager.modes, ["surround", "surround", "surround"])
 
     async def test_surround_global_needs_a_group_and_other_banks_take_none(self):
         with mock.patch.object(FakeOutputService, "load", return_value=SURROUND_STATE):

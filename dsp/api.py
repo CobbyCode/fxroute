@@ -284,32 +284,37 @@ def _validate_bank_target(service, binding: dict, *, needs_group: bool = False) 
     return canonical
 
 
-def _group_kwargs(binding: dict | None) -> dict:
-    """Manager keyword for the speaker group of a Surround Global binding."""
-    group = binding.get("bank_group") if binding else None
-    return {"group": group} if group else {}
+def _binding_kwargs(binding: dict | None) -> dict:
+    """Manager keywords of a bank binding: the output mode and a Surround speaker group.
+
+    The mode makes a Global preset the property of that mode's Global bank.
+    """
+    if not binding:
+        return {}
+    group = binding.get("bank_group")
+    return {"mode": binding["mode"], **({"group": group} if group else {})}
 
 
-def _optional_combine_bank(body: dict) -> str | None:
-    """Owning bank for a combined preset; None keeps legacy behavior.
+def _optional_combine_owner(body: dict) -> dict:
+    """Owning bank and output mode for a combined preset; empty keeps legacy behavior.
 
     Combine only tags the new file (it never auto-assigns A/B slots).
     All Banks is rejected; absent fields mean no bank was requested.
     """
     if not isinstance(body, dict):
-        return None
+        return {}
     if isinstance(body.get("bank_mode"), FieldInfo) or isinstance(body.get("bank_id"), FieldInfo):
-        return None
+        return {}
     mode = str(body.get("bank_mode") or "").strip()
     bank = str(body.get("bank_id") or "").strip()
     if not mode and not bank:
-        return None
+        return {}
     if not mode or not bank:
         raise HTTPException(status_code=400, detail="bank_mode and bank_id are required together")
     service = _output_state_service()
-    if service is None:
-        return bank
-    return _validate_bank_target(service, {"mode": mode, "bank_id": bank, "expected_revision": 0})
+    if service is not None:
+        bank = _validate_bank_target(service, {"mode": mode, "bank_id": bank, "expected_revision": 0})
+    return {"bank": bank, "mode": mode}
 
 
 async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) -> dict:
@@ -648,11 +653,11 @@ async def combine_dsp_presets(request: Request):
         raise HTTPException(status_code=400, detail="presetName is required")
     if not isinstance(preset_names, list):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
-    canonical_bank = _optional_combine_bank(body)
+    owner = _optional_combine_owner(body)
 
     try:
         async with _deps().dsp_mutation_lock():
-            created = dsp_mgr.combine_presets(preset_name, preset_names, bank=canonical_bank)
+            created = dsp_mgr.combine_presets(preset_name, preset_names, **owner)
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -793,7 +798,7 @@ async def create_convolver_preset(
                 tone_effect_mode=tone_effect_mode,
             )
             created = dsp_mgr.create_convolver_preset(preset_name, ir_filename, extras=extras,
-                                                      bank=canonical_bank, **_group_kwargs(binding))
+                                                      bank=canonical_bank, **_binding_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -832,7 +837,7 @@ async def import_dsp_preset_json(
         content = (await read_upload(file, DSP_PRESET_TEXT_MAX_BYTES)).decode("utf-8-sig")
         async with _deps().dsp_mutation_lock():
             created = dsp_mgr.import_preset_json(file.filename or "preset.json", content,
-                                                 bank=canonical_bank)
+                                                 bank=canonical_bank, **_binding_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -983,7 +988,8 @@ async def import_dsp_preset_bundle(
                     raise HTTPException(status_code=400, detail=f"Preset bundle is missing IR file(s): {', '.join(missing_kernels)}")
 
                 preset_filename = preset_rel.name if preset_rel.name.lower() != "preset.json" else (Path(file.filename or "preset.json").stem + ".json")
-                created = dsp_mgr.import_preset_json(preset_filename, preset_text, bank=canonical_bank)
+                created = dsp_mgr.import_preset_json(preset_filename, preset_text, bank=canonical_bank,
+                                                     **_binding_kwargs(binding))
             import_succeeded = True
             status = await _finish_dsp_preset_mutation(
                 load_after_create=load_after_create,
@@ -1107,7 +1113,7 @@ async def create_convolver_preset_with_ir(
                 file.filename or tmp_path.name,
                 extras=extras,
                 bank=canonical_bank,
-                **_group_kwargs(binding),
+                **_binding_kwargs(binding),
             )
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
@@ -1177,7 +1183,7 @@ async def create_peq_preset(request: Request):
     try:
         async with _deps().dsp_mutation_lock():
             created = dsp_mgr.create_peq_preset(preset_name, peq_definition, extras=extras,
-                                                bank=canonical_bank, **_group_kwargs(binding))
+                                                bank=canonical_bank, **_binding_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -1259,7 +1265,7 @@ async def import_rew_peq_preset(
             )
             created = dsp_mgr.create_peq_preset_from_rew_text(preset_name, rew_text, extras=extras,
                                                              bank=canonical_bank,
-                                                             **_group_kwargs(binding))
+                                                             **_binding_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
             load_after_create=load_after_create,
             preset_name=created["name"],
@@ -1385,7 +1391,7 @@ async def import_dual_filter_preset(
                     right_file.filename or right_tmp.name,
                     extras=extras,
                     bank=canonical_bank,
-                    **_group_kwargs(binding),
+                    **_binding_kwargs(binding),
                 )
             import_kind = "dual-convolver"
         else:
@@ -1409,7 +1415,7 @@ async def import_dual_filter_preset(
                     right_text,
                     extras=extras,
                     bank=canonical_bank,
-                    **_group_kwargs(binding),
+                    **_binding_kwargs(binding),
                 )
             import_kind = "dual-peq"
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from audio.filter_banks import bank_definitions
 
 MODES = ("stereo", "stereo-sub", "surround")
+MODE_LABELS = {"stereo": "Stereo", "stereo-sub": "Stereo + Sub", "surround": "Surround"}
 MAIN_ROLES = ("main_l", "main_r")
 SURROUND_SPEAKERS = ("center", "side_l", "side_r", "rear_l", "rear_r")
 SURROUND_POSITIONS = ("FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR")

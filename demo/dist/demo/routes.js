@@ -57,6 +57,11 @@
         presetEntry('PEQ', { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } }),
         presetEntry('PEQ LR Measurement 2f 0tewt', { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } }),
     ];
+    // Every output mode owns its Global presets; the stock belongs to
+    // Stereo + Sub, the mode the demo starts in.
+    dspPresets.forEach((entry) => {
+        if (!['Direct', 'Neutral'].includes(entry.name)) Object.assign(entry, { bank: 'global', mode: 'stereo-sub' });
+    });
     let dspActivePreset = 'Conv LR HybAlign BK 20-12000Hz -3dB 044321';
     let dspExtras = {
         limiter: { enabled: true, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
@@ -831,10 +836,11 @@
         if (revision !== outputStateStore.revision) {
             return { conflict: true, created: createdName };
         }
-        if (group) {
-            // A Surround Global preset carries its group plugins and the surround layout.
+        if (bankId === 'global') {
+            // A Global preset belongs to its output mode; a Surround one also
+            // carries its group plugins and the surround layout.
             const preset = dspPresets.find(entry => entry.name === createdName);
-            if (preset) Object.assign(preset, { bank: 'global', layout: 'surround', group });
+            if (preset) Object.assign(preset, { bank: 'global', mode }, group ? { layout: 'surround', group } : {});
         }
         updateDemoBanks(config, bank.roles, { preset: createdName });
         outputStateStore.revision += 1;
@@ -3483,8 +3489,10 @@
                 // Combining Surround presets stays a Surround preset of the Global bank.
                 const sources = presetNames.map(source => dspPresets.find(pr => pr.name === source));
                 const surround = sources.length > 0 && sources.every(source => source?.layout === 'surround');
+                const globalMode = body.bank_id === 'global' && body.bank_mode ? String(body.bank_mode) : '';
                 dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: presetNames,
-                    ...(surround ? { bank: 'global', layout: 'surround' } : {}) });
+                    ...(surround ? { bank: 'global', layout: 'surround', mode: 'surround' }
+                        : globalMode ? { bank: 'global', mode: globalMode } : {}) });
             }
             syncDspToState();
             return j({ success: true, preset: { name } });

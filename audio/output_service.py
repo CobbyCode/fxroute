@@ -16,16 +16,19 @@ but every audible change does.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from audio.output_state_migration import drop_foreign_bank_presets, migrate_legacy_output_state
+from audio.output_state_migration import (drop_foreign_bank_presets, global_copy_name,
+                                          migrate_legacy_output_state, split_shared_global_presets)
 from audio.filter_banks import resolve_bank
 from audio.output_state_store import OutputStateStore, StateConflictError
+from audio.output_topology import MODE_LABELS, MODES
 from dsp.native_config import layout_from_plan
-from dsp.persistence import preset_bank
+from dsp.persistence import preset_bank, preset_mode
 from dsp.processing_plan import compile_processing_plan
 from dsp.surround_global import BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, preset_layout
 
@@ -97,6 +100,60 @@ class OutputService:
         cleaned, changes = drop_foreign_bank_presets(state, preset_bank_of)
         if changes:
             self.commit_unowned(cleaned, expected_revision=state["revision"])
+        return changes
+
+    def assign_global_preset_modes(self, preset_store) -> list[str]:
+        """Give Global presets from before the per-mode split their output mode (startup).
+
+        Each output mode owns its Global presets. A Surround layout belongs
+        to Surround; the others are divided between Stereo and Stereo + Sub
+        by the slots that use them (see ``split_shared_global_presets``).
+        The copies are written first, then the slots move, then the owners
+        are tagged, so an interrupted run resumes without losing a binding.
+        Returns the applied changes.
+        """
+        unowned = {}
+        for entry in preset_store.list():
+            if entry["name"] in BUILTIN_PRESETS:
+                continue
+            payload = preset_store.read(entry["name"])
+            if preset_bank(payload) == "global" and (payload.get("metadata") or {}).get("mode") not in MODES:
+                unowned[entry["name"]] = payload
+        if not unowned:
+            return []
+        shared = [name for name, payload in unowned.items() if preset_layout(payload) != SURROUND_LAYOUT]
+        owners = {name: "surround" for name in unowned if name not in shared}
+        state = self._deps.store.load() if self._deps.store.path.exists() else None
+        copies, resumed = {}, {}
+        if state is None:
+            owners.update({name: "stereo" for name in shared})
+        else:
+            taken = {entry["name"] for entry in preset_store.list()}
+            for name in shared:
+                candidate = global_copy_name(name, ())
+                try:
+                    written = preset_store.read(candidate)
+                except (FileNotFoundError, RuntimeError, ValueError):
+                    continue
+                if ((written.get("metadata") or {}).get("mode") == "stereo-sub"
+                        and written.get("chain") == unowned[name].get("chain")):
+                    resumed[name] = candidate
+            split, shared_owners, copies = split_shared_global_presets(state, shared, taken, resumed)
+            owners.update(shared_owners)
+        changes = []
+        for name, copy_name in copies.items():
+            if resumed.get(name) != copy_name:
+                payload = copy.deepcopy(unowned[name])
+                payload["metadata"] = {**(payload.get("metadata") or {}), "mode": "stereo-sub"}
+                preset_store.write(copy_name, payload)
+            changes.append(f'"{name}": used by Stereo and Stereo + Sub; Stereo + Sub now uses the copy "{copy_name}"')
+        if copies:
+            self.commit_unowned(split, expected_revision=state["revision"])
+        for name, mode in owners.items():
+            payload = unowned[name]
+            payload["metadata"] = {**(payload.get("metadata") or {}), "mode": mode}
+            preset_store.write(name, payload)
+            changes.append(f'"{name}": Global preset of {MODE_LABELS[mode]}')
         return changes
 
     def apply(self, mutate: Callable[[dict], dict], *, expected_revision: int) -> dict:
@@ -182,6 +239,11 @@ class OutputService:
                     f'Preset "{preset}" is a Surround preset and fits only the Surround Global bank'
                     if mode != "surround" else
                     f'Preset "{preset}" is not a Surround preset; create one for a speaker group')
+            # Every output mode owns its Global presets.
+            owner = None if preset in BUILTIN_PRESETS else preset_mode(payload)
+            if owner is not None and owner != mode:
+                raise ValueError(f'Preset "{preset}" belongs to the {MODE_LABELS[owner]} Global bank, '
+                                 f'not {MODE_LABELS[mode]}')
             return
         self.compile_layout({
             "sample_rate_hz": 48000,

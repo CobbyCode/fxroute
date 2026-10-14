@@ -148,7 +148,7 @@ class PresetBankSeparationTests(unittest.TestCase):
             self.service.validate_bank_preset(state, "stereo-sub", "main", "LowCorr")
 
     def test_global_has_own_presets(self):
-        self.manager.create_peq_preset("GlobCorr", PEQ, bank="global")
+        self.manager.create_peq_preset("GlobCorr", PEQ, bank="global", mode="stereo-sub")
         self.manager.create_peq_preset("MainCorr", PEQ, bank="main")
         state = self.service.load()
         self.service.validate_bank_preset(state, "stereo-sub", "global", "GlobCorr")

@@ -14,7 +14,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from dsp.native_config import PEQ_Q_MAX, PEQ_Q_MIN
 from dsp.latency import ir_latency, render_av_sync, validate_ir_latency
-from dsp.persistence import DSPPresetStore, DSPStateStore, clean_bank, clean_name, kernel_name, preset_bank
+from audio.output_topology import MODE_LABELS, MODES
+from dsp.persistence import (DSPPresetStore, DSPStateStore, clean_bank, clean_name, kernel_name, preset_bank,
+                             preset_mode)
 from dsp.surround_global import (BUILTIN_PRESETS as SURROUND_BUILTINS, GROUP_PAIR_MASK, LAYOUT as SURROUND_LAYOUT, preset_layout,
                                  routed_chain, routed_groups, validate_surround_chain)
 
@@ -535,7 +537,8 @@ class DSPManager:
     def _native_preset(chain: Optional[List[dict]] = None,
                        source_presets: Optional[List[str]] = None,
                        bank: Optional[str] = None,
-                       layout: Optional[str] = None) -> Dict[str, Any]:
+                       layout: Optional[str] = None,
+                       mode: Optional[str] = None) -> Dict[str, Any]:
         metadata: Dict[str, Any] = {}
         if source_presets:
             metadata["source_presets"] = list(source_presets)
@@ -546,6 +549,8 @@ class DSPManager:
             raise ValueError(f"Invalid preset bank: {bank!r}")
         if cleaned is not None:
             metadata["bank"] = cleaned
+        if mode is not None:
+            metadata["mode"] = mode
         return {"schema": DSPPresetStore.SCHEMA, "version": DSPPresetStore.VERSION,
                 "chain": list(chain or []), "metadata": metadata}
 
@@ -588,6 +593,36 @@ class DSPManager:
         """Owning bank tag of one preset (None for built-ins/legacy)."""
         return preset_bank(self.preset_store.read(clean_name(preset_name)))
 
+    def _mode_for_create(self, name: str, bank_id: Optional[str], mode: Any,
+                         layout: Optional[str]) -> Optional[str]:
+        """Resolve the output mode that owns a Global preset, refusing cross-mode overwrites.
+
+        Every output mode has its own Global presets, so a name taken in one
+        mode's Global bank cannot be rewritten from another. Area-bank
+        presets carry no mode. Callers without a mode keep the stored owner;
+        a new preset then belongs to the mode its layout implies.
+        """
+        if bank_id != "global":
+            return None
+        requested = mode.strip() if isinstance(mode, str) and mode.strip() else None
+        if requested is not None and requested not in MODES:
+            raise ValueError(f"Unsupported output mode: {requested}")
+        implied = "surround" if layout == SURROUND_LAYOUT else None
+        if requested is not None and (requested == "surround") != (implied == "surround"):
+            raise ValueError("A Surround preset fits only the Surround Global bank" if implied
+                             else "Surround Global presets need a speaker group")
+        try:
+            existing = self.preset_store.read(clean_name(name))
+        except (FileNotFoundError, RuntimeError):
+            return requested or implied or "stereo"
+        stored = preset_mode(existing)
+        if requested is None:
+            return stored or implied or "stereo"
+        if stored is not None and stored != requested:
+            raise ValueError(f'Preset "{clean_name(name)}" belongs to the {MODE_LABELS[stored]} Global bank, '
+                             f'not {MODE_LABELS[requested]}')
+        return requested
+
     @staticmethod
     def _group_for_create(group: Any, bank_id: Optional[str]) -> Optional[str]:
         """Speaker group of a new Surround Global preset (None for ordinary presets)."""
@@ -598,6 +633,13 @@ class DSPManager:
         if bank_id != "global":
             raise ValueError("A speaker group applies to the Global bank only")
         return group
+
+    def _guard_create_owner(self, name: str, bank: Any, group: Any, mode: Any) -> None:
+        """Run the owner checks of a create ahead of its side effects."""
+        bank_id = self._bank_for_create(name, bank)
+        layout = SURROUND_LAYOUT if self._group_for_create(group, bank_id) else None
+        self._require_same_layout(name, layout)
+        self._mode_for_create(name, bank_id, mode, layout)
 
     def _require_same_layout(self, name: str, layout: Optional[str]) -> None:
         """Refuse to overwrite a preset with one of the other layout.
@@ -1422,7 +1464,7 @@ class DSPManager:
 
     def create_peq_preset(self, preset_name: str, peq_definition: Dict[str, Any],
                           extras: Optional[Dict[str, Any]] = None, bank: Any = None,
-                          group: Optional[str] = None) -> dict:
+                          group: Optional[str] = None, mode: Any = None) -> dict:
         # Legacy caller snapshots never override the separately owned global helpers.
         del extras
         name = self._ensure_overwritable_name(preset_name)
@@ -1439,7 +1481,8 @@ class DSPManager:
         if group:
             plugin["group"] = group
         self._require_same_layout(name, layout)
-        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id, layout=layout))
+        owner = self._mode_for_create(name, bank_id, mode, layout)
+        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id, layout=layout, mode=owner))
         if normalized["params"].get("channelMode") == "dual":
             band_count = (len(normalized["params"].get("leftBands", []))
                           + len(normalized["params"].get("rightBands", [])))
@@ -1450,7 +1493,7 @@ class DSPManager:
 
     def create_convolver_preset(self, preset_name: str, ir_filename: str,
                                 extras: Optional[Dict[str, Any]] = None, bank: Any = None,
-                                group: Optional[str] = None) -> dict:
+                                group: Optional[str] = None, mode: Any = None) -> dict:
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:
@@ -1474,7 +1517,8 @@ class DSPManager:
         if group:
             plugin["group"] = group
         self._require_same_layout(name, layout)
-        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id, layout=layout))
+        owner = self._mode_for_create(name, bank_id, mode, layout)
+        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id, layout=layout, mode=owner))
         return {"name": name, "filename": path.name, "bank": bank_id,
                 "path": str(path), "kernel_name": kernel}
 
@@ -1487,7 +1531,8 @@ class DSPManager:
         return name
 
     def combine_presets(self, preset_name: str, source_presets: List[str],
-                        extras: Optional[Dict[str, Any]] = None, bank: Any = None) -> Dict[str, Any]:
+                        extras: Optional[Dict[str, Any]] = None, bank: Any = None,
+                        mode: Any = None) -> Dict[str, Any]:
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:
@@ -1516,11 +1561,14 @@ class DSPManager:
         self._validate_supported_chain(chain)
         self._clamp_chain_limiter_params(chain)
         bank_id = self._bank_for_create(name, bank)
-        path = self.preset_store.write(name, self._native_preset(chain, sources, bank=bank_id, layout=layout))
+        owner = self._mode_for_create(name, bank_id, mode, layout)
+        path = self.preset_store.write(
+            name, self._native_preset(chain, sources, bank=bank_id, layout=layout, mode=owner))
         return {"name": name, "filename": path.name, "path": str(path), "bank": bank_id,
                 "source_presets": sources, "plugin_count": len(chain)}
 
-    def import_preset_json(self, preset_filename: str, preset_text: str, bank: Any = None) -> Dict[str, Any]:
+    def import_preset_json(self, preset_filename: str, preset_text: str, bank: Any = None,
+                           mode: Any = None) -> Dict[str, Any]:
         try:
             source = json.loads(preset_text)
         except json.JSONDecodeError as exc:
@@ -1538,6 +1586,13 @@ class DSPManager:
             metadata["bank"] = bank_id
         elif "bank" in metadata and preset_bank(payload) is None:
             metadata.pop("bank", None)
+        # The file joins the Global bank it is imported into, whatever mode exported it.
+        exported_mode = metadata.pop("mode", None)
+        owner = self._mode_for_create(name, clean_bank(metadata.get("bank")),
+                                      mode if isinstance(mode, str) and mode.strip() else exported_mode,
+                                      preset_layout(payload))
+        if owner is not None:
+            metadata["mode"] = owner
         payload["metadata"] = metadata
         path = self.preset_store.write(name, payload)
         return {"name": name, "filename": path.name, "path": str(path), "bank": preset_bank(payload),
@@ -1828,19 +1883,19 @@ class DSPManager:
 
     def create_convolver_preset_with_upload(self, preset_name: str, source_path: Path,
                                             filename: str, extras=None, bank: Any = None,
-                                            group: Optional[str] = None) -> dict:
+                                            group: Optional[str] = None, mode: Any = None) -> dict:
         # Guard before the IR is written so a protected or empty name can
         # never leave an unreferenced IR file behind.
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
-        # Refuse cross-bank overwrites before staging any IR file.
-        self._require_same_layout(
-            name, SURROUND_LAYOUT if self._group_for_create(group, self._bank_for_create(name, bank)) else None)
+        # Refuse cross-bank and cross-mode overwrites before staging any IR file.
+        self._guard_create_owner(name, bank, group, mode)
         uploaded = self.upload_ir(source_path, filename,
                                   f"{name}{Path(filename).suffix}")
         return {"ir": uploaded,
-                "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank, group=group)}
+                "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank, group=group,
+                                                       mode=mode)}
 
     def upload_ir_pair(self, left_source_path: Path, left_filename: str,
                        right_source_path: Path, right_filename: str,
@@ -1894,38 +1949,38 @@ class DSPManager:
     def create_convolver_preset_with_dual_uploads(
         self, preset_name: str, left_source_path: Path, left_filename: str,
         right_source_path: Path, right_filename: str, extras=None, bank: Any = None,
-        group: Optional[str] = None,
+        group: Optional[str] = None, mode: Any = None,
     ) -> dict:
         # Guard before the merged IR is written so a protected or empty name
         # can never leave an unreferenced IR file behind.
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
-        self._require_same_layout(
-            name, SURROUND_LAYOUT if self._group_for_create(group, self._bank_for_create(name, bank)) else None)
+        self._guard_create_owner(name, bank, group, mode)
         merged_name = f"{name}.irs"
         uploaded = self.upload_ir_pair(left_source_path, left_filename,
                                        right_source_path, right_filename, merged_name)
         return {"ir": uploaded,
-                "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank, group=group)}
+                "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank, group=group,
+                                                       mode=mode)}
 
     def create_peq_preset_from_rew_text(self, preset_name: str, rew_text: str,
                                         extras=None, bank: Any = None,
-                                        group: Optional[str] = None) -> Dict[str, Any]:
+                                        group: Optional[str] = None, mode: Any = None) -> Dict[str, Any]:
         imported = self.import_rew_peq_text(rew_text)
-        return {**self.create_peq_preset(preset_name, imported["peq"], extras, bank=bank, group=group),
+        return {**self.create_peq_preset(preset_name, imported["peq"], extras, bank=bank, group=group, mode=mode),
                 "import_source": imported["source"]}
 
     def create_dual_peq_preset_from_rew_texts(self, preset_name: str,
                                               left_rew_text: str, right_rew_text: str,
                                               extras=None, bank: Any = None,
-                                              group: Optional[str] = None) -> Dict[str, Any]:
+                                              group: Optional[str] = None, mode: Any = None) -> Dict[str, Any]:
         left = self.import_rew_peq_text(left_rew_text)
         right = self.import_rew_peq_text(right_rew_text)
         definition = {"enabled": True, "params": {"channelMode": "dual",
                       "leftBands": left["peq"]["params"]["bands"],
                       "rightBands": right["peq"]["params"]["bands"]}}
-        return {**self.create_peq_preset(preset_name, definition, extras, bank=bank, group=group),
+        return {**self.create_peq_preset(preset_name, definition, extras, bank=bank, group=group, mode=mode),
                 "import_source": {"left": left["source"], "right": right["source"]}}
 
     def get_status(self) -> dict:

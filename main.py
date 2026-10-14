@@ -3114,6 +3114,12 @@ async def lifespan(app: FastAPI):
         dsp_manager = await _drain_worker(DSPManager)
         try:
             # After the preset tag migration, before any runtime sync.
+            for change in await _drain_worker(get_output_service().assign_global_preset_modes,
+                                              dsp_manager.preset_store):
+                logger.info("Global preset split: %s", change)
+        except Exception as exc:
+            logger.warning("Global preset split skipped: %s", exc)
+        try:
             for change in await _drain_worker(get_output_service().drop_foreign_bank_presets):
                 logger.warning("Output state bank cleanup: %s", change)
         except Exception as exc:

@@ -31,7 +31,8 @@ const banks = {
 };
 const presets = [
     { name: 'Direct' }, { name: 'Neutral' }, { name: 'Legacy' },
-    { name: 'Global PEQ', bank: 'global' }, { name: 'Main PEQ', bank: 'main' },
+    { name: 'Global PEQ', bank: 'global', mode: 'stereo-sub' }, { name: 'Main PEQ', bank: 'main' },
+    { name: 'Stereo PEQ', bank: 'global', mode: 'stereo' },
     { name: 'Sub 1 PEQ', bank: 'sub1' }, { name: 'Sub 2 PEQ', bank: 'sub2' },
 ];
 const cases = [

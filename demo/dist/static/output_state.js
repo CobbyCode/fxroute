@@ -358,8 +358,16 @@ function presetBank(entry) {
     return tagged || null;
 }
 
-// Surround Global holds group-scoped presets (layout "surround"); every other
-// Global lists the stereo ones.
+// Output mode whose Global bank owns a preset. Without the tag a Surround
+// layout (group-scoped plugins) belongs to Surround, anything else to
+// Stereo, where Global presets lived before each mode got its own.
+function presetMode(entry) {
+    if (typeof entry?.mode === 'string' && entry.mode) return entry.mode;
+    return entry?.layout === 'surround' ? 'surround' : 'stereo';
+}
+
+// Every output mode has its own Global presets; the area banks own theirs
+// by bank id.
 function presetsForBank(presets, bankId, mode) {
     if (!Array.isArray(presets)) return [];
     // All Banks owns no presets: it only switches A/B jointly.
@@ -368,12 +376,14 @@ function presetsForBank(presets, bankId, mode) {
     return presets.filter((entry) => {
         const name = typeof entry === 'string' ? entry : entry?.name;
         if (isBuiltinBankPreset(name)) return true;
-        if (wanted === 'global' && (entry?.layout === 'surround') !== (mode === 'surround')) return false;
         const tag = presetBank(entry);
-        // Untagged legacy files were historically global presets (the
-        // backend migrates them to Global once); show them in Global only.
         // Bank-tagged files appear exclusively in their owning bank.
-        return tag ? tag === wanted : wanted === 'global';
+        if (wanted !== 'global') return tag === wanted;
+        if (tag) return tag === 'global' && presetMode(entry) === (mode || 'stereo');
+        // Untagged legacy files were historically global presets (the
+        // backend migrates them to Global once); until then they have no
+        // owning mode and only their layout keeps them out of the other family.
+        return (entry?.layout === 'surround') === (mode === 'surround');
     });
 }
 
@@ -573,6 +583,7 @@ function renderBankSelector(select, catalog, mode) {
         combineBank,
         isBuiltinBankPreset,
         presetBank,
+        presetMode,
         presetsForBank,
         peqParams,
         compareState,

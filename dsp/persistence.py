@@ -4,7 +4,7 @@
 import json
 import logging
 from pathlib import Path
-from audio.output_topology import SURROUND_GROUPS
+from audio.output_topology import MODES, SURROUND_GROUPS
 from common.atomic_write import atomic_write_text
 from dsp.surround_global import LAYOUT as SURROUND_LAYOUT, preset_layout, validate_preset_layout
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -76,6 +76,23 @@ def preset_bank(payload: Any) -> str | None:
     return clean_bank(metadata.get("bank"))
 
 
+def preset_mode(payload: Any) -> str | None:
+    """Output mode whose Global bank owns a preset (None unless it is a Global preset).
+
+    Every output mode has its own Global presets, stored as metadata.mode.
+    A Global preset without the tag predates the split: a Surround layout
+    belongs to Surround, anything else to Stereo, where it historically
+    lived. Built-ins and files without a bank tag have no owner.
+    """
+    if preset_bank(payload) != "global":
+        return None
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    mode = metadata.get("mode") if isinstance(metadata, dict) else None
+    if mode in MODES:
+        return mode
+    return "surround" if preset_layout(payload) == SURROUND_LAYOUT else "stereo"
+
+
 class DSPPresetStore:
     """Read and write versioned native presets under one owned root."""
 
@@ -126,6 +143,12 @@ class DSPPresetStore:
             if raw is not None and not (isinstance(raw, str)
                                         and (not raw.strip() or clean_bank(raw) is not None)):
                 raise ValueError("Preset metadata.bank must be a valid filterbank id")
+        mode = metadata.get("mode")
+        if mode is not None:
+            if mode not in MODES:
+                raise ValueError(f"Preset metadata.mode must be one of {', '.join(MODES)}")
+            if (metadata.get("layout") == SURROUND_LAYOUT) != (mode == "surround"):
+                raise ValueError("Preset metadata.mode and metadata.layout name different output modes")
         return payload
 
     def read(self, name: str) -> Dict[str, Any]:
@@ -161,6 +184,7 @@ class DSPPresetStore:
             sources = payload.get("metadata", {}).get("source_presets", [])
             result.append({"name": path.stem, "filename": path.name, "path": str(path),
                            "bank": preset_bank(payload), "layout": preset_layout(payload),
+                           "mode": None if path.stem in order else preset_mode(payload),
                            "source_presets": list(sources) if isinstance(sources, list) else []})
         return result
 

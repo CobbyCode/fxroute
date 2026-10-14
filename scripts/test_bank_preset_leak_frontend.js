@@ -35,7 +35,8 @@ const presets = [
     { name: 'LowCorr', bank: 'low' },
     { name: 'HighCorr', bank: 'high' },
     { name: 'MainCorr', bank: 'main' },
-    { name: 'GlobCorr', bank: 'global' },
+    { name: 'GlobCorr', bank: 'global', mode: 'stereo-sub' },
+    { name: 'StereoCorr', bank: 'global', mode: 'stereo' },
     { name: 'LegacyX' },
 ];
 
