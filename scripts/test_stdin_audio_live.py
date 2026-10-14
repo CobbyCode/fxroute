@@ -108,6 +108,38 @@ def _output_state() -> dict:
     return _http("GET", "/api/audio/output-state")
 
 
+def _extras_write_body(extras: dict) -> dict:
+    """Map the extras readback to the API's explicit write fields."""
+    body = {}
+    for section, field in (
+        ("limiter", "limiterEnabled"), ("headroom", "headroomEnabled"),
+        ("delay", "delayEnabled"), ("bass_enhancer", "bassEnabled"),
+        ("autogain", "autogainEnabled"), ("loudness", "loudnessEnabled"),
+        ("tone_effect", "toneEffectEnabled"), ("upmixer", "upmixerEnabled"),
+    ):
+        if "enabled" in extras.get(section, {}):
+            body[field] = extras[section]["enabled"]
+    for section, parameter, field in (
+        ("headroom", "gainDb", "headroomGainDb"),
+        ("delay", "leftMs", "delayLeftMs"), ("delay", "rightMs", "delayRightMs"),
+        ("bass_enhancer", "amount", "bassAmount"),
+        ("autogain", "targetDb", "autogainTargetDb"),
+        ("loudness", "fftSize", "loudnessFftSize"),
+        ("loudness", "strength", "loudnessStrength"),
+        ("loudness", "volumeDb", "loudnessVolumeDb"),
+        ("loudness", "calibration", "calibration"),
+        ("loudness", "calibrationProfiles", "calibrationProfiles"),
+        ("upmixer", "mode", "upmixerMode"), ("upmixer", "center", "upmixerCenter"),
+        ("upmixer", "surround", "upmixerSurround"), ("upmixer", "fftSize", "upmixerFftSize"),
+    ):
+        params = extras.get(section, {}).get("params", {})
+        if parameter in params:
+            body[field] = params[parameter]
+    if "mode" in extras.get("tone_effect", {}):
+        body["toneEffectMode"] = extras["tone_effect"]["mode"]
+    return body
+
+
 def _set_bank_preset(bank_id: str, live_applied: bool | None = None,
                      *, mode: str | None = None, **options) -> dict:
     """Assign a bank preset through the same mutation the UI uses."""
@@ -240,7 +272,7 @@ class StdinLiveTests(unittest.TestCase):
         except Exception as exc:
             errors.append(f"bank restore: {exc}")
         try:
-            _http("POST", "/api/dsp/extras", cls.saved_extras.get("extras") or {})
+            _http("POST", "/api/dsp/extras", _extras_write_body(cls.saved_extras.get("extras") or {}))
         except Exception as exc:
             errors.append(f"extras restore: {exc}")
         try:
