@@ -4,7 +4,7 @@
 import json
 import logging
 from pathlib import Path
-from audio.output_topology import MODES, SURROUND_GROUPS, supported_bank_ids
+from audio.output_topology import BANK_IDS, MODES, SURROUND_GROUPS
 from common.atomic_write import atomic_write_text
 from dsp.surround_global import (BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, preset_layout,
                                  validate_preset_layout)
@@ -50,17 +50,11 @@ def kernel_name(value: Any, fallback: str = "") -> str:
 
 
 def clean_bank(value: Any) -> str | None:
-    """Filterbank id usable as a library folder name, or None."""
+    """Filterbank id of a library folder (Global or a bank a mode can define), or None."""
     if not isinstance(value, str):
         return None
     cleaned = value.strip()
-    if not cleaned or cleaned in {".", ".."}:
-        return None
-    if any(char in cleaned for char in ("/", "\\")):
-        return None
-    if any(ord(char) < 32 for char in cleaned):
-        return None
-    return cleaned
+    return cleaned if cleaned == "global" or cleaned in BANK_IDS else None
 
 
 class DSPPresetStore:
@@ -219,9 +213,8 @@ class DSPPresetLibrary:
         Only bank ids a mode can define count: a directory that is none of
         them (a library backup, say) is not a bank and is not listed.
         """
-        supported = set(supported_bank_ids())
         banks = {path.name for root in (self.presets_dir, self.irs_dir) if root.is_dir()
-                 for path in root.iterdir() if path.is_dir() and path.name in supported}
+                 for path in root.iterdir() if path.is_dir() and path.name in BANK_IDS}
         return [self.store("global", mode) for mode in MODES] + [self.store(bank) for bank in sorted(banks)]
 
 

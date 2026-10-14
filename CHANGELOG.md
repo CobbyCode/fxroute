@@ -132,10 +132,14 @@ no public image.
   (`presets/global/<mode>/`), so Stereo, Stereo + Sub and Surround no
   longer share Global presets. A slot names a preset of its own bank, and
   combining, deleting, downloading and importing address bank and output
-  mode explicitly. **Direct** and **Neutral** exist in every bank without
-  a file. Preset and IR files of an installation from before this change
-  sit in the former flat `presets/` and `irs/` folders and are no longer
-  read — recreate or re-import them; the old files stay on disk.
+  mode explicitly. A folder is a bank only under a bank id an output mode
+  can define, one speaker of a pair routed alone included (`sub_l` for a
+  single mono subwoofer); any other folder, a library backup for example,
+  is neither listed nor written to. **Direct** and **Neutral** exist in
+  every bank without a file. Preset and IR files of an installation from
+  before this change sit in the former flat `presets/` and `irs/` folders
+  and are no longer read — recreate or re-import them; the old files stay
+  on disk.
 - **The A/B card names what every bank listens to.** Below Listening and
   Chain it lists one chip per bank of the active output mode, Global
   first, with the preset that bank plays; numbered banks in a row on the
@@ -280,12 +284,6 @@ no public image.
   on a graph that was already rebuilding itself. Such a graph is now read
   again after a short pause and never cached; a path that is missing for
   good still fails at once.
-- A directory in the preset or IR root that is not a filterbank (a backup of
-  the library, for example) counted as one: `presets/` and `irs/` were
-  scanned for subdirectories and every one of them became a bank of the
-  preset library, so its files were listed and inventoried as that bank's
-  presets and IRs. A folder is a bank only when its name is a bank id an
-  output mode can define; anything else is ignored.
 
 ### Installer and maintenance
 

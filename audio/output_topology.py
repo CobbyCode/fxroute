@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from audio.filter_banks import bank_definitions
+from audio.filter_banks import bank_definitions, owning_bank_ids
 
 MODES = ("stereo", "stereo-sub", "surround")
 MAIN_ROLES = ("main_l", "main_r")
@@ -63,17 +63,12 @@ def dormant_roles(mode: str, *, crossover_enabled: bool) -> tuple[str, ...]:
     return tuple(role for role in roles_for_mode(mode, crossover_enabled=True) if role not in active)
 
 
-def supported_bank_ids() -> tuple[str, ...]:
-    """Every filterbank id any output mode and crossover setting can define.
-
-    A stored library is a bank only if a mode can define it, so a stray
-    directory in the preset root cannot claim one.
-    """
-    ids = set()
-    for mode in MODES:
-        for crossover_enabled in (False, True):
-            ids.update(bank_definitions(roles_for_mode(mode, crossover_enabled=crossover_enabled)))
-    return tuple(sorted(ids))
+# Every area-bank id any output mode and crossover setting can define: a pair
+# bank, and each role on its own (a mono role, or a pair role routed alone).
+# A library folder is a bank only under one of these names.
+BANK_IDS = frozenset(bank_id for mode in MODES for crossover_enabled in (False, True)
+                     for role in roles_for_mode(mode, crossover_enabled=crossover_enabled)
+                     for bank_id in owning_bank_ids(role))
 
 
 def validate_assignments(mode: str, assignments: object, *, crossover_enabled: bool = False,

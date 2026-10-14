@@ -75,12 +75,12 @@ class Fixture(unittest.TestCase):
 
 
 class LibraryTests(Fixture):
-    def test_bank_ids_are_folder_safe(self):
-        self.assertEqual(clean_bank("low"), "low")
-        self.assertEqual(clean_bank("  low_mid  "), "low_mid")
-        for invalid in ("", None, "a/b", ".."):
+    def test_a_bank_id_is_one_an_output_mode_can_define(self):
+        for bank in ("global", "low", "  low_mid  ", "sub_l", "rear_r", "left_high"):
+            self.assertEqual(clean_bank(bank), bank.strip())
+        for invalid in ("", None, "a/b", "..", "ir-backup", "Main", "all"):
             self.assertIsNone(clean_bank(invalid))
-        for bank, mode in (("a/b", None), ("..", None), ("global", "mono")):
+        for bank, mode in (("a/b", None), ("..", None), ("ir-backup", None), ("global", "mono")):
             with self.subTest(bank=bank, mode=mode), self.assertRaises(ValueError):
                 self.manager.library(bank, mode)
 
@@ -132,17 +132,40 @@ class LibraryTests(Fixture):
         store.write("Handmade", {"schema": "fxroute.dsp.preset", "version": 1, "chain": [], "metadata": {}})
         self.assertEqual(self.stored("Handmade"), [("sub1", None)])
 
+    def test_a_pair_role_routed_alone_is_a_library_of_its_own(self):
+        """A lone pair role (a mono Sub on sub_l, say) keeps presets and IRs under its role id."""
+        banks = ("rear_l", "side_l", "sub_l", "sub_r")
+        source = self.home / "ir.wav"
+        source.write_bytes(mono_ir(0.5, 0.0))
+        for bank in banks:
+            self.create("Room", -1.0, bank)
+            self.manager.create_convolver_preset_with_upload("Conv", source, "upload.wav", bank=bank)
+        for name in ("Room", "Conv"):
+            self.assertEqual(self.stored(name), [(bank, None) for bank in banks])
+        self.assertEqual(sorted((ir["bank"], ir["name"]) for ir in self.manager.get_status()["irs"]),
+                         [(bank, "Conv.wav") for bank in banks])
+        for bank in banks:
+            self.assertEqual([item["name"] for item in self.manager.list_irs(bank)], ["Conv.wav"])
+
     def test_a_stray_directory_is_not_a_bank(self):
-        for root in (self.manager.output_dir, self.manager.irs_dir):
-            for name in ("ir-backup", "my backup"):
-                (root / name).mkdir(parents=True)
-        (self.manager.output_dir / "irs").mkdir()
+        """A library backup with real presets and IRs is neither listed, inventoried nor writable."""
+        preset = json.dumps({"schema": "fxroute.dsp.preset", "version": 1, "chain": [], "metadata": {}})
+        for name in ("ir-backup", "my backup", "irs"):
+            (self.manager.output_dir / name).mkdir(parents=True)
+            (self.manager.output_dir / name / "Stray.json").write_text(preset)
+            (self.manager.irs_dir / name).mkdir(parents=True)
+            (self.manager.irs_dir / name / "Stray.wav").write_bytes(mono_ir(0.5, 0.0))
         self.create("Room", -1.0, "main")
-        self.assertEqual([(entry["name"], entry["bank"], entry["mode"]) for entry in self.manager.list_presets()],
+        status = self.manager.get_status()
+        self.assertEqual([(entry["name"], entry["bank"], entry["mode"]) for entry in status["presets"]],
                          [("Direct", None, None), ("Neutral", None, None), ("Room", "main", None)])
+        self.assertEqual(status["irs"], [])
         self.assertEqual([store.presets_dir.name for store in self.manager.presets.stores()],
                          ["stereo", "stereo-sub", "surround", "main"])
-        self.assertEqual(self.manager.list_irs(), [])
+        with self.assertRaises(ValueError):
+            self.create("Written", -1.0, "ir-backup")
+        self.assertEqual(sorted(path.name for path in self.manager.output_dir.rglob("*.json")),
+                         ["Room.json", "Stray.json", "Stray.json", "Stray.json"])
 
     def test_an_activated_stereo_global_preset_survives_a_restart(self):
         """Activation goes through load_preset, the store the load API reads."""
@@ -430,6 +453,23 @@ class ApiTests(Fixture):
         listed = {(entry["bank"], entry["mode"]) for entry in self.client.get("/api/dsp/presets").json()["presets"]
                   if entry["name"] == "Room"}
         self.assertEqual(listed, {("global", "stereo"), ("global", "stereo-sub"), ("main", None)})
+
+    def test_a_lone_sub_l_lists_its_presets_and_irs(self):
+        """Stereo + Sub with one mono sub on sub_l: its bank is sub_l, not the Sub L/R pair."""
+        state = self.service.load()
+        self.service.commit(state_api.set_mode_routing(state, "stereo-sub", "A", ["main_l", "main_r", "sub_l"]),
+                            expected_revision=state["revision"])
+        self.create_peq("Room", -1.0, "sub_l")
+        response = self.client.post("/api/dsp/presets/create-with-ir", data={
+            "preset_name": "Conv", "load_after_create": "false", **self.owner("sub_l"),
+            "expected_revision": str(self.service.load()["revision"])},
+            files={"file": ("upload.wav", mono_ir(0.5, 0.0), "audio/wav")})
+        self.assertEqual(response.status_code, 200, response.text)
+        status = self.client.get("/api/dsp/presets").json()
+        self.assertEqual([(entry["name"], entry["bank"]) for entry in status["presets"] if entry["bank"]],
+                         [("Conv", "sub_l"), ("Room", "sub_l")])
+        self.assertEqual([(ir["name"], ir["bank"]) for ir in status["irs"]], [("Conv.wav", "sub_l")])
+        self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["sub_l"]["preset"], "Conv")
 
     def test_download_serves_the_named_banks_preset(self):
         self.create_peq("Room", -1.0, "global")
