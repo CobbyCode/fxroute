@@ -367,8 +367,9 @@ class MeasurementStore:
         # two concurrent starts cannot both pass the ownership guard.
         self._claim_measurement_start_slot()
         try:
-            inputs = self._measurement_inputs_with_sample_rate(
-                await asyncio.to_thread(self._cached_capture_inputs)
+            inputs = await asyncio.to_thread(
+                self._measurement_inputs_with_sample_rate,
+                await asyncio.to_thread(self._cached_capture_inputs),
             )
             try:
                 selected_input = self._resolve_capture_input(inputs, input_id=input_id, input_key=input_key)
@@ -379,7 +380,9 @@ class MeasurementStore:
                     self._capture_inputs_cache = {"at": time.monotonic(), "inputs": deepcopy(fresh_raw)}
                 except Exception:
                     pass
-                fresh_inputs = self._measurement_inputs_with_sample_rate(fresh_raw)
+                fresh_inputs = await asyncio.to_thread(
+                    self._measurement_inputs_with_sample_rate, fresh_raw
+                )
                 selected_input = self._resolve_capture_input(fresh_inputs, input_id=input_id, input_key=input_key)
             if not selected_input.get("available"):
                 raise ValueError("Selected capture input is not available")

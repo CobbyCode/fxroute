@@ -1992,10 +1992,10 @@ def _sub_output_targets(runtime_config: dict, *, output_key: str, hardware_ports
 
 
 async def _dump_21_runtime_state(label: str, ui_state: dict | None = None) -> dict:
-    overview = get_audio_output_overview()
+    overview = await asyncio.to_thread(get_audio_output_overview)
     output_mode = overview.get("output_mode") or {}
     output_key = str(output_mode.get("effective_output_key") or "").strip()
-    samplerate_status = get_samplerate_status()
+    samplerate_status = await asyncio.to_thread(get_samplerate_status)
     snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {}
     helper_pid = snapshot.get("helper_pid")
     helper_alive = False
@@ -3214,7 +3214,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Saved-output-sink recovery failed: %s", exc)
         try:
-            applied_output = apply_persisted_audio_output_selection()
+            applied_output = await asyncio.to_thread(apply_persisted_audio_output_selection)
             if applied_output and applied_output.get("selected_output"):
                 logger.info("Re-applied persisted audio output selection: %s", applied_output["selected_output"].get("target_label"))
             policy = samplerate.load_sample_rate_policy()
@@ -3224,7 +3224,9 @@ async def lifespan(app: FastAPI):
                     logger.info("Re-applied fixed sample-rate policy: %s Hz", policy.get("rate"))
                 except Exception as exc:
                     logger.warning("Failed to re-apply fixed sample-rate policy: %s", exc)
-            await dsp_orchestrator.sync_runtime(applied_output or get_audio_output_overview())
+            if applied_output is None:
+                applied_output = await asyncio.to_thread(get_audio_output_overview)
+            await dsp_orchestrator.sync_runtime(applied_output)
             runtime.dsp_runtime_link_watch_task = asyncio.create_task(
                 dsp_orchestrator.runtime_link_watch_loop(),
                 name="subwoofer-runtime-link-watch",
@@ -4835,7 +4837,7 @@ async def save_audio_samplerate_policy(request: Request):
                 raise HTTPException(status_code=423, detail="Measurement is active; sample-rate policy is locked")
             await finish_then_cancel(_transition_sample_rate_policy(policy, detail="api-audio-samplerate-policy"),
                                     what="Sample-rate policy transition")
-            return get_samplerate_status()
+            return await asyncio.to_thread(get_samplerate_status)
     except ValueError as exc:
         raise bad_request(exc) from exc
     except PlaybackTransitionFailure as exc:
@@ -5561,7 +5563,7 @@ async def _sync_v2_head_locked() -> dict:
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, str) else "No audio output device"
             return {"live_applied": False, "live_reason": detail}
-        status = get_samplerate_status()
+        status = await asyncio.to_thread(get_samplerate_status)
         rate = status.get("active_rate")
         if not isinstance(rate, int) or rate <= 0:
             rate = status.get("force_rate")
@@ -6399,7 +6401,7 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
     except ValueError as exc:
         raise bad_request(exc)
 
-    status = get_samplerate_status()
+    status = await asyncio.to_thread(get_samplerate_status)
     target_rate = status.get("active_rate")
     if not isinstance(target_rate, int) or target_rate <= 0:
         target_rate = status.get("force_rate")
@@ -6796,7 +6798,7 @@ async def get_audio_output_state_crossover_response():
         state = service.ensure_state()
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
-    status = get_samplerate_status()
+    status = await asyncio.to_thread(get_samplerate_status)
     rate = status.get("active_rate")
     if not isinstance(rate, int) or rate <= 0:
         rate = status.get("force_rate")

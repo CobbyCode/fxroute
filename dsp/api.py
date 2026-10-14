@@ -1071,6 +1071,11 @@ async def import_dsp_preset_bundle(
                         raise
                     extracted_total += written
                     staged_irs.append(stage_path)
+                    try:
+                        dsp_mgr._validate_ir_file(stage_path)
+                    except BaseException:
+                        stage_path.unlink(missing_ok=True)
+                        raise
                     if destination.exists():
                         backup_path = irs_dir / f".fxroute-bundle-backup-{uuid4().hex}"
                         os.replace(destination, backup_path)

@@ -66,6 +66,11 @@ class FakeDspManager:
     def normalize_effects_extras(self, extras=None):
         return extras or {}
 
+    @staticmethod
+    def _validate_ir_file(path):
+        from dsp.manager import DSPManager as _RealManager
+        return _RealManager._validate_ir_file(Path(path))
+
     def _extract_kernel_names_from_payload(self, payload):
         return set()
 
@@ -157,8 +162,14 @@ def standard_bundle_bytes() -> bytes:
     return write_zip([
         ("manifest.json", json.dumps({"type": "fxroute-preset-bundle", "version": 1})),
         ("preset.json", '{"output": "test"}'),
-        ("ir-left.irs", b"IRDATA" * 16),
+        ("ir-left.irs", valid_ir_bytes()),
     ])
+
+
+def valid_ir_bytes() -> bytes:
+    """Minimal kernel-supported IR (mono float32) for bundle success paths."""
+    from dsp.manager import build_wav_bytes
+    return build_wav_bytes(1, 48000, 32, 3, struct.pack("<4f", 0.5, 0.25, 0.125, 0.0625))
 
 
 class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -229,8 +240,17 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         result = await self._import(standard_bundle_bytes())
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["irs"], ["ir-left.irs"])
-        self.assertEqual((self.irs_dir / "ir-left.irs").read_bytes(), b"IRDATA" * 16)
+        self.assertEqual((self.irs_dir / "ir-left.irs").read_bytes(), valid_ir_bytes())
         self.assertTrue(all(not Path(path).exists() for path in self.created_temps))
+
+    async def test_bundle_with_non_finite_ir_is_rejected(self):
+        from dsp.manager import build_wav_bytes
+        bad = build_wav_bytes(1, 48000, 32, 3, struct.pack("<2f", float("nan"), 0.5))
+        with self.assertRaises(HTTPException) as ctx:
+            await self._import(self._bundle_with_ir("bad.irs", bad))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("finite", str(ctx.exception.detail))
+        self._assert_clean()
 
     async def test_export_keeps_each_ir_once_with_its_original_extension(self):
         preset_path = Path(self.temp_dir.name) / "Room.json"
@@ -391,13 +411,15 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self._assert_clean()
 
     async def test_existing_ir_restored_when_import_fails(self):
+        from dsp.manager import build_wav_bytes
+        old_ir = build_wav_bytes(1, 48000, 32, 3, struct.pack("<4f", 0.1, 0.2, 0.3, 0.4))
         self.irs_dir.mkdir()
-        (self.irs_dir / "same.irs").write_bytes(b"OLD" * 8)
+        (self.irs_dir / "same.irs").write_bytes(old_ir)
         main.dsp_manager = FakeDspManager(self.irs_dir, fail_import=True)
         with self.assertRaises(HTTPException) as ctx:
-            await self._import(self._bundle_with_ir("same.irs", b"NEW" * 16))
+            await self._import(self._bundle_with_ir("same.irs", valid_ir_bytes()))
         self.assertEqual(ctx.exception.status_code, 400)
-        self.assertEqual((self.irs_dir / "same.irs").read_bytes(), b"OLD" * 8)
+        self.assertEqual((self.irs_dir / "same.irs").read_bytes(), old_ir)
         self._assert_no_transaction_leftovers()
         self.assertTrue(all(not Path(path).exists() for path in self.created_temps))
 
@@ -405,7 +427,7 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.irs_dir.mkdir()
         main.dsp_manager = FakeDspManager(self.irs_dir, fail_import=True)
         with self.assertRaises(HTTPException) as ctx:
-            await self._import(self._bundle_with_ir("new.irs", b"NEW" * 16))
+            await self._import(self._bundle_with_ir("new.irs", valid_ir_bytes()))
         self.assertEqual(ctx.exception.status_code, 400)
         self._assert_clean()
 
@@ -424,11 +446,13 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not Path(path).exists() for path in self.created_temps))
 
     async def test_existing_ir_overwritten_on_success(self):
+        from dsp.manager import build_wav_bytes
+        old_ir = build_wav_bytes(1, 48000, 32, 3, struct.pack("<4f", 0.1, 0.2, 0.3, 0.4))
         self.irs_dir.mkdir()
-        (self.irs_dir / "same.irs").write_bytes(b"OLD" * 8)
-        result = await self._import(self._bundle_with_ir("same.irs", b"NEW" * 16))
+        (self.irs_dir / "same.irs").write_bytes(old_ir)
+        result = await self._import(self._bundle_with_ir("same.irs", valid_ir_bytes()))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual((self.irs_dir / "same.irs").read_bytes(), b"NEW" * 16)
+        self.assertEqual((self.irs_dir / "same.irs").read_bytes(), valid_ir_bytes())
         self._assert_no_transaction_leftovers()
         self.assertTrue(all(not Path(path).exists() for path in self.created_temps))
 

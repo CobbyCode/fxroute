@@ -526,7 +526,7 @@ class DSPPeakMonitor:
             generation = self._generation
         capture_started_at = time.monotonic()
         capture_node_name = f"{CAPTURE_NODE_NAME}_{next(CAPTURE_NODE_SEQUENCE)}"
-        capture_rate = _resolve_capture_rate()
+        capture_rate = await asyncio.to_thread(_resolve_capture_rate)
         self._capture_node_name = capture_node_name
         self._capture_rate = capture_rate
         self._last_audio_sample_at = None
@@ -749,7 +749,7 @@ class DSPPeakMonitor:
         at the settled rate instead of the stale pre-transition rate.
         """
         try:
-            status = get_samplerate_status()
+            status = await asyncio.to_thread(get_samplerate_status)
         except Exception:
             return False
         authoritative = authoritative_sample_rate(status)

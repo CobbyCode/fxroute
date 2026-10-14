@@ -132,7 +132,8 @@ class _RuntimeOutputModeMixin:
             # rate without it.  Mid-transition clears are deliberately avoided:
             # the DSP helper may still be rebuilding at the old rate and would
             # pull the sink away from the freshly cleared pin.
-            samplerate.clear_auto_policy_force_rate(
+            await asyncio.to_thread(
+                samplerate.clear_auto_policy_force_rate,
                 request.target_rate, app_policy=policy,
                 idle=not request.target_url and not request.should_play,
             )

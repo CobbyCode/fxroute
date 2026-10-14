@@ -84,6 +84,33 @@ def parse_wav_frames(path: Path) -> Dict[str, Any]:
     return params
 
 
+def ensure_ir_samples_finite(params: Dict[str, Any], name: str) -> None:
+    """Reject non-finite IR samples before they reach the native convolver.
+
+    PCM encodings are finite by construction; only IEEE float needs the
+    sample check. A NaN/Inf tap would otherwise enter the FIR kernel (the
+    engine zeroes the affected output samples, silently muting instead of
+    playing the stored IR).
+    """
+    if params.get("format") != 3 or params.get("bits") not in (32, 64):
+        return
+    bits = params["bits"]
+    data = params.get("data") or b""
+    width = bits // 8
+    if len(data) % width:
+        raise ValueError(f"IR WAV data is truncated: {name}")
+    tag = "f" if bits == 32 else "d"
+    chunk_samples = 8192
+    for offset in range(0, len(data), chunk_samples * width):
+        chunk = data[offset:offset + chunk_samples * width]
+        count = len(chunk) // width
+        if not count:
+            continue
+        for value in struct.unpack(f"<{count}{tag}", chunk):
+            if not math.isfinite(value):
+                raise ValueError(f"IR WAV samples must be finite numbers: {name}")
+
+
 def ensure_kernel_supported_ir(params: Dict[str, Any], name: str) -> None:
     """Reject IR encodings the native convolver cannot load."""
     fmt = params.get("format")
@@ -93,6 +120,7 @@ def ensure_kernel_supported_ir(params: Dict[str, Any], name: str) -> None:
             f"IR WAV encoding is not kernel-supported: format {fmt} "
             f"with {bits} bits (need PCM 16/24/32 bit or IEEE float 32 bit): {name}"
         )
+    ensure_ir_samples_finite(params, name)
 
 
 def normalize_ir_frames(params: Dict[str, Any], name: str) -> Dict[str, Any]:
@@ -1791,12 +1819,8 @@ class DSPManager:
             raise ValueError("Dual IR WAV formats must match")
         if left["channels"] != 1 or right["channels"] != 1:
             raise ValueError("Dual IR inputs must be mono WAV files")
-        if not ((left["format"] == 1 and left["bits"] in (16, 24, 32))
-                or (left["format"] == 3 and left["bits"] == 32)):
-            raise ValueError(
-                f"Dual IR WAV encoding is not kernel-supported: format {left['format']} "
-                f"with {left['bits']} bits (need PCM 16/24/32 bit or IEEE float 32 bit)"
-            )
+        ensure_kernel_supported_ir(left, Path(left_source_path).name)
+        ensure_kernel_supported_ir(right, Path(right_source_path).name)
         width = left["bits"] // 8
         samples = max(left["samples"], right["samples"])
         # Pad a shorter channel with silence so the interleaved sample count

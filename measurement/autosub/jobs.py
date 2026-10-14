@@ -18,6 +18,7 @@ import numpy as np
 import audio.volume_contract as volume_contract
 from audio.system_volume import volume_percent_to_linear_gain
 from audio.output_topology import SURROUND_POSITIONS
+from common.atomic_write import atomic_write_text
 from fastapi import APIRouter, HTTPException
 
 from dsp.manager import ensure_kernel_supported_ir, parse_wav_frames
@@ -1011,9 +1012,7 @@ def _persist_auto_sub_job_snapshot(job: dict[str, Any], job_id: str) -> None:
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
         target = target_dir / f"autosub-job-{job_id}.json"
-        tmp = target.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(snapshot, default=str), encoding="utf-8")
-        tmp.replace(target)
+        atomic_write_text(target, json.dumps(snapshot, default=str))
         _prune_auto_sub_snapshots(target_dir)
         logger.info("AUTOSUB job=%s result snapshot persisted: %s", job_id, target)
     except Exception:

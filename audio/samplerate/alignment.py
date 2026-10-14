@@ -161,7 +161,7 @@ async def suspend_resume_playback_sink(
             )
             return False
         if output_key is None:
-            overview = get_audio_output_overview()
+            overview = await asyncio.to_thread(get_audio_output_overview)
             output_mode = overview.get("output_mode") or {}
             output_key = str(output_mode.get("effective_output_key") or "").strip()
         if not output_key:

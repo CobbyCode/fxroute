@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import math
@@ -17,6 +18,7 @@ from uuid import uuid4
 import numpy as np
 
 from audio.output_topology import SUB_ROLES
+from common.atomic_write import atomic_write_text
 from measurement.target import measurement_target_from_context, targets_compatible
 from measurement.constants import (
     DISPLAY_DEFAULTS,
@@ -43,11 +45,14 @@ class MeasurementPersistence:
 
     def list_measurements(self) -> dict[str, Any]:
         measurements = []
+        corrupt_files: list[dict[str, str]] = []
         for path in sorted(self._store.measurements_dir.glob("*.json"), reverse=True):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 measurements.append(self._normalize_measurement(payload, source_path=path))
-            except Exception:
+            except Exception as exc:
+                logger.warning("Skipping corrupt measurement file %s: %s", path.name, exc)
+                corrupt_files.append({"id": path.stem, "filename": path.name, "error": str(exc)})
                 continue
         measurements.sort(key=lambda item: item.get("created_at") or "", reverse=True)
         return {
@@ -61,6 +66,7 @@ class MeasurementPersistence:
             "house_curves": self._store._list_house_curve_files(),
             "scope_note": MEASUREMENT_SCOPE_NOTE,
             "measurements": measurements,
+            "corrupt_files": corrupt_files,
         }
 
     def load_measurement(self, measurement_id: str) -> dict[str, Any]:
@@ -71,8 +77,13 @@ class MeasurementPersistence:
         path = self._store.measurements_dir / f"{measurement_id}.json"
         if not path.exists():
             raise KeyError(measurement_id)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return self._normalize_measurement(payload, source_path=path)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return self._normalize_measurement(payload, source_path=path)
+        except KeyError:
+            raise
+        except ValueError as exc:
+            raise ValueError(f"Saved measurement is corrupt: {measurement_id}: {exc}") from exc
 
     def save_measurement(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = self._normalize_measurement(payload)
@@ -80,7 +91,7 @@ class MeasurementPersistence:
         path = self._store.measurements_dir / f"{measurement_id}.json"
         if path.exists():
             raise ValueError(f"Measurement already exists: {measurement_id}")
-        path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(path, json.dumps(normalized, indent=2) + "\n")
         return normalized
 
     def save_measurements(self, payloads: list[Any]) -> list[dict[str, Any]]:
@@ -97,7 +108,7 @@ class MeasurementPersistence:
         written = []
         try:
             for path, measurement in zip(paths, normalized):
-                path.write_text(json.dumps(measurement, indent=2) + "\n", encoding="utf-8")
+                atomic_write_text(path, json.dumps(measurement, indent=2) + "\n")
                 written.append(path)
         except Exception:
             for path in written:
@@ -291,7 +302,7 @@ class MeasurementPersistence:
             payload = deepcopy(debug_segment)
             payload["measurement_id"] = measurement_id
             payload["generated_at"] = self._store._utc_now()
-            json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            atomic_write_text(json_path, json.dumps(payload, indent=2) + "\n")
 
             marker_names_by_sample: dict[int, list[str]] = {}
             for name, value in (payload.get("markers") or {}).items():
@@ -302,37 +313,38 @@ class MeasurementPersistence:
                 if sample is not None:
                     marker_names_by_sample.setdefault(int(sample), []).append(f"candidate_{index + 1}")
 
-            with csv_path.open("w", encoding="utf-8", newline="") as csv_file:
-                writer = csv.DictWriter(
-                    csv_file,
-                    fieldnames=[
-                        "measurement_id",
-                        "channel",
-                        "sample_rate",
-                        "sample",
-                        "offset_from_global_peak_samples",
-                        "offset_from_selected_direct_samples",
-                        "value_normalized",
-                        "abs_normalized",
-                        "markers",
-                    ],
+            csv_buffer = io.StringIO()
+            writer = csv.DictWriter(
+                csv_buffer,
+                fieldnames=[
+                    "measurement_id",
+                    "channel",
+                    "sample_rate",
+                    "sample",
+                    "offset_from_global_peak_samples",
+                    "offset_from_selected_direct_samples",
+                    "value_normalized",
+                    "abs_normalized",
+                    "markers",
+                ],
+            )
+            writer.writeheader()
+            for item in payload.get("segment") or []:
+                sample = int(item["sample"])
+                writer.writerow(
+                    {
+                        "measurement_id": measurement_id,
+                        "channel": payload.get("channel"),
+                        "sample_rate": payload.get("sample_rate"),
+                        "sample": sample,
+                        "offset_from_global_peak_samples": item.get("offset_from_global_peak_samples"),
+                        "offset_from_selected_direct_samples": item.get("offset_from_selected_direct_samples"),
+                        "value_normalized": item.get("value_normalized"),
+                        "abs_normalized": item.get("abs_normalized"),
+                        "markers": "|".join(marker_names_by_sample.get(sample, [])),
+                    }
                 )
-                writer.writeheader()
-                for item in payload.get("segment") or []:
-                    sample = int(item["sample"])
-                    writer.writerow(
-                        {
-                            "measurement_id": measurement_id,
-                            "channel": payload.get("channel"),
-                            "sample_rate": payload.get("sample_rate"),
-                            "sample": sample,
-                            "offset_from_global_peak_samples": item.get("offset_from_global_peak_samples"),
-                            "offset_from_selected_direct_samples": item.get("offset_from_selected_direct_samples"),
-                            "value_normalized": item.get("value_normalized"),
-                            "abs_normalized": item.get("abs_normalized"),
-                            "markers": "|".join(marker_names_by_sample.get(sample, [])),
-                        }
-                    )
+            atomic_write_text(csv_path, csv_buffer.getvalue())
 
             self._prune_ir_debug_segments(output_dir)
 
@@ -788,7 +800,7 @@ class MeasurementPersistence:
 
     def _persist_job(self, job: dict[str, Any]) -> None:
         path = self._store.job_records_dir / f"{job['id']}.json"
-        path.write_text(json.dumps(job, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(path, json.dumps(job, indent=2) + "\n")
 
     def _slugify(self, value: Any) -> str:
         raw = str(value or "measurement").strip().lower()
