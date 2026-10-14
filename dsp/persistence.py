@@ -4,7 +4,7 @@
 import json
 import logging
 from pathlib import Path
-from audio.output_topology import MODES, SURROUND_GROUPS
+from audio.output_topology import MODES, SURROUND_GROUPS, supported_bank_ids
 from common.atomic_write import atomic_write_text
 from dsp.surround_global import (BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, preset_layout,
                                  validate_preset_layout)
@@ -214,9 +214,14 @@ class DSPPresetLibrary:
         return DSPPresetStore(self.presets_dir / "global" / mode, self.irs_dir / "global" / mode, "global", mode)
 
     def stores(self) -> List[DSPPresetStore]:
-        """Every Global store, then the area banks that have a folder."""
+        """Every Global store, then the area banks that have a folder.
+
+        Only bank ids a mode can define count: a directory that is none of
+        them (a library backup, say) is not a bank and is not listed.
+        """
+        supported = set(supported_bank_ids())
         banks = {path.name for root in (self.presets_dir, self.irs_dir) if root.is_dir()
-                 for path in root.iterdir() if path.is_dir() and path.name != "global"}
+                 for path in root.iterdir() if path.is_dir() and path.name in supported}
         return [self.store("global", mode) for mode in MODES] + [self.store(bank) for bank in sorted(banks)]
 
 

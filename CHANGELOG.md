@@ -280,6 +280,12 @@ no public image.
   on a graph that was already rebuilding itself. Such a graph is now read
   again after a short pause and never cached; a path that is missing for
   good still fails at once.
+- A directory in the preset or IR root that is not a filterbank (a backup of
+  the library, for example) counted as one: `presets/` and `irs/` were
+  scanned for subdirectories and every one of them became a bank of the
+  preset library, so its files were listed and inventoried as that bank's
+  presets and IRs. A folder is a bank only when its name is a bank id an
+  output mode can define; anything else is ignored.
 
 ### Installer and maintenance
 

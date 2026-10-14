@@ -126,6 +126,47 @@ class LibraryTests(Fixture):
                 self.create("Neutral", -1.0, bank, mode)
         self.assertEqual(list(self.manager.output_dir.iterdir()), [])
 
+    def test_a_bank_folder_nobody_created_yet_is_a_library(self):
+        store = self.manager.presets.store("sub1")
+        store.presets_dir.mkdir(parents=True)
+        store.write("Handmade", {"schema": "fxroute.dsp.preset", "version": 1, "chain": [], "metadata": {}})
+        self.assertEqual(self.stored("Handmade"), [("sub1", None)])
+
+    def test_a_stray_directory_is_not_a_bank(self):
+        for root in (self.manager.output_dir, self.manager.irs_dir):
+            for name in ("ir-backup", "my backup"):
+                (root / name).mkdir(parents=True)
+        (self.manager.output_dir / "irs").mkdir()
+        self.create("Room", -1.0, "main")
+        self.assertEqual([(entry["name"], entry["bank"], entry["mode"]) for entry in self.manager.list_presets()],
+                         [("Direct", None, None), ("Neutral", None, None), ("Room", "main", None)])
+        self.assertEqual([store.presets_dir.name for store in self.manager.presets.stores()],
+                         ["stereo", "stereo-sub", "surround", "main"])
+        self.assertEqual(self.manager.list_irs(), [])
+
+    def test_an_activated_stereo_global_preset_survives_a_restart(self):
+        """Activation goes through load_preset, the store the load API reads."""
+        self.create("Room", -1.0)
+        self.create("Room", -9.0, "main")
+        self.manager.load_preset("Room")
+        for _ in range(2):
+            self.manager = DSPManager(home=self.home)
+            self.assertEqual(self.manager.get_active_preset(), "Room")
+        self.assertTrue(self.manager.is_active_preset("Room"))
+        self.assertEqual(gain(self.manager.library().read("Room")), -1.0)
+
+    def test_only_a_stereo_global_name_can_be_active(self):
+        """Another library's name is refused; no path writes one into active.json."""
+        self.create("Room", -1.0)
+        self.create("Sub", -2.0, "global", "stereo-sub")
+        self.create("Area", -3.0, "main")
+        self.manager.load_preset("Room")
+        for name in ("Sub", "Area", "Missing"):
+            with self.subTest(name=name), self.assertRaises(FileNotFoundError):
+                self.manager.load_preset(name)
+        self.assertEqual(self.manager.get_active_preset(), "Room")
+        self.assertEqual(DSPManager(home=self.home).get_active_preset(), "Room")
+
     def test_uploaded_ir_belongs_to_the_bank_of_its_preset(self):
         for bank, sample in (("main", 0.5), ("sub1", 0.25)):
             source = self.home / f"{bank}.wav"
@@ -174,6 +215,9 @@ class LibraryTests(Fixture):
         self.manager.delete_preset("Room")
         self.assertEqual(self.manager.get_active_preset(), "Neutral")
         # A restart keeps an active preset only while Stereo Global still has it.
+        # Only a foreign active.json (an old flat library) can name another one:
+        # no current path writes a name it could not read back, see
+        # test_only_a_stereo_global_name_can_be_active.
         self.create("Room", -1.0, "sub1")
         self.manager.state_store.write("active.json", {"schema": "fxroute.dsp.active", "version": 1, "preset": "Room"})
         self.assertEqual(DSPManager(home=self.home).get_active_preset(), "Neutral")

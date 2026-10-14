@@ -63,6 +63,19 @@ def dormant_roles(mode: str, *, crossover_enabled: bool) -> tuple[str, ...]:
     return tuple(role for role in roles_for_mode(mode, crossover_enabled=True) if role not in active)
 
 
+def supported_bank_ids() -> tuple[str, ...]:
+    """Every filterbank id any output mode and crossover setting can define.
+
+    A stored library is a bank only if a mode can define it, so a stray
+    directory in the preset root cannot claim one.
+    """
+    ids = set()
+    for mode in MODES:
+        for crossover_enabled in (False, True):
+            ids.update(bank_definitions(roles_for_mode(mode, crossover_enabled=crossover_enabled)))
+    return tuple(sorted(ids))
+
+
 def validate_assignments(mode: str, assignments: object, *, crossover_enabled: bool = False,
                          allow_dormant: bool = False) -> tuple[str, ...]:
     """Check routing roles against the mode's domain.
