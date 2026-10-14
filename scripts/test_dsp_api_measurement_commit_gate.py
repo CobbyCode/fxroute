@@ -45,6 +45,11 @@ class FakeOutputService:
         return OUTPUT_STATE
 
 
+async def routed_roles(state, mode):
+    """The fixture states route every role they store."""
+    return [role for role in state["modes"][mode]["banks"] if role != "global"]
+
+
 class FakeUploadFile:
     def __init__(self, filename="sweep.wav"):
         self.filename = filename
@@ -138,7 +143,8 @@ class MeasurementCommitGateTests(unittest.IsolatedAsyncioTestCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        deps = dataclasses.replace(main._make_dsp_api_deps(), verify_measurement_commit=verify)
+        deps = dataclasses.replace(main._make_dsp_api_deps(), verify_measurement_commit=verify,
+                                   routed_roles=routed_roles)
         self.addCleanup(dsp_api.configure_dsp_api, main._make_dsp_api_deps())
         dsp_api.configure_dsp_api(deps)
 

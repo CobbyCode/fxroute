@@ -3500,6 +3500,7 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         get_output_service=lambda: get_output_service(),
         sync_v2_head_live=lambda: _sync_v2_head_after_bank_assign(),
         verify_measurement_commit=lambda targets, binding: _verify_measurement_commit(targets, binding),
+        routed_roles=lambda state, mode: _routed_roles(state, mode),
     )
 
 
@@ -5770,6 +5771,13 @@ def _output_state_topology(state: dict, mode: str, output_key: str, channels: in
             "sub_roles": list(topology.sub_roles), "sub_mode": topology.sub_mode,
             "left_ways": list(topology.left_ways), "right_ways": list(topology.right_ways),
             "way_count": topology.way_count, "issues": list(topology.issues)}
+
+
+async def _routed_roles(state: dict, mode: str) -> list[str]:
+    """Roles ``mode`` routes on the selected output device, as the bank catalog lists them."""
+    overview = await asyncio.to_thread(get_audio_output_overview)
+    output_key, channels = _output_state_device(overview)
+    return _output_state_topology(state, mode, output_key, channels)["roles"]
 
 
 @app.get("/api/audio/output-state")

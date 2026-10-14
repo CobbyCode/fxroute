@@ -135,11 +135,15 @@ no public image.
   mode explicitly. A folder is a bank only under a bank id an output mode
   can define, one speaker of a pair routed alone included (`sub_l` for a
   single mono subwoofer); any other folder, a library backup for example,
-  is neither listed nor written to. **Direct** and **Neutral** exist in
-  every bank without a file. Preset and IR files of an installation from
-  before this change sit in the former flat `presets/` and `irs/` folders
-  and are no longer read — recreate or re-import them; the old files stay
-  on disk.
+  is neither listed nor written to. A bank is what the selected output
+  routes right now: a speaker whose pair partner is not routed is a bank
+  of its own, and a bank that is not routed (that pair, or the crossover
+  ways while the crossover is off) takes no new presets until it is routed
+  again; its presets and assignments stay. **Direct** and **Neutral**
+  exist in every bank without a file. Preset and IR files of an
+  installation from before this change sit in the former flat `presets/`
+  and `irs/` folders and are no longer read — recreate or re-import them;
+  the old files stay on disk.
 - **The A/B card names what every bank listens to.** Below Listening and
   Chain it lists one chip per bank of the active output mode, Global
   first, with the preset that bank plays; numbered banks in a row on the

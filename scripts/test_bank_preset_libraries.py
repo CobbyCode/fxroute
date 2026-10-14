@@ -22,6 +22,7 @@ import dsp.api as api
 from audio import output_state as state_api
 from audio.output_service import OutputService, OutputServiceDeps
 from audio.output_state_store import OutputStateStore
+from audio.output_topology import derive_topology
 from dsp.manager import DSPManager, build_wav_bytes, parse_wav_frames
 from dsp.persistence import clean_bank
 
@@ -412,6 +413,12 @@ class ApiTests(Fixture):
         async def drain(fn, *args, **kwargs):
             return fn(*args, **kwargs)
 
+        async def routed_roles(state, mode):
+            """Device "A", as main.py derives the bank catalog's topology."""
+            routing = state_api.routing_for_device(state, mode, "A")
+            crossover = state["modes"][mode]["crossover_enabled"]
+            return list(derive_topology(mode, routing, crossover_enabled=crossover).roles)
+
         previous = api._runtime.deps
         self.addCleanup(api.configure_dsp_api, previous)
         self.load_dsp_preset = AsyncMock()
@@ -424,7 +431,8 @@ class ApiTests(Fixture):
             volume_state_for_manager=lambda *args, **kwargs: {},
             schedule_peak_monitor_refresh=lambda *args, **kwargs: None,
             get_output_service=lambda: self.service,
-            sync_v2_head_live=AsyncMock(return_value={"live_applied": True})))
+            sync_v2_head_live=AsyncMock(return_value={"live_applied": True}),
+            routed_roles=routed_roles))
         app = FastAPI()
         app.include_router(api.router)
         self.client = TestClient(app)
@@ -442,6 +450,11 @@ class ApiTests(Fixture):
         response = self.post_peq(name, gain_db, bank, mode, **fields)
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
+
+    def route(self, *roles, mode="stereo-sub"):
+        state = self.service.load()
+        self.service.commit(state_api.set_mode_routing(state, mode, "A", list(roles)),
+                            expected_revision=state["revision"])
 
     def test_one_name_can_be_created_in_every_bank_and_mode(self):
         for gain_db, (bank, mode) in zip((-1.0, -2.0, -3.0), (("global", "stereo-sub"), ("main", "stereo-sub"),
@@ -474,6 +487,30 @@ class ApiTests(Fixture):
                          [("Conv", "sub_l"), ("Room", "sub_l")])
         self.assertEqual([(ir["name"], ir["bank"]) for ir in status["irs"]], [("Conv.wav", "sub_l")])
         self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["sub_l"]["preset"], "Conv")
+
+    def test_a_role_whose_pair_partner_is_unrouted_is_its_own_bank(self):
+        """Stored bindings outlive routing; only the routed roles form banks."""
+        self.route("main_l", "main_r", "sub_l", "sub_r")
+        self.create_peq("Pair", -1.0, "sub")
+        self.route("main_l", "main_r", "sub_l", "off")
+        created = self.create_peq("Lone", -2.0, "sub_l")
+        self.assertEqual(created["bank"]["bank_id"], "sub_l")
+        self.assertEqual(self.stored("Lone"), [("sub_l", None)])
+        banks = self.service.load()["modes"]["stereo-sub"]["banks"]
+        self.assertEqual((banks["sub_l"]["preset"], banks["sub_r"]["preset"]), ("Lone", "Pair"))
+        plan = self.service.compile_plan(self.service.load(), output_key="A", channels=4, sample_rate_hz=48000)
+        self.assertEqual([(item["role"], item["bank"]["library"]) for item in plan["outputs"]],
+                         [("main_l", "main"), ("main_r", "main"), ("sub_l", "sub_l")])
+        # The temporarily unrouted pair is no target; its library stays as it is.
+        refused = self.post_peq("Other", -3.0, "sub")
+        self.assertEqual(refused.status_code, 400, refused.text)
+        self.assertEqual(self.stored("Other"), [])
+        self.assertEqual(self.stored("Pair"), [("sub", None)])
+        deleted = self.client.post("/api/dsp/presets/delete", json={"preset_name": "Lone", **self.owner("sub_l")})
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(self.stored("Lone"), [])
+        self.route("main_l", "main_r", "sub_l", "sub_r")
+        self.assertEqual(self.create_peq("Back", -4.0, "sub_l")["bank"]["bank_id"], "sub")
 
     def test_load_after_create_activates_a_bank_preset_through_its_bank(self):
         """Only Stereo Global loads into the fallback graph; other banks are assigned."""

@@ -88,6 +88,10 @@ class DspApiDeps:
     # Gates a generated-correction commit on its source measurements' frozen
     # targets fitting the bank it is committed into; raises ValueError otherwise.
     verify_measurement_commit: Optional[Callable[[list, dict], None]] = None
+    # routed_roles(state, mode): roles the mode routes on the selected output
+    # device, the topology the bank catalog lists. Absent in tests, where a bank
+    # resolves against the stored bindings.
+    routed_roles: Optional[Callable[[dict, str], Awaitable[list]]] = None
 
 
 @dataclass
@@ -266,8 +270,22 @@ def _parse_bank_binding(*, bank_mode: Any, bank_id: Any, expected_revision: Any,
             **({"bank_group": group} if group else {})}
 
 
-def _validate_bank_target(service, binding: dict, *, needs_group: bool = False) -> str:
-    """Fail fast (400) when the requested bank does not exist yet.
+async def _routed_roles(state: dict, mode: str, bank_id: str) -> list | None:
+    """Roles an area bank resolves against: the routing of the selected device.
+
+    Stored bindings outlive their routing, so a pair whose partner is no
+    longer routed is not a bank; its routed role is a bank of its own, with
+    its own library, exactly as the bank catalog and the engine see it.
+    Global needs no topology (None).
+    """
+    getter = _deps().routed_roles
+    if bank_id == "global" or getter is None:
+        return None
+    return await getter(state, mode)
+
+
+async def _validate_bank_target(service, binding: dict, *, needs_group: bool = False) -> str:
+    """Fail fast (400) when the requested bank is not routed.
 
     Returns the canonical bank id (All Banks is rejected: it owns no
     presets and only switches A/B jointly).
@@ -283,7 +301,8 @@ def _validate_bank_target(service, binding: dict, *, needs_group: bool = False) 
             raise ValueError("Unknown output mode")
         if str(binding["bank_id"]).strip() == "all":
             raise ValueError("All Banks owns no presets; select a concrete filterbank")
-        canonical = resolve_bank(config, binding["bank_id"])["id"]
+        roles = await _routed_roles(state, binding["mode"], binding["bank_id"])
+        canonical = resolve_bank(config, binding["bank_id"], roles)["id"]
     except ValueError as exc:
         if "All Banks" in str(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -312,7 +331,7 @@ def _binding_kwargs(binding: dict | None) -> dict:
     return {"mode": binding["mode"], **({"group": group} if group else {})}
 
 
-def _optional_owner(body: dict) -> dict:
+async def _optional_owner(body: dict) -> dict:
     """Bank and output mode whose preset library a request addresses.
 
     Preset names are unique within a bank only, so combine, delete and
@@ -331,13 +350,15 @@ def _optional_owner(body: dict) -> dict:
         raise HTTPException(status_code=400, detail="bank_mode and bank_id are required together")
     service = _output_state_service()
     if service is not None:
-        bank = _validate_bank_target(service, {"mode": mode, "bank_id": bank, "expected_revision": 0})
+        bank = await _validate_bank_target(service, {"mode": mode, "bank_id": bank, "expected_revision": 0})
     return {"bank": bank, "mode": mode}
 
 
 async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) -> dict:
     """Assign a just-created preset to its bank; conflicts report partial state.
 
+    The bank resolves against the routed roles, so only the roles that play
+    its library take the preset (see ``_routed_roles``).
     The assignment persists through OutputService, which never touches the
     runtime; without a follow-up sync the engine would keep serving the
     previous bank content until the next unrelated edit.  The injected
@@ -346,11 +367,13 @@ async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) ->
     """
     service = _require_output_state_service()
     try:
-        service.validate_bank_preset(service.load(), binding["mode"], binding["bank_id"], created_name)
+        state = service.load()
+        roles = await _routed_roles(state, binding["mode"], binding["bank_id"])
+        service.validate_bank_preset(state, binding["mode"], binding["bank_id"], created_name, roles=roles)
         committed = await _deps().drain_worker(
             service.apply,
             lambda state: set_bank_preset(
-                state, binding["mode"], binding["bank_id"], preset=created_name),
+                state, binding["mode"], binding["bank_id"], preset=created_name, roles=roles),
             expected_revision=binding["expected_revision"])
     except MeasurementActiveError as exc:
         raise HTTPException(status_code=423, detail={
@@ -589,7 +612,7 @@ async def list_dsp_presets():
 @router.get("/api/dsp/presets/{preset_name}/file")
 async def download_dsp_preset_file(preset_name: str, bank_mode: str = "", bank_id: str = ""):
     dsp_mgr = _deps().require_dsp_manager()
-    store = dsp_mgr.library(**_optional_owner({"bank_mode": bank_mode, "bank_id": bank_id}))
+    store = dsp_mgr.library(**(await _optional_owner({"bank_mode": bank_mode, "bank_id": bank_id})))
     if preset_name in BUILTIN_PRESETS:
         # Built-ins are no files; every bank serves the same empty preset.
         return Response(dsp_mgr.export_preset_json(preset_name), media_type="application/json",
@@ -679,7 +702,7 @@ async def combine_dsp_presets(request: Request):
         raise HTTPException(status_code=400, detail="presetName is required")
     if not isinstance(preset_names, list):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
-    owner = _optional_owner(body)
+    owner = await _optional_owner(body)
     # Combine assigns no bank, so only a Stereo Global preset can be loaded.
     if load_after_create and not _in_stereo_global(owner.get("mode"), owner.get("bank")):
         raise HTTPException(status_code=400, detail=(
@@ -748,7 +771,7 @@ async def load_dsp_preset(request: Request):
 @router.post("/api/dsp/irs/upload")
 async def upload_dsp_ir(file: UploadFile = File(...), bank_mode: str = Form(""), bank_id: str = Form("")):
     dsp_mgr = _deps().require_dsp_manager()
-    owner = _optional_owner({"bank_mode": bank_mode, "bank_id": bank_id})
+    owner = await _optional_owner({"bank_mode": bank_mode, "bank_id": bank_id})
 
     tmp_path = None
     try:
@@ -809,7 +832,7 @@ async def create_convolver_preset(
         bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
     _verify_measurement_commit(source_measurement_targets, binding)
@@ -864,7 +887,7 @@ async def import_dsp_preset_json(
     binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding)
         binding = {**binding, "bank_id": canonical_bank}
 
     try:
@@ -908,7 +931,7 @@ async def import_dsp_preset_bundle(
     binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding)
+        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding)
         binding = {**binding, "bank_id": canonical_bank}
 
     temp_zip_path = None
@@ -1115,7 +1138,7 @@ async def create_convolver_preset_with_ir(
         bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a conflict.
     _verify_measurement_commit(source_measurement_targets, binding)
@@ -1214,7 +1237,7 @@ async def create_peq_preset(request: Request):
         raise HTTPException(status_code=400, detail="peq is required")
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
     _verify_measurement_commit(source_measurement_targets, binding)
@@ -1275,7 +1298,7 @@ async def import_rew_peq_preset(
         bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
 
     try:
@@ -1396,7 +1419,7 @@ async def import_dual_filter_preset(
         bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
     _verify_measurement_commit(source_measurement_targets, binding)
@@ -1503,7 +1526,7 @@ async def delete_dsp_preset(request: Request):
 
     if not preset_name:
         raise HTTPException(status_code=400, detail="preset_name is required")
-    owner = _optional_owner(body)
+    owner = await _optional_owner(body)
 
     try:
         async with _deps().dsp_mutation_lock():
