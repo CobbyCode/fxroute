@@ -30,6 +30,12 @@ class FakeUploadFile:
 
 
 class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # These manager doubles exercise the standalone legacy API contract.
+        patch = mock.patch.object(dsp_api, "_output_state_service", return_value=None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
     async def asyncTearDown(self):
         main.runtime.dsp_mutation_lock = None
         main.dsp_manager = None

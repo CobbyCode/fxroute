@@ -468,13 +468,31 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(self.manager.extras["loudness"]["params"]["volumeDb"], db(30), places=6)
 
     async def test_guarded_rebuild_does_not_pin_master_when_direct(self):
-        self.manager.active_preset = "Direct"
-        previous = self.manager.load_global_extras()
-        candidate = copy.deepcopy(previous)
-        candidate["loudness"]["enabled"] = True
-        candidate["loudness"]["params"]["volumeDb"] = db(30)
-        self.recorder.master = 30
-        await main._guarded_effects_transition(previous, candidate, True)
+        import tempfile
+        import test_output_state_lifecycle as lifecycle
+        from audio.output_state import set_bank_preset
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = lifecycle.make_manager(directory)
+            service = lifecycle.make_service(directory, manager)
+            lifecycle.seed_sub_state(service)
+            service.apply(lambda state: set_bank_preset(state, "stereo-sub", "global", preset="Direct"),
+                          expected_revision=1)
+            native = mock.MagicMock()
+            native.snapshot.return_value = {"active": True, "output_gain_db": 0.0}
+
+            async def rebuild(*args, apply_candidate, **kwargs):
+                apply_candidate()
+
+            native.guarded_rebuild_rendered = mock.AsyncMock(side_effect=rebuild)
+            previous = manager.load_global_extras()
+            candidate = copy.deepcopy(previous)
+            candidate["loudness"]["enabled"] = True
+            candidate["loudness"]["params"]["volumeDb"] = db(30)
+            self.recorder.master = 30
+            with lifecycle.lifecycle_context(service, manager, native), mock.patch.object(main, "dsp_manager", manager):
+                await main._guarded_effects_transition(previous, candidate, True)
+            self.assertAlmostEqual(native.guarded_rebuild_rendered.await_args.kwargs["guard_db"], db(30))
         self.assertEqual(self.recorder.master, 30)
 
     async def test_rollback_restores_complete_volume_state(self):

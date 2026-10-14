@@ -15,6 +15,7 @@ from dataclasses import replace
 from typing import Any, Mapping
 
 import audio.samplerate as samplerate
+from audio.output_state_store import StateConflictError
 from audio import src_policy
 from streaming.spotify.provider import play as spotify_play
 import playback.source_policy as source_policy
@@ -34,10 +35,12 @@ class _RuntimeOutputModeMixin:
     @asynccontextmanager
     async def transition_configuration(self, request: TransitionRequest):
         """Reserve configuration through policy handoff and failure cleanup."""
-        if request.src_mode is None:
+        v2 = bool((request.output_state_transition or {}).get("candidate_state"))
+        if request.src_mode is None and not v2:
             yield
             return
-        await self._deps.guard_src_change()
+        if request.src_mode is not None:
+            await self._deps.guard_src_change()
         async with AsyncExitStack() as stack:
             factories = (self._deps.canonical_volume_write_lock,
                          self._deps.dsp_mutation_lock, self._deps.audio_configuration_lock)
@@ -48,10 +51,16 @@ class _RuntimeOutputModeMixin:
                 if lock.locked() or any(not waiter.cancelled() for waiter in (lock._waiters or ())):
                     raise RuntimeError("DSP audio configuration is busy")
                 await stack.enter_async_context(lock)
+            if v2 and self._deps.graph_write_lock is not None:
+                await stack.enter_async_context(self._deps.graph_write_lock())
+            if v2 and self._deps.refresh_output_state_transition is not None:
+                self._deps.refresh_output_state_transition(request)
             self._configuration_locks_held = True
+            self._graph_write_lock_held = v2 and self._deps.graph_write_lock is not None
             try:
                 yield
             finally:
+                self._graph_write_lock_held = False
                 self._configuration_locks_held = False
 
     def _output_state_service(self):
@@ -208,20 +217,31 @@ class _RuntimeOutputModeMixin:
         if current_fingerprint == v2.get("fingerprint"):
             reverted = service.revert(v2["previous_state"],
                                       expected_revision=int(current.get("revision")))
+            rollback_state = reverted
             logger.info("Output-state rollback recommitted revision %s", reverted.get("revision"))
         elif current == v2.get("previous_state"):
             # The persist stage never ran (or a repeated rollback already
             # reverted): the store needs no repair, but the engine may still
             # hold the staged candidate graph.
             logger.info("Output-state store already at previous revision; resyncing graph only")
+            rollback_state = current
         else:
             logger.warning(
                 "Skipping output-state rollback: store head is not the failed candidate")
             return
         if previous_target is not None and runtime is not None:
+            token = service.activation_token()
+
+            def require_rollback():
+                if service.load()["revision"] != rollback_state["revision"]:
+                    raise StateConflictError("Output state changed during output-mode rollback")
+                service.require_activation_token(token)
+
+            previous_target = replace(previous_target, validate_current=require_rollback)
             await runtime.sync_rendered(previous_target)
             await self._verify_plan_rollback(request, previous_target)
-            service.remember_applied(v2["previous_state"], output_key=v2["output_key"],
+            require_rollback()
+            service.remember_applied(rollback_state, output_key=v2["output_key"],
                                      channels=v2["channels"],
                                      hardware_ports=list(previous_target.config.hardware_ports),
                                      sample_rate_hz=previous_target.config.sample_rate,
@@ -313,4 +333,16 @@ class _RuntimeOutputModeMixin:
                 "post-gate output-mode graph is incomplete: "
                 f"{diagnosis.get('signature')}"
             )
+        v2 = request.output_state_transition or {}
+        target = v2.get("target")
+        if target is not None and v2.get("candidate_state") is not None:
+            service = self._output_state_service()
+            committed = service.load()
+            if committed["revision"] != v2["expected_revision"] + 1:
+                raise RuntimeError("Output state changed before final graph verification")
+            service.remember_applied(
+                committed, output_key=v2["output_key"], channels=v2["channels"],
+                hardware_ports=list(target.config.hardware_ports),
+                sample_rate_hz=target.config.sample_rate,
+                fingerprint=target.config.plan_fingerprint)
         return {"graph_complete": True, "diagnosis": diagnosis}

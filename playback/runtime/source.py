@@ -397,6 +397,7 @@ class _RuntimeSourceMixin:
                 request.target_rate,
                 reason=f"coordinator:{request.operation}:{request.source}",
                 _rate_lock_held=self._configuration_locks_held,
+                **({"_graph_lock_held": True} if self._graph_write_lock_held else {}),
             )
         if not aligned:
             status = await asyncio.to_thread(self._deps.get_samplerate_status)

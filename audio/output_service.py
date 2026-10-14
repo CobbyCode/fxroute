@@ -69,6 +69,17 @@ class OutputService:
         """Unwritten editing defaults are not a safe production recovery state."""
         return self._deps.store.load(required=True)
 
+    def activation_token(self) -> bytes | None:
+        """Include missing/corrupt heads in freshness checks without normalizing them."""
+        try:
+            return self._deps.store.path.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def require_activation_token(self, token: bytes | None) -> None:
+        if self.activation_token() != token:
+            raise StateConflictError("Output state changed while preparing the DSP graph")
+
     def remember_applied(self, state: dict, *, output_key: str, channels: int,
                          hardware_ports: list[str], sample_rate_hz: int,
                          fingerprint: str | None = None) -> None:
@@ -118,6 +129,7 @@ class OutputService:
     async def render_for_activation(self, render, *, preflight, output_key: str,
                                     channels: int, hardware_ports: list[str]) -> tuple:
         """Select one fully renderable production state, including native preflight."""
+        token = self.activation_token()
         errors = []
         for recovering in (False, True):
             try:
@@ -127,10 +139,14 @@ class OutputService:
                 targets = await asyncio.to_thread(render, state)
                 for target in targets:
                     await preflight(target)
+                self.require_activation_token(token)
                 if recovering:
                     logger.warning("Restoring last applied v2 output state: head_error=%s", errors[0])
                 return state, targets
+            except StateConflictError:
+                raise
             except Exception as exc:
+                self.require_activation_token(token)
                 errors.append(str(exc))
         raise RuntimeError("No renderable v2 output state: " + "; ".join(errors))
 

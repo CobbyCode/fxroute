@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -107,6 +108,7 @@ class DspOrchestrationDeps:
     # sync target. Failure must raise, never authorize a legacy graph.
     # Absent only in unit tests that cover the legacy path.
     try_render_v2_target: Callable[[int, dict], Awaitable[Any | None]] | None = None
+    graph_write_lock: Callable[[], Any] | None = None
 
 
 def helper_argument_sample_rate(snapshot: dict | None) -> int | None:
@@ -144,6 +146,7 @@ class DspOrchestrator:
         *,
         reason: str = "unspecified",
         _rate_lock_held: bool = False,
+        _graph_lock_held: bool = False,
         target_overview: dict | None = None,
         retry_on_stale: bool = False,
         allow_unsettled_rate: bool = False,
@@ -172,6 +175,8 @@ class DspOrchestrator:
         that target and the gates can therefore never pass.
         """
         overview_was_supplied = audio_overview is not None
+        if _graph_lock_held and not _rate_lock_held:
+            raise RuntimeError("Graph ownership requires sample-rate ownership during DSP sync")
         overview = (
             audio_overview
             if audio_overview
@@ -321,11 +326,18 @@ class DspOrchestrator:
             await dsp_runtime.sync(current_overview)
             return current_overview
 
+        async def _sync_graph_locked():
+            if _graph_lock_held:
+                return await _sync_locked()
+            factory = getattr(self._deps, "graph_write_lock", None)
+            async with factory() if factory is not None else nullcontext():
+                return await _sync_locked()
+
         measurement_sr_session = self._deps.get_measurement_sr_session()
         if _rate_lock_held or measurement_sr_session is None:
-            return await _sync_locked()
+            return await _sync_graph_locked()
         async with measurement_sr_session.lock:
-            return await _sync_locked()
+            return await _sync_graph_locked()
 
     async def _render_v2_target(self, rate: int, overview: dict) -> Any | None:
         """Render v2 or propagate failure; only an absent renderer is legacy."""
@@ -390,6 +402,7 @@ class DspOrchestrator:
         reason: str = "unspecified",
         _rate_lock_held: bool = False,
         allow_measurement_graph_owned: bool = False,
+        _graph_lock_held: bool = False,
     ) -> bool:
         """Rebuild a stale native DSP helper so the hardware sink can move.
 
@@ -492,6 +505,7 @@ class DspOrchestrator:
                         target_overview=staged_overview,
                         reason=f"stale-helper-rebuild:{reason}",
                         _rate_lock_held=_rate_lock_held,
+                        _graph_lock_held=_graph_lock_held,
                         allow_unsettled_rate=True,
                     )
                 except Exception as exc:

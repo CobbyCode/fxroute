@@ -24,7 +24,7 @@ import inspect
 import subprocess
 import playback.queue as playback_queue
 import playback.media_readiness as media_readiness
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -742,6 +742,7 @@ class RuntimeResources:
     # concurrent HTTP requests cannot interleave filesystem/preset state
     # changes that used to run serially in the event loop.
     dsp_mutation_lock: Optional[asyncio.Lock] = None
+    dsp_graph_write_lock: Optional[asyncio.Lock] = None
     source_transition_lock: Optional[asyncio.Lock] = None
     # Serializes canonical volume writes (/api/volume, streaming volume actions) so
     # concurrent requests cannot interleave their set -> verified get -> status
@@ -764,6 +765,7 @@ class RuntimeResources:
         self.dsp_runtime_link_watch_task = None
         self.dsp_preset_load_lock = None
         self.dsp_mutation_lock = None
+        self.dsp_graph_write_lock = None
         self.source_transition_lock = None
         self.canonical_volume_write_lock = None
         self.stdin_input = None
@@ -812,6 +814,13 @@ def _dsp_mutation_lock() -> asyncio.Lock:
     if runtime.dsp_mutation_lock is None:
         runtime.dsp_mutation_lock = asyncio.Lock()
     return runtime.dsp_mutation_lock
+
+
+def _dsp_graph_write_lock() -> asyncio.Lock:
+    """Reserve render through apply/rollback, inside configuration/rate locks."""
+    if runtime.dsp_graph_write_lock is None:
+        runtime.dsp_graph_write_lock = asyncio.Lock()
+    return runtime.dsp_graph_write_lock
 
 
 def _get_dsp_preset_load_lock() -> asyncio.Lock:
@@ -1279,6 +1288,8 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         restart_src_graph=lambda state: _restart_src_graph(state),
         sample_rate_policy_request=lambda policy, **kwargs: playback_orchestration.configured().sample_rate_policy_request(policy, **kwargs),
         canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
+        graph_write_lock=lambda: _dsp_graph_write_lock(),
+        refresh_output_state_transition=lambda request: _refresh_output_state_transition(request),
     )
 
 
@@ -2122,7 +2133,7 @@ async def _render_effects_transition_targets(previous, candidate):
 
 async def _temporary_effects_transition(previous, candidate):
     """Apply temporary SPL helpers without replacing v2 routing or filters."""
-    async with _dsp_mutation_lock():
+    async with _dsp_mutation_lock(), _dsp_graph_write_lock():
         new_target, old_target = await _render_effects_transition_targets(previous, candidate)
         await runtime.dsp_runtime.guarded_rebuild_rendered(
             new_target, previous=old_target, guard_db=-18.0,
@@ -2132,24 +2143,31 @@ async def _temporary_effects_transition(previous, candidate):
 
 async def _guarded_effects_transition(previous, candidate, persist_all_presets):
     """Apply extras through a guarded DSP rebuild without touching the master."""
+    async with _dsp_graph_write_lock():
+        return await _guarded_effects_transition_locked(previous, candidate, persist_all_presets)
+
+
+async def _guarded_effects_transition_locked(previous, candidate, persist_all_presets):
     result_holder = {}
+    new_target, old_target = await _render_effects_transition_targets(previous, candidate)
     start = await _volume_state_for_manager(dsp_manager)
-    candidate_loudness = (candidate.get("loudness") or {})
-    if start.loudness_in_path or volume_contract.loudness_in_path(
-        start.preset, bool(candidate_loudness.get("enabled"))
-    ):
+    if any("loud_comp_stereo" in target.text for target in (new_target, old_target)):
         guard_db = dsp_manager.loudness_transition_guard_db(previous, candidate)
     else:
         guard_db = min(0.0, start.dsp_guard_db, volume_percent_to_db(start.master_percent))
     settle = float(getattr(dsp_manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0) or 0.0)
 
     def persist_candidate():
-        result_holder["result"] = (
-            dsp_manager.apply_global_extras_to_all_presets(candidate)
-            if persist_all_presets else
-            dsp_manager.apply_global_extras_to_active_preset(candidate))
+        normalized = dsp_manager.save_global_extras(candidate)
+        # No legacy preset load/notification: the v2 graph was already applied.
+        result_holder["result"] = {
+            "extras": normalized,
+            "updated": (len([p for p in dsp_manager.list_presets()
+                             if p["name"] not in dsp_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS])
+                        if persist_all_presets else 1),
+            "skipped": sorted(dsp_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS),
+        }
 
-    new_target, old_target = await _render_effects_transition_targets(previous, candidate)
     await runtime.dsp_runtime.guarded_rebuild_rendered(
         new_target, previous=old_target, guard_db=guard_db,
         apply_candidate=persist_candidate,
@@ -3445,6 +3463,7 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         sync_v2_head_live=lambda: _sync_v2_head_after_bank_assign(),
         verify_measurement_commit=lambda targets, binding: _verify_measurement_commit(targets, binding),
         routed_roles=lambda state, mode: _routed_roles(state, mode),
+        sync_v2_extras_runtime=lambda: _sync_v2_extras_runtime(),
     )
 
 
@@ -3527,6 +3546,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         # fully idle sink ignores force-rate writes and suspend/resume pulses.
         trigger_idle_sink_renegotiation=lambda *a, **k: samplerate.trigger_idle_sink_renegotiation(*a, **k),
         try_render_v2_target=lambda rate, overview: _try_render_v2_sync_target(rate, overview),
+        graph_write_lock=lambda: _dsp_graph_write_lock(),
     )
 
 
@@ -5400,6 +5420,13 @@ async def _render_v2_recovery_targets(rate: int, overview: dict, extras_snapshot
         if len(ports) != channels:
             raise ValueError("Output playback ports are undiscovered or incomplete")
         manager = _require_dsp_manager()
+        token = service.activation_token()
+        base_extras = manager.load_global_extras()
+
+        def validate_current():
+            service.require_activation_token(token)
+            if manager.load_global_extras() != base_extras:
+                raise StateConflictError("Effects extras changed while preparing the DSP graph")
         native = runtime.dsp_runtime
         if native is None:
             raise RuntimeError("Native DSP runtime is unavailable")
@@ -5410,18 +5437,23 @@ async def _render_v2_recovery_targets(rate: int, overview: dict, extras_snapshot
             fingerprint = service.fingerprint_plan(plan)
             return tuple(_build_plan_target(
                 service, manager, plan, output_key=output_key, rate=rate,
-                hardware_ports=ports, fingerprint=fingerprint, extras_override=extras)
+                hardware_ports=ports, fingerprint=fingerprint,
+                extras_override=base_extras if extras is None else extras)
                 for extras in extras_snapshots)
 
         state, targets = await service.render_for_activation(
             render, preflight=native.preflight_rendered, output_key=output_key,
             channels=channels, hardware_ports=ports)
+        validate_current()
 
         def remember():
             service.remember_applied(state, output_key=output_key, channels=channels,
                                      hardware_ports=ports, sample_rate_hz=rate,
                                      fingerprint=targets[0].config.plan_fingerprint)
-        return tuple(replace(target, on_applied=remember) for target in targets)
+        return tuple(replace(target, on_applied=remember, validate_current=validate_current)
+                     for target in targets)
+    except StateConflictError:
+        raise
     except Exception as exc:
         logger.error("V2 output render failed; legacy fallback refused: %s", exc)
         native = runtime.dsp_runtime
@@ -5500,6 +5532,11 @@ async def _sync_v2_head_after_bank_assign() -> dict:
     content until the next unrelated edit.  Never raises: the assignment
     stays committed when the head cannot activate or the sync fails.
     """
+    async with _dsp_graph_write_lock():
+        return await _sync_v2_head_locked()
+
+
+async def _sync_v2_head_locked() -> dict:
     try:
         overview = await asyncio.to_thread(get_audio_output_overview)
         try:
@@ -5530,6 +5567,13 @@ async def _sync_v2_head_after_bank_assign() -> dict:
     except Exception as exc:
         logger.warning("Bank-assign live sync failed: %s", exc)
         return {"live_applied": False, "live_reason": "live-apply-failed"}
+
+
+async def _sync_v2_extras_runtime() -> None:
+    """Strict extras reconciliation, also on the last applied v2 recovery state."""
+    async with _dsp_graph_write_lock():
+        target, _ = await _render_effects_transition_targets(None, None)
+        await runtime.dsp_runtime.sync_rendered(target)
 
 
 def _create_autosub_release_adapter(*, service, output_key: str, channels: int):
@@ -5719,6 +5763,35 @@ async def _sync_plan_runtime(target, *, reason: str = "output-state-transition")
     await runtime.dsp_runtime.sync_rendered(target)
 
 
+def _refresh_output_state_transition(request) -> None:
+    """Re-render coordinator targets after configuration and graph ownership."""
+    v2 = request.output_state_transition
+    service = get_output_service()
+    if service.load()["revision"] != v2["expected_revision"]:
+        raise StateConflictError("Output state changed during transition prepare")
+    manager = _require_dsp_manager()
+    extras = manager.load_global_extras()
+    token = service.activation_token()
+    ports = list(v2["target"].config.hardware_ports)
+
+    def validate_current():
+        service.require_activation_token(token)
+        if manager.load_global_extras() != extras:
+            raise StateConflictError("Effects extras changed during transition prepare")
+
+    for key, document in (("target", v2["candidate_state"]),
+                          ("previous_target", v2["previous_state"])):
+        if key == "previous_target" and v2.get(key) is None:
+            continue
+        plan = service.compile_plan(document, output_key=v2["output_key"],
+                                    channels=v2["channels"], sample_rate_hz=request.target_rate)
+        target = _build_plan_target(
+            service, manager, plan, output_key=v2["output_key"], rate=request.target_rate,
+            hardware_ports=ports, fingerprint=service.fingerprint_plan(plan), extras_override=extras)
+        v2[key] = replace(target, validate_current=validate_current) if key == "target" else target
+    v2["fingerprint"] = v2["target"].config.plan_fingerprint
+
+
 def _output_state_topology(state: dict, mode: str, output_key: str, channels: int | None) -> dict:
     topology = derive_topology(mode, routing_for_device(state, mode, output_key, channels), channels=channels,
                                crossover_enabled=effective_crossover_enabled(state, mode, channels))
@@ -5814,7 +5887,7 @@ async def _adopt_av_sync_basis(latency: dict) -> None:
             or runtime.dsp_runtime is None):
         return
     from dsp.av_sync_service import adopt_latency_basis
-    async with _dsp_mutation_lock():
+    async with _dsp_mutation_lock(), _dsp_graph_write_lock():
         service = get_output_service()
         native = runtime.dsp_runtime
         config = native.snapshot().get('config') or {}
@@ -6388,6 +6461,10 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
                     "output_key": output_key,
                     "channels": channels,
                 }))
+        except StateConflictError as exc:
+            raise HTTPException(status_code=409, detail={
+                "code": "revision-conflict", "message": str(exc),
+                "revision": service.load()["revision"]}) from exc
         except PlaybackTransitionFailure as exc:
             cause = exc.__cause__
             while cause is not None:
@@ -6400,9 +6477,6 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
                 cause = cause.__cause__
             raise _transition_error_http(exc) from exc
         committed = service.load()
-        service.remember_applied(committed, output_key=output_key, channels=channels,
-                                 hardware_ports=list(ports), sample_rate_hz=target_rate,
-                                 fingerprint=new_fp)
         return {
             "status": "ok",
             "revision": committed["revision"],
@@ -6414,6 +6488,33 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
             "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
         }
 
+    rate_lock = measurement_sr_session.lock if measurement_sr_session is not None else nullcontext()
+    async with rate_lock, _dsp_graph_write_lock():
+        return await _apply_output_state_fast(
+            body, service=service, state=state, candidate=candidate, overview=overview,
+            output_key=output_key, channels=channels, target_rate=target_rate,
+            live_known=live_known, old_plan=old_plan, new_plan=new_plan,
+            old_fp=old_fp, new_fp=new_fp, expected_revision=expected_revision)
+
+
+async def _apply_output_state_fast(body, *, service, state, candidate, overview,
+                                   output_key, channels, target_rate, live_known,
+                                   old_plan, new_plan, old_fp, new_fp, expected_revision):
+    """Render, commit and reconcile one edit under graph-write ownership."""
+    current_overview = await asyncio.to_thread(get_audio_output_overview)
+    current_status = await asyncio.to_thread(get_samplerate_status)
+    current_rate = current_status.get("active_rate") or current_status.get("force_rate")
+    try:
+        current_device = _output_state_device(current_overview)
+    except HTTPException:
+        current_device = None
+    if (current_device != (output_key, channels) or current_rate != target_rate
+            or (current_overview.get("output_mode") or {}).get("hardware_playback_ports")
+            != (overview.get("output_mode") or {}).get("hardware_playback_ports")):
+        raise HTTPException(status_code=409, detail={
+            "code": "output-context-conflict", "message": "Output device or rate changed; retry the edit",
+            "revision": service.load()["revision"]})
+    rendered_extras = None
     # Stage render targets BEFORE committing: a candidate that compiles but
     # cannot render (unstable coefficients, unresolvable IR, missing ports)
     # must fail here with the last good head still live -- never as a
@@ -6426,14 +6527,15 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
             and (overview.get("output_mode") or {}).get("hardware_playback_ports")):
         ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
         manager = _require_dsp_manager()
+        rendered_extras = manager.load_global_extras()
         try:
             staged_new_target = _build_plan_target(
                 service, manager, new_plan, output_key=output_key,
-                rate=target_rate, hardware_ports=ports, fingerprint=new_fp)
+                rate=target_rate, hardware_ports=ports, fingerprint=new_fp, extras_override=rendered_extras)
             if old_plan is not None:
                 staged_old_target = _build_plan_target(
                     service, manager, old_plan, output_key=output_key,
-                    rate=target_rate, hardware_ports=ports, fingerprint=old_fp)
+                    rate=target_rate, hardware_ports=ports, fingerprint=old_fp, extras_override=rendered_extras)
         except (RuntimeError, ValueError) as exc:
             logger.warning("Output-state staging failed before commit (head unchanged): %s", exc)
             raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
@@ -6458,6 +6560,23 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
         raise HTTPException(status_code=423, detail=str(exc)) from exc
     except ValueError as exc:
         raise bad_request(exc)
+
+    token = service.activation_token()
+
+    def require_revision(expected_revision, expected_token):
+        if service.load()["revision"] != expected_revision:
+            raise StateConflictError("Output state changed during output-state activation")
+        service.require_activation_token(expected_token)
+        if rendered_extras is not None and manager.load_global_extras() != rendered_extras:
+            raise StateConflictError("Effects extras changed during output-state activation")
+
+    def require_current():
+        require_revision(committed["revision"], token)
+
+    if staged_new_target is not None:
+        staged_new_target = replace(staged_new_target, validate_current=require_current)
+    if staged_old_target is not None:
+        staged_old_target = replace(staged_old_target, validate_current=require_current)
 
     def draft_response(reason: str) -> dict:
         return {
@@ -6495,6 +6614,7 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
                                      fingerprint=new_fp)
         except BaseException as exc:
             try:
+                require_current()
                 service.revert(state, expected_revision=committed["revision"])
             except BaseException:
                 logger.exception("Output-state activation rollback failed")
@@ -6516,7 +6636,7 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
     try:
         await runtime.dsp_runtime.guarded_rebuild_rendered(
             staged_new_target, previous=staged_old_target, guard_db=staged_guard,
-            apply_candidate=lambda: None, apply_previous=lambda: None,
+            apply_candidate=require_current, apply_previous=require_current,
             settle_seconds=0.0)
         service.remember_applied(committed, output_key=output_key, channels=channels,
                                  hardware_ports=ports, sample_rate_hz=target_rate,
@@ -6524,9 +6644,13 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
     except BaseException as exc:
         rolled_back = False
         try:
-            service.revert(state, expected_revision=committed["revision"])
+            require_current()
+            reverted = service.revert(state, expected_revision=committed["revision"])
             rolled_back = True
-            await runtime.dsp_runtime.sync_rendered(staged_old_target, initial_output_gain_db=staged_guard)
+            reverted_token = service.activation_token()
+            rollback_target = replace(staged_old_target, validate_current=lambda: require_revision(
+                reverted["revision"], reverted_token))
+            await runtime.dsp_runtime.sync_rendered(rollback_target, initial_output_gain_db=staged_guard)
         except BaseException:
             logger.exception("Output-state fast-path rollback failed")
         logger.warning("Output-state live apply failed (rollback=%s): %s",

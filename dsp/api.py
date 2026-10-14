@@ -92,6 +92,7 @@ class DspApiDeps:
     # device, the topology the bank catalog lists. Absent in tests, where a bank
     # resolves against the stored bindings.
     routed_roles: Optional[Callable[[dict, str], Awaitable[list]]] = None
+    sync_v2_extras_runtime: Optional[Callable[[], Awaitable[None]]] = None
 
 
 @dataclass
@@ -477,6 +478,19 @@ async def _release_bank_slots(name: str, owner: dict) -> bool:
     return True
 
 
+async def _reconcile_extras_runtime(dsp_mgr) -> None:
+    """V2 slots own the graph; active.json is only for standalone legacy managers."""
+    if _output_state_service() is not None:
+        sync = _deps().sync_v2_extras_runtime
+        if sync is None:
+            raise RuntimeError("V2 extras reconciliation is unavailable; legacy fallback refused")
+        await sync()
+        return
+    active = dsp_mgr.get_active_preset()
+    if active and active not in dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
+        await _deps().load_dsp_preset(active, _locks_held=True)
+
+
 @router.get("/api/dsp/extras")
 async def get_dsp_extras():
     dsp_mgr = _deps().require_dsp_manager()
@@ -543,23 +557,26 @@ async def save_dsp_extras(request: Request):
                     result = await _deps().drain_worker(
                         dsp_mgr.apply_autogain_loudness_runtime, previous, extras
                     )
+                elif _output_state_service() is not None and dsp_mgr.runtime_transition_callback:
+                    result = await _deps().drain_worker(
+                        dsp_mgr.apply_autogain_loudness_runtime, previous, extras
+                    )
                 else:
                     result = await _deps().drain_worker(
                         dsp_mgr.apply_global_extras_to_all_presets, extras
                     )
-                active_preset = dsp_mgr.get_active_preset()
-                if (not result.get("runtime_applied") and active_preset
-                        and active_preset not in dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS):
-                    await _deps().load_dsp_preset(active_preset, _locks_held=True)
+                if not result.get("runtime_applied"):
+                    await _reconcile_extras_runtime(dsp_mgr)
             except (Exception, asyncio.CancelledError):
                 # The worker may have committed before raising or propagating
                 # cancellation. Keep both locks until recovery has completed.
                 async def recover_previous_extras():
-                    if dsp_mgr.load_global_extras() != previous:
+                    changed = dsp_mgr.load_global_extras() != previous
+                    if changed:
                         await _deps().drain_worker(dsp_mgr.save_global_extras, previous)
-                        active = dsp_mgr.get_active_preset()
-                        if active and active not in dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-                            await _deps().load_dsp_preset(active, _locks_held=True)
+                    if changed or _output_state_service() is not None:
+                        # Native rollback may fail after restoring JSON already.
+                        await _reconcile_extras_runtime(dsp_mgr)
                     await _deps().restore_volume_state(dsp_mgr, start)
 
                 recovery = asyncio.create_task(recover_previous_extras())

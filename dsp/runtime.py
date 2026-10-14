@@ -461,6 +461,7 @@ class PlannedSyncTarget:
     config: DSPRuntimeConfig
     text: str
     on_applied: Callable[[], None] | None = None
+    validate_current: Callable[[], None] | None = None
 
 class DSPRuntime:
     def __init__(self, manager: Any, *, binary: str | Path | None = None,
@@ -1391,7 +1392,9 @@ class DSPRuntime:
             try:
                 async with self._lock:
                     await self._run_sync(new.config, new.text,
-                                         initial_output_gain_db=guard)
+                                         initial_output_gain_db=guard,
+                                         **({"validate_current": new.validate_current}
+                                            if new.validate_current else {}))
                 if settle_seconds > 0:
                     await asyncio.sleep(settle_seconds)
                 if before_ramp:
@@ -1408,7 +1411,9 @@ class DSPRuntime:
                     rollback_applied = True
                     async with self._lock:
                         await self._run_sync(previous.config, previous.text,
-                                             initial_output_gain_db=guard)
+                                             initial_output_gain_db=guard,
+                                             **({"validate_current": previous.validate_current}
+                                                if previous.validate_current else {}))
                     if settle_seconds > 0:
                         await asyncio.sleep(settle_seconds)
                     if before_rollback_ramp:
@@ -1477,7 +1482,9 @@ class DSPRuntime:
         async with self._measurement_scope_lock:
             async with self._lock:
                 await self._run_sync(target.config, target.text,
-                                     initial_output_gain_db=initial_output_gain_db)
+                                     initial_output_gain_db=initial_output_gain_db,
+                                     **({"validate_current": target.validate_current}
+                                        if target.validate_current else {}))
                 if target.on_applied:
                     target.on_applied()
 
@@ -1501,7 +1508,8 @@ class DSPRuntime:
                         self._error = error
 
     async def _run_sync(self, config: DSPRuntimeConfig, text: str, *,
-                        initial_output_gain_db: float = 0.0) -> None:
+                        initial_output_gain_db: float = 0.0,
+                        validate_current: Callable[[], None] | None = None) -> None:
         """Preflight and commit one (config, text) pair; caller holds _lock."""
         if not self.binary.is_file():
             self._error = f"Native DSP binary is not available: {self.binary}"
@@ -1513,6 +1521,12 @@ class DSPRuntime:
             text += f'input_latency {input_ms:.9g}\n'
         await self._stop_orphan_helpers()
         config_name = await self._preflight_text(text)
+        try:
+            if validate_current:
+                validate_current()
+        except BaseException:
+            Path(config_name).unlink(missing_ok=True)
+            raise
 
         if self._can_hot_update(config):
             try:

@@ -347,15 +347,23 @@ class FinalizeV2Tests(unittest.TestCase):
         with mock.patch.object(runtime, "_deps") as deps:
             deps.coordinator_reconcile_subwoofer_links_only = sub
             deps.playback_graph_diagnosis = AsyncMock(return_value=dict(complete))
+            deps.get_output_service = lambda: main.get_output_service()
             result = asyncio.run(runtime.finalize_output_mode_graph_after_gate_open(request))
         return result, sub
 
     def test_finalize_skips_legacy_sub_reconcile_for_v2(self):
-        request = v2_request({"candidate_state": {}, "expected_revision": 1,
-                              "fingerprint": "fp", "target": {"t": 1},
-                              "output_key": "A", "channels": 4})
-        request = replace(request, output_mode_target=v2_overview())
-        result, sub = self.finalize(request)
+        with tempfile.TemporaryDirectory() as directory:
+            manager = make_manager(directory)
+            service = make_service(directory, manager)
+            base = seed_sub_state(service)
+            candidate = set_bank_preset(base, "stereo-sub", "sub1", preset="Room")
+            target = plan_target(service, manager, candidate)
+            request = v2_request(v2_payload(service, candidate, base, target=target))
+            service.commit(candidate, expected_revision=1)
+            with mock.patch.object(main, "get_output_service", return_value=service):
+                result, sub = self.finalize(request)
+            self.assertEqual(service.load_applied(
+                output_key="A", channels=4, hardware_ports=list(target.config.hardware_ports)), service.load())
         self.assertTrue(result["graph_complete"])
         sub.assert_not_awaited()
 
@@ -425,7 +433,11 @@ class RollbackV2Tests(unittest.TestCase):
                                      previous_target=self.previous_target))
         self.assertEqual(self.service.load()["revision"], 3)
         self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]["preset"], "Neutral")
-        fake.sync_rendered.assert_awaited_once_with(self.previous_target)
+        fake.sync_rendered.assert_awaited_once()
+        restored = fake.sync_rendered.await_args.args[0]
+        self.assertEqual(restored.config, self.previous_target.config)
+        self.assertEqual(restored.text, self.previous_target.text)
+        restored.validate_current()
 
     def test_concurrent_winner_skips_rollback(self):
         self.service.commit(self.candidate, expected_revision=1)
@@ -444,7 +456,11 @@ class RollbackV2Tests(unittest.TestCase):
             self.rollback(v2_payload(self.service, self.candidate, self.base,
                                      previous_target=self.previous_target))
         self.assertEqual(self.service.load()["revision"], 1)
-        fake.sync_rendered.assert_awaited_once_with(self.previous_target)
+        fake.sync_rendered.assert_awaited_once()
+        restored = fake.sync_rendered.await_args.args[0]
+        self.assertEqual(restored.config, self.previous_target.config)
+        self.assertEqual(restored.text, self.previous_target.text)
+        restored.validate_current()
 
     def test_rollback_without_service_fails(self):
         with mock.patch.object(main, "get_output_service", return_value=None):
@@ -820,7 +836,11 @@ class LegacyFilesUntouchedTests(unittest.TestCase):
                                       previous_target=self.previous_target)),
                 snapshot={}))
         self.assertEqual(self.service.load()["revision"], 3)
-        fake.sync_rendered.assert_awaited_once_with(self.previous_target)
+        fake.sync_rendered.assert_awaited_once()
+        restored = fake.sync_rendered.await_args.args[0]
+        self.assertEqual(restored.config, self.previous_target.config)
+        self.assertEqual(restored.text, self.previous_target.text)
+        restored.validate_current()
         self.assertEqual(self.legacy_bytes(), before)
 
 

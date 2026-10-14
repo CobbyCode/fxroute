@@ -36,6 +36,7 @@ class FxrouteTransitionRuntime(
         self._staged_qobuz_track_id: int | None = None
         self._qobuz_stream_rate: int | None = None
         self._configuration_locks_held = False
+        self._graph_write_lock_held = False
 
     @property
     def _player(self) -> Any:

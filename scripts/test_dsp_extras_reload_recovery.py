@@ -17,6 +17,12 @@ from dsp.manager import DSPManager
 
 
 class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Standalone legacy manager fixture; v2 recovery has separate real-state tests.
+        patch = mock.patch.object(dsp_api, "_output_state_service", return_value=None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
     async def test_cancelled_worker_after_persist_restores_previous_runtime(self):
         with tempfile.TemporaryDirectory() as home:
             manager = DSPManager(home=Path(home))
