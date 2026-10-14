@@ -26,9 +26,10 @@ class StdinLiveStateTests(unittest.TestCase):
                                 preset_a="Neutral", preset_b="Direct", active_side="B")
         saved_bank = copy.deepcopy(state["modes"]["stereo"]["banks"]["global"])
         selection = {"mode": "app-playback"}
+        rate_policy = {"mode": "auto", "rate": None}
 
         def http(method, path, payload=None):
-            nonlocal state, selection
+            nonlocal state, selection, rate_policy
             if method == "GET":
                 if path.endswith("/output-state"):
                     catalog = copy.deepcopy(state)
@@ -41,6 +42,8 @@ class StdinLiveStateTests(unittest.TestCase):
                     return {"volume": 27, "playing": False, "current_file": None}
                 if path.endswith("/outputs"):
                     return {"selected_output": {"name": "hw", "active_rate": 44100}}
+                if path.endswith("/samplerate"):
+                    return {"policy": dict(rate_policy)}
                 return {"extras": {}}
             if path.endswith("/source-mode"):
                 target = {"mode": payload["mode"]}
@@ -53,6 +56,8 @@ class StdinLiveStateTests(unittest.TestCase):
                     state = remember_mode(switch_mode(state, mode), selection)
                 else:
                     state = set_bank_preset(state, mode, mutation.pop("bank_id"), **mutation)
+            elif path.endswith("/samplerate"):
+                rate_policy = dict(payload)
             return {"status": "ok"}
 
         with mock.patch.object(live, "_http", side_effect=http), \
@@ -63,6 +68,7 @@ class StdinLiveStateTests(unittest.TestCase):
                 live.StdinLiveTests.setUpClass()
                 self.assertEqual(state["active_mode"], "stereo")
                 self.assertEqual(state["modes"]["stereo"]["banks"]["global"]["preset"], "Neutral")
+                self.assertEqual(rate_policy, {"mode": "fixed", "rate": 44100})
             finally:
                 live.StdinLiveTests.doClassCleanups()
             self.assertEqual(live.StdinLiveTests.tearDown_exceptions, [])
@@ -70,6 +76,7 @@ class StdinLiveStateTests(unittest.TestCase):
         self.assertEqual(state["active_mode"], "stereo")
         self.assertEqual(state["input_modes"], {"app-playback": "stereo", "stdin-input": "surround"})
         self.assertEqual(state["modes"]["stereo"]["banks"]["global"], saved_bank)
+        self.assertEqual(rate_policy, {"mode": "auto", "rate": None})
 
     def test_cleanup_restores_extras_through_the_write_contract(self):
         directory = tempfile.TemporaryDirectory()

@@ -7,6 +7,10 @@ installed ``fxroute`` CLI, Stereo mode with crossover disabled)::
 
     FXROUTE_STDIN_LIVE=1 python3 scripts/test_stdin_audio_live.py
 
+Temporarily fixes the graph rate so writer-native rate transitions cannot
+replace the prelinked capture taps. Restores the original rate policy.
+This proves PCM conversion/routing, not Auto-policy rate following.
+
 Representative matrix (no exhaustive channel x format x rate product):
 
 - 1ch/s16le/48000 mono (duplicated to L/R)
@@ -261,7 +265,13 @@ class StdinLiveTests(unittest.TestCase):
             "STDIN channel-isolation acceptance requires Stereo with crossover disabled")
         cls.saved_bank = dict(state["modes"][cls.saved_mode]["banks"]["global"])
         cls.saved_stdin_mode = None
+        cls.saved_rate_policy = _http("GET", "/api/audio/samplerate")["policy"]
         cls.addClassCleanup(cls._restore_test_state)
+        output = cls.saved_outputs.get("selected_output") or cls.saved_outputs.get("current_output") or {}
+        rate = output.get("active_rate")
+        assert isinstance(rate, int) and rate > 0, "selected output rate is unavailable"
+        _http("POST", "/api/audio/samplerate", {"mode": "fixed", "rate": rate})
+        cls.graph_rate = rate
         _http("POST", "/api/audio/source-mode", {"mode": "stdin-input"})
         # Each source restores its own output mode on selection. The clean
         # Stereo fixture must therefore be staged after selecting STDIN.
@@ -271,9 +281,6 @@ class StdinLiveTests(unittest.TestCase):
         _set_bank_preset("global", mode=cls.saved_mode,
                          preset_a="Neutral", preset_b=None, active_side="A")
         cls.dsp_left, cls.dsp_right, cls.mon_left, cls.mon_right = _main_dsp_outputs(sink)
-        outputs = _http("GET", "/api/audio/outputs")
-        rate = (outputs.get("selected_output") or {}).get("active_rate")
-        cls.graph_rate = int(rate) if rate else 48000
 
     @classmethod
     def _restore_test_state(cls):
@@ -315,6 +322,12 @@ class StdinLiveTests(unittest.TestCase):
             _http("POST", "/api/audio/source-mode", payload)
         except Exception as exc:
             errors.append(f"source restore: {exc}")
+        try:
+            policy = getattr(cls, "saved_rate_policy", None)
+            if policy is not None:
+                _http("POST", "/api/audio/samplerate", policy)
+        except Exception as exc:
+            errors.append(f"sample-rate policy restore: {exc}")
         leftovers = subprocess.run(
             ["pw-link", "-l"], capture_output=True, text=True, timeout=10,
         ).stdout
