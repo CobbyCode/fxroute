@@ -504,6 +504,13 @@ class SpeakerReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.targets = []
 
         class FakeRuntime:
+            active = True
+            last_error = None
+
+            async def fail_closed(inner_self, error, *, output_key):
+                inner_self.active = False
+                inner_self.last_error = error
+
             async def preflight_rendered(inner_self, target):
                 pass
 
@@ -543,6 +550,18 @@ class SpeakerReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await self.build_adapter()(RESTORE_RATE)
         self.assertEqual(self.targets, [])
+        self.assertFalse(self.runtime.active)
+        self.assertIn("No renderable v2", self.runtime.last_error)
+
+    async def test_both_native_preflights_failing_stop_release_graph(self):
+        await self.build_adapter()(RESTORE_RATE)
+        async def reject(_target):
+            raise RuntimeError("Native preflight refused")
+        self.runtime.preflight_rendered = reject
+        with self.assertRaises(RuntimeError):
+            await self.build_adapter()(RESTORE_RATE)
+        self.assertFalse(self.runtime.active)
+        self.assertIn("Native preflight refused", self.runtime.last_error)
 
 
 if __name__ == "__main__":

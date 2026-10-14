@@ -595,13 +595,17 @@ def create_speaker_release_adapter(
                 sample_rate_hz=restore_rate_hz, extras_override=plan["global"]["extras"])
             return (PlannedSyncTarget(config, text),)
 
-        state, (target,) = await service.render_for_activation(
-            render, preflight=native_runtime.preflight_rendered, output_key=output_key,
-            channels=channels, hardware_ports=ports)
-        await native_runtime.sync_rendered(target)
-        service.remember_applied(state, output_key=output_key, channels=channels,
-                                 hardware_ports=ports, sample_rate_hz=restore_rate_hz,
-                                 fingerprint=target.config.plan_fingerprint)
+        try:
+            state, (target,) = await service.render_for_activation(
+                render, preflight=native_runtime.preflight_rendered, output_key=output_key,
+                channels=channels, hardware_ports=ports)
+            await native_runtime.sync_rendered(target)
+            service.remember_applied(state, output_key=output_key, channels=channels,
+                                     hardware_ports=ports, sample_rate_hz=restore_rate_hz,
+                                     fingerprint=target.config.plan_fingerprint)
+        except Exception as exc:
+            await native_runtime.fail_closed(str(exc), output_key=output_key)
+            raise
         return {"revision": state["revision"], "plan_fingerprint": target.config.plan_fingerprint,
                 "sample_rate_hz": restore_rate_hz}
 

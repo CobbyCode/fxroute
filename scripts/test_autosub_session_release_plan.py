@@ -249,6 +249,13 @@ class ReleaseAdapterRenderTests(unittest.IsolatedAsyncioTestCase):
         self.targets = []
 
         class FakeRuntime:
+            active = True
+            last_error = None
+
+            async def fail_closed(inner_self, error, *, output_key):
+                inner_self.active = False
+                inner_self.last_error = error
+
             async def preflight_rendered(inner_self, target):
                 pass
 
@@ -304,6 +311,24 @@ class ReleaseAdapterRenderTests(unittest.IsolatedAsyncioTestCase):
         await adapter(RESTORE_RATE)
         self.assertEqual([row["name"] for row in self.targets[-1].config.layout],
                          ["main_l", "main_r", "sub1"])
+
+    async def test_exhausted_release_recovery_stops_measurement_graph_and_reports_error(self):
+        self.store.path.unlink()
+        with self.assertRaises(RuntimeError):
+            await self.build_adapter()(RESTORE_RATE)
+        self.assertFalse(self.runtime.active)
+        self.assertIn("No renderable v2", self.runtime.last_error)
+        self.assertEqual(self.targets, [])
+
+    async def test_both_native_preflights_failing_stop_release_graph(self):
+        await self.build_adapter()(RESTORE_RATE)
+        async def reject(_target):
+            raise RuntimeError("Native preflight refused")
+        self.runtime.preflight_rendered = reject
+        with self.assertRaises(RuntimeError):
+            await self.build_adapter()(RESTORE_RATE)
+        self.assertFalse(self.runtime.active)
+        self.assertIn("Native preflight refused", self.runtime.last_error)
 
     async def test_adapter_validates_rate_context_and_runtime(self):
         adapter = self.build_adapter()
