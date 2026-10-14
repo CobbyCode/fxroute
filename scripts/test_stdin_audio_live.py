@@ -153,6 +153,15 @@ def _set_bank_preset(bank_id: str, live_applied: bool | None = None,
     return result
 
 
+def _switch_output_mode(mode: str) -> dict:
+    """Switch the selected source's output mode through its revisioned API."""
+    state = _output_state()
+    return _http("POST", "/api/audio/output-state/apply", {
+        "expected_revision": state["revision"],
+        "mutation": {"kind": "switch_mode", "mode": mode},
+    })
+
+
 def _sink_volume_percent(sink_name: str) -> int:
     """Read back the live sink volume (the canonical master actuator)."""
     import re
@@ -234,14 +243,13 @@ class StdinLiveTests(unittest.TestCase):
         cls.saved_source = _http("GET", "/api/audio/source-mode")
         cls.saved_extras = _http("GET", "/api/dsp/extras")
         cls.saved_status = _http("GET", "/api/status")
+        assert not cls.saved_status.get("playing") and not cls.saved_status.get("current_file"), (
+            "STDIN acceptance requires fully idle playback")
         cls.saved_outputs = _http("GET", "/api/audio/outputs")
         sink = (cls.saved_outputs.get("selected_output") or {}).get("name") or (
             cls.saved_outputs.get("current_output") or {}).get("name")
         assert sink, "no selected audio output"
         cls.sink_name = sink
-        cls.dsp_left, cls.dsp_right, cls.mon_left, cls.mon_right = _main_dsp_outputs(sink)
-        rate = (cls.saved_outputs.get("selected_output") or {}).get("active_rate")
-        cls.graph_rate = int(rate) if rate else 48000
         # Channel isolation is asserted against a clean chain: the box may
         # render a crosstalk-correcting convolver that legitimately bleeds
         # test tones across channels. The engine renders bank assignments,
@@ -252,9 +260,20 @@ class StdinLiveTests(unittest.TestCase):
         assert cls.saved_mode == "stereo" and not state["modes"]["stereo"]["crossover_enabled"], (
             "STDIN channel-isolation acceptance requires Stereo with crossover disabled")
         cls.saved_bank = dict(state["modes"][cls.saved_mode]["banks"]["global"])
+        cls.saved_stdin_mode = None
         cls.addClassCleanup(cls._restore_test_state)
-        _set_bank_preset("global", preset_a="Neutral", preset_b=None, active_side="A")
         _http("POST", "/api/audio/source-mode", {"mode": "stdin-input"})
+        # Each source restores its own output mode on selection. The clean
+        # Stereo fixture must therefore be staged after selecting STDIN.
+        cls.saved_stdin_mode = _output_state()["active_mode"]
+        if cls.saved_stdin_mode != cls.saved_mode:
+            _switch_output_mode(cls.saved_mode)
+        _set_bank_preset("global", mode=cls.saved_mode,
+                         preset_a="Neutral", preset_b=None, active_side="A")
+        cls.dsp_left, cls.dsp_right, cls.mon_left, cls.mon_right = _main_dsp_outputs(sink)
+        outputs = _http("GET", "/api/audio/outputs")
+        rate = (outputs.get("selected_output") or {}).get("active_rate")
+        cls.graph_rate = int(rate) if rate else 48000
 
     @classmethod
     def _restore_test_state(cls):
@@ -281,6 +300,12 @@ class StdinLiveTests(unittest.TestCase):
                 _http("POST", "/api/volume", {"volume": int(volume)})
         except Exception as exc:
             errors.append(f"volume restore: {exc}")
+        try:
+            stdin_mode = getattr(cls, "saved_stdin_mode", None)
+            if stdin_mode is not None and _output_state()["active_mode"] != stdin_mode:
+                _switch_output_mode(stdin_mode)
+        except Exception as exc:
+            errors.append(f"STDIN output-mode restore: {exc}")
         try:
             mode = cls.saved_source.get("mode") or "app-playback"
             payload = {"mode": mode}

@@ -12,12 +12,65 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_stdin_audio_live as live
-from audio.output_state import default_output_state, set_bank_preset
+from audio.output_state import default_output_state, set_bank_preset, switch_mode
+from audio.input_output_mode import remember_mode, restore_mode
 from dsp.manager import DSPManager
 from dsp.effects_extras import merge_effects_extras_from_json
 
 
 class StdinLiveStateTests(unittest.TestCase):
+    def test_setup_and_cleanup_preserve_the_stdin_output_mode_binding(self):
+        state = default_output_state()
+        state["input_modes"] = {"app-playback": "stereo", "stdin-input": "surround"}
+        state = set_bank_preset(state, "stereo", "global",
+                                preset_a="Neutral", preset_b="Direct", active_side="B")
+        saved_bank = copy.deepcopy(state["modes"]["stereo"]["banks"]["global"])
+        selection = {"mode": "app-playback"}
+
+        def http(method, path, payload=None):
+            nonlocal state, selection
+            if method == "GET":
+                if path.endswith("/output-state"):
+                    catalog = copy.deepcopy(state)
+                    bank = catalog["modes"]["stereo"]["banks"]["global"]
+                    bank["active_side"] = "B" if bank["preset"] == "Direct" else "A"
+                    return catalog
+                if path.endswith("/source-mode"):
+                    return dict(selection)
+                if path == "/api/status":
+                    return {"volume": 27, "playing": False, "current_file": None}
+                if path.endswith("/outputs"):
+                    return {"selected_output": {"name": "hw", "active_rate": 44100}}
+                return {"extras": {}}
+            if path.endswith("/source-mode"):
+                target = {"mode": payload["mode"]}
+                state = restore_mode(state, selection, target)
+                selection = target
+            elif path.endswith("/output-state/apply"):
+                mutation = dict(payload["mutation"])
+                kind, mode = mutation.pop("kind"), mutation.pop("mode")
+                if kind == "switch_mode":
+                    state = remember_mode(switch_mode(state, mode), selection)
+                else:
+                    state = set_bank_preset(state, mode, mutation.pop("bank_id"), **mutation)
+            return {"status": "ok"}
+
+        with mock.patch.object(live, "_http", side_effect=http), \
+                mock.patch.object(live.shutil, "which", return_value="/bin/test"), \
+                mock.patch.object(live, "_main_dsp_outputs", return_value=("out1", "out2", "mon1", "mon2")), \
+                mock.patch.object(live.subprocess, "run", return_value=SimpleNamespace(stdout="")):
+            try:
+                live.StdinLiveTests.setUpClass()
+                self.assertEqual(state["active_mode"], "stereo")
+                self.assertEqual(state["modes"]["stereo"]["banks"]["global"]["preset"], "Neutral")
+            finally:
+                live.StdinLiveTests.doClassCleanups()
+            self.assertEqual(live.StdinLiveTests.tearDown_exceptions, [])
+        self.assertEqual(selection["mode"], "app-playback")
+        self.assertEqual(state["active_mode"], "stereo")
+        self.assertEqual(state["input_modes"], {"app-playback": "stereo", "stdin-input": "surround"})
+        self.assertEqual(state["modes"]["stereo"]["banks"]["global"], saved_bank)
+
     def test_cleanup_restores_extras_through_the_write_contract(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -39,6 +92,7 @@ class StdinLiveStateTests(unittest.TestCase):
             return {"status": "ok"}
 
         with mock.patch.multiple(live.StdinLiveTests, create=True, saved_mode="stereo",
+                saved_stdin_mode=None,
                 saved_bank={"preset": "Neutral", "preset_a": "Neutral", "preset_b": None,
                             "active_side": "A"}, saved_extras={"extras": original},
                 saved_status={"volume": 27}, saved_source={"mode": "app-playback"}), \
@@ -72,6 +126,7 @@ class StdinLiveStateTests(unittest.TestCase):
                     return {"status": "ok"}
 
                 with mock.patch.multiple(live.StdinLiveTests, create=True, saved_mode="stereo",
+                        saved_stdin_mode=None,
                         saved_bank=saved, saved_extras={"extras": {}}, saved_status={"volume": 27},
                         saved_source={"mode": "app-playback"}), \
                         mock.patch.object(live, "_http", side_effect=http), \
