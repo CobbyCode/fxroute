@@ -127,6 +127,8 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("control volume -30\n", self.engine._config_text)
         self.assertIn("param output_gain_db 30\n", self.engine._config_text)
         self.assertEqual(self.engine.snapshot()["config"]["layout"][2]["gain_db"], -7)
+        self.assertEqual(self.engine.snapshot()["config"]["plan_fingerprint"], self.service.fingerprint(
+            self.service.load(), output_key="A", channels=4, sample_rate_hz=48000))
 
     async def test_background_render_cannot_activate_after_a_newer_output_edit(self):
         deps = sync_support._FakeDeps()

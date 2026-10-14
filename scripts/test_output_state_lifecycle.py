@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +52,7 @@ def make_service(directory, manager):
         preset_loader=manager.read_preset,
         resolve_ir=lambda _bank, kernel: (_ for _ in ()).throw(AssertionError(kernel)),
         measurement_active=lambda: False,
+        global_extras_loader=manager.load_global_extras,
     ))
 
 
@@ -296,7 +298,7 @@ class EffectsTransitionTargetTests(unittest.TestCase):
             targets = asyncio.run(main._render_effects_transition_targets(previous, candidate))
         self.assertIsNotNone(targets)
         new_target, old_target = targets
-        self.assertEqual(new_target.config.plan_fingerprint, old_target.config.plan_fingerprint)
+        self.assertNotEqual(new_target.config.plan_fingerprint, old_target.config.plan_fingerprint)
         self.assertIn("sc_limiter", new_target.text)
         self.assertNotIn("sc_limiter", old_target.text)
 
@@ -316,7 +318,8 @@ def lifecycle_context(service, manager, runtime):
     stack.enter_context(mock.patch.multiple(
         main,
         get_output_service=mock.MagicMock(return_value=service),
-        measurement_sr_session=mock.MagicMock(has_active_jobs=False),
+        measurement_sr_session=SimpleNamespace(has_active_jobs=False, entry_in_progress=False,
+                                              lock=asyncio.Lock()),
         get_audio_output_overview=mock.MagicMock(return_value={
             "selected_output": {"key": "A", "channels": 4},
             "output_mode": {"effective_output_key": "A", "effective_output_channels": 4,

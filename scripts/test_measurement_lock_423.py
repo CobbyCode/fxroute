@@ -107,7 +107,8 @@ class LateMeasurementOwnerTests(unittest.IsolatedAsyncioTestCase):
         rig = Rig()
         rig.setUp()
         self.addCleanup(rig.doCleanups)
-        owner = SimpleNamespace(has_active_jobs=False)
+        owner = SimpleNamespace(has_active_jobs=False, entry_in_progress=False,
+                                lock=asyncio.Lock())
         service = OutputService(replace(
             rig.service._deps, measurement_active=lambda: owner.has_active_jobs))
         overview_entered = threading.Event()

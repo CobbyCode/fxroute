@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import asyncio
+import copy
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -56,6 +57,7 @@ class OutputServiceDeps:
     resolve_ir: Callable[[str, str], dict]
     measurement_active: Callable[[], bool]
     legacy_snapshot_loader: Callable[[], dict] | None = None
+    global_extras_loader: Callable[[], dict] | None = None
 
 
 class OutputService:
@@ -206,11 +208,18 @@ class OutputService:
         return self.commit(candidate, expected_revision=expected_revision)
 
     def compile_plan(self, state: dict, *, output_key: str, channels: int,
-                     sample_rate_hz: int) -> dict:
+                     sample_rate_hz: int, extras_override: dict | None = None) -> dict:
         """Compile the effective processing plan for one device and rate."""
-        return compile_processing_plan(
+        plan = compile_processing_plan(
             state, output_key=output_key, channels=channels,
             sample_rate_hz=sample_rate_hz, preset_loader=self._deps.preset_loader)
+        if not plan["global"]["bypass"]:
+            extras = extras_override
+            if extras is None and self._deps.global_extras_loader is not None:
+                extras = self._deps.global_extras_loader()
+            if extras is not None:
+                plan["global"]["extras"] = copy.deepcopy(extras)
+        return plan
 
     def compile_alignment_plan(self, state: dict, *, output_key: str, channels: int,
                                sample_rate_hz: int) -> dict:

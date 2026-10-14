@@ -16,6 +16,7 @@ import os
 import tempfile
 import zipfile
 from dataclasses import dataclass
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
@@ -93,6 +94,9 @@ class DspApiDeps:
     # resolves against the stored bindings.
     routed_roles: Optional[Callable[[dict, str], Awaitable[list]]] = None
     sync_v2_extras_runtime: Optional[Callable[[], Awaitable[None]]] = None
+    # Reserves the job-free graph against measurement registration. Yields
+    # whether the caller holds the sample-rate lock for a nested preset load.
+    external_mutation_scope: Optional[Callable[[], Any]] = None
 
 
 @dataclass
@@ -118,6 +122,11 @@ def _deps() -> DspApiDeps:
     if _runtime.deps is None:
         raise RuntimeError("DSP API runtime is not configured")
     return _runtime.deps
+
+
+def _external_mutation_scope():
+    factory = _deps().external_mutation_scope
+    return factory() if factory is not None else nullcontext(False)
 
 
 def _parse_effects_extras_from_json(body: dict) -> dict:
@@ -210,7 +219,9 @@ async def _finish_dsp_preset_mutation(
     if binding is not None and not _in_stereo_global(binding["mode"], binding["bank_id"]):
         load_after_create = False
     if load_after_create:
-        await _deps().load_dsp_preset(preset_name)
+        async with _external_mutation_scope() as rate_locked:
+            await _deps().load_dsp_preset(
+                preset_name, **({"_rate_lock_held": True} if rate_locked else {}))
     status = dsp_mgr.get_status()
     await _deps().broadcast({"type": "dsp", "data": status})
     if load_after_create or not refresh_only_when_loaded:
@@ -510,105 +521,114 @@ async def save_dsp_extras(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    # A Loudness enabled-state transition owns the canonical volume write
-    # lock from the live read through the Loudness mutation and the final
-    # master=100, so a parallel /api/volume or streaming volume request
-    # can never interleave.  All transferred values are (re)read under the
-    # lock. Other extras updates also hold it until runtime reconciliation
-    # completes so no newer preset/volume mutation can pass the rollback.
-    #
-    # The full read-modify-write (extras read, JSON merge, resolution, manager
-    # mutation/persistence) runs under the central DSP mutation
-    # ownership so a parallel coordinator/volume/SPL mutation can never
-    # interleave between the read and the write.  Lock order: canonical
-    # volume write lock first, then DSP mutation lock.
-    canonical_lock = _deps().canonical_volume_write_lock()
-    await canonical_lock.acquire()
+    # Lock order is session (job-free graph) outermost, then canonical
+    # volume write lock, then DSP mutation lock. Measurement entry uses the
+    # same session-first order, so an external writer never holds inner
+    # locks while waiting for the session. Unchanged and invalid requests
+    # return before reserving the graph, so idle no-ops stay allowed.
     try:
-        async with _deps().dsp_mutation_lock():
-            previous = dsp_mgr.load_global_extras()
-            try:
-                parsed = _merge_effects_extras_from_json(previous, body)
-                extras = _resolve_effects_extras(parsed)
-            except (ValueError, TypeError, OverflowError) as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"code": "invalid_effects_extras", "message": str(exc)},
-                ) from exc
-            start = await _deps().volume_state_for_manager(dsp_mgr)
-            if extras == previous:
-                logger.info("Ignored unchanged effects extras update")
-                return {
-                    "status": "ok",
-                    "extras": extras,
-                    "updated_presets": 0,
-                    "skipped_presets": [],
-                }
-            runtime_strength_change = _is_pure_loudness_strength_change(previous, extras)
-            runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
-                previous, extras
-            )
-            try:
-                if runtime_strength_change:
-                    result = await _deps().drain_worker(
-                        dsp_mgr.apply_loudness_strength_runtime, previous, extras
-                    )
-                elif runtime_autogain_loudness_change:
-                    result = await _deps().drain_worker(
-                        dsp_mgr.apply_autogain_loudness_runtime, previous, extras
-                    )
-                elif _output_state_service() is not None and dsp_mgr.runtime_transition_callback:
-                    result = await _deps().drain_worker(
-                        dsp_mgr.apply_autogain_loudness_runtime, previous, extras
-                    )
-                else:
-                    result = await _deps().drain_worker(
-                        dsp_mgr.apply_global_extras_to_all_presets, extras
-                    )
-                if not result.get("runtime_applied"):
-                    await _reconcile_extras_runtime(dsp_mgr)
-            except (Exception, asyncio.CancelledError):
-                # The worker may have committed before raising or propagating
-                # cancellation. Keep both locks until recovery has completed.
-                async def recover_previous_extras():
-                    changed = dsp_mgr.load_global_extras() != previous
-                    if changed:
-                        await _deps().drain_worker(dsp_mgr.save_global_extras, previous)
-                    if changed or _output_state_service() is not None:
-                        # Native rollback may fail after restoring JSON already.
-                        await _reconcile_extras_runtime(dsp_mgr)
-                    await _deps().restore_volume_state(dsp_mgr, start)
-
-                recovery = asyncio.create_task(recover_previous_extras())
+        optimistic_previous = dsp_mgr.load_global_extras()
+        optimistic_parsed = _merge_effects_extras_from_json(optimistic_previous, body)
+        optimistic_extras = _resolve_effects_extras(optimistic_parsed)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_effects_extras", "message": str(exc)},
+        ) from exc
+    if optimistic_extras == optimistic_previous:
+        logger.info("Ignored unchanged effects extras update")
+        return {
+            "status": "ok",
+            "extras": optimistic_extras,
+            "updated_presets": 0,
+            "skipped_presets": [],
+        }
+    async with _external_mutation_scope():
+        canonical_lock = _deps().canonical_volume_write_lock()
+        await canonical_lock.acquire()
+        try:
+            async with _deps().dsp_mutation_lock():
+                previous = dsp_mgr.load_global_extras()
                 try:
-                    while not recovery.done():
-                        try:
-                            await asyncio.shield(recovery)
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception:
-                            break
-                    recovery.result()
+                    parsed = _merge_effects_extras_from_json(previous, body)
+                    extras = _resolve_effects_extras(parsed)
+                except (ValueError, TypeError, OverflowError) as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={"code": "invalid_effects_extras", "message": str(exc)},
+                    ) from exc
+                if extras == previous:
+                    logger.info("Ignored unchanged effects extras update")
+                    return {
+                        "status": "ok",
+                        "extras": extras,
+                        "updated_presets": 0,
+                        "skipped_presets": [],
+                    }
+                runtime_strength_change = _is_pure_loudness_strength_change(previous, extras)
+                runtime_autogain_loudness_change = _is_runtime_autogain_loudness_change(
+                    previous, extras
+                )
+                start = await _deps().volume_state_for_manager(dsp_mgr)
+                try:
+                    if runtime_strength_change:
+                        result = await _deps().drain_worker(
+                            dsp_mgr.apply_loudness_strength_runtime, previous, extras
+                        )
+                    elif runtime_autogain_loudness_change:
+                        result = await _deps().drain_worker(
+                            dsp_mgr.apply_autogain_loudness_runtime, previous, extras
+                        )
+                    elif _output_state_service() is not None and dsp_mgr.runtime_transition_callback:
+                        result = await _deps().drain_worker(
+                            dsp_mgr.apply_autogain_loudness_runtime, previous, extras
+                        )
+                    else:
+                        result = await _deps().drain_worker(
+                            dsp_mgr.apply_global_extras_to_all_presets, extras
+                        )
+                    if not result.get("runtime_applied"):
+                        await _reconcile_extras_runtime(dsp_mgr)
                 except (Exception, asyncio.CancelledError):
-                    logger.exception("Failed to recover previous extras after DSP update failure")
-                    dsp_runtime = _deps().get_dsp_runtime()
-                    if dsp_runtime is not None:
-                        stop = asyncio.create_task(dsp_runtime.stop())
-                        try:
-                            while not stop.done():
-                                try:
-                                    await asyncio.shield(stop)
-                                except asyncio.CancelledError:
-                                    pass
-                                except Exception:
-                                    break
-                            stop.result()
-                        except (Exception, asyncio.CancelledError):
-                            logger.exception("Failed to stop uncertain DSP runtime after extras recovery failure")
+                    # Keep graph ownership until recovery has completed.
+                    async def recover_previous_extras():
+                        changed = dsp_mgr.load_global_extras() != previous
+                        if changed:
+                            await _deps().drain_worker(dsp_mgr.save_global_extras, previous)
+                        if changed or _output_state_service() is not None:
+                            await _reconcile_extras_runtime(dsp_mgr)
+                        await _deps().restore_volume_state(dsp_mgr, start)
+
+                    recovery = asyncio.create_task(recover_previous_extras())
+                    try:
+                        while not recovery.done():
+                            try:
+                                await asyncio.shield(recovery)
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception:
+                                break
+                        recovery.result()
+                    except (Exception, asyncio.CancelledError):
+                        logger.exception("Failed to recover previous extras after DSP update failure")
+                        dsp_runtime = _deps().get_dsp_runtime()
+                        if dsp_runtime is not None:
+                            stop = asyncio.create_task(dsp_runtime.stop())
+                            try:
+                                while not stop.done():
+                                    try:
+                                        await asyncio.shield(stop)
+                                    except asyncio.CancelledError:
+                                        pass
+                                    except Exception:
+                                        break
+                                stop.result()
+                            except (Exception, asyncio.CancelledError):
+                                logger.exception("Failed to stop uncertain DSP runtime after extras recovery failure")
+                        raise
                     raise
-                raise
-    finally:
-        canonical_lock.release()
+        finally:
+            canonical_lock.release()
 
     status = dsp_mgr.get_status()
     await _deps().broadcast({"type": "dsp", "data": status})
@@ -759,25 +779,25 @@ async def load_dsp_preset(request: Request):
         raise HTTPException(status_code=400, detail="preset_name is required")
 
     try:
-        async with _deps().get_dsp_preset_load_lock():
-            await _deps().load_dsp_preset(preset_name)
-            compare = dsp_mgr.load_compare_state()
-            if compare.get("presetA") == preset_name:
-                compare["activeSide"] = "A"
-                dsp_mgr.save_compare_state(compare)
-            elif compare.get("presetB") == preset_name:
-                compare["activeSide"] = "B"
-                dsp_mgr.save_compare_state(compare)
-            status = dsp_mgr.get_status()
-        runtime = _deps().get_dsp_runtime()
-        if (
-            runtime is not None
-            and runtime.snapshot().get("active")
-            and not runtime.sync_in_progress
-        ):
-            # A running helper sync owns the graph and verifies/repairs its
-            # own links; a concurrent reclean would race that repair.
-            await runtime._reclean_guarded(skip_if_locked=False)
+        async with _external_mutation_scope() as rate_locked:
+            async with _deps().get_dsp_preset_load_lock():
+                await _deps().load_dsp_preset(
+                    preset_name, **({"_rate_lock_held": True} if rate_locked else {}))
+                compare = dsp_mgr.load_compare_state()
+                if compare.get("presetA") == preset_name:
+                    compare["activeSide"] = "A"
+                    dsp_mgr.save_compare_state(compare)
+                elif compare.get("presetB") == preset_name:
+                    compare["activeSide"] = "B"
+                    dsp_mgr.save_compare_state(compare)
+                status = dsp_mgr.get_status()
+            runtime = _deps().get_dsp_runtime()
+            if (
+                runtime is not None
+                and runtime.snapshot().get("active")
+                and not runtime.sync_in_progress
+            ):
+                await runtime._reclean_guarded(skip_if_locked=False)
         await _deps().broadcast({"type": "dsp", "data": status})
         _deps().schedule_peak_monitor_refresh("preset-load")
         return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}
@@ -1546,31 +1566,53 @@ async def delete_dsp_preset(request: Request):
     owner = await _optional_owner(body)
 
     try:
-        async with _deps().dsp_mutation_lock():
-            name = dsp_mgr.require_deletable_preset(preset_name, **owner)
-            deleted_active = dsp_mgr.is_active_preset(name, **owner)
-            released = await _release_bank_slots(name, owner)
-            dsp_mgr.delete_preset(name, **owner, pinned_presets=_pinned_deletion_presets(owner))
-        if released and _deps().sync_v2_head_live is not None:
-            # The released slots are committed; render them before reporting.
-            await _deps().sync_v2_head_live()
-        if deleted_active:
-            # The manager already moved the persisted active state to the
-            # Neutral fallback; resync the running native engine through the
-            # normal locked loader so it never keeps processing the deleted
-            # preset's graph.
-            try:
-                await _deps().load_dsp_preset(dsp_mgr.get_active_preset() or "Neutral")
-            except Exception:
-                # Fail closed: never publish a false success. Broadcast the
-                # truthful current state before propagating the failure.
+        # Optimistic library-only check without locks: active and pinned
+        # deletes reserve the job-free graph, everything else stays allowed
+        # during jobs. The guarded path re-validates under session-first
+        # locks, so a concurrent pin never slips through.
+        try:
+            optimistic_name = dsp_mgr.require_deletable_preset(preset_name, **owner)
+            optimistic_active = dsp_mgr.is_active_preset(optimistic_name, **owner)
+            optimistic_guarded = optimistic_active or optimistic_name in _pinned_deletion_presets(owner)
+        except (FileNotFoundError, ValueError, RuntimeError):
+            optimistic_guarded = True
+            optimistic_name = None
+            optimistic_active = False
+        if not optimistic_guarded:
+            async with _deps().dsp_mutation_lock():
+                name = dsp_mgr.require_deletable_preset(preset_name, **owner)
+                if dsp_mgr.is_active_preset(name, **owner) or name in _pinned_deletion_presets(owner):
+                    raise HTTPException(status_code=423, detail="DSP state changed; retry the delete")
+                released = await _release_bank_slots(name, owner)
+                dsp_mgr.delete_preset(name, **owner, pinned_presets=_pinned_deletion_presets(owner))
+                if released and _deps().sync_v2_head_live is not None:
+                    await _deps().sync_v2_head_live()
+            status = dsp_mgr.get_status()
+            await _deps().broadcast({"type": "dsp", "data": status})
+            _deps().schedule_peak_monitor_refresh("preset-delete")
+            return {"status": "ok", "deleted": preset_name}
+        async with _external_mutation_scope() as rate_locked:
+            async with _deps().dsp_mutation_lock():
+                name = dsp_mgr.require_deletable_preset(preset_name, **owner)
+                deleted_active = dsp_mgr.is_active_preset(name, **owner)
+                released = await _release_bank_slots(name, owner)
+                dsp_mgr.delete_preset(name, **owner, pinned_presets=_pinned_deletion_presets(owner))
+            if released and _deps().sync_v2_head_live is not None:
+                await _deps().sync_v2_head_live()
+            if deleted_active:
+                # Keep ownership from deletion through Neutral reconciliation.
                 try:
-                    status = dsp_mgr.get_status()
-                    await _deps().broadcast({"type": "dsp", "data": status})
+                    await _deps().load_dsp_preset(
+                        dsp_mgr.get_active_preset() or "Neutral",
+                        **({"_rate_lock_held": True} if rate_locked else {}))
                 except Exception:
-                    logger.exception(
-                        "Failed to broadcast DSP state after preset-delete resync failure")
-                raise
+                    try:
+                        status = dsp_mgr.get_status()
+                        await _deps().broadcast({"type": "dsp", "data": status})
+                    except Exception:
+                        logger.exception(
+                            "Failed to broadcast DSP state after preset-delete resync failure")
+                    raise
         status = dsp_mgr.get_status()
         await _deps().broadcast({"type": "dsp", "data": status})
         _deps().schedule_peak_monitor_refresh("preset-delete")

@@ -3439,6 +3439,25 @@ async def _shutdown_lifespan_resources() -> None:
     if cleanup_cancelled:
         raise asyncio.CancelledError
 
+@asynccontextmanager
+async def _external_dsp_mutation_scope():
+    """Reserve the job-free graph without blocking an in-flight measurement entry."""
+    session = measurement_sr_session
+    lock = getattr(session, "lock", None) if session is not None else None
+
+    def require_unowned():
+        if session is not None and (session.has_active_jobs or getattr(session, "entry_in_progress", False)):
+            raise HTTPException(status_code=423, detail="Measurement is active; DSP state is locked")
+
+    require_unowned()
+    if lock is not None and lock.locked():
+        # Entry/release owns this lock and may need the caller's DSP locks.
+        raise HTTPException(status_code=423, detail="Measurement transition is active; DSP state is locked")
+    async with lock if lock is not None else nullcontext():
+        require_unowned()
+        yield lock is not None
+
+
 def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
     """Bind the /api/dsp/* routes to the application's DSP services.
 
@@ -3464,6 +3483,7 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         verify_measurement_commit=lambda targets, binding: _verify_measurement_commit(targets, binding),
         routed_roles=lambda state, mode: _routed_roles(state, mode),
         sync_v2_extras_runtime=lambda: _sync_v2_extras_runtime(),
+        external_mutation_scope=lambda: _external_dsp_mutation_scope(),
     )
 
 
@@ -5089,6 +5109,7 @@ def get_output_service() -> OutputService:
             resolve_ir=_resolve_state_ir,
             measurement_active=lambda: measurement_sr_session is not None and bool(
                 measurement_sr_session.has_active_jobs),
+            global_extras_loader=lambda: _require_dsp_manager().load_global_extras(),
         ))
     return _output_service_instance
 
@@ -5376,25 +5397,19 @@ def _plan_transition_guard(old_layout, new_layout, previous_gain: float) -> floa
 
 
 def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
-                       hardware_ports: list, fingerprint: str | None,
-                       extras_override: dict | None = None):
+                       hardware_ports: list, fingerprint: str | None):
     """Render one plan to a runtime sync target (pre-commit, may raise).
 
-    The global DSP chain (limiter, loudness, ...) always renders from the
-    manager's global extras -- the surface the UI writes through
-    /api/dsp/extras -- so the same helpers stay live on v2 crossover/bank
-    graphs.  An explicit override (candidate/previous extras during a
-    guarded transition) renders that snapshot instead.
+    Extras are resolved into the plan before fingerprinting. Rendering must
+    not reread globals or substitute a different transition snapshot.
     """
     layout = service.compile_layout(plan)
     config = DSPRuntimeConfig.from_plan(
         plan, layout=layout, output_key=output_key, sample_rate_hz=rate,
         hardware_ports=hardware_ports, plan_fingerprint=fingerprint)
-    if extras_override is None:
-        extras_override = manager.load_global_extras()
     text = manager.compile_engine_text(
         [dict(entry) for entry in layout], preset_name=plan["global"]["preset"], mode=plan["mode"],
-        sample_rate_hz=rate, extras_override=extras_override)
+        sample_rate_hz=rate, extras_override=plan["global"]["extras"])
     return PlannedSyncTarget(config=config, text=text)
 
 
@@ -5432,26 +5447,28 @@ async def _render_v2_recovery_targets(rate: int, overview: dict, extras_snapshot
             raise RuntimeError("Native DSP runtime is unavailable")
 
         def render(state):
-            plan = service.compile_plan(state, output_key=output_key,
-                                        channels=channels, sample_rate_hz=rate)
-            fingerprint = service.fingerprint_plan(plan)
-            return tuple(_build_plan_target(
-                service, manager, plan, output_key=output_key, rate=rate,
-                hardware_ports=ports, fingerprint=fingerprint,
-                extras_override=base_extras if extras is None else extras)
-                for extras in extras_snapshots)
+            targets = []
+            for extras in extras_snapshots:
+                plan = service.compile_plan(
+                    state, output_key=output_key, channels=channels, sample_rate_hz=rate,
+                    extras_override=base_extras if extras is None else extras)
+                targets.append(_build_plan_target(
+                    service, manager, plan, output_key=output_key, rate=rate,
+                    hardware_ports=ports, fingerprint=service.fingerprint_plan(plan)))
+            return tuple(targets)
 
         state, targets = await service.render_for_activation(
             render, preflight=native.preflight_rendered, output_key=output_key,
             channels=channels, hardware_ports=ports)
         validate_current()
 
-        def remember():
-            service.remember_applied(state, output_key=output_key, channels=channels,
-                                     hardware_ports=ports, sample_rate_hz=rate,
-                                     fingerprint=targets[0].config.plan_fingerprint)
-        return tuple(replace(target, on_applied=remember, validate_current=validate_current)
-                     for target in targets)
+        def with_checkpoint(target):
+            def remember():
+                service.remember_applied(state, output_key=output_key, channels=channels,
+                                         hardware_ports=ports, sample_rate_hz=rate,
+                                         fingerprint=target.config.plan_fingerprint)
+            return replace(target, on_applied=remember, validate_current=validate_current)
+        return tuple(with_checkpoint(target) for target in targets)
     except StateConflictError:
         raise
     except Exception as exc:
@@ -5784,10 +5801,11 @@ def _refresh_output_state_transition(request) -> None:
         if key == "previous_target" and v2.get(key) is None:
             continue
         plan = service.compile_plan(document, output_key=v2["output_key"],
-                                    channels=v2["channels"], sample_rate_hz=request.target_rate)
+                                    channels=v2["channels"], sample_rate_hz=request.target_rate,
+                                    extras_override=extras)
         target = _build_plan_target(
             service, manager, plan, output_key=v2["output_key"], rate=request.target_rate,
-            hardware_ports=ports, fingerprint=service.fingerprint_plan(plan), extras_override=extras)
+            hardware_ports=ports, fingerprint=service.fingerprint_plan(plan))
         v2[key] = replace(target, validate_current=validate_current) if key == "target" else target
     v2["fingerprint"] = v2["target"].config.plan_fingerprint
 
@@ -6522,20 +6540,37 @@ async def _apply_output_state_fast(body, *, service, state, candidate, overview,
     # trips over (and silently replaces with the legacy graph).
     staged_new_target = staged_old_target = None
     staged_guard = 0.0
+    if (live_known and new_plan is not None
+            and runtime.dsp_runtime is not None
+            and (overview.get("output_mode") or {}).get("hardware_playback_ports")):
+        manager = _require_dsp_manager()
+        rendered_extras = manager.load_global_extras()
+        # The edit may have queued behind an extras writer. Refresh both plan
+        # identities under graph ownership, using the same rendering snapshot.
+        for key, document in (("old", state), ("new", candidate)):
+            try:
+                plan = service.compile_plan(
+                    document, output_key=output_key, channels=channels,
+                    sample_rate_hz=target_rate, extras_override=rendered_extras)
+                fingerprint = service.fingerprint_plan(plan)
+            except (FileNotFoundError, ValueError):
+                plan, fingerprint = None, None
+            if key == "old":
+                old_plan, old_fp = plan, fingerprint
+            else:
+                new_plan, new_fp = plan, fingerprint
     if (live_known and new_plan is not None and old_fp != new_fp
             and runtime.dsp_runtime is not None
             and (overview.get("output_mode") or {}).get("hardware_playback_ports")):
         ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
-        manager = _require_dsp_manager()
-        rendered_extras = manager.load_global_extras()
         try:
             staged_new_target = _build_plan_target(
                 service, manager, new_plan, output_key=output_key,
-                rate=target_rate, hardware_ports=ports, fingerprint=new_fp, extras_override=rendered_extras)
+                rate=target_rate, hardware_ports=ports, fingerprint=new_fp)
             if old_plan is not None:
                 staged_old_target = _build_plan_target(
                     service, manager, old_plan, output_key=output_key,
-                    rate=target_rate, hardware_ports=ports, fingerprint=old_fp, extras_override=rendered_extras)
+                    rate=target_rate, hardware_ports=ports, fingerprint=old_fp)
         except (RuntimeError, ValueError) as exc:
             logger.warning("Output-state staging failed before commit (head unchanged): %s", exc)
             raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
