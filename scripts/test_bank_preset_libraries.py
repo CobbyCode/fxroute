@@ -414,12 +414,13 @@ class ApiTests(Fixture):
 
         previous = api._runtime.deps
         self.addCleanup(api.configure_dsp_api, previous)
+        self.load_dsp_preset = AsyncMock()
         api.configure_dsp_api(api.DspApiDeps(
             require_dsp_manager=lambda: self.manager, get_dsp_manager=lambda: self.manager,
             get_dsp_runtime=lambda: None, get_dsp_preset_load_lock=lambda: asyncio.Lock(),
             dsp_mutation_lock=lambda: asyncio.Lock(), canonical_volume_write_lock=lambda: asyncio.Lock(),
             drain_worker=drain, run_locked_worker=drain, broadcast=AsyncMock(),
-            load_dsp_preset=AsyncMock(), restore_volume_state=AsyncMock(),
+            load_dsp_preset=self.load_dsp_preset, restore_volume_state=AsyncMock(),
             volume_state_for_manager=lambda *args, **kwargs: {},
             schedule_peak_monitor_refresh=lambda *args, **kwargs: None,
             get_output_service=lambda: self.service,
@@ -432,10 +433,13 @@ class ApiTests(Fixture):
     def owner(self, bank, mode="stereo-sub"):
         return {"bank_mode": mode, "bank_id": bank}
 
-    def create_peq(self, name, gain_db, bank, mode="stereo-sub"):
-        response = self.client.post("/api/dsp/presets/create-peq", json={
+    def post_peq(self, name, gain_db, bank, mode="stereo-sub", **fields):
+        return self.client.post("/api/dsp/presets/create-peq", json={
             "presetName": name, "peq": peq(gain_db), **self.owner(bank, mode),
-            "expected_revision": self.service.load()["revision"]})
+            "expected_revision": self.service.load()["revision"], **fields})
+
+    def create_peq(self, name, gain_db, bank, mode="stereo-sub", **fields):
+        response = self.post_peq(name, gain_db, bank, mode, **fields)
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
@@ -470,6 +474,36 @@ class ApiTests(Fixture):
                          [("Conv", "sub_l"), ("Room", "sub_l")])
         self.assertEqual([(ir["name"], ir["bank"]) for ir in status["irs"]], [("Conv.wav", "sub_l")])
         self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["sub_l"]["preset"], "Conv")
+
+    def test_load_after_create_activates_a_bank_preset_through_its_bank(self):
+        """Only Stereo Global loads into the fallback graph; other banks are assigned."""
+        self.create_peq("Room", -1.0, "global", "stereo")
+        self.load_dsp_preset.reset_mock()
+        for bank, mode in (("main", "stereo-sub"), ("sub1", "stereo-sub"), ("global", "stereo-sub")):
+            with self.subTest(bank=bank, mode=mode):
+                created = self.create_peq("Room", -2.0, bank, mode, loadAfterCreate=True)
+                self.assertTrue(created["loaded"])
+                self.assertTrue(created["bank"]["assigned"])
+        self.load_dsp_preset.assert_not_awaited()
+        banks = self.service.load()["modes"]["stereo-sub"]["banks"]
+        self.assertEqual({role: banks[role]["preset"] for role in ("global", "main_l", "main_r", "sub1")},
+                         dict.fromkeys(("global", "main_l", "main_r", "sub1"), "Room"))
+        self.create_peq("Hall", -3.0, "global", "stereo", loadAfterCreate=True)
+        self.load_dsp_preset.assert_awaited_once_with("Hall")
+
+    def test_combine_loads_only_a_stereo_global_preset(self):
+        for bank, mode in (("main", "stereo-sub"), ("global", "stereo")):
+            for name in ("A", "B"):
+                self.create_peq(name, -1.0, bank, mode)
+        refused = self.client.post("/api/dsp/presets/combine", json={
+            "presetName": "Both", "presetNames": ["A", "B"], "loadAfterCreate": True, **self.owner("main")})
+        self.assertEqual(refused.status_code, 400, refused.text)
+        self.assertEqual(self.stored("Both"), [])
+        combined = self.client.post("/api/dsp/presets/combine", json={
+            "presetName": "Both", "presetNames": ["A", "B"], "loadAfterCreate": True,
+            **self.owner("global", "stereo")})
+        self.assertEqual(combined.status_code, 200, combined.text)
+        self.load_dsp_preset.assert_awaited_once_with("Both")
 
     def test_download_serves_the_named_banks_preset(self):
         self.create_peq("Room", -1.0, "global")

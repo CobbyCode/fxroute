@@ -180,14 +180,30 @@ def _effects_extras_from_form(
     return _resolve_effects_extras(extras)
 
 
+def _in_stereo_global(mode: str | None, bank_id: str | None) -> bool:
+    """Whether a preset library is Stereo Global, the only one ``load_preset`` reads.
+
+    A preset of any other bank becomes active through its bank assignment.
+    """
+    return (mode or "stereo", bank_id or "global") == ("stereo", "global")
+
+
 async def _finish_dsp_preset_mutation(
     *,
     load_after_create: bool,
     preset_name: str,
     refresh_reason: str,
     refresh_only_when_loaded: bool = False,
+    binding: dict | None = None,
 ) -> dict:
+    """Broadcast a created preset; ``load_after_create`` loads a Stereo Global one.
+
+    A preset created into another bank (``binding``) is activated by the bank
+    assignment that follows, not by the Stereo Global fallback graph.
+    """
     dsp_mgr = _deps().require_dsp_manager()
+    if binding is not None and not _in_stereo_global(binding["mode"], binding["bank_id"]):
+        load_after_create = False
     if load_after_create:
         await _deps().load_dsp_preset(preset_name)
     status = dsp_mgr.get_status()
@@ -664,6 +680,11 @@ async def combine_dsp_presets(request: Request):
     if not isinstance(preset_names, list):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
     owner = _optional_owner(body)
+    # Combine assigns no bank, so only a Stereo Global preset can be loaded.
+    if load_after_create and not _in_stereo_global(owner.get("mode"), owner.get("bank")):
+        raise HTTPException(status_code=400, detail=(
+            "loadAfterCreate loads Stereo Global presets only; "
+            "assign a combined bank preset to its bank to activate it"))
 
     try:
         async with _deps().dsp_mutation_lock():
@@ -815,6 +836,7 @@ async def create_convolver_preset(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="create-convolver",
+            binding=binding,
         )
         response = {
             "status": "ok",
@@ -854,6 +876,7 @@ async def import_dsp_preset_json(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="import-preset-json",
+            binding=binding,
         )
         response = {
             "status": "ok",
@@ -1009,6 +1032,7 @@ async def import_dsp_preset_bundle(
                 load_after_create=load_after_create,
                 preset_name=created["name"],
                 refresh_reason="import-preset-bundle",
+                binding=binding,
             )
             response = {
                 "status": "ok",
@@ -1133,6 +1157,7 @@ async def create_convolver_preset_with_ir(
             load_after_create=load_after_create,
             preset_name=created["preset"]["name"],
             refresh_reason="create-with-ir",
+            binding=binding,
         )
         response = {
             "status": "ok",
@@ -1202,6 +1227,7 @@ async def create_peq_preset(request: Request):
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="create-peq",
+            binding=binding,
         )
         response = {
             "status": "ok",
@@ -1284,6 +1310,7 @@ async def import_rew_peq_preset(
             load_after_create=load_after_create,
             preset_name=created["name"],
             refresh_reason="import-rew-peq",
+            binding=binding,
         )
         response = {
             "status": "ok",
@@ -1438,6 +1465,7 @@ async def import_dual_filter_preset(
             load_after_create=load_after_create,
             preset_name=created_preset["name"],
             refresh_reason="import-filter-dual",
+            binding=binding,
         )
         response = {
             "status": "ok",
