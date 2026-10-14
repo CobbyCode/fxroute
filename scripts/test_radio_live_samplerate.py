@@ -193,7 +193,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         updates it, so the Coordinator's final verification sees the
         new rate (exactly one switch, no parallel rollback).
         """
-        calls = {"force": [], "preset": [], "subwoofer": []}
+        calls = {"force": [], "subwoofer": []}
         logs = []
         status = {"active_rate": active_rate, "force_rate": active_rate}
 
@@ -202,9 +202,6 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
             status["active_rate"] = rate
             status["force_rate"] = rate
             return True
-
-        async def preset_sync(**kwargs):
-            calls["preset"].append(kwargs)
 
         async def helper_sync(*args, **kwargs):
             calls["subwoofer"].append((args, kwargs))
@@ -260,8 +257,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             main, "get_samplerate_status", side_effect=lambda: dict(status)
         ), patch.object(samplerate, "ensure_playback_samplerate_force", force), patch.object(
-            main.dsp_orchestrator, "sync_preset_for_playback_samplerate", preset_sync
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", helper_sync), patch.object(
+            main.dsp_orchestrator, "sync_runtime", helper_sync), patch.object(
             main.runtime, "dsp_runtime", type("NativeRuntime", (), {
                 "snapshot": lambda self: {
                     "active": True,
@@ -296,7 +292,6 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, 48000)
         self.assertEqual(calls["force"], [], "48->48 must not force a rate")
-        self.assertEqual(calls["preset"], [], "48->48 must not bounce the preset")
         self.assertEqual(calls["subwoofer"], [], "48->48 must not touch the helper")
 
     async def test_44_to_44_no_rate_switch(self):
@@ -307,7 +302,6 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, 44100)
         self.assertEqual(calls["force"], [])
-        self.assertEqual(calls["preset"], [])
         self.assertEqual(calls["subwoofer"], [])
 
     async def test_44_to_48_switches_exactly_once(self):
@@ -319,11 +313,6 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, 48000)
         self.assertEqual(calls["force"], [(48000, "radio-post-load-handoff")])
-        self.assertEqual(
-            len(calls["preset"]),
-            0,
-            "a working DSP graph must not reload its preset for rate alone",
-        )
         # dsp_runtime is now the complete native DSPRuntime, including
         # Stereo; a real rate transition rebuilds it at the target rate even
         # for the stereo graph.
@@ -336,11 +325,6 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, 44100)
         self.assertEqual(calls["force"], [(44100, "radio-post-load-handoff")])
-        self.assertEqual(
-            len(calls["preset"]),
-            0,
-            "a working DSP graph must not reload its preset for rate alone",
-        )
         self.assertEqual(len(calls["subwoofer"]), 1)
 
     async def test_first_radio_start_accepts_any_valid_live_rate(self):
@@ -374,7 +358,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stale_generation_aborts_complete_handoff_without_switch(self):
         # Even when a live rate becomes available, a stale generation must
-        # abort the whole handoff: no force/preset/helper for an old
+        # abort the whole handoff: no force/helper for an old
         # transition while a newer station switch already took over.
         track = {"id": "radio_stale", "source": "radio", "url": "https://radio.example/stale"}
 
@@ -433,7 +417,6 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, main.RADIO_EXPECTED_SAMPLE_RATE_HZ)
         self.assertEqual(calls["force"], [])
-        self.assertEqual(calls["preset"], [])
         self.assertEqual(calls["subwoofer"], [])
 
 

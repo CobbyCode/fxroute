@@ -43,7 +43,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.originals = {name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name)) for name in names}
         coordinator = main.peak_monitor_coordinator
         self._coordinator_state = (coordinator.armed, coordinator.signature, coordinator.lock)
-        self._sync_preset_original = main.dsp_orchestrator.sync_preset_for_playback_samplerate
         self.monitor = FakePeakMonitor()
         main.runtime.peak_monitor = self.monitor
         main.manager = FakeManager()
@@ -56,7 +55,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         }
         self._samplerate_wait_original = samplerate.wait_for_samplerate_alignment
         samplerate.wait_for_samplerate_alignment = lambda _rate: async_value(True)
-        main.dsp_orchestrator.sync_preset_for_playback_samplerate = lambda **_kwargs: async_value(None)
         main.dsp_manager = object()
         main.runtime.player_instance = type("Player", (), {"_running": True})()
 
@@ -66,7 +64,6 @@ class PlaybackTransitionGenerationTests(unittest.IsolatedAsyncioTestCase):
         samplerate.wait_for_samplerate_alignment = self._samplerate_wait_original
         coordinator = main.peak_monitor_coordinator
         coordinator.armed, coordinator.signature, coordinator.lock = self._coordinator_state
-        main.dsp_orchestrator.sync_preset_for_playback_samplerate = self._sync_preset_original
 
     async def test_stale_radio_callback_cannot_apply_after_local_handoff(self):
         main.peak_monitor_coordinator.armed = False

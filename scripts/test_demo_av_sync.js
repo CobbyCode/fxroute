@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
 const assert = require('node:assert/strict');
+const { assignGlobalPreset } = require('./demo_preset_test_support.js');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const ctx = { console, Date, Math, URLSearchParams, FormData, setInterval() {}, clearInterval() {},
     fetch() { throw new Error('Unexpected real fetch'); } };
@@ -16,7 +17,7 @@ async function request(url, body) {
     return data;
 }
 (async () => {
-    await request('/api/dsp/presets/load', { preset_name: 'Neutral' });
+    await assignGlobalPreset(ctx.fetch, 'Neutral');
     await request('/api/dsp/extras', { loudness_enabled: true, loudnessFftSize: 8192,
         limiter_enabled: false, tone_effect_enabled: false });
     const initialTiming = await request('/api/audio/av-sync');

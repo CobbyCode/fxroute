@@ -109,8 +109,6 @@ class MeasurementEntryRateSyncTests(unittest.IsolatedAsyncioTestCase):
         deps = SimpleNamespace(
             dsp_port_timeout_ms=1000,
             get_audio_output_overview=lambda: dict(self.live_overview),
-            get_dsp_manager=lambda: None,
-            sync_preset_for_samplerate=AsyncMock(return_value=None),
             wait_for_dsp_output_ports=AsyncMock(return_value=True),
             reconcile_sink_rate=AsyncMock(return_value=True),
             get_samplerate_status=lambda: dict(self.samplerate_status),

@@ -49,9 +49,6 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
             status["force_rate"] = rate
             return True
 
-        async def preset_sync(**_kwargs) -> None:
-            ledger.events.append(f"{source}.preset-sync")
-
         async def helper_sync(*_args, **_kwargs) -> None:
             ledger.events.append(f"{source}.helper-sync")
 
@@ -76,7 +73,7 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
         main.playback_state.playback_transition_epoch = 40
         with patch.object(main, "get_samplerate_status", samplerate_status), patch.object(
             samplerate, "ensure_playback_samplerate_force", ensure_force
-        ), patch.object(main.dsp_orchestrator, "sync_preset_for_playback_samplerate", preset_sync), patch.object(
+        ), patch.object(
             main.dsp_orchestrator, "sync_runtime", helper_sync
         ), patch.object(samplerate, "get_current_pipewire_force_rate", lambda: status["force_rate"]), patch.object(
             pw_link_mod, "run_pw_link_command", pw_link
@@ -111,7 +108,6 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.committed)
         self.assertLess(ledger.events.index("gate.set:True"), ledger.events.index("local.ensure-force:48000"))
         self.assertLess(ledger.events.index("local.ensure-force:48000"), ledger.events.index("effects-helper-links"))
-        self.assertNotIn("local.preset-sync", ledger.events)
         self.assertLess(ledger.events.index("effects-helper-links"), ledger.events.index("graph-readback"))
         self.assertLess(ledger.events.index("graph-readback"), ledger.events.index("source-volume:100"))
         self.assertLess(ledger.events.index("source-volume:100"), ledger.events.index("dsp-stabilize"))

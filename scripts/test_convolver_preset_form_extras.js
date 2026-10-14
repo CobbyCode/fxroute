@@ -132,7 +132,6 @@ function main() {
     };
     vm.runInContext('appendMeasurementConvolverExtras(new FormData())', context);
     assert.ok(formData.get('preset_name') === undefined, 'builder must not invent a preset name');
-    assert.equal(formData.get('load_after_create'), 'false');
     assert.equal(formData.get('headroom_enabled'), 'true');
     assert.equal(formData.get('headroom_gain_db'), '-3');
     assert.equal(formData.get('autogain_target_db'), '-12');

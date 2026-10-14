@@ -46,7 +46,7 @@ AUDIT_FILES = (
     "measurement/autosub/runners/optimize.py",
     "measurement/session.py",
     "dsp/api.py",
-    "dsp/preset_loading.py",
+    "dsp/volume_state.py",
 )
 SOURCES = {name: (ROOT / name).read_text() for name in AUDIT_FILES}
 TREES = {name: ast.parse(source) for name, source in SOURCES.items()}
@@ -78,16 +78,13 @@ OLD_HANDOFF_NAMES = {
 MUTATION_CALL_NAMES = {
     "_set_pipewire_force_rate",
     "_ensure_playback_samplerate_force",
-    "sync_preset_for_playback_samplerate",
     "sync_runtime",
     "sync_runtime_at_rate",
     "_sync_dsp_runtime_for_measurement_sweep",
     "ensure_mpv_to_dsp_links",
     "_repair_stereo_output_links_once",
     "_set_hardware_sink_mute",
-    "load_preset",
     "set_exact_sub_mute",
-    "_load_dsp_preset",
 }
 
 # Mutations delegated through worker wrappers (asyncio.to_thread and the
@@ -264,7 +261,6 @@ def _reason(context: str, name: str) -> str | None:
         "_restart_src_graph",
         "_set_canonical_output_volume",
         "_finish_dsp_preset_mutation", "save_dsp_extras",
-        "load_dsp_preset", "_load_dsp_preset", "_load_preset_locked", "_sync_runtime_drained",
         "_make_dsp_api_deps",
     }:
         return "startup or explicit user configuration workflow"

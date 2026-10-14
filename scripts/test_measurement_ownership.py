@@ -99,7 +99,7 @@ class MeasurementOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
         run.assert_not_awaited()
 
-    async def test_subwoofer_watcher_skips_tick_while_measurement_owns_graph(self):
+    async def test_output_monitor_skips_tick_while_measurement_owns_graph(self):
         session = main.MeasurementSampleRateSession()
         session.active = True
         session.measurement_rate = 48000

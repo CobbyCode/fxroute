@@ -137,10 +137,21 @@ const realFetch = globalThis.fetch;
     {
         const state = { outputSystem: { catalog: bankCatalog('main') },
             dsp: { presets: [{ name: 'Neutral' }, { name: 'Room' }], compare: {}, active_preset: '' } };
-        initBankUI(state, bankElements());
-        const idle = BankUI.getEffectsCompareToggleTarget(
-            { effectiveActiveSide: null, activePreset: '', presetA: 'Neutral', presetB: '' });
-        assert.deepEqual(idle, { target: 'Neutral', side: 'A' });
+        const bank = state.outputSystem.catalog.modes['stereo-sub'].banks.main;
+        bank.preset_b = 'Room';
+        bank.can_b = true;
+        const mutations = [];
+        initBankUI(state, bankElements(), { applyMutation: async (kind, fields) => {
+            mutations.push([kind, fields]);
+            bank.active_side = fields.active_side;
+            bank.preset = fields.active_side === 'B' ? 'Room' : 'Neutral';
+        } });
+        await BankUI.toggleComparePreset();
+        assert.equal(BankUI.getEffectsCompareState().activePreset, 'Room');
+        await BankUI.toggleComparePreset();
+        assert.equal(BankUI.getEffectsCompareState().activePreset, 'Neutral');
+        assert.deepEqual(mutations, ['B', 'A'].map(active_side => ['set_bank_preset',
+            { mode: 'stereo-sub', bank_id: 'main', active_side }]));
     }
 
     // Combine validation rejects aggregates, cross-bank picks and dupes.
@@ -155,7 +166,7 @@ const realFetch = globalThis.fetch;
         assert.match(elements.effectsStatus.innerHTML, /All Banks owns no presets/);
     }
 
-    // Legacy compare load (no catalog) posts through the preset endpoint.
+    // Until the catalog is ready, no stale DSP status may activate a preset.
     {
         const posted = [];
         const toasts = [];
@@ -167,10 +178,14 @@ const realFetch = globalThis.fetch;
             posted.push([url, JSON.parse(options.body || '{}')]);
             return { ok: true, json: async () => ({}) };
         };
-        await BankUI.loadEffectsComparePreset('Room', 'B', 'Neutral', 'Room');
+        await BankUI.loadEffectsComparePreset('B');
+        await BankUI.toggleComparePreset();
+        await BankUI.handleEffectsCompareSelectionChange('A');
+        BankUI.renderEffectsCompare();
         globalThis.fetch = realFetch;
-        assert.ok(posted.some(([url, body]) => url === '/api/dsp/presets/load' && body.preset_name === 'Room'));
-        assert.equal(state.dsp.active_preset, 'Room');
+        assert.deepEqual(posted, []);
+        assert.equal(state.dsp.active_preset, '');
+        assert.equal(elements.effectsCompareRow.style.display, 'none');
     }
 
     // Import routing: unknown suffixes stay out with a plain error.
@@ -281,13 +296,11 @@ const realFetch = globalThis.fetch;
         initBankUI(state, bankElements(), { showToast: (message, type) => toasts.push([message, type]) });
         await BankUI.deleteEffectsPreset();
         assert.deepEqual(toasts.at(-1), ['No active preset to delete', 'warning']);
-        // Built-in and delete paths resolve through the legacy state without
-        // a catalog; the bank-backed state above only proved the empty case.
-        state.outputSystem.catalog = null;
-        state.dsp.active_preset = 'Direct';
+        const bank = emptyCatalog.modes['stereo-sub'].banks.main;
+        bank.preset = 'Direct';
         await BankUI.deleteEffectsPreset();
         assert.match(toasts.at(-1)[0], /built-in/);
-        state.dsp.active_preset = 'Room';
+        bank.preset = 'Room';
         globalThis.fetch = async (url) => {
             calls.push(url);
             return { ok: true, json: async () => ({}) };

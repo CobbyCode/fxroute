@@ -82,10 +82,7 @@ const context = {
 vm.createContext(context);
 vm.runInContext([
     'function getEmptyEffectsCompareState() { return window.FXRouteBankUI.getEmptyEffectsCompareState(...arguments); }',
-    'function normalizeEffectsCompareSelection() { return window.FXRouteBankUI.normalizeEffectsCompareSelection(...arguments); }',
-    'function getEffectiveEffectsCompareSide() { return window.FXRouteBankUI.getEffectiveEffectsCompareSide(...arguments); }',
     'function getEffectsCompareState() { return window.FXRouteBankUI.getEffectsCompareState(...arguments); }',
-    'function getEffectsCompareToggleTarget() { return window.FXRouteBankUI.getEffectsCompareToggleTarget(...arguments); }',
     'async function handleEffectsCompareSelectionChange() { return window.FXRouteBankUI.handleEffectsCompareSelectionChange(...arguments); }',
     'async function loadEffectsComparePreset() { return window.FXRouteBankUI.loadEffectsComparePreset(...arguments); }',
     'async function toggleComparePreset() { return window.FXRouteBankUI.toggleComparePreset(...arguments); }',

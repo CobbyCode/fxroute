@@ -516,7 +516,7 @@ from dsp.crossover import design_crossover
 from dsp.runtime import DSPRuntime, DSPRuntimeConfig, PlannedSyncTarget, _contains_link
 import dsp.api as dsp_api
 import dsp.orchestration as dsp_orchestration
-import dsp.preset_loading as preset_loading
+import dsp.volume_state as volume_state
 import playback.orchestration as playback_orchestration
 from audio import pw_link
 from audio.source_native_rate import resolve_active_source_native_rate
@@ -736,7 +736,6 @@ class RuntimeResources:
     lifecycle_background_tasks: set[asyncio.Task] = field(default_factory=set)
     library_refresh_tasks: set[asyncio.Task] = field(default_factory=set)
     dsp_runtime_link_watch_task: Optional[asyncio.Task] = None
-    dsp_preset_load_lock: Optional[asyncio.Lock] = None
     # Serializes threaded DSP mutations (convolver IR upload/create) so
     # concurrent HTTP requests cannot interleave filesystem/preset state
     # changes that used to run serially in the event loop.
@@ -762,7 +761,6 @@ class RuntimeResources:
         self.lifecycle_background_tasks.clear()
         self.library_refresh_tasks.clear()
         self.dsp_runtime_link_watch_task = None
-        self.dsp_preset_load_lock = None
         self.dsp_mutation_lock = None
         self.dsp_graph_write_lock = None
         self.source_transition_lock = None
@@ -820,12 +818,6 @@ def _dsp_graph_write_lock() -> asyncio.Lock:
     if runtime.dsp_graph_write_lock is None:
         runtime.dsp_graph_write_lock = asyncio.Lock()
     return runtime.dsp_graph_write_lock
-
-
-def _get_dsp_preset_load_lock() -> asyncio.Lock:
-    if runtime.dsp_preset_load_lock is None:
-        runtime.dsp_preset_load_lock = asyncio.Lock()
-    return runtime.dsp_preset_load_lock
 
 
 def _canonical_volume_write_lock() -> asyncio.Lock:
@@ -1251,7 +1243,6 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         measurement_audio_graph_owned=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
         dsp_mutation_lock=lambda: _dsp_mutation_lock(),
         drain_worker=lambda *a, **k: _drain_worker(*a, **k),
-        load_dsp_preset=lambda *a, **k: _load_dsp_preset(*a, **k),
         sync_dsp_runtime=lambda *a, **k: dsp_orchestrator.sync_runtime(*a, **k),
         helper_argument_sample_rate=dsp_orchestration.helper_argument_sample_rate,
         playback_graph_diagnosis=lambda *a, **k: playback_orchestration.configured().playback_graph_diagnosis(*a, **k),
@@ -3049,7 +3040,7 @@ async def lifespan(app: FastAPI):
             downloader = None
             logger.warning("Downloader not available: %s", exc)
 
-        dsp_manager = await _drain_worker(DSPManager)
+        dsp_manager = await _drain_worker(DSPManager, active_preset_reader=_active_global_preset)
         volume_read_monitor_task = start_volume_read_monitor()
         runtime.lifecycle_background_tasks.add(volume_read_monitor_task)
         volume_read_monitor_task.add_done_callback(runtime.lifecycle_background_tasks.discard)
@@ -3153,7 +3144,6 @@ async def lifespan(app: FastAPI):
             pass
         peak_monitor_coordinator.reset()
         source_overview_feed.reset()
-        runtime.dsp_preset_load_lock = asyncio.Lock()
         runtime.source_transition_lock = SourceTransitionLock()
         playback_state.latest_spotify_state = await get_spotify_ui_state()
         await peak_monitor_coordinator.sync_spotify_state(playback_state.latest_spotify_state)
@@ -3186,7 +3176,7 @@ async def lifespan(app: FastAPI):
             await dsp_orchestrator.sync_runtime(applied_output)
             runtime.dsp_runtime_link_watch_task = asyncio.create_task(
                 dsp_orchestrator.runtime_link_watch_loop(),
-                name="subwoofer-runtime-link-watch",
+                name="dsp-output-authority-watch",
             )
         except Exception as exc:
             logger.warning("Failed to re-apply persisted audio output selection: %s", exc)
@@ -3426,14 +3416,12 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         require_dsp_manager=lambda: _require_dsp_manager(),
         get_dsp_manager=lambda: dsp_manager,
         get_dsp_runtime=lambda: runtime.dsp_runtime,
-        get_dsp_preset_load_lock=lambda: _get_dsp_preset_load_lock(),
         dsp_mutation_lock=lambda: _dsp_mutation_lock(),
         canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
         drain_worker=lambda *args, **kwargs: _drain_worker(*args, **kwargs),
         run_locked_worker=lambda *args, **kwargs: _run_locked_worker(*args, **kwargs),
         broadcast=lambda message: manager.broadcast(message),
-        load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
-        restore_volume_state=lambda *args, **kwargs: preset_loading._restore_volume_state(*args, **kwargs),
+        restore_volume_state=lambda *args, **kwargs: volume_state._restore_volume_state(*args, **kwargs),
         volume_state_for_manager=lambda *args, **kwargs: _volume_state_for_manager(*args, **kwargs),
         schedule_peak_monitor_refresh=lambda reason: dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason),
         get_output_service=lambda: get_output_service(),
@@ -3445,35 +3433,6 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
     )
 
 
-def _current_output_mode() -> str:
-    """Cheap current output mode for the subwoofer link-watcher gate.
-
-    Prefers the committed DSP runtime config, then the committed v2 output
-    state (any routed sub role reads as a subwoofer mode), then stereo.  It
-    never builds the PipeWire overview, so the idle link-watcher tick stays
-    cheap.
-    """
-    dsp_runtime = runtime.dsp_runtime
-    if dsp_runtime is not None:
-        snapshot = dsp_runtime.snapshot()
-        mode = (snapshot.get("config") or {}).get("output_mode")
-        if mode:
-            return str(mode)
-    try:
-        head = get_output_service().load()
-        modes = head.get("modes") if isinstance(head, Mapping) else None
-        spec = modes.get(head.get("active_mode")) if isinstance(modes, Mapping) else None
-        routing = spec.get("routing") if isinstance(spec, Mapping) else None
-        if isinstance(routing, Mapping):
-            for assignments in routing.values():
-                if any(role in SUB_ROLES
-                       for role in (assignments or [])):
-                    return OUTPUT_MODE_SUBWOOFER_22
-    except Exception:
-        pass
-    return OUTPUT_MODE_STEREO
-
-
 def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
     """Bind the DSP/output orchestration to the application's runtime services.
 
@@ -3482,7 +3441,6 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
     """
     return DspOrchestrationDeps(
         get_dsp_runtime=lambda: runtime.dsp_runtime,
-        get_dsp_manager=lambda: dsp_manager,
         get_audio_output_overview=lambda: get_audio_output_overview(),
         get_samplerate_status=lambda: get_samplerate_status(),
         get_current_force_rate=lambda: samplerate.get_current_pipewire_force_rate(),
@@ -3497,20 +3455,15 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         sync_peak_monitor_for_playback_state=peak_monitor_coordinator.sync_playback_state,
         sync_peak_monitor_for_spotify_state=peak_monitor_coordinator.sync_spotify_state,
         sync_peak_monitor_for_qobuz_state=peak_monitor_coordinator.sync_qobuz_state,
-        load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
-        broadcast=lambda message: manager.broadcast(message),
         wait_for_samplerate_alignment=lambda *args, **kwargs: samplerate.wait_for_samplerate_alignment(*args, **kwargs),
         wait_for_selected_output_effective_rate=lambda *args, **kwargs: _wait_for_selected_output_effective_rate(*args, **kwargs),
         measurement_audio_graph_owned=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
         observe_playback_samplerate_drift=lambda: samplerate_drift.observe(),
         playback_transition_is_active=lambda: _playback_transition_is_active(),
-        coordinator_target_rate=lambda *args, **kwargs: _coordinator_target_rate(*args, **kwargs),
         playback_graph_diagnosis=lambda *args, **kwargs: playback_orchestration.configured().playback_graph_diagnosis(*args, **kwargs),
-        request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
         create_lifecycle_background_task=lambda coro, *, name: _create_lifecycle_background_task(coro, name=name),
         peak_monitor_restart_settle_ms=PEAK_MONITOR_RESTART_SETTLE_MS,
         sleep=lambda delay: asyncio.sleep(delay),
-        get_output_mode=lambda: _current_output_mode(),
         reconcile_output_default=lambda: samplerate.reconcile_selected_output_default(),
         read_output_default_state=lambda: samplerate.selected_output_default_state(),
         get_coordinator_lock=lambda: getattr(playback_transition_coordinator, "lock", None),
@@ -3545,8 +3498,6 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         get_playback_state=lambda: playback_state,
         get_runtime_player=lambda: runtime.player_instance,
         get_dsp_runtime=lambda: runtime.dsp_runtime,
-        get_dsp_manager=lambda: dsp_manager,
-        get_dsp_preset_load_lock=lambda: runtime.dsp_preset_load_lock,
         get_measurement_session=lambda: measurement_sr_session,
         get_samplerate_status=lambda: get_samplerate_status(),
         get_audio_output_overview=lambda *args, **kwargs: get_audio_output_overview(*args, **kwargs),
@@ -3562,12 +3513,10 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         connect_ports=lambda *args: pw_link.connect_ports(*args),
         contains_link=_contains_link,
         helper_argument_sample_rate=dsp_orchestration.helper_argument_sample_rate,
-        sync_preset_for_samplerate=lambda *args, **kwargs: dsp_orchestrator.sync_preset_for_playback_samplerate(*args, **kwargs),
         sync_runtime=lambda *args, **kwargs: dsp_orchestrator.sync_runtime(*args, **kwargs),
         reconcile_sink_rate=lambda *args, measurement_blocks_rate=_measurement_blocks_playback_rate, **kwargs: samplerate.reconcile_transition_sink_rate(
             *args, measurement_blocks_rate=measurement_blocks_rate, **kwargs
         ),
-        load_dsp_preset=lambda *args, **kwargs: _load_dsp_preset(*args, **kwargs),
         sleep=lambda delay: asyncio.sleep(delay),
         pipewire_poll_interval_ms=media_readiness.PIPEWIRE_HANDOFF_POLL_INTERVAL_MS,
         dsp_port_timeout_ms=PLAYBACK_HANDOFF_DSP_PORT_TIMEOUT_MS,
@@ -5081,6 +5030,15 @@ def _v2_head_for_overview() -> dict | None:
 
 
 samplerate.configure_output_state_head(_v2_head_for_overview)
+
+
+def _active_global_preset() -> str | None:
+    """Global preset of the active output mode (None if the head is unusable)."""
+    head = _v2_head_for_overview()
+    try:
+        return head["modes"][head["active_mode"]]["banks"]["global"]["preset"]
+    except (KeyError, TypeError):
+        return None
 
 
 def _output_state_device(overview: dict) -> tuple[str, int | None]:
@@ -6986,32 +6944,25 @@ async def save_audio_source_selection_route(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to save source mode: {exc}")
 
 
-def _make_preset_load_deps() -> preset_loading.PresetLoadDeps:
-    """Bind the DSP preset-load coordination to the application services.
+def _make_volume_state_deps() -> volume_state.VolumeStateDeps:
+    """Bind the volume-state capture/restore to the application services.
 
     All entries resolve the current runtime state at call time, so tests that
-    patch main attributes observe the patched services through the thin
-    wrappers below (same contract as the other ``configure_*`` extractions).
+    patch main attributes observe the patched services.
     """
-    return preset_loading.PresetLoadDeps(
-        require_dsp_manager=lambda: _require_dsp_manager(),
+    return volume_state.VolumeStateDeps(
         get_dsp_runtime=lambda: runtime.dsp_runtime,
         get_output_volume=lambda: get_output_volume(),
         set_output_volume=lambda value: set_output_volume(value),
         drain_worker=lambda *args, **kwargs: _drain_worker(*args, **kwargs),
-        dsp_mutation_lock=lambda: _dsp_mutation_lock(),
-        canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
-        sync_runtime=lambda *args, **kwargs: dsp_orchestrator.sync_runtime(*args, **kwargs),
     )
 
 
 def _require_dsp_manager():
     """Composition-root guard for the DSP manager singleton (stays in main).
 
-    Kept here (not in dsp.preset_loading) because it guards main's own
-    global and is an established patch seam: the preset-loading module
-    resolves the manager through the injected ``require_dsp_manager``
-    dependency, which delegates to this guard.
+    Kept here because it guards main's own global and is an established
+    patch seam for the API modules' injected ``require_dsp_manager``.
     """
     global dsp_manager
     if not dsp_manager:
@@ -7019,21 +6970,11 @@ def _require_dsp_manager():
     return dsp_manager
 
 
-async def _load_dsp_preset(
-    preset_name: str, *, convolver_sample_rate_hz: int | None = None,
-    _locks_held: bool = False, _rate_lock_held: bool = False,
-) -> None:
-    """Thin wrapper: DSP preset loading lives in dsp.preset_loading (REFACTOR-016)."""
-    await preset_loading._load_dsp_preset(
-        preset_name, convolver_sample_rate_hz=convolver_sample_rate_hz,
-        _locks_held=_locks_held, _rate_lock_held=_rate_lock_held)
-
-
 async def _volume_state_for_manager(
     manager, *, live_master: int | None = None
 ) -> volume_contract.VolumeState:
-    """Thin wrapper: DSP preset loading lives in dsp.preset_loading (REFACTOR-016)."""
-    return await preset_loading._volume_state_for_manager(manager, live_master=live_master)
+    """Thin wrapper: the volume-state capture lives in dsp.volume_state (REFACTOR-016)."""
+    return await volume_state._volume_state_for_manager(manager, live_master=live_master)
 
 
 @app.get("/api/library/status")
@@ -7595,7 +7536,7 @@ def run_server():
 
 
 dsp_api.register_dsp_routes(app, _make_dsp_api_deps())
-preset_loading.configure_preset_loading(_make_preset_load_deps())
+volume_state.configure_volume_state(_make_volume_state_deps())
 canonical_volume.configure_canonical_volume(_make_canonical_volume_deps())
 power_api.register_power_routes(app, power_api.PowerApiDeps(
     is_origin_trusted=is_request_origin_trusted,

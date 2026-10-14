@@ -162,7 +162,7 @@ function selectorExistsIn(selector, html) {
     // the interceptor for the DSP preset switch.
     const actionLines = [tourSource, bootSource].join('\n');
     assert.ok(actionLines.includes('FXROUTE_DEMO_STATE'), 'tour actions must use the demo state API');
-    assert.ok(actionLines.includes('/api/dsp/presets/load'), 'tour must switch presets via the demo API');
+    assert.ok(actionLines.includes('/api/audio/output-state/apply'), 'tour must switch presets via the output-state API');
 
     // Reachable from the demo banner: boot.js creates the tour trigger.
     assert.ok(bootSource.includes('demo-tour-start'),

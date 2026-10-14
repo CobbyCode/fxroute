@@ -63,10 +63,9 @@ class DSPManagerPresetTests(unittest.TestCase):
                 {"filterType": "bell", "frequencyHz": 80, "gainDb": -3, "q": 1.2}
             ]},
         })
-        self.manager.load_preset("Room")
         config = self.manager.compile_engine_config(
             [{"name": "front-left", "source": 0}, {"name": "sub", "source": 0}],
-            sample_rate_hz=96000,
+            preset_name="Room", sample_rate_hz=96000,
         )
         self.assertEqual((config["schema"], config["version"]), ("fxroute.dsp.engine", 1))
         self.assertEqual([channel["name"] for channel in config["outputs"]], ["front-left", "sub"])
@@ -81,10 +80,9 @@ class DSPManagerPresetTests(unittest.TestCase):
             handle.setframerate(48000)
             handle.writeframes(b"\x00\x00\x00\x40")
         self.manager.create_convolver_preset("Room IR", ir.name)
-        self.manager.load_preset("Room IR")
         texts = [self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
-            sample_rate_hz=rate,
+            preset_name="Room IR", sample_rate_hz=rate,
         ) for rate in (44100, 48000, 96000)]
         self.assertTrue(all('param path ' in text for text in texts))
         self.assertEqual([text.split('param path ', 1)[1].splitlines()[0] for text in texts],
@@ -330,7 +328,6 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.assertEqual(ir.name, f"{name}.irs")
         self.assertEqual(created["preset"]["name"], name)
         # The engine config must resolve the dotted kernel back to the IR.
-        self.manager.load_preset(name)
         text = self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
             preset_name=name, sample_rate_hz=48000,

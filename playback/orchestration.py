@@ -137,8 +137,6 @@ class PlaybackOrchestrationDeps:
     get_playback_state: Callable[[], Any]
     get_runtime_player: Callable[[], Any]
     get_dsp_runtime: Callable[[], Any]
-    get_dsp_manager: Callable[[], Any]
-    get_dsp_preset_load_lock: Callable[[], Any]
     get_measurement_session: Callable[[], Any]
     get_samplerate_status: Callable[[], Mapping[str, Any]]
     get_audio_output_overview: Callable[[], dict]
@@ -153,10 +151,8 @@ class PlaybackOrchestrationDeps:
     connect_ports: Callable[..., Awaitable[None]]
     contains_link: Callable[[str, str, str], bool]
     helper_argument_sample_rate: Callable[[dict | None], int | None]
-    sync_preset_for_samplerate: Callable[..., Awaitable[Any]]
     sync_runtime: Callable[..., Awaitable[Any]]
     reconcile_sink_rate: Callable[..., Awaitable[bool]]
-    load_dsp_preset: Callable[..., Awaitable[Any]]
     sleep: Callable[[float], Awaitable[Any]]
     pipewire_poll_interval_ms: int
     dsp_port_timeout_ms: int
@@ -376,15 +372,7 @@ class PlaybackOrchestrator:
         coordinator = self._deps.get_coordinator()
         validator = getattr(coordinator, "recovery_context_is_current", None)
         if callable(validator) and not validator(expected_context):
-            gate = getattr(coordinator, "gate", None)
-            latch_reentry = bool(
-                request.detail == "subwoofer-link-watcher"
-                and getattr(coordinator, "last_successful_commit_id", None) == expected_context
-                and getattr(gate, "failure_latched", False)
-                and not getattr(coordinator, "transition_active", False)
-            )
-            if not latch_reentry:
-                return False
+            return False
         elif not callable(validator) and (
             self.coordinator_commit_context_id() != expected_context or self.transition_is_active()
         ):
@@ -951,7 +939,7 @@ class PlaybackOrchestrator:
     async def establish_effects_and_helper(self, request: TransitionRequest, *, dsp_port_timeout_ms: int | None = None,
                                          _configuration_locks_held: bool = False) -> dict[str, Any]:
         target_rate = request.target_rate
-        empty = {"dsp_reinitialized": False, "preset_reloaded": False, "helper_rebuilt": False, "links_reconciled": False}
+        empty = {"dsp_reinitialized": False, "helper_rebuilt": False, "links_reconciled": False}
         if not isinstance(target_rate, int) or target_rate <= 0:
             return empty
         timeout = self._deps.dsp_port_timeout_ms if dsp_port_timeout_ms is None else dsp_port_timeout_ms
@@ -962,84 +950,42 @@ class PlaybackOrchestrator:
         )
         mode = (overview.get("output_mode") or {}).get("mode")
         diagnosis = await self.playback_graph_diagnosis(overview, target_rate=target_rate)
-        preset_reloaded = helper_rebuilt = links_reconciled = False
-        manager = self._deps.get_dsp_manager()
+        dsp_reinitialized = helper_rebuilt = links_reconciled = False
         if request.graph_only:
             if not diagnosis.get("bypass_only"):
                 raise RuntimeError(f"graph-only reconciliation requested for a non-bypass graph: signature={diagnosis.get('signature')}")
             await self.reconcile_subwoofer_links_only()
             links_reconciled = True
         else:
-            # A v2 transition stages its plan-derived graph (including the
-            # global bank's active preset) directly: legacy preset/compare
-            # handling would stage a legacy graph first and is skipped.
-            # v2_pending below reuses this decision for the port wait.
-            v2_staging = (request.operation == "output-mode-switch"
-                          and (request.output_state_transition or {}).get("target") is not None)
-            needs_preset = not diagnosis.get("dsp_ports")
-            if request.operation == "output-mode-switch" and manager is not None and not v2_staging:
-                compare = manager.load_compare_state(); side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
-                target = compare.get("presetA") if side == "A" else compare.get("presetB") if side == "B" else None
-                if target and manager.get_active_preset() != target:
-                    await self._deps.load_dsp_preset(target, convolver_sample_rate_hz=target_rate); needs_preset = preset_reloaded = True
-            if needs_preset and not preset_reloaded and not v2_staging:
-                await self._deps.sync_preset_for_samplerate(
-                    sample_rate_hz=target_rate,
+            # An output-mode switch stages its own planned graph: staging may
+            # cold-start the engine and reconciles its links. Every other
+            # operation starts a missing engine through the runtime sync
+            # before it waits for the DSP ports.
+            mode_switch = request.operation == "output-mode-switch"
+            planned_target = (request.output_state_transition or {}).get("target")
+            if mode_switch and planned_target is None:
+                raise RuntimeError("Coordinator output-mode switch requires a planned target")
+            if not mode_switch and not diagnosis.get("dsp_ports"):
+                await self._deps.sync_runtime(
                     reason=f"coordinator-{request.operation}",
-                    detail=request.detail,
                     # The measurement entry owns the sample-rate session lock
-                    # for its whole transition; the nested preset reload must
-                    # not re-enter it (same contract as the direct helper
-                    # syncs below).
+                    # for its whole transition; this nested sync must not
+                    # re-enter it (same contract as the helper syncs below).
                     _rate_lock_held=_configuration_locks_held or request.operation in {"measurement-entry", "measurement-restore"},
-                    **({"_locks_held": True} if _configuration_locks_held else {}),
                 )
-                preset_reloaded = True
-            v2_pending = (request.operation == "output-mode-switch"
-                          and (request.output_state_transition or {}).get("target") is not None)
-            # A v2 transition may cold-start the engine: staging creates the
-            # ports, so the pre-staging wait only gates the legacy path.
-            if not v2_pending and not await self.wait_for_dsp_output_ports(timeout):
+                dsp_reinitialized = True
+            if not mode_switch and not await self.wait_for_dsp_output_ports(timeout):
                 raise RuntimeError("Coordinator effects stage failed: native DSP output ports were not confirmed")
             if request.operation in {"measurement-entry", "output-mode-switch"} and not await self._deps.reconcile_sink_rate(target_rate, reason=f"effects-{request.operation}"):
                 status = dict(await asyncio.to_thread(self._deps.get_samplerate_status))
                 raise RuntimeError(f"Coordinator effects stage rate reconcile failed: expected={target_rate} active={status.get('active_rate')} force={status.get('force_rate')}")
-            if request.operation == "output-mode-switch":
-                if v2_pending:
-                    # No legacy preset sync (it would stage a legacy graph
-                    # first), no legacy sub/stereo/compare follow-ups (the
-                    # runtime reconciled its own links while staging).
-                    v2_target = (request.output_state_transition or {}).get("target")
-                    if self._deps.sync_plan_runtime is None:
-                        raise RuntimeError("Coordinator plan runtime sync is unavailable")
-                    await self._deps.sync_plan_runtime(
-                        v2_target, reason="coordinator-output-mode-switch")
-                    helper_rebuilt = True
-                    links_reconciled = True
-                else:
-                    await self._deps.sync_runtime(audio_overview=overview, reason="coordinator-output-mode-switch", _rate_lock_held=False, target_overview=overview)
-                    helper_rebuilt = True
-                    if mode in self._deps.output_mode_subwoofer_modes:
-                        await self.reconcile_subwoofer_links_only()
-                    elif not diagnosis.get("links_complete"):
-                        if diagnosis.get("bypass_only"):
-                            await self.reconcile_subwoofer_links_only()
-                        else:
-                            await self.repair_stereo_output_links_once(diagnosis)
-                    if manager is not None:
-                        lock = self._deps.get_dsp_preset_load_lock()
-                        if lock is None:
-                            lock = asyncio.Lock()
-                        async with lock:
-                            compare = manager.load_compare_state()
-                            side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
-                            target = compare.get("presetA") if side == "A" else compare.get("presetB") if side == "B" else None
-                            if target and manager.get_active_preset() != target:
-                                await self._deps.load_dsp_preset(target, convolver_sample_rate_hz=target_rate)
-                                if not await self.wait_for_dsp_output_ports(timeout):
-                                    raise RuntimeError("Coordinator compare preset restore did not recreate native DSP output ports")
-                                preset_reloaded = True
-                    links_reconciled = True
+            if mode_switch:
+                if self._deps.sync_plan_runtime is None:
+                    raise RuntimeError("Coordinator plan runtime sync is unavailable")
+                await self._deps.sync_plan_runtime(
+                    planned_target, reason="coordinator-output-mode-switch")
+                helper_rebuilt = True
+                links_reconciled = True
             else:
                 snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}
                 helper_needs_sync = bool(request.rate_change or not snapshot.get("active") or self._deps.helper_argument_sample_rate(snapshot) != target_rate or not diagnosis.get("helper_ports") or not all(diagnosis.get("links", {}).values()))
@@ -1085,7 +1031,7 @@ class PlaybackOrchestrator:
         if not final.get("links_complete"):
             self.log_playback_graph_diagnosis(final, target_rate=target_rate, reason=f"coordinator-{request.operation}", detail=request.detail)
             raise RuntimeError("Coordinator effects/helper graph did not reach the canonical topology")
-        return {"dsp_reinitialized": preset_reloaded, "preset_reloaded": preset_reloaded, "helper_rebuilt": helper_rebuilt, "links_reconciled": links_reconciled, "graph_complete": True, "graph_signature": final.get("signature")}
+        return {"dsp_reinitialized": dsp_reinitialized, "helper_rebuilt": helper_rebuilt, "links_reconciled": links_reconciled, "graph_complete": True, "graph_signature": final.get("signature")}
 
     async def playback_graph_links_complete(self, audio_overview: dict | None = None, *, source: str | None = None, target_rate: int | None = None, require_source: bool = False) -> bool:
         return (await self.playback_graph_diagnosis(audio_overview, source=source, target_rate=target_rate, require_source=require_source))["links_complete"]

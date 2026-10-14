@@ -487,26 +487,26 @@ class DSPManager:
                 "output-gain": 0.0 - plugin_volume_db if definition["enabled"] else 0.0}
 
     def __init__(self, home: Optional[Path] = None,
-                  apply_callback: Optional[Callable[[Dict[str, Any]], Any]] = None):
+                 active_preset_reader: Optional[Callable[[], Optional[str]]] = None):
         self.home = Path(home or Path.home())
         self.base_dir = self.home / ".config/fxroute/dsp"
         self.output_dir = self.base_dir / "presets"
         self.irs_dir = self.base_dir / "irs"
         self.state_dir = self.base_dir / "state"
         self.global_extras_file = self.state_dir / "extras.json"
-        self.compare_state_file = self.state_dir / "compare.json"
         for directory in (self.output_dir, self.irs_dir, self.state_dir):
             directory.mkdir(parents=True, exist_ok=True)
         self.presets = DSPPresetLibrary(self.output_dir, self.irs_dir)
         self.state_store = DSPStateStore(self.state_dir)
-        self.apply_callback = apply_callback
+        # The Global preset of the active output mode lives in the output
+        # state; the composition root installs its reader.
+        self.active_preset_reader = active_preset_reader
         self.runtime_transition_callback = None
         self.temporary_runtime_transition_callback = None
         self.legacy_extras_candidates = (
             self.home / ".var/app/com.github.wwmm.easyeffects/config/easyeffects/agent-output-extras.json",
             self.home / ".config/easyeffects/agent-output-extras.json",
         )
-        self._bootstrap()
         self._migrate_legacy_extras()
 
     def _migrate_legacy_extras(self) -> None:
@@ -575,8 +575,7 @@ class DSPManager:
         """Preset store of one filterbank; Global has one per output mode.
 
         A preset name is unique within its bank only. Without a bank this is
-        the Stereo Global store, which also holds the single active preset
-        of the fallback graph (``load_preset``, ``active.json``).
+        the Stereo Global store.
         """
         return self.presets.store(bank, mode)
 
@@ -595,16 +594,6 @@ class DSPManager:
             raise ValueError("A speaker group applies to the Global bank only")
         return group
 
-    def _bootstrap(self) -> None:
-        active = self.state_store.read("active.json", {})
-        if not isinstance(active, dict) or active.get("preset") not in self._library_names():
-            self.state_store.write("active.json", {"schema": "fxroute.dsp.active", "version": 1,
-                                                   "preset": "Neutral"})
-
-    def _library_names(self, bank: Any = None, mode: Any = None) -> List[str]:
-        """Built-ins first, then the presets of one bank."""
-        return [*SURROUND_BUILTINS, *(entry["name"] for entry in self.library(bank, mode).list())]
-
     def list_presets(self) -> List[dict]:
         """The built-ins, valid in every bank, then every bank's own presets."""
         builtins = [{"name": name, "filename": None, "path": None, "bank": None, "mode": None,
@@ -617,46 +606,9 @@ class DSPManager:
                  "size": path.stat().st_size} for path in self.library(bank, mode).irs()]
 
     def get_active_preset(self) -> Optional[str]:
-        state = self.state_store.read("active.json", {})
-        return state.get("preset") if isinstance(state, dict) else None
-
-    def load_preset(self, preset_name: str,
-                    convolver_sample_rate_hz: Optional[int] = None) -> None:
-        name = clean_name(preset_name)
-        self.library().read(name)
-        config = self.compile_engine_config(
-            [{"name": "left", "source": 0}, {"name": "right", "source": 1}],
-            preset_name=name, sample_rate_hz=convolver_sample_rate_hz or 48000,
-        )
-        if self.apply_callback:
-            self.apply_callback({"operation": "load_preset", "preset": name, "config": config})
-        self.state_store.write("active.json", {"schema": "fxroute.dsp.active", "version": 1,
-                                               "preset": name})
-
-    def normalize_compare_state(self, compare: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        compare = compare if isinstance(compare, dict) else {}
-        available = set(self._library_names())
-        preset_a = compare.get("presetA") if compare.get("presetA") in available else ""
-        preset_b = compare.get("presetB") if compare.get("presetB") in available else ""
-        if preset_a == preset_b:
-            preset_b = ""
-        active_side = compare.get("activeSide") if compare.get("activeSide") in {"A", "B"} else None
-        if not preset_a:
-            preset_a = self.get_active_preset() or ""
-        if active_side == "B" and not preset_b:
-            active_side = None
-        if active_side is None:
-            active = self.get_active_preset()
-            active_side = "A" if active == preset_a else "B" if active == preset_b else None
-        return {"presetA": preset_a, "presetB": preset_b, "activeSide": active_side}
-
-    def load_compare_state(self) -> Dict[str, Any]:
-        return self.normalize_compare_state(self.state_store.read("compare.json", {}))
-
-    def save_compare_state(self, compare: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        normalized = self.normalize_compare_state(compare)
-        self.state_store.write("compare.json", normalized)
-        return normalized
+        """The Global preset of the active output mode (None while unknown)."""
+        reader = self.active_preset_reader
+        return reader() if reader is not None else None
 
     def load_global_extras(self) -> Dict[str, Any]:
         return self.normalize_effects_extras(self.state_store.read("extras.json", {}))
@@ -670,7 +622,6 @@ class DSPManager:
         normalized = self.save_global_extras(extras)
         updated = len([p for p in self.list_presets()
                        if p["name"] not in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS])
-        self._notify_active_config()
         return {"extras": normalized, "updated": updated,
                 "skipped": sorted(self.EXCLUDED_GLOBAL_EXTRAS_PRESETS)}
 
@@ -678,8 +629,6 @@ class DSPManager:
         normalized = self.save_global_extras(extras)
         active = self.get_active_preset()
         skipped = [active] if active in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS else []
-        if not skipped:
-            self._notify_active_config()
         return {"extras": normalized, "updated": 0 if skipped else 1, "skipped": skipped}
 
     def apply_autogain_loudness_runtime(self, previous_extras: Dict[str, Any],
@@ -721,12 +670,6 @@ class DSPManager:
         self.temporary_runtime_transition_callback(
             self.normalize_effects_extras(previous_extras),
             self.normalize_effects_extras(extras))
-
-    def _notify_active_config(self) -> None:
-        if self.apply_callback:
-            config = self.compile_engine_config(
-                [{"name": "left", "source": 0}, {"name": "right", "source": 1}])
-            self.apply_callback({"operation": "configure", "config": config})
 
     def _validate_supported_chain(self, chain: List[dict]) -> None:
         for plugin in chain:
@@ -872,10 +815,10 @@ class DSPManager:
                                mode: Optional[str] = None,
                                sample_rate_hz: int = 48000,
                                extras_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Engine configuration of one Global preset.
+        """Engine configuration of one Global preset (Neutral when none is named).
 
         ``mode`` names the output mode whose Global bank holds the preset;
-        without it the Stereo Global one, where the active preset lives.
+        without it the Stereo Global one.
         """
         if not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be a positive integer")
@@ -958,7 +901,7 @@ class DSPManager:
                 if channel["input_positions"] != list(SURROUND_POSITIONS):
                     raise ValueError("Surround requires the canonical eight input positions")
                 outputs[-1]["input_positions"] = list(SURROUND_POSITIONS)
-        active = clean_name(preset_name or self.get_active_preset())
+        active = clean_name(preset_name or "Neutral")
         payload = self.library("global", mode).read(active)
         chain = copy.deepcopy(payload["chain"])
         if preset_layout(payload) == SURROUND_LAYOUT:
@@ -1600,11 +1543,6 @@ class DSPManager:
         self.library(bank, mode).read(name)
         return name
 
-    def is_active_preset(self, preset_name: str, bank: Any = None, mode: Any = None) -> bool:
-        """Whether a bank's preset is the active preset of the fallback graph (Stereo Global)."""
-        store = self.library(bank, mode)
-        return (store.bank, store.mode) == ("global", "stereo") and self.get_active_preset() == clean_name(preset_name)
-
     def delete_preset(self, preset_name: str, *, bank: Any = None, mode: Any = None,
                       pinned_presets: tuple[str, ...] | frozenset[str] | set[str] | list[str] = ()) -> None:
         """Delete one bank's preset; ``pinned_presets`` are the names its bank's slots still hold."""
@@ -1614,16 +1552,6 @@ class DSPManager:
         store = self.library(bank, mode)
         kernels = store.kernels(store.read(name))
         preset_path = store.path(name)
-        active = self.is_active_preset(name, bank, mode)
-        if active:
-            # Pre-flight the Neutral fallback before mutating anything: a
-            # fallback that cannot load must fail here, never after the
-            # preset file is already gone (which would leave active.json
-            # pointing at a missing preset).
-            self.compile_engine_config(
-                [{"name": "left", "source": 0}, {"name": "right", "source": 1}],
-                preset_name="Neutral", sample_rate_hz=48000,
-            )
         # Stage every removal as a same-directory rename first: any later
         # persist/apply failure restores the exact previous files instead
         # of leaving a half-deleted preset behind.
@@ -1634,8 +1562,6 @@ class DSPManager:
             for kernel in orphaned:
                 for path in store.find_ir_paths(kernel):
                     self._stage_delete_path(path, staged)
-            if active:
-                self.load_preset("Neutral")
         except BaseException:
             for original, backup in reversed(staged):
                 try:
@@ -1889,12 +1815,11 @@ class DSPManager:
         presets = self.list_presets()
         return {"available": True, "mode": "native", "runtime": {"owner": "fxroute"},
                 "preset_count": len(presets), "active_preset": self.get_active_preset(),
-                "presets": presets, "compare": self.load_compare_state(),
+                "presets": presets,
                 "irs": [{"name": path.name, "basename": path.stem, "path": str(path), "size": path.stat().st_size,
                          "bank": store.bank, "mode": store.mode}
                         for store in self.presets.stores() for path in store.irs()],
                 "global_extras": self.load_global_extras(),
                 "global_extras_excluded_presets": sorted(self.EXCLUDED_GLOBAL_EXTRAS_PRESETS),
                 "paths": {"output": str(self.output_dir), "irs": str(self.irs_dir),
-                          "state": str(self.state_dir), "global_extras": str(self.global_extras_file),
-                          "compare_state": str(self.compare_state_file)}}
+                          "state": str(self.state_dir), "global_extras": str(self.global_extras_file)}}

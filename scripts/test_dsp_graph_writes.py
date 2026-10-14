@@ -181,8 +181,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
             await sync
         self.assertFalse(self.engine.snapshot()["active"])
 
-    async def test_extras_use_v2_global_slot_not_legacy_direct(self):
-        self.manager.state_store.write("active.json", {"preset": "Direct"})
+    async def test_extras_use_v2_global_slot(self):
         self.manager.runtime_transition_callback = None
         with mock.patch.object(main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
                 main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
@@ -191,17 +190,14 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "ok")
         self.assertTrue(self.engine.snapshot()["active"])
         self.assertIn("param gain_db -6\n", self.engine._config_text)
-        self.assertEqual(self.manager.get_active_preset(), "Direct")
         self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["global"]["preset"], "Neutral")
 
-    async def test_v2_direct_does_not_reload_legacy_preset(self):
+    async def test_v2_direct_keeps_extras_out_of_the_graph(self):
         self.service.apply(lambda state: set_bank_preset(state, "stereo-sub", "global", preset="Direct"),
                            expected_revision=1)
-        with mock.patch.object(main, "_load_dsp_preset", mock.AsyncMock()) as legacy, mock.patch.object(
-                main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
+        with mock.patch.object(main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
                 main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             await dsp_api.save_dsp_extras(lifecycle.FakeRequest({"headroomGainDb": -6}))
-        legacy.assert_not_awaited()
         self.assertTrue(self.engine.snapshot()["active"])
         self.assertNotIn("param gain_db -6\n", self.engine._config_text)
 
@@ -274,7 +270,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.edit(), 2)
         self.assertEqual(self.engine.snapshot()["config"]["layout"][2]["gain_db"], -7)
 
-    async def test_ordinary_extras_use_guarded_worker_bridge_without_legacy_reload(self):
+    async def test_ordinary_extras_use_guarded_worker_bridge(self):
         loop = asyncio.get_running_loop()
 
         def transition(previous, candidate, persist_all):
@@ -282,13 +278,10 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
                 main._guarded_effects_transition(previous, candidate, persist_all), loop).result(5)
 
         self.manager.runtime_transition_callback = transition
-        self.manager.state_store.write("active.json", {"preset": "Direct"})
-        with mock.patch.object(main, "_load_dsp_preset", mock.AsyncMock()) as legacy, mock.patch.object(
-                main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
+        with mock.patch.object(main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
                 main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             await asyncio.wait_for(dsp_api.save_dsp_extras(lifecycle.FakeRequest({
                 "headroomEnabled": True, "headroomGainDb": -6})), 5)
-        legacy.assert_not_awaited()
         self.assertIn("param gain_db -6\n", self.engine._config_text)
         self.assertTrue(self.manager.load_global_extras()["headroom"]["enabled"])
         self.assertFalse(main._dsp_graph_write_lock().locked())
@@ -376,7 +369,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(self.engine, "_preflight_text", side_effect=reject_rollback), mock.patch.object(
                 self.engine, "ramp_output_gain_db", mock.AsyncMock(side_effect=RuntimeError("ramp failed"))), mock.patch.object(
-                main.preset_loading, "_restore_volume_state", mock.AsyncMock()):
+                main.volume_state, "_restore_volume_state", mock.AsyncMock()):
             with self.assertRaises(RuntimeError):
                 await dsp_api.save_dsp_extras(lifecycle.FakeRequest({
                     "headroomEnabled": True, "headroomGainDb": -6}))

@@ -149,11 +149,10 @@ def test_parser_loads_manager_generated_maximum_dual_peq(tmp_path):
     manager.create_peq_preset("Maximum", {
         "params": {"channelMode": "dual", "leftBands": bands, "rightBands": bands},
     })
-    manager.load_preset("Maximum")
     config = tmp_path / "maximum.conf"
     config.write_text(manager.compile_engine_text([
         {"name": "FL", "source": 0}, {"name": "FR", "source": 1},
-    ]))
+    ], preset_name="Maximum"))
     source = tmp_path / "maximum.f32"
     target = tmp_path / "maximum-output.f32"
     array.array("f", [0., 0.]).tofile(source.open("wb"))

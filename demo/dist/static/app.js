@@ -749,7 +749,6 @@ let state = {
         },
         peqDraft: {
             presetName: '',
-            loadAfterCreate: false,
             leftBands: [],
             rightBands: [],
         },
@@ -1876,13 +1875,11 @@ function handleWebSocketMessage(msg) {
             }
             break;
         case 'dsp':
-            const prev = state.dsp?.compare;
             const presetNames = (data.presets || []).map(p => p.name);
             state.dsp = {
                 ...data,
                 combineDraft: state.dsp?.combineDraft || window.FXRouteBankUI.getDefaultEffectsCombineDraft(),
-                peqDraft: state.dsp?.peqDraft || { presetName: '', eqMode: 'IIR', loadAfterCreate: false, leftBands: [EffectsUI.defaultPeqBand()], rightBands: [EffectsUI.defaultPeqBand()] },
-                compare: window.FXRouteBankUI.resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
+                peqDraft: state.dsp?.peqDraft || { presetName: '', eqMode: 'IIR', leftBands: [EffectsUI.defaultPeqBand()], rightBands: [EffectsUI.defaultPeqBand()] },
             };
             state.dsp.combineDraft = window.FXRouteBankUI.normalizeEffectsCombineDraft(state.dsp.combineDraft, presetNames);
             EffectsUI.renderEffects();

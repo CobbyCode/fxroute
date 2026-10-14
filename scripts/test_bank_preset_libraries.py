@@ -168,29 +168,6 @@ class LibraryTests(Fixture):
         self.assertEqual(sorted(path.name for path in self.manager.output_dir.rglob("*.json")),
                          ["Room.json", "Stray.json", "Stray.json", "Stray.json"])
 
-    def test_an_activated_stereo_global_preset_survives_a_restart(self):
-        """Activation goes through load_preset, the store the load API reads."""
-        self.create("Room", -1.0)
-        self.create("Room", -9.0, "main")
-        self.manager.load_preset("Room")
-        for _ in range(2):
-            self.manager = DSPManager(home=self.home)
-            self.assertEqual(self.manager.get_active_preset(), "Room")
-        self.assertTrue(self.manager.is_active_preset("Room"))
-        self.assertEqual(gain(self.manager.library().read("Room")), -1.0)
-
-    def test_only_a_stereo_global_name_can_be_active(self):
-        """Another library's name is refused; no path writes one into active.json."""
-        self.create("Room", -1.0)
-        self.create("Sub", -2.0, "global", "stereo-sub")
-        self.create("Area", -3.0, "main")
-        self.manager.load_preset("Room")
-        for name in ("Sub", "Area", "Missing"):
-            with self.subTest(name=name), self.assertRaises(FileNotFoundError):
-                self.manager.load_preset(name)
-        self.assertEqual(self.manager.get_active_preset(), "Room")
-        self.assertEqual(DSPManager(home=self.home).get_active_preset(), "Room")
-
     def test_uploaded_ir_belongs_to_the_bank_of_its_preset(self):
         for bank, sample in (("main", 0.5), ("sub1", 0.25)):
             source = self.home / f"{bank}.wav"
@@ -226,26 +203,6 @@ class LibraryTests(Fixture):
         self.assertEqual(created["bank"], "global")
         self.assertEqual(self.stored("Imported"), [STEREO_SUB])
         self.assertEqual(json.loads(self.manager.export_preset_json("Imported", "global", "stereo-sub"))["chain"], [])
-
-    def test_only_the_stereo_global_preset_is_the_active_one(self):
-        for bank, mode in (("global", "stereo"), STEREO_SUB, ("sub1", None)):
-            self.create("Room", -1.0, bank, mode)
-        self.manager.load_preset("Room")
-        for bank, mode in (STEREO_SUB, ("sub1", None)):
-            self.assertFalse(self.manager.is_active_preset("Room", bank, mode))
-            self.manager.delete_preset("Room", bank=bank, mode=mode)
-            self.assertEqual(self.manager.get_active_preset(), "Room")
-        self.assertTrue(self.manager.is_active_preset("Room"))
-        self.manager.delete_preset("Room")
-        self.assertEqual(self.manager.get_active_preset(), "Neutral")
-        # A restart keeps an active preset only while Stereo Global still has it.
-        # Only a foreign active.json (an old flat library) can name another one:
-        # no current path writes a name it could not read back, see
-        # test_only_a_stereo_global_name_can_be_active.
-        self.create("Room", -1.0, "sub1")
-        self.manager.state_store.write("active.json", {"schema": "fxroute.dsp.active", "version": 1, "preset": "Room"})
-        self.assertEqual(DSPManager(home=self.home).get_active_preset(), "Neutral")
-
 
 class OutputStateTests(Fixture):
     def setUp(self):
@@ -421,13 +378,12 @@ class ApiTests(Fixture):
 
         previous = api._runtime.deps
         self.addCleanup(api.configure_dsp_api, previous)
-        self.load_dsp_preset = AsyncMock()
         api.configure_dsp_api(api.DspApiDeps(
             require_dsp_manager=lambda: self.manager, get_dsp_manager=lambda: self.manager,
-            get_dsp_runtime=lambda: None, get_dsp_preset_load_lock=lambda: asyncio.Lock(),
+            get_dsp_runtime=lambda: None,
             dsp_mutation_lock=lambda: asyncio.Lock(), canonical_volume_write_lock=lambda: asyncio.Lock(),
             drain_worker=drain, run_locked_worker=drain, broadcast=AsyncMock(),
-            load_dsp_preset=self.load_dsp_preset, restore_volume_state=AsyncMock(),
+            restore_volume_state=AsyncMock(),
             volume_state_for_manager=lambda *args, **kwargs: {},
             schedule_peak_monitor_refresh=lambda *args, **kwargs: None,
             get_output_service=lambda: self.service,
@@ -478,7 +434,7 @@ class ApiTests(Fixture):
                             expected_revision=state["revision"])
         self.create_peq("Room", -1.0, "sub_l")
         response = self.client.post("/api/dsp/presets/create-with-ir", data={
-            "preset_name": "Conv", "load_after_create": "false", **self.owner("sub_l"),
+            "preset_name": "Conv", **self.owner("sub_l"),
             "expected_revision": str(self.service.load()["revision"])},
             files={"file": ("upload.wav", mono_ir(0.5, 0.0), "audio/wav")})
         self.assertEqual(response.status_code, 200, response.text)
@@ -512,35 +468,24 @@ class ApiTests(Fixture):
         self.route("main_l", "main_r", "sub_l", "sub_r")
         self.assertEqual(self.create_peq("Back", -4.0, "sub_l")["bank"]["bank_id"], "sub")
 
-    def test_load_after_create_activates_a_bank_preset_through_its_bank(self):
-        """Only Stereo Global loads into the fallback graph; other banks are assigned."""
-        self.create_peq("Room", -1.0, "global", "stereo")
-        self.load_dsp_preset.reset_mock()
+    def test_a_created_bank_preset_is_activated_by_its_bank_assignment(self):
         for bank, mode in (("main", "stereo-sub"), ("sub1", "stereo-sub"), ("global", "stereo-sub")):
             with self.subTest(bank=bank, mode=mode):
-                created = self.create_peq("Room", -2.0, bank, mode, loadAfterCreate=True)
-                self.assertTrue(created["loaded"])
+                created = self.create_peq("Room", -2.0, bank, mode)
                 self.assertTrue(created["bank"]["assigned"])
-        self.load_dsp_preset.assert_not_awaited()
         banks = self.service.load()["modes"]["stereo-sub"]["banks"]
         self.assertEqual({role: banks[role]["preset"] for role in ("global", "main_l", "main_r", "sub1")},
                          dict.fromkeys(("global", "main_l", "main_r", "sub1"), "Room"))
-        self.create_peq("Hall", -3.0, "global", "stereo", loadAfterCreate=True)
-        self.load_dsp_preset.assert_awaited_once_with("Hall")
 
-    def test_combine_loads_only_a_stereo_global_preset(self):
-        for bank, mode in (("main", "stereo-sub"), ("global", "stereo")):
-            for name in ("A", "B"):
-                self.create_peq(name, -1.0, bank, mode)
-        refused = self.client.post("/api/dsp/presets/combine", json={
-            "presetName": "Both", "presetNames": ["A", "B"], "loadAfterCreate": True, **self.owner("main")})
-        self.assertEqual(refused.status_code, 400, refused.text)
-        self.assertEqual(self.stored("Both"), [])
+    def test_combine_creates_in_the_owners_bank_without_activating(self):
+        for name in ("A", "B"):
+            self.create_peq(name, -1.0, "main", "stereo-sub")
+        before = self.service.load()
         combined = self.client.post("/api/dsp/presets/combine", json={
-            "presetName": "Both", "presetNames": ["A", "B"], "loadAfterCreate": True,
-            **self.owner("global", "stereo")})
+            "presetName": "Both", "presetNames": ["A", "B"], **self.owner("main")})
         self.assertEqual(combined.status_code, 200, combined.text)
-        self.load_dsp_preset.assert_awaited_once_with("Both")
+        self.assertEqual(self.stored("Both"), [("main", None)])
+        self.assertEqual(self.service.load(), before)
 
     def test_download_serves_the_named_banks_preset(self):
         self.create_peq("Room", -1.0, "global")
@@ -558,7 +503,7 @@ class ApiTests(Fixture):
     def test_download_bundles_the_banks_own_ir(self):
         for bank, sample in (("main", 0.5), ("sub1", 0.25)):
             response = self.client.post("/api/dsp/presets/create-with-ir", data={
-                "preset_name": "Room", "load_after_create": "false", **self.owner(bank),
+                "preset_name": "Room", **self.owner(bank),
                 "expected_revision": str(self.service.load()["revision"])},
                 files={"file": ("upload.wav", mono_ir(sample, 0.0), "audio/wav")})
             self.assertEqual(response.status_code, 200, response.text)
@@ -578,7 +523,7 @@ class ApiTests(Fixture):
                                       "input_gain_db": 0.0, "output_gain_db": 0.0}}]}))
             archive.writestr("Kernel.wav", mono_ir(0.5, 0.0))
         response = self.client.post("/api/dsp/presets/import-bundle", data={
-            "load_after_create": "false", **self.owner("sub1"),
+            **self.owner("sub1"),
             "expected_revision": str(self.service.load()["revision"])},
             files={"file": ("Bundle.zip", buffer.getvalue(), "application/zip")})
         self.assertEqual(response.status_code, 200, response.text)

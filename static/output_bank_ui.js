@@ -53,34 +53,6 @@
     let _bankImportChannelMode = null;
     let effectsImportInFlight = false;
 
-    function normalizeEffectsCompareSelection(compare = {}) {
-        const presetA = typeof compare.presetA === 'string' ? compare.presetA : '';
-        let presetB = typeof compare.presetB === 'string' ? compare.presetB : '';
-        const activeSide = compare.activeSide === 'A' || compare.activeSide === 'B' ? compare.activeSide : null;
-        if (presetA && presetB && presetA === presetB) {
-            presetB = '';
-        }
-        return { presetA, presetB, activeSide };
-    }
-
-    function resolveEffectsCompareState(compare, presets = [], activePreset = '') {
-        const server = normalizeEffectsCompareSelection(compare || {});
-        const presetSet = new Set((presets || []).filter(Boolean));
-        const presetA = presetSet.has(server.presetA) ? server.presetA : (activePreset && presetSet.has(activePreset) ? activePreset : '');
-        const presetB = presetSet.has(server.presetB) ? server.presetB : '';
-        const activeSide = server.activeSide === 'A' || server.activeSide === 'B' ? server.activeSide : null;
-        return normalizeEffectsCompareSelection({ presetA, presetB, activeSide });
-    }
-
-    async function saveEffectsCompareState(compare) {
-        try {
-            const api = (root && root.FXRouteApi) || null;
-            await api.apiPostJson('/api/dsp/compare', compare);
-        } catch (e) {
-            console.warn('Failed to persist effects compare state', e);
-        }
-    }
-
     function getDefaultEffectsCombineDraft() {
         return {
             preset1: '',
@@ -395,7 +367,6 @@
             formData.append('preset_name', presetName);
             formData.append('left_text', leftText);
             formData.append('right_text', rightText);
-            formData.append('load_after_create', 'false');
             formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
             formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
             formData.append('headroom_gain_db', String(extras.headroomGainDb));
@@ -464,26 +435,16 @@
         return { presetA: '', presetB: '', activeSide: null };
     }
 
+    // A/B compare lives in the output-state banks; nothing to compare
+    // until the catalog is loaded.
     function getEffectsCompareState() {
-        const bankState = outputState()?.compareState((deps.getState().outputSystem || {}).catalog);
-        if (bankState) return bankState;
-        const fx = deps.getState().dsp || {};
-        const compare = normalizeEffectsCompareSelection(fx.compare || getEmptyEffectsCompareState());
-        const activePreset = fx.active_preset || '';
-        const effectiveActiveSide = getEffectiveEffectsCompareSide(compare, activePreset);
-        return {
-            compare,
-            activePreset,
-            effectiveActiveSide,
-            presetA: compare.presetA || activePreset || '',
-            presetB: compare.presetB || '',
+        return outputState()?.compareState((deps.getState().outputSystem || {}).catalog) || {
+            compare: getEmptyEffectsCompareState(),
+            activePreset: '',
+            effectiveActiveSide: null,
+            presetA: '',
+            presetB: '',
         };
-    }
-
-    function getEffectiveEffectsCompareSide(compare, activePreset) {
-        if (activePreset && compare?.presetA === activePreset) return 'A';
-        if (activePreset && compare?.presetB === activePreset) return 'B';
-        return compare?.activeSide || null;
     }
 
     function setEffectsCompareLoadBusy(isBusy) {
@@ -588,7 +549,8 @@
         const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate, canA, canB } = getEffectsCompareState();
 
         if (!deps.getElements().effectsCompareRow) return;
-        if (!aggregate && presets.length === 0) {
+        renderEffectsBankPresets();
+        if (!deps.getState().outputSystem?.catalog || (!aggregate && presets.length === 0)) {
             deps.getElements().effectsCompareRow.style.display = 'none';
             syncBankActionButtons();
             return;
@@ -645,7 +607,6 @@
                 ? `Listening: ${effectiveActiveSide} · All Banks` : 'Listening: Mixed A/B';
             renderAllBanksSlots(effectiveActiveSide);
         }
-        renderEffectsBankPresets();
         if (deps.getElements().effectsCompareToggle) deps.getElements().effectsCompareToggle.textContent = 'Compare A/B';
         syncEffectsDeleteButton();
         const badge = document.getElementById('effects-compare-active-badge');
@@ -804,34 +765,17 @@
         }
     }
 
-    async function loadEffectsComparePreset(target, newSide, targetA, targetB) {
+    async function loadEffectsComparePreset(newSide) {
         if (effectsCompareLoadInFlight) return;
+        const catalog = deps.getState().outputSystem?.catalog;
+        if (!catalog) return;
         setEffectsCompareLoadBusy(true);
         try {
-            const catalog = deps.getState().outputSystem?.catalog;
-            if (catalog) {
-                const bankId = catalog.modes[catalog.active_mode].selected_bank;
-                await deps.applyMutation('set_bank_preset', {
-                    mode: catalog.active_mode, bank_id: bankId, active_side: newSide,
-                }, false);
-                renderEffectsCompare();
-                return;
-            }
-            const resp = await fetch('/api/dsp/presets/load', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ preset_name: target }),
-            });
-            const data = await resp.json();
-            if (!resp.ok) throw new Error(data.detail || 'Failed to load preset');
-            deps.getState().dsp.active_preset = target;
-            deps.getState().dsp.compare = {
-                presetA: targetA,
-                presetB: targetB,
-                activeSide: newSide,
-            };
-            await saveEffectsCompareState(deps.getState().dsp.compare);
-            deps.renderEffects();
+            const bankId = catalog.modes[catalog.active_mode].selected_bank;
+            await deps.applyMutation('set_bank_preset', {
+                mode: catalog.active_mode, bank_id: bankId, active_side: newSide,
+            }, false);
+            renderEffectsCompare();
         } finally {
             setEffectsCompareLoadBusy(false);
         }
@@ -840,109 +784,51 @@
     async function handleEffectsCompareSelectionChange(slot) {
         if (effectsCompareLoadInFlight) return;
         const catalog = deps.getState().outputSystem?.catalog;
-        if (catalog) {
-            const current = getEffectsCompareState();
-            if (current.aggregate) return;
-            const selectedValue = (slot === 'A' ? deps.getElements().effectsCompareA?.value : deps.getElements().effectsCompareB?.value) || null;
-            if (slot === 'B' && selectedValue && selectedValue === current.presetA) {
-                deps.showToast('A and B must use different presets', 'warning');
-                renderEffectsCompare();
-                return;
-            }
-            const fields = { mode: catalog.active_mode, bank_id: catalog.modes[catalog.active_mode].selected_bank,
-                [slot === 'A' ? 'preset_a' : 'preset_b']: selectedValue };
-            if (selectedValue && (!current.effectiveActiveSide || current.effectiveActiveSide === slot)) fields.active_side = slot;
-            if (!selectedValue && slot === 'B' && current.effectiveActiveSide === 'B') fields.active_side = 'A';
-            if (slot === 'A' && selectedValue && selectedValue === current.presetB) {
-                // Global's compare always did this: A takes B's preset and B is cleared.
-                fields.preset_b = null;
-                fields.active_side = 'A';
-            }
-            await deps.applyMutation('set_bank_preset', fields, false);
+        if (!catalog) {
             renderEffectsCompare();
             return;
         }
-        deps.getState().dsp.compare = normalizeEffectsCompareSelection(deps.getState().dsp.compare || getEmptyEffectsCompareState());
-
-        const previousCompare = {
-            presetA: deps.getState().dsp.compare.presetA || '',
-            presetB: deps.getState().dsp.compare.presetB || '',
-            activeSide: deps.getState().dsp.compare.activeSide || null,
-        };
-        const activePreset = deps.getState().dsp?.active_preset || '';
-        const effectiveActiveSide = getEffectiveEffectsCompareSide(previousCompare, activePreset);
-
-        let targetA = deps.getElements().effectsCompareA?.value || '';
-        let targetB = deps.getElements().effectsCompareB?.value || '';
-        if (targetA && targetB && targetA === targetB) {
-            if (slot === 'B') {
-                targetB = '';
-                if (deps.getElements().effectsCompareB) deps.getElements().effectsCompareB.value = '';
-                deps.showToast('A and B must use different presets', 'warning');
-            } else {
-                targetB = '';
-            }
-        }
-        deps.getState().dsp.compare = normalizeEffectsCompareSelection({
-            presetA: targetA,
-            presetB: targetB,
-            activeSide: deps.getState().dsp.compare.activeSide || null,
-        });
-        await saveEffectsCompareState(deps.getState().dsp.compare);
-
-        const selectedValue = slot === 'A' ? targetA : targetB;
-        const shouldAutoload = !!selectedValue && selectedValue !== activePreset && (!effectiveActiveSide || effectiveActiveSide === slot);
-
-        if (shouldAutoload) {
-            await loadEffectsComparePreset(selectedValue, slot, deps.getState().dsp.compare.presetA, deps.getState().dsp.compare.presetB);
-        } else {
+        const current = getEffectsCompareState();
+        if (current.aggregate) return;
+        const selectedValue = (slot === 'A' ? deps.getElements().effectsCompareA?.value : deps.getElements().effectsCompareB?.value) || null;
+        if (slot === 'B' && selectedValue && selectedValue === current.presetA) {
+            deps.showToast('A and B must use different presets', 'warning');
             renderEffectsCompare();
+            return;
         }
-    }
-
-    function getEffectsCompareToggleTarget({ effectiveActiveSide, activePreset, presetA, presetB }) {
-        if (effectiveActiveSide === 'A' && presetB) return { target: presetB, side: 'B' };
-        if (effectiveActiveSide === 'B' && presetA) return { target: presetA, side: 'A' };
-        if (presetB && presetA === activePreset) return { target: presetB, side: 'B' };
-        if (presetA) return { target: presetA, side: 'A' };
-        if (presetB) return { target: presetB, side: 'B' };
-        return { target: null, side: null };
+        const fields = { mode: catalog.active_mode, bank_id: catalog.modes[catalog.active_mode].selected_bank,
+            [slot === 'A' ? 'preset_a' : 'preset_b']: selectedValue };
+        if (selectedValue && (!current.effectiveActiveSide || current.effectiveActiveSide === slot)) fields.active_side = slot;
+        if (!selectedValue && slot === 'B' && current.effectiveActiveSide === 'B') fields.active_side = 'A';
+        if (slot === 'A' && selectedValue && selectedValue === current.presetB) {
+            // Global's compare always did this: A takes B's preset and B is cleared.
+            fields.preset_b = null;
+            fields.active_side = 'A';
+        }
+        await deps.applyMutation('set_bank_preset', fields, false);
+        renderEffectsCompare();
     }
 
     async function toggleComparePreset() {
         if (effectsCompareLoadInFlight) return;
         try {
+            const catalog = deps.getState().outputSystem?.catalog;
+            if (!catalog) return;
             const compareState = getEffectsCompareState();
+            const side = compareState.effectiveActiveSide === 'A' ? 'B' : 'A';
             if (compareState.aggregate) {
-                const side = compareState.effectiveActiveSide === 'A' ? 'B' : 'A';
                 if (!(side === 'B' ? compareState.canB : compareState.canA)) {
                     deps.showToast('Assign preset B in at least one bank first.', 'warning');
                     return;
                 }
                 await deps.applyMutation('switch_all_banks', {
-                    mode: deps.getState().outputSystem.catalog.active_mode, active_side: side,
+                    mode: catalog.active_mode, active_side: side,
                 }, false);
                 renderEffectsCompare();
                 return;
             }
-            if (deps.getState().outputSystem?.catalog) {
-                const side = compareState.effectiveActiveSide === 'A' ? 'B' : 'A';
-                if (!(side === 'B' ? compareState.canB : compareState.canA)) return;
-                await loadEffectsComparePreset(null, side, compareState.presetA, compareState.presetB);
-                return;
-            }
-            if (!compareState.presetA && !compareState.presetB) {
-                deps.showToast('Select a preset in A or B first', 'warning');
-                return;
-            }
-
-            const { target, side } = getEffectsCompareToggleTarget(compareState);
-            if (!target || !side) {
-                deps.showToast('Select a preset in A or B first', 'warning');
-                return;
-            }
-
-            await loadEffectsComparePreset(target, side, compareState.presetA, compareState.presetB);
+            if (!(side === 'B' ? compareState.canB : compareState.canA)) return;
+            await loadEffectsComparePreset(side);
         } catch (e) {
             console.error('toggleComparePreset error:', e);
             deps.showToast(e.message || 'Failed to toggle preset', 'error');
@@ -1054,7 +940,6 @@
             return;
         }
         const formData = new FormData();
-        formData.append('load_after_create', 'false');
         formData.append('file', file);
         appendBankBindingFields(formData);
         if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = `<div>Importing preset: <strong>${deps.escapeHtml(file.name)}</strong>…</div>`;
@@ -1095,7 +980,6 @@
             return;
         }
         const formData = new FormData();
-        formData.append('load_after_create', 'false');
         formData.append('file', file);
         appendBankBindingFields(formData);
         if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = `<div>Importing bundle: <strong>${deps.escapeHtml(file.name)}</strong>…</div>`;
@@ -1140,7 +1024,6 @@
         const extras = deps.collectEffectsExtras();
         const formData = new FormData();
         formData.append('preset_name', presetName);
-        formData.append('load_after_create', 'false');
         formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
         formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
         formData.append('headroom_gain_db', String(extras.headroomGainDb));
@@ -1224,7 +1107,6 @@
         const extras = deps.collectEffectsExtras();
         const formData = new FormData();
         formData.append('preset_name', presetName);
-        formData.append('load_after_create', 'false');
         formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
         formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
         formData.append('headroom_gain_db', String(extras.headroomGainDb));
@@ -1312,9 +1194,6 @@
 
     return {
         init,
-        normalizeEffectsCompareSelection,
-        resolveEffectsCompareState,
-        saveEffectsCompareState,
         getDefaultEffectsCombineDraft,
         normalizeEffectsCombineDraft,
         setEffectsImportPanelOpen,
@@ -1338,7 +1217,6 @@
         createDualFilterPreset,
         getEmptyEffectsCompareState,
         getEffectsCompareState,
-        getEffectiveEffectsCompareSide,
         setEffectsCompareLoadBusy,
         getEffectsChainLabelForPreset,
         getCompactDisplayName,
@@ -1350,7 +1228,6 @@
         createCombinedEffectsPreset,
         loadEffectsComparePreset,
         handleEffectsCompareSelectionChange,
-        getEffectsCompareToggleTarget,
         toggleComparePreset,
         setupEffectsCompareActions,
         detectEffectsImportType,

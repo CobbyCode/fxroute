@@ -35,7 +35,6 @@ class DSPManagerStateTests(unittest.TestCase):
         self.assertEqual(manager.irs_dir, manager.base_dir / "irs")
         self.assertEqual(manager.state_dir, manager.base_dir / "state")
         self.assertEqual([item["name"] for item in manager.list_presets()][:2], ["Direct", "Neutral"])
-        self.assertEqual(manager.get_active_preset(), "Neutral")
         # The built-ins are no files: every bank's library serves them.
         self.assertEqual(list(manager.output_dir.iterdir()), [])
         for bank, mode in ((None, None), ("global", "surround"), ("sub1", None)):
@@ -43,15 +42,13 @@ class DSPManagerStateTests(unittest.TestCase):
             self.assertEqual((payload["schema"], payload["version"], payload["chain"]),
                              ("fxroute.dsp.preset", 1, []))
 
-    def test_active_preset_and_compare_state_are_locally_persisted(self):
-        manager = DSPManager(home=self.home)
-        manager.load_preset("Direct")
-        self.assertEqual(DSPManager(home=self.home).get_active_preset(), "Direct")
-        compare = manager.save_compare_state(
-            {"presetA": "Direct", "presetB": "Neutral", "activeSide": "B"}
-        )
-        self.assertEqual(compare["activeSide"], "B")
-        self.assertEqual(DSPManager(home=self.home).load_compare_state(), compare)
+    def test_active_preset_is_read_from_the_output_state(self):
+        # The Global preset of the active mode lives in the output state; the
+        # manager keeps no active/compare file of its own.
+        self.assertIsNone(DSPManager(home=self.home).get_active_preset())
+        manager = DSPManager(home=self.home, active_preset_reader=lambda: "Direct")
+        self.assertEqual(manager.get_active_preset(), "Direct")
+        self.assertEqual(list(manager.state_dir.iterdir()), [])
 
     def test_manager_does_not_own_runtime_state(self):
         # Live/confirmed DSP state is owned by DSPRuntime; the manager only
@@ -62,15 +59,6 @@ class DSPManagerStateTests(unittest.TestCase):
         self.assertFalse(hasattr(manager, "read_loudness_runtime"))
         self.assertFalse(hasattr(manager, "read_autogain_runtime"))
         self.assertFalse(hasattr(manager, "set_active_plugin_property"))
-
-    def test_failed_apply_does_not_acknowledge_preset_state(self):
-        def reject(_event):
-            raise RuntimeError("engine rejected update")
-
-        manager = DSPManager(home=self.home, apply_callback=reject)
-        with self.assertRaisesRegex(RuntimeError, "engine rejected"):
-            manager.load_preset("Direct")
-        self.assertEqual(manager.get_active_preset(), "Neutral")
 
     def test_loudness_and_autogain_offsets_keep_plugin_net_zero(self):
         manager = DSPManager(home=self.home)

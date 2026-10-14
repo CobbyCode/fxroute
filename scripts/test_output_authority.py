@@ -17,7 +17,7 @@ from audio import system_volume
 from audio.samplerate import overview, persistence
 from dsp.runtime import DSPRuntime, DSPRuntimeConfig, PipeWireLink, CommandResult
 from dsp.orchestration import DspOrchestrator
-from test_link_watch_output_mode_gate import _watcher_deps
+from test_runtime_watch import _watcher_deps
 
 
 class OutputAuthorityTests(unittest.IsolatedAsyncioTestCase):
@@ -110,6 +110,32 @@ class OutputAuthorityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_extra_physical_output_is_not_a_complete_graph(self):
         self.assertFalse(await self.runtime.verify())
+
+    async def test_direct_producer_links_are_not_a_complete_graph(self):
+        for source in ("mpv:output_FL", "spotify:output_FR", "alsa_playback.qbzd:output_FL",
+                       "alsa_playback.qbzd:playback_FR"):
+            with self.subTest(source=source):
+                self.links = self.desired | {self.tap, PipeWireLink(source, "alsa_output.A:playback_FL")}
+                self.assertFalse(await self.runtime.verify())
+
+    async def test_authority_removes_direct_producer_bypass_in_every_mode(self):
+        self.default = "alsa_output.A"
+        bypass = PipeWireLink("mpv:output_FL", "alsa_output.A:playback_FR")
+        source_tap = PipeWireLink("mpv:output_FL", "meter:input_FL")
+        for mode in ("stereo", "subwoofer-2.2", "surround"):
+            with self.subTest(mode=mode):
+                self.runtime._config = replace(self.runtime._config, output_mode=mode)
+                self.links = self.desired | {self.tap, source_tap, bypass}
+                deps = _watcher_deps(SimpleNamespace(
+                    sleep=lambda _d: None, get_dsp_runtime=lambda: self.runtime,
+                    get_audio_output_overview=lambda: self.fail("Bypass repair needs no overview"),
+                    observe_playback_samplerate_drift=mock.AsyncMock()))
+                deps = replace(deps, reconcile_output_default=overview.reconcile_selected_output_default,
+                               read_output_default_state=overview.selected_output_default_state,
+                               get_coordinator_lock=asyncio.Lock,
+                               get_measurement_sr_session=lambda: SimpleNamespace(lock=asyncio.Lock()))
+                await DspOrchestrator(deps).reconcile_output_authority()
+                self.assertEqual(self.links, self.desired | {self.tap, source_tap})
 
     def test_default_drift_and_reappearing_device_reconcile_to_saved_a(self):
         reconcile = getattr(overview, "reconcile_selected_output_default", None)

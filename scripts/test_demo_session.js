@@ -118,9 +118,9 @@ const flush = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     await post(first, '/api/play', { track_id: playingId });
     assert.equal(first.FXROUTE_DEMO_STATE.getPlayback().playing, true);
     await post(first, '/api/volume', { volume: 71 });
-    await post(first, '/api/dsp/presets/load', { preset_name: '+6' });
+    const { assignGlobalPreset } = require('./demo_preset_test_support.js');
+    await assignGlobalPreset(first.fetch, '+6');
     await post(first, '/api/dsp/extras', { loudness_enabled: true, loudnessStrength: 5 });
-    await post(first, '/api/audio/output-mode', { mode: 'subwoofer-2.1' });
     await json(await post(first, '/api/measurements/save', {
         measurement: { id: trackId, name: 'Session sweep', channel: 'left', traces: [] },
     }));
@@ -147,7 +147,8 @@ const flush = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     assert.equal(dspPayload.active_preset, '+6', 'the active preset must survive the reload');
     assert.equal(dspPayload.global_extras.loudness.enabled, true, 'the output extras must survive');
     const outputs = await json(await second.fetch('/api/audio/outputs'));
-    assert.equal(outputs.output_mode.mode, 'subwoofer-2.1', 'the output mode must survive');
+    assert.equal((await json(await second.fetch('/api/audio/output-state'))).active_mode,
+        'stereo-sub', 'the output mode must survive');
     const settings = await json(await second.fetch('/api/measurements/settings'));
     assert.equal(settings.status, 'ok');
     const savedRuns = await json(await second.fetch('/api/measurements'));

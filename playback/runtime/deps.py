@@ -79,7 +79,6 @@ class PlaybackRuntimeDependencies:
     # DSP / worker helpers (main.py)
     dsp_mutation_lock: Callable[[], Any]
     drain_worker: Callable[..., Awaitable[Any]]
-    load_dsp_preset: Callable[..., Awaitable[None]]
     sync_dsp_runtime: Callable[..., Awaitable[dict]]
     helper_argument_sample_rate: Callable[..., int | None]
 

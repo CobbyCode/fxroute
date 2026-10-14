@@ -19,7 +19,6 @@ import asyncio
 import contextlib
 import sys
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -27,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
 
-import audio.samplerate as samplerate
 import main
 import playback.orchestration as playback_orchestration
 import dsp.api as dsp_api
@@ -135,7 +133,7 @@ async def _route_mode_switch_coordinated() -> None:
 RADIO_URL = "https://ice4.somafm.com/groovesalad-256-mp3"
 
 
-def _radio_recovery_request(detail: str = "subwoofer-link-watcher") -> TransitionRequest:
+def _radio_recovery_request(detail: str = "samplerate-drift-watcher") -> TransitionRequest:
     return TransitionRequest(
         operation="recovery",
         source="radio",
@@ -180,22 +178,20 @@ async def _recovery_valid(
         return await playback_orchestration.configured().recovery_context_is_valid(request)
 
 
-async def _link_watcher_latch_reentry() -> None:
-    """The subwoofer link watcher may re-enter across a latched gate."""
+async def _latched_recovery_rejected() -> None:
+    """Background recovery cannot re-enter a failed gate."""
     latched = _fake_coordinator(current=False, latched=True)
-    assert await _recovery_valid(_radio_recovery_request(), coordinator=latched, runtime=_idle_runtime()) is True
-    print("link watcher recovery re-enters a latched gate: ok")
+    assert await _recovery_valid(_radio_recovery_request(), coordinator=latched, runtime=_idle_runtime()) is False
+    print("background recovery respects a latched gate: ok")
 
 
-async def _link_watcher_kept_out_for_other_reasons() -> None:
-    """Non-watcher recoveries, stale commits and active transitions stay out."""
-    other = _radio_recovery_request(detail="samplerate-drift-watcher")
-    assert await _recovery_valid(other, coordinator=_fake_coordinator(current=False, latched=True), runtime=_idle_runtime()) is False
+async def _stale_recovery_rejected() -> None:
+    """Stale commits and active transitions cannot recover the graph."""
     stale = _fake_coordinator(current=False, latched=True, commit="tr-999")
     assert await _recovery_valid(_radio_recovery_request(), coordinator=stale, runtime=_idle_runtime()) is False
     active = _fake_coordinator(current=False, latched=True, active=True)
     assert await _recovery_valid(_radio_recovery_request(), coordinator=active, runtime=_idle_runtime()) is False
-    print("latched-gate re-entry stays limited to the link watcher: ok")
+    print("stale and active recovery contexts stay out: ok")
 
 
 async def _recovery_deferred_during_subwoofer_sync() -> None:
@@ -407,133 +403,8 @@ async def _mode_switch_volume_preserved() -> None:
 
 
 
-async def _preset_load_reclean_skipped_during_sync() -> None:
-    """A/B flip repair must not race an in-flight subwoofer sync."""
-    active_runtime = mock.MagicMock(
-        snapshot=mock.MagicMock(return_value={"active": True}),
-        sync_in_progress=True,
-        sync=mock.AsyncMock(),
-        _reclean_guarded=mock.AsyncMock(),
-    )
-    dsp_manager = mock.MagicMock()
-    dsp_manager.load_preset.return_value = None
-    dsp_manager.load_compare_state.return_value = {"presetA": "Neutral", "presetB": "B", "activeSide": None}
-    dsp_manager.get_status.return_value = {"active_preset": "Neutral", "compare": {}}
-    broadcast = mock.AsyncMock()
-    stack = contextlib.ExitStack()
-    stack.enter_context(mock.patch.multiple(
-        main,
-        _require_dsp_manager=mock.MagicMock(return_value=dsp_manager),
-        manager=mock.MagicMock(broadcast=broadcast),
-    ))
-    stack.enter_context(mock.patch.multiple(main.runtime, dsp_runtime=active_runtime))
-    stack.enter_context(mock.patch.object(
-        main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change", mock.MagicMock()
-    ))
-    with stack:
-        await dsp_api.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
-    active_runtime._reclean_guarded.assert_not_awaited()
-
-    idle_runtime = mock.MagicMock(
-        snapshot=mock.MagicMock(return_value={"active": True}),
-        sync_in_progress=False,
-        sync=mock.AsyncMock(),
-        _reclean_guarded=mock.AsyncMock(),
-    )
-    stack2 = contextlib.ExitStack()
-    stack2.enter_context(mock.patch.multiple(
-        main,
-        _require_dsp_manager=mock.MagicMock(return_value=dsp_manager),
-        manager=mock.MagicMock(broadcast=mock.AsyncMock()),
-    ))
-    stack2.enter_context(mock.patch.multiple(main.runtime, dsp_runtime=idle_runtime))
-    stack2.enter_context(mock.patch.object(
-        main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change", mock.MagicMock()
-    ))
-    with stack2:
-        await dsp_api.load_dsp_preset(FakeRequest({"preset_name": "Neutral"}))
-    idle_runtime._reclean_guarded.assert_awaited_once()
-    print("preset-load reclean defers to an in-flight subwoofer sync: ok")
-
-
-async def _mode_switch_reapplies_compare_after_runtime_sync() -> None:
-    """Stereo recovery restores the latest A/B side after a DSP restart."""
-    active_preset = "A"
-    events = []
-    dsp_manager = mock.MagicMock()
-    dsp_manager.load_compare_state.side_effect = [
-        {"presetA": "A", "presetB": "B", "activeSide": "A"},
-        # Model a user selecting B while runtime sync restarts the DSP.
-        {"presetA": "A", "presetB": "B", "activeSide": "B"},
-    ]
-    dsp_manager.get_active_preset.side_effect = lambda: active_preset
-
-    def load_preset(name, *, convolver_sample_rate_hz=None):
-        nonlocal active_preset
-        events.append(("load", name, convolver_sample_rate_hz))
-        active_preset = name
-
-    dsp_manager.load_preset.side_effect = load_preset
-
-    async def sync_runtime(**_kwargs):
-        nonlocal active_preset
-        events.append(("runtime-sync",))
-        if len(events) == 1:
-            active_preset = "stale-dsp-restart-preset"
-
-    wait_for_ports = mock.AsyncMock(return_value=True)
-    complete_graph = {
-        "dsp_ports": True,
-        "links_complete": True,
-        "links": {},
-        "signature": "stereo-complete",
-    }
-    request = replace(
-        _mode_request("stereo"),
-        output_mode_target={
-            "output_mode": {
-                "mode": "stereo",
-                "effective_output_key": "mock_output",
-            }
-        },
-    )
-    with contextlib.ExitStack() as stack:
-        stack.enter_context(mock.patch.multiple(
-            main,
-            dsp_manager=dsp_manager,
-        ))
-        stack.enter_context(mock.patch.object(
-            playback_orchestration.configured(), "playback_graph_diagnosis",
-            mock.AsyncMock(return_value=complete_graph),
-        ))
-        stack.enter_context(mock.patch.object(
-            playback_orchestration.configured(), "wait_for_dsp_output_ports", wait_for_ports
-        ))
-        stack.enter_context(mock.patch.object(
-            playback_orchestration.configured(), "repair_stereo_output_links_once", mock.AsyncMock()
-        ))
-        stack.enter_context(mock.patch.object(
-            samplerate, "reconcile_transition_sink_rate", mock.AsyncMock(return_value=True)
-        ))
-        stack.enter_context(mock.patch.multiple(main.runtime, dsp_preset_load_lock=asyncio.Lock()))
-        stack.enter_context(mock.patch.object(
-            main.dsp_orchestrator, "sync_runtime", mock.AsyncMock(side_effect=sync_runtime)
-        ))
-        result = await playback_orchestration.configured().establish_effects_and_helper(request)
-
-    assert result["preset_reloaded"] is True
-    assert events == [
-        ("runtime-sync",),
-        ("load", "B", 44100),
-        ("runtime-sync",),
-    ], events
-    assert active_preset == "B"
-    assert wait_for_ports.await_count == 2
-    print("mode switch restores latest compare preset after runtime sync: ok")
-
-
 async def _runtime_sync_in_progress_covers_link_repair() -> None:
-    """sync_in_progress must cover the preset-load link repair lock."""
+    """sync_in_progress must cover the engine link repair lock."""
     runtime = main.DSPRuntime(mock.MagicMock())
     lock = asyncio.Lock()
     runtime._lock = lock
@@ -546,13 +417,11 @@ async def _runtime_sync_in_progress_covers_link_repair() -> None:
 async def main_async() -> None:
     await _route_same_mode_direct()
     await _route_mode_switch_coordinated()
-    await _link_watcher_latch_reentry()
-    await _link_watcher_kept_out_for_other_reasons()
+    await _latched_recovery_rejected()
+    await _stale_recovery_rejected()
     await _recovery_deferred_during_subwoofer_sync()
     await _runtime_sync_in_progress_flag()
     await _mode_switch_volume_preserved()
-    await _preset_load_reclean_skipped_during_sync()
-    await _mode_switch_reapplies_compare_after_runtime_sync()
     await _runtime_sync_in_progress_covers_link_repair()
     print("crossover / sub mute regression tests: ok")
 

@@ -1076,17 +1076,18 @@ const radio = state.getPlayback();
     // level) is covered by scripts/test_demo_meter_and_scan.js.
     state.playLocal(state.localTracks[0].id);
     const meterOf = () => state.getPeak();
-    await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: 'Direct' }) })).json();
+    const { assignGlobalPreset } = require('./demo_preset_test_support.js');
+    await assignGlobalPreset(demoFetch, 'Direct');
     // 0.5 dB sits above the 0 dBFS threshold, so a detector reading the VU
     // would report detection; the raw-peak path must stay silent.
     state.getMeter().vu_db_l = 0.5; state.getMeter().vu_db_r = 0.5; state.getMeter().vu_fresh = true;
     assert.equal(meterOf().detected, false, 'smoothed VU levels must not latch peaks');
-    await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: '+6' }) })).json();
+    await assignGlobalPreset(demoFetch, '+6');
     await (await demoFetch('/api/dsp/extras', { method: 'POST', body: JSON.stringify({ loudnessEnabled: true, loudnessStrength: 10 }) })).json();
     const loudExtras = await (await demoFetch('/api/dsp/presets')).json();
     assert.equal(loudExtras.global_extras.loudness.enabled, true);
     await (await demoFetch('/api/dsp/extras', { method: 'POST', body: JSON.stringify({ loudnessEnabled: false }) })).json();
-    await (await demoFetch('/api/dsp/presets/load', { method: 'POST', body: JSON.stringify({ preset_name: 'Direct' }) })).json();
+    await assignGlobalPreset(demoFetch, 'Direct');
     const dspAfterMeter = await (await demoFetch('/api/dsp/presets')).json();
     assert.ok(dspAfterMeter.presets.some(p => p.name === '+3'));
     assert.ok(dspAfterMeter.presets.some(p => p.name === '+6'));

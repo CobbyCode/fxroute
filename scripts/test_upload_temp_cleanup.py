@@ -85,7 +85,6 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(Exception):
             await dsp_api.create_convolver_preset_with_ir(
                 preset_name="p",
-                load_after_create=False,
                 limiter_enabled=False,
                 headroom_enabled=False,
                 headroom_gain_db=-3.0,
@@ -115,7 +114,6 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
             await dsp_api.import_dual_filter_preset(
                 preset_name="p",
                 left_text="", right_text="",
-                load_after_create=False,
                 limiter_enabled=False, headroom_enabled=False, headroom_gain_db=-3.0,
                 autogain_enabled=False, autogain_target_db=-12.0,
                 delay_enabled=False, delay_left_ms=0.0, delay_right_ms=0.0,
@@ -140,7 +138,6 @@ class UploadTempCleanupTests(unittest.IsolatedAsyncioTestCase):
             result = await dsp_api.import_dual_filter_preset(
                 preset_name="p",
                 left_text="", right_text="",
-                load_after_create=False,
                 limiter_enabled=False, headroom_enabled=False, headroom_gain_db=-3.0,
                 autogain_enabled=False, autogain_target_db=-12.0,
                 delay_enabled=False, delay_left_ms=0.0, delay_right_ms=0.0,

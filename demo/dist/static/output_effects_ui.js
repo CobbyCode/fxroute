@@ -296,7 +296,6 @@ async function fetchEffects() {
         const resp = await fetch('/api/dsp/presets');
         if (!resp.ok) throw new Error('Failed to fetch DSP presets');
         const data = await resp.json();
-        const prev = deps.getState().dsp?.compare;
         const presetNames = (data.presets || []).map(p => p.name);
         deps.getState().dsp = {
             ...data,
@@ -304,12 +303,10 @@ async function fetchEffects() {
             peqDraft: deps.getState().dsp?.peqDraft || {
                 presetName: '',
                 eqMode: 'IIR',
-                loadAfterCreate: false,
                 leftBands: [defaultPeqBand()],
                 rightBands: [defaultPeqBand()],
             },
             assistStack: Array.isArray(deps.getState().dsp?.assistStack) ? deps.getState().dsp.assistStack : [],
-            compare: root.FXRouteBankUI.resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
         };
         deps.getState().dsp.combineDraft = root.FXRouteBankUI.normalizeEffectsCombineDraft(deps.getState().dsp.combineDraft, presetNames);
         if (!Array.isArray(deps.getState().dsp.peqDraft?.leftBands) || !deps.getState().dsp.peqDraft.leftBands.length) deps.getState().dsp.peqDraft.leftBands = [defaultPeqBand()];
@@ -382,7 +379,6 @@ function getDefaultPeqDraft() {
     return {
         presetName: '',
         eqMode: 'IIR',
-        loadAfterCreate: false,
         leftBands: [defaultPeqBand()],
         rightBands: [defaultPeqBand()],
     };
@@ -715,7 +711,6 @@ async function createPeqPreset() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 presetName,
-                loadAfterCreate: false,
                 ...collectEffectsExtras(),
                 ...root.FXRouteBankUI.bankBindingJson(),
                 peq: {

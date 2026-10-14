@@ -14,6 +14,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { assignGlobalPreset } = require('./demo_preset_test_support.js');
 
 const root = path.join(__dirname, '..');
 const librarySource = fs.readFileSync(path.join(root, 'demo', 'data', 'library.js'), 'utf8');
@@ -118,7 +119,7 @@ function makeDemoContext(bootArmed) {
             const st = c.window.FXROUTE_DEMO_STATE;
             const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
             await post('/api/play', { track_id: 'local_Midnight Relay/01 - Palm Nightcall.flac' });
-            if (setup) await setup(post);
+            if (setup) await setup(post, preset => assignGlobalPreset(c.fetch, preset));
             let sum = 0, n = 0, tt = 0;
             for (let i = 0; i < ticks + 20; i += 1) {
                 st.demoMeterTick(tt); tt += 500;
@@ -136,7 +137,7 @@ function makeDemoContext(bootArmed) {
     const limMean = await meterMean((post) => post('/api/dsp/extras', { limiter_enabled: false }));
     assert.ok(Math.abs(limMean - baseMean) < 2,
         `default program stays below the limiter threshold (delta ${limMean - baseMean})`);
-    const plusMean = await meterMean((post) => post('/api/dsp/presets/load', { preset_name: '+6' }));
+    const plusMean = await meterMean((_post, setPreset) => setPreset('+6'));
     assert.ok(plusMean - baseMean > 3, '+6 preset must lift the VU');
 
     // Hand-set VU levels alone must never trip the peak detector: holds
@@ -156,7 +157,7 @@ function makeDemoContext(bootArmed) {
             const st = c.window.FXROUTE_DEMO_STATE;
             const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
             await post('/api/play', { track_id: 'local_Midnight Relay/01 - Palm Nightcall.flac' });
-            if (setup) await setup(post);
+            if (setup) await setup(post, preset => assignGlobalPreset(c.fetch, preset));
             let hits = 0, max = -60, tt = 0;
             for (let i = 0; i < ticks + 20; i += 1) {
                 st.demoMeterTick(tt); tt += 500;
@@ -168,11 +169,11 @@ function makeDemoContext(bootArmed) {
             return { hits, max };
         } finally { Math.random = realRandom; }
     }
-    const hotOn = await peakRun((post) => post('/api/dsp/presets/load', { preset_name: '+6' }));
+    const hotOn = await peakRun((_post, setPreset) => setPreset('+6'));
     assert.equal(hotOn.hits, 0, 'engaged limiter caps peaks below 0 dBFS even on a hot master');
     assert.ok(hotOn.max <= -1, `engaged limiter caps the visible level at its threshold (max ${hotOn.max})`);
-    const hotOff = await peakRun(async (post) => {
-        await post('/api/dsp/presets/load', { preset_name: '+6' });
+    const hotOff = await peakRun(async (post, setPreset) => {
+        await setPreset('+6');
         await post('/api/dsp/extras', { limiter_enabled: false });
     });
     assert.ok(hotOff.hits > 0, 'unprotected hot program overs');
@@ -184,8 +185,8 @@ function makeDemoContext(bootArmed) {
     assert.ok(calmOff.hits > 0, 'a default program does flash once unprotected, unlike the stock-limiter calmOn run');
     // Gain staging gradient (limiter disengaged): default spars, +3 dB
     // clearly busier, +6 dB saturated.
-    const midOff = await peakRun(async (post) => {
-        await post('/api/dsp/presets/load', { preset_name: '+3' });
+    const midOff = await peakRun(async (post, setPreset) => {
+        await setPreset('+3');
         await post('/api/dsp/extras', { limiter_enabled: false });
     });
     assert.ok(midOff.hits > calmOff.hits, `+3 dB must peak clearly more than default (${midOff.hits} vs ${calmOff.hits})`);
@@ -214,7 +215,7 @@ function makeDemoContext(bootArmed) {
             const st = c.window.FXROUTE_DEMO_STATE;
             const post = (url, body) => c.fetch(url, { method: 'POST', body: JSON.stringify(body || {}) });
             await post('/api/play', { track_id: 'local_Midnight Relay/01 - Palm Nightcall.flac' });
-            await post('/api/dsp/presets/load', { preset_name: '+6' });
+            await assignGlobalPreset(c.fetch, '+6');
             await post('/api/dsp/extras', { limiter_enabled: false });
             let tt = 0, hit = null;
             for (let i = 0; i < 260 && !hit; i += 1) {

@@ -77,7 +77,6 @@
         const owner = demoPresetOwner(body);
         if (!findDemoPreset(name, owner)) dspPresets.push({ ...presetEntry(name, extra), ...owner });
     }
-    let dspActivePreset = 'Conv LR HybAlign BK 20-12000Hz -3dB 044321';
     let dspExtras = {
         limiter: { enabled: true, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
         headroom: { enabled: false, params: { gainDb: -3 } },
@@ -88,11 +87,6 @@
         tone_effect: { enabled: false, mode: 'crystalizer' },
         upmixer: { enabled: false, params: { mode: 'fast', center: 6, surround: 6, fftSize: 2048 } },
     };
-    // The A/B compare block mirrors the seeded Global bank slots, so the card
-    // and the legacy compare payload never name different presets. The chain
-    // itself starts on the .104 active preset.
-    let dspCompare = { presetA: 'Neutral', presetB: 'Conv LR HybAlign BK 30-3000Hz -7dB', activeSide: 'B' };
-
     // Audible offset for the meter sim: only the +3/+6 dB filter
     // presets lift the visible level (their real chains hold a broadband
     // gain stage); headroom cuts it 1:1 (the real headroom stage sits
@@ -121,7 +115,7 @@
     }
 
     function demoMeterOffsetDb() {
-        let offset = presetMeterGainDb(dspActivePreset);
+        let offset = presetMeterGainDb(activeGlobalPreset());
         const extras = dspExtras || {};
         if (extras.headroom && extras.headroom.enabled) {
             offset += Number(extras.headroom.params && extras.headroom.params.gainDb) || 0;
@@ -142,10 +136,9 @@
             limiterEnabled: !!(dspExtras.limiter && dspExtras.limiter.enabled),
             extras: dspExtras,
             presets: dspPresets,
-            activePreset: dspActivePreset,
+            activePreset: activeGlobalPreset(),
         });
     }
-    syncDspToState();
 
     function dspPayload() {
         // The IR pool mirrors the .104 kernel stock, so a preset that carries a
@@ -161,11 +154,10 @@
             available: true,
             presets: dspPresets,
             preset_count: dspPresets.length,
-            active_preset: dspActivePreset,
+            active_preset: activeGlobalPreset(),
             irs,
             global_extras: dspExtras,
             global_extras_excluded_presets: [],
-            compare: dspCompare,
             mode: 'native',
             paths: {},
         };
@@ -657,6 +649,9 @@
             },
         },
     };
+    function activeGlobalPreset() {
+        return outputStateStore.modes[outputStateStore.active_mode].banks.global.preset;
+    }
     for (const config of Object.values(outputStateStore.modes)) {
         config.av_sync = { target_ms: 0, basis: {}, source_basis: {}, basis_origin: 'adopted', basis_context: {} };
     }
@@ -857,6 +852,7 @@
         }
         updateDemoBanks(config, bank.roles, { preset: createdName });
         outputStateStore.revision += 1;
+        syncDspToState();
         return { assigned: true, mode, bank_id: bankId, revision: outputStateStore.revision };
     }
     function demoButterworthDb(frequency, cutoff, slopeDbOct, kind) {
@@ -2393,7 +2389,7 @@
     }
     if (typeof S.registerSessionSlice === 'function') {
         S.registerSessionSlice(() => ({
-            dsp: { active_preset: dspActivePreset, extras: dspExtras, compare: dspCompare },
+            dsp: { extras: dspExtras },
             output: {
                 device_key: selectedOutputKeyCache,
                 mode: outputMode,
@@ -2414,13 +2410,7 @@
         if (!S.session) return;
         const saved = S.session.read();
         if (saved.dsp) {
-            if (typeof saved.dsp.active_preset === 'string'
-                && dspPresets.some(preset => preset.name === saved.dsp.active_preset)) {
-                dspActivePreset = saved.dsp.active_preset;
-            }
             if (saved.dsp.extras) dspExtras = { ...dspExtras, ...saved.dsp.extras };
-            if (saved.dsp.compare) dspCompare = { ...dspCompare, ...saved.dsp.compare };
-            syncDspToState();
         }
         if (saved.output) {
             const output = saved.output;
@@ -2466,6 +2456,7 @@
         S.session.ready();
     }
     restoreDemoSession();
+    syncDspToState();
 
     // ── fetch interceptor ───────────────────────────────────────────────
     const origFetch = window.fetch;
@@ -3243,6 +3234,7 @@
                 return fail(`Unknown mutation kind: ${mutation.kind}`);
             }
             outputStateStore.revision += 1;
+            syncDspToState();
             const catalog = outputStateCatalog();
             const topology = catalog.modes[catalog.active_mode].topology;
             return j({ status: 'ok', revision: catalog.revision, active_mode: catalog.active_mode,
@@ -3448,12 +3440,6 @@
 
         // ── DSP ─────────────────────────────────────────────────────────
         if (p === '/api/dsp/presets') return j(dspPayload());
-        if (p === '/api/dsp/presets/load' && post) {
-            const name = String(body.preset_name || body.name || 'Direct');
-            if (dspPresets.find(pr => pr.name === name)) dspActivePreset = name;
-            syncDspToState();
-            return j({ success: true, active_preset: dspActivePreset, message: 'Preset "' + dspActivePreset + '" loaded' });
-        }
         if (p === '/api/dsp/presets/create-peq' && post) {
             const name = String(body.presetName || body.preset_name || '').trim();
             if (!name) return err('Preset name required', 400);
@@ -3524,11 +3510,9 @@
             }
             if (released) outputStateStore.revision += 1;
             dspPresets.splice(idx, 1);
-            if (dspActivePreset === name && !dspPresets.some(pr => pr.name === name)) dspActivePreset = 'Direct';
             syncDspToState();
             return j({ success: true });
         }
-        if (p === '/api/dsp/compare' && post) { dspCompare = { ...body }; return j({ ok: true }); }
         if (p === '/api/dsp/extras' && post) {
             // Same merge vocabulary as the backend
             // (merge_effects_extras_from_json): camelCase from the app and

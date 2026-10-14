@@ -527,7 +527,6 @@
 
     function appendMeasurementConvolverExtras(formData) {
         const extras = deps.collectEffectsExtras();
-        formData.append('load_after_create', 'false');
         formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
         formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
         formData.append('headroom_gain_db', String(extras.headroomGainDb));

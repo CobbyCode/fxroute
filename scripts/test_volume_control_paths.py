@@ -513,7 +513,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
         # The disable only applies the extras change; it never rewrites the master.
         self.assertEqual(order, ["apply"])
 
-    async def test_autogain_change_reloads_active_native_preset(self):
+    async def test_autogain_change_resyncs_the_v2_graph_in_the_transaction(self):
         class FakeManager:
             EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
 
@@ -538,17 +538,17 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
                 return {"autogain_enabled": True}
 
         fake = FakeManager()
-        reload_preset = mock.AsyncMock()
+        extras_sync = mock.AsyncMock()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main, "dsp_manager", fake
-        ), mock.patch.object(main, "_load_dsp_preset", reload_preset), mock.patch.object(
+        ), mock.patch.object(main, "_sync_v2_extras_runtime", extras_sync), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             await dsp_api.save_dsp_extras(FakeRequest())
 
-        # Reload stays inside the extras transaction even without a Loudness
-        # transition so a failed request cannot undo a newer mutation.
-        reload_preset.assert_awaited_once_with("Neutral", _locks_held=True)
+        # The resync stays inside the extras transaction even without a
+        # Loudness transition so a failed request cannot undo a newer mutation.
+        extras_sync.assert_awaited_once_with()
 
     async def test_loudness_disable_failure_restores_original_master(self):
         order = []
@@ -587,7 +587,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             main, "set_output_volume", side_effect=lambda value: order.append(f"set-{value}") or value
         ), mock.patch.object(
             main, "get_output_volume", return_value=42
-        ):
+        ), mock.patch.object(main, "_sync_v2_extras_runtime", mock.AsyncMock()):
             with self.assertRaises(RuntimeError):
                 await dsp_api.save_dsp_extras(FakeExtrasRequest())
 
@@ -739,17 +739,6 @@ class VolumeOwnershipDirectTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"volume": 40})
         self.assertEqual(self.volume_writes, [40])
         self.assertEqual(self.manager.loudness_volume_writes, [])
-
-    async def test_preset_load_never_moves_master(self):
-        manager = self.use_manager(loudness_enabled=True, active_preset="Neutral", volume_db=-20.0)
-        self.live_master = 65
-        await main._load_dsp_preset("Direct")
-        self.assertEqual(self.volume_writes, [])
-        self.assertEqual(self.live_master, 65)
-        self.assertEqual(manager.active_preset, "Direct")
-        self.assertAlmostEqual(
-            float(manager.extras["loudness"]["params"]["volumeDb"]), -20.0, places=9
-        )
 
 
 if __name__ == "__main__":

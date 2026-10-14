@@ -264,13 +264,11 @@ def dsp_deps(service, manager, sync_hook=None):
         require_dsp_manager=mock.MagicMock(return_value=manager),
         get_dsp_manager=mock.MagicMock(return_value=manager),
         get_dsp_runtime=lambda: None,
-        get_dsp_preset_load_lock=lambda: asyncio.Lock(),
         dsp_mutation_lock=lambda: asyncio.Lock(),
         canonical_volume_write_lock=lambda: asyncio.Lock(),
         drain_worker=drain,
         run_locked_worker=drain,
         broadcast=mock.AsyncMock(),
-        load_dsp_preset=mock.AsyncMock(),
         restore_volume_state=mock.AsyncMock(),
         volume_state_for_manager=mock.MagicMock(),
         schedule_peak_monitor_refresh=mock.MagicMock(),
@@ -296,7 +294,7 @@ class DspBankApiTests(unittest.TestCase):
     def test_dual_import_projects_each_side_of_shared_main_bank(self):
         bands = lambda frequency, gain: [{"filterType": "bell", "frequencyHz": frequency, "gainDb": gain, "q": 1}]
         result = asyncio.run(dsp_api.create_peq_preset(FakeRequest({
-            "presetName": "Pair EQ", "loadAfterCreate": True,
+            "presetName": "Pair EQ",
             "peq": {"enabled": True, "params": {"channelMode": "dual",
                     "leftBands": bands(900, -2), "rightBands": bands(1100, -4)}},
             "bank_mode": "stereo-sub", "bank_id": "main", "expected_revision": 1,
@@ -368,12 +366,6 @@ class DspBankApiTests(unittest.TestCase):
             self.assertEqual(ctx.exception.status_code, status)
         self.assertEqual(self.service.load(), before)
 
-    def test_delete_legacy_compare_preset_normalizes_the_slot(self):
-        self.manager.save_compare_state({"presetA": "Room", "presetB": "", "activeSide": "A"})
-        asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
-        self.assertNotIn(("global", "stereo"), stored_in(self.manager, "Room"))
-        self.assertNotEqual(self.manager.load_compare_state()["presetA"], "Room")
-
     def test_delete_unpinned_preset_still_works(self):
         result = asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
         self.assertEqual(result["deleted"], "Room")
@@ -420,7 +412,6 @@ class DspBankApiTests(unittest.TestCase):
         result = asyncio.run(dsp_api.import_rew_peq_preset(
             preset_name="REW Bank",
             file=FakeUpload("rew.txt", b"Equaliser: Generic\n1 True Auto PK 46.30 -4.80 3.387\n"),
-            load_after_create=False,
             limiter_enabled=False, headroom_enabled=False, headroom_gain_db=-3.0,
             autogain_enabled=False, autogain_target_db=-12.0,
             delay_enabled=False, delay_left_ms=0.0, delay_right_ms=0.0,

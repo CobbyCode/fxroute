@@ -70,13 +70,11 @@ class DspApiDeps:
     require_dsp_manager: Callable[[], Any]
     get_dsp_manager: Callable[[], Any]
     get_dsp_runtime: Callable[[], Any]
-    get_dsp_preset_load_lock: Callable[[], asyncio.Lock]
     dsp_mutation_lock: Callable[[], asyncio.Lock]
     canonical_volume_write_lock: Callable[[], asyncio.Lock]
     drain_worker: Callable[..., Awaitable[Any]]
     run_locked_worker: Callable[..., Awaitable[Any]]
     broadcast: Callable[[dict], Awaitable[Any]]
-    load_dsp_preset: Callable[..., Awaitable[Any]]
     restore_volume_state: Callable[..., Awaitable[Any]]
     volume_state_for_manager: Callable[..., Awaitable[Any]]
     schedule_peak_monitor_refresh: Callable[[str], None]
@@ -94,8 +92,7 @@ class DspApiDeps:
     # resolves against the stored bindings.
     routed_roles: Optional[Callable[[dict, str], Awaitable[list]]] = None
     sync_v2_extras_runtime: Optional[Callable[[], Awaitable[None]]] = None
-    # Reserves the job-free graph against measurement registration. Yields
-    # whether the caller holds the sample-rate lock for a nested preset load.
+    # Reserves the job-free graph against measurement registration.
     external_mutation_scope: Optional[Callable[[], Any]] = None
 
 
@@ -126,7 +123,7 @@ def _deps() -> DspApiDeps:
 
 def _external_mutation_scope():
     factory = _deps().external_mutation_scope
-    return factory() if factory is not None else nullcontext(False)
+    return factory() if factory is not None else nullcontext()
 
 
 def _parse_effects_extras_from_json(body: dict) -> dict:
@@ -194,37 +191,15 @@ def _effects_extras_from_form(
     return _resolve_effects_extras(extras)
 
 
-def _in_stereo_global(mode: str | None, bank_id: str | None) -> bool:
-    """Whether a preset library is Stereo Global, the only one ``load_preset`` reads.
+async def _finish_dsp_preset_mutation(*, refresh_reason: str | None) -> dict:
+    """Broadcast the DSP status after a preset was created.
 
-    A preset of any other bank becomes active through its bank assignment.
+    A preset becomes active through a bank assignment, never on its own.
+    ``refresh_reason`` schedules a peak-monitor refresh (None skips it).
     """
-    return (mode or "stereo", bank_id or "global") == ("stereo", "global")
-
-
-async def _finish_dsp_preset_mutation(
-    *,
-    load_after_create: bool,
-    preset_name: str,
-    refresh_reason: str,
-    refresh_only_when_loaded: bool = False,
-    binding: dict | None = None,
-) -> dict:
-    """Broadcast a created preset; ``load_after_create`` loads a Stereo Global one.
-
-    A preset created into another bank (``binding``) is activated by the bank
-    assignment that follows, not by the Stereo Global fallback graph.
-    """
-    dsp_mgr = _deps().require_dsp_manager()
-    if binding is not None and not _in_stereo_global(binding["mode"], binding["bank_id"]):
-        load_after_create = False
-    if load_after_create:
-        async with _external_mutation_scope() as rate_locked:
-            await _deps().load_dsp_preset(
-                preset_name, **({"_rate_lock_held": True} if rate_locked else {}))
-    status = dsp_mgr.get_status()
+    status = _deps().require_dsp_manager().get_status()
     await _deps().broadcast({"type": "dsp", "data": status})
-    if load_after_create or not refresh_only_when_loaded:
+    if refresh_reason is not None:
         _deps().schedule_peak_monitor_refresh(refresh_reason)
     return status
 
@@ -489,17 +464,12 @@ async def _release_bank_slots(name: str, owner: dict) -> bool:
     return True
 
 
-async def _reconcile_extras_runtime(dsp_mgr) -> None:
-    """V2 slots own the graph; active.json is only for standalone legacy managers."""
-    if _output_state_service() is not None:
-        sync = _deps().sync_v2_extras_runtime
-        if sync is None:
-            raise RuntimeError("V2 extras reconciliation is unavailable; legacy fallback refused")
-        await sync()
-        return
-    active = dsp_mgr.get_active_preset()
-    if active and active not in dsp_mgr.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-        await _deps().load_dsp_preset(active, _locks_held=True)
+async def _reconcile_extras_runtime() -> None:
+    """Re-render the output-state graph so the Global extras reach the engine."""
+    sync = _deps().sync_v2_extras_runtime
+    if sync is None:
+        raise RuntimeError("V2 extras reconciliation is unavailable")
+    await sync()
 
 
 @router.get("/api/dsp/extras")
@@ -588,7 +558,7 @@ async def save_dsp_extras(request: Request):
                             dsp_mgr.apply_global_extras_to_all_presets, extras
                         )
                     if not result.get("runtime_applied"):
-                        await _reconcile_extras_runtime(dsp_mgr)
+                        await _reconcile_extras_runtime()
                 except (Exception, asyncio.CancelledError):
                     # Keep graph ownership until recovery has completed.
                     async def recover_previous_extras():
@@ -596,7 +566,7 @@ async def save_dsp_extras(request: Request):
                         if changed:
                             await _deps().drain_worker(dsp_mgr.save_global_extras, previous)
                         if changed or _output_state_service() is not None:
-                            await _reconcile_extras_runtime(dsp_mgr)
+                            await _reconcile_extras_runtime()
                         await _deps().restore_volume_state(dsp_mgr, start)
 
                     recovery = asyncio.create_task(recover_previous_extras())
@@ -699,26 +669,6 @@ async def download_dsp_preset_file(preset_name: str, bank_mode: str = "", bank_i
     return FileResponse(preset_path, filename=preset_path.name)
 
 
-@router.post("/api/dsp/compare")
-async def save_dsp_compare(request: Request):
-    dsp_mgr = _deps().require_dsp_manager()
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-
-    compare = dsp_mgr.save_compare_state({
-        "presetA": body.get("presetA", body.get("preset_a", "")),
-        "presetB": body.get("presetB", body.get("preset_b", "")),
-        "activeSide": body.get("activeSide", body.get("active_side")),
-    })
-
-    status = dsp_mgr.get_status()
-    await _deps().broadcast({"type": "dsp", "data": status})
-    return {"status": "ok", "compare": compare}
-
-
 @router.post("/api/dsp/presets/combine")
 async def combine_dsp_presets(request: Request):
     dsp_mgr = _deps().require_dsp_manager()
@@ -733,74 +683,22 @@ async def combine_dsp_presets(request: Request):
 
     preset_name = (body.get("presetName") or body.get("preset_name") or "").strip()
     preset_names = body.get("presetNames", body.get("preset_names")) or []
-    load_after_create = bool(body.get("loadAfterCreate", body.get("load_after_create", False)))
 
     if not preset_name:
         raise HTTPException(status_code=400, detail="presetName is required")
     if not isinstance(preset_names, list):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
     owner = await _optional_owner(body)
-    # Combine assigns no bank, so only a Stereo Global preset can be loaded.
-    if load_after_create and not _in_stereo_global(owner.get("mode"), owner.get("bank")):
-        raise HTTPException(status_code=400, detail=(
-            "loadAfterCreate loads Stereo Global presets only; "
-            "assign a combined bank preset to its bank to activate it"))
 
     try:
         async with _deps().dsp_mutation_lock():
             created = dsp_mgr.combine_presets(preset_name, preset_names, **owner)
-        status = await _finish_dsp_preset_mutation(
-            load_after_create=load_after_create,
-            preset_name=created["name"],
-            refresh_reason="combine-presets",
-            refresh_only_when_loaded=True,
-        )
+        status = await _finish_dsp_preset_mutation(refresh_reason=None)
         return {
             "status": "ok",
             "preset": created,
-            "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
-    except (FileNotFoundError, ValueError, RuntimeError) as e:
-        _raise_dsp_http_error(e)
-
-
-@router.post("/api/dsp/presets/load")
-async def load_dsp_preset(request: Request):
-    dsp_mgr = _deps().require_dsp_manager()
-
-    try:
-        body = await request.json()
-        preset_name = (body.get("preset_name") or "").strip()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body, expected {\"preset_name\": \"...\"}")
-
-    if not preset_name:
-        raise HTTPException(status_code=400, detail="preset_name is required")
-
-    try:
-        async with _external_mutation_scope() as rate_locked:
-            async with _deps().get_dsp_preset_load_lock():
-                await _deps().load_dsp_preset(
-                    preset_name, **({"_rate_lock_held": True} if rate_locked else {}))
-                compare = dsp_mgr.load_compare_state()
-                if compare.get("presetA") == preset_name:
-                    compare["activeSide"] = "A"
-                    dsp_mgr.save_compare_state(compare)
-                elif compare.get("presetB") == preset_name:
-                    compare["activeSide"] = "B"
-                    dsp_mgr.save_compare_state(compare)
-                status = dsp_mgr.get_status()
-            runtime = _deps().get_dsp_runtime()
-            if (
-                runtime is not None
-                and runtime.snapshot().get("active")
-                and not runtime.sync_in_progress
-            ):
-                await runtime._reclean_guarded(skip_if_locked=False)
-        await _deps().broadcast({"type": "dsp", "data": status})
-        _deps().schedule_peak_monitor_refresh("preset-load")
-        return {"status": "ok", "active_preset": preset_name, "compare": status.get("compare")}
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         _raise_dsp_http_error(e)
 
@@ -846,7 +744,6 @@ async def upload_dsp_ir(file: UploadFile = File(...), bank_mode: str = Form(""),
 async def create_convolver_preset(
     preset_name: str = Form(...),
     ir_filename: str = Form(...),
-    load_after_create: bool = Form(False),
     limiter_enabled: bool = Form(False),
     headroom_enabled: bool = Form(False),
     headroom_gain_db: float = Form(-3.0),
@@ -893,15 +790,11 @@ async def create_convolver_preset(
             created = dsp_mgr.create_convolver_preset(preset_name, ir_filename, extras=extras,
                                                       bank=canonical_bank, **_binding_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
-            load_after_create=load_after_create,
-            preset_name=created["name"],
             refresh_reason="create-convolver",
-            binding=binding,
         )
         response = {
             "status": "ok",
             "preset": created,
-            "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
         if binding is not None:
@@ -915,7 +808,6 @@ async def create_convolver_preset(
 @router.post("/api/dsp/presets/import-json")
 async def import_dsp_preset_json(
     file: UploadFile = File(...),
-    load_after_create: bool = Form(False),
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
     expected_revision: int = Form(-1),
@@ -933,15 +825,11 @@ async def import_dsp_preset_json(
             created = dsp_mgr.import_preset_json(file.filename or "preset.json", content,
                                                  bank=canonical_bank, **_binding_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
-            load_after_create=load_after_create,
-            preset_name=created["name"],
             refresh_reason="import-preset-json",
-            binding=binding,
         )
         response = {
             "status": "ok",
             "preset": created,
-            "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
         if binding is not None:
@@ -959,7 +847,6 @@ async def import_dsp_preset_json(
 @router.post("/api/dsp/presets/import-bundle")
 async def import_dsp_preset_bundle(
     file: UploadFile = File(...),
-    load_after_create: bool = Form(False),
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
     expected_revision: int = Form(-1),
@@ -1094,16 +981,12 @@ async def import_dsp_preset_bundle(
                                                      **_binding_kwargs(binding))
             import_succeeded = True
             status = await _finish_dsp_preset_mutation(
-                load_after_create=load_after_create,
-                preset_name=created["name"],
                 refresh_reason="import-preset-bundle",
-                binding=binding,
             )
             response = {
                 "status": "ok",
                 "preset": created,
                 "irs": imported_irs,
-                "loaded": bool(load_after_create),
                 "active_preset": status.get("active_preset"),
             }
             if binding is not None:
@@ -1153,7 +1036,6 @@ async def import_dsp_preset_bundle(
 @router.post("/api/dsp/presets/create-with-ir")
 async def create_convolver_preset_with_ir(
     preset_name: str = Form(...),
-    load_after_create: bool = Form(False),
     limiter_enabled: bool = Form(False),
     headroom_enabled: bool = Form(False),
     headroom_gain_db: float = Form(-3.0),
@@ -1219,16 +1101,12 @@ async def create_convolver_preset_with_ir(
                 **_binding_kwargs(binding),
             )
         status = await _finish_dsp_preset_mutation(
-            load_after_create=load_after_create,
-            preset_name=created["preset"]["name"],
             refresh_reason="create-with-ir",
-            binding=binding,
         )
         response = {
             "status": "ok",
             "ir": created["ir"],
             "preset": created["preset"],
-            "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
         if binding is not None:
@@ -1261,12 +1139,11 @@ async def create_peq_preset(request: Request):
     except Exception:
         raise HTTPException(
             status_code=400,
-            detail="Invalid JSON body, expected {'presetName': '...', 'peq': {...}, 'loadAfterCreate': true|false}",
+            detail="Invalid JSON body, expected {'presetName': '...', 'peq': {...}}",
         )
 
     preset_name = (body.get("presetName") or body.get("preset_name") or "").strip()
     peq_definition = body.get("peq")
-    load_after_create = bool(body.get("loadAfterCreate", body.get("load_after_create", False)))
     extras = _parse_effects_extras_from_json(body)
     binding = _parse_bank_binding(
         bank_mode=body.get("bank_mode"), bank_id=body.get("bank_id"),
@@ -1289,15 +1166,11 @@ async def create_peq_preset(request: Request):
             created = dsp_mgr.create_peq_preset(preset_name, peq_definition, extras=extras,
                                                 bank=canonical_bank, **_binding_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
-            load_after_create=load_after_create,
-            preset_name=created["name"],
             refresh_reason="create-peq",
-            binding=binding,
         )
         response = {
             "status": "ok",
             "preset": created,
-            "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
         if binding is not None:
@@ -1311,7 +1184,6 @@ async def create_peq_preset(request: Request):
 @router.post("/api/dsp/presets/import-rew-peq")
 async def import_rew_peq_preset(
     preset_name: str = Form(...),
-    load_after_create: bool = Form(False),
     limiter_enabled: bool = Form(False),
     headroom_enabled: bool = Form(False),
     headroom_gain_db: float = Form(-3.0),
@@ -1372,15 +1244,11 @@ async def import_rew_peq_preset(
                                                              bank=canonical_bank,
                                                              **_binding_kwargs(binding))
         status = await _finish_dsp_preset_mutation(
-            load_after_create=load_after_create,
-            preset_name=created["name"],
             refresh_reason="import-rew-peq",
-            binding=binding,
         )
         response = {
             "status": "ok",
             "preset": created,
-            "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
         if binding is not None:
@@ -1396,7 +1264,6 @@ async def import_dual_filter_preset(
     preset_name: str = Form(...),
     left_text: str = Form(""),
     right_text: str = Form(""),
-    load_after_create: bool = Form(False),
     limiter_enabled: bool = Form(False),
     headroom_enabled: bool = Form(False),
     headroom_gain_db: float = Form(-3.0),
@@ -1527,17 +1394,13 @@ async def import_dual_filter_preset(
 
         created_preset = created["preset"] if import_kind == "dual-convolver" else created
         status = await _finish_dsp_preset_mutation(
-            load_after_create=load_after_create,
-            preset_name=created_preset["name"],
             refresh_reason="import-filter-dual",
-            binding=binding,
         )
         response = {
             "status": "ok",
             "import_kind": import_kind,
             "preset": created_preset,
             "ir": created.get("ir") if isinstance(created, dict) else None,
-            "loaded": bool(load_after_create),
             "active_preset": status.get("active_preset"),
         }
         if binding is not None:
@@ -1571,22 +1434,19 @@ async def delete_dsp_preset(request: Request):
     owner = await _optional_owner(body)
 
     try:
-        # Optimistic library-only check without locks: active and pinned
-        # deletes reserve the job-free graph, everything else stays allowed
-        # during jobs. The guarded path re-validates under session-first
-        # locks, so a concurrent pin never slips through.
+        # Optimistic library-only check without locks: pinned deletes reserve
+        # the job-free graph, everything else stays allowed during jobs. The
+        # guarded path re-validates under session-first locks, so a
+        # concurrent pin never slips through.
         try:
             optimistic_name = dsp_mgr.require_deletable_preset(preset_name, **owner)
-            optimistic_active = dsp_mgr.is_active_preset(optimistic_name, **owner)
-            optimistic_guarded = optimistic_active or optimistic_name in _pinned_deletion_presets(owner)
+            optimistic_guarded = optimistic_name in _pinned_deletion_presets(owner)
         except (FileNotFoundError, ValueError, RuntimeError):
             optimistic_guarded = True
-            optimistic_name = None
-            optimistic_active = False
         if not optimistic_guarded:
             async with _deps().dsp_mutation_lock():
                 name = dsp_mgr.require_deletable_preset(preset_name, **owner)
-                if dsp_mgr.is_active_preset(name, **owner) or name in _pinned_deletion_presets(owner):
+                if name in _pinned_deletion_presets(owner):
                     raise HTTPException(status_code=423, detail="DSP state changed; retry the delete")
                 released = await _release_bank_slots(name, owner)
                 dsp_mgr.delete_preset(name, **owner, pinned_presets=_pinned_deletion_presets(owner))
@@ -1596,28 +1456,13 @@ async def delete_dsp_preset(request: Request):
             await _deps().broadcast({"type": "dsp", "data": status})
             _deps().schedule_peak_monitor_refresh("preset-delete")
             return {"status": "ok", "deleted": preset_name}
-        async with _external_mutation_scope() as rate_locked:
+        async with _external_mutation_scope():
             async with _deps().dsp_mutation_lock():
                 name = dsp_mgr.require_deletable_preset(preset_name, **owner)
-                deleted_active = dsp_mgr.is_active_preset(name, **owner)
                 released = await _release_bank_slots(name, owner)
                 dsp_mgr.delete_preset(name, **owner, pinned_presets=_pinned_deletion_presets(owner))
             if released and _deps().sync_v2_head_live is not None:
                 await _deps().sync_v2_head_live()
-            if deleted_active:
-                # Keep ownership from deletion through Neutral reconciliation.
-                try:
-                    await _deps().load_dsp_preset(
-                        dsp_mgr.get_active_preset() or "Neutral",
-                        **({"_rate_lock_held": True} if rate_locked else {}))
-                except Exception:
-                    try:
-                        status = dsp_mgr.get_status()
-                        await _deps().broadcast({"type": "dsp", "data": status})
-                    except Exception:
-                        logger.exception(
-                            "Failed to broadcast DSP state after preset-delete resync failure")
-                    raise
         status = dsp_mgr.get_status()
         await _deps().broadcast({"type": "dsp", "data": status})
         _deps().schedule_peak_monitor_refresh("preset-delete")

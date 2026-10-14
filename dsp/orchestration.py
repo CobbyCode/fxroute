@@ -2,7 +2,7 @@
 """Native DSP/output runtime orchestration extracted from main.py.
 
 Owns the coordination between the native DSP runtime (:class:`dsp.runtime.DSPRuntime`),
-the sample-rate overview, the subwoofer link watcher, and the peak monitor
+the sample-rate overview, the output-authority monitor, and the peak monitor
 refresh scheduling after DSP/effect changes.  It holds no application state
 of its own: every dependency is injected explicitly through
 :class:`DspOrchestrationDeps`, so it never imports ``main`` and main.py keeps
@@ -56,7 +56,6 @@ class DspOrchestrationDeps:
     """Application services injected from main.py."""
 
     get_dsp_runtime: Callable[[], Any]
-    get_dsp_manager: Callable[[], Any]
     get_audio_output_overview: Callable[[], dict]
     get_samplerate_status: Callable[[], dict]
     get_measurement_sr_session: Callable[[], Any]
@@ -70,20 +69,15 @@ class DspOrchestrationDeps:
     sync_peak_monitor_for_playback_state: Callable[..., Awaitable[Any]]
     sync_peak_monitor_for_spotify_state: Callable[..., Awaitable[Any]]
     sync_peak_monitor_for_qobuz_state: Callable[..., Awaitable[Any]]
-    load_dsp_preset: Callable[..., Awaitable[Any]]
-    broadcast: Callable[[dict], Awaitable[Any]]
     wait_for_samplerate_alignment: Callable[..., Awaitable[bool]]
     wait_for_selected_output_effective_rate: Callable[..., Awaitable[Any]]
     measurement_audio_graph_owned: Callable[[], bool]
     observe_playback_samplerate_drift: Callable[[], Awaitable[Any]]
     playback_transition_is_active: Callable[[], bool]
-    coordinator_target_rate: Callable[..., Any]
     playback_graph_diagnosis: Callable[..., Awaitable[dict]]
-    request_coordinated_recovery: Callable[..., Awaitable[Any]]
     create_lifecycle_background_task: Callable[..., Any]
     peak_monitor_restart_settle_ms: float
     sleep: Callable[[float], Awaitable[Any]]
-    get_output_mode: Callable[[], str] | None = None
     reconcile_output_default: Callable[[], str | None] | None = None
     get_coordinator_lock: Callable[[], Any] | None = None
     # Read-only (selected_key, drifted) for the saved output default. Used
@@ -598,8 +592,7 @@ class DspOrchestrator:
     async def _repair_idle_stale_pinned_rate(self, dsp_runtime: Any) -> None:
         """Repair the unambiguous idle rate inconsistency behind a live pin.
 
-        With no current track the link watcher has no source identity or
-        target rate, so the full link recovery cannot run.  A live force-rate
+        With no current track there is no source-owned target rate. A live force-rate
         pin the running graph does not honour is still unambiguous: the sink
         stays at the stale rate, so every later play on the pinned rate fails
         its target-rate stage.  The helper may still be stale itself, or it may
@@ -724,59 +717,6 @@ class DspOrchestrator:
             helper_argument_sample_rate(runtime_snapshot),
         )
 
-    async def sync_preset_for_playback_samplerate(
-        self,
-        *,
-        sample_rate_hz: int | None,
-        reason: str,
-        detail: str = "",
-        _rate_lock_held: bool = False,
-        _locks_held: bool = False,
-    ) -> None:
-        dsp_manager = self._deps.get_dsp_manager()
-        if not dsp_manager or not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
-            return
-
-        active_preset = dsp_manager.get_active_preset()
-        if not active_preset or active_preset in dsp_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
-            return
-
-        logger.info(
-            "Syncing DSP preset for playback samplerate: preset=%s sample_rate=%s reason=%s detail=%s",
-            active_preset,
-            sample_rate_hz,
-            reason,
-            detail,
-        )
-        await self._deps.load_dsp_preset(
-            active_preset,
-            convolver_sample_rate_hz=sample_rate_hz,
-            _rate_lock_held=_rate_lock_held,
-            **({"_locks_held": True} if _locks_held else {}),
-        )
-        status = dsp_manager.get_status()
-        await self._deps.broadcast({"type": "dsp", "data": status})
-
-    @staticmethod
-    def _is_topology_complete_rate_only_mismatch(diagnosis: dict) -> bool:
-        """Return whether only the helper rate mismatches an intact topology.
-
-        All links present, source links complete, no direct-to-hardware
-        bypass, DSP/helper ports up: the graph is canonically linked and the
-        ``links_complete=False`` verdict rests solely on the track-derived
-        rate expectation. Rate ownership belongs to the drift observer.
-        """
-        links = diagnosis.get("links") or {}
-        if not isinstance(links, dict) or not links or not all(links.values()):
-            return False
-        return bool(
-            diagnosis.get("source_links_complete") is True
-            and not diagnosis.get("direct_source_to_hw_present")
-            and diagnosis.get("dsp_ports") is True
-            and diagnosis.get("helper_active") is True
-            and diagnosis.get("helper_rate_matches") is False
-        )
-
     async def reconcile_output_authority(self) -> None:
         """Repair output identity and edges in every mode, including idle stereo.
 
@@ -889,11 +829,12 @@ class DspOrchestrator:
             coord_lock.release()
 
     async def runtime_link_watch_loop(self) -> None:
+        """Monitor output authority and rates without a mode-specific recovery path."""
         while True:
             await self._deps.sleep(2.0)
             try:
                 if self._deps.measurement_audio_graph_owned():
-                    logger.debug("Subwoofer link watcher skipped while Measurement owns the audio graph")
+                    logger.debug("Output monitor skipped while Measurement owns the audio graph")
                     continue
                 # The repair steps are independent: one failing step must not
                 # discard the rest of the tick, least of all the idle stale-rate
@@ -903,102 +844,26 @@ class DspOrchestrator:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.warning("Subwoofer output authority reconcile failed: %s", exc)
+                    logger.warning("Output authority reconcile failed: %s", exc)
                 try:
                     await self._deps.observe_playback_samplerate_drift()
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.warning("Subwoofer samplerate drift observation failed: %s", exc)
+                    logger.warning("Samplerate drift observation failed: %s", exc)
                 dsp_runtime = self._deps.get_dsp_runtime()
                 if dsp_runtime is None:
                     continue
-                mode_provider = self._deps.get_output_mode
-                cheap_mode = str(mode_provider() or "stereo") if mode_provider is not None else None
-                if cheap_mode is not None and cheap_mode not in samplerate.OUTPUT_MODE_SUBWOOFER_MODES:
-                    # Stereo output needs no subwoofer link watch; skip the
-                    # overview build (dozens of short-lived PipeWire/BlueZ
-                    # subprocesses per tick) until a subwoofer mode is active.
-                    continue
-                track = dict(self._deps.get_current_track_info() or {})
-                # The overview is needed to re-read the output mode when the
-                # cheap provider above is unavailable, and to diagnose the
-                # graph of a track.  On an idle graph with the provider present
-                # it has nothing to contribute, and building it cost ~35
-                # short-lived PipeWire/BlueZ subprocesses every 2 s tick, so it
-                # must not run for the idle pinned-rate repair below.
-                # Contract: overview.mode is the same persisted mode the cheap
-                # provider falls back to (it only adds availability/ports the
-                # idle gate does not read); the cheap provider additionally
-                # prefers the committed runtime config, so it stays
-                # authoritative for the idle gate.
-                overview = None
-                if cheap_mode is None or track:
-                    # The overview build spawns a dozen PipeWire/BlueZ
-                    # subprocesses; keep that blocking pipeline off the event
-                    # loop so playback transitions, IPC, and status endpoints
-                    # stay responsive.
-                    overview = await asyncio.to_thread(self._deps.get_audio_output_overview)
-                    output_mode = overview.get("output_mode") or {}
-                    if output_mode.get("mode") not in samplerate.OUTPUT_MODE_SUBWOOFER_MODES:
-                        continue
                 if self._deps.playback_transition_is_active():
                     continue
                 if dsp_runtime.sync_in_progress:
-                    logger.debug(
-                        "Subwoofer link watcher skipped while a subwoofer runtime reconfiguration is in progress"
-                    )
                     continue
-                if not track:
-                    # No source owns a target rate.  Repair a pinned helper
-                    # that does not honour the live force-rate pin rather than
-                    # preserving that inconsistency until the next play fails.
+                if not self._deps.get_current_track_info():
                     await self._repair_idle_stale_pinned_rate(dsp_runtime)
-                    continue
-                source = str(track.get("source") or "")
-                target_rate = self._deps.coordinator_target_rate(source, track)
-                diagnosis = await self._deps.playback_graph_diagnosis(
-                    overview,
-                    source=source,
-                    target_rate=target_rate,
-                    require_source=True,
-                )
-                if diagnosis.get("links_complete"):
-                    continue
-                if source_policy.is_mpv_source(source) and self._is_topology_complete_rate_only_mismatch(diagnosis):
-                    # Pure helper-rate mismatch with complete topology: the
-                    # track-derived target may be stale (e.g. a radio track
-                    # still carrying a previous fixed rate while live MPV
-                    # already runs the auto rate). The drift observer owns
-                    # rate mismatches with live-MPV authority and stable
-                    # readbacks; a full link-watcher recovery here would flap
-                    # the hardware rate.
-                    logger.debug(
-                        "Subwoofer link watcher deferring pure rate mismatch to drift observer: "
-                        "source=%s helper_rate=%s",
-                        source,
-                        diagnosis.get("helper_rate"),
-                    )
-                    continue
-                logger.info(
-                    "Subwoofer link watcher observed incomplete canonical graph; requesting Coordinator action: "
-                    "bypass_only=%s helper_active=%s helper_rate=%s direct_source_to_hw=%s signature=%s",
-                    diagnosis.get("bypass_only"),
-                    diagnosis.get("helper_active"),
-                    diagnosis.get("helper_rate"),
-                    diagnosis.get("direct_source_to_hw_present"),
-                    diagnosis.get("signature"),
-                )
-                await self._deps.request_coordinated_recovery(
-                    track,
-                    "subwoofer-link-watcher",
-                    graph_only=bool(diagnosis.get("bypass_only")),
-                    diagnosis=diagnosis,
-                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("Subwoofer link watch repair failed: %s", exc)
+                logger.warning("Output monitor repair failed: %s", exc)
 
     async def refresh_peak_monitor_after_effects_change(self, reason: str = "effects-change") -> None:
         peak_monitor = self._deps.get_peak_monitor()

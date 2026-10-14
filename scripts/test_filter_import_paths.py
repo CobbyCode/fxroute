@@ -50,10 +50,10 @@ class FilterImportPathsTests(unittest.TestCase):
         self.addCleanup(api.configure_dsp_api, previous)
         api.configure_dsp_api(api.DspApiDeps(
             require_dsp_manager=lambda: self.manager, get_dsp_manager=lambda: self.manager,
-            get_dsp_runtime=lambda: None, get_dsp_preset_load_lock=lambda: asyncio.Lock(),
+            get_dsp_runtime=lambda: None,
             dsp_mutation_lock=lambda: asyncio.Lock(), canonical_volume_write_lock=lambda: asyncio.Lock(),
             drain_worker=drain, run_locked_worker=drain, broadcast=AsyncMock(),
-            load_dsp_preset=AsyncMock(), restore_volume_state=AsyncMock(),
+            restore_volume_state=AsyncMock(),
             volume_state_for_manager=lambda *args, **kwargs: {},
             schedule_peak_monitor_refresh=lambda *args, **kwargs: None,
             get_output_service=lambda: self.service,
@@ -75,7 +75,7 @@ class FilterImportPathsTests(unittest.TestCase):
         self.service.commit(state, expected_revision=current["revision"])
 
     def request_import(self, kind, bank, name, revision=None):
-        data = {"preset_name": name, "load_after_create": "false", "bank_mode": "stereo-sub",
+        data = {"preset_name": name, "bank_mode": "stereo-sub",
                 "bank_id": bank, "expected_revision": str(self.service.load()["revision"] if revision is None else revision)}
         mono = bank in ("sub1", "sub2")
         if kind in ("wav", "irs", "float64"):
@@ -203,7 +203,7 @@ class FilterImportPathsTests(unittest.TestCase):
             with self.subTest(name=name):
                 response = self.client.post(
                     "/api/dsp/presets/import-rew-peq",
-                    data={"preset_name": name, "load_after_create": "false"},
+                    data={"preset_name": name},
                     files={"file": ("rew.txt", text.encode(), "text/plain")})
                 self.assertEqual(response.status_code, status, response.text)
                 exists = self.manager.library().path(name).exists()

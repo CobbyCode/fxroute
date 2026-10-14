@@ -38,6 +38,7 @@ class MeasurementConsistencyTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(factory.stop)
         self.service = main.get_output_service()
         self.state = lifecycle.seed_sub_state(self.service)
+        self.manager.active_preset_reader = main._active_global_preset
         self.native = SimpleNamespace(
             preflight_rendered=mock.AsyncMock(), fail_closed=mock.AsyncMock(),
             snapshot=lambda: {"active": False}, sync_rendered=mock.AsyncMock())
@@ -144,11 +145,13 @@ class MeasurementConsistencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(self.manager.load_global_extras()["headroom"]["params"]["gainDb"], -6)
 
-    async def test_preset_load_during_job_does_not_change_active_preset(self):
-        self.manager.library().write("Other", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
+    async def test_bank_activation_during_job_does_not_change_active_preset(self):
         self.owner.has_active_jobs = True
         with self.assertRaises(main.HTTPException) as failure:
-            await dsp_api.load_dsp_preset(lifecycle.FakeRequest({"preset_name": "Other"}))
+            await main.apply_audio_output_state(lifecycle.FakeRequest({
+                "expected_revision": 1,
+                "mutation": {"kind": "set_bank_preset", "mode": "stereo-sub",
+                             "bank_id": "global", "preset": "Room"}}))
         self.assertEqual(failure.exception.status_code, 423)
         self.assertEqual(self.manager.get_active_preset(), "Neutral")
 
@@ -227,20 +230,21 @@ class MeasurementConsistencyTests(unittest.IsolatedAsyncioTestCase):
         self.native.sync_rendered.assert_not_awaited()
 
     async def test_active_preset_delete_is_refused_before_removing_the_file(self):
-        self.manager.library().write("Other", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
-        self.manager.state_store.write("active.json", {"preset": "Other"})
+        self.service.apply(lambda state: set_bank_preset(
+            state, "stereo-sub", "global", preset="Room"), expected_revision=1)
         self.owner.has_active_jobs = True
         with self.assertRaises(main.HTTPException) as failure:
-            await dsp_api.delete_dsp_preset(lifecycle.FakeRequest({"preset_name": "Other"}))
+            await dsp_api.delete_dsp_preset(lifecycle.FakeRequest({
+                "preset_name": "Room", "bank_mode": "stereo-sub", "bank_id": "global"}))
         self.assertEqual(failure.exception.status_code, 423)
-        self.assertEqual(self.manager.get_active_preset(), "Other")
-        self.assertEqual(self.manager.library().read("Other")["chain"], [])
+        self.assertEqual(self.manager.get_active_preset(), "Room")
+        self.assertEqual(self.manager.library("global", "stereo-sub").read("Room")["chain"], [])
 
     async def test_library_only_create_and_delete_remain_allowed_during_jobs(self):
         self.owner.has_active_jobs = True
         result = await dsp_api.combine_dsp_presets(lifecycle.FakeRequest({
             "presetName": "LibraryOnly", "presetNames": ["Neutral", "Direct"]}))
-        self.assertFalse(result["loaded"])
+        self.assertEqual(result["active_preset"], "Neutral")
         self.assertEqual(self.manager.library().read("LibraryOnly")["chain"], [])
         result = await dsp_api.delete_dsp_preset(lifecycle.FakeRequest({"preset_name": "LibraryOnly"}))
         self.assertEqual(result["deleted"], "LibraryOnly")

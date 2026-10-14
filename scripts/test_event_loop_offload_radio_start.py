@@ -109,18 +109,16 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rate, 48000)
         self.assertEqual(seen, [False])
 
-    async def test_runtime_link_watch_loop_builds_overview_off_loop(self):
+    async def test_runtime_monitor_reads_output_authority_off_loop(self):
         seen = []
 
-        def overview_builder():
+        def read_default():
             seen.append(threading.current_thread() is MAIN_THREAD)
-            # Stereo mode: the loop must stop after the mode check.
-            return {"output_mode": {"mode": "stereo"}}
+            return (None, False)
 
         ticks = 0
 
         async def one_tick_then_cancel(_delay):
-            # First tick proceeds to the overview build; second tick ends the loop.
             nonlocal ticks
             ticks += 1
             if ticks < 2:
@@ -131,19 +129,23 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
             sleep=one_tick_then_cancel,
             measurement_audio_graph_owned=lambda: False,
             observe_playback_samplerate_drift=unittest.mock.AsyncMock(),
-            get_dsp_runtime=lambda: object(),
-            get_audio_output_overview=overview_builder,
+            get_dsp_runtime=lambda: SimpleNamespace(sync_in_progress=False),
+            get_audio_output_overview=lambda: self.fail("A steady tick needs no overview"),
             playback_transition_is_active=lambda: True,
             sync_peak_monitor_for_source_mode_state=None,
         )
         orchestrator = DspOrchestrator(_watcher_deps(deps))
+        from dataclasses import replace
+        orchestrator._deps = replace(orchestrator._deps,
+                                    reconcile_output_default=lambda: None,
+                                    read_output_default_state=read_default)
         task = asyncio.create_task(orchestrator.runtime_link_watch_loop())
         with self.assertRaises(asyncio.CancelledError):
             await task
-        self.assertTrue(seen, "watcher tick did not build the overview")
+        self.assertTrue(seen, "monitor tick did not read output authority")
         self.assertFalse(
             seen[0],
-            "runtime_link_watch_loop built the audio overview on the event loop",
+            "runtime monitor read output authority on the event loop",
         )
 
     async def test_bluetooth_monitor_loop_builds_overview_off_loop(self):
@@ -309,7 +311,6 @@ def _watcher_deps(overrides) -> DspOrchestrationDeps:
         return None
     return DspOrchestrationDeps(
         get_dsp_runtime=overrides.get_dsp_runtime,
-        get_dsp_manager=lambda: None,
         get_audio_output_overview=overrides.get_audio_output_overview,
         get_samplerate_status=lambda: {},
         get_measurement_sr_session=lambda: None,
@@ -323,16 +324,12 @@ def _watcher_deps(overrides) -> DspOrchestrationDeps:
         sync_peak_monitor_for_playback_state=stub,
         sync_peak_monitor_for_spotify_state=stub,
         sync_peak_monitor_for_qobuz_state=stub,
-        load_dsp_preset=stub,
-        broadcast=stub,
         wait_for_samplerate_alignment=stub,
         wait_for_selected_output_effective_rate=stub,
         measurement_audio_graph_owned=lambda: False,
         observe_playback_samplerate_drift=overrides.observe_playback_samplerate_drift,
         playback_transition_is_active=lambda: True,
-        coordinator_target_rate=lambda *_a, **_k: 44100,
         playback_graph_diagnosis=stub,
-        request_coordinated_recovery=stub,
         create_lifecycle_background_task=stub,
         peak_monitor_restart_settle_ms=320.0,
         sleep=overrides.sleep,

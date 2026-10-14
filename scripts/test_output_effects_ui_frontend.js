@@ -38,7 +38,6 @@ const MOVED = [
 // Former thin shims: removed from app.js, real code already lives in
 // output_bank_ui.js (or subwoofer_ui.js for the subwoofer wiring entry).
 const DROPPED_SHIMS = [
-    'normalizeEffectsCompareSelection', 'resolveEffectsCompareState', 'saveEffectsCompareState',
     'getDefaultEffectsCombineDraft', 'normalizeEffectsCombineDraft', 'setEffectsImportPanelOpen',
     'outputSystemBankBinding', 'outputSystemBankOwner', 'visiblePresetEntriesForBank',
     'visiblePresetNamesForBank', 'appendBankBindingFields', 'bankBindingJson',
@@ -47,11 +46,11 @@ const DROPPED_SHIMS = [
     'readTextFile', 'getDualFilterFileKind', 'populateDualFilterTextareaFromFile',
     'createDualFilterPreset', 'wireSubwooferControls', 'wireBankUi',
     'importRewPeqPreset', 'getEmptyEffectsCompareState', 'getEffectsCompareState',
-    'getEffectiveEffectsCompareSide', 'setEffectsCompareLoadBusy', 'getEffectsChainLabelForPreset',
+    'setEffectsCompareLoadBusy', 'getEffectsChainLabelForPreset',
     'getCompactDisplayName', 'renderPresetDownloadLink', 'renderEffectsCompare',
     'getEffectsCombineValidationState', 'renderEffectsCombine', 'createCombinedEffectsPreset',
     'loadEffectsComparePreset', 'handleEffectsCompareSelectionChange',
-    'getEffectsCompareToggleTarget', 'toggleComparePreset', 'setupEffectsCompareActions',
+    'toggleComparePreset', 'setupEffectsCompareActions',
     'detectEffectsImportType', 'updateEffectsImportUi', 'handleEffectsImportFileChange',
     'submitEffectsImport', 'importEffectsPresetJson', 'importEffectsPresetBundle',
     'createConvolverPreset', 'deleteEffectsPreset',
@@ -149,7 +148,6 @@ assert.deepEqual(Effects.defaultPeqBand(), {
 const draft = Effects.getDefaultPeqDraft();
 assert.equal(draft.presetName, '');
 assert.equal(draft.eqMode, 'IIR');
-assert.equal(draft.loadAfterCreate, false);
 assert.deepEqual(draft.leftBands, [Effects.defaultPeqBand()]);
 assert.equal(Effects.isPeqGainBand({ filterType: 'GAIN' }), true);
 assert.equal(Effects.isPeqDelayBand({ filterType: 'bell' }), false);

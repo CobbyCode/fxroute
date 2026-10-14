@@ -3,7 +3,7 @@
 """Live STDIN acceptance on the audio host (opt-in, representative matrix).
 
 Runs on the FXRoute audio machine itself (needs the service, pw-cat and the
-installed ``fxroute`` CLI)::
+installed ``fxroute`` CLI, Stereo mode with crossover disabled)::
 
     FXROUTE_STDIN_LIVE=1 python3 scripts/test_stdin_audio_live.py
 
@@ -108,13 +108,14 @@ def _output_state() -> dict:
     return _http("GET", "/api/audio/output-state")
 
 
-def _set_bank_preset(bank_id: str, live_applied: bool | None = None, **options) -> dict:
+def _set_bank_preset(bank_id: str, live_applied: bool | None = None,
+                     *, mode: str | None = None, **options) -> dict:
     """Assign a bank preset through the same mutation the UI uses."""
-    revision = _output_state()["revision"]
-    mutation = {"kind": "set_bank_preset", "mode": _output_state()["active_mode"],
+    state = _output_state()
+    mutation = {"kind": "set_bank_preset", "mode": mode or state["active_mode"],
                 "bank_id": bank_id, **options}
     result = _http("POST", "/api/audio/output-state/apply",
-                   {"expected_revision": revision, "mutation": mutation})
+                   {"expected_revision": state["revision"], "mutation": mutation})
     if live_applied is not None:
         assert result.get("live_applied") is live_applied, result
     return result
@@ -199,7 +200,6 @@ class StdinLiveTests(unittest.TestCase):
         assert shutil.which("fxroute"), "installed fxroute CLI is required"
         assert shutil.which("pw-link"), "pw-link is required"
         cls.saved_source = _http("GET", "/api/audio/source-mode")
-        cls.saved_presets = _http("GET", "/api/dsp/presets")
         cls.saved_extras = _http("GET", "/api/dsp/extras")
         cls.saved_status = _http("GET", "/api/status")
         cls.saved_outputs = _http("GET", "/api/audio/outputs")
@@ -213,45 +213,42 @@ class StdinLiveTests(unittest.TestCase):
         # Channel isolation is asserted against a clean chain: the box may
         # render a crosstalk-correcting convolver that legitimately bleeds
         # test tones across channels. The engine renders bank assignments,
-        # so listen to the clean A side without rewriting any slots (the
-        # DSP-chain proof below shapes it again through the same mutation).
-        cls.saved_bank = dict(_bank_state("global"))
-        _set_bank_preset("global", active_side="A")
-        _http("POST", "/api/dsp/presets/load", {"preset_name": "Neutral"})
+        # so temporarily assign Neutral to A and restore both original slots
+        # in class cleanup, including when setup fails after the assignment.
+        state = _output_state()
+        cls.saved_mode = state["active_mode"]
+        assert cls.saved_mode == "stereo" and not state["modes"]["stereo"]["crossover_enabled"], (
+            "STDIN channel-isolation acceptance requires Stereo with crossover disabled")
+        cls.saved_bank = dict(state["modes"][cls.saved_mode]["banks"]["global"])
+        cls.addClassCleanup(cls._restore_test_state)
+        _set_bank_preset("global", preset_a="Neutral", preset_b=None, active_side="A")
         _http("POST", "/api/audio/source-mode", {"mode": "stdin-input"})
 
     @classmethod
-    def tearDownClass(cls):
+    def _restore_test_state(cls):
+        errors = []
         try:
-            saved_bank = dict(getattr(cls, "saved_bank", {}))
-            if saved_bank.get("active_side") in {"A", "B"}:
-                _set_bank_preset("global", active_side=saved_bank["active_side"])
-        except Exception:
-            pass
-        try:
-            saved_compare = cls.saved_presets.get("compare") or {}
-            _http("POST", "/api/dsp/compare", {
-                "presetA": saved_compare.get("presetA") or "",
-                "presetB": saved_compare.get("presetB") or "",
-                "activeSide": saved_compare.get("activeSide"),
-            })
-        except Exception:
-            pass
-        try:
-            _http("POST", "/api/dsp/presets/load",
-                  {"preset_name": cls.saved_presets.get("active_preset") or "Neutral"})
-        except Exception:
-            pass
+            if cls.saved_bank["active_side"] not in {"A", "B"}:
+                # The active preset can be outside both slots. Listen to it
+                # first, then restore the slots without changing listening.
+                _set_bank_preset("global", mode=cls.saved_mode,
+                                 preset=cls.saved_bank["preset"], active_side="A")
+            _set_bank_preset("global", mode=cls.saved_mode,
+                             preset_a=cls.saved_bank["preset_a"],
+                             preset_b=cls.saved_bank["preset_b"],
+                             active_side=cls.saved_bank["active_side"])
+        except Exception as exc:
+            errors.append(f"bank restore: {exc}")
         try:
             _http("POST", "/api/dsp/extras", cls.saved_extras.get("extras") or {})
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"extras restore: {exc}")
         try:
             volume = cls.saved_status.get("volume")
             if isinstance(volume, (int, float)):
                 _http("POST", "/api/volume", {"volume": int(volume)})
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"volume restore: {exc}")
         try:
             mode = cls.saved_source.get("mode") or "app-playback"
             payload = {"mode": mode}
@@ -259,12 +256,13 @@ class StdinLiveTests(unittest.TestCase):
             if selected:
                 payload["inputKey"] = selected
             _http("POST", "/api/audio/source-mode", payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"source restore: {exc}")
         leftovers = subprocess.run(
             ["pw-link", "-l"], capture_output=True, text=True, timeout=10,
         ).stdout
         assert "fxroute_stdin_" not in leftovers, "STDIN adapter node leaked"
+        assert not errors, "; ".join(errors)
 
     def _run_pipeline(self, channels: int, format_name: str, rate: int,
                       left: int, right: int,
@@ -418,19 +416,18 @@ class StdinLiveTests(unittest.TestCase):
         slot_a_before = _bank_state("global").get("preset_a") or "Neutral"
         try:
             plain_left, plain_right = self._run_pipeline(8, "f32le", 48000, 5, 6)
+            head = _output_state()
             created = _http("POST", "/api/dsp/presets/create-peq", {
                 "presetName": preset,
+                "bank_mode": self.saved_mode, "bank_id": "global",
+                "expected_revision": head["revision"],
                 "peq": {"enabled": True, "params": {
                     "channelMode": "stereo-linked", "bands": [
                         {"filterType": "bell", "frequencyHz": notch_hz,
                          "gainDb": -12, "q": 4}]}},
             })
             self.assertEqual(created.get("status"), "ok")
-            # The engine renders bank assignments: assign the temp preset to
-            # the global bank through the same mutation the UI uses. A bare
-            # preset load is not enough (an unslotted name never reaches
-            # the chain).
-            _set_bank_preset("global", preset=preset, live_applied=True)
+            self.assertTrue(created["bank"]["assigned"], created)
             # Bank switches rebuild the native engine asynchronously; verify
             # the notch on full runs (a truncated run can fake a notch, so
             # every run must also carry the reference tone near its
@@ -492,9 +489,10 @@ class StdinLiveTests(unittest.TestCase):
             except Exception:
                 pass
             try:
-                _http("POST", "/api/dsp/presets/delete", {"preset_name": preset})
-            except Exception:
-                pass
+                _http("POST", "/api/dsp/presets/delete", {"preset_name": preset,
+                      "bank_mode": self.saved_mode, "bank_id": "global"})
+            except Exception as exc:
+                raise AssertionError(f"temporary preset cleanup failed: {exc}") from exc
 
 
 if __name__ == "__main__":

@@ -83,7 +83,8 @@ class SlowPlayer:
 class SlowDSPManager:
     """Constructor blocks like the native DSP manager construction."""
 
-    def __init__(self):
+    def __init__(self, active_preset_reader=None):
+        self.active_preset_reader = active_preset_reader
         SLOW_EFFECTS_EVENTS.append("effects-construct")
         time.sleep(SLOW_BLOCK_SECONDS)
 

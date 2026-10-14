@@ -1342,15 +1342,15 @@ class PwLinkLiveShapeTests(unittest.TestCase):
         runtime = DSPRuntime(manager, command_runner=run)
         runtime._config = DSPRuntimeConfig("stereo", "hw", 48000, ("playback_FL", "playback_FR"), ())
         asyncio.run(runtime._remove_direct_source_links())
-        # Fail-safe: the exact pre-optimization matrix, in deterministic
-        # node -> port -> channel order (2 sources x 2 ports x 4 channels).
-        expected = [
-            ("pw-link", "-d", f"{node}:output_{channel}", f"hw:{port}")
-            for node in ("mpv", "spotify")
+        # Fail-safe: every modeled producer, hardware port and naming scheme.
+        expected = {
+            ("pw-link", "-d", f"{node}:{kind}_{channel}", f"hw:{port}")
+            for node in ("mpv", "spotify", "alsa_playback.qbzd")
             for port in ("playback_FL", "playback_FR")
             for channel in HARDWARE_CHANNEL_ORDER
-        ]
-        self.assertEqual([command for command in commands if command[:2] == ("pw-link", "-d")], expected)
+            for kind in ("output", "playback")
+        }
+        self.assertEqual({command for command in commands if command[:2] == ("pw-link", "-d")}, expected)
 
 
 class ControlReplyTruncationTests(unittest.TestCase):

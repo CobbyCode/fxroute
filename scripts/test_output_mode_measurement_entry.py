@@ -613,12 +613,14 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=False,
             output_mode_target=overview,
+            output_state_transition={"target": object()},
         )
         with patch.object(main.runtime, "dsp_runtime", SimpleNamespace()), patch.object(
             main, "dsp_manager", None
         ), patch.object(
             playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()        ), patch.object(playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
+        ), patch.object(main, "_sync_plan_runtime", new=AsyncMock()
+        ), patch.object(playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
             samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
         ), patch.object(
             playback_orchestration.configured(), "reconcile_subwoofer_links_only", new=AsyncMock()
@@ -677,12 +679,14 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=False,
             output_mode_target=overview,
+            output_state_transition={"target": object()},
         )
         with patch.object(main.runtime, "dsp_runtime", None), patch.object(
             main, "dsp_manager", None
         ), patch.object(
             playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", new=AsyncMock()        ), patch.object(playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
+        ), patch.object(main, "_sync_plan_runtime", new=AsyncMock()
+        ), patch.object(playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
             samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
         ), patch.object(
             pw_link_mod, "connect_ports", new=AsyncMock()

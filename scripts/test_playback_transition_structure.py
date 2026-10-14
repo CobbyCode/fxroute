@@ -74,7 +74,6 @@ class OwnershipStructureTests(unittest.TestCase):
             "_run_coordinated_transition",
             "_set_pipewire_force_rate",
             "_ensure_playback_samplerate_force",
-            "dsp_orchestrator.sync_preset_for_playback_samplerate",
             "dsp_orchestrator.sync_runtime",
             "ensure_mpv_to_dsp_links",
             "_set_hardware_sink_mute",
@@ -102,12 +101,10 @@ class OwnershipStructureTests(unittest.TestCase):
         self.assertIn("direct restore is intentionally suppressed", body)
         self.assertIn("measurement_only_restore", body)
 
-    def test_watchers_only_request_coordinator_recovery(self):
-        # The link watcher lives in dsp/orchestration.py; it must request
-        # Coordinator recovery through the injected dep and must never
-        # re-sync the runtime or reclean the graph directly.
+    def test_runtime_monitor_uses_shared_output_authority(self):
         watcher = function_source("runtime_link_watch_loop")
-        self.assertIn("self._deps.request_coordinated_recovery", watcher)
+        self.assertIn("self.reconcile_output_authority", watcher)
+        self.assertIn("self._deps.observe_playback_samplerate_drift", watcher)
         self.assertNotIn("sync_runtime", watcher)
         self.assertNotIn("_reclean_guarded", watcher)
 

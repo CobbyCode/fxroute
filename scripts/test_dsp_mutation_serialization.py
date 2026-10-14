@@ -261,7 +261,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeManager()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
+        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), \
+                mock.patch.object(main, "_sync_v2_extras_runtime", mock.AsyncMock()), \
+                mock.patch.object(main, "get_output_volume", return_value=27):
             upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
 
@@ -358,63 +360,13 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(upload_task.cancelled())
             self.assertEqual(order, ["upload-entered", "delete-entered"])
 
-    async def test_delete_of_active_preset_resyncs_the_neutral_fallback(self):
-        class FakeManager:
-            def __init__(self):
-                self.active = "Room"
-                self.deleted = []
-
-            def get_active_preset(self):
-                return self.active
-
-            def require_deletable_preset(self, preset_name):
-                return preset_name
-
-            def is_active_preset(self, preset_name):
-                return self.get_active_preset() == preset_name
-
-            def delete_preset(self, preset_name, pinned_presets=()):
-                self.deleted.append(preset_name)
-                if self.active == "Room":
-                    # Mirror the real manager: deleting the active preset
-                    # moves the persisted active state to Neutral.
-                    self.active = "Neutral"
-
-            def get_status(self):
-                return {"status": "ok", "active_preset": self.active}
-
-        class FakeDeleteRequest:
-            async def json(self):
-                return {"preset_name": "Room"}
-
-        fake = FakeManager()
-        load_preset = mock.AsyncMock()
-        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
-            main, "_load_dsp_preset", load_preset
-        ), mock.patch.object(main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
-            main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"
-        ):
-            result = await dsp_api.delete_dsp_preset(FakeDeleteRequest())
-
-        self.assertEqual(result, {"status": "ok", "deleted": "Room"})
-        self.assertEqual(fake.deleted, ["Room"])
-        # The running engine must be resynced to the Neutral fallback instead
-        # of keeping the deleted preset's graph alive.
-        load_preset.assert_awaited_once_with("Neutral")
-
-    async def test_delete_of_inactive_preset_does_not_touch_the_runtime(self):
+    async def test_delete_of_an_unassigned_preset_does_not_touch_the_runtime(self):
         class FakeManager:
             def __init__(self):
                 self.deleted = []
 
-            def get_active_preset(self):
-                return "Other"
-
             def require_deletable_preset(self, preset_name):
                 return preset_name
-
-            def is_active_preset(self, preset_name):
-                return self.get_active_preset() == preset_name
 
             def delete_preset(self, preset_name, pinned_presets=()):
                 self.deleted.append(preset_name)
@@ -427,16 +379,16 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
                 return {"preset_name": "Room"}
 
         fake = FakeManager()
-        load_preset = mock.AsyncMock()
+        live_sync = mock.AsyncMock()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
-            main, "_load_dsp_preset", load_preset
+            main, "_sync_v2_head_after_bank_assign", live_sync
         ), mock.patch.object(main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
             main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"
         ):
             await dsp_api.delete_dsp_preset(FakeDeleteRequest())
 
         self.assertEqual(fake.deleted, ["Room"])
-        load_preset.assert_not_awaited()
+        live_sync.assert_not_awaited()
 
     async def _extras_fake_manager(self, order):
         class FakeManager:
@@ -457,19 +409,17 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
 
         return FakeManager()
 
-    async def test_extras_fallback_reload_holds_the_mutation_lock_when_canonical_is_held(self):
+    async def test_extras_runtime_sync_holds_both_locks_for_a_loudness_change(self):
         main.runtime.dsp_mutation_lock = None
         main.runtime.canonical_volume_write_lock = None
         lock_probe = {}
 
-        async def fake_load_preset(preset_name, **_kwargs):
+        async def fake_extras_sync():
             # Runs while the route holds the canonical volume write lock and
-            # must have re-acquired the DSP mutation lock before calling the
-            # loader under its documented "both locks held" contract.
+            # the DSP mutation lock: the persisted extras and the engine are
+            # reconciled inside one transaction.
             lock_probe["canonical_locked"] = main._canonical_volume_write_lock().locked()
             lock_probe["mutation_locked"] = main._dsp_mutation_lock().locked()
-            lock_probe["kwargs"] = dict(_kwargs)
-            lock_probe["args"] = (preset_name,)
 
         class FakeExtrasRequest:
             async def json(self):
@@ -478,31 +428,27 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         order = []
         fake = await self._extras_fake_manager(order)
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
-            main, "_load_dsp_preset", fake_load_preset
+            main, "_sync_v2_extras_runtime", fake_extras_sync
         ), mock.patch.object(main, "_volume_state_for_manager", mock.AsyncMock()), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             result = await dsp_api.save_dsp_extras(FakeExtrasRequest())
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(lock_probe["args"], ("Neutral",))
-        self.assertEqual(lock_probe["kwargs"], {"_locks_held": True})
         self.assertTrue(lock_probe["canonical_locked"])
         self.assertTrue(lock_probe["mutation_locked"])
         self.assertFalse(main._canonical_volume_write_lock().locked())
         main.runtime.canonical_volume_write_lock = None
 
-    async def test_extras_fallback_reload_keeps_both_locks_without_loudness_transition(self):
+    async def test_extras_runtime_sync_keeps_both_locks_without_loudness_transition(self):
         main.runtime.dsp_mutation_lock = None
         lock_probe = {}
 
-        async def fake_load_preset(preset_name, **_kwargs):
+        async def fake_extras_sync():
             # Non-loudness updates also retain the transaction locks until
             # the persisted extras and runtime are reconciled.
             lock_probe["canonical_locked"] = main._canonical_volume_write_lock().locked()
             lock_probe["mutation_locked"] = main._dsp_mutation_lock().locked()
-            lock_probe["kwargs"] = dict(_kwargs)
-            lock_probe["args"] = (preset_name,)
 
         class FakeExtrasRequest:
             async def json(self):
@@ -511,72 +457,16 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         order = []
         fake = await self._extras_fake_manager(order)
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
-            main, "_load_dsp_preset", fake_load_preset
+            main, "_sync_v2_extras_runtime", fake_extras_sync
         ), mock.patch.object(main, "_volume_state_for_manager", mock.AsyncMock()), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             result = await dsp_api.save_dsp_extras(FakeExtrasRequest())
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(lock_probe["args"], ("Neutral",))
-        self.assertEqual(lock_probe["kwargs"], {"_locks_held": True})
         self.assertTrue(lock_probe["canonical_locked"])
         self.assertTrue(lock_probe["mutation_locked"])
         main.runtime.canonical_volume_write_lock = None
-
-    async def test_preset_load_waits_for_threaded_mutation(self):
-        entered = threading.Event()
-        release = threading.Event()
-        order = []
-
-        class FakeManager:
-            def load_global_extras(self):
-                return {"loudness": {"enabled": False, "params": {}}}
-
-            def upload_ir(self, source_path, filename, stored_name=None):
-                order.append("upload-entered")
-                entered.set()
-                release.wait(timeout=5)
-                return {
-                    "name": "x.irs",
-                    "basename": "x",
-                    "path": "/tmp/x.irs",
-                    "size": 4,
-                    "format": "irs",
-                }
-
-            def load_preset(self, preset_name, convolver_sample_rate_hz=None):
-                order.append("load-entered")
-
-            def load_compare_state(self):
-                return {}
-
-            def save_compare_state(self, compare):
-                pass
-
-            def get_status(self):
-                return {"status": "ok"}
-
-        class FakeLoadRequest:
-            async def json(self):
-                return {"preset_name": "Neutral"}
-
-        fake = FakeManager()
-        with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
-            main.manager, "broadcast", mock.AsyncMock()
-        ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
-            upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
-            self.assertTrue(await asyncio.to_thread(entered.wait, 5))
-
-            load_task = asyncio.create_task(dsp_api.load_dsp_preset(FakeLoadRequest()))
-            await asyncio.sleep(0.05)
-            # load_preset must not enter the manager while the threaded
-            # mutation is still running.
-            self.assertEqual(order, ["upload-entered"])
-
-            release.set()
-            await asyncio.gather(upload_task, load_task)
-            self.assertEqual(order, ["upload-entered", "load-entered"])
 
 
 if __name__ == "__main__":

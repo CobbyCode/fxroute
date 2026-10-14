@@ -217,17 +217,8 @@ class _RecordingManager:
         self.extras["loudness"]["params"]["volumeDb"] = float(volume_db)
         return {"extras": copy.deepcopy(self.extras), "runtime_applied": True, "updated": 1, "skipped": []}
 
-    def load_preset(self, preset_name, **_kwargs):
-        self.active_preset = preset_name
-
     def get_status(self):
         return {"status": "ok", "active_preset": self.active_preset}
-
-    def load_compare_state(self):
-        return {"presetA": "Neutral", "presetB": "", "activeSide": "A"}
-
-    def save_compare_state(self, compare):
-        return compare
 
 
 class _RecordingRuntime:
@@ -306,63 +297,6 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         if not self.recorder.samples:
             self.recorder.capture()
         return max(self.recorder.samples)
-
-    async def test_preset_switch_from_direct_keeps_master_and_work_point(self):
-        self.manager.active_preset = "Direct"
-        self.manager.extras["loudness"]["enabled"] = True
-        self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
-        self.recorder.master = 30
-        start = self.recorder.capture()
-        await main._load_dsp_preset("Neutral")
-        final = self.recorder.capture()
-        self.assertEqual(final.preset, "Neutral")
-        self.assertEqual(final.master_percent, 30)
-        self.assertAlmostEqual(final.volume_db, 0.0, places=6)
-        self.assertLessEqual(self.peak(), _effective_db(start) + 1e-9)
-
-    async def test_preset_round_trip_never_moves_master(self):
-        self.manager.active_preset = "Direct"
-        self.manager.extras["loudness"]["enabled"] = True
-        self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
-        self.recorder.master = 25
-        writes = []
-        original = self.recorder.set_master
-
-        def record_master(value):
-            writes.append(int(round(float(value))))
-            return original(value)
-
-        with mock.patch.object(main, "set_output_volume", record_master):
-            await main._load_dsp_preset("Neutral")
-            await main._load_dsp_preset("Direct")
-            await main._load_dsp_preset("Neutral")
-
-        self.assertEqual(writes, [])
-        self.assertEqual(self.recorder.master, 25)
-        final = self.recorder.capture()
-        self.assertEqual(final.preset, "Neutral")
-        self.assertEqual(final.master_percent, 25)
-
-    async def test_preset_a_b_switch_never_moves_master(self):
-        self.manager.active_preset = "Direct"
-        self.manager.extras["loudness"]["enabled"] = True
-        self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
-        self.recorder.master = 25
-        await main._load_dsp_preset("Room")
-        await main._load_dsp_preset("Direct")
-        self.assertEqual(self.manager.get_active_preset(), "Direct")
-        self.assertEqual(self.recorder.master, 25)
-
-    async def test_enter_direct_from_neutral_keeps_master_and_work_point(self):
-        self.manager.active_preset = "Neutral"
-        self.manager.extras["loudness"]["enabled"] = True
-        self.manager.extras["loudness"]["params"]["volumeDb"] = db(30)
-        self.recorder.master = 100
-        await main._load_dsp_preset("Direct")
-        final = self.recorder.capture()
-        self.assertEqual(final.preset, "Direct")
-        self.assertEqual(final.master_percent, 100)
-        self.assertAlmostEqual(final.volume_db, db(30), places=6)
 
     async def test_enable_loudness_while_direct_keeps_master_and_work_point(self):
         self.manager.active_preset = "Direct"
@@ -475,23 +409,6 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await main._guarded_effects_transition(previous, candidate, True)
             self.assertAlmostEqual(native.guarded_rebuild_rendered.await_args.kwargs["guard_db"], db(30))
         self.assertEqual(self.recorder.master, 30)
-
-    async def test_rollback_restores_complete_volume_state(self):
-        self.manager.active_preset = "Direct"
-        self.manager.extras["loudness"]["enabled"] = True
-        self.manager.extras["loudness"]["params"]["volumeDb"] = 0.0
-        self.recorder.master = 30
-
-        def failing_load(preset_name, **_kwargs):
-            self.manager.active_preset = preset_name
-            raise RuntimeError("preset load failed")
-
-        self.manager.load_preset = failing_load
-        with self.assertRaisesRegex(RuntimeError, "preset load failed"):
-            await main._load_dsp_preset("Neutral")
-        self.assertEqual(self.recorder.master, 30)
-        self.assertEqual(self.manager.active_preset, "Direct")
-        self.assertAlmostEqual(self.manager.extras["loudness"]["params"]["volumeDb"], 0.0, places=9)
 
 
 if __name__ == "__main__":

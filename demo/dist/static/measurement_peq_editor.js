@@ -345,7 +345,6 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     presetName,
-                    loadAfterCreate: false,
                     ...deps.collectEffectsExtras(),
                     ...deps.bankBindingJson(),
                     peq: {

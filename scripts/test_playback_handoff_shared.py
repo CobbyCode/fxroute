@@ -182,7 +182,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_graph_only_rejects_obsolete_bypass_request(self):
         helper = HelperDouble(active=True, rate=48000, direct=True)
-        calls = {"preset": 0, "sync": 0}
+        calls = {"sync": 0}
         link_state = {"direct": True}
 
         async def pw_link(*args):
@@ -206,23 +206,20 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "get_audio_output_overview", return_value=self.overview), patch.object(
             pw_link_mod, "run_pw_link_command", side_effect=pw_link
         ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
-            main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
-            side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
-        ), patch.object(
             main.dsp_orchestrator, "sync_runtime",
             side_effect=lambda **_kwargs: calls.__setitem__("sync", calls["sync"] + 1),
         ):
             with self.assertRaisesRegex(RuntimeError, "graph-only reconciliation"):
                 await playback_orchestration.configured().establish_effects_and_helper(request)
         self.assertEqual(helper.reconcile_calls, 0)
-        self.assertEqual(calls, {"preset": 0, "sync": 0})
+        self.assertEqual(calls, {"sync": 0})
         self.assertTrue(link_state["direct"])
 
     async def test_rate_change_syncs_helper_once_and_reaches_canonical_graph(self):
         for mode in ("subwoofer-2.1", "subwoofer-2.2"):
             with self.subTest(mode=mode):
                 helper = HelperDouble(active=False, rate=None)
-                calls = {"preset": 0, "sync": 0}
+                calls = {"sync": 0}
                 overview = {
                     "output_mode": {
                         "mode": mode,
@@ -250,13 +247,11 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(main, "get_audio_output_overview", return_value=overview), patch.object(
                     pw_link_mod, "run_pw_link_command", side_effect=pw_link
                 ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
-                    main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
-                    side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
-                ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync), patch.object(
+                    main.dsp_orchestrator, "sync_runtime", side_effect=sync), patch.object(
                     main, "dsp_manager", None
                 ):
                     await playback_orchestration.configured().establish_effects_and_helper(request)
-                self.assertEqual(calls, {"preset": 0, "sync": 1})
+                self.assertEqual(calls, {"sync": 1})
                 self.assertEqual(helper.reconcile_calls, 1)
 
     async def test_measurement_restore_respects_held_session_lock_and_commits(self):
@@ -527,8 +522,8 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         reconciler.assert_awaited_once()
         self.assertFalse(coordinator.gate.closed)
 
-    async def test_play_convolver_preset_sync_acquires_session_lock_normally(self):
-        """Outside the measurement entry the preset reload keeps the default
+    async def test_play_engine_start_acquires_session_lock_normally(self):
+        """Outside the measurement entry the engine start keeps the default
         lock behaviour: the runtime sync must not skip the session lock."""
         helper = HelperDouble(active=True, rate=48000)
         overview = {
@@ -561,27 +556,6 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             lock_flags.append(_rate_lock_held)
             return overview
 
-        class ConvolverManagerStub:
-            EXCLUDED_GLOBAL_EXTRAS_PRESETS = {"Direct"}
-
-            def get_active_preset(self):
-                return "Conv L HybAlign Test 194030"
-
-            def load_global_extras(self):
-                return {
-                    "loudness": {"enabled": False, "params": {}},
-                    "autogain": {"enabled": False, "params": {}},
-                }
-
-            def normalize_effects_extras(self, extras):
-                return dict(extras)
-
-            def load_preset(self, preset_name, convolver_sample_rate_hz=None):
-                return None
-
-            def get_status(self):
-                return {"status": "ok", "active_preset": self.get_active_preset()}
-
         request = TransitionRequest(
             operation="play",
             source="local",
@@ -599,17 +573,13 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper
         ), patch.object(
             playback_orchestration.configured(), "reconcile_subwoofer_links_only", reconciler
-        ), patch.object(main.runtime, "dsp_runtime", helper), patch.object(
-            main, "dsp_manager", ConvolverManagerStub()
-        ), patch.object(main, "get_output_volume", return_value=33), patch.object(
-            main, "set_output_volume", return_value=33
-        ), patch.object(main.manager, "broadcast", new=AsyncMock()):
+        ), patch.object(main.runtime, "dsp_runtime", helper):
             result = await asyncio.wait_for(
                 playback_orchestration.configured().establish_effects_and_helper(request),
                 timeout=0.5,
             )
 
-        self.assertTrue(result.get("preset_reloaded"))
+        self.assertTrue(result["dsp_reinitialized"])
         self.assertEqual(lock_flags, [False, False])
         reconciler.assert_awaited_once()
 
@@ -637,11 +607,11 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
                 "signature": "subwoofer-2.2|complete" if complete else "subwoofer-2.2|missing",
             }
 
-        async def sync_helper(*_args, **_kwargs):
+        async def sync_plan(target, **_kwargs):
             events.append("sync")
             link_state["lost"] = True
 
-        async def reconcile():
+        async def reconcile(*_args, **_kwargs):
             events.append("reconcile")
             link_state["lost"] = False
 
@@ -654,6 +624,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             rate_change=False,
             reload_source=False,
             output_mode_target=self.overview,
+            output_state_transition={"target": object()},
         )
         with patch.object(main.runtime, "dsp_runtime", helper), patch.object(
             main, "dsp_manager", None
@@ -661,15 +632,15 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
             playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
-        ), patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync_helper), patch.object(
-            playback_orchestration.configured(), "reconcile_subwoofer_links_only", side_effect=reconcile
-        ) as reconciler:
+        ), patch.object(main, "_sync_plan_runtime", side_effect=sync_plan), patch.object(
+            playback_orchestration.configured(), "relink_missing_production_links", side_effect=reconcile
+        ) as reconciler, patch.object(samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)):
             result = await playback_orchestration.configured().establish_effects_and_helper(request)
 
         self.assertTrue(result["graph_complete"])
         self.assertTrue(result["links_reconciled"])
         reconciler.assert_awaited_once()
-        self.assertEqual(events, ["diagnosis", "sync", "reconcile", "diagnosis"])
+        self.assertEqual(events, ["diagnosis", "sync", "diagnosis", "reconcile", "diagnosis"])
 
 
 class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -1120,7 +1091,7 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
                 "effective_output_key": OUTPUT_KEY,
             }
         }
-        calls = {"preset": 0, "repair": 0}
+        calls = {"sync": 0, "repair": 0}
 
         async def pw_link(*_args):
             return _links_text("stereo")
@@ -1148,14 +1119,14 @@ class CoordinatorRecoveryRequestTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             main.runtime, "dsp_runtime", runtime
         ), patch.object(
-            main.dsp_orchestrator, "sync_preset_for_playback_samplerate",
-            side_effect=lambda **_kwargs: calls.__setitem__("preset", calls["preset"] + 1),
+            main.dsp_orchestrator, "sync_runtime",
+            side_effect=lambda **_kwargs: calls.__setitem__("sync", calls["sync"] + 1),
         ), patch.object(
             playback_orchestration.configured(), "repair_stereo_output_links_once",
             side_effect=lambda _diagnosis: calls.__setitem__("repair", calls["repair"] + 1),
         ):
             await playback_orchestration.configured().establish_effects_and_helper(request)
-        self.assertEqual(calls, {"preset": 0, "repair": 0})
+        self.assertEqual(calls, {"sync": 0, "repair": 0})
 
     async def test_same_rate_source_switch_quiets_without_releasing_mpv_stream(self):
         player = SimpleNamespace(

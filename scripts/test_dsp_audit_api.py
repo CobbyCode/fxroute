@@ -19,8 +19,7 @@ class DspAuditApiTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.manager = DSPManager(home=Path(temporary.name))
-        self.manager.load_preset("Direct")
+        self.manager = DSPManager(home=Path(temporary.name), active_preset_reader=lambda: "Direct")
         previous_deps = api._runtime.deps
         self.addCleanup(setattr, api._runtime, "deps", previous_deps)
         canonical, mutation, preset = asyncio.Lock(), asyncio.Lock(), asyncio.Lock()
@@ -30,11 +29,12 @@ class DspAuditApiTests(unittest.IsolatedAsyncioTestCase):
 
         api.configure_dsp_api(api.DspApiDeps(
             require_dsp_manager=lambda: self.manager, get_dsp_manager=lambda: self.manager,
-            get_dsp_runtime=lambda: None, get_dsp_preset_load_lock=lambda: preset,
+            get_dsp_runtime=lambda: None,
             dsp_mutation_lock=lambda: mutation, canonical_volume_write_lock=lambda: canonical,
             drain_worker=worker, run_locked_worker=AsyncMock(), broadcast=AsyncMock(),
-            load_dsp_preset=AsyncMock(), restore_volume_state=AsyncMock(),
-            volume_state_for_manager=AsyncMock(return_value={}), schedule_peak_monitor_refresh=lambda _: None))
+            restore_volume_state=AsyncMock(),
+            volume_state_for_manager=AsyncMock(return_value={}), schedule_peak_monitor_refresh=lambda _: None,
+            sync_v2_extras_runtime=AsyncMock()))
 
     async def test_loudness_volume_is_persisted_even_with_a_corrupt_preset(self):
         (self.manager.output_dir / "Broken.json").write_text("{")

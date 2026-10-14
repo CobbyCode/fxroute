@@ -72,8 +72,6 @@ def _orchestrator(overrides) -> PlaybackOrchestrator:
         ),
         get_runtime_player=lambda: None,
         get_dsp_runtime=lambda: None,
-        get_dsp_manager=lambda: None,
-        get_dsp_preset_load_lock=lambda: None,
         get_measurement_session=lambda: None,
         get_samplerate_status=lambda: {},
         get_audio_output_overview=lambda: {"output_mode": {}},
@@ -88,10 +86,8 @@ def _orchestrator(overrides) -> PlaybackOrchestrator:
         connect_ports=_none,
         contains_link=lambda _text, _s, _t: False,
         helper_argument_sample_rate=lambda _snapshot: None,
-        sync_preset_for_samplerate=_none,
         sync_runtime=_none,
         reconcile_sink_rate=_none,
-        load_dsp_preset=_none,
         sleep=lambda _delay: asyncio.sleep(0),
         pipewire_poll_interval_ms=10,
         dsp_port_timeout_ms=5,
@@ -177,7 +173,7 @@ class PlaybackOrchestrationOffloadTest(unittest.IsolatedAsyncioTestCase):
             {
                 "get_audio_output_overview": overview_builder,
                 "run_pw_link_command": pw_link_command,
-                "sync_preset_for_samplerate": AsyncMock(),
+                "sync_runtime": AsyncMock(),
             }
         )
         request = TransitionRequest(
@@ -208,7 +204,7 @@ class PlaybackOrchestrationOffloadTest(unittest.IsolatedAsyncioTestCase):
                 },
                 "get_samplerate_status": status_builder,
                 "run_pw_link_command": pw_link_command,
-                "sync_preset_for_samplerate": AsyncMock(),
+                "sync_runtime": AsyncMock(),
                 "reconcile_sink_rate": AsyncMock(return_value=False),
             }
         )

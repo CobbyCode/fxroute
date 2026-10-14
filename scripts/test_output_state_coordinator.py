@@ -50,8 +50,6 @@ def orchestrator(overrides):
             current_track_info={}, latest_qobuz_state={}, current_playback_owner=None),
         get_runtime_player=lambda: None,
         get_dsp_runtime=lambda: None,
-        get_dsp_manager=lambda: None,
-        get_dsp_preset_load_lock=lambda: None,
         get_measurement_session=lambda: None,
         get_samplerate_status=lambda: {},
         get_audio_output_overview=lambda: {"output_mode": {}},
@@ -66,10 +64,8 @@ def orchestrator(overrides):
         connect_ports=_none,
         contains_link=_contains_link,
         helper_argument_sample_rate=lambda _snapshot: None,
-        sync_preset_for_samplerate=_none,
         sync_runtime=_none,
         reconcile_sink_rate=_none,
-        load_dsp_preset=_none,
         sleep=lambda _delay: asyncio.sleep(0),
         pipewire_poll_interval_ms=10,
         dsp_port_timeout_ms=5,
@@ -163,21 +159,13 @@ class PlannedDiagnosisTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StagingBranchTests(unittest.IsolatedAsyncioTestCase):
-    async def test_v2_target_uses_plan_sync_and_skips_legacy_repairs(self):
+    async def test_v2_target_uses_plan_sync_and_skips_runtime_repairs(self):
         sync_plan = AsyncMock()
-        sync_legacy = AsyncMock()
-        sync_preset = AsyncMock()
-        load_preset = AsyncMock()
-        manager = mock.MagicMock()
-        manager.load_compare_state.return_value = {"presetA": "X", "presetB": "", "activeSide": "A"}
-        manager.get_active_preset.return_value = "Y"
+        sync_runtime = AsyncMock()
         instance = orchestrator({
             "sync_plan_runtime": sync_plan,
-            "sync_runtime": sync_legacy,
-            "sync_preset_for_samplerate": sync_preset,
-            "load_dsp_preset": load_preset,
+            "sync_runtime": sync_runtime,
             "reconcile_sink_rate": AsyncMock(return_value=True),
-            "get_dsp_manager": lambda: manager,
         })
         repair = AsyncMock()
         sub = AsyncMock()
@@ -197,22 +185,19 @@ class StagingBranchTests(unittest.IsolatedAsyncioTestCase):
             result = await instance.establish_effects_and_helper(request)
         sync_plan.assert_awaited_once()
         self.assertIs(sync_plan.await_args.args[0], sentinel)
-        sync_legacy.assert_not_awaited()
-        sync_preset.assert_not_awaited()
-        load_preset.assert_not_awaited()
+        sync_runtime.assert_not_awaited()
         repair.assert_not_awaited()
         sub.assert_not_awaited()
         self.assertTrue(result["helper_rebuilt"])
         self.assertTrue(result["links_reconciled"])
 
-    async def test_legacy_request_keeps_legacy_sync(self):
+    async def test_mode_switch_without_a_planned_target_is_refused(self):
         sync_plan = AsyncMock()
-        sync_legacy = AsyncMock()
+        sync_runtime = AsyncMock()
         instance = orchestrator({
             "sync_plan_runtime": sync_plan,
-            "sync_runtime": sync_legacy,
+            "sync_runtime": sync_runtime,
             "reconcile_sink_rate": AsyncMock(return_value=True),
-            "get_dsp_manager": lambda: None,
         })
         canned = {"dsp_ports": True, "bypass_only": False, "links_complete": True,
                   "signature": "sig"}
@@ -220,12 +205,33 @@ class StagingBranchTests(unittest.IsolatedAsyncioTestCase):
             operation="output-mode-switch", source="local", target_rate=48000,
             should_play=False, output_mode_target=v2_overview())
         with mock.patch.object(instance, "playback_graph_diagnosis",
-                               new=AsyncMock(return_value=dict(canned))), \
-             mock.patch.object(instance, "wait_for_dsp_output_ports",
-                               new=AsyncMock(return_value=True)):
-            await instance.establish_effects_and_helper(request)
-        sync_legacy.assert_awaited_once()
+                               new=AsyncMock(return_value=dict(canned))):
+            with self.assertRaisesRegex(RuntimeError, "requires a planned target"):
+                await instance.establish_effects_and_helper(request)
+        sync_runtime.assert_not_awaited()
         sync_plan.assert_not_awaited()
+
+    async def test_missing_engine_starts_through_the_runtime_sync(self):
+        sync_runtime = AsyncMock()
+        instance = orchestrator({
+            "sync_runtime": sync_runtime,
+            "reconcile_sink_rate": AsyncMock(return_value=True),
+        })
+        diagnoses = [{"dsp_ports": False, "helper_ports": False, "links": {},
+                      "links_complete": False, "signature": "missing"},
+                     {"dsp_ports": True, "bypass_only": False, "links_complete": True,
+                      "signature": "sig"}]
+        request = TransitionRequest(operation="play", source="local", target_rate=48000,
+                                    should_play=True)
+        with mock.patch.object(instance, "playback_graph_diagnosis",
+                               new=AsyncMock(side_effect=lambda *_a, **_k: dict(diagnoses.pop(0) if len(diagnoses) > 1 else diagnoses[0]))), \
+             mock.patch.object(instance, "wait_for_dsp_output_ports",
+                               new=AsyncMock(return_value=True)), \
+             mock.patch.object(instance, "repair_stereo_output_links_once", new=AsyncMock()):
+            result = await instance.establish_effects_and_helper(request)
+        self.assertEqual(sync_runtime.await_args_list[0].kwargs,
+                         {"reason": "coordinator-play", "_rate_lock_held": False})
+        self.assertTrue(result["dsp_reinitialized"])
 
 
 def make_service(directory, manager):

@@ -27,9 +27,10 @@ from audio.output_ports import HARDWARE_CHANNEL_ORDER, hardware_link_target
 from audio.pw_link import stop_command_child_cancellation_safe
 from common.run_to_completion import restore_after, run_to_completion
 from dsp.latency import latency_signature
+from playback.source_policy import GRAPH_NODE_BY_SOURCE
 
 # Sources that must reach the hardware only through the DSP output stage.
-DIRECT_SOURCE_NODES = ("mpv", "spotify")
+DIRECT_SOURCE_NODES = tuple(dict.fromkeys(GRAPH_NODE_BY_SOURCE.values()))
 DSP_NODE_NAME = "fxroute_dsp"
 DSP_INGRESS_MONITOR_NODE = "fxroute_dsp_sink"
 DSP_INGRESS_PORTS = ("monitor_FL", "monitor_FR")
@@ -722,19 +723,25 @@ class DSPRuntime:
                 await self._run(("pw-link", link.source, link.target))
             return await self.verify()
 
-    async def _remove_direct_source_links(self) -> None:
+    def _direct_source_link_candidates(self) -> set[PipeWireLink]:
         if self._config is None:
-            return
+            return set()
         # The source nodes keep their fixed output_FL/FR/RL/RR naming; only
         # the hardware side is resolved, so a direct source→sink link is
         # removed no matter how the device names its playback ports.
         # Split-group ports are already qualified (sink:port).
-        candidates = {
-            PipeWireLink(f"{node}:output_{channel}", hardware_link_target(self._config.output_key, port))
+        return {
+            PipeWireLink(f"{node}:{kind}_{channel}", hardware_link_target(self._config.output_key, port))
             for node in DIRECT_SOURCE_NODES
             for port in self._config.hardware_ports
             for channel in HARDWARE_CHANNEL_ORDER
+            for kind in ("output", "playback")
         }
+
+    async def _remove_direct_source_links(self) -> None:
+        if self._config is None:
+            return
+        candidates = self._direct_source_link_candidates()
         # Disconnecting the whole candidate matrix costs one failing `pw-link
         # -d` subprocess per combination (144 on an 18-channel device) and
         # every one of them is a no-op on a healthy graph.  Read the live graph
@@ -749,13 +756,8 @@ class DSPRuntime:
             # absent candidate proves nothing.  Remove the whole matrix as
             # before the single-read optimization; never taken on success.
             logger.warning("Direct source link inspection unrecognized; removing full candidate matrix")
-            for node in DIRECT_SOURCE_NODES:
-                for port in self._config.hardware_ports:
-                    for channel in HARDWARE_CHANNEL_ORDER:
-                        await self._run((
-                            "pw-link", "-d", f"{node}:output_{channel}",
-                            hardware_link_target(self._config.output_key, port),
-                        ))
+            for link in sorted(candidates, key=lambda link: (link.source, link.target)):
+                await self._run(("pw-link", "-d", link.source, link.target))
             return
         live = {PipeWireLink(source, target) for source, target in parsed}
         for link in live & candidates:
@@ -1731,6 +1733,8 @@ class DSPRuntime:
         result = await self._run(("pw-link", "-l"))
         desired = {link for link in self._links if link.source.startswith(f"{DSP_NODE_NAME}:output_")}
         return (result.returncode == 0
+                and not (self._direct_source_link_candidates()
+                         & {PipeWireLink(source, target) for source, target in iter_pw_links(result.stdout)})
                 and not (physical_output_links(result.stdout) - desired)
                 and all(_contains_link(result.stdout, link.source, link.target) for link in self._links))
 

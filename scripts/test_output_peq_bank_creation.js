@@ -104,7 +104,6 @@ function combineOptions() {
         assert.deepEqual({ bank_mode: body.bank_mode, bank_id: body.bank_id, expected_revision: body.expected_revision },
             { bank_mode: 'stereo-sub', bank_id: entry.bank, expected_revision: entry.revision });
         assert.equal(body.presetName, entry.name);
-        assert.equal(body.loadAfterCreate, false);
         assert.equal(body.peq.enabled, true);
         assert.equal(body.peq.params.eqMode, 'IIR');
         if (entry.bank === 'sub1' || entry.bank === 'sub2') {

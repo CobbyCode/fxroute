@@ -12,13 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from dsp import api as dsp_api
-from dsp import preset_loading
+from dsp import volume_state
 from dsp.manager import DSPManager
 
 
 class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        # Standalone legacy manager fixture; v2 recovery has separate real-state tests.
+        # The extras reach the engine through the v2 extras sync, faked per test;
+        # v2 recovery has separate real-state tests.
         patch = mock.patch.object(dsp_api, "_output_state_service", return_value=None)
         patch.start()
         self.addCleanup(patch.stop)
@@ -37,7 +38,7 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     raise asyncio.CancelledError
                 return result
 
-            async def reload_active(_preset, **_kwargs):
+            async def reload_active():
                 nonlocal running_extras
                 running_extras = manager.load_global_extras()
                 reloads.append(running_extras)
@@ -50,10 +51,10 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
             main.runtime.dsp_mutation_lock = None
             with mock.patch.object(main, "_require_dsp_manager", return_value=manager), mock.patch.object(
                 main, "_drain_worker", new=cancel_after_commit
-            ), mock.patch.object(main, "_load_dsp_preset", new=reload_active), mock.patch.object(
+            ), mock.patch.object(main, "_sync_v2_extras_runtime", new=reload_active), mock.patch.object(
                 main, "_volume_state_for_manager", new=mock.AsyncMock()
             ), mock.patch.object(
-                preset_loading, "_restore_volume_state", new=mock.AsyncMock()
+                volume_state, "_restore_volume_state", new=mock.AsyncMock()
             ), mock.patch.object(main.manager, "broadcast", new=mock.AsyncMock()) as broadcast, mock.patch.object(
                 main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"
             ) as refresh:
@@ -77,7 +78,7 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
         runtime = mock.Mock(stop=mock.AsyncMock())
         attempts = 0
 
-        async def reload_active(_preset, **_kwargs):
+        async def reload_active():
             nonlocal attempts
             attempts += 1
             if attempts == 1:
@@ -91,11 +92,11 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
         main.runtime.canonical_volume_write_lock = None
         main.runtime.dsp_mutation_lock = None
         with mock.patch.object(main, "_require_dsp_manager", return_value=manager), mock.patch.object(
-            main, "_load_dsp_preset", new=reload_active
+            main, "_sync_v2_extras_runtime", new=reload_active
         ), mock.patch.object(main.runtime, "dsp_runtime", runtime), mock.patch.object(
             main, "_volume_state_for_manager", new=mock.AsyncMock()
         ), mock.patch.object(
-            preset_loading, "_restore_volume_state", new=mock.AsyncMock()
+            volume_state, "_restore_volume_state", new=mock.AsyncMock()
         ), mock.patch.object(main.manager, "broadcast", new=mock.AsyncMock()) as broadcast, mock.patch.object(
             main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"
         ) as refresh:
@@ -125,7 +126,7 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     loop.call_soon_threadsafe(second_committed.set)
                 return result
 
-            async def reload_active(_preset, **_kwargs):
+            async def reload_active():
                 nonlocal reloads, running_extras
                 reloads += 1
                 if reloads == 1:
@@ -146,9 +147,9 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
             with mock.patch.object(manager, "apply_global_extras_to_all_presets", new=record_apply), mock.patch.object(
                 main, "_require_dsp_manager", return_value=manager
             ), mock.patch.object(
-                main, "_load_dsp_preset", new=reload_active
+                main, "_sync_v2_extras_runtime", new=reload_active
             ), mock.patch.object(main, "_volume_state_for_manager", new=mock.AsyncMock()), mock.patch.object(
-                preset_loading, "_restore_volume_state", new=mock.AsyncMock()
+                volume_state, "_restore_volume_state", new=mock.AsyncMock()
             ), mock.patch.object(
                 main.manager, "broadcast", new=mock.AsyncMock()
             ), mock.patch.object(
@@ -185,9 +186,8 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 running_extras = previous
                 reload_seen = []
 
-                async def reload_active(preset, **kwargs):
+                async def reload_active():
                     nonlocal running_extras
-                    self.assertEqual(preset, "Neutral")
                     reload_seen.append(manager.load_global_extras())
                     if len(reload_seen) == 1:
                         raise failure
@@ -200,11 +200,11 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 main.runtime.canonical_volume_write_lock = None
                 main.runtime.dsp_mutation_lock = None
                 with mock.patch.object(main, "_require_dsp_manager", return_value=manager), mock.patch.object(
-                    main, "_load_dsp_preset", new=reload_active
+                    main, "_sync_v2_extras_runtime", new=reload_active
                 ), mock.patch.object(
                     main, "_volume_state_for_manager", new=mock.AsyncMock()
                 ), mock.patch.object(
-                    preset_loading, "_restore_volume_state", new=mock.AsyncMock()
+                    volume_state, "_restore_volume_state", new=mock.AsyncMock()
                 ), mock.patch.object(
                     main.manager, "broadcast", new=mock.AsyncMock()
                 ) as broadcast, mock.patch.object(
