@@ -139,7 +139,9 @@
     gap: 0.75rem;
 }
 
+/* min-width: long All Banks rows end in an ellipsis instead of widening the column. */
 .effects-compare-slot {
+    min-width: 0;
     padding: 0.8rem;
     border-radius: var(--radius-md);
     border: 1px solid var(--border);
@@ -159,6 +161,53 @@
 
 .effects-compare-fields .field-group {
     margin-bottom: 0;
+}
+
+/* All Banks slots: one row per switched bank, bank left, preset right.
+   Long names end in an ellipsis; the row tooltip carries the full name. */
+.effects-compare-slot-banks {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.85rem;
+    line-height: 1.35;
+}
+
+.effects-compare-slot-bank {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+    min-width: 0;
+}
+
+.effects-compare-slot-bank-key {
+    flex: 0 0 auto;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+
+.effects-compare-slot-bank-preset {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.effects-compare-slot-bank.is-fixed .effects-compare-slot-bank-preset {
+    color: var(--text-muted);
+    font-weight: 400;
+    font-style: italic;
+}
+
+/* Mixed A/B: the side each bank listens to. */
+.effects-compare-slot-bank.is-heard .effects-compare-slot-bank-preset {
+    color: var(--accent);
 }
 
 .compare-select {

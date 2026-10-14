@@ -492,8 +492,12 @@
         const busy = effectsCompareLoadInFlight || !!deps.getState().outputSystem?.busy;
         if (deps.getElements().effectsCompareA) deps.getElements().effectsCompareA.disabled = busy || !!compare.aggregate;
         if (deps.getElements().effectsCompareB) deps.getElements().effectsCompareB.disabled = busy || !!compare.aggregate;
+        // All Banks lists the bank presets of each slot in place of the picker.
         [deps.getElements().effectsCompareA, deps.getElements().effectsCompareB].forEach(select => {
-            select?.closest?.('.field-group')?.classList.toggle('hidden', !!compare.aggregate);
+            select?.closest?.('.select-tooltip-wrap')?.classList.toggle('hidden', !!compare.aggregate);
+        });
+        [deps.getElements().effectsCompareABanks, deps.getElements().effectsCompareBBanks].forEach(list => {
+            list?.classList?.toggle('hidden', !compare.aggregate);
         });
         const unavailable = !!deps.getState().outputSystem?.catalog && !(compare.effectiveActiveSide === 'A' ? compare.canB : compare.canA);
         if (deps.getElements().effectsCompareToggle) {
@@ -531,13 +535,15 @@
     }
 
     // Under Listening/Chain: the active preset of every bank in the chain.
+    // All Banks lists them in its A and B slots instead.
     function renderEffectsBankPresets() {
         const target = deps.getElements().effectsCompareBanks;
         if (!target) return;
         const catalog = deps.getState().outputSystem?.catalog;
         const mod = outputState();
-        const entries = catalog && typeof mod?.activePresetOverview === 'function' ? mod.activePresetOverview(catalog) : [];
         const selected = catalog?.modes?.[catalog.active_mode]?.selected_bank;
+        const entries = catalog && selected !== 'all' && typeof mod?.activePresetOverview === 'function'
+            ? mod.activePresetOverview(catalog) : [];
         const html = entries.map((entry) => {
             const name = entry.preset || 'Per-channel';
             const selectedClass = entry.ids.includes(selected) ? ' is-selected' : '';
@@ -549,6 +555,29 @@
         if (target.innerHTML !== html) target.innerHTML = html;
     }
 
+    // All Banks slots: the preset each switched bank plays on that side. A bank
+    // without a B stays on A; in a mixed state each bank marks the side it is on.
+    function renderAllBanksSlots(effectiveActiveSide) {
+        const catalog = deps.getState().outputSystem?.catalog;
+        const mod = outputState();
+        const rows = catalog && typeof mod?.allBanksCompareOverview === 'function' ? mod.allBanksCompareOverview(catalog) : [];
+        [['A', deps.getElements().effectsCompareABanks], ['B', deps.getElements().effectsCompareBBanks]].forEach(([slot, target]) => {
+            if (!target) return;
+            const html = rows.map((row) => {
+                const preset = slot === 'A' ? row.presetA : row.presetB;
+                const staysOnA = slot === 'B' && !preset && !row.canB;
+                const name = preset || (staysOnA ? 'stays on A' : 'Per-channel');
+                const tooltip = staysOnA ? `${row.label}: no preset B, stays on A` : `${row.label}: ${name}`;
+                const classes = `effects-compare-slot-bank${staysOnA ? ' is-fixed' : ''}`
+                    + `${!effectiveActiveSide && row.side === slot ? ' is-heard' : ''}`;
+                return `<li class="${classes}" data-tooltip="${deps.escapeHtml(tooltip)}">`
+                    + `<span class="effects-compare-slot-bank-key">${deps.escapeHtml(row.label)}</span>`
+                    + `<span class="effects-compare-slot-bank-preset">${deps.escapeHtml(name)}</span></li>`;
+            }).join('') || '<li class="effects-compare-slot-bank is-fixed">No area banks</li>';
+            if (target.innerHTML !== html) target.innerHTML = html;
+        });
+    }
+
     function renderEffectsCompare() {
         const fx = deps.getState().dsp;
         const presetEntries = fx.presets || [];
@@ -556,7 +585,7 @@
         const presets = visibleEntries.map(p => p.name);
         // The selected bank's entries: another bank may hold a preset of the same name.
         const presetMap = new Map(visibleEntries.map(preset => [preset.name, preset]));
-        const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate } = getEffectsCompareState();
+        const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate, canA, canB } = getEffectsCompareState();
 
         if (!deps.getElements().effectsCompareRow) return;
         if (!aggregate && presets.length === 0) {
@@ -568,13 +597,8 @@
 
         // Rebuilding <option> lists on every WS push closes an open dropdown.
         // Only touch the DOM when the values actually changed.
-        // All Banks owns no presets: both disabled selects show one aggregate
-        // A/B label, and the chain line names the involved area banks below.
-        const aggregateBanks = aggregate ? (() => {
-            const modeConfig = (deps.getState().outputSystem?.catalog?.modes || {})[deps.getState().outputSystem?.catalog?.active_mode] || {};
-            return Object.entries(modeConfig.banks || {}).filter(([id]) => id !== 'global');
-        })() : [];
-        const aggregateLabel = (id, bank) => bank?.label || outputState()?.roleLabel?.(id) || id;
+        // All Banks owns no presets: its hidden selects hold one aggregate
+        // label each, and the slots list the bank presets instead.
         const optionsA = aggregate ? '<option>All Banks · A</option>' :
             (!presetA ? '<option value="">Per-channel presets</option>' : '') + presets.map(n => `<option value="${deps.escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${deps.escapeHtml(n)}</option>`).join('');
         if (deps.getElements().effectsCompareA.innerHTML !== optionsA) {
@@ -614,15 +638,15 @@
             const chainLabel = getEffectsChainLabelForPreset(chainPresetName, presetMap);
             deps.getElements().effectsCompareChain.textContent = chainLabel;
         }
+        // All Banks: the status names the side only; the slots list the banks.
+        deps.getElements().effectsCompareChain?.classList?.toggle('hidden', !!aggregate);
         if (aggregate) {
             if (deps.getElements().effectsCompareActive) deps.getElements().effectsCompareActive.textContent = effectiveActiveSide
                 ? `Listening: ${effectiveActiveSide} · All Banks` : 'Listening: Mixed A/B';
-            if (deps.getElements().effectsCompareChain) deps.getElements().effectsCompareChain.textContent =
-                aggregateBanks.map(([id, bank]) => aggregateLabel(id, bank)).join(' · ') || 'No area banks';
+            renderAllBanksSlots(effectiveActiveSide);
         }
         renderEffectsBankPresets();
-        if (deps.getElements().effectsCompareToggle) deps.getElements().effectsCompareToggle.textContent = aggregate
-            ? `Switch all to ${effectiveActiveSide === 'A' ? 'B' : 'A'}` : 'Compare A/B';
+        if (deps.getElements().effectsCompareToggle) deps.getElements().effectsCompareToggle.textContent = 'Compare A/B';
         syncEffectsDeleteButton();
         const badge = document.getElementById('effects-compare-active-badge');
         if (badge) {
@@ -631,9 +655,9 @@
         }
         document.querySelectorAll('.effects-compare-slot').forEach((slotEl) => {
             const slot = slotEl.dataset.compareSlot;
-            const slotPreset = slot === 'A' ? presetA : presetB;
-            slotEl.classList.toggle('is-active', effectiveActiveSide === slot && (!!slotPreset || aggregate));
-            slotEl.classList.toggle('is-armed', effectiveActiveSide !== slot && !!slotPreset);
+            const slotAvailable = aggregate ? !!(slot === 'A' ? canA : canB) : !!(slot === 'A' ? presetA : presetB);
+            slotEl.classList.toggle('is-active', effectiveActiveSide === slot && (slotAvailable || aggregate));
+            slotEl.classList.toggle('is-armed', effectiveActiveSide !== slot && slotAvailable);
         });
         renderEffectsBankSelector();
         setEffectsCompareLoadBusy(effectsCompareLoadInFlight);

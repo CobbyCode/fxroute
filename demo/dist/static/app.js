@@ -1278,6 +1278,8 @@ const elements = {
     effectsCompareActive: document.getElementById('effects-compare-active'),
     effectsCompareChain: document.getElementById('effects-compare-chain'),
     effectsCompareBanks: document.getElementById('effects-compare-banks'),
+    effectsCompareABanks: document.getElementById('effects-compare-a-banks'),
+    effectsCompareBBanks: document.getElementById('effects-compare-b-banks'),
     effectsCompareRow: document.getElementById('effects-compare-row'),
     effectsToggleImportBtn: document.getElementById('effects-toggle-import'),
     effectsImportPanel: document.getElementById('effects-import-panel'),

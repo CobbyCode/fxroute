@@ -66,6 +66,37 @@ assert.deepEqual(ui.activePresetOverview(catalog('surround', {
 assert.deepEqual(ui.activePresetOverview(null), []);
 assert.deepEqual(ui.activePresetOverview({ active_mode: 'stereo', modes: {} }), []);
 
+// All Banks slots: every area bank with its A and B, Global left out.
+const abBank = (label, presetA, presetB, side = 'A', extra = {}) => ({
+    label, preset: side === 'B' ? presetB : presetA, preset_a: presetA, preset_b: presetB,
+    active_side: side, can_a: true, can_b: !!presetB, ...extra,
+});
+assert.deepEqual(ui.allBanksCompareOverview(catalog('surround', {
+    global: abBank('Global', 'Neutral', 'Direct'), main: abBank('Front L/R', 'Neutral', CONV),
+    rear: abBank('Rear L/R', 'Neutral', null), sub1: abBank('Sub 1', 'Neutral', 'Direct'),
+    sub2: abBank('Sub 2', 'Neutral', 'Direct'),
+})), [
+    { ids: ['main'], label: 'Front L/R', presetA: 'Neutral', presetB: CONV, canB: true, side: 'A' },
+    { ids: ['rear'], label: 'Rear L/R', presetA: 'Neutral', presetB: null, canB: false, side: 'A' },
+    { ids: ['sub1', 'sub2'], label: 'Sub 1/2', presetA: 'Neutral', presetB: 'Direct', canB: true, side: 'A' },
+]);
+// Numbered banks merge only on equal A, B and side; per-channel slots never merge.
+assert.deepEqual(ui.allBanksCompareOverview(catalog('stereo-sub', {
+    sub1: abBank('Sub 1', 'Neutral', 'Direct', 'B'), sub2: abBank('Sub 2', 'Neutral', 'Direct', 'A'),
+    sub3: abBank('Sub 3', 'Neutral', 'PEQ'), sub4: abBank('Sub 4', 'Neutral', 'PEQ'),
+})).map(row => row.label), ['Sub 1', 'Sub 2', 'Sub 3/4']);
+assert.deepEqual(ui.allBanksCompareOverview(catalog('stereo-sub', {
+    sub1: abBank('Sub 1', null, null, null, { can_b: true }), sub2: abBank('Sub 2', null, null, null, { can_b: true }),
+    sub3: abBank('Sub 3', 'Neutral', null, 'A', { can_b: true }), sub4: abBank('Sub 4', 'Neutral', null, 'A', { can_b: true }),
+})).map(row => [row.label, row.presetA, row.presetB, row.canB, row.side]), [
+    ['Sub 1', null, null, true, null], ['Sub 2', null, null, true, null],
+    ['Sub 3', 'Neutral', null, true, 'A'], ['Sub 4', 'Neutral', null, true, 'A'],
+]);
+// An unlabelled bank takes the role label of the mode.
+assert.deepEqual(ui.allBanksCompareOverview(catalog('surround', { global: {}, main: { preset_a: 'Neutral' } }))
+    .map(row => [row.label, row.canB]), [['Front L/R', false]]);
+assert.deepEqual(ui.allBanksCompareOverview(null), []);
+
 // Rendered into the compare badge: one chip per entry, the selected bank marked.
 function render(state) {
     const elements = {
@@ -104,13 +135,14 @@ const banks = {
     ]);
     assert.ok(!html.includes('<x>'), 'preset names are escaped');
 }
-// A merged entry is marked when one of its banks is the selected one; All Banks marks none.
+// A merged entry is marked when one of its banks is the selected one; All Banks
+// lists the banks in its A/B slots, so the badge carries no chips there.
 assert.deepEqual(chips(render({ outputSystem: { catalog: catalog('stereo-sub', banks, 'sub2') }, dsp: { presets } }))
     .map(chip => chip.selected), [false, false, true]);
-assert.deepEqual(chips(render({ outputSystem: { catalog: {
+assert.equal(render({ outputSystem: { catalog: {
     ...catalog('stereo-sub', banks, 'all'), modes: { 'stereo-sub': { selected_bank: 'all', banks,
         all_banks: { preset: null, preset_a: null, preset_b: null, active_side: null, can_a: true, can_b: true } } },
-} }, dsp: { presets } })).map(chip => chip.selected), [false, false, false]);
+} }, dsp: { presets } }), '');
 // Mixed channel bindings read as per-channel; without a catalog the line is empty.
 assert.match(render({ outputSystem: { catalog: catalog('stereo-sub', { global: bank('Global', 'Neutral'),
     main: bank('Main L/R', null) }) }, dsp: { presets } }), /Main L\/R<\/span> <span class="effects-compare-bank-preset">Per-channel</);

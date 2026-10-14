@@ -8,6 +8,10 @@ fills the card and spends the spare height evenly between its sections
 (status, preset pair, actions, info line); the preset slots keep their natural
 height. Below 768px the card keeps its natural height and the plain gaps.
 
+All Banks fills the same card with the same sections: the slots list the
+bank presets of each side instead of a picker, and long preset names end in
+an ellipsis inside their slot.
+
 Runs the real rendered page (static server + stubbed audio API) in headless
 Chromium. Skips cleanly when playwright or a browser is not available.
 """
@@ -110,6 +114,45 @@ MEASURE_JS = """
 }
 """
 
+# All Banks through the real compare render: Global plus area banks, one of them with a long B.
+ALL_BANKS_JS = """
+() => {
+    const b = (label, a, bb, side) => ({ label, preset: side === 'B' ? bb : a, preset_a: a, preset_b: bb,
+        active_side: side, can_a: true, can_b: !!bb });
+    const roles = ['main_l', 'main_r', 'center', 'rear_l', 'rear_r', 'sub1', 'sub2'];
+    state.outputSystem.catalog = { revision: 1, active_mode: 'surround', modes: { surround: {
+        selected_bank: 'all',
+        banks: { global: b('Global', 'Neutral', 'Direct', 'A'),
+            main: b('Front L/R', 'Neutral', 'Conv LR HybAlign Neutral 20-2500Hz -4.5dB 130826', 'A'),
+            center: b('Center', 'PEQ Center Measurement 2f 233800', null, 'A'), rear: b('Rear L/R', 'Neutral', null, 'A'),
+            sub1: b('Sub 1', 'Neutral', 'Direct', 'A'), sub2: b('Sub 2', 'Neutral', 'Direct', 'A') },
+        all_banks: { preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A', can_a: true, can_b: true },
+        topology: { mode: 'surround', roles, sub_roles: ['sub1', 'sub2'] },
+        processing: {}, extras: {},
+    } } };
+    FXRouteBankUI.renderEffectsCompare();
+}
+"""
+
+ALL_BANKS_MEASURE_JS = """
+() => {
+    const visible = (el) => !!el && el.offsetParent !== null && el.getBoundingClientRect().height > 0;
+    const slots = [...document.querySelectorAll('.effects-compare-slot')].map((slot) => {
+        const box = slot.getBoundingClientRect();
+        const rows = [...slot.querySelectorAll('.effects-compare-slot-bank')];
+        return {
+            active: slot.classList.contains('is-active'), pickerShown: visible(slot.querySelector('.select-tooltip-wrap')),
+            rows: rows.filter(visible).map((row) => row.querySelector('.effects-compare-slot-bank-key').textContent),
+            contained: rows.every((row) => { const r = row.getBoundingClientRect(); return r.left >= box.left - 0.5 && r.right <= box.right + 0.5; }),
+        };
+    });
+    return { slots, chainShown: visible(document.getElementById('effects-compare-chain')),
+        chipsShown: visible(document.getElementById('effects-compare-banks')),
+        active: document.getElementById('effects-compare-active').textContent,
+        toggle: document.getElementById('effects-compare-toggle').textContent };
+}
+"""
+
 
 def gaps(blocks):
     return [b["top"] - a["bottom"] for a, b in zip(blocks, blocks[1:])]
@@ -190,6 +233,33 @@ def _run():
                 check(f"[{width}px] natural gaps between the sections ({[round(x, 1) for x in g]})",
                       all(abs(x - 14.4) <= 1.5 for x in g))
                 check(f"[{width}px] no horizontal page overflow", m["docFits"])
+
+            # All Banks: the same four sections fill the card, the slots list the banks.
+            page.evaluate(ALL_BANKS_JS)
+            for width in (1440, 1000, 800, 767, 600, 390):
+                page.set_viewport_size({"width": width, "height": 1300})
+                page.evaluate(SET_EXTRAS_JS, [EXTRAS, width >= 1000])
+                page.wait_for_timeout(120)
+                m = page.evaluate(MEASURE_JS)
+                a = page.evaluate(ALL_BANKS_MEASURE_JS)
+                tag = f"[{width}px/all banks]"
+                g = gaps(m["blocks"])
+                check(f"{tag} status, slots, actions and info line ({[b['id'] for b in m['blocks']]})", len(m["blocks"]) == 4)
+                check(f"{tag} the status names the side only", a["active"] == "Listening: A · All Banks"
+                      and not a["chainShown"] and not a["chipsShown"])
+                check(f"{tag} the toggle reads as in a single bank", a["toggle"] == "Compare A/B")
+                check(f"{tag} both slots list the switched banks without a picker",
+                      all(not slot["pickerShown"] and slot["rows"] == ["Front L/R", "Center", "Rear L/R", "Sub 1/2"]
+                          for slot in a["slots"]))
+                check(f"{tag} the listened side is marked", [slot["active"] for slot in a["slots"]] == [True, False])
+                check(f"{tag} long names stay inside their slot", all(slot["contained"] for slot in a["slots"]))
+                check(f"{tag} no horizontal page overflow", m["docFits"])
+                if m["columns"] == 2:
+                    check(f"{tag} tile fills the card",
+                          abs(m["tile"]["bottom"] - (m["card"]["bottom"] - m["cardPaddingBottom"])) <= 1.5)
+                    check(f"{tag} the spare height is spread evenly ({[round(x, 1) for x in g]})", max(g) - min(g) <= 1.5)
+                else:
+                    check(f"{tag} natural gaps ({[round(x, 1) for x in g]})", all(abs(x - 14.4) <= 1.5 for x in g))
             browser.close()
     finally:
         server.shutdown()

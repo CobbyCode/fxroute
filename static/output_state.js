@@ -400,29 +400,54 @@ function compactPresetName(name, maxChars = 20) {
     return `${clean.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
 }
 
+// Numbered banks in a row with the same merge key share one entry ("Sub 1/2");
+// a null key never merges.
+function mergeNumberedBanks(items) {
+    const entries = [];
+    for (const item of items) {
+        const numbered = /^(.*\D)(\d+)$/.exec(item.label);
+        const previous = entries[entries.length - 1];
+        if (numbered && item.key !== null && previous && previous.family === numbered[1] && previous.key === item.key) {
+            previous.ids.push(...item.ids);
+            previous.label = `${previous.label}/${numbered[2]}`;
+            continue;
+        }
+        entries.push({ ...item, ids: [...item.ids], family: numbered ? numbered[1] : null });
+    }
+    return entries.map(({ family, key, ...entry }) => entry);
+}
+
 // Active preset of every bank in the active mode's chain, Global first.
-// Numbered banks in a row on the same preset share one entry ("Sub 1/2");
-// a bank whose channels listen to different presets has no single preset.
+// A bank whose channels listen to different presets has no single preset.
 function activePresetOverview(catalog) {
     const mode = catalog?.active_mode;
     const banks = catalog?.modes?.[mode]?.banks;
     if (!banks) return [];
     const ids = Object.keys(banks).sort((a, b) => (b === 'global') - (a === 'global'));
-    const entries = [];
-    for (const id of ids) {
+    return mergeNumberedBanks(ids.map((id) => {
         const bank = banks[id] || {};
-        const label = bank.label || roleLabel(id, mode);
         const preset = typeof bank.preset === 'string' && bank.preset ? bank.preset : null;
-        const numbered = /^(.*\D)(\d+)$/.exec(label);
-        const previous = entries[entries.length - 1];
-        if (numbered && preset && previous && previous.family === numbered[1] && previous.preset === preset) {
-            previous.ids.push(id);
-            previous.label = `${previous.label}/${numbered[2]}`;
-            continue;
-        }
-        entries.push({ ids: [id], label, preset, family: numbered ? numbered[1] : null });
-    }
-    return entries.map(({ ids: members, label, preset }) => ({ ids: members, label, preset }));
+        return { ids: [id], label: bank.label || roleLabel(id, mode), preset, key: preset };
+    }));
+}
+
+// A and B slot of every area bank that All Banks switches jointly; Global is
+// not switched. A bank without a B stays on A (canB false); a null slot with
+// canB means per-channel presets. Banks merge only on equal slots and side.
+function allBanksCompareOverview(catalog) {
+    const mode = catalog?.active_mode;
+    const banks = catalog?.modes?.[mode]?.banks;
+    if (!banks) return [];
+    return mergeNumberedBanks(Object.keys(banks).filter((id) => id !== 'global').map((id) => {
+        const bank = banks[id] || {};
+        const presetA = typeof bank.preset_a === 'string' && bank.preset_a ? bank.preset_a : null;
+        const presetB = typeof bank.preset_b === 'string' && bank.preset_b ? bank.preset_b : null;
+        const canB = !!(bank.can_b ?? presetB);
+        const side = bank.active_side === 'A' || bank.active_side === 'B' ? bank.active_side : null;
+        const singleSlots = !!presetA && (!!presetB || !canB);
+        return { ids: [id], label: bank.label || roleLabel(id, mode), presetA, presetB, canB, side,
+            key: singleSlots ? JSON.stringify([presetA, presetB, side]) : null };
+    }));
 }
 
 function buildMutation(kind, fields) {
@@ -562,6 +587,7 @@ function renderBankSelector(select, catalog, mode) {
         compareState,
         compactPresetName,
         activePresetOverview,
+        allBanksCompareOverview,
         buildMutation,
         fetchCatalog,
         applyMutation,
