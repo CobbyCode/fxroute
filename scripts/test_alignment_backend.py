@@ -115,8 +115,8 @@ class NeutralizeTests(unittest.TestCase):
         manager = DSPManager(home=Path(directory.name) / "home")
         service = OutputService(OutputServiceDeps(
             store=OutputStateStore(Path(directory.name) / "output-state.json"),
-            preset_loader=manager.preset_store.read,
-            resolve_ir=lambda kernel: (_ for _ in ()).throw(AssertionError(kernel)),
+            preset_loader=manager.read_preset,
+            resolve_ir=lambda _bank, kernel: (_ for _ in ()).throw(AssertionError(kernel)),
             measurement_active=lambda: False))
         state = default_output_state()
         state = set_crossover(state, "stereo", True)

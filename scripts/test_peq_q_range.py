@@ -40,32 +40,33 @@ class PeqQRangeTests(unittest.TestCase):
         self.manager = DSPManager(home=Path(directory.name))
         self.name = self.manager.create_peq_preset_from_rew_text("High Q", REW)["name"]
 
-    def engine_text(self, bank):
+    def engine_text(self, role, bank):
         state = default_output_state()
         state = switch_mode(set_mode_routing(
             state, "stereo-sub", "A", ["main_l", "main_r", "sub1"]), "stereo-sub")
-        state["modes"]["stereo-sub"]["banks"][bank]["preset"] = self.name
+        self.manager.create_peq_preset_from_rew_text(self.name, REW, bank=bank, mode="stereo-sub")
+        state["modes"]["stereo-sub"]["banks"][role]["preset"] = self.name
         plan = compile_processing_plan(state, output_key="A", channels=3, sample_rate_hz=48000,
-                                       preset_loader=self.manager.preset_store.read)
-        layout = layout_from_plan(plan, resolve_ir=lambda name: {})
+                                       preset_loader=self.manager.read_preset)
+        layout = layout_from_plan(plan, resolve_ir=lambda _bank, name: {})
         text = self.manager.compile_engine_text(
-            layout, preset_name=plan["global"]["preset"], sample_rate_hz=48000,
+            layout, preset_name=plan["global"]["preset"], mode=plan["mode"], sample_rate_hz=48000,
             extras_override=plan["global"]["extras"])
         return layout, text.splitlines()
 
     def test_rew_import_stores_q_above_20_exactly(self):
-        bands = self.manager.preset_store.read(self.name)["chain"][0]["params"]["bands"]
+        bands = self.manager.library().read(self.name)["chain"][0]["params"]["bands"]
         self.assertEqual([(band["frequencyHz"], band["q"]) for band in bands], EXPECTED)
 
     def test_area_bank_renders_the_imported_q_in_its_biquads(self):
-        layout, lines = self.engine_text("main_l")
+        layout, lines = self.engine_text("main_l", "main")
         row = next(row for row in layout if row["name"] == "main_l")
         self.assertEqual([(item["frequency_hz"], item["q"]) for item in row["filters"]], EXPECTED)
         for frequency, q in EXPECTED:
             self.assertIn(f"peq 0 bell {frequency:.9g} {q:.9g}", "\n".join(lines))
 
     def test_global_bank_renders_the_imported_q_in_the_lsp_controls(self):
-        _, lines = self.engine_text("global")
+        _, lines = self.engine_text("global", "global")
         for index, (_, q) in enumerate(EXPECTED):
             for side in ("l", "r"):
                 self.assertIn(f"control q{side}_{index} {q:.9g}", lines)

@@ -69,7 +69,7 @@ class HardwareBoundary:
             plan, layout=layout, output_key="dev", sample_rate_hz=rate,
             hardware_ports=PORTS, plan_fingerprint=fingerprint)
         return PlannedSyncTarget(config, config and self.service.manager.compile_engine_text(
-            layout, preset_name=plan["global"]["preset"], sample_rate_hz=rate,
+            layout, preset_name=plan["global"]["preset"], mode=plan["mode"], sample_rate_hz=rate,
             extras_override=plan["global"]["extras"]))
 
     async def readback(self):
@@ -169,8 +169,8 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
         self.manager = DSPManager(home=Path(directory.name) / "dsp")
         self.store = OutputStateStore(Path(directory.name) / "output-state.json")
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            store=self.store, preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         self.service.manager = self.manager
         state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub")

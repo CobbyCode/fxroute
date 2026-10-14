@@ -78,7 +78,7 @@ class SurroundMeasurementTests(unittest.TestCase):
     def setUp(self):
         self.state = switch_mode(set_mode_routing(default_output_state(), "surround", "device", ROLES), "surround")
         self.plan = self.compile(self.state)
-        self.layout = layout_from_plan(self.plan, resolve_ir=lambda _: self.fail("Unexpected IR"))
+        self.layout = layout_from_plan(self.plan, resolve_ir=lambda *_: self.fail("Unexpected IR"))
         self.clock = count(0.0, 0.1)
         self.sleep = patch("measurement.routing.time.sleep", return_value=None)
         self.monotonic = patch("measurement.routing.time.monotonic", side_effect=lambda: next(self.clock))
@@ -90,7 +90,7 @@ class SurroundMeasurementTests(unittest.TestCase):
     @staticmethod
     def compile(state):
         return compile_processing_plan(state, output_key="device", channels=16, sample_rate_hz=48000,
-                                       preset_loader=lambda _: {"chain": []})
+                                       preset_loader=lambda *_: {"chain": []})
 
     def route(self, bank="all", *, layout=None, scope="active_chain", mode="surround", channel="stereo", group=None):
         layout = self.layout if layout is None else layout
@@ -176,7 +176,7 @@ class SurroundMeasurementTests(unittest.TestCase):
         roles = ["main_l", "main_r", "rear_l", "rear_r", "sub1", "sub2"]
         self.state = switch_mode(set_mode_routing(default_output_state(), "surround", "device", roles), "surround")
         self.plan = self.compile(self.state)
-        self.layout = layout_from_plan(self.plan, resolve_ir=lambda _: self.fail("Unexpected IR"))
+        self.layout = layout_from_plan(self.plan, resolve_ir=lambda *_: self.fail("Unexpected IR"))
         fixture, routing, route = self.route("rear")
         self.link(fixture, routing, route)
         self.assert_links(fixture, {(f"{PLAY}:output_FL", "fxroute_dsp:input_7"),
@@ -197,7 +197,7 @@ class SurroundMeasurementTests(unittest.TestCase):
         self.state = set_mode_routing(self.state, "surround", "device",
             ["left_low", "left_high", "right_low", "right_high", *ROLES[2:]])
         self.plan = self.compile(self.state)
-        self.layout = layout_from_plan(self.plan, resolve_ir=lambda _: self.fail("Unexpected IR"))
+        self.layout = layout_from_plan(self.plan, resolve_ir=lambda *_: self.fail("Unexpected IR"))
         fixture, routing, route = self.route("high")
         self.link(fixture, routing, route)
         self.assert_links(fixture, set())

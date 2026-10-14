@@ -130,8 +130,10 @@ function measurementFileUrl(measurementId = '') {
     return `/api/measurements/${encodeURIComponent(String(measurementId || ''))}/file`;
 }
 
-function presetFileUrl(presetName = '') {
-    return `/api/dsp/presets/${encodeURIComponent(String(presetName || ''))}/file`;
+// A preset name is unique within its bank only; ``owner`` ({bank_mode, bank_id}) names the bank.
+function presetFileUrl(presetName = '', owner = null) {
+    const query = owner ? `?${new URLSearchParams(owner)}` : '';
+    return `/api/dsp/presets/${encodeURIComponent(String(presetName || ''))}/file${query}`;
 }
 
 function getDefaultMeasurementPeqFilter(index = 0) {

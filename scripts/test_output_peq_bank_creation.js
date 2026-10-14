@@ -30,13 +30,13 @@ const banks = {
     sub2: { id: 'sub2', roles: ['sub2'], channel_mode: 'mono' },
 };
 const presets = [
-    { name: 'Direct' }, { name: 'Neutral' }, { name: 'Legacy' },
+    { name: 'Direct' }, { name: 'Neutral' },
     { name: 'Global PEQ', bank: 'global', mode: 'stereo-sub' }, { name: 'Main PEQ', bank: 'main' },
     { name: 'Stereo PEQ', bank: 'global', mode: 'stereo' },
     { name: 'Sub 1 PEQ', bank: 'sub1' }, { name: 'Sub 2 PEQ', bank: 'sub2' },
 ];
 const cases = [
-    { bank: 'global', name: 'Global PEQ', revision: 7, visible: ['Direct', 'Neutral', 'Legacy', 'Global PEQ'] },
+    { bank: 'global', name: 'Global PEQ', revision: 7, visible: ['Direct', 'Neutral', 'Global PEQ'] },
     { bank: 'main', name: 'Main PEQ', revision: 8, visible: ['Direct', 'Neutral', 'Main PEQ'] },
     { bank: 'sub1', name: 'Sub 1 PEQ', revision: 9, visible: ['Direct', 'Neutral', 'Sub 1 PEQ'] },
     { bank: 'sub2', name: 'Sub 2 PEQ', revision: 10, visible: ['Direct', 'Neutral', 'Sub 2 PEQ'] },

@@ -373,8 +373,8 @@ class SpeakerAcquisitionTests(unittest.IsolatedAsyncioTestCase):
         candidate["modes"]["stereo-sub"]["processing"]["left_low"]["alignment_ms"] = 5
         from dsp.native_config import layout_from_plan
         plan = compile_processing_plan(candidate, output_key="dev", channels=6, sample_rate_hz=RATE,
-                                       preset_loader=lambda name: {"chain": []})
-        expected = {"expected_native_layout": layout_from_plan(plan, resolve_ir=lambda name: None),
+                                       preset_loader=lambda *_: {"chain": []})
+        expected = {"expected_native_layout": layout_from_plan(plan, resolve_ir=lambda _bank, name: None),
                     "expected_native_output_mode": "stereo-sub",
                     "expected_plan_fingerprint": "candidate-plan"}
         contexts = []

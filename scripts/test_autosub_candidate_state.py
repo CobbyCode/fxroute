@@ -64,12 +64,14 @@ class Fixture:
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "output-state.json"
         self.manager = DSPManager(home=Path(directory.name) / "dsp")
-        self.manager.preset_store.write("Room", {
-            "schema": "fxroute.dsp.preset", "version": 1, "chain": []})
+        # Every bank a state_fixture topology binds "Room" in has its own library.
+        for bank in ("global", "main", "low", "mid", "high", "sub", *SUB_ROLES):
+            self.manager.library(bank, "stereo-sub").write("Room", {
+                "schema": "fxroute.dsp.preset", "version": 1, "chain": []})
         self.store = OutputStateStore(self.path)
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(
+            store=self.store, preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(
                 AssertionError(f"fixture has no IR presets: {name}")),
             measurement_active=lambda: True))
         self.base = self.store.commit(state_fixture(), expected_revision=0)
@@ -93,7 +95,7 @@ class Fixture:
             hardware_ports=[f"playback_AUX{i}" for i in range(self.context["channels"])],
             plan_fingerprint=fingerprint)
         text = self.manager.compile_engine_text(
-            layout, preset_name=plan["global"]["preset"], sample_rate_hz=48000,
+            layout, preset_name=plan["global"]["preset"], mode=plan["mode"], sample_rate_hz=48000,
             extras_override=plan["global"]["extras"])
         return PlannedSyncTarget(config, text)
 

@@ -99,8 +99,8 @@ class ServiceHarness:
         self.manager = DSPManager(home=Path(directory.name) / "dsp")
         self.service = OutputService(OutputServiceDeps(
             store=OutputStateStore(Path(directory.name) / "output-state.json"),
-            preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         self.start = _seed_state(self.service, roles)
         self.transitions = []
@@ -134,7 +134,7 @@ class ServiceHarness:
             plan, layout=layout, output_key="dev", sample_rate_hz=rate,
             hardware_ports=PORTS, plan_fingerprint=fingerprint)
         text = self.manager.compile_engine_text(
-            layout, preset_name=plan["global"]["preset"], sample_rate_hz=rate,
+            layout, preset_name=plan["global"]["preset"], mode=plan["mode"], sample_rate_hz=rate,
             extras_override=plan["global"]["extras"])
         return PlannedSyncTarget(config, text)
 

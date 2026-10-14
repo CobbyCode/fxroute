@@ -54,6 +54,8 @@ class PeqConvolverReviewTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp(prefix="fxroute-peq-review-"))
         self.manager = DSPManager(home=self.home)
+        self.irs_dir = self.manager.library().irs_dir
+        self.irs_dir.mkdir(parents=True)
 
     def test_dual_gain_mismatch_rejected_at_validation(self):
         with self.assertRaisesRegex(ValueError, "shared stereo trim"):
@@ -73,7 +75,7 @@ class PeqConvolverReviewTests(unittest.TestCase):
                                             "gainDb": 0.0, "q": 1.0, "enabled": True}],
                              "rightBands": [{"filterType": "gain", "frequencyHz": 1000,
                                              "gainDb": 6.0, "q": 1.0, "enabled": True}]}}]
-        self.manager.preset_store.write("StoredMismatch", self.manager._native_preset(chain))
+        self.manager.library().write("StoredMismatch", self.manager._native_preset(chain))
         with self.assertRaisesRegex(ValueError, "shared stereo trim"):
             self.manager.compile_engine_text(
                 [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
@@ -119,8 +121,8 @@ class PeqConvolverReviewTests(unittest.TestCase):
             "Filter 1: ON PK Fc 46.30 Hz Gain -4.80 dB Q 3.387\n"
             "Filter 2: OFF PK Fc 1200 Hz Gain +2.50 dB Q 0.75\n"
             "Filter 3: ON None\n"), bank="low")
-        stored = self.manager.preset_store.read(created["name"])
-        self.assertEqual(stored["metadata"]["bank"], "low")
+        stored = self.manager.library("low").read(created["name"])
+        self.assertEqual(created["bank"], "low")
         bands = stored["chain"][0]["params"]["bands"]
         self.assertEqual([(b["frequencyHz"], b["gainDb"], b["q"], b["enabled"])
                           for b in bands], [(46.3, -4.8, 3.387, True),
@@ -158,7 +160,7 @@ class PeqConvolverReviewTests(unittest.TestCase):
             "Filter  2: ON  PK       Fc     209 Hz  Gain  -3.90 dB  Q  3.943\n"
             "Filter  3: OFF PK       Fc    1607 Hz  Gain  -6.50 dB  Q  1.864\n"
             "Filter  4: ON  None\n"))
-        stored = self.manager.preset_store.read(created["name"])
+        stored = self.manager.library().read(created["name"])
         bands = stored["chain"][0]["params"]["bands"]
         self.assertEqual([(b["frequencyHz"], b["gainDb"], b["q"], b["enabled"])
                           for b in bands], [(46.3, -4.8, 3.387, True),
@@ -179,48 +181,48 @@ class PeqConvolverReviewTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "REW"):
                     self.manager.create_peq_preset_from_rew_text(
                         "Partial", "1 on PK 100 3.0 1.0\n" + invalid)
-                self.assertFalse(self.manager.preset_store.path("Partial").exists())
+                self.assertFalse(self.manager.library().path("Partial").exists())
 
     def test_empty_and_invalid_ir_never_reach_engine(self):
         empty = self.home / "empty.wav"
         write_wav(empty, frames=b"")
         with self.assertRaisesRegex(ValueError, "no audio frames"):
             self.manager.upload_ir(empty, empty.name)
-        self.assertEqual(list(self.manager.irs_dir.iterdir()), [])
+        self.assertEqual(list(self.irs_dir.iterdir()), [])
         blob = self.home / "bad.wav"
         blob.write_bytes(b"not a wav file")
         with self.assertRaisesRegex(ValueError, "Invalid IR"):
             self.manager.upload_ir(blob, blob.name)
-        self.assertEqual(list(self.manager.irs_dir.iterdir()), [])
+        self.assertEqual(list(self.irs_dir.iterdir()), [])
         # A corrupt file placed manually must still fail at preset
         # creation and at compile time, never produce an engine config.
-        smuggled = self.manager.irs_dir / "smuggled.wav"
+        smuggled = self.irs_dir / "smuggled.wav"
         smuggled.write_bytes(b"not a wav file")
         with self.assertRaisesRegex(ValueError, "Invalid IR"):
             self.manager.create_convolver_preset("Bad", smuggled.name)
-        valid = self.manager.irs_dir / "valid.wav"
+        valid = self.irs_dir / "valid.wav"
         write_wav(valid)
         self.manager.create_convolver_preset("Good", valid.name)
         smuggled.unlink()
         smuggled.write_bytes(b"not a wav file")
         # Point the stored preset at the corrupt kernel stem.
-        payload = self.manager.preset_store.read("Good")
+        payload = self.manager.library().read("Good")
         payload["chain"][0]["params"]["kernel"] = "smuggled"
-        self.manager.preset_store.write("Good", payload)
+        self.manager.library().write("Good", payload)
         with self.assertRaisesRegex(ValueError, "Invalid IR"):
             self.manager.compile_engine_text(
                 [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
                 preset_name="Good")
 
     def test_ambiguous_ir_stem_is_rejected(self):
-        first = self.manager.irs_dir / "room.irs"
-        second = self.manager.irs_dir / "room.wav"
+        first = self.irs_dir / "room.irs"
+        second = self.irs_dir / "room.wav"
         write_wav(first)
         write_wav(second)
         with self.assertRaisesRegex(ValueError, "Ambiguous IR"):
             self.manager.create_convolver_preset("Room", first.name)
         # Bypass creation to prove compile also refuses to guess.
-        self.manager.preset_store.write("RoomDirect", self.manager._native_preset([
+        self.manager.library().write("RoomDirect", self.manager._native_preset([
             {"id": "convolver#0", "type": "convolver", "enabled": True,
              "params": {"kernel": "room"}}]))
         with self.assertRaisesRegex(ValueError, "Ambiguous IR"):

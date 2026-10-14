@@ -26,6 +26,8 @@ class IrUploadAtomicTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
         self.manager = DSPManager(home=self.home)
+        self.irs_dir = self.manager.library().irs_dir
+        self.irs_dir.mkdir(parents=True)
 
     def _write_mono_wav(self, path, frames=b"\x00\x00\x00\x00"):
         with wave.open(str(path), "wb") as handle:
@@ -35,11 +37,11 @@ class IrUploadAtomicTests(unittest.TestCase):
             handle.writeframes(frames)
 
     def _stage_leftovers(self):
-        return [path.name for path in self.manager.irs_dir.iterdir()
+        return [path.name for path in self.irs_dir.iterdir()
                 if path.name.startswith(".fxroute-ir-stage-")]
 
     def _existing_ir(self, name="room.wav", frames=b"\x01\x00\x02\x00\x03\x00\x04\x00"):
-        path = self.manager.irs_dir / name
+        path = self.irs_dir / name
         self._write_mono_wav(path, frames)
         return path, path.read_bytes()
 
@@ -80,7 +82,7 @@ class IrUploadAtomicTests(unittest.TestCase):
         self._write_mono_wav(left, b"\x01\x00\x02\x00")
         self._write_mono_wav(right, b"\x03\x00\x04\x00")
         self.manager.upload_ir_pair(left, "left.wav", right, "right.wav", "Stereo.irs")
-        merged = self.manager.irs_dir / "Stereo.irs"
+        merged = self.irs_dir / "Stereo.irs"
         merged_bytes = merged.read_bytes()
         with mock.patch.object(DSPManager, "_publish_staged_ir",
                                side_effect=OSError("publish fault simulated")):
@@ -104,11 +106,11 @@ class IrUploadAtomicTests(unittest.TestCase):
         self._write_mono_wav(left, b"\x01\x00\x02\x00")
         self._write_mono_wav(right, b"\x03\x00\x04\x00")
         first = self.manager.upload_ir_pair(left, "left.wav", right, "right.wav", "Stereo.irs")
-        first_bytes = (self.manager.irs_dir / "Stereo.irs").read_bytes()
+        first_bytes = (self.irs_dir / "Stereo.irs").read_bytes()
         self._write_mono_wav(left, b"\x05\x00\x06\x00")
         self._write_mono_wav(right, b"\x07\x00\x08\x00")
         second = self.manager.upload_ir_pair(left, "left.wav", right, "right.wav", "Stereo.irs")
-        merged = self.manager.irs_dir / "Stereo.irs"
+        merged = self.irs_dir / "Stereo.irs"
         self.assertEqual(second["name"], "Stereo.irs")
         self.assertNotEqual(merged.read_bytes(), first_bytes)
         self.assertEqual(first["name"], second["name"])
@@ -119,7 +121,7 @@ class IrUploadAtomicTests(unittest.TestCase):
         target = self.home / "outside.wav"
         self._write_mono_wav(target, b"\x01\x00\x02\x00")
         before = target.read_bytes()
-        link = self.manager.irs_dir / "room.wav"
+        link = self.irs_dir / "room.wav"
         os.symlink(target, link)
         with self.assertRaisesRegex(ValueError, "symlink"):
             self.manager.upload_ir(self._new_source(), "room.wav")
@@ -127,7 +129,7 @@ class IrUploadAtomicTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), before)
 
     def test_directory_destination_is_blocked(self):
-        (self.manager.irs_dir / "room.wav").mkdir()
+        (self.irs_dir / "room.wav").mkdir()
         with self.assertRaisesRegex(ValueError, "directory"):
             self.manager.upload_ir(self._new_source(), "room.wav")
 

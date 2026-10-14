@@ -39,6 +39,8 @@ class PresetDeleteSafetyTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
         self.manager = DSPManager(home=self.home)
+        self.irs_dir = self.manager.library().irs_dir
+        self.irs_dir.mkdir(parents=True)
         self.manager.create_peq_preset("Victim", _peq_definition())
         self.manager.load_preset("Victim")
         self.assertEqual(self.manager.get_active_preset(), "Victim")
@@ -51,14 +53,15 @@ class PresetDeleteSafetyTests(unittest.TestCase):
             handle.writeframes(frames)
 
     def _delete_leftovers(self):
-        return [path.name for path in self.manager.output_dir.iterdir()
+        return [path.name for path in self.manager.library().presets_dir.iterdir()
                 if path.name.startswith(".fxroute-delete-backup-")]
 
     def test_broken_neutral_fallback_keeps_file_and_active_state(self):
-        (self.manager.output_dir / "Neutral.json").unlink()
-        with self.assertRaises(FileNotFoundError):
-            self.manager.delete_preset("Victim")
-        self.assertTrue((self.manager.output_dir / "Victim.json").exists())
+        with mock.patch.object(self.manager, "compile_engine_config",
+                               side_effect=RuntimeError("fallback does not compile")):
+            with self.assertRaises(RuntimeError):
+                self.manager.delete_preset("Victim")
+        self.assertTrue((self.manager.library().presets_dir / "Victim.json").exists())
         self.assertEqual(self.manager.get_active_preset(), "Victim")
         self.assertEqual(self.manager.get_status()["active_preset"], "Victim")
         self.assertEqual(self._delete_leftovers(), [])
@@ -75,7 +78,7 @@ class PresetDeleteSafetyTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.manager.delete_preset("Victim")
         self.manager.state_store.write = original_write
-        self.assertTrue((self.manager.output_dir / "Victim.json").exists())
+        self.assertTrue((self.manager.library().presets_dir / "Victim.json").exists())
         self.assertEqual(self.manager.get_active_preset(), "Victim")
         self.assertEqual(self.manager.get_status()["active_preset"], "Victim")
         self.assertEqual(self._delete_leftovers(), [])
@@ -85,12 +88,12 @@ class PresetDeleteSafetyTests(unittest.TestCase):
             RuntimeError("engine apply failed"))
         with self.assertRaises(RuntimeError):
             self.manager.delete_preset("Victim")
-        self.assertTrue((self.manager.output_dir / "Victim.json").exists())
+        self.assertTrue((self.manager.library().presets_dir / "Victim.json").exists())
         self.assertEqual(self.manager.get_active_preset(), "Victim")
         self.assertEqual(self._delete_leftovers(), [])
 
     def test_orphan_ir_failure_restores_preset_file(self):
-        ir = self.manager.irs_dir / "victim.irs"
+        ir = self.irs_dir / "victim.irs"
         self._write_mono_wav(ir)
         self.manager.create_convolver_preset("Conv", ir.name)
         self.manager.create_convolver_preset("Conv2", ir.name)
@@ -111,17 +114,17 @@ class PresetDeleteSafetyTests(unittest.TestCase):
         with mock.patch.object(dsp_manager_module.os, "replace", side_effect=flaky_replace):
             with self.assertRaises(OSError):
                 self.manager.delete_preset("Conv2")
-        self.assertTrue((self.manager.output_dir / "Conv2.json").exists())
+        self.assertTrue((self.manager.library().presets_dir / "Conv2.json").exists())
         self.assertTrue(ir.exists())
         self.assertEqual(self._delete_leftovers(), [])
 
     def test_successful_active_delete_moves_to_neutral(self):
-        ir = self.manager.irs_dir / "victim.irs"
+        ir = self.irs_dir / "victim.irs"
         self._write_mono_wav(ir)
         self.manager.create_convolver_preset("Conv", ir.name)
         self.manager.load_preset("Conv")
         self.manager.delete_preset("Conv")
-        self.assertFalse((self.manager.output_dir / "Conv.json").exists())
+        self.assertFalse((self.manager.library().presets_dir / "Conv.json").exists())
         # The orphaned kernel is removed with the preset.
         self.assertFalse(ir.exists())
         self.assertEqual(self.manager.get_active_preset(), "Neutral")
@@ -131,7 +134,7 @@ class PresetDeleteSafetyTests(unittest.TestCase):
     def test_successful_inactive_delete_keeps_active_preset(self):
         self.manager.create_peq_preset("Other", _peq_definition())
         self.manager.delete_preset("Other")
-        self.assertFalse((self.manager.output_dir / "Other.json").exists())
+        self.assertFalse((self.manager.library().presets_dir / "Other.json").exists())
         self.assertEqual(self.manager.get_active_preset(), "Victim")
 
 
@@ -152,6 +155,9 @@ class PresetDeleteApiTests(unittest.IsolatedAsyncioTestCase):
 
             def require_deletable_preset(self, preset_name):
                 return preset_name
+
+            def is_active_preset(self, preset_name):
+                return self.get_active_preset() == preset_name
 
             def delete_preset(self, preset_name, pinned_presets=()):
                 self.active = "Neutral"

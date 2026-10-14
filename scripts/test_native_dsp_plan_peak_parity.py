@@ -70,8 +70,8 @@ def test_plan_peak_parity(tmp_path):
         manager = DSPManager(home=home / "dsp")
         service = OutputService(OutputServiceDeps(
             store=OutputStateStore(home / "output-state.json"),
-            preset_loader=manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            preset_loader=manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
         state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub")
         committed = service.commit(state, expected_revision=0)

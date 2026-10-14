@@ -69,7 +69,11 @@ class FakeDspManager:
     def _extract_kernel_names_from_payload(self, payload):
         return set()
 
-    def _find_ir_paths_for_kernel_name(self, name):
+    def library(self, bank=None, mode=None):
+        # The fake doubles as the one preset store the bundle endpoints address.
+        return self
+
+    def find_ir_paths(self, name):
         return []
 
     def import_preset_json(self, filename, text, bank=None):
@@ -238,13 +242,13 @@ class PresetBundleEndpointTests(unittest.IsolatedAsyncioTestCase):
         class ExportManager(FakeDspManager):
             output_dir = preset_path.parent
 
-            def list_presets(self):
+            def list(self):
                 return [{"name": "Room", "path": str(preset_path)}]
 
             def _extract_kernel_names_from_payload(self, payload):
                 return set(payload["kernels"])
 
-            def _find_ir_paths_for_kernel_name(self, name):
+            def find_ir_paths(self, name):
                 return [self.irs_dir / ("left.irs" if name == "left" else "right.wav")]
 
         main.dsp_manager = ExportManager(self.irs_dir)

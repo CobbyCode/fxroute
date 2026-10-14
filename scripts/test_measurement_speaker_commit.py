@@ -16,6 +16,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import speaker_take_test_support as takes
+from preset_test_support import seed_bound_preset
 from audio.output_service import OutputService, OutputServiceDeps
 from audio.output_state import default_output_state, set_mode_routing, switch_mode, validate_output_state, set_crossover
 from audio.output_state_store import OutputStateStore, StateConflictError
@@ -114,18 +115,17 @@ class SessionFixture:
         self.addCleanup(directory.cleanup)
         home = Path(directory.name)
         self.manager = DSPManager(home=home / "dsp")
-        self.manager.preset_store.write("Room", {
-            "schema": "fxroute.dsp.preset", "version": 1, "chain": []})
         self.store = OutputStateStore(home / "output-state.json")
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(
+            store=self.store, preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(
                 AssertionError(f"fixture has no IR presets: {name}")),
             measurement_active=lambda: False))
         base = crossover_state()
         for config in base["modes"].values():
             for bank in config["banks"].values():
                 bank.update(preset="Room", preset_a="Neutral", preset_b="Room")
+        seed_bound_preset(self.manager, "Room", base)
         self.base = self.store.commit(base, expected_revision=0)
         self.context = dict(output_key="dev", channels=6, sample_rate_hz=RATE)
         # Fake runtime: the "graph" is just the staged fingerprint + gain.
@@ -151,7 +151,7 @@ class SessionFixture:
             hardware_ports=[f"playback_AUX{i}" for i in range(6)],
             plan_fingerprint=fingerprint)
         text = self.manager.compile_engine_text(
-            layout, preset_name=plan["global"]["preset"], sample_rate_hz=RATE,
+            layout, preset_name=plan["global"]["preset"], mode=plan["mode"], sample_rate_hz=RATE,
             extras_override=plan["global"]["extras"])
         return PlannedSyncTarget(config, text)
 

@@ -17,24 +17,25 @@ class DSPManagerPresetTests(unittest.TestCase):
     def test_malformed_presets_do_not_break_listing_or_global_extras(self):
         for name, content in (("Broken", "{"), ("Wrong schema", "[]"),
                               ("Invalid encoding", b"\xff")):
-            path = self.manager.output_dir / f"{name}.json"
+            path = self.manager.library().path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content.encode() if isinstance(content, str) else content)
         self.assertEqual([entry["name"] for entry in self.manager.list_presets()],
                          ["Direct", "Neutral"])
         result = self.manager.apply_global_extras_to_all_presets({"headroom": {"enabled": True}})
         self.assertTrue(result["extras"]["headroom"]["enabled"])
         with self.assertRaises(RuntimeError):
-            self.manager.preset_store.read("Broken")
+            self.manager.library().read("Broken")
 
     def test_corrupt_other_preset_prevents_destructive_ir_cleanup(self):
-        ir = self.manager.irs_dir / "shared.wav"
+        ir = self.irs_dir / "shared.wav"
         self._write_mono_wav(ir)
         self.manager.create_convolver_preset("Valid", ir.name)
-        (self.manager.output_dir / "Broken.json").write_text("{")
+        self.manager.library().path("Broken").write_text("{")
         with self.assertRaises(RuntimeError):
             self.manager.delete_preset("Valid")
         self.assertTrue(ir.exists())
-        self.assertTrue(self.manager.preset_store.path("Valid").exists())
+        self.assertTrue(self.manager.library().path("Valid").exists())
 
     def test_creation_keeps_output_helpers_global_not_frozen_in_presets(self):
         self.manager.save_global_extras({"headroom": {"enabled": True, "params": {"gainDb": -6}},
@@ -42,7 +43,7 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.manager.create_peq_preset("A", self._peq_definition(), extras={"limiter": {"enabled": True}})
         self.manager.create_peq_preset("B", self._peq_definition())
         self.manager.combine_presets("AB", ["A", "B"], extras={"limiter": {"enabled": True}})
-        self.assertEqual([p["type"] for p in self.manager.preset_store.read("AB")["chain"]],
+        self.assertEqual([p["type"] for p in self.manager.library().read("AB")["chain"]],
                          ["equalizer", "equalizer"])
         config = self.manager.compile_engine_config(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}], preset_name="AB")
@@ -52,6 +53,8 @@ class DSPManagerPresetTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
         self.manager = DSPManager(home=self.home)
+        self.irs_dir = self.manager.library().irs_dir
+        self.irs_dir.mkdir(parents=True)
 
     def test_create_peq_and_compile_for_arbitrary_layout(self):
         self.manager.create_peq_preset("Room", {
@@ -71,7 +74,7 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.assertEqual(config["chain"][0]["type"], "equalizer")
 
     def test_convolver_preset_is_not_rate_reload_bound(self):
-        ir = self.manager.irs_dir / "room.wav"
+        ir = self.irs_dir / "room.wav"
         with wave.open(str(ir), "wb") as handle:
             handle.setnchannels(1)
             handle.setsampwidth(2)
@@ -189,7 +192,7 @@ class DSPManagerPresetTests(unittest.TestCase):
     def test_maximizer_compilation_emits_input_gain_control(self):
         chain = [{"id": "maximizer#0", "type": "maximizer", "enabled": True,
                   "params": {"inputGainDb": 3, "thresholdDb": -0.5, "releaseMs": 30}}]
-        self.manager.preset_store.write("Maximizer", self.manager._native_preset(chain))
+        self.manager.library().write("Maximizer", self.manager._native_preset(chain))
 
         text = self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
@@ -224,7 +227,7 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.assertEqual(payload["chain"][0]["params"]["bands"][0]["frequencyHz"], 46.3)
 
     def test_convolver_combine_export_and_delete_orphan_ir(self):
-        ir = self.manager.irs_dir / "room.irs"
+        ir = self.irs_dir / "room.irs"
         with wave.open(str(ir), "wb") as handle:
             handle.setnchannels(1)
             handle.setsampwidth(2)
@@ -248,8 +251,6 @@ class DSPManagerPresetTests(unittest.TestCase):
             {"filterType": "bell", "frequencyHz": 100, "gainDb": 2, "q": 1}]}}
 
     def test_protected_presets_cannot_be_overwritten_by_create_import_combine(self):
-        direct = (self.manager.output_dir / "Direct.json").read_text()
-        neutral = (self.manager.output_dir / "Neutral.json").read_text()
         for name in ("Direct", "Neutral", "Direct.json", "Neutral.json"):
             with self.assertRaisesRegex(ValueError, "built-in preset", msg=name):
                 self.manager.create_peq_preset(name, self._peq_definition())
@@ -265,9 +266,9 @@ class DSPManagerPresetTests(unittest.TestCase):
         self.manager.create_peq_preset("B", self._peq_definition())
         with self.assertRaisesRegex(ValueError, "built-in preset"):
             self.manager.combine_presets("Neutral", ["A", "B"])
-        # Nothing was written over the built-ins.
-        self.assertEqual((self.manager.output_dir / "Direct.json").read_text(), direct)
-        self.assertEqual((self.manager.output_dir / "Neutral.json").read_text(), neutral)
+        # The built-ins stay the empty presets every bank serves.
+        self.assertEqual(sorted(entry["name"] for entry in self.manager.library().list()), ["A", "B"])
+        self.assertEqual([self.manager.library().read(name)["chain"] for name in ("Direct", "Neutral")], [[], []])
 
     def test_protected_preset_upload_leaves_no_ir_behind(self):
         ir = self.home / "room.wav"
@@ -279,11 +280,11 @@ class DSPManagerPresetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "built-in preset"):
             self.manager.create_convolver_preset_with_upload(
                 "Neutral", ir, ir.name)
-        self.assertEqual([path.name for path in self.manager.irs_dir.iterdir()], [])
+        self.assertEqual([path.name for path in self.irs_dir.iterdir()], [])
         with self.assertRaisesRegex(ValueError, "built-in preset"):
             self.manager.create_convolver_preset_with_dual_uploads(
                 "Direct", ir, ir.name, ir, ir.name)
-        self.assertEqual([path.name for path in self.manager.irs_dir.iterdir()], [])
+        self.assertEqual([path.name for path in self.irs_dir.iterdir()], [])
 
     def test_dual_ir_upload_merges_mono_wav_channels(self):
         left = self.home / "left.wav"
@@ -343,15 +344,15 @@ class DSPManagerPresetTests(unittest.TestCase):
         # Regression for kernels that contain dots without a trailing
         # extension (the exact form stored in preset plugins): resolution
         # must not truncate at the first dot via pathlib stem semantics.
-        ir = self.manager.irs_dir / "Conv LR Min Harman 30-12000Hz -1.5dB 130321.irs"
+        ir = self.irs_dir / "Conv LR Min Harman 30-12000Hz -1.5dB 130321.irs"
         self._write_mono_wav(ir)
         kernel = "Conv LR Min Harman 30-12000Hz -1.5dB 130321"
-        self.assertEqual(self.manager.preset_store.find_ir_paths(kernel), [ir])
+        self.assertEqual(self.manager.library().find_ir_paths(kernel), [ir])
         self.assertEqual(self.manager._resolve_kernel_path(kernel), ir)
         created = self.manager.create_convolver_preset("Dotted kernel", ir.name)
         payload = json.loads(Path(created["path"]).read_text())
         self.assertEqual(payload["chain"][0]["params"]["kernel"], kernel)
-        self.assertEqual(self.manager.preset_store.kernels(payload), {kernel})
+        self.assertEqual(self.manager.library().kernels(payload), {kernel})
         self.manager.delete_preset("Dotted kernel")
         self.assertFalse(ir.exists())
 

@@ -36,9 +36,12 @@ class DSPManagerStateTests(unittest.TestCase):
         self.assertEqual(manager.state_dir, manager.base_dir / "state")
         self.assertEqual([item["name"] for item in manager.list_presets()][:2], ["Direct", "Neutral"])
         self.assertEqual(manager.get_active_preset(), "Neutral")
-        payload = json.loads((manager.output_dir / "Direct.json").read_text())
-        self.assertEqual((payload["schema"], payload["version"], payload["chain"]),
-                         ("fxroute.dsp.preset", 1, []))
+        # The built-ins are no files: every bank's library serves them.
+        self.assertEqual(list(manager.output_dir.iterdir()), [])
+        for bank, mode in ((None, None), ("global", "surround"), ("sub1", None)):
+            payload = manager.library(bank, mode).read("Direct")
+            self.assertEqual((payload["schema"], payload["version"], payload["chain"]),
+                             ("fxroute.dsp.preset", 1, []))
 
     def test_active_preset_and_compare_state_are_locally_persisted(self):
         manager = DSPManager(home=self.home)

@@ -43,7 +43,7 @@ class UpmixerExtrasTests(unittest.TestCase):
         self.surround = surround_support.SurroundTests()
 
     def compile(self, roles, extras, preset="Neutral"):
-        layout = layout_from_plan(self.surround.plan(self.surround.state(roles)), resolve_ir=lambda name: {})
+        layout = layout_from_plan(self.surround.plan(self.surround.state(roles)), resolve_ir=lambda _bank, name: {})
         return self.manager.compile_engine_text(layout, preset_name=preset, extras_override=extras)
 
     # --- schema -----------------------------------------------------------

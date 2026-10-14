@@ -37,7 +37,7 @@ class SurroundTests(unittest.TestCase):
 
     def plan(self, state):
         return compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
-                                       preset_loader=lambda name: {"chain": []})
+                                       preset_loader=lambda *_: {"chain": []})
 
     def test_surround_roles_and_only_common_mono_subs(self):
         self.assertEqual(roles_for_mode("surround"), tuple(ROLES))
@@ -89,7 +89,7 @@ class SurroundTests(unittest.TestCase):
         state = self.state()
         state["modes"]["surround"]["processing"]["sub1"]["highpass"] = {
             "family": "butterworth", "slope_db_oct": 12, "frequency_hz": 25}
-        layout = {item["name"]: item for item in layout_from_plan(self.plan(state), resolve_ir=lambda name: {})}
+        layout = {item["name"]: item for item in layout_from_plan(self.plan(state), resolve_ir=lambda _bank, name: {})}
         sub = layout["sub1"]
         self.assertEqual(sub["post_crossover_routes"], [{"input": 3, "gain": 1.0}])
         self.assertEqual(len(sub["crossover_sos"]), 2)
@@ -131,7 +131,7 @@ class SurroundTests(unittest.TestCase):
     def test_engine_text_retains_eight_positions_and_separate_lfe_send(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = DSPManager(Path(directory) / "presets", Path(directory) / "irs")
-            layout = layout_from_plan(self.plan(self.state()), resolve_ir=lambda name: {})
+            layout = layout_from_plan(self.plan(self.state()), resolve_ir=lambda _bank, name: {})
             text = manager.compile_engine_text(layout, preset_name="Direct")
         self.assertIn("inputs 8\nsurround 1\n", text)
         self.assertIn("postmatrix 7 3 1\n", text)
@@ -139,7 +139,7 @@ class SurroundTests(unittest.TestCase):
 
     def test_surround_runtime_keeps_eight_inputs_even_with_only_front_outputs(self):
         plan = self.plan(self.state(["main_l", "main_r"]))
-        layout = layout_from_plan(plan, resolve_ir=lambda name: {})
+        layout = layout_from_plan(plan, resolve_ir=lambda _bank, name: {})
         config = DSPRuntimeConfig.from_plan(plan, layout=layout, output_key="A", sample_rate_hz=48000,
                                             hardware_ports=["playback_AUX0", "playback_AUX1"])
         self.assertEqual(config.input_count, 8)
@@ -242,7 +242,7 @@ class SurroundTests(unittest.TestCase):
                                     sub_filters={"rear": group_filter(120)})
         with tempfile.TemporaryDirectory() as directory:
             manager = DSPManager(Path(directory) / "presets", Path(directory) / "irs")
-            layout = layout_from_plan(self.plan(state), resolve_ir=lambda name: {})
+            layout = layout_from_plan(self.plan(state), resolve_ir=lambda _bank, name: {})
             text = manager.compile_engine_text(layout, preset_name="Direct")
         lines = text.splitlines()
         self.assertEqual([line for line in lines if line.startswith("gmatrix 4 ")],
@@ -291,7 +291,7 @@ class SurroundTests(unittest.TestCase):
         state = validate_output_state(state)
         loaded = []
 
-        def loader(name):
+        def loader(_mode, _bank, name):
             loaded.append(name)
             return {"chain": [{"type": "equalizer", "params": {}}] if name == "Room" else [], "metadata": {}}
 
@@ -306,8 +306,8 @@ class SurroundTests(unittest.TestCase):
         chain = [{"type": "equalizer", "params": {"channelMode": "dual", "leftBands": [],
                   "rightBands": [{"filterType": "gain", "gainDb": -3}]}}]
         plan = compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
-                                       preset_loader=lambda name: {"chain": chain if name == "Side EQ" else []})
-        layout = {item["name"]: item for item in layout_from_plan(plan, resolve_ir=lambda name: {})}
+                                       preset_loader=lambda _mode, _bank, name: {"chain": chain if name == "Side EQ" else []})
+        layout = {item["name"]: item for item in layout_from_plan(plan, resolve_ir=lambda _bank, name: {})}
         self.assertEqual(layout["side_r"]["gain_db"], -3)
 
 
@@ -334,7 +334,7 @@ class SurroundGlobalPresetTests(unittest.TestCase):
     def plan(self, state, preset=None):
         payload = preset or self.preset()
         return compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
-                                       preset_loader=lambda name: payload if name == "Room" else {"chain": [], "metadata": {}})
+                                       preset_loader=lambda _mode, _bank, name: payload if name == "Room" else {"chain": [], "metadata": {}})
 
     def test_plan_keeps_only_groups_with_a_routed_speaker(self):
         plan = self.plan(self.state(QUAD_SUBS))
@@ -352,7 +352,7 @@ class SurroundGlobalPresetTests(unittest.TestCase):
         for plugin in payload_b["chain"]:
             plugin["params"]["bands"][0]["gainDb"] = -6.0
         plan = compile_processing_plan(switched, output_key="A", channels=16, sample_rate_hz=48000,
-                                       preset_loader=lambda name: payload_b if name == "Room B" else {"chain": []})
+                                       preset_loader=lambda _mode, _bank, name: payload_b if name == "Room B" else {"chain": []})
         self.assertEqual(plan["global"]["preset"], "Room B")
         self.assertEqual([plugin["group"] for plugin in plan["global"]["chain"]], ["front", "center", "side", "rear"])
         self.assertTrue(all(plugin["params"]["bands"][0]["gainDb"] == -6.0 for plugin in plan["global"]["chain"]))
@@ -394,21 +394,24 @@ class SurroundGlobalPresetTests(unittest.TestCase):
     def manager(self, directory):
         return DSPManager(Path(directory) / "presets", Path(directory) / "irs")
 
-    def test_global_slot_accepts_only_presets_of_its_layout(self):
-        presets = {"Room": {"chain": [], "metadata": {}},
-                   "Front EQ": {"chain": [eq_plugin("front", "equalizer#0")], "metadata": {"layout": "surround"}},
-                   "Neutral": {"chain": [], "metadata": {}}, "Direct": {"chain": [], "metadata": {}}}
-        service = OutputService(OutputServiceDeps(store=None, preset_loader=presets.__getitem__,
-                                                  resolve_ir=lambda _: {}, measurement_active=lambda: False))
-        surround, stereo = self.state(QUAD_SUBS), validate_output_state(default_output_state())
-        for name in ("Front EQ", "Neutral", "Direct"):
-            service.validate_bank_preset(surround, "surround", "global", name)
-        with self.assertRaisesRegex(ValueError, "not a Surround preset"):
-            service.validate_bank_preset(surround, "surround", "global", "Room")
-        for name in ("Room", "Neutral", "Direct"):
-            service.validate_bank_preset(stereo, "stereo", "global", name)
-        with self.assertRaisesRegex(ValueError, "fits only the Surround Global bank"):
-            service.validate_bank_preset(stereo, "stereo", "global", "Front EQ")
+    def test_global_slot_accepts_only_presets_of_its_own_mode(self):
+        # Surround Global holds speaker-group presets, the other modes stereo
+        # ones; each mode's Global bank lists and accepts only its own.
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(directory)
+            manager.create_peq_preset("Room", self.peq(), bank="global", mode="stereo")
+            manager.create_peq_preset("Front EQ", self.peq(), bank="global", mode="surround", group="front")
+            service = OutputService(OutputServiceDeps(store=None, preset_loader=manager.read_preset,
+                                                      resolve_ir=lambda *_: {}, measurement_active=lambda: False))
+            surround, stereo = self.state(QUAD_SUBS), validate_output_state(default_output_state())
+            for name in ("Front EQ", "Neutral", "Direct"):
+                service.validate_bank_preset(surround, "surround", "global", name)
+            with self.assertRaises(FileNotFoundError):
+                service.validate_bank_preset(surround, "surround", "global", "Room")
+            for name in ("Room", "Neutral", "Direct"):
+                service.validate_bank_preset(stereo, "stereo", "global", name)
+            with self.assertRaises(FileNotFoundError):
+                service.validate_bank_preset(stereo, "stereo", "global", "Front EQ")
 
     def peq(self):
         band = {"enabled": True, "filterType": "bell", "frequencyHz": 120.0, "gainDb": -4.0, "q": 3.0}
@@ -418,14 +421,15 @@ class SurroundGlobalPresetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(directory)
             for group in ("front", "center", "rear", "side"):
-                manager.create_peq_preset(f"EQ {group}", self.peq(), bank="global", group=group)
-            manager.combine_presets("Room", ["EQ front", "EQ center", "EQ side", "EQ rear"], bank="global")
-            self.assertEqual(manager.preset_store.read("Room")["metadata"]["layout"], "surround")
+                manager.create_peq_preset(f"EQ {group}", self.peq(), bank="global", mode="surround", group=group)
+            manager.combine_presets("Room", ["EQ front", "EQ center", "EQ side", "EQ rear"],
+                                    bank="global", mode="surround")
+            self.assertEqual(manager.library("global", "surround").read("Room")["metadata"]["layout"], "surround")
             state = self.state(QUAD_SUBS)
             plan = compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
-                                           preset_loader=manager.preset_store.read)
-            layout = layout_from_plan(plan, resolve_ir=lambda name: {})
-            text = manager.compile_engine_text(layout, preset_name=plan["global"]["preset"])
+                                           preset_loader=manager.read_preset)
+            layout = layout_from_plan(plan, resolve_ir=lambda *_: {})
+            text = manager.compile_engine_text(layout, preset_name=plan["global"]["preset"], mode=plan["mode"])
         stages = [line for line in text.splitlines() if line.startswith(("stage_begin", "pairs"))]
         # Center and Side have no routed speaker in QUAD_SUBS, so only Front (1) and Rear (16) render.
         eq = "lv2 http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr"
@@ -435,39 +439,44 @@ class SurroundGlobalPresetTests(unittest.TestCase):
         self.assertEqual([line for line in stages[4:] if line.startswith("pairs")], [])
         self.assertEqual(len(stages), 5)
 
-    def test_group_tag_is_only_valid_on_the_global_bank_and_known_groups(self):
+    def test_group_tag_is_only_valid_on_the_surround_global_bank_and_known_groups(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(directory)
-            for bank, group, message in (("main", "front", "Global bank only"), ("global", "lfe", "Unknown speaker group"),
-                                         (None, "front", "Global bank only")):
-                with self.subTest(bank=bank, group=group), self.assertRaisesRegex(ValueError, message):
-                    manager.create_peq_preset("Bad", self.peq(), bank=bank, group=group)
-            self.assertFalse((Path(directory) / "presets" / "Bad.json").exists())
+            for bank, mode, group, message in (
+                    ("main", None, "front", "Global bank only"),
+                    ("global", "surround", "lfe", "Unknown speaker group"),
+                    (None, None, "front", "fits only the Surround Global bank"),
+                    ("global", "stereo-sub", "front", "fits only the Surround Global bank"),
+                    ("global", "surround", None, "need a speaker group")):
+                with self.subTest(bank=bank, mode=mode, group=group), self.assertRaisesRegex(ValueError, message):
+                    manager.create_peq_preset("Bad", self.peq(), bank=bank, mode=mode, group=group)
+            self.assertEqual([entry["name"] for entry in manager.list_presets()], ["Direct", "Neutral"])
 
-    def test_layouts_do_not_mix_in_overwrite_or_combine(self):
+    def test_layouts_live_in_separate_global_banks(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(directory)
             manager.create_peq_preset("Stereo EQ", self.peq(), bank="global")
-            manager.create_peq_preset("Front EQ", self.peq(), bank="global", group="front")
-            manager.create_peq_preset("Rear EQ", self.peq(), bank="global", group="rear")
-            with self.assertRaisesRegex(ValueError, "different layout"):
-                manager.create_peq_preset("Front EQ", self.peq(), bank="global")
-            with self.assertRaisesRegex(ValueError, "different layout"):
-                manager.create_peq_preset("Stereo EQ", self.peq(), bank="global", group="front")
-            with self.assertRaisesRegex(ValueError, "only be combined"):
-                manager.combine_presets("Mixed", ["Stereo EQ", "Front EQ"], bank="global")
-            combined = manager.combine_presets("Both", ["Front EQ", "Rear EQ"], bank="global")
-            chain = manager.preset_store.read("Both")["chain"]
+            manager.create_peq_preset("Front EQ", self.peq(), bank="global", mode="surround", group="front")
+            manager.create_peq_preset("Rear EQ", self.peq(), bank="global", mode="surround", group="rear")
+            # The same name may exist in both banks, each with its own layout.
+            manager.create_peq_preset("Front EQ", self.peq(), bank="global")
+            self.assertIsNone(manager.library("global", "stereo").read("Front EQ")["metadata"].get("layout"))
+            self.assertEqual(manager.library("global", "surround").read("Front EQ")["metadata"]["layout"], "surround")
+            # Combine reads its sources from the bank it writes to.
+            with self.assertRaises(FileNotFoundError):
+                manager.combine_presets("Mixed", ["Stereo EQ", "Rear EQ"], bank="global", mode="surround")
+            combined = manager.combine_presets("Both", ["Front EQ", "Rear EQ"], bank="global", mode="surround")
+            chain = manager.library("global", "surround").read("Both")["chain"]
             self.assertEqual([plugin["group"] for plugin in chain], ["front", "rear"])
             self.assertEqual(combined["plugin_count"], 2)
 
     def test_surround_preset_cannot_drive_a_stereo_graph(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(directory)
-            manager.create_peq_preset("Front EQ", self.peq(), bank="global", group="front")
+            manager.create_peq_preset("Front EQ", self.peq(), bank="global", mode="surround", group="front")
             with self.assertRaisesRegex(ValueError, "needs the Surround output mode"):
                 manager.compile_engine_text([{"name": "left", "source": 0}, {"name": "right", "source": 1}],
-                                            preset_name="Front EQ")
+                                            preset_name="Front EQ", mode="surround")
 
     def test_store_refuses_group_tags_without_the_surround_layout(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -475,10 +484,10 @@ class SurroundGlobalPresetTests(unittest.TestCase):
             payload = {"schema": "fxroute.dsp.preset", "version": 1, "metadata": {},
                        "chain": [eq_plugin("front", "equalizer#0")]}
             with self.assertRaisesRegex(ValueError, "require the Surround preset layout"):
-                manager.preset_store.write("Tagged", payload)
+                manager.library().write("Tagged", payload)
             payload["chain"][0]["group"] = "lfe"
             with self.assertRaisesRegex(ValueError, "group must be one of"):
-                manager.preset_store.write("Tagged", payload)
+                manager.library().write("Tagged", payload)
 
 
 if __name__ == "__main__":

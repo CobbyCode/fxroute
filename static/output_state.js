@@ -336,7 +336,8 @@ function bankBinding(catalog, group) {
         ...(groupOption ? { bank_group: groupOption.id } : {}) };
 }
 
-function combineBank(catalog) {
+// Bank and output mode whose preset library a combine, delete or download addresses.
+function bankOwner(catalog) {
     if (!catalog) return null;
     const bankId = catalog.modes?.[catalog.active_mode]?.selected_bank || 'global';
     if (bankId === 'all') throw new Error('All Banks owns no presets; select a concrete filterbank.');
@@ -349,41 +350,15 @@ function isBuiltinBankPreset(name) {
     return BUILTIN_BANK_PRESETS.includes(String(name || ''));
 }
 
-function presetBank(entry) {
-    if (!entry || typeof entry !== 'object') return null;
-    const direct = typeof entry.bank === 'string' ? entry.bank.trim() : '';
-    if (direct) return direct;
-    const metadata = entry.metadata;
-    const tagged = metadata && typeof metadata.bank === 'string' ? metadata.bank.trim() : '';
-    return tagged || null;
-}
-
-// Output mode whose Global bank owns a preset. Without the tag a Surround
-// layout (group-scoped plugins) belongs to Surround, anything else to
-// Stereo, where Global presets lived before each mode got its own.
-function presetMode(entry) {
-    if (typeof entry?.mode === 'string' && entry.mode) return entry.mode;
-    return entry?.layout === 'surround' ? 'surround' : 'stereo';
-}
-
-// Every output mode has its own Global presets; the area banks own theirs
-// by bank id.
+// Every bank lists its own presets, Global one set per output mode; a preset
+// name is unique within its bank only. The built-ins belong to every bank.
 function presetsForBank(presets, bankId, mode) {
     if (!Array.isArray(presets)) return [];
     // All Banks owns no presets: it only switches A/B jointly.
     if (!bankId || bankId === 'all') return [];
-    const wanted = String(bankId);
     return presets.filter((entry) => {
-        const name = typeof entry === 'string' ? entry : entry?.name;
-        if (isBuiltinBankPreset(name)) return true;
-        const tag = presetBank(entry);
-        // Bank-tagged files appear exclusively in their owning bank.
-        if (wanted !== 'global') return tag === wanted;
-        if (tag) return tag === 'global' && presetMode(entry) === (mode || 'stereo');
-        // Untagged legacy files were historically global presets (the
-        // backend migrates them to Global once); until then they have no
-        // owning mode and only their layout keeps them out of the other family.
-        return (entry?.layout === 'surround') === (mode === 'surround');
+        if (isBuiltinBankPreset(entry?.name)) return true;
+        return entry?.bank === bankId && (bankId !== 'global' || entry.mode === mode);
     });
 }
 
@@ -580,10 +555,8 @@ function renderBankSelector(select, catalog, mode) {
         bankOptions,
         bankSelectorVisible,
         bankBinding,
-        combineBank,
+        bankOwner,
         isBuiltinBankPreset,
-        presetBank,
-        presetMode,
         presetsForBank,
         peqParams,
         compareState,

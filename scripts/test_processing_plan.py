@@ -34,7 +34,7 @@ class ProcessingPlanTests(unittest.TestCase):
 
     def compile(self, state, channels=8, rate=48000):
         return compile_processing_plan(state, output_key="A", channels=channels,
-                                       sample_rate_hz=rate, preset_loader=self.presets.read)
+                                       sample_rate_hz=rate, preset_loader=lambda _mode, _bank, name: self.presets.read(name))
 
     def crossover_state(self):
         assignments = [f"{side}_{way}" for side in ("left", "right") for way in ("low", "mid", "high")]

@@ -403,8 +403,8 @@ class PlanPeakPredictionTests(unittest.TestCase):
         manager = DSPManager(home=Path(directory.name) / "dsp")
         service = OutputService(OutputServiceDeps(
             store=OutputStateStore(Path(directory.name) / "output-state.json"),
-            preset_loader=manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            preset_loader=manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
         from audio.output_state import switch_mode
         state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub1"]), "stereo-sub")

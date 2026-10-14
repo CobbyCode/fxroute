@@ -6,8 +6,9 @@ import logging
 from pathlib import Path
 from audio.output_topology import MODES, SURROUND_GROUPS
 from common.atomic_write import atomic_write_text
-from dsp.surround_global import LAYOUT as SURROUND_LAYOUT, preset_layout, validate_preset_layout
-from typing import Any, Dict, Iterable, List, Optional, Set
+from dsp.surround_global import (BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, preset_layout,
+                                 validate_preset_layout)
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +50,7 @@ def kernel_name(value: Any, fallback: str = "") -> str:
 
 
 def clean_bank(value: Any) -> str | None:
-    """Owning filterbank of a preset, or None for built-ins/legacy.
-
-    Each concrete filterbank (plus Global) owns its presets; All Banks owns
-    none. Stored as metadata.bank in the preset file.
-    """
+    """Filterbank id usable as a library folder name, or None."""
     if not isinstance(value, str):
         return None
     cleaned = value.strip()
@@ -66,42 +63,26 @@ def clean_bank(value: Any) -> str | None:
     return cleaned
 
 
-def preset_bank(payload: Any) -> str | None:
-    """Read the owning bank tag from a preset payload (None when absent)."""
-    if not isinstance(payload, dict):
-        return None
-    metadata = payload.get("metadata")
-    if not isinstance(metadata, dict):
-        return None
-    return clean_bank(metadata.get("bank"))
-
-
-def preset_mode(payload: Any) -> str | None:
-    """Output mode whose Global bank owns a preset (None unless it is a Global preset).
-
-    Every output mode has its own Global presets, stored as metadata.mode.
-    A Global preset without the tag predates the split: a Surround layout
-    belongs to Surround, anything else to Stereo, where it historically
-    lived. Built-ins and files without a bank tag have no owner.
-    """
-    if preset_bank(payload) != "global":
-        return None
-    metadata = payload.get("metadata") if isinstance(payload, dict) else None
-    mode = metadata.get("mode") if isinstance(metadata, dict) else None
-    if mode in MODES:
-        return mode
-    return "surround" if preset_layout(payload) == SURROUND_LAYOUT else "stereo"
-
-
 class DSPPresetStore:
-    """Read and write versioned native presets under one owned root."""
+    """Versioned native presets of one filterbank, with its IR files.
+
+    A preset name is unique within its store only. The built-ins exist in
+    every store without a file.
+    """
 
     SCHEMA = "fxroute.dsp.preset"
     VERSION = 1
 
-    def __init__(self, presets_dir: Path, irs_dir: Path):
+    def __init__(self, presets_dir: Path, irs_dir: Path, bank: str = "global", mode: Optional[str] = "stereo"):
         self.presets_dir = Path(presets_dir)
         self.irs_dir = Path(irs_dir)
+        self.bank = bank
+        self.mode = mode
+
+    @property
+    def surround(self) -> bool:
+        """Surround Global holds speaker-group presets, every other store stereo ones."""
+        return self.bank == "global" and self.mode == "surround"
 
     def path(self, name: str) -> Path:
         normalized = clean_name(name)
@@ -138,20 +119,11 @@ class DSPPresetStore:
             raise ValueError("Preset metadata must be an object")
         if metadata.get("layout") not in (None, SURROUND_LAYOUT):
             raise ValueError("Preset metadata.layout must be surround when present")
-        if "bank" in metadata:
-            raw = metadata.get("bank")
-            if raw is not None and not (isinstance(raw, str)
-                                        and (not raw.strip() or clean_bank(raw) is not None)):
-                raise ValueError("Preset metadata.bank must be a valid filterbank id")
-        mode = metadata.get("mode")
-        if mode is not None:
-            if mode not in MODES:
-                raise ValueError(f"Preset metadata.mode must be one of {', '.join(MODES)}")
-            if (metadata.get("layout") == SURROUND_LAYOUT) != (mode == "surround"):
-                raise ValueError("Preset metadata.mode and metadata.layout name different output modes")
         return payload
 
     def read(self, name: str) -> Dict[str, Any]:
+        if clean_name(name) in BUILTIN_PRESETS:
+            return {"schema": self.SCHEMA, "version": self.VERSION, "chain": [], "metadata": {}}
         path = self.path(name)
         if not path.is_file():
             raise FileNotFoundError(f"Preset not found: {clean_name(name)}")
@@ -164,18 +136,17 @@ class DSPPresetStore:
     def write(self, name: str, payload: Dict[str, Any]) -> Path:
         self.validate(payload)
         validate_preset_layout(payload)
+        if (preset_layout(payload) == SURROUND_LAYOUT) != self.surround:
+            raise ValueError("Surround Global presets need a speaker group" if self.surround
+                             else "A Surround preset fits only the Surround Global bank")
         path = self.path(name)
         atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
         return path
 
-    def list(self, pinned: Iterable[str] = ()) -> List[dict]:
-        order = {name: index for index, name in enumerate(pinned)}
-        paths = sorted(
-            self.presets_dir.glob("*.json"),
-            key=lambda path: (order.get(path.stem, len(order)), path.stem.lower()),
-        ) if self.presets_dir.exists() else []
+    def list(self) -> List[dict]:
+        """Stored presets by name; the built-ins are not files and not listed."""
         result = []
-        for path in paths:
+        for path in sorted(self.presets_dir.glob("*.json"), key=lambda path: path.stem.lower()):
             try:
                 payload = self.read(path.stem)
             except (OSError, ValueError, RuntimeError) as exc:
@@ -183,8 +154,7 @@ class DSPPresetStore:
                 continue
             sources = payload.get("metadata", {}).get("source_presets", [])
             result.append({"name": path.stem, "filename": path.name, "path": str(path),
-                           "bank": preset_bank(payload), "layout": preset_layout(payload),
-                           "mode": None if path.stem in order else preset_mode(payload),
+                           "bank": self.bank, "mode": self.mode, "layout": preset_layout(payload),
                            "source_presets": list(sources) if isinstance(sources, list) else []})
         return result
 
@@ -211,7 +181,43 @@ class DSPPresetStore:
         if not target:
             return []
         return sorted(path for path in self.irs_dir.iterdir()
-                      if path.is_file() and kernel_name(path.name) == target) if self.irs_dir.exists() else []
+                      if path.is_file() and kernel_name(path.name) == target) if self.irs_dir.is_dir() else []
+
+    def irs(self) -> List[Path]:
+        return sorted(path for path in self.irs_dir.iterdir() if path.is_file()) if self.irs_dir.is_dir() else []
+
+
+class DSPPresetLibrary:
+    """The preset stores under one root: one per filterbank, Global one per output mode.
+
+    Global lives in ``global/<mode>``, an area bank in ``<bank id>``, below
+    both the presets and the IR root.
+    """
+
+    def __init__(self, presets_dir: Path, irs_dir: Path):
+        self.presets_dir = Path(presets_dir)
+        self.irs_dir = Path(irs_dir)
+
+    def store(self, bank: Any = None, mode: Any = None) -> DSPPresetStore:
+        """Store of one bank; without a bank the Stereo Global one.
+
+        The mode selects the Global store and is ignored for an area bank.
+        """
+        bank_id = "global" if bank is None or (isinstance(bank, str) and not bank.strip()) else clean_bank(bank)
+        if bank_id is None:
+            raise ValueError(f"Invalid preset bank: {bank!r}")
+        if bank_id != "global":
+            return DSPPresetStore(self.presets_dir / bank_id, self.irs_dir / bank_id, bank_id, None)
+        mode = "stereo" if mode is None or (isinstance(mode, str) and not mode.strip()) else mode
+        if mode not in MODES:
+            raise ValueError(f"Unsupported output mode: {mode}")
+        return DSPPresetStore(self.presets_dir / "global" / mode, self.irs_dir / "global" / mode, "global", mode)
+
+    def stores(self) -> List[DSPPresetStore]:
+        """Every Global store, then the area banks that have a folder."""
+        banks = {path.name for root in (self.presets_dir, self.irs_dir) if root.is_dir()
+                 for path in root.iterdir() if path.is_dir() and path.name != "global"}
+        return [self.store("global", mode) for mode in MODES] + [self.store(bank) for bank in sorted(banks)]
 
 
 class DSPStateStore:

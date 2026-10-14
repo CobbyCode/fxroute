@@ -111,7 +111,7 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.state = state_store.load()
         self.store.state = self.state
         self.service = OutputService(OutputServiceDeps(
-            store=state_store, preset_loader=lambda name: {"chain": []}, resolve_ir=lambda name: {},
+            store=state_store, preset_loader=lambda *_: {"chain": []}, resolve_ir=lambda _bank, name: {},
             measurement_active=lambda: self.session.has_active_jobs))
         self.ports = [f"playback_AUX{index}" for index in range(len(roles))]
 

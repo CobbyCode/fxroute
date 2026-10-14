@@ -63,11 +63,11 @@ def ir_magnitude_db(taps, freq_hz, rate=48000):
     return 20.0 * math.log10(abs(total))
 
 
-def write_mono_ir(tmp_path, manager, name, taps):
+def write_mono_ir(tmp_path, manager, name, taps, bank):
     source = tmp_path / f"{name}.wav"
     source.write_bytes(build_wav_bytes(
         1, 48000, 32, 3, struct.pack(f"<{len(taps)}f", *taps)))
-    manager.upload_ir(source, f"{name}.wav")
+    manager.upload_ir(source, f"{name}.wav", bank=bank)
 
 
 def test_full_bank_chain_matches_python_prediction(tmp_path):
@@ -75,13 +75,14 @@ def test_full_bank_chain_matches_python_prediction(tmp_path):
     manager = DSPManager(home=tmp_path / "home")
     short_taps = [0.5, -0.25, 0.125, -0.0625, 0.03125, -0.015625, 0.0078125, -0.00390625]
     long_taps = [math.sin(index * 0.9) * math.exp(-index / 60.0) for index in range(300)]
-    write_mono_ir(tmp_path, manager, "mid-short", short_taps)
-    write_mono_ir(tmp_path, manager, "mid-long", long_taps)
-    manager.preset_store.write(
+    # Left/Right Mid form the Mid bank, which owns their presets and IR files.
+    write_mono_ir(tmp_path, manager, "mid-short", short_taps, "mid")
+    write_mono_ir(tmp_path, manager, "mid-long", long_taps, "mid")
+    manager.library("mid").write(
         "Short IR", {"schema": "fxroute.dsp.preset", "version": 1,
                      "chain": [{"id": "conv", "type": "convolver",
                                 "params": {"kernel": "mid-short"}}]})
-    manager.preset_store.write(
+    manager.library("mid").write(
         "Long IR", {"schema": "fxroute.dsp.preset", "version": 1,
                     "chain": [{"id": "conv", "type": "convolver",
                                "params": {"kernel": "mid-long"}}]})
@@ -105,11 +106,11 @@ def test_full_bank_chain_matches_python_prediction(tmp_path):
         state["modes"]["stereo-sub"]["banks"][role] = {
             "preset": preset, "preset_a": preset, "preset_b": None}
     plan = compile_processing_plan(state, output_key="A", channels=6, sample_rate_hz=48000,
-                                   preset_loader=manager.preset_store.read)
+                                   preset_loader=manager.read_preset)
 
-    def resolve_ir(kernel):
+    def resolve_ir(bank, kernel):
         calls.append(kernel)
-        path = manager._resolve_kernel_path(kernel)
+        path = manager._resolve_kernel_path(kernel, manager.library(bank))
         return {"path": str(path), "channels": 1}
 
     calls: list = []
@@ -166,10 +167,10 @@ def render_peq_impulse(tmp_path, manager, bank, preset, frames=1 << 15):
     if bank is not None:
         state["modes"]["stereo"]["banks"][bank]["preset"] = preset
     plan = compile_processing_plan(state, output_key="A", channels=2, sample_rate_hz=48000,
-                                   preset_loader=manager.preset_store.read)
+                                   preset_loader=manager.read_preset)
     text = manager.compile_engine_text(
-        layout_from_plan(plan, resolve_ir=lambda name: {}),
-        preset_name=plan["global"]["preset"], sample_rate_hz=48000,
+        layout_from_plan(plan, resolve_ir=lambda *_: {}),
+        preset_name=plan["global"]["preset"], mode=plan["mode"], sample_rate_hz=48000,
         extras_override=plan["global"]["extras"])
     name = f"{bank or 'reference'}-{preset}".replace(" ", "_")
     cfg, source, target = (tmp_path / f"impulse-{name}{suffix}"
@@ -197,12 +198,14 @@ def test_global_lsp_peq_renders_the_area_bank_rbj_response(tmp_path):
     """
     build_once()
     manager = DSPManager(home=tmp_path / "home")
-    manager.create_peq_preset("RBJ", {"params": {"bands": [
-        {"filterType": kind, "frequencyHz": frequency, "gainDb": gain, "q": q}
-        for kind, frequency, gain, q in (
-            ("bell", 120, -10.0, 2.0), ("bell", 688, 7.0, 45.76), ("notch", 3000, 0.0, 4.0),
-            ("high_pass", 40, 0.0, 2.0), ("low_shelf", 250, 4.0, 0.707),
-            ("high_shelf", 6000, -5.0, 0.707), ("low_pass", 15000, 0.0, 0.707))]}})
+    # The same preset in Stereo Global and in the Main bank, which owns Main L's slots.
+    for bank in ("global", "main"):
+        manager.create_peq_preset("RBJ", {"params": {"bands": [
+            {"filterType": kind, "frequencyHz": frequency, "gainDb": gain, "q": q}
+            for kind, frequency, gain, q in (
+                ("bell", 120, -10.0, 2.0), ("bell", 688, 7.0, 45.76), ("notch", 3000, 0.0, 4.0),
+                ("high_pass", 40, 0.0, 2.0), ("low_shelf", 250, 4.0, 0.707),
+                ("high_shelf", 6000, -5.0, 0.707), ("low_pass", 15000, 0.0, 0.707))]}}, bank=bank)
     reference, via_global, via_area = (
         render_peq_impulse(tmp_path, manager, bank, "RBJ") for bank in (None, "global", "main_l"))
     # Half-gain edges of the Q 45.76 bell sit at 688 +- 7.5 Hz; the notch null
@@ -233,7 +236,9 @@ def test_engine_keeps_the_measurement_assistant_peq_reference(tmp_path):
     reference_db = [ir_magnitude_db(reference, f) for f in fixture["frequencies_hz"]]
     for index, case in enumerate(fixture["cases"]):
         band = {key: case[key] for key in ("filterType", "frequencyHz", "gainDb", "q")}
-        name = manager.create_peq_preset(f"Case {index}", {"params": {"bands": [band]}})["name"]
+        name = f"Case {index}"
+        for bank in ("global", "main"):
+            manager.create_peq_preset(name, {"params": {"bands": [band]}}, bank=bank)
         for bank in ("main_l", "global"):
             taps = render_peq_impulse(tmp_path, manager, bank, name, frames)
             for frequency, expected, level in zip(

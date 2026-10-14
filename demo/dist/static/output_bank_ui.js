@@ -123,11 +123,11 @@
         }
     }
 
-    function outputSystemCombineBank() {
+    function outputSystemBankOwner() {
         const catalog = (deps.getState().outputSystem || {}).catalog;
         if (!catalog) return null;
         try {
-            return outputState()?.combineBank(catalog) || null;
+            return outputState()?.bankOwner(catalog) || null;
         } catch (e) {
             return null;
         }
@@ -139,9 +139,9 @@
         const catalog = (deps.getState().outputSystem || {}).catalog;
         if (!catalog || !mod || typeof mod.presetsForBank !== 'function') return entries.slice();
         const bankId = catalog.modes?.[catalog.active_mode]?.selected_bank || 'global';
-        // Strict per-bank stock: only the bank's own presets (plus built-ins;
-        // untagged legacy reads as Global). No foreign presets are merged in,
-        // so switching banks can never leak another bank's stock.
+        // Strict per-bank stock: only the bank's own presets plus the
+        // built-ins. No foreign presets are merged in, so switching banks can
+        // never leak another bank's stock.
         return mod.presetsForBank(entries, bankId, catalog.active_mode);
     }
 
@@ -527,7 +527,7 @@
         const cleanName = String(presetName || '').trim();
         if (!cleanName) return '—';
         const displayName = getCompactDisplayName(cleanName, 24);
-        return `<a href="${deps.escapeHtml(deps.presetFileUrl(cleanName))}" data-tooltip="${deps.escapeHtml(cleanName)}">${deps.escapeHtml(displayName)}</a>`;
+        return `<a href="${deps.escapeHtml(deps.presetFileUrl(cleanName, outputSystemBankOwner()))}" data-tooltip="${deps.escapeHtml(cleanName)}">${deps.escapeHtml(displayName)}</a>`;
     }
 
     // Under Listening/Chain: the active preset of every bank in the chain.
@@ -554,7 +554,8 @@
         const presetEntries = fx.presets || [];
         const visibleEntries = deps.getState().outputSystem?.catalog ? visiblePresetEntriesForBank() : presetEntries.slice();
         const presets = visibleEntries.map(p => p.name);
-        const presetMap = new Map(presetEntries.map(preset => [preset.name, preset]));
+        // The selected bank's entries: another bank may hold a preset of the same name.
+        const presetMap = new Map(visibleEntries.map(preset => [preset.name, preset]));
         const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate } = getEffectsCompareState();
 
         if (!deps.getElements().effectsCompareRow) return;
@@ -755,14 +756,14 @@
         if (deps.getElements().effectsCombineSaveBtn) deps.getElements().effectsCombineSaveBtn.disabled = true;
         if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = `<div>Saving combined preset: <strong>${deps.escapeHtml(validation.presetName)}</strong>…</div>`;
         try {
-            const combineBank = outputSystemCombineBank();
+            const owner = outputSystemBankOwner();
             const resp = await fetch('/api/dsp/presets/combine', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     presetName: validation.presetName,
                     presetNames: validation.selectedPresets,
-                    ...(combineBank || {}),
+                    ...(owner || {}),
                 }),
             });
             const data = await resp.json().catch(() => ({}));
@@ -1168,7 +1169,7 @@
             const resp = await fetch('/api/dsp/presets/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ preset_name: presetName }),
+                body: JSON.stringify({ preset_name: presetName, ...(outputSystemBankOwner() || {}) }),
             });
             const data = await resp.json();
             if (!resp.ok) throw new Error(data.detail || 'Preset delete failed');
@@ -1294,7 +1295,7 @@
         normalizeEffectsCombineDraft,
         setEffectsImportPanelOpen,
         outputSystemBankBinding,
-        outputSystemCombineBank,
+        outputSystemBankOwner,
         visiblePresetEntriesForBank,
         visiblePresetNamesForBank,
         appendBankBindingFields,

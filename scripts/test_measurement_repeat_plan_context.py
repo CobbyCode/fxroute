@@ -37,8 +37,8 @@ class RepeatPlanContextTests(unittest.IsolatedAsyncioTestCase):
         self.state = switch_mode(set_mode_routing(default_output_state(), "surround", "device", roles), "surround")
         self.plan = compile_processing_plan(
             self.state, output_key="device", channels=18, sample_rate_hz=48000,
-            preset_loader=lambda _: {"chain": []})
-        self.layout = layout_from_plan(self.plan, resolve_ir=lambda _: self.fail("Unexpected IR"))
+            preset_loader=lambda *_: {"chain": []})
+        self.layout = layout_from_plan(self.plan, resolve_ir=lambda *_: self.fail("Unexpected IR"))
         self.expected = {
             "expected_native_layout": self.layout,
             "expected_native_output_mode": "surround",

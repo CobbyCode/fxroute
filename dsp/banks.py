@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Independent correction-bank A/B selections over a shared preset library."""
+"""A/B selection of one correction bank over that bank's own preset library."""
 
 from __future__ import annotations
 

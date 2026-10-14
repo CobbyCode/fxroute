@@ -45,16 +45,23 @@ class FakeUpload:
 
 
 def make_manager(directory):
+    """Every bank has its own "Room": Sub 1, both Global banks the tests use."""
     manager = DSPManager(home=Path(directory) / "home")
-    manager.preset_store.write("Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
+    for bank, mode in (("sub1", None), ("global", "stereo-sub"), ("global", "stereo")):
+        manager.library(bank, mode).write("Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
     return manager
+
+
+def stored_in(manager, name):
+    """Banks (with the Global output mode) that hold a preset of this name."""
+    return sorted((entry["bank"], entry["mode"]) for entry in manager.list_presets() if entry["name"] == name)
 
 
 def make_service(directory, manager):
     return OutputService(OutputServiceDeps(
         store=OutputStateStore(Path(directory) / "output-state.json"),
-        preset_loader=manager.preset_store.read,
-        resolve_ir=lambda kernel: (_ for _ in ()).throw(AssertionError(kernel)),
+        preset_loader=manager.read_preset,
+        resolve_ir=lambda _bank, kernel: (_ for _ in ()).throw(AssertionError(kernel)),
         measurement_active=lambda: False,
     ))
 
@@ -322,7 +329,7 @@ class DspBankApiTests(unittest.TestCase):
                 "bank_mode": "stereo-sub", "bank_id": "all", "expected_revision": 1,
             })))
         self.assertEqual(ctx.exception.status_code, 400)
-        self.assertFalse(self.manager.preset_store.path("Invalid group").exists())
+        self.assertEqual(stored_in(self.manager, "Invalid group"), [])
 
     def test_delete_releases_bank_slots_like_global_compare(self):
         self.service.apply(
@@ -333,15 +340,22 @@ class DspBankApiTests(unittest.TestCase):
             expected_revision=2)
         sync = mock.AsyncMock(return_value={"live_applied": True, "live_reason": None})
         dsp_api.configure_dsp_api(dsp_deps(self.service, self.manager, sync_hook=sync))
-        result = asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
+        # A delete names one bank's preset: Sub 1 loses its "Room", Global keeps its own.
+        result = asyncio.run(dsp_api.delete_dsp_preset(FakeRequest(
+            {"preset_name": "Room", "bank_mode": "stereo-sub", "bank_id": "sub1"})))
         self.assertEqual(result["deleted"], "Room")
-        self.assertFalse(self.manager.preset_store.path("Room").exists())
+        self.assertEqual(stored_in(self.manager, "Room"), [("global", "stereo"), ("global", "stereo-sub")])
         state = self.service.load()
         banks = state["modes"]["stereo-sub"]["banks"]
         self.assertEqual(state["revision"], 4)
         self.assertEqual(banks["sub1"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
-        self.assertEqual(banks["global"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
+        self.assertEqual(banks["global"], {"preset": "Room", "preset_a": "Neutral", "preset_b": "Room"})
         sync.assert_awaited_once()
+        asyncio.run(dsp_api.delete_dsp_preset(FakeRequest(
+            {"preset_name": "Room", "bank_mode": "stereo-sub", "bank_id": "global"})))
+        self.assertEqual(stored_in(self.manager, "Room"), [("global", "stereo")])
+        self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["global"],
+                         {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
 
     def test_delete_keeps_slots_when_the_preset_cannot_be_deleted(self):
         self.service.apply(
@@ -357,13 +371,13 @@ class DspBankApiTests(unittest.TestCase):
     def test_delete_legacy_compare_preset_normalizes_the_slot(self):
         self.manager.save_compare_state({"presetA": "Room", "presetB": "", "activeSide": "A"})
         asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
-        self.assertFalse(self.manager.preset_store.path("Room").exists())
+        self.assertNotIn(("global", "stereo"), stored_in(self.manager, "Room"))
         self.assertNotEqual(self.manager.load_compare_state()["presetA"], "Room")
 
     def test_delete_unpinned_preset_still_works(self):
         result = asyncio.run(dsp_api.delete_dsp_preset(FakeRequest({"preset_name": "Room"})))
         self.assertEqual(result["deleted"], "Room")
-        self.assertFalse(self.manager.preset_store.path("Room").exists())
+        self.assertNotIn(("global", "stereo"), stored_in(self.manager, "Room"))
 
     def test_create_peq_with_bank_binding_assigns_target(self):
         result = asyncio.run(dsp_api.create_peq_preset(FakeRequest({
@@ -388,7 +402,7 @@ class DspBankApiTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertFalse(ctx.exception.detail["assigned"])
         self.assertEqual(ctx.exception.detail["created"], "Bank EQ")
-        self.assertTrue(self.manager.preset_store.path("Bank EQ").is_file())
+        self.assertEqual(stored_in(self.manager, "Bank EQ"), [("sub1", None)])
         bank = self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]
         self.assertEqual(bank["preset"], "Neutral")
 
@@ -400,7 +414,7 @@ class DspBankApiTests(unittest.TestCase):
                 "bank_mode": "stereo-sub", "bank_id": "left_low", "expected_revision": 1,
             })))
         self.assertEqual(ctx.exception.status_code, 400)
-        self.assertFalse(self.manager.preset_store.path("Orphan EQ").exists())
+        self.assertEqual(stored_in(self.manager, "Orphan EQ"), [])
 
     def test_rew_import_with_bank_binding(self):
         result = asyncio.run(dsp_api.import_rew_peq_preset(

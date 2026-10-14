@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import speaker_take_test_support as takes
+from preset_test_support import seed_bound_preset
 from measurement.speaker_api import build_speaker_align_service, configure_speaker_align
 from measurement.speaker_service import (
     SpeakerAlignBusyError,
@@ -234,12 +235,10 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         home = Path(directory.name)
         manager = DSPManager(home=home / "dsp")
-        manager.preset_store.write("Room", {
-            "schema": "fxroute.dsp.preset", "version": 1, "chain": []})
         store = OutputStateStore(home / "output-state.json")
         output_service = OutputService(OutputServiceDeps(
-            store=store, preset_loader=manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            store=store, preset_loader=manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
         state = set_crossover(default_output_state(), "stereo-sub", True)
         state = set_mode_routing(
@@ -258,6 +257,7 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
         for config in state["modes"].values():
             for bank in config["banks"].values():
                 bank.update(preset="Room", preset_a="Neutral", preset_b="Room")
+        seed_bound_preset(manager, "Room", state)
         head = store.commit(state, expected_revision=0)
         runtime = {"fingerprint": None, "gain_db": 0.0}
         ports = [f"playback_AUX{i}" for i in range(6)]

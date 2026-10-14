@@ -142,8 +142,8 @@ class ReleaseAdapterWiringTests(unittest.IsolatedAsyncioTestCase):
         self.manager = DSPManager(home=Path(directory.name) / "home")
         self.store = OutputStateStore(Path(directory.name) / "output-state.json")
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            store=self.store, preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         state = set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1"])
         self.service.commit(state, expected_revision=0)

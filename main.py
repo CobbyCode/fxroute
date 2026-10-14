@@ -3112,18 +3112,6 @@ async def lifespan(app: FastAPI):
             logger.warning("Downloader not available: %s", exc)
 
         dsp_manager = await _drain_worker(DSPManager)
-        try:
-            # After the preset tag migration, before any runtime sync.
-            for change in await _drain_worker(get_output_service().assign_global_preset_modes,
-                                              dsp_manager.preset_store):
-                logger.info("Global preset split: %s", change)
-        except Exception as exc:
-            logger.warning("Global preset split skipped: %s", exc)
-        try:
-            for change in await _drain_worker(get_output_service().drop_foreign_bank_presets):
-                logger.warning("Output state bank cleanup: %s", change)
-        except Exception as exc:
-            logger.warning("Output state bank cleanup skipped: %s", exc)
         volume_read_monitor_task = start_volume_read_monitor()
         runtime.lifecycle_background_tasks.add(volume_read_monitor_task)
         volume_read_monitor_task.add_done_callback(runtime.lifecycle_background_tasks.discard)
@@ -5117,10 +5105,10 @@ def _level_match_store_path() -> Path:
     return _output_state_store_path().with_name("level-match.json")
 
 
-def _resolve_state_ir(kernel):
-    """Resolve a bank convolver kernel to its file and channel count."""
+def _resolve_state_ir(bank_id, kernel):
+    """Resolve an area bank's convolver kernel to its file and channel count."""
     manager = _require_dsp_manager()
-    path = manager._resolve_kernel_path(kernel)
+    path = manager._resolve_kernel_path(kernel, manager.library(bank_id))
     params = parse_wav_frames(path)
     ensure_kernel_supported_ir(params, path.name)
     return {"path": str(path), "channels": params["channels"]}
@@ -5132,7 +5120,7 @@ def get_output_service() -> OutputService:
     if _output_service_instance is None:
         _output_service_instance = OutputService(OutputServiceDeps(
             store=OutputStateStore(_output_state_store_path()),
-            preset_loader=lambda name: _require_dsp_manager().preset_store.read(name),
+            preset_loader=lambda mode, bank_id, name: _require_dsp_manager().read_preset(mode, bank_id, name),
             resolve_ir=_resolve_state_ir,
             measurement_active=lambda: measurement_sr_session is not None and bool(
                 measurement_sr_session.has_active_jobs),
@@ -5440,7 +5428,7 @@ def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
     if extras_override is None:
         extras_override = manager.load_global_extras()
     text = manager.compile_engine_text(
-        [dict(entry) for entry in layout], preset_name=plan["global"]["preset"],
+        [dict(entry) for entry in layout], preset_name=plan["global"]["preset"], mode=plan["mode"],
         sample_rate_hz=rate, extras_override=extras_override)
     return PlannedSyncTarget(config=config, text=text)
 

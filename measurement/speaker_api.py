@@ -369,7 +369,7 @@ def build_speaker_align_service(
                 plan, layout=layout, output_key=output_key, sample_rate_hz=sample_rate_hz,
                 hardware_ports=list(ports), plan_fingerprint=fingerprint)
             text = dsp_manager.compile_engine_text(
-                [dict(entry) for entry in layout], preset_name=plan["global"]["preset"],
+                [dict(entry) for entry in layout], preset_name=plan["global"]["preset"], mode=plan["mode"],
                 sample_rate_hz=sample_rate_hz, extras_override=plan["global"]["extras"])
             return PlannedSyncTarget(config=config, text=text)
 

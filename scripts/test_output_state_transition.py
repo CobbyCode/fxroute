@@ -24,9 +24,9 @@ from dsp.manager import DSPManager, build_wav_bytes
 def make_service(path, *, manager=None, active=False, legacy=None):
     return OutputService(OutputServiceDeps(
         store=OutputStateStore(path),
-        preset_loader=manager.preset_store.read if manager else (lambda name: (_ for _ in ()).throw(
+        preset_loader=manager.read_preset if manager else (lambda _mode, _bank, name: (_ for _ in ()).throw(
             AssertionError(f"unexpected preset load: {name}"))),
-        resolve_ir=lambda kernel: (_ for _ in ()).throw(AssertionError(f"unexpected IR: {kernel}")),
+        resolve_ir=lambda _bank, kernel: (_ for _ in ()).throw(AssertionError(f"unexpected IR: {kernel}")),
         measurement_active=lambda: active,
         legacy_snapshot_loader=legacy,
     ))
@@ -44,7 +44,9 @@ class ServiceMutationTests(unittest.TestCase):
         self.path = Path(directory.name) / "output-state.json"
         home = Path(directory.name) / "home"
         self.manager = DSPManager(home=home)
-        self.manager.preset_store.write("Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
+        for bank in ("sub1", "global"):
+            self.manager.library(bank, "stereo-sub").write(
+                "Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
         self.service = make_service(self.path, manager=self.manager)
 
     def test_apply_routing_and_bank_preset_commits_revision(self):
@@ -136,7 +138,9 @@ class FingerprintTests(unittest.TestCase):
         self.path = Path(directory.name) / "output-state.json"
         home = Path(directory.name) / "home"
         self.manager = DSPManager(home=home)
-        self.manager.preset_store.write("Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
+        for bank in ("sub1", "global"):
+            self.manager.library(bank, "stereo-sub").write(
+                "Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
         self.service = make_service(self.path, manager=self.manager)
         self.base = self.service.apply(
             lambda state: switch_mode(set_mode_routing(state, "stereo-sub", "A",
@@ -208,7 +212,9 @@ class DeleteGuardTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.manager = DSPManager(home=Path(directory.name) / "home")
-        self.manager.preset_store.write("Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
+        for bank in ("sub1", "global"):
+            self.manager.library(bank, "stereo-sub").write(
+                "Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
         ir = build_wav_bytes(1, 48000, 32, 3, struct.pack("<4f", 0.5, 0.25, 0.125, 0.0625))
         source = Path(directory.name) / "room.wav"
         source.write_bytes(ir)
@@ -218,18 +224,18 @@ class DeleteGuardTests(unittest.TestCase):
     def test_pinned_preset_refused_with_files_intact(self):
         with self.assertRaises(ValueError):
             self.manager.delete_preset("Room IR", pinned_presets={"Room IR"})
-        self.assertTrue(self.manager.preset_store.path("Room IR").is_file())
-        self.assertTrue((self.manager.irs_dir / "room.wav").is_file())
+        self.assertTrue(self.manager.library().path("Room IR").is_file())
+        self.assertTrue((self.manager.library().irs_dir / "room.wav").is_file())
 
     def test_unpinned_orphan_gc_still_works(self):
         self.manager.delete_preset("Room IR")
-        self.assertFalse(self.manager.preset_store.path("Room IR").exists())
-        self.assertFalse((self.manager.irs_dir / "room.wav").exists())
+        self.assertFalse(self.manager.library().path("Room IR").exists())
+        self.assertFalse((self.manager.library().irs_dir / "room.wav").exists())
 
     def test_shared_kernel_survives_single_deletion(self):
         self.manager.create_convolver_preset("Room IR 2", "room.wav")
         self.manager.delete_preset("Room IR")
-        self.assertTrue((self.manager.irs_dir / "room.wav").is_file())
+        self.assertTrue((self.manager.library().irs_dir / "room.wav").is_file())
 
 
 if __name__ == "__main__":

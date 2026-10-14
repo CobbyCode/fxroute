@@ -57,11 +57,26 @@
         presetEntry('PEQ', { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } }),
         presetEntry('PEQ LR Measurement 2f 0tewt', { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } }),
     ];
-    // Every output mode owns its Global presets; the stock belongs to
-    // Stereo + Sub, the mode the demo starts in.
+    // Every bank has its own presets, Global one set per output mode; the
+    // stock belongs to Stereo + Sub Global, the mode the demo starts in.
     dspPresets.forEach((entry) => {
-        if (!['Direct', 'Neutral'].includes(entry.name)) Object.assign(entry, { bank: 'global', mode: 'stereo-sub' });
+        Object.assign(entry, ['Direct', 'Neutral'].includes(entry.name)
+            ? { bank: null, mode: null } : { bank: 'global', mode: 'stereo-sub' });
     });
+    // Mirror of dsp.api._optional_owner: the bank a request addresses, Stereo
+    // Global without one. A preset name is unique within its bank only.
+    function demoPresetOwner(body) {
+        const bank = String(body.bank_id || '') || 'global';
+        return { bank, mode: bank === 'global' ? String(body.bank_mode || '') || 'stereo' : null };
+    }
+    function findDemoPreset(name, owner) {
+        return dspPresets.find(entry => entry.name === name
+            && (entry.bank === null || (entry.bank === owner.bank && entry.mode === owner.mode)));
+    }
+    function addDemoPreset(name, body, extra) {
+        const owner = demoPresetOwner(body);
+        if (!findDemoPreset(name, owner)) dspPresets.push({ ...presetEntry(name, extra), ...owner });
+    }
     let dspActivePreset = 'Conv LR HybAlign BK 20-12000Hz -3dB 044321';
     let dspExtras = {
         limiter: { enabled: true, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
@@ -836,11 +851,9 @@
         if (revision !== outputStateStore.revision) {
             return { conflict: true, created: createdName };
         }
-        if (bankId === 'global') {
-            // A Global preset belongs to its output mode; a Surround one also
-            // carries its group plugins and the surround layout.
-            const preset = dspPresets.find(entry => entry.name === createdName);
-            if (preset) Object.assign(preset, { bank: 'global', mode }, group ? { layout: 'surround', group } : {});
+        if (group) {
+            // A Surround Global preset carries its group plugins and the surround layout.
+            Object.assign(findDemoPreset(createdName, demoPresetOwner(body)), { layout: 'surround', group });
         }
         updateDemoBanks(config, bank.roles, { preset: createdName });
         outputStateStore.revision += 1;
@@ -3444,15 +3457,7 @@
         if (p === '/api/dsp/presets/create-peq' && post) {
             const name = String(body.presetName || body.preset_name || '').trim();
             if (!name) return err('Preset name required', 400);
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({
-                    name,
-                    filename: name + '.json',
-                    path: '/demo/presets/' + name + '.json',
-                    source_presets: [],
-                    peq: body.peq && body.peq.params ? { enabled: true, params: body.peq.params } : null,
-                });
-            }
+            addDemoPreset(name, body, { peq: body.peq && body.peq.params ? { enabled: true, params: body.peq.params } : null });
             syncDspToState();
             const created = { success: true, preset: { name } };
             const binding = assignDemoBankTarget(body, name);
@@ -3466,9 +3471,7 @@
         }
         if (p === '/api/dsp/presets/create-with-ir' && post) {
             const name = String(body.preset_name || body.name || 'Convolver Preset').trim() || 'Convolver Preset';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], convolver: true });
-            }
+            addDemoPreset(name, body, { convolver: true });
             syncDspToState();
             const created = { success: true, preset: { name } };
             const binding = assignDemoBankTarget(body, name);
@@ -3485,27 +3488,32 @@
             const presetNames = Array.isArray(body.presetNames) && body.presetNames.length
                 ? body.presetNames
                 : [body.preset1, body.preset2].filter(Boolean);
-            if (!dspPresets.find(pr => pr.name === name)) {
-                // Combining Surround presets stays a Surround preset of the Global bank.
-                const sources = presetNames.map(source => dspPresets.find(pr => pr.name === source));
-                const surround = sources.length > 0 && sources.every(source => source?.layout === 'surround');
-                const globalMode = body.bank_id === 'global' && body.bank_mode ? String(body.bank_mode) : '';
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: presetNames,
-                    ...(surround ? { bank: 'global', layout: 'surround', mode: 'surround' }
-                        : globalMode ? { bank: 'global', mode: globalMode } : {}) });
-            }
+            // The sources and the result are presets of the bank the request names.
+            const owner = demoPresetOwner(body);
+            const missing = presetNames.find(source => !findDemoPreset(source, owner));
+            if (missing) return err(`Preset not found: ${missing}`, 404);
+            addDemoPreset(name, body, { source_presets: presetNames,
+                ...(owner.mode === 'surround' ? { layout: 'surround' } : {}) });
             syncDspToState();
             return j({ success: true, preset: { name } });
         }
         if (p === '/api/dsp/presets/delete' && post) {
             const name = String(body.preset_name || body.name || '');
             if (name === 'Direct' || name === 'Neutral') return err(`Preset "${name}" is a built-in preset and cannot be deleted`, 400);
-            // Same release as the backend: A falls back to Neutral, B clears,
-            // a bank listening to the deleted slot falls back to A.
+            const owner = demoPresetOwner(body);
+            const idx = dspPresets.findIndex(pr => pr.name === name && pr.bank === owner.bank && pr.mode === owner.mode);
+            if (idx < 0) return err(`Preset not found: ${name}`, 404);
+            // Same release as the backend, in the slots of the preset's bank
+            // only: A falls back to Neutral, B clears, a bank listening to the
+            // deleted slot falls back to A. Global has its slots in one output
+            // mode, an area bank in every mode that routes it.
             let released = false;
-            for (const config of Object.values(outputStateStore.modes)) {
-                for (const bank of Object.values(config.banks)) {
-                    if (![bank.preset, bank.preset_a, bank.preset_b].includes(name)) continue;
+            for (const [mode, config] of Object.entries(outputStateStore.modes)) {
+                const roles = owner.bank === 'global' ? (mode === owner.mode ? ['global'] : [])
+                    : (outputStateCatalog().modes[mode].banks[owner.bank]?.roles || []);
+                for (const role of roles) {
+                    const bank = config.banks[role];
+                    if (!bank || ![bank.preset, bank.preset_a, bank.preset_b].includes(name)) continue;
                     const side = bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null;
                     if (bank.preset_a === name) bank.preset_a = 'Neutral';
                     if (bank.preset_b === name || bank.preset_b === bank.preset_a) bank.preset_b = null;
@@ -3515,9 +3523,8 @@
                 }
             }
             if (released) outputStateStore.revision += 1;
-            const idx = dspPresets.findIndex(pr => pr.name === name);
-            if (idx >= 0 && name !== 'Direct' && name !== 'Neutral') dspPresets.splice(idx, 1);
-            if (dspActivePreset === name) dspActivePreset = 'Direct';
+            dspPresets.splice(idx, 1);
+            if (dspActivePreset === name && !dspPresets.some(pr => pr.name === name)) dspActivePreset = 'Direct';
             syncDspToState();
             return j({ success: true });
         }
@@ -3591,9 +3598,7 @@
         }
         if (p === '/api/dsp/presets/import-json' && post) {
             const name = String(body.preset_name || body.name || 'Imported Preset').trim() || 'Imported Preset';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [] });
-            }
+            addDemoPreset(name, body);
             syncDspToState();
             const binding = assignDemoBankTarget(body, name);
             if (binding?.error) return err(binding.error, binding.status);
@@ -3602,9 +3607,7 @@
         }
         if (p === '/api/dsp/presets/import-bundle' && post) {
             const name = String(body.preset_name || body.name || 'Imported Bundle').trim() || 'Imported Bundle';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [] });
-            }
+            addDemoPreset(name, body);
             syncDspToState();
             const binding = assignDemoBankTarget(body, name);
             if (binding?.error) return err(binding.error, binding.status);
@@ -3613,9 +3616,7 @@
         }
         if (p === '/api/dsp/presets/import-filter-dual' && post) {
             const name = String(body.preset_name || body.name || 'Dual Filter Preset').trim() || 'Dual Filter Preset';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], convolver: true });
-            }
+            addDemoPreset(name, body, { convolver: true });
             syncDspToState();
             const binding = assignDemoBankTarget(body, name);
             if (binding?.error) return err(binding.error, binding.status);
@@ -3624,9 +3625,7 @@
         }
         if (p === '/api/dsp/presets/import-rew-peq' && post) {
             const name = String(body.preset_name || body.name || 'REW PEQ Preset').trim() || 'REW PEQ Preset';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } });
-            }
+            addDemoPreset(name, body, { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } });
             syncDspToState();
             const created = { success: true, preset: { name } };
             const binding = assignDemoBankTarget(body, name);

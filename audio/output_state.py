@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import copy
 import math
-from collections.abc import Callable
 
 from audio.output_routing import device_key
-from audio.filter_banks import bank_definitions, resolve_bank, summarize_banks
+from audio.filter_banks import bank_definitions, owning_bank_ids, resolve_bank, summarize_banks
 from audio.output_topology import (MAIN_ROLES, MODES, SURROUND_GROUPS, derive_topology, dormant_roles,
                                    roles_for_mode, validate_assignments)
 from dsp.banks import BankState
@@ -569,42 +568,51 @@ def select_bank(state: dict, mode: str, output_key: str, channels: int, bank_id:
     return validate_output_state(result)
 
 
-def release_bank_presets(state: dict, drop: Callable[[str, str], bool]) -> tuple[dict, list[str]]:
-    """Clear every bank slot whose preset ``drop(role, name)`` selects.
+def _uses_library(slot_mode: str, role: str, mode: str | None, bank_id: str) -> bool:
+    """Whether a role's slots name presets of one bank's library.
 
-    Global's compare rules for a preset that goes away: a released A falls
-    back to Neutral, a released B is cleared, and a role listening to a
-    released slot falls back to A. Returns the new state and one line per
-    touched role.
+    Global has a library per output mode; an area bank's library serves its
+    roles in every mode.
+    """
+    if bank_id == "global":
+        return role == "global" and slot_mode == mode
+    return bank_id in owning_bank_ids(role)
+
+
+def release_bank_preset(state: dict, mode: str | None, bank_id: str, name: str) -> tuple[dict, list[str]]:
+    """Clear every slot holding one preset of one bank's library.
+
+    The compare rules for a preset that goes away: a released A falls back
+    to Neutral, a released B is cleared, and a role listening to a released
+    slot falls back to A. Returns the new state and one line per touched
+    role.
     """
     result = validate_output_state(state)
     changes = []
-    for mode, config in result["modes"].items():
+    for slot_mode, config in result["modes"].items():
         for role, binding in config["banks"].items():
-            def released(name):
-                return name is not None and drop(role, name)
-
-            names = [name for name in dict.fromkeys(binding.values()) if released(name)]
-            if not names:
+            if not _uses_library(slot_mode, role, mode, bank_id) or name not in binding.values():
                 continue
             side = BankState.from_dict(binding).active_side
-            preset_a = "Neutral" if released(binding["preset_a"]) else binding["preset_a"]
+            preset_a = "Neutral" if binding["preset_a"] == name else binding["preset_a"]
             preset_b = binding["preset_b"]
-            if released(preset_b) or preset_b == preset_a:
+            if preset_b in (name, preset_a):
                 preset_b = None
             if side == "B" and preset_b is not None:
                 preset = preset_b
-            elif side is None and not released(binding["preset"]):
+            elif side is None and binding["preset"] != name:
                 preset = binding["preset"]
             else:
                 preset = preset_a
             config["banks"][role] = BankState(preset, preset_a, preset_b).to_dict()
-            changes.append(f"{mode}/{role}: released {', '.join(map(repr, names))}; "
+            changes.append(f"{slot_mode}/{role}: released {name!r}; "
                            f"A={preset_a!r} B={preset_b!r} listening={preset!r}")
     return validate_output_state(result), changes
 
 
-def referenced_presets(state: dict) -> set[str]:
+def referenced_presets(state: dict, mode: str | None, bank_id: str) -> set[str]:
+    """Preset names the slots of one bank's library hold."""
     validated = validate_output_state(state)
-    return {name for mode in validated["modes"].values() for bank in mode["banks"].values()
+    return {name for slot_mode, config in validated["modes"].items()
+            for role, bank in config["banks"].items() if _uses_library(slot_mode, role, mode, bank_id)
             for name in bank.values() if name is not None}

@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic.fields import FieldInfo
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
 import zip_album
@@ -35,9 +35,10 @@ from dsp.effects_extras import (
 )
 from audio.output_service import MeasurementActiveError
 from audio.filter_banks import resolve_bank
-from audio.output_state import referenced_presets, release_bank_presets, set_bank_preset
+from audio.output_state import referenced_presets, release_bank_preset, set_bank_preset
 from audio.output_state_store import StateConflictError
 from audio.output_topology import SURROUND_GROUPS
+from dsp.surround_global import BUILTIN_PRESETS
 from library.core import path_within_root
 from library.api import _cleanup_temp_file
 from uploads import (
@@ -287,7 +288,7 @@ def _validate_bank_target(service, binding: dict, *, needs_group: bool = False) 
 def _binding_kwargs(binding: dict | None) -> dict:
     """Manager keywords of a bank binding: the output mode and a Surround speaker group.
 
-    The mode makes a Global preset the property of that mode's Global bank.
+    The mode selects the Global bank the preset is stored in.
     """
     if not binding:
         return {}
@@ -295,11 +296,12 @@ def _binding_kwargs(binding: dict | None) -> dict:
     return {"mode": binding["mode"], **({"group": group} if group else {})}
 
 
-def _optional_combine_owner(body: dict) -> dict:
-    """Owning bank and output mode for a combined preset; empty keeps legacy behavior.
+def _optional_owner(body: dict) -> dict:
+    """Bank and output mode whose preset library a request addresses.
 
-    Combine only tags the new file (it never auto-assigns A/B slots).
-    All Banks is rejected; absent fields mean no bank was requested.
+    Preset names are unique within a bank only, so combine, delete and
+    download name the bank. All Banks is rejected; absent fields address the
+    Stereo Global bank.
     """
     if not isinstance(body, dict):
         return {}
@@ -389,26 +391,29 @@ def _verify_measurement_commit(source_targets: object, binding: dict | None) -> 
         }) from exc
 
 
-def _pinned_deletion_presets() -> set[str]:
-    """Presets still referenced by output bank slots (checked after release).
+def _owner_scope(owner: dict) -> tuple[str | None, str]:
+    """Output mode and bank id of the library ``_optional_owner`` resolved."""
+    bank = owner.get("bank") or "global"
+    return (owner.get("mode") or "stereo") if bank == "global" else None, bank
 
-    Legacy compare slots never pin: reading them drops missing presets.
-    """
+
+def _pinned_deletion_presets(owner: dict) -> set[str]:
+    """Presets the slots of one bank still hold (checked after release)."""
     service = _output_state_service()
     if service is None:
         return set()
     try:
-        return referenced_presets(service.load())
+        return referenced_presets(service.load(), *_owner_scope(owner))
     except ValueError:
         logger.warning("Output state unavailable; bank-pinned preset guard skipped")
         return set()
 
 
-async def _release_bank_slots(name: str) -> bool:
-    """Release every bank slot referencing a preset that is being deleted.
+async def _release_bank_slots(name: str, owner: dict) -> bool:
+    """Release every slot of one bank holding a preset that is being deleted.
 
     Global and every area bank follow the same compare rules (see
-    release_bank_presets). Returns whether a slot was released.
+    release_bank_preset). Returns whether a slot was released.
     """
     service = _output_state_service()
     if service is None:
@@ -418,7 +423,7 @@ async def _release_bank_slots(name: str) -> bool:
     except ValueError:
         logger.warning("Output state unavailable; bank slots not released")
         return False
-    released, changes = release_bank_presets(state, lambda _role, preset: preset == name)
+    released, changes = release_bank_preset(state, *_owner_scope(owner), name)
     if not changes:
         return False
     try:
@@ -566,9 +571,14 @@ async def list_dsp_presets():
 
 
 @router.get("/api/dsp/presets/{preset_name}/file")
-async def download_dsp_preset_file(preset_name: str):
+async def download_dsp_preset_file(preset_name: str, bank_mode: str = "", bank_id: str = ""):
     dsp_mgr = _deps().require_dsp_manager()
-    preset = next((item for item in dsp_mgr.list_presets() if item.get("name") == preset_name), None)
+    store = dsp_mgr.library(**_optional_owner({"bank_mode": bank_mode, "bank_id": bank_id}))
+    if preset_name in BUILTIN_PRESETS:
+        # Built-ins are no files; every bank serves the same empty preset.
+        return Response(dsp_mgr.export_preset_json(preset_name), media_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="{preset_name}.json"'})
+    preset = next((item for item in store.list() if item.get("name") == preset_name), None)
     if not preset:
         raise HTTPException(status_code=404, detail="Preset not found")
     preset_path = Path(str(preset.get("path") or "")).resolve()
@@ -583,7 +593,7 @@ async def download_dsp_preset_file(preset_name: str):
     kernel_names = dsp_mgr._extract_kernel_names_from_payload(payload) if isinstance(payload, dict) else set()
     ir_paths = []
     for kernel_name in sorted(kernel_names):
-        ir_paths.extend(dsp_mgr._find_ir_paths_for_kernel_name(kernel_name))
+        ir_paths.extend(store.find_ir_paths(kernel_name))
     if ir_paths:
         with tempfile.NamedTemporaryFile(prefix="fxroute-preset-", suffix=".zip", delete=False) as temp_file:
             temp_zip_path = Path(temp_file.name)
@@ -653,7 +663,7 @@ async def combine_dsp_presets(request: Request):
         raise HTTPException(status_code=400, detail="presetName is required")
     if not isinstance(preset_names, list):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
-    owner = _optional_combine_owner(body)
+    owner = _optional_owner(body)
 
     try:
         async with _deps().dsp_mutation_lock():
@@ -715,8 +725,9 @@ async def load_dsp_preset(request: Request):
 
 
 @router.post("/api/dsp/irs/upload")
-async def upload_dsp_ir(file: UploadFile = File(...)):
+async def upload_dsp_ir(file: UploadFile = File(...), bank_mode: str = Form(""), bank_id: str = Form("")):
     dsp_mgr = _deps().require_dsp_manager()
+    owner = _optional_owner({"bank_mode": bank_mode, "bank_id": bank_id})
 
     tmp_path = None
     try:
@@ -730,6 +741,7 @@ async def upload_dsp_ir(file: UploadFile = File(...)):
             dsp_mgr.upload_ir,
             tmp_path,
             file.filename or tmp_path.name,
+            **owner,
         )
         status = dsp_mgr.get_status()
         await _deps().broadcast({"type": "dsp", "data": status})
@@ -935,7 +947,9 @@ async def import_dsp_preset_bundle(
             kernel_names = dsp_mgr._extract_kernel_names_from_payload(preset_payload if isinstance(preset_payload, dict) else None)
 
             async with _deps().dsp_mutation_lock():
-                dsp_mgr.irs_dir.mkdir(parents=True, exist_ok=True)
+                store = dsp_mgr.library(canonical_bank, binding["mode"] if binding else None)
+                irs_dir = store.irs_dir
+                irs_dir.mkdir(parents=True, exist_ok=True)
                 imported_irs = []
                 ir_members_by_stem = {}
                 for member, rel in safe_members:
@@ -951,7 +965,7 @@ async def import_dsp_preset_bundle(
 
                 extracted_total = 0
                 for _, (member, clean_ir_name) in sorted(ir_members_by_stem.items()):
-                    destination = dsp_mgr.irs_dir / clean_ir_name
+                    destination = irs_dir / clean_ir_name
                     if destination.is_symlink():
                         raise ValueError(
                             f"Import blocked: existing IR path is a symlink: {clean_ir_name}"
@@ -960,7 +974,7 @@ async def import_dsp_preset_bundle(
                         raise ValueError(
                             f"Import blocked: existing IR path is a directory: {clean_ir_name}"
                         )
-                    stage_path = dsp_mgr.irs_dir / f".fxroute-bundle-stage-{uuid4().hex}"
+                    stage_path = irs_dir / f".fxroute-bundle-stage-{uuid4().hex}"
                     try:
                         remaining = min(
                             PRESET_BUNDLE_MAX_TOTAL_UNCOMPRESSED_BYTES - extracted_total,
@@ -975,7 +989,7 @@ async def import_dsp_preset_bundle(
                     extracted_total += written
                     staged_irs.append(stage_path)
                     if destination.exists():
-                        backup_path = dsp_mgr.irs_dir / f".fxroute-bundle-backup-{uuid4().hex}"
+                        backup_path = irs_dir / f".fxroute-bundle-backup-{uuid4().hex}"
                         os.replace(destination, backup_path)
                         ir_backups.append((destination, backup_path))
                     else:
@@ -983,7 +997,7 @@ async def import_dsp_preset_bundle(
                     os.replace(stage_path, destination)
                     imported_irs.append(destination.name)
 
-                missing_kernels = [name for name in sorted(kernel_names) if not dsp_mgr._find_ir_paths_for_kernel_name(name)]
+                missing_kernels = [name for name in sorted(kernel_names) if not store.find_ir_paths(name)]
                 if missing_kernels:
                     raise HTTPException(status_code=400, detail=f"Preset bundle is missing IR file(s): {', '.join(missing_kernels)}")
 
@@ -1461,13 +1475,14 @@ async def delete_dsp_preset(request: Request):
 
     if not preset_name:
         raise HTTPException(status_code=400, detail="preset_name is required")
+    owner = _optional_owner(body)
 
     try:
         async with _deps().dsp_mutation_lock():
-            name = dsp_mgr.require_deletable_preset(preset_name)
-            deleted_active = dsp_mgr.get_active_preset() == name
-            released = await _release_bank_slots(name)
-            dsp_mgr.delete_preset(name, pinned_presets=_pinned_deletion_presets())
+            name = dsp_mgr.require_deletable_preset(preset_name, **owner)
+            deleted_active = dsp_mgr.is_active_preset(name, **owner)
+            released = await _release_bank_slots(name, owner)
+            dsp_mgr.delete_preset(name, **owner, pinned_presets=_pinned_deletion_presets(owner))
         if released and _deps().sync_v2_head_live is not None:
             # The released slots are committed; render them before reporting.
             await _deps().sync_v2_head_live()

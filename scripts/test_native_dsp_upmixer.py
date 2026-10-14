@@ -55,7 +55,7 @@ class NativeUpmixerTests(unittest.TestCase):
 
         ``others`` maps a program position above Front L/R (2 = FC .. 7 = BR) to its samples.
         """
-        layout = layout_from_plan(self.surround.plan(self.surround.state(roles)), resolve_ir=lambda name: {})
+        layout = layout_from_plan(self.surround.plan(self.surround.state(roles)), resolve_ir=lambda *_: {})
         text = self.manager.compile_engine_text(layout, preset_name="Neutral", sample_rate_hz=RATE,
                                                 extras_override=extras)
         if text_filter:

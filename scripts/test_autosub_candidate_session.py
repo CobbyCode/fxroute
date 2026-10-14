@@ -81,8 +81,8 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
         self.manager = DSPManager(home=Path(directory.name) / "dsp")
         self.store = OutputStateStore(self.path)
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            store=self.store, preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1", "sub2"]), "stereo-sub")
         self.base = self.store.commit(state, expected_revision=0)
@@ -100,7 +100,7 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
             hardware_ports=[f"playback_AUX{i}" for i in range(4)],
             plan_fingerprint=fingerprint)
         text = self.manager.compile_engine_text(
-            layout, preset_name=plan["global"]["preset"], sample_rate_hz=rate,
+            layout, preset_name=plan["global"]["preset"], mode=plan["mode"], sample_rate_hz=rate,
             extras_override=plan["global"]["extras"])
         return PlannedSyncTarget(config, text)
 
@@ -253,14 +253,14 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
         return {"path": str(path), "channels": 1}
 
     def configure_ir(self, resolver):
-        self.manager.preset_store.write("Sub IR", {
+        self.manager.library("sub1").write("Sub IR", {
             "schema": "fxroute.dsp.preset", "version": 1,
             "chain": [{"id": "conv", "type": "convolver", "params": {"kernel": "sub"}}]})
         state = self.service.load()
         state["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Sub IR"
         self.base = self.store.commit(state, expected_revision=state["revision"])
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
+            store=self.store, preset_loader=self.manager.read_preset,
             resolve_ir=resolver, measurement_active=lambda: True))
         self.before_bytes = self.path.read_bytes()
         self.owner = self.make_owner()
@@ -270,7 +270,7 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(fail_second=fail_second):
                 calls = []
 
-                def resolve_ir(name):
+                def resolve_ir(_bank, name):
                     calls.append(name)
                     if len(calls) > 1 and fail_second:
                         raise RuntimeError("IR disappeared after preparation")
@@ -289,7 +289,7 @@ class AutoSubCandidateSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_layout_cache_preserves_initial_and_identical_targets(self):
         calls = []
 
-        def resolve_ir(name):
+        def resolve_ir(_bank, name):
             calls.append(name)
             return self.ir_info(len(calls))
 

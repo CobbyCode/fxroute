@@ -124,6 +124,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def require_deletable_preset(self, preset_name):
                 return preset_name
 
+            def is_active_preset(self, preset_name):
+                return self.get_active_preset() == preset_name
+
             def delete_preset(self, preset_name, pinned_presets=()):
                 order.append("delete-entered")
                 return None
@@ -310,6 +313,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def require_deletable_preset(self, preset_name):
                 return preset_name
 
+            def is_active_preset(self, preset_name):
+                return self.get_active_preset() == preset_name
+
             def delete_preset(self, preset_name, pinned_presets=()):
                 order.append("delete-entered")
 
@@ -358,6 +364,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
             def require_deletable_preset(self, preset_name):
                 return preset_name
 
+            def is_active_preset(self, preset_name):
+                return self.get_active_preset() == preset_name
+
             def delete_preset(self, preset_name, pinned_presets=()):
                 self.deleted.append(preset_name)
                 if self.active == "Room":
@@ -397,6 +406,9 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
 
             def require_deletable_preset(self, preset_name):
                 return preset_name
+
+            def is_active_preset(self, preset_name):
+                return self.get_active_preset() == preset_name
 
             def delete_preset(self, preset_name, pinned_presets=()):
                 self.deleted.append(preset_name)

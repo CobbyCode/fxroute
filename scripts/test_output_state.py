@@ -112,7 +112,9 @@ class OutputStateTests(unittest.TestCase):
                          ["main_r", "main_l", "off", "off", "sub2", "off"])
         self.assertEqual(state["modes"]["stereo-sub"]["selected_bank"], "global")
         self.assertEqual(state["modes"]["stereo-sub"]["banks"]["sub2"]["preset"], "Dormant IR")
-        self.assertIn("Dormant IR", referenced_presets(state))
+        # The dormant bank still pins its own preset; another bank's slots do not hold it.
+        self.assertIn("Dormant IR", referenced_presets(state, None, "sub2"))
+        self.assertNotIn("Dormant IR", referenced_presets(state, "stereo-sub", "global"))
         with self.assertRaises(ValueError):
             select_bank(state, "stereo-sub", "A", 4, "sub2")
 

@@ -51,7 +51,7 @@ class FakeService:
         assert state is self._state
         return compile_processing_plan(state, output_key=output_key, channels=channels,
                                        sample_rate_hz=sample_rate_hz,
-                                       preset_loader=lambda _name: {"chain": []})
+                                       preset_loader=lambda *_: {"chain": []})
 
     @staticmethod
     def fingerprint_plan(plan):

@@ -117,7 +117,11 @@ async function request(url, body) {
 
     // Deleting a bank preset releases its slots like Global's compare.
     await apply({ kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'sub', preset: 'Demo Bank EQ' });
-    assert.equal((await rawRequest('/api/dsp/presets/delete', { preset_name: 'Demo Bank EQ' })).status, 200);
+    // A delete names the bank: Global has no preset of that name.
+    assert.equal((await rawRequest('/api/dsp/presets/delete',
+        { preset_name: 'Demo Bank EQ', bank_mode: 'stereo-sub', bank_id: 'global' })).status, 404);
+    assert.equal((await rawRequest('/api/dsp/presets/delete',
+        { preset_name: 'Demo Bank EQ', bank_mode: 'stereo-sub', bank_id: 'sub' })).status, 200);
     const afterDelete = await request('/api/audio/output-state');
     assert.equal(afterDelete.revision, revision + 1);
     revision = afterDelete.revision;
@@ -125,6 +129,35 @@ async function request(url, body) {
     assert.equal(subBank.preset, 'Neutral');
     assert.equal(subBank.preset_a, 'Neutral');
     assert.equal((await rawRequest('/api/dsp/presets/delete', { preset_name: 'Neutral' })).status, 400);
+
+    // A preset name is unique within its bank only: Global and the Sub bank each keep their own.
+    const owners = async (name) => (await request('/api/dsp/presets')).presets
+        .filter(entry => entry.name === name).map(entry => `${entry.bank}/${entry.mode}`).sort();
+    for (const bankId of ['sub', 'global']) {
+        const shared = await request('/api/dsp/presets/create-peq',
+            { presetName: 'Shared EQ', peq: { params: {} }, bank_mode: 'stereo-sub', bank_id: bankId, expected_revision: revision });
+        assert.equal(shared.bank.assigned, true);
+        revision = shared.bank.revision;
+    }
+    assert.deepEqual(await owners('Shared EQ'), ['global/stereo-sub', 'sub/null']);
+    // Combine reads its sources from the bank it writes to.
+    assert.equal((await rawRequest('/api/dsp/presets/combine', { presetName: 'Sub Combo',
+        presetNames: ['Shared EQ', '+3'], bank_mode: 'stereo-sub', bank_id: 'sub' })).status, 404);
+    assert.equal((await rawRequest('/api/dsp/presets/combine', { presetName: 'Global Combo',
+        presetNames: ['Shared EQ', '+3'], bank_mode: 'stereo-sub', bank_id: 'global' })).status, 200);
+    assert.deepEqual(await owners('Global Combo'), ['global/stereo-sub']);
+    // Deleting the Sub bank's preset keeps Global's preset and Global's slot.
+    assert.equal((await rawRequest('/api/dsp/presets/delete',
+        { preset_name: 'Shared EQ', bank_mode: 'stereo-sub', bank_id: 'sub' })).status, 200);
+    assert.deepEqual(await owners('Shared EQ'), ['global/stereo-sub']);
+    const afterShared = await request('/api/audio/output-state');
+    assert.equal(afterShared.modes['stereo-sub'].banks.sub.preset, 'Neutral');
+    assert.equal(afterShared.modes['stereo-sub'].banks.global.preset, 'Shared EQ');
+    assert.equal((await rawRequest('/api/dsp/presets/delete',
+        { preset_name: 'Shared EQ', bank_mode: 'stereo-sub', bank_id: 'global' })).status, 200);
+    assert.equal((await rawRequest('/api/dsp/presets/delete',
+        { preset_name: 'Global Combo', bank_mode: 'stereo-sub', bank_id: 'global' })).status, 200);
+    revision = (await request('/api/audio/output-state')).revision;
 
     // Turn the crossover back on and route a complete stereo sub pair with
     // two ways per side; that is the shape the Crossover card graphs.

@@ -83,7 +83,7 @@ def create_release_adapter(
             plan_fingerprint=fingerprint)
         text = dsp_manager.compile_engine_text(
             [dict(entry) for entry in layout],
-            preset_name=plan["global"]["preset"],
+            preset_name=plan["global"]["preset"], mode=plan["mode"],
             sample_rate_hz=restore_rate_hz,
             extras_override=plan["global"]["extras"])
         native_runtime = get_native_runtime()

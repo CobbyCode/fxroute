@@ -2,7 +2,7 @@
 """Compile a processing plan into a native engine output layout.
 
 Pure function over a validated processing plan. Preset payloads arrive
-through ``preset_loader`` (for example ``DSPPresetStore.read``) and IR
+through ``preset_loader`` (for example ``DSPManager.read_preset``) and IR
 files through ``resolve_ir`` so this module owns no files, no hardware,
 and no global state. The manager renders the returned layout to engine
 text; the native engine executes it.
@@ -114,6 +114,7 @@ def _project_bands(role: str, plugin: dict, sub_mode: str = "stereo") -> list[di
 
 def _oconv_for_bank(role: str, plugin: dict, resolve_ir: Callable[[str], dict],
                     sub_mode: str = "stereo") -> dict:
+    """Convolver of one role; ``resolve_ir`` reads a kernel of the role's bank."""
     params = plugin.get("params") if isinstance(plugin.get("params"), dict) else {}
     info = resolve_ir(params.get("kernel", ""))
     if not isinstance(info, dict) or not isinstance(info.get("path"), str) or not info["path"]:
@@ -137,11 +138,12 @@ def _oconv_for_bank(role: str, plugin: dict, resolve_ir: Callable[[str], dict],
     }
 
 
-def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[dict]:
+def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str, str], dict]) -> list[dict]:
     """Map every plan output to a manager layout entry with sos/oconv data.
 
     The plan already carries resolved bank chains, so no preset loading is
-    needed here; only IR files resolve late through ``resolve_ir``.
+    needed here; only IR files resolve late through ``resolve_ir(bank_id,
+    kernel)``, from the library of the bank the plan names for the output.
     """
     if not isinstance(plan, dict) or not isinstance(plan.get("outputs"), list):
         raise ValueError("Processing plan requires an outputs array")
@@ -193,7 +195,8 @@ def layout_from_plan(plan: dict, *, resolve_ir: Callable[[str], dict]) -> list[d
                 elif plugin_type == "convolver":
                     if oconv is not None:
                         raise ValueError(f"Area bank {role} supports a single convolver")
-                    oconv = _oconv_for_bank(role, plugin, resolve_ir, sub_mode)
+                    oconv = _oconv_for_bank(
+                        role, plugin, lambda kernel, library=bank["library"]: resolve_ir(library, kernel), sub_mode)
                 else:
                     raise ValueError(f"Area bank {role} supports only PEQ and convolver presets")
         if sum(item["stages"] for item in filters) + len(sos) > OUTPUT_BIQUAD_BUDGET:

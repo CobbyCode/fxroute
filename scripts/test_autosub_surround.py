@@ -107,7 +107,7 @@ class CompiledSurroundTests(unittest.TestCase):
         self.manager = DSPManager(home=self.directory / "dsp")
         self.service = OutputService(OutputServiceDeps(
             store=OutputStateStore(self.directory / "output-state.json"),
-            preset_loader=self.manager.preset_store.read, resolve_ir=lambda name: {},
+            preset_loader=self.manager.read_preset, resolve_ir=lambda _bank, name: {},
             measurement_active=lambda: False))
 
     def layout(self, *, mono=False, crossover=False, linked=False):

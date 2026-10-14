@@ -239,15 +239,17 @@ class StagingBranchTests(unittest.IsolatedAsyncioTestCase):
 def make_service(directory, manager):
     return OutputService(OutputServiceDeps(
         store=OutputStateStore(Path(directory) / "output-state.json"),
-        preset_loader=manager.preset_store.read,
-        resolve_ir=lambda kernel: (_ for _ in ()).throw(AssertionError(kernel)),
+        preset_loader=manager.read_preset,
+        resolve_ir=lambda _bank, kernel: (_ for _ in ()).throw(AssertionError(kernel)),
         measurement_active=lambda: False,
     ))
 
 
 def make_manager(directory):
     manager = DSPManager(home=Path(directory) / "home")
-    manager.preset_store.write("Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
+    for bank in ("sub1", "global"):
+        manager.library(bank, "stereo-sub").write(
+            "Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
     return manager
 
 
@@ -283,7 +285,7 @@ def plan_target(service, manager, state, fingerprint="fp"):
         hardware_ports=[f"playback_AUX{i}" for i in range(4)],
         plan_fingerprint=fingerprint)
     text = manager.compile_engine_text(
-        [dict(entry) for entry in layout], preset_name=plan["global"]["preset"],
+        [dict(entry) for entry in layout], preset_name=plan["global"]["preset"], mode=plan["mode"],
         sample_rate_hz=48000, extras_override=plan["global"]["extras"])
     return PlannedSyncTarget(config=config, text=text)
 

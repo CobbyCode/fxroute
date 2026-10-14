@@ -124,13 +124,13 @@ class TargetFixture:
             self.presets.write(name, {"schema": "fxroute.dsp.preset", "version": 1, "chain": chain})
         self.service = OutputService(OutputServiceDeps(
             store=OutputStateStore(self.root / "output-state.json"),
-            preset_loader=self.presets.read,
+            preset_loader=lambda _mode, _bank, name: self.presets.read(name),
             resolve_ir=self._no_ir,
             measurement_active=lambda: False,
         ))
 
     @staticmethod
-    def _no_ir(kernel):
+    def _no_ir(_bank, kernel):
         raise AssertionError(f"no IR expected, got {kernel}")
 
     def fingerprint(self, state, channels=8, output_key="A", sample_rate_hz=48000):

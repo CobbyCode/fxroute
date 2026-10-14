@@ -40,7 +40,8 @@ class BankCompileTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.home = Path(self.directory.name) / "home"
         self.manager = DSPManager(home=self.home)
-        store = self.manager.preset_store
+        # One shared stock for every bank: these tests cover the compiler, not ownership.
+        store = self.store = self.manager.library()
         for name, chain in (
             ("Neutral", []),
             ("Direct", []),
@@ -77,7 +78,10 @@ class BankCompileTests(unittest.TestCase):
             source.write_bytes(payload)
             self.manager.upload_ir(source, filename)
 
-    def resolve_ir(self, kernel):
+    def load_preset(self, _mode, _bank, name):
+        return self.store.read(name)
+
+    def resolve_ir(self, _bank, kernel):
         path = self.manager._resolve_kernel_path(kernel)
         params = parse_wav_frames(path)
         ensure_kernel_supported_ir(params, path.name)
@@ -158,14 +162,14 @@ class BankCompileTests(unittest.TestCase):
     def _plan_with_channels(self, state, channels, rate=48000):
         from dsp.processing_plan import compile_processing_plan
         return compile_processing_plan(state, output_key="A", channels=channels,
-                                       sample_rate_hz=rate, preset_loader=self.manager.preset_store.read)
+                                       sample_rate_hz=rate, preset_loader=self.load_preset)
 
     def test_lone_sub_l_bank_is_mono_not_left_sided(self):
         # A single sub role sums both inputs at 0.5, so its bank is a mono
         # bank even though the role is called sub_l: dual PEQ needs identical
         # sides and a stereo IR is rejected instead of silently using channel
         # 0 only. A real stereo sub pair keeps its per-side behaviour.
-        self.manager.preset_store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
+        self.store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
             "chain": [{"id": "conv", "type": "convolver", "params": {"kernel": "wide"}}]})
         state = self.stereo_state()
         state = set_mode_routing(state, "stereo-sub", "A", ["main_l", "main_r", "sub1"])
@@ -195,7 +199,7 @@ class BankCompileTests(unittest.TestCase):
         state = self.crossover_state()
         mode = state["modes"]["stereo-sub"]
         mode["banks"]["left_mid"]["preset"] = "Mid IR"
-        self.manager.preset_store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
+        self.store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
             "chain": [{"id": "conv", "type": "convolver", "params": {"kernel": "wide"}}]})
         mode["banks"]["right_mid"]["preset"] = "Wide IR"
         rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
@@ -204,7 +208,7 @@ class BankCompileTests(unittest.TestCase):
 
     def test_stereo_ir_into_mono_sum_is_rejected(self):
         state = self.stereo_state()
-        self.manager.preset_store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
+        self.store.write("Wide IR", {"schema": "fxroute.dsp.preset", "version": 1,
             "chain": [{"id": "conv", "type": "convolver", "params": {"kernel": "wide"}}]})
         state["modes"]["stereo-sub"]["banks"]["sub1"]["preset"] = "Wide IR"
         with self.assertRaises(ValueError):
@@ -263,7 +267,7 @@ class BankRenderTests(unittest.TestCase):
         source = Path(self.directory.name) / "room.wav"
         source.write_bytes(ir)
         self.manager.upload_ir(source, "room.wav")
-        self.ir_path = str(self.manager.irs_dir / "room.wav")
+        self.ir_path = str(self.manager.library().irs_dir / "room.wav")
 
     def layout(self, **overrides):
         entry = {"name": "left_low", "routes": [{"input": 0, "gain": 1.0}],

@@ -16,21 +16,16 @@ but every audible change does.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from audio.output_state_migration import (drop_foreign_bank_presets, global_copy_name,
-                                          migrate_legacy_output_state, split_shared_global_presets)
+from audio.output_state_migration import migrate_legacy_output_state
 from audio.filter_banks import resolve_bank
 from audio.output_state_store import OutputStateStore, StateConflictError
-from audio.output_topology import MODE_LABELS, MODES
 from dsp.native_config import layout_from_plan
-from dsp.persistence import preset_bank, preset_mode
 from dsp.processing_plan import compile_processing_plan
-from dsp.surround_global import BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, preset_layout
 
 __all__ = [
     "MeasurementActiveError",
@@ -49,8 +44,10 @@ class OutputServiceDeps:
     """Application services injected by the composition root."""
 
     store: OutputStateStore
-    preset_loader: Callable[[str], dict]
-    resolve_ir: Callable[[str], dict]
+    # preset_loader(mode, bank_id, name) and resolve_ir(bank_id, kernel): every
+    # bank has its own presets and IR files, Global one set per output mode.
+    preset_loader: Callable[[str, str, str], dict]
+    resolve_ir: Callable[[str, str], dict]
     measurement_active: Callable[[], bool]
     legacy_snapshot_loader: Callable[[], dict] | None = None
 
@@ -80,81 +77,6 @@ class OutputService:
                 expected_revision=0)
         except StateConflictError:
             return self._deps.store.load()
-
-    def drop_foreign_bank_presets(self) -> list[str]:
-        """Commit the foreign-slot cleanup of a stored document (startup).
-
-        A missing file is left to ``ensure_state``; unreadable presets count
-        as untagged and stay bound. Returns the applied changes.
-        """
-        if not self._deps.store.path.exists():
-            return []
-        state = self._deps.store.load()
-
-        def preset_bank_of(name: str) -> str | None:
-            try:
-                return preset_bank(self._deps.preset_loader(name))
-            except (FileNotFoundError, RuntimeError, ValueError):
-                return None
-
-        cleaned, changes = drop_foreign_bank_presets(state, preset_bank_of)
-        if changes:
-            self.commit_unowned(cleaned, expected_revision=state["revision"])
-        return changes
-
-    def assign_global_preset_modes(self, preset_store) -> list[str]:
-        """Give Global presets from before the per-mode split their output mode (startup).
-
-        Each output mode owns its Global presets. A Surround layout belongs
-        to Surround; the others are divided between Stereo and Stereo + Sub
-        by the slots that use them (see ``split_shared_global_presets``).
-        The copies are written first, then the slots move, then the owners
-        are tagged, so an interrupted run resumes without losing a binding.
-        Returns the applied changes.
-        """
-        unowned = {}
-        for entry in preset_store.list():
-            if entry["name"] in BUILTIN_PRESETS:
-                continue
-            payload = preset_store.read(entry["name"])
-            if preset_bank(payload) == "global" and (payload.get("metadata") or {}).get("mode") not in MODES:
-                unowned[entry["name"]] = payload
-        if not unowned:
-            return []
-        shared = [name for name, payload in unowned.items() if preset_layout(payload) != SURROUND_LAYOUT]
-        owners = {name: "surround" for name in unowned if name not in shared}
-        state = self._deps.store.load() if self._deps.store.path.exists() else None
-        copies, resumed = {}, {}
-        if state is None:
-            owners.update({name: "stereo" for name in shared})
-        else:
-            taken = {entry["name"] for entry in preset_store.list()}
-            for name in shared:
-                candidate = global_copy_name(name, ())
-                try:
-                    written = preset_store.read(candidate)
-                except (FileNotFoundError, RuntimeError, ValueError):
-                    continue
-                if ((written.get("metadata") or {}).get("mode") == "stereo-sub"
-                        and written.get("chain") == unowned[name].get("chain")):
-                    resumed[name] = candidate
-            split, shared_owners, copies = split_shared_global_presets(state, shared, taken, resumed)
-            owners.update(shared_owners)
-        changes = []
-        for name, copy_name in copies.items():
-            if resumed.get(name) != copy_name:
-                payload = copy.deepcopy(unowned[name])
-                payload["metadata"] = {**(payload.get("metadata") or {}), "mode": "stereo-sub"}
-                preset_store.write(copy_name, payload)
-            changes.append(f'"{name}": used by Stereo and Stereo + Sub; Stereo + Sub now uses the copy "{copy_name}"')
-        if copies:
-            self.commit_unowned(split, expected_revision=state["revision"])
-        for name, mode in owners.items():
-            payload = unowned[name]
-            payload["metadata"] = {**(payload.get("metadata") or {}), "mode": mode}
-            preset_store.write(name, payload)
-            changes.append(f'"{name}": Global preset of {MODE_LABELS[mode]}')
-        return changes
 
     def apply(self, mutate: Callable[[dict], dict], *, expected_revision: int) -> dict:
         """Apply a pure state mutation under the measurement and revision guards."""
@@ -218,37 +140,20 @@ class OutputService:
         return layout_from_plan(plan, resolve_ir=self._deps.resolve_ir)
 
     def validate_bank_preset(self, state: dict, mode: str, bank_id: str, preset: str, *, roles=None) -> None:
-        """Check a preset against its bank's shape and owning bank.
+        """Check that a bank has the preset and that it fits the bank's shape.
 
-        Each concrete bank (and Global) owns its presets; All Banks owns
-        none. Built-ins and legacy files without a bank tag stay assignable
-        everywhere, bank-tagged files only in their owning bank.
+        Every bank has its own preset library, Global one per output mode;
+        a name from another bank raises FileNotFoundError.
         """
         definition = resolve_bank(state["modes"][mode], bank_id, roles)
-        payload = self._deps.preset_loader(preset)
-        if preset not in ("Direct", "Neutral"):
-            metadata = payload.get("metadata") if isinstance(payload, dict) else None
-            tag = metadata.get("bank") if isinstance(metadata, dict) else None
-            if isinstance(tag, str) and tag.strip() and tag.strip() != definition["id"]:
-                raise ValueError(
-                    f'Preset "{preset}" belongs to bank "{tag.strip()}", not "{definition["id"]}"')
+        payload = self._deps.preset_loader(mode, definition["id"], preset)
         if definition["id"] == "global":
-            # Surround Global holds group-tagged presets, every other mode the stereo ones.
-            if preset not in BUILTIN_PRESETS and (preset_layout(payload) == SURROUND_LAYOUT) != (mode == "surround"):
-                raise ValueError(
-                    f'Preset "{preset}" is a Surround preset and fits only the Surround Global bank'
-                    if mode != "surround" else
-                    f'Preset "{preset}" is not a Surround preset; create one for a speaker group')
-            # Every output mode owns its Global presets.
-            owner = None if preset in BUILTIN_PRESETS else preset_mode(payload)
-            if owner is not None and owner != mode:
-                raise ValueError(f'Preset "{preset}" belongs to the {MODE_LABELS[owner]} Global bank, '
-                                 f'not {MODE_LABELS[mode]}')
             return
         self.compile_layout({
             "sample_rate_hz": 48000,
             "sub_mode": "stereo" if definition["channel_mode"] == "stereo" else "mono",
-            "outputs": [{"role": role, "bank": {"chain": payload["chain"], "bypass": preset == "Direct"}}
+            "outputs": [{"role": role, "bank": {"chain": payload["chain"], "bypass": preset == "Direct",
+                                                "library": definition["id"]}}
                         for role in definition["roles"]],
         })
 

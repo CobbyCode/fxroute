@@ -40,7 +40,7 @@ const MOVED = [
 const DROPPED_SHIMS = [
     'normalizeEffectsCompareSelection', 'resolveEffectsCompareState', 'saveEffectsCompareState',
     'getDefaultEffectsCombineDraft', 'normalizeEffectsCombineDraft', 'setEffectsImportPanelOpen',
-    'outputSystemBankBinding', 'outputSystemCombineBank', 'visiblePresetEntriesForBank',
+    'outputSystemBankBinding', 'outputSystemBankOwner', 'visiblePresetEntriesForBank',
     'visiblePresetNamesForBank', 'appendBankBindingFields', 'bankBindingJson',
     'measurementPeqParams', 'requireConcreteFilterBank', 'renderEffectsBankSelector',
     'syncBankActionButtons', 'renderBankImportTarget',

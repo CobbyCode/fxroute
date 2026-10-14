@@ -388,7 +388,7 @@ window.FXRouteBankUI?.init({
     refreshCatalog: (force) => fetchOutputSystemCatalog(force),
     collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
-    presetFileUrl: (name) => MeasurementUI.presetFileUrl(name),
+    presetFileUrl: (name, owner) => MeasurementUI.presetFileUrl(name, owner),
     renderEffects: () => EffectsUI.renderEffects(),
     renderMeasurementArea: () => renderMeasurementArea(),
     measurementArea: () => measurementAreaFromCatalog(),

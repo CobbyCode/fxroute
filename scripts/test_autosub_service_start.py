@@ -64,8 +64,8 @@ class AutoSubServiceStartTests(unittest.IsolatedAsyncioTestCase):
         self.manager = DSPManager(home=Path(directory.name) / "home")
         self.store = OutputStateStore(self.path)
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: self.fail(f"Unexpected IR: {name}"),
+            store=self.store, preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: self.fail(f"Unexpected IR: {name}"),
             measurement_active=lambda: True))
         self.runtime = RuntimeBoundary()
         self.session = SimpleNamespace(capture_entry_epoch=lambda: 42,

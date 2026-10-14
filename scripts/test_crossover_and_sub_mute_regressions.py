@@ -86,8 +86,8 @@ def _v2_service(raw: str):
     manager = DSPManager(home=Path(raw) / "home")
     service = OutputService(OutputServiceDeps(
         store=OutputStateStore(Path(raw) / "output-state.json"),
-        preset_loader=manager.preset_store.read,
-        resolve_ir=lambda kernel: (_ for _ in ()).throw(AssertionError(kernel)),
+        preset_loader=manager.read_preset,
+        resolve_ir=lambda _bank, kernel: (_ for _ in ()).throw(AssertionError(kernel)),
         measurement_active=lambda: False))
     _v2_seed(service)
     return service, manager

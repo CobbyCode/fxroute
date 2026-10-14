@@ -146,9 +146,9 @@ def test_plan_render_end_to_end_matches_prediction(tmp_path):
             settings["lowpass"] = {"family": "linkwitz-riley", "slope_db_oct": 24,
                                    "frequency_hz": 300 if role.endswith("low") else 2500}
     plan = compile_processing_plan(state, output_key="A", channels=6, sample_rate_hz=48000,
-                                   preset_loader=manager.preset_store.read)
+                                   preset_loader=manager.read_preset)
 
-    def no_ir(kernel):
+    def no_ir(_bank, kernel):
         raise AssertionError(f"no IR expected, got {kernel}")
 
     layout = layout_from_plan(plan, resolve_ir=no_ir)

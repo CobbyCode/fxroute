@@ -101,8 +101,8 @@ class MeasurementPersistGuardTests(unittest.IsolatedAsyncioTestCase):
                 output_path = Path(tempdir) / "output-state.json"
                 service = OutputService(OutputServiceDeps(
                     store=OutputStateStore(output_path),
-                    preset_loader=lambda name: {"chain": []},
-                    resolve_ir=lambda kernel: {},
+                    preset_loader=lambda *_: {"chain": []},
+                    resolve_ir=lambda _bank, kernel: {},
                     measurement_active=store.has_active_measurement_job,
                 ))
                 state = service.load()

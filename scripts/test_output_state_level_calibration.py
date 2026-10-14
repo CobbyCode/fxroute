@@ -90,7 +90,7 @@ class LevelCalibrationUpgradeTests(unittest.TestCase):
 class LevelCalibrationPlanTests(unittest.TestCase):
     def outputs(self, state):
         plan = compile_processing_plan(state, output_key="A", channels=2, sample_rate_hz=48000,
-                                       preset_loader=lambda name: {"chain": []})
+                                       preset_loader=lambda *_: {"chain": []})
         return {output["role"]: output for output in plan["outputs"]}
 
     def test_slots_add_to_the_manual_level(self):

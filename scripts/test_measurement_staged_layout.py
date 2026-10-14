@@ -43,8 +43,8 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
                     processing[kind] = {"family": "linkwitz-riley", "slope_db_oct": 24,
                                         "frequency_hz": frequency}
         plan = compile_processing_plan(state, output_key="dev", channels=8,
-                                       sample_rate_hz=48000, preset_loader=manager.preset_store.read)
-        self.layout = layout_from_plan(plan, resolve_ir=lambda _: self.fail("Unexpected IR"))
+                                       sample_rate_hz=48000, preset_loader=manager.read_preset)
+        self.layout = layout_from_plan(plan, resolve_ir=lambda *_: self.fail("Unexpected IR"))
         manager.compile_engine_text(self.layout, preset_name="Direct", sample_rate_hz=48000)
         self.assertEqual(len(self.layout), 8)
         self.assertTrue(self.layout[0]["sos"])

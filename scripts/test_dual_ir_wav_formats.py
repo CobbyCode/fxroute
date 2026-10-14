@@ -71,6 +71,8 @@ class DualIrWavFormatTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
         self.manager = DSPManager(home=self.home)
+        self.irs_dir = self.manager.library().irs_dir
+        self.irs_dir.mkdir(parents=True)
         self.tmp = Path(tempfile.mkdtemp())
 
     def write(self, name, payload):
@@ -84,7 +86,7 @@ class DualIrWavFormatTests(unittest.TestCase):
         right = self.write("r.wav", wav_bytes([-1.0, 0.5, 0.25, 0.75]))
         result = self.manager.upload_ir_pair(left, "l.wav", right, "r.wav", "Pair.irs")
         self.assertEqual(result["name"], "Pair.irs")
-        parsed = parse_wav_frames(self.manager.irs_dir / "Pair.irs")
+        parsed = parse_wav_frames(self.irs_dir / "Pair.irs")
         self.assertEqual(parsed["channels"], 2)
         self.assertEqual(parsed["format"], 3)
         self.assertEqual(parsed["bits"], 32)
@@ -97,7 +99,7 @@ class DualIrWavFormatTests(unittest.TestCase):
         left = self.write("l.wav", wav_bytes([100, -200, 300], bits=16, format_tag=1))
         right = self.write("r.wav", wav_bytes([-100, 200, 150], bits=16, format_tag=1))
         self.manager.upload_ir_pair(left, "l.wav", right, "r.wav", "Pair.irs")
-        parsed = parse_wav_frames(self.manager.irs_dir / "Pair.irs")
+        parsed = parse_wav_frames(self.irs_dir / "Pair.irs")
         self.assertEqual((parsed["channels"], parsed["format"], parsed["bits"]), (2, 1, 16))
         self.assertEqual(
             parsed["data"],
@@ -108,7 +110,7 @@ class DualIrWavFormatTests(unittest.TestCase):
         left = self.write("l.wav", wav_bytes([0.5, 0.5, 0.5, 0.5]))
         right = self.write("r.wav", wav_bytes([0.25, 0.25]))
         self.manager.upload_ir_pair(left, "l.wav", right, "r.wav", "Pair.irs")
-        parsed = parse_wav_frames(self.manager.irs_dir / "Pair.irs")
+        parsed = parse_wav_frames(self.irs_dir / "Pair.irs")
         self.assertEqual(parsed["samples"], 8)
         samples = struct.unpack("<8f", parsed["data"])
         # Interleaved L,R pairs; right channel frames 3-4 are silence-padded.
@@ -137,7 +139,7 @@ class DualIrWavFormatTests(unittest.TestCase):
         right = self.write("r.wav", wav_bytes(right_samples, bits=64, format_tag=3))
         result = self.manager.upload_ir_pair(left, "l.wav", right, "r.wav", "Pair64.irs")
         self.assertEqual(result["name"], "Pair64.irs")
-        parsed = parse_wav_frames(self.manager.irs_dir / "Pair64.irs")
+        parsed = parse_wav_frames(self.irs_dir / "Pair64.irs")
         self.assertEqual(parsed["channels"], 2)
         self.assertEqual(parsed["format"], 3)
         self.assertEqual(parsed["bits"], 32)
@@ -154,7 +156,7 @@ class DualIrWavFormatTests(unittest.TestCase):
         left = self.write("l.wav", wav_bytes([0.5, -0.25], bits=64, format_tag=3))
         right = self.write("r.wav", wav_bytes([0.5, -0.25]))
         self.manager.upload_ir_pair(left, "l.wav", right, "r.wav", "Mixed.irs")
-        parsed = parse_wav_frames(self.manager.irs_dir / "Mixed.irs")
+        parsed = parse_wav_frames(self.irs_dir / "Mixed.irs")
         self.assertEqual((parsed["channels"], parsed["format"], parsed["bits"]), (2, 3, 32))
         self.assertEqual(parsed["data"], struct.pack("<4f", 0.5, 0.5, -0.25, -0.25))
 
@@ -165,7 +167,7 @@ class DualIrWavFormatTests(unittest.TestCase):
             self.manager.upload_ir_pair(huge, "huge.wav", normal, "r.wav", "Huge.irs")
         with self.assertRaisesRegex(ValueError, "float32 range"):
             self.manager.upload_ir(huge, "huge.wav")
-        self.assertEqual(list(self.manager.irs_dir.iterdir()), [])
+        self.assertEqual(list(self.irs_dir.iterdir()), [])
 
     def test_float64_mono_upload_stores_converted_kernel(self):
         source = self.write("room64.wav", wav_bytes([0.75, -0.125, 0.1], bits=64, format_tag=3))
@@ -174,7 +176,7 @@ class DualIrWavFormatTests(unittest.TestCase):
         self.assertEqual(result["name"], "room64.wav")
         # The source file is untouched; the stored kernel is float32.
         self.assertEqual(source.read_bytes(), source_bytes)
-        stored = self.manager.irs_dir / "room64.wav"
+        stored = self.irs_dir / "room64.wav"
         self.assertLess(stored.stat().st_size, len(source_bytes))
         parsed = parse_wav_frames(stored)
         self.assertEqual((parsed["channels"], parsed["format"], parsed["bits"]), (1, 3, 32))

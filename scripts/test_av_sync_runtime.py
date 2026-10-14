@@ -248,8 +248,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         state = switch_mode(default_output_state(), 'surround')
         state = set_mode_routing(state, 'surround', 'dev', ['main_l', 'main_r', 'center', 'sub1'])
         plan = compile_processing_plan(state, output_key='dev', channels=4, sample_rate_hz=48000,
-                                       preset_loader=lambda name: {'chain': []})
-        layout = layout_from_plan(plan, resolve_ir=lambda name: None)
+                                       preset_loader=lambda *_: {'chain': []})
+        layout = layout_from_plan(plan, resolve_ir=lambda _bank, name: None)
         runtime = DSPRuntime(object())
         runtime._process = SimpleNamespace(returncode=None)
         runtime._config = DSPRuntimeConfig.from_plan(plan, layout=layout, output_key='dev', sample_rate_hz=48000,
@@ -275,8 +275,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         state = switch_mode(default_output_state(), 'surround')
         state = set_mode_routing(state, 'surround', 'dev', ['main_l', 'main_r', 'center', 'sub1'])
         plan = compile_processing_plan(state, output_key='dev', channels=4, sample_rate_hz=48000,
-                                       preset_loader=lambda name: {'chain': []})
-        layout = layout_from_plan(plan, resolve_ir=lambda name: None)
+                                       preset_loader=lambda *_: {'chain': []})
+        layout = layout_from_plan(plan, resolve_ir=lambda _bank, name: None)
         runtime = DSPRuntime(object())
         runtime._process = SimpleNamespace(returncode=None)
         runtime._config = DSPRuntimeConfig.from_plan(plan, layout=layout, output_key='dev', sample_rate_hz=48000,

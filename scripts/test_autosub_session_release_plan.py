@@ -239,8 +239,8 @@ class ReleaseAdapterRenderTests(unittest.IsolatedAsyncioTestCase):
         self.manager = DSPManager(home=Path(directory.name) / "dsp")
         self.store = OutputStateStore(Path(directory.name) / "output-state.json")
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            store=self.store, preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1"]), "stereo-sub")
         state["modes"]["stereo-sub"]["processing"]["sub1"].update(
@@ -429,8 +429,8 @@ class ReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.manager = DSPManager(home=Path(directory.name) / "dsp")
         self.store = OutputStateStore(Path(directory.name) / "output-state.json")
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            store=self.store, preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev", ["main_l", "main_r", "sub1"]), "stereo-sub")
         self.service.commit(state, expected_revision=0)

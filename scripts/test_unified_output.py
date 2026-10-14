@@ -41,13 +41,13 @@ class UnifiedOutputTests(unittest.TestCase):
                 state = model.switch_mode(model.default_output_state(), 'stereo-sub')
                 state = model.set_mode_routing(state, 'stereo-sub', 'A', ['main_l', 'main_r', *subs])
                 plan = compile_processing_plan(state, output_key='A', channels=4,
-                    sample_rate_hz=48000, preset_loader=lambda _: {'chain': []})
+                    sample_rate_hz=48000, preset_loader=lambda *_: {'chain': []})
                 self.assertEqual(plan['mode'], 'stereo-sub')
                 self.assertEqual(plan['sub_mode'], kind)
                 self.assertEqual(plan['outputs'][2]['routes'], routes)
                 stereo = model.switch_mode(state, 'stereo')
                 plan = compile_processing_plan(stereo, output_key='A', channels=4,
-                    sample_rate_hz=48000, preset_loader=lambda _: {'chain': []})
+                    sample_rate_hz=48000, preset_loader=lambda *_: {'chain': []})
                 self.assertEqual([row['role'] for row in plan['outputs']], ['main_l', 'main_r'])
 
     def test_crossover_toggle_uses_one_routing_and_preserves_subs_and_banks(self):
@@ -72,7 +72,7 @@ class UnifiedOutputTests(unittest.TestCase):
                          ['main_l', 'main_r', 'sub1', 'off', 'off'])
         state = model.switch_mode(state, 'stereo-sub')
         plan = compile_processing_plan(state, output_key='A', channels=6,
-                                       sample_rate_hz=48000, preset_loader=lambda _: {'chain': []})
+                                       sample_rate_hz=48000, preset_loader=lambda *_: {'chain': []})
         self.assertEqual([row['role'] for row in plan['outputs']], ['main_l', 'main_r', 'sub1'])
         self.assertEqual([edge['channel'] for edge in plan['physical_routes']], [0, 1, 2])
         with self.assertRaises(ValueError):
@@ -119,7 +119,7 @@ class UnifiedOutputTests(unittest.TestCase):
                 **{'lowpass' if role.endswith('low') else 'highpass':
                    {'family': 'linkwitz-riley', 'slope_db_oct': 24, 'frequency_hz': 1800}})
         plan = compile_processing_plan(state, output_key='A', channels=4,
-            sample_rate_hz=48000, preset_loader=lambda _: {'chain': []})
+            sample_rate_hz=48000, preset_loader=lambda *_: {'chain': []})
         self.assertEqual(plan['mode'], 'stereo')
         self.assertTrue(plan['crossover_enabled'])
         self.assertEqual(plan['way_count'], 2)

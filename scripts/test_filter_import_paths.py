@@ -40,7 +40,7 @@ class FilterImportPathsTests(unittest.TestCase):
         self.manager = DSPManager(home=self.home)
         self.service = OutputService(OutputServiceDeps(
             store=OutputStateStore(self.home / "output.json"),
-            preset_loader=self.manager.preset_store.read,
+            preset_loader=self.manager.read_preset,
             resolve_ir=self.resolve_ir, measurement_active=lambda: False))
 
         async def drain(fn, *args, **kwargs):
@@ -63,8 +63,8 @@ class FilterImportPathsTests(unittest.TestCase):
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
 
-    def resolve_ir(self, kernel):
-        path = self.manager._resolve_kernel_path(kernel)
+    def resolve_ir(self, bank, kernel):
+        path = self.manager._resolve_kernel_path(kernel, self.manager.library(bank))
         return {"path": str(path), "channels": parse_wav_frames(path)["channels"]}
 
     def seed(self, roles, crossover=False):
@@ -143,8 +143,11 @@ class FilterImportPathsTests(unittest.TestCase):
                             expected["modes"]["stereo-sub"]["banks"][role]["preset"] = name
                             expected["modes"]["stereo-sub"]["banks"][role]["preset_a"] = name
                         self.assertEqual(after, expected)
-                        stored = self.manager.preset_store.read(name)
-                        self.assertEqual(stored["metadata"]["bank"], bank)
+                        # The preset lives in the library of the bank it was imported into.
+                        library = self.manager.library(bank, "stereo-sub")
+                        stored = library.read(name)
+                        self.assertEqual([entry["bank"] for entry in self.manager.list_presets()
+                                          if entry["name"] == name], [bank])
                         if kind in ("json", "bundle"):
                             self.assertEqual(stored["chain"], [])
                             params = None
@@ -157,7 +160,7 @@ class FilterImportPathsTests(unittest.TestCase):
                             if kind != "rew-mono":
                                 self.assertEqual(params["rightBands"][0]["frequencyHz"], 1234)
                         elif kind not in ("json", "bundle"):
-                            ir = parse_wav_frames(self.manager._resolve_kernel_path(params["kernel"]))
+                            ir = parse_wav_frames(self.manager._resolve_kernel_path(params["kernel"], library))
                             expected_samples = (0.5, -0.125) if bank in ("sub1", "sub2") else (
                                 (0.5, 0.25, -0.125, 0.0) if kind == "dual-ir" else (0.5, 0.25, -0.125, -0.0625))
                             self.assertEqual(struct.unpack(f"<{ir['samples']}f", ir["data"]), expected_samples)
@@ -203,7 +206,7 @@ class FilterImportPathsTests(unittest.TestCase):
                     data={"preset_name": name, "load_after_create": "false"},
                     files={"file": ("rew.txt", text.encode(), "text/plain")})
                 self.assertEqual(response.status_code, status, response.text)
-                exists = self.manager.preset_store.path(name).exists()
+                exists = self.manager.library().path(name).exists()
                 self.assertEqual(exists, bands is not None)
                 if bands is not None:
                     self.assertEqual(response.json()["preset"]["band_count"], bands)

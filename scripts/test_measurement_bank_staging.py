@@ -54,8 +54,8 @@ OVERVIEW_FIVE = {
 def make_service(directory, manager):
     return OutputService(OutputServiceDeps(
         store=OutputStateStore(Path(directory) / "output-state.json"),
-        preset_loader=manager.preset_store.read,
-        resolve_ir=lambda kernel: (_ for _ in ()).throw(AssertionError(kernel)),
+        preset_loader=manager.read_preset,
+        resolve_ir=lambda _bank, kernel: (_ for _ in ()).throw(AssertionError(kernel)),
         measurement_active=lambda: False,
     ))
 

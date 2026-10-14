@@ -298,5 +298,41 @@ const realFetch = globalThis.fetch;
         assert.match(toasts.at(-1)[0], /Deleted preset: Room/);
     }
 
+    // A preset name is unique within its bank only: the listening link, the
+    // chain line and a delete all address the selected bank's own preset.
+    {
+        const slot = (id, label, preset) => ({ id, label, preset, preset_a: preset, preset_b: null, active_side: 'A' });
+        const sharedName = { revision: 7, active_mode: 'stereo-sub',
+            modes: { 'stereo-sub': { selected_bank: 'main',
+                banks: { global: slot('global', 'Global', 'Room'), main: slot('main', 'Main L/R', 'Room') },
+                topology: { roles: ['main_l', 'main_r'] } } } };
+        const state = { outputSystem: { catalog: sharedName }, dsp: { available: true, compare: {}, presets: [
+            { name: 'Direct', bank: null }, { name: 'Neutral', bank: null },
+            { name: 'Room', bank: 'global', mode: 'stereo-sub', source_presets: ['Bass', 'Treble'] },
+            { name: 'Room', bank: 'global', mode: 'stereo', source_presets: ['Left', 'Right'] },
+            { name: 'Room', bank: 'main', mode: null, source_presets: [] },
+        ] } };
+        const elements = bankElements();
+        const requests = [];
+        initBankUI(state, elements, {
+            presetFileUrl: (name, owner) => `/file/${name}?${new URLSearchParams(owner || {})}` });
+        BankUI.renderEffectsCompare();
+        assert.match(elements.effectsCompareActive.innerHTML, /href="\/file\/Room\?bank_mode=stereo-sub&bank_id=main"/);
+        assert.equal(elements.effectsCompareChain.textContent, 'Chain: Single preset');
+        assert.equal((elements.effectsCompareA.innerHTML.match(/value="Room"/g) || []).length, 1);
+        sharedName.modes['stereo-sub'].selected_bank = 'global';
+        BankUI.renderEffectsCompare();
+        assert.match(elements.effectsCompareActive.innerHTML, /bank_mode=stereo-sub&bank_id=global"/);
+        assert.equal(elements.effectsCompareChain.textContent, 'Chain: Bass → Treble');
+        globalThis.fetch = async (url, options) => {
+            requests.push([url, JSON.parse(options.body)]);
+            return { ok: true, json: async () => ({}) };
+        };
+        await BankUI.deleteEffectsPreset();
+        globalThis.fetch = realFetch;
+        assert.deepEqual(requests, [['/api/dsp/presets/delete',
+            { preset_name: 'Room', bank_mode: 'stereo-sub', bank_id: 'global' }]]);
+    }
+
     console.log('output bank ui frontend tests: ok');
 })().catch((error) => { globalThis.fetch = realFetch; console.error(error); process.exit(1); });

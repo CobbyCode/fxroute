@@ -14,9 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from dsp.native_config import PEQ_Q_MAX, PEQ_Q_MIN
 from dsp.latency import ir_latency, render_av_sync, validate_ir_latency
-from audio.output_topology import MODE_LABELS, MODES
-from dsp.persistence import (DSPPresetStore, DSPStateStore, clean_bank, clean_name, kernel_name, preset_bank,
-                             preset_mode)
+from dsp.persistence import DSPPresetLibrary, DSPPresetStore, DSPStateStore, clean_name, kernel_name
 from dsp.surround_global import (BUILTIN_PRESETS as SURROUND_BUILTINS, GROUP_PAIR_MASK, LAYOUT as SURROUND_LAYOUT, preset_layout,
                                  routed_chain, routed_groups, validate_surround_chain)
 
@@ -471,7 +469,7 @@ class DSPManager:
         self.compare_state_file = self.state_dir / "compare.json"
         for directory in (self.output_dir, self.irs_dir, self.state_dir):
             directory.mkdir(parents=True, exist_ok=True)
-        self.preset_store = DSPPresetStore(self.output_dir, self.irs_dir)
+        self.presets = DSPPresetLibrary(self.output_dir, self.irs_dir)
         self.state_store = DSPStateStore(self.state_dir)
         self.apply_callback = apply_callback
         self.runtime_transition_callback = None
@@ -536,171 +534,59 @@ class DSPManager:
     @staticmethod
     def _native_preset(chain: Optional[List[dict]] = None,
                        source_presets: Optional[List[str]] = None,
-                       bank: Optional[str] = None,
-                       layout: Optional[str] = None,
-                       mode: Optional[str] = None) -> Dict[str, Any]:
+                       layout: Optional[str] = None) -> Dict[str, Any]:
         metadata: Dict[str, Any] = {}
         if source_presets:
             metadata["source_presets"] = list(source_presets)
         if layout is not None:
             metadata["layout"] = layout
-        cleaned = clean_bank(bank) if bank is not None else None
-        if bank is not None and cleaned is None and str(bank).strip():
-            raise ValueError(f"Invalid preset bank: {bank!r}")
-        if cleaned is not None:
-            metadata["bank"] = cleaned
-        if mode is not None:
-            metadata["mode"] = mode
         return {"schema": DSPPresetStore.SCHEMA, "version": DSPPresetStore.VERSION,
                 "chain": list(chain or []), "metadata": metadata}
 
-    @staticmethod
-    def _normalize_bank_arg(bank: Any) -> Optional[str]:
-        """Owning bank for a new preset; None leaves the stored tag untouched."""
-        if bank is None:
-            return None
-        if isinstance(bank, str) and not bank.strip():
-            return None
-        cleaned = clean_bank(bank)
-        if cleaned is None:
-            raise ValueError(f"Invalid preset bank: {bank!r}")
-        return cleaned
+    def library(self, bank: Any = None, mode: Any = None) -> DSPPresetStore:
+        """Preset store of one filterbank; Global has one per output mode.
 
-    def _bank_for_create(self, name: str, bank: Any) -> Optional[str]:
-        """Resolve the stored owning bank, refusing cross-bank overwrites.
-
-        A preset belongs to exactly one concrete bank (or Global); built-ins
-        stay universal. Rewriting a bank-owned preset from another bank is
-        rejected instead of hijacking it. Legacy files without a tag adopt
-        the requesting bank; callers without a bank keep the stored tag.
+        A preset name is unique within its bank only. Without a bank this is
+        the Stereo Global store, which also holds the single active preset
+        of the fallback graph (``load_preset``, ``active.json``).
         """
-        requested = self._normalize_bank_arg(bank)
-        try:
-            existing = self.preset_store.read(clean_name(name))
-        except (FileNotFoundError, RuntimeError):
-            return requested
-        stored = preset_bank(existing)
-        if requested is None:
-            return stored
-        if stored is None:
-            return requested
-        if stored != requested:
-            raise ValueError(
-                f'Preset "{clean_name(name)}" belongs to bank "{stored}", not "{requested}"')
-        return requested
+        return self.presets.store(bank, mode)
 
-    def preset_bank(self, preset_name: str) -> Optional[str]:
-        """Owning bank tag of one preset (None for built-ins/legacy)."""
-        return preset_bank(self.preset_store.read(clean_name(preset_name)))
-
-    def _mode_for_create(self, name: str, bank_id: Optional[str], mode: Any,
-                         layout: Optional[str]) -> Optional[str]:
-        """Resolve the output mode that owns a Global preset, refusing cross-mode overwrites.
-
-        Every output mode has its own Global presets, so a name taken in one
-        mode's Global bank cannot be rewritten from another. Area-bank
-        presets carry no mode. Callers without a mode keep the stored owner;
-        a new preset then belongs to the mode its layout implies.
-        """
-        if bank_id != "global":
-            return None
-        requested = mode.strip() if isinstance(mode, str) and mode.strip() else None
-        if requested is not None and requested not in MODES:
-            raise ValueError(f"Unsupported output mode: {requested}")
-        implied = "surround" if layout == SURROUND_LAYOUT else None
-        if requested is not None and (requested == "surround") != (implied == "surround"):
-            raise ValueError("A Surround preset fits only the Surround Global bank" if implied
-                             else "Surround Global presets need a speaker group")
-        try:
-            existing = self.preset_store.read(clean_name(name))
-        except (FileNotFoundError, RuntimeError):
-            return requested or implied or "stereo"
-        stored = preset_mode(existing)
-        if requested is None:
-            return stored or implied or "stereo"
-        if stored is not None and stored != requested:
-            raise ValueError(f'Preset "{clean_name(name)}" belongs to the {MODE_LABELS[stored]} Global bank, '
-                             f'not {MODE_LABELS[requested]}')
-        return requested
+    def read_preset(self, mode: str, bank_id: str, name: str) -> Dict[str, Any]:
+        """Preset loader of the output state: a bank slot names a preset of its own bank."""
+        return self.library(bank_id, mode).read(name)
 
     @staticmethod
-    def _group_for_create(group: Any, bank_id: Optional[str]) -> Optional[str]:
+    def _group_for_create(group: Any, store: DSPPresetStore) -> Optional[str]:
         """Speaker group of a new Surround Global preset (None for ordinary presets)."""
         if group is None or (isinstance(group, str) and not group.strip()):
             return None
         if group not in GROUP_PAIR_MASK:
             raise ValueError(f"Unknown speaker group: {group!r}")
-        if bank_id != "global":
+        if store.bank != "global":
             raise ValueError("A speaker group applies to the Global bank only")
         return group
 
-    def _guard_create_owner(self, name: str, bank: Any, group: Any, mode: Any) -> None:
-        """Run the owner checks of a create ahead of its side effects."""
-        bank_id = self._bank_for_create(name, bank)
-        layout = SURROUND_LAYOUT if self._group_for_create(group, bank_id) else None
-        self._require_same_layout(name, layout)
-        self._mode_for_create(name, bank_id, mode, layout)
-
-    def _require_same_layout(self, name: str, layout: Optional[str]) -> None:
-        """Refuse to overwrite a preset with one of the other layout.
-
-        A Surround preset replacing a stereo one (or the reverse) would break
-        every output mode still holding the name in its Global slot.
-        """
-        try:
-            existing = preset_layout(self.preset_store.read(clean_name(name)))
-        except (FileNotFoundError, RuntimeError):
-            return
-        if existing != layout:
-            raise ValueError(
-                f'Preset "{clean_name(name)}" already exists with a different layout; choose another name')
-
     def _bootstrap(self) -> None:
-        direct = self._native_preset()
-        neutral = self._native_preset()
-        for name, payload in (("Direct", direct), ("Neutral", neutral)):
-            path = self.output_dir / f"{name}.json"
-            if not path.exists():
-                self.preset_store.write(name, payload)
-        self._migrate_legacy_preset_banks()
         active = self.state_store.read("active.json", {})
-        if not isinstance(active, dict) or active.get("preset") not in {p["name"] for p in self.preset_store.list()}:
+        if not isinstance(active, dict) or active.get("preset") not in self._library_names():
             self.state_store.write("active.json", {"schema": "fxroute.dsp.active", "version": 1,
                                                    "preset": "Neutral"})
 
-    def _migrate_legacy_preset_banks(self) -> None:
-        """Tag once untagged presets as Global, where they historically lived.
-
-        Before per-bank ownership the preset library was shared with Global
-        as the default surface, so a file without a bank tag is a former
-        global preset. Built-ins stay universal and tagged files are left
-        untouched; the rewrite is idempotent.
-        """
-        if not self.output_dir.exists():
-            return
-        for path in sorted(self.output_dir.glob("*.json")):
-            if path.stem in self.PROTECTED_PRESETS:
-                continue
-            try:
-                payload = self.preset_store.read(path.stem)
-            except (FileNotFoundError, RuntimeError, ValueError) as exc:
-                logger.warning("Legacy bank migration skipped %s: %s", path.name, exc)
-                continue
-            if preset_bank(payload) is not None:
-                continue
-            payload["metadata"] = {**(payload.get("metadata") or {}), "bank": "global"}
-            try:
-                self.preset_store.write(path.stem, payload)
-            except ValueError as exc:
-                logger.warning("Legacy bank migration failed for %s: %s", path.name, exc)
+    def _library_names(self, bank: Any = None, mode: Any = None) -> List[str]:
+        """Built-ins first, then the presets of one bank."""
+        return [*SURROUND_BUILTINS, *(entry["name"] for entry in self.library(bank, mode).list())]
 
     def list_presets(self) -> List[dict]:
-        return self.preset_store.list(("Direct", "Neutral"))
+        """The built-ins, valid in every bank, then every bank's own presets."""
+        builtins = [{"name": name, "filename": None, "path": None, "bank": None, "mode": None,
+                     "layout": None, "source_presets": []} for name in SURROUND_BUILTINS]
+        return builtins + [entry for store in self.presets.stores() for entry in store.list()]
 
-    def list_irs(self) -> List[dict]:
+    def list_irs(self, bank: Any = None, mode: Any = None) -> List[dict]:
+        """IR files of one bank."""
         return [{"name": path.name, "basename": path.stem, "path": str(path),
-                 "size": path.stat().st_size}
-                for path in sorted(self.irs_dir.iterdir()) if path.is_file()]
+                 "size": path.stat().st_size} for path in self.library(bank, mode).irs()]
 
     def get_active_preset(self) -> Optional[str]:
         state = self.state_store.read("active.json", {})
@@ -709,7 +595,7 @@ class DSPManager:
     def load_preset(self, preset_name: str,
                     convolver_sample_rate_hz: Optional[int] = None) -> None:
         name = clean_name(preset_name)
-        self.preset_store.read(name)
+        self.library().read(name)
         config = self.compile_engine_config(
             [{"name": "left", "source": 0}, {"name": "right", "source": 1}],
             preset_name=name, sample_rate_hz=convolver_sample_rate_hz or 48000,
@@ -721,7 +607,7 @@ class DSPManager:
 
     def normalize_compare_state(self, compare: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         compare = compare if isinstance(compare, dict) else {}
-        available = {entry["name"] for entry in self.list_presets()}
+        available = set(self._library_names())
         preset_a = compare.get("presetA") if compare.get("presetA") in available else ""
         preset_b = compare.get("presetB") if compare.get("presetB") in available else ""
         if preset_a == preset_b:
@@ -955,8 +841,14 @@ class DSPManager:
 
     def compile_engine_config(self, output_layout: List[Dict[str, Any]], *,
                                preset_name: Optional[str] = None,
+                               mode: Optional[str] = None,
                                sample_rate_hz: int = 48000,
                                extras_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Engine configuration of one Global preset.
+
+        ``mode`` names the output mode whose Global bank holds the preset;
+        without it the Stereo Global one, where the active preset lives.
+        """
         if not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be a positive integer")
         if not isinstance(output_layout, list) or not output_layout:
@@ -1039,7 +931,7 @@ class DSPManager:
                     raise ValueError("Surround requires the canonical eight input positions")
                 outputs[-1]["input_positions"] = list(SURROUND_POSITIONS)
         active = clean_name(preset_name or self.get_active_preset())
-        payload = self.preset_store.read(active)
+        payload = self.library("global", mode).read(active)
         chain = copy.deepcopy(payload["chain"])
         if preset_layout(payload) == SURROUND_LAYOUT:
             if not any("input_positions" in output for output in outputs):
@@ -1064,11 +956,12 @@ class DSPManager:
 
     def compile_engine_text(self, output_layout: List[Dict[str, Any]], *,
                             preset_name: Optional[str] = None,
+                            mode: Optional[str] = None,
                             sample_rate_hz: int = 48000,
                             extras_override: Optional[Dict[str, Any]] = None) -> str:
         av_sync = output_layout[0].get('av_sync') if output_layout else None
         config = self.compile_engine_config(
-            output_layout, preset_name=preset_name, sample_rate_hz=sample_rate_hz,
+            output_layout, preset_name=preset_name, mode=mode, sample_rate_hz=sample_rate_hz,
             extras_override=extras_override)
         max_input = max(route["input"] for output in config["outputs"]
                         for route in output["routes"] + output.get("post_crossover_routes", [])
@@ -1203,7 +1096,7 @@ class DSPManager:
                         control(f"g{side}_{index}", 10.0 ** (float(band.get("gainDb", 0.0)) / 20.0))
                         control(f"q{side}_{index}", band.get("q", 1.0))
             elif plugin_type == "convolver":
-                resolved = self._resolve_kernel_path(str(params.get("kernel", "")))
+                resolved = self._resolve_kernel_path(str(params.get("kernel", "")), self.library("global", mode))
                 # Never emit a corrupt kernel path: an invalid IR must fail
                 # here, not inside the native engine process.
                 self._validate_ir_file(resolved)
@@ -1475,20 +1368,17 @@ class DSPManager:
                   "enabled": normalized["enabled"],
                   "params": copy.deepcopy(normalized["params"]),
                   "mix": copy.deepcopy(normalized["mix"])}
-        bank_id = self._bank_for_create(name, bank)
-        group = self._group_for_create(group, bank_id)
-        layout = SURROUND_LAYOUT if group else None
+        store = self.library(bank, mode)
+        group = self._group_for_create(group, store)
         if group:
             plugin["group"] = group
-        self._require_same_layout(name, layout)
-        owner = self._mode_for_create(name, bank_id, mode, layout)
-        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id, layout=layout, mode=owner))
+        path = store.write(name, self._native_preset([plugin], layout=SURROUND_LAYOUT if group else None))
         if normalized["params"].get("channelMode") == "dual":
             band_count = (len(normalized["params"].get("leftBands", []))
                           + len(normalized["params"].get("rightBands", [])))
         else:
             band_count = len(normalized["params"].get("bands", []))
-        return {"name": name, "filename": path.name, "path": str(path), "bank": bank_id,
+        return {"name": name, "filename": path.name, "path": str(path), "bank": store.bank,
                 "band_count": band_count, "channel_mode": normalized["params"]["channelMode"]}
 
     def create_convolver_preset(self, preset_name: str, ir_filename: str,
@@ -1498,11 +1388,12 @@ class DSPManager:
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
+        store = self.library(bank, mode)
         requested = Path(ir_filename).name
-        if requested not in {item["name"] for item in self.list_irs()}:
+        if requested not in {path.name for path in store.irs()}:
             raise FileNotFoundError(f"IR file not found: {ir_filename}")
         kernel = kernel_name(requested)
-        resolved = self._resolve_kernel_path(kernel)
+        resolved = self._resolve_kernel_path(kernel, store)
         if resolved.name != requested:
             raise ValueError(
                 f"Ambiguous IR kernel {kernel!r}: requested {requested!r} "
@@ -1511,15 +1402,11 @@ class DSPManager:
         plugin = {"id": "convolver#0", "type": "convolver", "enabled": True,
                   "params": {"kernel": kernel, "wet_db": 0.0, "dry_db": -100.0,
                              "input_gain_db": 0.0, "output_gain_db": 0.0}}
-        bank_id = self._bank_for_create(name, bank)
-        group = self._group_for_create(group, bank_id)
-        layout = SURROUND_LAYOUT if group else None
+        group = self._group_for_create(group, store)
         if group:
             plugin["group"] = group
-        self._require_same_layout(name, layout)
-        owner = self._mode_for_create(name, bank_id, mode, layout)
-        path = self.preset_store.write(name, self._native_preset([plugin], bank=bank_id, layout=layout, mode=owner))
-        return {"name": name, "filename": path.name, "bank": bank_id,
+        path = store.write(name, self._native_preset([plugin], layout=SURROUND_LAYOUT if group else None))
+        return {"name": name, "filename": path.name, "bank": store.bank,
                 "path": str(path), "kernel_name": kernel}
 
     @staticmethod
@@ -1542,16 +1429,11 @@ class DSPManager:
             raise ValueError("Select at least two different presets to combine")
         if name in sources:
             raise ValueError("New preset name must differ from the source presets")
+        store = self.library(bank, mode)
         chain = []
         counters: Dict[str, int] = {}
-        layouts = {preset_layout(self.preset_store.read(source)) for source in sources
-                   if source not in SURROUND_BUILTINS}
-        if len(layouts) > 1:
-            raise ValueError("Surround presets can only be combined with other Surround presets")
-        layout = next(iter(layouts)) if layouts else None
-        self._require_same_layout(name, layout)
         for source in sources:
-            for plugin in self.preset_store.read(source)["chain"]:
+            for plugin in store.read(source)["chain"]:
                 item = copy.deepcopy(plugin)
                 base = item["type"]
                 number = counters.get(base, 0)
@@ -1560,11 +1442,9 @@ class DSPManager:
                 chain.append(item)
         self._validate_supported_chain(chain)
         self._clamp_chain_limiter_params(chain)
-        bank_id = self._bank_for_create(name, bank)
-        owner = self._mode_for_create(name, bank_id, mode, layout)
-        path = self.preset_store.write(
-            name, self._native_preset(chain, sources, bank=bank_id, layout=layout, mode=owner))
-        return {"name": name, "filename": path.name, "path": str(path), "bank": bank_id,
+        path = store.write(
+            name, self._native_preset(chain, sources, layout=SURROUND_LAYOUT if store.surround else None))
+        return {"name": name, "filename": path.name, "path": str(path), "bank": store.bank,
                 "source_presets": sources, "plugin_count": len(chain)}
 
     def import_preset_json(self, preset_filename: str, preset_text: str, bank: Any = None,
@@ -1573,33 +1453,20 @@ class DSPManager:
             source = json.loads(preset_text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"Preset JSON is invalid: {exc}") from exc
+        store = self.library(bank, mode)
         if isinstance(source, dict) and source.get("schema") == self.PRESET_SCHEMA:
-            payload = copy.deepcopy(self.preset_store.validate(source))
+            payload = copy.deepcopy(store.validate(source))
             self._validate_supported_chain(payload["chain"])
             self._clamp_chain_limiter_params(payload["chain"])
         else:
             payload = self._translate_legacy_preset(source)
         name = self._ensure_overwritable_name(preset_filename)
-        bank_id = self._bank_for_create(name, bank)
-        metadata = dict(payload.get("metadata") or {})
-        if bank_id is not None:
-            metadata["bank"] = bank_id
-        elif "bank" in metadata and preset_bank(payload) is None:
-            metadata.pop("bank", None)
-        # The file joins the Global bank it is imported into, whatever mode exported it.
-        exported_mode = metadata.pop("mode", None)
-        owner = self._mode_for_create(name, clean_bank(metadata.get("bank")),
-                                      mode if isinstance(mode, str) and mode.strip() else exported_mode,
-                                      preset_layout(payload))
-        if owner is not None:
-            metadata["mode"] = owner
-        payload["metadata"] = metadata
-        path = self.preset_store.write(name, payload)
-        return {"name": name, "filename": path.name, "path": str(path), "bank": preset_bank(payload),
+        path = store.write(name, payload)
+        return {"name": name, "filename": path.name, "path": str(path), "bank": store.bank,
                 "source_presets": payload.get("metadata", {}).get("source_presets", [])}
 
-    def export_preset_json(self, preset_name: str) -> str:
-        return json.dumps(self.preset_store.read(preset_name), indent=2, sort_keys=True) + "\n"
+    def export_preset_json(self, preset_name: str, bank: Any = None, mode: Any = None) -> str:
+        return json.dumps(self.library(bank, mode).read(preset_name), indent=2, sort_keys=True) + "\n"
 
     def _translate_legacy_preset(self, source: Any) -> Dict[str, Any]:
         output = source.get("output") if isinstance(source, dict) else None
@@ -1697,28 +1564,34 @@ class DSPManager:
                            "q": float(band.get("q", 1.0))})
         return result
 
-    def require_deletable_preset(self, preset_name: str) -> str:
-        """Return the clean name of an existing, non-built-in preset."""
+    def require_deletable_preset(self, preset_name: str, bank: Any = None, mode: Any = None) -> str:
+        """Return the clean name of an existing, non-built-in preset of one bank."""
         name = clean_name(preset_name)
         if name in self.PROTECTED_PRESETS:
             raise ValueError(f'Preset "{name}" is a built-in preset and cannot be deleted')
-        self.preset_store.read(name)
+        self.library(bank, mode).read(name)
         return name
 
-    def delete_preset(self, preset_name: str, *,
+    def is_active_preset(self, preset_name: str, bank: Any = None, mode: Any = None) -> bool:
+        """Whether a bank's preset is the active preset of the fallback graph (Stereo Global)."""
+        store = self.library(bank, mode)
+        return (store.bank, store.mode) == ("global", "stereo") and self.get_active_preset() == clean_name(preset_name)
+
+    def delete_preset(self, preset_name: str, *, bank: Any = None, mode: Any = None,
                       pinned_presets: tuple[str, ...] | frozenset[str] | set[str] | list[str] = ()) -> None:
-        name = self.require_deletable_preset(preset_name)
+        """Delete one bank's preset; ``pinned_presets`` are the names its bank's slots still hold."""
+        name = self.require_deletable_preset(preset_name, bank, mode)
         if name in {clean_name(pinned) for pinned in pinned_presets}:
             raise ValueError(f'Preset "{name}" is used by an output bank and cannot be deleted')
-        payload = self.preset_store.read(name)
-        kernels = self.preset_store.kernels(payload)
-        preset_path = self.preset_store.path(name)
-        if self.get_active_preset() == name:
+        store = self.library(bank, mode)
+        kernels = store.kernels(store.read(name))
+        preset_path = store.path(name)
+        active = self.is_active_preset(name, bank, mode)
+        if active:
             # Pre-flight the Neutral fallback before mutating anything: a
             # fallback that cannot load must fail here, never after the
             # preset file is already gone (which would leave active.json
             # pointing at a missing preset).
-            self.preset_store.read("Neutral")
             self.compile_engine_config(
                 [{"name": "left", "source": 0}, {"name": "right", "source": 1}],
                 preset_name="Neutral", sample_rate_hz=48000,
@@ -1729,11 +1602,11 @@ class DSPManager:
         staged: List[tuple[Path, Path]] = []
         try:
             self._stage_delete_path(preset_path, staged)
-            orphaned = kernels - self.preset_store.referenced_kernels_except(name)
+            orphaned = kernels - store.referenced_kernels_except(name)
             for kernel in orphaned:
-                for path in self.preset_store.find_ir_paths(kernel):
+                for path in store.find_ir_paths(kernel):
                     self._stage_delete_path(path, staged)
-            if self.get_active_preset() == name:
+            if active:
                 self.load_preset("Neutral")
         except BaseException:
             for original, backup in reversed(staged):
@@ -1767,21 +1640,18 @@ class DSPManager:
 
     def _extract_kernel_names_from_payload(self, payload: Optional[Dict[str, Any]]):
         if isinstance(payload, dict) and payload.get("schema") == self.PRESET_SCHEMA:
-            return self.preset_store.kernels(payload)
+            return DSPPresetStore.kernels(payload)
         try:
-            return self.preset_store.kernels(self._translate_legacy_preset(payload))
+            return DSPPresetStore.kernels(self._translate_legacy_preset(payload))
         except (ValueError, UnsupportedPluginError):
             return set()
 
-    def _find_ir_paths_for_kernel_name(self, kernel_name: str) -> List[Path]:
-        return self.preset_store.find_ir_paths(kernel_name)
-
-    def _resolve_kernel_path(self, kernel: Any) -> Path:
-        """Resolve a convolver kernel name to exactly one IR file."""
+    def _resolve_kernel_path(self, kernel: Any, store: Optional[DSPPresetStore] = None) -> Path:
+        """Resolve a convolver kernel name to exactly one IR file of one bank."""
         stem = kernel_name(kernel)
         if not stem:
             raise ValueError("Convolver kernel name is required")
-        paths = self.preset_store.find_ir_paths(stem)
+        paths = (store or self.library()).find_ir_paths(stem)
         if not paths:
             raise FileNotFoundError(f"IR file not found: {kernel}")
         if len(paths) > 1:
@@ -1807,10 +1677,12 @@ class DSPManager:
         except ValueError as exc:
             raise ValueError(f"Invalid IR file {path.name}: {exc}") from exc
 
-    def _stage_ir_bytes(self, destination: Path, data: bytes) -> Path:
-        """Write IR bytes to a temp file in irs_dir without touching the target."""
+    @staticmethod
+    def _stage_ir_bytes(destination: Path, data: bytes) -> Path:
+        """Write IR bytes to a temp file next to the target without touching it."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
-            prefix=".fxroute-ir-stage-", suffix=destination.suffix, dir=str(self.irs_dir))
+            prefix=".fxroute-ir-stage-", suffix=destination.suffix, dir=str(destination.parent))
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
@@ -1852,14 +1724,14 @@ class DSPManager:
         os.replace(stage, destination)
 
     def upload_ir(self, source_path: Path, filename: str,
-                  stored_name: Optional[str] = None) -> dict:
+                  stored_name: Optional[str] = None, bank: Any = None, mode: Any = None) -> dict:
         source = Path(source_path)
         if not source.is_file():
             raise FileNotFoundError(f"IR upload not found: {source}")
         name = Path(stored_name or filename).name
         if not name.lower().endswith((".irs", ".wav")):
             raise ValueError("IR file must be .irs or .wav")
-        # Validate before storing so invalid content never lands in irs_dir
+        # Validate before storing so invalid content never lands in the bank's IR folder
         # and can never reach the native convolver. Float64 sources are
         # stored as float32 so the stored kernel is directly loadable.
         try:
@@ -1867,7 +1739,7 @@ class DSPManager:
             ensure_kernel_supported_ir(params, name)
         except ValueError as exc:
             raise ValueError(f"Invalid IR file {name}: {exc}") from exc
-        destination = self.irs_dir / name
+        destination = self.library(bank, mode).irs_dir / name
         self._guard_ir_destination(destination, name)
         if params.get("converted"):
             data = build_wav_bytes(
@@ -1881,6 +1753,13 @@ class DSPManager:
         return {"name": destination.name, "basename": destination.stem,
                 "path": str(destination), "size": destination.stat().st_size}
 
+    def _guard_create(self, name: str, bank: Any, group: Any, mode: Any) -> None:
+        """Refuse a preset its bank cannot hold before any IR file is written."""
+        store = self.library(bank, mode)
+        if bool(self._group_for_create(group, store)) != store.surround:
+            raise ValueError("Surround Global presets need a speaker group" if store.surround
+                             else "A Surround preset fits only the Surround Global bank")
+
     def create_convolver_preset_with_upload(self, preset_name: str, source_path: Path,
                                             filename: str, extras=None, bank: Any = None,
                                             group: Optional[str] = None, mode: Any = None) -> dict:
@@ -1889,17 +1768,16 @@ class DSPManager:
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
-        # Refuse cross-bank and cross-mode overwrites before staging any IR file.
-        self._guard_create_owner(name, bank, group, mode)
+        self._guard_create(name, bank, group, mode)
         uploaded = self.upload_ir(source_path, filename,
-                                  f"{name}{Path(filename).suffix}")
+                                  f"{name}{Path(filename).suffix}", bank=bank, mode=mode)
         return {"ir": uploaded,
                 "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank, group=group,
                                                        mode=mode)}
 
     def upload_ir_pair(self, left_source_path: Path, left_filename: str,
                        right_source_path: Path, right_filename: str,
-                       merged_name: str) -> dict:
+                       merged_name: str, bank: Any = None, mode: Any = None) -> dict:
         del left_filename, right_filename
         # Both sides normalize to the kernel encoding first, so float64
         # sources (or mixed float64/float32 pairs) interleave into a plain
@@ -1929,7 +1807,7 @@ class DSPManager:
         for byte_offset in range(width):
             stereo[byte_offset::2 * width] = left_data[byte_offset::width]
             stereo[width + byte_offset::2 * width] = right_data[byte_offset::width]
-        destination = self.irs_dir / Path(merged_name).name
+        destination = self.library(bank, mode).irs_dir / Path(merged_name).name
         self._guard_ir_destination(destination, destination.name)
         latency = None
         if left.get('latency') is not None and right.get('latency') is not None:
@@ -1956,10 +1834,10 @@ class DSPManager:
         name = self._ensure_overwritable_name(preset_name)
         if not name:
             raise ValueError("Invalid preset name")
-        self._guard_create_owner(name, bank, group, mode)
+        self._guard_create(name, bank, group, mode)
         merged_name = f"{name}.irs"
         uploaded = self.upload_ir_pair(left_source_path, left_filename,
-                                       right_source_path, right_filename, merged_name)
+                                       right_source_path, right_filename, merged_name, bank=bank, mode=mode)
         return {"ir": uploaded,
                 "preset": self.create_convolver_preset(name, uploaded["name"], extras, bank=bank, group=group,
                                                        mode=mode)}
@@ -1987,7 +1865,10 @@ class DSPManager:
         presets = self.list_presets()
         return {"available": True, "mode": "native", "runtime": {"owner": "fxroute"},
                 "preset_count": len(presets), "active_preset": self.get_active_preset(),
-                "presets": presets, "irs": self.list_irs(), "compare": self.load_compare_state(),
+                "presets": presets, "compare": self.load_compare_state(),
+                "irs": [{"name": path.name, "basename": path.stem, "path": str(path), "size": path.stat().st_size,
+                         "bank": store.bank, "mode": store.mode}
+                        for store in self.presets.stores() for path in store.irs()],
                 "global_extras": self.load_global_extras(),
                 "global_extras_excluded_presets": sorted(self.EXCLUDED_GLOBAL_EXTRAS_PRESETS),
                 "paths": {"output": str(self.output_dir), "irs": str(self.irs_dir),

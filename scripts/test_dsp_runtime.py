@@ -76,7 +76,8 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         self.assertEqual(text.count("peq 2 lowpass 80"), 2)
 
     def test_engine_text_emits_every_enabled_stage_in_exact_order(self):
-        ir = self.manager.irs_dir / "room.irs"
+        ir = self.manager.library().irs_dir / "room.irs"
+        ir.parent.mkdir(parents=True)
         import wave as _wave
         with _wave.open(str(ir), "wb") as _handle:
             _handle.setnchannels(1)
@@ -99,7 +100,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                         "input_gain_db": -2, "output_gain_db": 3}},
             {"id": "crystalizer#0", "type": "crystalizer", "enabled": True, "params": {}},
         ]
-        self.manager.preset_store.write("Ordered", self.manager._native_preset(chain))
+        self.manager.library().write("Ordered", self.manager._native_preset(chain))
         text = self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
             preset_name="Ordered")
@@ -126,7 +127,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                                             "frequencyHz": 100, "gainDb": -6, "q": 2}],
                              "rightBands": [{"enabled": True, "filterType": "high_shelf",
                                              "frequencyHz": 5000, "gainDb": 4, "q": .7}]}}]
-        self.manager.preset_store.write("Dual", self.manager._native_preset(chain))
+        self.manager.library().write("Dual", self.manager._native_preset(chain))
         text = self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}], preset_name="Dual")
         self.assertNotIn("control clink ", text)
@@ -149,7 +150,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         chain = [{"id": "equalizer#0", "type": "equalizer", "enabled": True,
                   "params": {"channelMode": "stereo-linked", "eqMode": "FFT",
                              "bands": bands}}]
-        self.manager.preset_store.write("Types", self.manager._native_preset(chain))
+        self.manager.library().write("Types", self.manager._native_preset(chain))
         text = self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}], preset_name="Types")
         self.assertIn("control mode 2", text)
@@ -171,7 +172,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                                  {"enabled": True, "filterType": "delay", "delayMs": 7},
                                  {"enabled": True, "filterType": "notch", "frequencyHz": 200,
                                   "gainDb": 0, "q": 2}]}}]
-        self.manager.preset_store.write("Legacy PEQ", self.manager._native_preset(chain))
+        self.manager.library().write("Legacy PEQ", self.manager._native_preset(chain))
         text = self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
             preset_name="Legacy PEQ")
@@ -190,7 +191,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                       {"enabled": True, "filterType": "delay", "delayMs": 500},
                       {"enabled": True, "filterType": "delay", "delayMs": 500},
                   ]}}]
-        self.manager.preset_store.write("Long PEQ Delay", self.manager._native_preset(chain))
+        self.manager.library().write("Long PEQ Delay", self.manager._native_preset(chain))
         text = self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}],
             preset_name="Long PEQ Delay")
@@ -214,7 +215,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             {"id": "maximizer#0", "type": "maximizer", "enabled": True,
              "params": {"thresholdDb": -0.5, "releaseMs": 30, "inputGainDb": 1}},
         ]
-        self.manager.preset_store.write("LV2", self.manager._native_preset(chain))
+        self.manager.library().write("LV2", self.manager._native_preset(chain))
         text = self.manager.compile_engine_text(
             [{"name": "FL", "source": 0}, {"name": "FR", "source": 1}], preset_name="LV2")
         self.assertIn("lv2 http://calf.sourceforge.net/plugins/BassEnhancer", text)
@@ -248,7 +249,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
     def test_output_alignment_follows_chain(self):
         chain = [{"id": "delay#0", "type": "delay", "enabled": True,
                   "params": {"leftMs": 1, "rightMs": 2}}]
-        self.manager.preset_store.write("Placement", self.manager._native_preset(chain))
+        self.manager.library().write("Placement", self.manager._native_preset(chain))
         text = self.manager.compile_engine_text([{
             "name": "FL", "source": 0, "gain_db": -3, "delay_ms": 4, "invert": True,
             "filters": [{"type": "highpass", "frequency_hz": 80, "q": .707, "stages": 1}],

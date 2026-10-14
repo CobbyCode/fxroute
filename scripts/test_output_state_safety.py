@@ -161,8 +161,8 @@ class ApplyMeasurementGuardTests(unittest.TestCase):
             active = {"value": False}
             service = OutputService(OutputServiceDeps(
                 store=OutputStateStore(path),
-                preset_loader=lambda name: {"chain": []},
-                resolve_ir=lambda kernel: {"path": "x", "channels": 1},
+                preset_loader=lambda *_: {"chain": []},
+                resolve_ir=lambda _bank, kernel: {"path": "x", "channels": 1},
                 measurement_active=lambda: active["value"],
             ))
             base = set_mode_routing(default_output_state(), "stereo",
@@ -191,8 +191,8 @@ class ApplyMeasurementGuardTests(unittest.TestCase):
             path = Path(tmp) / "output-state.json"
             service = OutputService(OutputServiceDeps(
                 store=OutputStateStore(path),
-                preset_loader=lambda name: {"chain": []},
-                resolve_ir=lambda kernel: {"path": "x", "channels": 1},
+                preset_loader=lambda *_: {"chain": []},
+                resolve_ir=lambda _bank, kernel: {"path": "x", "channels": 1},
                 measurement_active=lambda: False,
             ))
             base = set_mode_routing(default_output_state(), "stereo",

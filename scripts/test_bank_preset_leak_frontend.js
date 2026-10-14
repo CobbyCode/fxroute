@@ -4,8 +4,8 @@
 // another bank's presets through visiblePresetEntriesForBank() — asserted
 // against the real output_bank_ui.js picker wiring (catalog -> bank id ->
 // presetsForBank) instead of the output_state.js helper in isolation.
-// Untagged legacy reads as Global stock; All Banks lists none (joint A/B
-// switching only). app.js keeps thin delegating wrappers.
+// All Banks lists none (joint A/B switching only). app.js keeps thin
+// delegating wrappers.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -37,7 +37,6 @@ const presets = [
     { name: 'MainCorr', bank: 'main' },
     { name: 'GlobCorr', bank: 'global', mode: 'stereo-sub' },
     { name: 'StereoCorr', bank: 'global', mode: 'stereo' },
-    { name: 'LegacyX' },
 ];
 
 const catalog = (selectedBank) => ({
@@ -49,7 +48,7 @@ const catalog = (selectedBank) => ({
 // Every bank sees exactly its own stock plus built-ins, and never a foreign
 // bank's presets — asserted after an explicit switch across all banks.
 const expected = {
-    global: ['Direct', 'Neutral', 'GlobCorr', 'LegacyX'],
+    global: ['Direct', 'Neutral', 'GlobCorr'],
     low: ['Direct', 'Neutral', 'LowCorr'],
     high: ['Direct', 'Neutral', 'HighCorr'],
     main: ['Direct', 'Neutral', 'MainCorr'],

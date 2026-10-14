@@ -4,13 +4,11 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
 
-from audio.filter_banks import owning_bank_ids
 from audio.output_routing import device_key
 from audio.output_state import (BASS_FIELDS, SUB_SIDES, default_bass_management, default_level_cal,
-                                default_output_state, default_processing, release_bank_presets,
-                                set_mode_routing, validate_output_state)
+                                default_output_state, default_processing, set_mode_routing,
+                                validate_output_state)
 from audio.output_topology import MAX_CHANNELS, SUB_ROLES, roles_for_mode
 from audio.samplerate.persistence import _normalize_subwoofer_config, _normalize_subwoofer_22_config
 from dsp.banks import BankState
@@ -90,64 +88,6 @@ def migrate_legacy_output_state(*, mode: dict, routing: dict, active_preset: str
         stereo["banks"].setdefault(role, BankState().to_dict())
         stereo["processing"][role] = {**default_processing(), **settings}
     return validate_output_state(state)
-
-
-def drop_foreign_bank_presets(state: dict,
-                              preset_bank_of: Callable[[str], str | None]) -> tuple[dict, list[str]]:
-    """Release slot references to presets another bank owns.
-
-    Before per-bank ownership every preset was assignable to every bank; the
-    later tag migration declared untagged files Global without touching the
-    bindings, so slots could keep presets their bank never lists. Built-in,
-    untagged and own-bank presets stay; ``preset_bank_of`` returns a
-    preset's tag or None.
-    """
-    def foreign(role: str, name: str) -> bool:
-        tag = preset_bank_of(name)
-        return tag is not None and tag not in owning_bank_ids(role)
-
-    return release_bank_presets(state, foreign)
-
-
-def global_copy_name(name: str, taken) -> str:
-    """Free preset name for the Stereo + Sub copy of a shared Global preset."""
-    candidate = f"{name} (Stereo + Sub)"
-    index = 2
-    while candidate in taken:
-        candidate = f"{name} (Stereo + Sub) {index}"
-        index += 1
-    return candidate
-
-
-def split_shared_global_presets(state: dict, names, taken, copies: dict[str, str] | None = None,
-                                ) -> tuple[dict, dict[str, str], dict[str, str]]:
-    """Give each Global preset Stereo and Stereo + Sub shared its one output mode.
-
-    Before the per-mode split both modes listed the same Global presets. A
-    preset goes to the mode whose Global slots use it. One used by both stays
-    with Stereo and Stereo + Sub gets a copy, to which its slots move; an
-    unused one stays with Stereo, where Global historically lived.
-
-    ``names`` are the presets without an owner, ``taken`` every preset name
-    in the library, ``copies`` copies an interrupted run already wrote.
-    Returns the state, the owner per name and the copy name per shared name.
-    """
-    result = validate_output_state(state)
-    stereo = result["modes"]["stereo"]["banks"]["global"]
-    sub = result["modes"]["stereo-sub"]["banks"]["global"]
-    taken = set(taken)
-    existing = dict(copies or {})
-    owners, made = {}, {}
-    for name in names:
-        in_stereo, in_sub = name in stereo.values(), name in sub.values()
-        if in_stereo and in_sub:
-            made[name] = existing.get(name) or global_copy_name(name, taken)
-            taken.add(made[name])
-        owners[name] = "stereo-sub" if in_sub and not in_stereo else "stereo"
-    if made:
-        result["modes"]["stereo-sub"]["banks"]["global"] = {
-            slot: made.get(preset, preset) for slot, preset in sub.items()}
-    return validate_output_state(result), owners, made
 
 
 def _defaulted_bass_management(bass: object) -> dict:

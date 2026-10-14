@@ -94,7 +94,7 @@ def plan_delays(state, channels):
     from dsp.processing_plan import compile_processing_plan
     plan = compile_processing_plan(
         state, output_key="dev", channels=channels, sample_rate_hz=RATE,
-        preset_loader=lambda name: {"chain": []}, neutralize_banks=True)
+        preset_loader=lambda *_: {"chain": []}, neutralize_banks=True)
     return {row["role"]: row["delay_ms"] for row in plan["outputs"]}
 
 

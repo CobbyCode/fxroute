@@ -413,12 +413,12 @@ class SpeakerCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         home = FsPath(directory.name)
         manager = DSPManager(home=home / "dsp")
-        manager.preset_store.write("Room", {
+        manager.library().write("Room", {
             "schema": "fxroute.dsp.preset", "version": 1, "chain": []})
         store = OutputStateStore(home / "output-state.json")
         output_service = OutputService(OutputServiceDeps(
-            store=store, preset_loader=manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            store=store, preset_loader=manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
         output_service.ensure_state()
 
@@ -463,12 +463,12 @@ class SpeakerCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         home = FsPath(directory.name)
         manager = DSPManager(home=home / "dsp")
-        manager.preset_store.write("Room", {
+        manager.library().write("Room", {
             "schema": "fxroute.dsp.preset", "version": 1, "chain": []})
         store = OutputStateStore(home / "output-state.json")
         output_service = OutputService(OutputServiceDeps(
-            store=store, preset_loader=manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            store=store, preset_loader=manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
         output_service.ensure_state()
         service = build_speaker_align_service(
@@ -495,8 +495,8 @@ class SpeakerReleaseAdapterLiveDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.manager = DSPManager(home=Path(directory.name) / "dsp")
         self.store = OutputStateStore(Path(directory.name) / "output-state.json")
         self.service = OutputService(OutputServiceDeps(
-            store=self.store, preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: (_ for _ in ()).throw(AssertionError(name)),
+            store=self.store, preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: True))
         state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "dev",
                                  ["main_l", "main_r"]), "stereo-sub")

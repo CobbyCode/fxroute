@@ -27,8 +27,8 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
         path = Path(directory.name)
         self.manager = DSPManager(home=path)
         self.service = OutputService(OutputServiceDeps(
-            store=OutputStateStore(path / "state.json"), preset_loader=self.manager.preset_store.read,
-            resolve_ir=lambda name: {}, measurement_active=lambda: False))
+            store=OutputStateStore(path / "state.json"), preset_loader=self.manager.read_preset,
+            resolve_ir=lambda _bank, name: {}, measurement_active=lambda: False))
         state = set_mode_routing(default_output_state(), "surround", "A",
                                  ["main_l", "main_r", "sub1", "sub2", "center", "side_l", "side_r", "rear_l", "rear_r"])
         self.state = self.service.commit(state, expected_revision=0)

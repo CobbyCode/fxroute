@@ -11,6 +11,7 @@ import copy
 import logging
 from collections.abc import Callable
 
+from audio.filter_banks import bank_definitions
 from audio.output_routing import device_key
 from audio.output_state import (bass_crossover_for_group, bass_crossover_for_side,
                                 effective_crossover_enabled, routing_for_device,
@@ -25,19 +26,20 @@ from dsp.surround_global import (BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, pre
 logger = logging.getLogger(__name__)
 
 
-def _bank_plan(bank_id: str, payload: dict, preset_loader: Callable[[str], dict],
+def _bank_plan(bank_id: str, payload: dict, load: Callable[[str], dict],
                 *, neutralized: bool = False, surround_groups: frozenset[str] | None = None) -> dict:
     """Plan one bank; ``surround_groups`` marks the Surround Global bank.
 
-    Its chain keeps only plugins of speaker groups with a routed speaker. A
-    stored preset without the Surround layout cannot be assigned any more and
-    renders as Neutral instead of blocking the activation.
+    ``load`` reads a preset of the bank's own library. Surround Global keeps
+    only plugins of speaker groups with a routed speaker. A stored preset
+    without the Surround layout cannot be assigned any more and renders as
+    Neutral instead of blocking the activation.
     """
     if neutralized:
         return {"bank_id": bank_id, "preset": "Direct",
                 "bypass": True, "chain": []}
     bank = BankState.from_dict(payload)
-    preset = preset_loader(bank.preset)
+    preset = load(bank.preset)
     chain = copy.deepcopy(preset["chain"])
     name = bank.preset
     if surround_groups is not None and name not in BUILTIN_PRESETS:
@@ -197,9 +199,13 @@ def rendered_crossover_filters(state: dict, *, output_key: str, channels: int) -
 
 
 def compile_processing_plan(state: dict, *, output_key: str, channels: int,
-                            sample_rate_hz: int, preset_loader: Callable[[str], dict],
+                            sample_rate_hz: int, preset_loader: Callable[[str, str, str], dict],
                             neutralize_banks: bool = False) -> dict:
-    """Resolve banks using a validating loader such as DSPPresetStore.read.
+    """Resolve banks through ``preset_loader(mode, bank_id, name)``.
+
+    Every bank has its own preset library (Global one per output mode), so a
+    slot's name is read from the bank the role belongs to in this topology;
+    ``DSPManager.read_preset`` is such a loader.
 
     With neutralize_banks, Global and area PEQ/convolver banks render
     bypassed (Direct, empty chain, no extras) while crossover filters,
@@ -224,13 +230,17 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
     # Surround Global holds group-tagged PEQ/convolver plugins; groups without
     # a routed speaker render nothing (see dsp.surround_global).
     surround_groups = routed_groups(topology.roles) if mode == "surround" else None
-    global_bank = _bank_plan("global", config["banks"]["global"], preset_loader,
+    global_bank = _bank_plan("global", config["banks"]["global"],
+                             lambda name: preset_loader(mode, "global", name),
                              neutralized=neutralize_banks, surround_groups=surround_groups)
     global_bank["extras"] = {} if (global_bank["bypass"] or neutralize_banks) else copy.deepcopy(config["extras"])
     crossover = _rendered_crossover(config, topology)
     surround = mode == "surround"
     destinations = surround_destinations(topology.roles) if surround else {}
     has_subs = bool(topology.sub_roles)
+    # Bank whose preset library each role's slots name: its pair bank or itself.
+    libraries = {role: definition["id"] for definition in bank_definitions(topology.roles).values()
+                 for role in definition["roles"]}
     outputs = []
     for role in topology.roles:
         settings = processing[role]
@@ -246,8 +256,10 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
         outputs.append({
             "role": role, "routes": routes,
             "crossover": filters,
-            "bank": _bank_plan(role, config["banks"][role], preset_loader,
-                               neutralized=neutralize_banks),
+            "bank": {**_bank_plan(role, config["banks"][role],
+                                  lambda name, role=role: preset_loader(mode, libraries[role], name),
+                                  neutralized=neutralize_banks),
+                     "library": libraries[role]},
             "gain_db": settings["level_db"] + sum(settings["level_cal_db"].values()),
             "delay_ms": settings["alignment_ms"] + delay_offset,
             "invert": settings["polarity"] == "invert",
