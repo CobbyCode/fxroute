@@ -110,23 +110,17 @@ class SurroundTests(unittest.TestCase):
         self.assertEqual(upgraded["input_modes"], {})
         self.assertEqual(old, before)
 
-    def test_migration_drops_stale_surround_sub_filter_keys(self):
-        # Before the speaker-group scheme Surround overrides were keyed
-        # left/right; those were never read and must not brick the load.
+    def test_surround_sub_filters_must_be_keyed_by_speaker_group(self):
         state = self.state()
         stale = {"family": "butterworth", "slope_db_oct": 12, "frequency_hz": 90.0}
-        state["modes"]["surround"]["bass_management"]["sub_filters"] = {
-            "left": dict(stale), "right": dict(stale), "front": group_filter(95)}
-        state["modes"]["stereo-sub"]["bass_management"]["sub_filters"] = {
-            "left": dict(stale)}
-        upgraded = upgrade_output_state(state)
-        self.assertEqual(upgraded["modes"]["surround"]["bass_management"]["sub_filters"],
-                         {"front": group_filter(95)})
-        self.assertEqual(upgraded["modes"]["stereo-sub"]["bass_management"]["sub_filters"],
+        state["modes"]["stereo-sub"]["bass_management"]["sub_filters"] = {"left": dict(stale)}
+        self.assertEqual(upgrade_output_state(state)["modes"]["stereo-sub"]["bass_management"]["sub_filters"],
                          {"left": dict(stale)})
-        state["modes"]["surround"]["bass_management"]["sub_filters"] = {"rear_l": group_filter(95)}
-        with self.assertRaisesRegex(ValueError, "keyed by front"):
-            upgrade_output_state(state)
+        for keys in ({"left": dict(stale)}, {"rear_l": group_filter(95)}):
+            with self.subTest(keys=list(keys)):
+                state["modes"]["surround"]["bass_management"]["sub_filters"] = keys
+                with self.assertRaisesRegex(ValueError, "keyed by front"):
+                    upgrade_output_state(state)
 
     def test_engine_text_retains_eight_positions_and_separate_lfe_send(self):
         with tempfile.TemporaryDirectory() as directory:

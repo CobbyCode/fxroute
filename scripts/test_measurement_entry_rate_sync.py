@@ -42,8 +42,8 @@ class _RecordingDspRuntime:
     def __init__(self) -> None:
         self.sync_calls: list[dict] = []
 
-    async def sync(self, overview: dict) -> None:
-        self.sync_calls.append(dict(overview))
+    async def sync_rendered(self, target) -> None:
+        self.sync_calls.append(dict(target.overview))
 
 
 class _FakeMeasurementSrSession:
@@ -64,6 +64,9 @@ class _DspDeps:
 
     def get_dsp_manager(self):
         return None
+
+    async def try_render_v2_target(self, rate, overview):
+        return SimpleNamespace(rate=rate, overview=dict(overview))
 
     def get_audio_output_overview(self):
         return dict(self.live_overview)

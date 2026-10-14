@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Independent mode/crossover and routing-to-DSP contracts."""
-import copy
 import asyncio
-import json
 import sys
 import tempfile
 import unittest
@@ -81,32 +79,6 @@ class UnifiedOutputTests(unittest.TestCase):
         self.assertEqual(state['modes']['stereo-sub']['routing']['A'],
                          ['left_low', 'right_low', 'sub1', 'left_high', 'right_high'])
         self.assertEqual(state['modes']['stereo-sub']['processing']['left_high']['level_db'], -8)
-
-    def test_version_one_upgrade_preserves_active_processing_and_revision(self):
-        bank = {'preset': 'Neutral', 'preset_a': 'Neutral', 'preset_b': None}
-        def config(roles):
-            return {'routing': {'A': roles}, 'selected_bank': 'global',
-                    'banks': {role: copy.deepcopy(bank) for role in ['global', *roles]},
-                    'processing': {role: model.default_processing() for role in roles},
-                    'bass_management': {'frequency_hz': 80, 'main_highpass_enabled': True}, 'extras': {}}
-        old = {'schema': 'fxroute.output-state', 'version': 1, 'revision': 12,
-               'active_mode': 'crossover', 'legacy': {}, 'modes': {
-                   'stereo': config(['main_l', 'main_r']),
-                   'crossover': config(['left_low', 'left_high', 'right_low', 'right_high', 'sub1'])}}
-        old['modes']['crossover']['processing']['sub1']['alignment_ms'] = 3
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'state.json'
-            path.write_text(json.dumps(old))
-            store = OutputStateStore(path)
-            upgraded = store.load()
-            self.assertEqual(upgraded['version'], model.VERSION)
-            self.assertEqual(upgraded['revision'], 12)
-            self.assertEqual(upgraded['active_mode'], 'stereo-sub')
-            self.assertNotIn('crossover', upgraded['modes'])
-            self.assertTrue(upgraded['modes']['stereo-sub']['crossover_enabled'])
-            self.assertEqual(upgraded['modes']['stereo-sub']['processing']['sub1']['alignment_ms'], 3)
-            self.assertEqual(store.commit(upgraded, expected_revision=12)['revision'], 13)
-            self.assertEqual(store.load()['version'], model.VERSION)
 
     def test_crossover_compiles_and_measurement_targets_follow_active_roles(self):
         from measurement.target import freeze_measurement_target

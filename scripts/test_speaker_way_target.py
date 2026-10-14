@@ -44,7 +44,7 @@ class FakeService:
     def __init__(self, state):
         self._state = state
 
-    def ensure_state(self):
+    def load(self):
         return self._state
 
     def compile_plan(self, state, *, output_key, channels, sample_rate_hz):

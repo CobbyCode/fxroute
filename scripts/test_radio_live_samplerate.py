@@ -168,7 +168,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
         main.runtime.dsp_runtime = type("NativeRuntime", (), {
             "snapshot": lambda self: {
                 "active": True,
-                "config": {"sample_rate": 48000},
+                "config": {"sample_rate": 48000, "output_routes": [[1, "playback_FL"], [2, "playback_FR"]]},
             }
         })()
 
@@ -265,7 +265,7 @@ class RadioPostLoadHandoffTests(unittest.IsolatedAsyncioTestCase):
             main.runtime, "dsp_runtime", type("NativeRuntime", (), {
                 "snapshot": lambda self: {
                     "active": True,
-                    "config": {"sample_rate": status["force_rate"]},
+                    "config": {"sample_rate": status["force_rate"], "output_routes": [[1, "playback_FL"], [2, "playback_FR"]]},
                 }
             })()
         ), patch.object(

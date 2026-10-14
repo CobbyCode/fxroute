@@ -2,15 +2,12 @@
 
 """Release-runtime adapter: rebuild the committed plan at session release.
 
-After an AutoSub service run commits its winner, the persisted legacy mode
-file still shows the frozen start (service jobs never persist legacy).  A
-session release that re-syncs the runtime from the legacy overview would
-rebuild the stale graph and audibly lose the commit.  The adapter built here
-renders the *current* ``OutputService.load()`` at the restore rate and syncs
-the prebuilt target (the output-state equivalent of the legacy
-``dsp_runtime.sync(overview)``); the measurement session invokes it instead
-of the legacy overview sync.  Rendering is always live, never rebased: a
-later concurrent writer is consumed as-is.
+After an AutoSub service run commits its winner, the session release must
+rebuild the committed plan, not the graph the run started from.  The adapter
+built here renders the *current* ``OutputService.load()`` at the restore rate
+and syncs the prebuilt target; the measurement session invokes it instead of
+its generic release sync.  Rendering is always live, never rebased: a later
+concurrent writer is consumed as-is.
 """
 
 from __future__ import annotations

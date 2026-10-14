@@ -26,10 +26,6 @@ def _audio_output_selection_path() -> Path:
     config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
     return config_root / "fxroute" / "audio-output-selection.json"
 
-def _audio_output_mode_path() -> Path:
-    config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
-    return config_root / "fxroute" / "audio-output-mode.json"
-
 def _sample_rate_policy_path() -> Path:
     config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
     return config_root / "fxroute" / "sample-rate-policy.json"
@@ -103,108 +99,6 @@ def playback_target_rate(source_rate: int | None, policy: Mapping[str, Any] | No
     :func:`audio.samplerate.capability.playable_rate`).
     """
     return playable_rate(effective_playback_rate(source_rate, policy))
-
-
-def _normalize_single_sub_config(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Normalize one sub's {level_db, alignment_ms, polarity} for 2.2."""
-    payload = payload or {}
-    try:
-        level = round(float(payload.get("level_db", 0.0)), 1)
-    except (TypeError, ValueError):
-        level = 0.0
-    try:
-        alignment = round(float(payload.get("alignment_ms", 0.0)), 2)
-    except (TypeError, ValueError):
-        alignment = 0.0
-    polarity = str(payload.get("polarity", "normal") or "normal").strip().lower()
-    level = max(-80.0, min(12.0, level))
-    alignment = max(-40.0, min(40.0, alignment))
-    return {
-        "level_db": level,
-        "alignment_ms": alignment,
-        "polarity": "invert" if polarity in {"invert", "inverted", "180"} else "normal",
-    }
-
-def _normalize_subwoofer_22_config(
-    subwoofers: dict[str, Any] | None = None,
-    fallback_21: dict[str, Any] | None = None,
-    global_override: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Normalize 2.2 subwoofer config.
-
-    sub1 derives from fallback_21 when subwoofers.sub1 is missing.
-    Global fields (crossover, slope, highpass) come from fallback_21 or
-    defaults, unless ``global_override`` supplies explicit durable fields
-    (the top-level 2.2 payload wins over the legacy 2.1 block).
-    """
-    subwoofers = subwoofers or {}
-    override = global_override or {}
-
-    # Global fields from fallback_21 (existing 2.1 subwoofer block) or defaults
-    if fallback_21:
-        raw_freq = fallback_21.get("crossover_frequency_hz", 80)
-        raw_hp = fallback_21.get("main_highpass_enabled", True)
-    else:
-        raw_freq = 80
-        raw_hp = True
-    raw_freq = override.get("crossover_frequency_hz", raw_freq)
-    raw_hp = override.get("main_highpass_enabled", raw_hp)
-
-    try:
-        frequency = int(round(float(raw_freq)))
-    except (TypeError, ValueError):
-        frequency = 80
-
-    # Sub 1: from subwoofers.sub1 or derived from 2.1 config
-    sub1_payload = subwoofers.get("sub1") if isinstance(subwoofers.get("sub1"), dict) else None
-    if sub1_payload is None and fallback_21 is not None:
-        sub1_payload = {
-            "level_db": fallback_21.get("sub_level_db", 0.0),
-            "alignment_ms": fallback_21.get("sub_alignment_ms", 0.0),
-            "polarity": fallback_21.get("sub_polarity", "normal"),
-        }
-    sub1 = _normalize_single_sub_config(sub1_payload)
-
-    # Sub 2: from subwoofers.sub2 or defaults
-    sub2 = _normalize_single_sub_config(
-        subwoofers.get("sub2") if isinstance(subwoofers.get("sub2"), dict) else None
-    )
-
-    return {
-        "crossover_frequency_hz": max(40, min(200, frequency)),
-        "slope": "LR24",
-        "main_highpass_enabled": bool(raw_hp),
-        "sub1": sub1,
-        "sub2": sub2,
-    }
-
-def _normalize_subwoofer_config(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = payload or {}
-    raw_frequency = payload.get("crossover_frequency_hz", payload.get("crossoverFrequencyHz", 80))
-    raw_level = payload.get("sub_level_db", payload.get("subLevelDb", 0.0))
-    raw_alignment = payload.get("sub_alignment_ms", payload.get("subAlignmentMs", 0.0))
-    try:
-        frequency = int(round(float(raw_frequency)))
-    except (TypeError, ValueError):
-        frequency = 80
-    try:
-        level = round(float(raw_level), 1)
-    except (TypeError, ValueError):
-        level = 0.0
-    try:
-        alignment = round(float(raw_alignment), 2)
-    except (TypeError, ValueError):
-        alignment = 0.0
-    polarity = str(payload.get("sub_polarity", payload.get("subPolarity", "normal")) or "normal").strip().lower()
-    alignment = max(-40.0, min(40.0, alignment))
-    return {
-        "crossover_frequency_hz": max(40, min(200, frequency)),
-        "slope": "LR24",
-        "main_highpass_enabled": bool(payload.get("main_highpass_enabled", payload.get("mainHighpassEnabled", True))),
-        "sub_level_db": max(-24.0, min(12.0, level)),
-        "sub_alignment_ms": alignment,
-        "sub_polarity": "invert" if polarity in {"invert", "inverted", "180"} else "normal",
-    }
 
 
 def _load_audio_source_selection() -> dict[str, Any]:

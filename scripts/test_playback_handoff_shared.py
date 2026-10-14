@@ -76,7 +76,13 @@ def _links_text(mode: str, *, direct: bool = False, source: bool = True, complet
     return "\n".join(lines)
 
 
+STEREO_ROUTES = [[1, "playback_FL"], [2, "playback_FR"]]
+SUB_ROUTES = STEREO_ROUTES + [[3, "playback_RL"], [4, "playback_RR"]]
+
+
 class HelperDouble:
+    """A running engine whose plan routes Main L/R plus two subs."""
+
     def __init__(self, *, active: bool, rate: int | None, direct: bool = False):
         self.active = active
         self.rate = rate
@@ -88,7 +94,7 @@ class HelperDouble:
         return {
             "active": self.active,
             "helper_pid": 42 if self.active else None,
-            "config": {"sample_rate": self.rate} if self.rate else None,
+            "config": {"sample_rate": self.rate, "output_routes": SUB_ROUTES} if self.rate else None,
         }
 
     async def reclean_direct_dsp_links(self):
@@ -125,12 +131,10 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
 
         runtime = main.DSPRuntime(Mock())
         runtime._process = SimpleNamespace(returncode=None, pid=42) if helper is None or helper.active else None
-        runtime._config = SimpleNamespace(
-            sample_rate=helper.rate if helper else target_rate,
-            output_mode=mode,
-            output_key=OUTPUT_KEY,
-            hardware_ports=("playback_FL", "playback_FR"),
-        )
+        routes = STEREO_ROUTES if mode == "stereo" else SUB_ROUTES
+        runtime._config = main.DSPRuntimeConfig(
+            mode, OUTPUT_KEY, helper.rate if helper else target_rate,
+            tuple(port for _, port in routes), (), tuple(tuple(edge) for edge in routes), "plan")
         runtime._links = [SimpleNamespace(source="source", target="target")] if runtime._process else []
         with patch.object(main.runtime, "dsp_runtime", runtime), patch.object(
             pw_link_mod, "run_pw_link_command", side_effect=pw_link
@@ -684,6 +688,8 @@ class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
                     "mode": "stereo",
                     "effective_output_key": OUTPUT_KEY,
                     "effective_output_rate": rate,
+                    "effective_output_channels": 2,
+                    "hardware_playback_ports": ["playback_FL", "playback_FR"],
                 }
             }
 
@@ -741,7 +747,11 @@ class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
                 process_launcher=launch,
             )
             runtime._process = old_process
-            runtime._config = main.DSPRuntimeConfig.from_overview(stereo_overview(44100))
+            runtime._config = main.DSPRuntimeConfig(
+                "stereo", OUTPUT_KEY, 44100, ("playback_FL", "playback_FR"),
+                ({"name": "main_l", "routes": [{"input": 0, "gain": 1.0}]},
+                 {"name": "main_r", "routes": [{"input": 1, "gain": 1.0}]}),
+                tuple(tuple(edge) for edge in STEREO_ROUTES), "plan")
             runtime._links = [
                 PipeWireLink("fxroute_dsp:output_1", f"{OUTPUT_KEY}:playback_FL"),
                 PipeWireLink("fxroute_dsp:output_2", f"{OUTPUT_KEY}:playback_FR"),
@@ -762,9 +772,19 @@ class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
                 reload_source=True,
             )
 
+            from audio.output_service import OutputService, OutputServiceDeps
+            from audio.output_state import default_output_state, set_mode_routing
+            from audio.output_state_store import OutputStateStore
+            service = OutputService(OutputServiceDeps(
+                store=OutputStateStore(Path(directory) / "output-state.json"),
+                preset_loader=manager.read_preset, resolve_ir=lambda *_args: {},
+                measurement_active=lambda: False, global_extras_loader=manager.load_global_extras))
+            service.commit(set_mode_routing(default_output_state(), "stereo", OUTPUT_KEY,
+                                            ["main_l", "main_r"]), expected_revision=0)
+
             with patch.object(main.runtime, "dsp_runtime", runtime), patch.object(
-                main, "dsp_manager", None
-            ), patch.object(
+                main, "dsp_manager", manager
+            ), patch.object(main, "get_output_service", return_value=service), patch.object(
                 main, "get_audio_output_overview", return_value=stereo_overview(44100)
             ), patch.object(
                 main, "get_samplerate_status", return_value={"active_rate": 48000, "force_rate": 48000}

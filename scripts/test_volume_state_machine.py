@@ -234,8 +234,6 @@ class _RecordingRuntime:
     def __init__(self):
         self.gain_db = 0.0
         self.gains = []
-        self.syncs = []
-        self.rebuilds = []
 
     def snapshot(self):
         return {"active": True, "output_gain_db": self.gain_db}
@@ -244,23 +242,6 @@ class _RecordingRuntime:
         self.gain_db = float(value)
         self.gains.append(float(value))
         return self.gain_db
-
-    async def sync(self, overview, **kwargs):
-        self.syncs.append((overview, kwargs))
-
-    async def guarded_rebuild(self, overview, *, guard_db, apply_candidate, apply_previous,
-                              settle_seconds=0, candidate_extras=None, previous_extras=None,
-                              before_ramp=None, before_rollback_ramp=None):
-        del overview, apply_previous, settle_seconds, previous_extras, before_rollback_ramp
-        self.rebuilds.append({
-            "guard_db": float(guard_db),
-            "candidate_enabled": bool((candidate_extras or {}).get("loudness", {}).get("enabled")),
-        })
-        await self.set_output_gain_db(guard_db)
-        if before_ramp:
-            await before_ramp()
-        await self.set_output_gain_db(0.0)
-        apply_candidate()
 
 
 class VolumePathRecorder:

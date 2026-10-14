@@ -209,7 +209,8 @@ class GraphDiagnosisParallelReadsTest(unittest.IsolatedAsyncioTestCase):
             run_pw_link_command=fake_pw_link,
             output_mode_subwoofer_modes=frozenset({"subwoofer-2.1", "subwoofer-2.2"}),
             output_mode_stereo="stereo",
-            get_dsp_snapshot=lambda: {"active": True},
+            get_dsp_snapshot=lambda: {"active": True, "config": {
+                "output_routes": [[1, "playback_FL"], [2, "playback_FR"]]}},
             helper_argument_sample_rate=lambda snapshot: 44100,
             resolve_source_producer_ports=None,
             contains_link=None,

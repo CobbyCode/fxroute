@@ -87,7 +87,8 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
                             'hardware_playback_ports': ['playback_FL', 'playback_FR']}}
                 deps = SimpleNamespace(run_pw_link_command=read, output_mode_subwoofer_modes=frozenset(),
                     get_dsp_snapshot=lambda: {'active': True, 'surround_input': True,
-                        'config': {'sample_rate': 48000, 'output_mode': mode}},
+                        'config': {'sample_rate': 48000, 'output_mode': mode,
+                                   'output_routes': [[1, 'playback_FL'], [2, 'playback_FR']]}},
                     contains_link=_contains_link, helper_argument_sample_rate=lambda snapshot: 48000)
                 orchestrator = PlaybackOrchestrator(deps)
                 self.assertTrue((await orchestrator.playback_graph_diagnosis(overview, target_rate=48000))['links_complete'])

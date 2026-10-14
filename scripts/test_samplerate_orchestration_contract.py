@@ -86,7 +86,8 @@ class SamplerateOrchestrationContractTests(unittest.IsolatedAsyncioTestCase):
             return_value={"output_mode": {"mode": "stereo", "effective_output_key": "alsa_output.pci-0000_00_1f.3.analog-stereo"}},
         ), patch.object(main.asyncio, "sleep", sleep), patch.object(
             main.runtime, "dsp_runtime", type("NativeRuntime", (), {
-                "snapshot": lambda self: {"active": True, "config": {"sample_rate": status["force_rate"]}}
+                "snapshot": lambda self: {"active": True, "config": {"sample_rate": status["force_rate"],
+                                                                 "output_routes": [[1, "playback_FL"], [2, "playback_FR"]]}}
             })()
         ):
             result, runtime = await run_main_handoff_through_coordinator(

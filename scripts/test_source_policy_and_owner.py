@@ -207,7 +207,7 @@ class PlaybackOwnerTests(unittest.IsolatedAsyncioTestCase):
                         self.main.bluetooth_input, "sync", new=mock.AsyncMock(side_effect=lambda value: value)
                     ), mock.patch.object(self.main.bluetooth_input, "finish_bluetoothctl_actions", new=mock.AsyncMock()), mock.patch.object(
                         self.main.peak_monitor_coordinator, "sync_source_mode_state", new=mock.AsyncMock()
-                    ), mock.patch.object(self.main, "get_output_service", return_value=mock.Mock(ensure_state=lambda: {}, load=lambda: {"active_mode": "stereo"})), mock.patch.object(
+                    ), mock.patch.object(self.main, "get_output_service", return_value=mock.Mock(load=lambda: {"active_mode": "stereo"})), mock.patch.object(
                         self.main, "_run_coordinated_transition", side_effect=run
                     ), mock.patch.object(self.main, "_publish_committed_playback_owner", side_effect=publish), mock.patch.object(
                         self.main, f"get_{source}_ui_state", new=mock.AsyncMock(return_value=playing)

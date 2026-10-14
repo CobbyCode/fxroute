@@ -420,7 +420,7 @@ class SpeakerCompositionTests(unittest.IsolatedAsyncioTestCase):
             store=store, preset_loader=manager.read_preset,
             resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
-        output_service.ensure_state()
+        output_service.load()
 
         registered = []
 
@@ -470,7 +470,7 @@ class SpeakerCompositionTests(unittest.IsolatedAsyncioTestCase):
             store=store, preset_loader=manager.read_preset,
             resolve_ir=lambda _bank, name: (_ for _ in ()).throw(AssertionError(name)),
             measurement_active=lambda: False))
-        output_service.ensure_state()
+        output_service.load()
         service = build_speaker_align_service(
             output_service=output_service, measurement_store=None,
             dsp_manager=manager,

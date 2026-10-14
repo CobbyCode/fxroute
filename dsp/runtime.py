@@ -22,15 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
 
-from audio.output_routing import output_route_pairs
 from audio.output_topology import SURROUND_POSITIONS
-from audio.output_ports import (
-    HARDWARE_CHANNEL_ORDER,
-    hardware_link_target,
-    hardware_playback_port_fallback_from_mode,
-    resolve_hardware_playback_ports,
-    warn_semantic_playback_fallback,
-)
+from audio.output_ports import HARDWARE_CHANNEL_ORDER, hardware_link_target
 from audio.pw_link import stop_command_child_cancellation_safe
 from common.run_to_completion import restore_after, run_to_completion
 from dsp.latency import latency_signature
@@ -279,13 +272,6 @@ class BassManagementConfig:
                    channels, rate, frequency, highpass, levels[0], alignments[0], polarities[0], levels[1], alignments[1], polarities[1])
 
 
-# Internal sentinel for DSPRuntimeConfig.from_overview: a caller that only
-# needs the port topology (e.g. the hot-update capability probe) passes it so
-# the discovery-fallback path is skipped entirely and the semantic-fallback
-# warning is emitted by the real link-build path only.
-_TOPOLOGY_ONLY = "__fxroute_topology_only_probe__"
-
-
 @dataclass(frozen=True)
 class DSPRuntimeConfig:
     output_mode: str
@@ -313,9 +299,8 @@ class DSPRuntimeConfig:
                   plan_fingerprint: str | None = None) -> "DSPRuntimeConfig":
         """Build a runtime config from a compiled processing plan.
 
-        Unlike from_overview, no legacy mode strings are interpreted: the
-        plan carries explicit role-indexed physical edges, and only those
-        hardware channels are linked. Malformed plans fail instead of
+        The plan carries explicit role-indexed physical edges, and only
+        those hardware channels are linked. Malformed plans fail instead of
         falling back to semantic port names.
         """
         if type(sample_rate_hz) is not int or sample_rate_hz <= 0:
@@ -347,99 +332,6 @@ class DSPRuntimeConfig:
         mode = plan.get("mode") if isinstance(plan, Mapping) else None
         return cls(str(mode or ""), str(output_key or ""), sample_rate_hz,
                    tuple(ports), rows, tuple(routes), plan_fingerprint)
-
-    @classmethod
-    def from_overview(cls, overview: dict[str, Any], *,
-                      hardware_ports: Sequence[str] | None = None) -> "DSPRuntimeConfig":
-        # Internal sentinel: a caller that only needs the port topology
-        # (e.g. the hot-update capability probe) passes it to skip the
-        # discovery-fallback path entirely, so the semantic-fallback warning
-        # is emitted by the real link-build path only.
-        if isinstance(hardware_ports, str) and hardware_ports == _TOPOLOGY_ONLY:
-            hardware_ports = None
-            topology_only = True
-        else:
-            topology_only = False
-        bass = BassManagementConfig.from_overview(overview)
-        layout = [
-            {"name": "FL", "routes": [{"input": 0, "gain": 1.0}]},
-            {"name": "FR", "routes": [{"input": 1, "gain": 1.0}]},
-        ]
-        ports = cls._resolve_ports(bass, hardware_ports, topology_only=topology_only)
-        if bass.output_mode.startswith("subwoofer-2."):
-            if bass.main_highpass_enabled:
-                for channel in layout:
-                    channel["filters"] = [{"type": "highpass", "frequency_hz": bass.crossover_frequency_hz, "q": 0.70710678, "stages": 2}]
-            for channel in layout:
-                channel["delay_ms"] = bass.derived_main_delay_ms
-            stereo_bass = bass.bass_routing == "stereo"
-            sub_defs = (
-                (bass.sub_level_db, bass.derived_sub1_delay_ms, bass.sub_polarity),
-                (bass.sub2_level_db, bass.derived_sub2_delay_ms, bass.sub2_polarity),
-            )
-            for index, (level_db, delay_ms, polarity) in enumerate(sub_defs):
-                routes = ([{"input": index, "gain": 1.0}] if stereo_bass else
-                          [{"input": 0, "gain": 0.5}, {"input": 1, "gain": 0.5}])
-                layout.append({
-                    "name": f"SUB{index + 1}", "routes": routes,
-                    "gain_db": level_db,
-                    "delay_ms": delay_ms,
-                    "invert": polarity == "invert",
-                    "filters": [{"type": "lowpass", "frequency_hz": bass.crossover_frequency_hz, "q": 0.70710678, "stages": 2}],
-                })
-        else:
-            layout.extend((
-                {"name": "SUB1", "routes": [{"input": 0, "gain": 0.0}]},
-                {"name": "SUB2", "routes": [{"input": 1, "gain": 0.0}]},
-            ))
-        mode = overview.get("output_mode") or {}
-        routes = None
-        if mode.get("output_routing") and bass.output_channels > 2:
-            ports = list(hardware_ports or mode.get("hardware_playback_ports") or ports)
-            routes = output_route_pairs(mode, ports)
-        return cls(bass.output_mode, bass.output_key, bass.sample_rate, tuple(ports), tuple(layout), routes)
-
-    @staticmethod
-    def _resolve_ports(bass: BassManagementConfig,
-                       hardware_ports: Sequence[str] | None,
-                       *, topology_only: bool = False) -> list[str]:
-        """Map the DSP outputs onto the sink's real playback ports.
-
-        The discovered list is ordered by the device's own channel order
-        (``playback_FL/FR/RL/RR`` or ``playback_AUX0…``); the DSP outputs are
-        fixed (Out 1/2 Main, Out 3/4 Sub), so only its first entries are used.
-        Without a discovered list the historical semantic port names keep the
-        configured topology working.  A mode that needs more hardware outputs
-        than the device actually exposes is rejected with a clear reason
-        instead of failing later inside ``pw-link``.
-        """
-        resolved = [str(port) for port in (hardware_ports or ()) if port]
-        if resolved:
-            require_sub_outputs = bass.output_mode.startswith("subwoofer-2.")
-            if require_sub_outputs and len(resolved) < 4:
-                raise RuntimeError(
-                    f"Output mode {bass.output_mode} requires 4 hardware playback ports, "
-                    f"but {bass.output_key or 'the selected output'} exposes {len(resolved)} "
-                    f"({', '.join(resolved)})"
-                )
-            if len(resolved) < 2:
-                raise RuntimeError(
-                    f"{bass.output_key or 'The selected output'} exposes fewer than two "
-                    f"hardware playback ports ({', '.join(resolved) or 'none'})"
-                )
-            return resolved[:2] if bass.output_channels < 4 else resolved[:4]
-        # No discovered list: the historic semantic port names keep the
-        # configured topology working, but on a device that exposes only raw
-        # channels (playback_AUX0…) this fallback can never link. Announce it
-        # (rate-limited) so the rare path is visible for field diagnosis —
-        # except for topology-only probes, which never build links.
-        if not topology_only:
-            warn_semantic_playback_fallback(bass.output_key)
-        ports = ["playback_FL", "playback_FR"]
-        if bass.output_channels >= 4:
-            ports.extend(("playback_RL", "playback_RR"))
-        return ports
-
 
 
 def config_route_pairs(config: Any) -> tuple[tuple[int, str], ...]:
@@ -1240,48 +1132,6 @@ class DSPRuntime:
         if self._control_socket is not None:
             self._control_socket.close()
 
-    async def guarded_rebuild(self, overview: dict[str, Any], *, guard_db: float,
-                              apply_candidate: Callable[[], Any],
-                              apply_previous: Callable[[], Any],
-                              settle_seconds: float = 0.35,
-                              candidate_extras: dict[str, Any] | None = None,
-                              previous_extras: dict[str, Any] | None = None,
-                              before_ramp: Callable[[], Awaitable[Any]] | None = None,
-                              before_rollback_ramp: Callable[[], Awaitable[Any]] | None = None) -> None:
-        guard = max(-80.0, min(0.0, float(guard_db)))
-        hot_update = self._can_hot_update(
-            DSPRuntimeConfig.from_overview(overview, hardware_ports=_TOPOLOGY_ONLY))
-        settle_seconds = 0.0 if hot_update else settle_seconds
-        async with self._measurement_scope_lock:
-            if self._control_socket is not None:
-                # Pin a running engine to the guard before the rebuild so it
-                # never sits at full gain during the transition.  On the first
-                # start no engine exists yet and the rebuild applies the guard
-                # through initial_output_gain_db before any audio link exists.
-                await self.set_output_gain_db(guard)
-            try:
-                await self._sync(overview, initial_output_gain_db=guard,
-                                 extras_override=candidate_extras)
-                if settle_seconds > 0:
-                    await asyncio.sleep(settle_seconds)
-                if before_ramp:
-                    await before_ramp()
-                await self.ramp_output_gain_db(guard, 0.0)
-                apply_candidate()
-            except BaseException:
-                try:
-                    apply_previous()
-                    await self._sync(overview, initial_output_gain_db=guard,
-                                     extras_override=previous_extras)
-                    if settle_seconds > 0:
-                        await asyncio.sleep(settle_seconds)
-                    if before_rollback_ramp:
-                        await before_rollback_ramp()
-                    await self.ramp_output_gain_db(guard, 0.0)
-                except BaseException:
-                    logger.exception("Native DSP guarded transition rollback failed")
-                raise
-
     async def _operating_output_gain_db(self) -> float:
         """The level in effect before a transition ducks the output.
 
@@ -1359,11 +1209,10 @@ class DSPRuntime:
                                        before_rollback_ramp: Callable[[], Awaitable[Any]] | None = None,
                                        ramp_target_db: float = 0.0,
                                        rollback_ramp_target_db: float = 0.0) -> None:
-        """guarded_rebuild for prebuilt plan targets, with rollback to previous.
+        """Guarded rebuild of a prebuilt plan target, with rollback to previous.
 
-        Unlike the overview form, the previous target is an explicit
-        parameter: no durable source can re-derive it, so the caller owns
-        both documents.  ``ramp_target_db`` / ``rollback_ramp_target_db``
+        The previous target is an explicit parameter: no durable source can
+        re-derive it, so the caller owns both documents.  ``ramp_target_db`` / ``rollback_ramp_target_db``
         bound the post-transition operating gain (default 0 dB); a rollback
         may restore a different gain than the candidate path intended.  Neither
         may leave the output below the gain the engine reported before the
@@ -1430,53 +1279,9 @@ class DSPRuntime:
                         await self._settle_output_gain_db_cancellation_safe(rollback_return)
                 raise
 
-    async def sync(self, overview: dict[str, Any], *, initial_output_gain_db: float = 0.0,
-                   extras_override: dict[str, Any] | None = None) -> None:
-        async with self._measurement_scope_lock:
-            await self._sync(overview, initial_output_gain_db=initial_output_gain_db,
-                             extras_override=extras_override)
-
-    async def _resolve_hardware_ports(self, overview: Mapping[str, Any]) -> tuple[str, ...] | None:
-        """Resolve the selected sink's real playback ports for this sync.
-
-        Output discovery already resolved the ports; a direct ``pw-link -io``
-        read is the fallback, and the sink's channel map is the last resort
-        before ``DSPRuntimeConfig`` substitutes the semantic port names — a
-        suspended raw-channel interface publishes no ports, yet its real
-        ``playback_AUX0…`` topology is still known and linking against the
-        semantic names could never succeed.
-        """
-        output_mode = overview.get("output_mode") or {}
-        output_key = str(output_mode.get("effective_output_key") or "").strip()
-        discovered = output_mode.get("hardware_playback_ports")
-        if isinstance(discovered, (list, tuple)) and discovered:
-            return tuple(str(port) for port in discovered)
-        if output_key:
-            result = await self._run(("pw-link", "-io"))
-            if not result.returncode:
-                live_ports = resolve_hardware_playback_ports(result.stdout, output_key)
-                if live_ports:
-                    return live_ports
-        # The full ordered list: the config maps its fixed Out 1/2 (and 3/4)
-        # onto the first entries itself, and rejects a mode that needs more
-        # ports than the device exposes with a clear reason.
-        return hardware_playback_port_fallback_from_mode(output_mode) or None
-
-    async def _sync(self, overview: dict[str, Any], *, initial_output_gain_db: float = 0.0,
-                    extras_override: dict[str, Any] | None = None) -> None:
-        config = DSPRuntimeConfig.from_overview(
-            overview, hardware_ports=await self._resolve_hardware_ports(overview))
-        if not config.output_key:
-            raise RuntimeError("Native DSP requires a selected hardware output")
-        async with self._lock:
-            text = self.manager.compile_engine_text(
-                list(config.layout), sample_rate_hz=config.sample_rate,
-                extras_override=extras_override)
-            await self._run_sync(config, text, initial_output_gain_db=initial_output_gain_db)
-
     async def sync_rendered(self, target: PlannedSyncTarget, *,
                             initial_output_gain_db: float = 0.0) -> None:
-        """Sync a prebuilt plan target with the same contract as sync()."""
+        """Sync a prebuilt plan target under the measurement scope and graph locks."""
         if not target.config.output_key:
             raise RuntimeError("Native DSP requires a selected hardware output")
         async with self._measurement_scope_lock:

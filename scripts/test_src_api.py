@@ -564,16 +564,19 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
         from dsp.orchestration import DspOrchestrator
         self.configure_playback()
         live = {"active_rate": 48000, "force_rate": 44100}
-        async def sync(overview):
-            live["active_rate"] = 44100
+        async def render(rate, overview):
+            return SimpleNamespace(rate=rate)
+
+        async def sync(target):
+            live["active_rate"] = target.rate
         dsp = SimpleNamespace(snapshot=lambda: {"active": True, "config": {"sample_rate": live["active_rate"]}},
-                              sync=sync)
+                              sync_rendered=sync)
         recovery = DspOrchestrator(SimpleNamespace(
             measurement_audio_graph_owned=lambda: False, get_dsp_runtime=lambda: dsp,
             get_samplerate_status=lambda: dict(live), get_audio_output_overview=lambda: self.overview,
             get_measurement_sr_session=lambda: main.measurement_sr_session,
             wait_for_samplerate_alignment=AsyncMock(return_value=True),
-            try_render_v2_target=None,
+            try_render_v2_target=render,
         ))
         self.adapter._deps = replace(self.adapter._deps,
             get_samplerate_status=lambda: dict(live),

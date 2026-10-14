@@ -4,8 +4,8 @@
 Stateless helpers moved out of ``main.py``.  No imports from ``main``;
 the shared stop lifecycle lives in the neutral ``common.process_stop``
 module, so every consumer (transition orchestration, Bluetooth/
-external-input routing, silent-active diagnosis, the update lifecycle)
-uses the same bounded command path.
+external-input routing, the update lifecycle) uses the same bounded
+command path.
 """
 
 from __future__ import annotations

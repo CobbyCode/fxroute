@@ -562,7 +562,6 @@ from audio.source_feed import SourceOverviewFeed, SourceTransitionLock
 from audio.source_transitions import SourceTransitionDependencies, SourceTransitions
 from common.run_to_completion import finish_then_cancel
 from playback.radio_reconnect import RadioReconnect, RadioReconnectDependencies
-from playback.silent_active import SilentActiveDependencies, SilentActiveRecovery
 from playback.spotify_watch import (
     SpotifyPlayerctlWatch,
     SpotifyWatchDependencies,
@@ -907,8 +906,6 @@ async def _finish_despite_cancellation(coro, *, name: str) -> Any:
 playback_transition_coordinator: PlaybackTransitionCoordinator | None = None
 # Measurement-window heartbeat timestamp: set by
 # /api/power/measurement-heartbeat, read only via _is_measurement_window_open().
-# It is measurement-window/power state, not silent-active recovery, so it
-# stays a plain module scalar rather than joining SilentActiveRecoveryState.
 last_measurement_window_seen_at = 0.0
 # Wait primitive for ended callbacks: set once no playback transition
 # is in flight.  asyncio.Event binds to the first used event loop; tests
@@ -946,22 +943,6 @@ radio_reconnect = RadioReconnect(RadioReconnectDependencies(
     request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
 ))
 
-silent_active_recovery = SilentActiveRecovery(SilentActiveDependencies(
-    get_peak_monitor=lambda: runtime.peak_monitor,
-    get_player_instance=lambda: runtime.player_instance,
-    get_current_track_info=lambda: playback_state.current_track_info,
-    get_current_playback_owner=lambda: _resolve_playback_owner(),
-    get_spotify_ui_state=lambda *args, **kwargs: get_spotify_ui_state(*args, **kwargs),
-    list_mpv_sink_inputs=lambda: media_readiness.list_mpv_sink_inputs(),
-    list_spotify_sink_inputs=lambda: media_readiness.list_spotify_sink_inputs(),
-    list_all_sink_inputs=lambda: media_readiness.list_sink_inputs(),
-    get_output_volume_safe=lambda default=100: get_output_volume_safe(default),
-    run_debug_command=lambda args, timeout=2.0: _run_debug_command(args, timeout),
-    is_measurement_window_open=lambda: _is_measurement_window_open(),
-    dsp_preset_load_locked=lambda: runtime.dsp_preset_load_lock is not None and runtime.dsp_preset_load_lock.locked(),
-    current_track_matches=lambda track: _current_track_matches(track),
-))
-
 peak_monitor_coordinator = PeakMonitorCoordinator(PeakMonitorCoordinatorDeps(
     get_peak_monitor=lambda: runtime.peak_monitor,
     get_player_state=lambda: runtime.player_instance.state if runtime.player_instance else {},
@@ -984,7 +965,7 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     get_source_transition_lock=lambda: _source_transition_lock(),
     # Also pushes the overview to clients (SourceTransitions.sync_source_mode_state).
     sync_peak_monitor_for_source_mode_state=lambda overview: source_transitions.sync_source_mode_state(overview),
-    get_output_mode=lambda: get_output_service().ensure_state()["active_mode"],
+    get_output_mode=lambda: get_output_service().load()["active_mode"],
     sync_digital_input=lambda source, left, right, card, right_source=None: _sync_surround_input(
         source, left, right, card, right_source),
     stop_digital_input=lambda: _stop_surround_input(),
@@ -1177,7 +1158,7 @@ level_match_api.configure_level_match(level_match_api.LevelMatchDeps(
     get_session=lambda: measurement_sr_session,
     auto_sub_active=lambda: autosub.is_optimization_active() or (
         _speaker_align_service_instance is not None and _speaker_align_service_instance.active),
-    get_output_state=lambda: get_output_service().ensure_state(),
+    get_output_state=lambda: get_output_service().load(),
     get_output_volume=lambda: get_output_volume(),
     get_node_volume=lambda node: get_node_volume(node),
     capture_scope=lambda *args, **kwargs: _level_match_capture_scope(*args, **kwargs),
@@ -1187,7 +1168,7 @@ polarity_check_api.configure_polarity_check(polarity_check_api.PolarityCheckDeps
     get_session=lambda: measurement_sr_session,
     auto_sub_active=lambda: autosub.is_optimization_active() or (
         _speaker_align_service_instance is not None and _speaker_align_service_instance.active),
-    get_output_state=lambda: get_output_service().ensure_state(),
+    get_output_state=lambda: get_output_service().load(),
 ))
 autosub.configure_dependencies(autosub.AutoSubDependencies(
     get_dsp_runtime=lambda: runtime.dsp_runtime,
@@ -1448,7 +1429,7 @@ source_transitions = SourceTransitions(SourceTransitionDependencies(
     sync_peak_monitor=lambda overview: peak_monitor_coordinator.sync_source_mode_state(overview),
     sync_peak_monitor_for_stdin=lambda overview: peak_monitor_coordinator.sync_stdin_state(overview),
     sync_output_mode=lambda previous, overview: _restore_input_output_mode(previous, overview),
-    capture_output_mode_state=lambda: get_output_service().ensure_state(),
+    capture_output_mode_state=lambda: get_output_service().load(),
     restore_output_mode_state=lambda previous, overview, state: _restore_input_output_mode(previous, overview, saved_state=state),
     request_source_rate_follow=lambda committed: _follow_active_source_native_rate(
         committed, reason="source-mode-native-rate"),
@@ -1715,23 +1696,6 @@ def _commit_coordinated_track(
 
 # WebSocket connection manager
 manager = ConnectionManager()
-
-
-def _current_track_matches(expected_track: dict | None) -> bool:
-    if not expected_track:
-        return False
-    live_track = playback_state.current_track_info or {}
-    if not (
-        live_track.get("source") == expected_track.get("source")
-        and live_track.get("url") == expected_track.get("url")
-        and live_track.get("id") == expected_track.get("id")
-    ):
-        return False
-    expected_url = expected_track.get("url")
-    current_file = (runtime.player_instance.state if runtime.player_instance else {}).get("current_file")
-    if expected_url and current_file and current_file != expected_url:
-        return False
-    return True
 
 
 def _playback_state_matches_track(state: dict | None, track: dict | None) -> bool:
@@ -2905,13 +2869,6 @@ async def broadcast_spotify_state(data=None):
     data = await get_spotify_ui_state(data)
     playback_state.latest_spotify_state = data
     await peak_monitor_coordinator.sync_spotify_state(data)
-    if _is_spotify_playback_active(data):
-        signature_payload = repr(_spotify_state_signature(data)).encode("utf-8", errors="replace")
-        silent_active_recovery.schedule(
-            source="spotify",
-            signature=f"spotify:{hashlib.sha1(signature_payload).hexdigest()}",
-            spotify_state=data.copy(),
-        )
     await manager.broadcast({"type": "spotify", "data": data})
     return data
 
@@ -3355,7 +3312,6 @@ async def _shutdown_lifespan_resources() -> None:
     await cleanup("qobuz-volume-watch", qobuz_volume_watch.stop)
     await cleanup("spotifyd-volume-watch", spotifyd_volume_watch.stop)
     await cleanup("radio-reconnect", radio_reconnect.stop)
-    await cleanup("silent-active-recovery", silent_active_recovery.stop)
     # Before the source services stop: no automatic switch during shutdown.
     await cleanup("input-auto-select", input_auto_select.stop)
     runtime.lifecycle_background_tasks.clear()
@@ -5152,7 +5108,7 @@ def _measurement_area(bank_id: str) -> tuple[dict, str, str, int]:
     selector's Global default).
     """
     service = get_output_service()
-    state = service.ensure_state()
+    state = service.load()
     overview = get_audio_output_overview()
     output_key, channels = _output_state_device(overview)
     channel_count = int(channels or 0)
@@ -5416,7 +5372,7 @@ def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
 
 
 async def _try_render_v2_sync_target(rate: int, overview: dict):
-    """Render the head or last applied v2 state; failure never permits legacy."""
+    """Render the head or the last applied v2 state; failure raises."""
     targets = await _render_v2_recovery_targets(rate, overview, (None,))
     return targets[0]
 
@@ -5474,7 +5430,7 @@ async def _render_v2_recovery_targets(rate: int, overview: dict, extras_snapshot
     except StateConflictError:
         raise
     except Exception as exc:
-        logger.error("V2 output render failed; legacy fallback refused: %s", exc)
+        logger.error("V2 output render failed: %s", exc)
         native = runtime.dsp_runtime
         snapshot = native.snapshot() if native is not None else {}
         keep_running = service.applied_graph_matches(
@@ -5482,7 +5438,7 @@ async def _render_v2_recovery_targets(rate: int, overview: dict, extras_snapshot
             hardware_ports=ports, sample_rate_hz=rate)
         if native is not None and not keep_running:
             await native.fail_closed(str(exc), output_key=output_key)
-        raise RuntimeError(f"V2 output unavailable; legacy fallback refused: {exc}") from exc
+        raise RuntimeError(f"V2 output unavailable: {exc}") from exc
 
 
 def _level_match_capture_scope(job: dict, target: dict, scope: dict, state: dict, *, neutralize: bool):
@@ -5503,16 +5459,12 @@ def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,
 
     Returns {"expected_native_layout", "expected_native_output_mode",
     "expected_plan_fingerprint"} compiled at the measurement rate, or None
-    when the head cannot activate (the caller keeps the legacy route, whose
-    pre-sweep check then fails closed as before).  Never raises.
+    when the head cannot activate (the sweep is then refused when its
+    playback route is built).  Never raises.
 
     The committed plan is the engine's own processing model, so it is the
     only expectation that can describe the running graph: one layout entry
-    per active role and the engine's own mode name.  The legacy overview
-    translation cannot (it names the mode "subwoofer-2.2" and always
-    describes four outputs), which is why a manual sweep without a named
-    area bank used to be refused as "native DSP output mode stereo-sub !=
-    measurement mode subwoofer-2.2" plus "does not expose 4 outputs".
+    per active role and the engine's own mode name.
 
     The bank is therefore optional: the plan covers the whole active
     topology, and an empty bank follows the current editing selection
@@ -5832,7 +5784,7 @@ async def _routed_roles(state: dict, mode: str) -> list[str]:
 async def get_audio_output_state():
     service = get_output_service()
     try:
-        state = service.ensure_state()
+        state = service.load()
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
     overview = await asyncio.to_thread(get_audio_output_overview)
@@ -5890,7 +5842,7 @@ async def apply_audio_output_state(request: Request):
 
 @app.get('/api/audio/av-sync')
 async def get_av_sync():
-    state = get_output_service().ensure_state()
+    state = get_output_service().load()
     native = runtime.dsp_runtime
     latency = {'ready': False}
     if native is not None and not native.sync_in_progress:
@@ -6296,7 +6248,7 @@ async def get_surround_input_status():
 async def _restore_input_output_mode(previous: dict, overview: dict, *, saved_state: dict | None = None) -> dict:
     if saved_state is None and input_identity(previous) == input_identity(overview):
         return overview
-    state = get_output_service().ensure_state()
+    state = get_output_service().load()
     if saved_state is not None:
         candidate = {**state, "active_mode": saved_state["active_mode"], "input_modes": saved_state["input_modes"]}
     else:
@@ -6337,7 +6289,7 @@ async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | N
     external = selection.get("mode") == SOURCE_MODE_EXTERNAL_INPUT
     previous_owned = _surround_carrier_owned
     previous_clock_card = _surround_clock_card
-    previous_state = get_output_service().ensure_state()
+    previous_state = get_output_service().load()
     _build_output_state_mutation(mutation, output_key="", channels=None)(previous_state)
     if (type(body.get("expected_revision")) is not int
             or body["expected_revision"] != previous_state["revision"]
@@ -6377,7 +6329,7 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
 
     service = get_output_service()
     try:
-        state = service.ensure_state()
+        state = service.load()
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
     if state["revision"] != expected_revision:
@@ -6539,7 +6491,7 @@ async def _apply_output_state_fast(body, *, service, state, candidate, overview,
     # cannot render (unstable coefficients, unresolvable IR, missing ports)
     # must fail here with the last good head still live -- never as a
     # committed-but-unrunnable poison head that every later background sync
-    # trips over (and silently replaces with the legacy graph).
+    # trips over.
     staged_new_target = staged_old_target = None
     staged_guard = 0.0
     if (live_known and new_plan is not None
@@ -6795,7 +6747,7 @@ def _crossover_way_points(role: str, role_settings: dict, sample_rate_hz: int,
 async def get_audio_output_state_crossover_response():
     service = get_output_service()
     try:
-        state = service.ensure_state()
+        state = service.load()
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
     status = await asyncio.to_thread(get_samplerate_status)

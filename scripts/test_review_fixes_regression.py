@@ -14,6 +14,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -25,8 +26,8 @@ class _FakeDspRuntime:
     def __init__(self) -> None:
         self.sync_calls = []
 
-    async def sync(self, overview: dict) -> None:
-        self.sync_calls.append(dict(overview))
+    async def sync_rendered(self, target) -> None:
+        self.sync_calls.append(dict(target.overview))
 
 
 class _FakeMeasurementSrSession:
@@ -52,6 +53,9 @@ class _FailSecondOverviewDeps:
 
     def get_dsp_manager(self):
         return None
+
+    async def try_render_v2_target(self, rate, overview):
+        return SimpleNamespace(rate=rate, overview=dict(overview))
 
     def get_audio_output_overview(self):
         self.calls += 1

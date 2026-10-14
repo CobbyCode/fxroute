@@ -5,9 +5,8 @@
 Background: persistence resolves $XDG_CONFIG_HOME/fxroute (config),
 $XDG_STATE_HOME (measurement/autosub state) and $XDG_DATA_HOME with a $HOME
 fallback. A test that touches those paths without its own sandbox would
-overwrite the invoking user's live product files (e.g. the tuned
-2.1/2.2/2.2-stereo subwoofer levels in audio-output-mode.json) whenever the
-suite runs on that machine.
+overwrite the invoking user's live product files (e.g. the tuned output
+state or sample-rate policy) whenever the suite runs on that machine.
 
 run_tests.sh already sandboxes the whole run; this check enforces the same
 property per test file so future tests cannot regress it, including when a
@@ -33,10 +32,9 @@ SCRIPTS = ROOT / "scripts"
 
 # Write entry points that can reach real product configuration on disk.
 # (Files that merely mention XDG_* to sandbox themselves need no audit.)
-# Backend-v2 migration: the legacy mode persist/set helpers are deleted, so
-# only the still-existing path/file triggers remain for the mode file.
+# The legacy mode file is no longer read or written; its name stays a trigger
+# so a test that still creates it is audited.
 TRIGGERS = (
-    "_audio_output_mode_path",
     "_save_audio_output_selection",
     "persist_sample_rate_policy",
     "audio-output-mode.json",

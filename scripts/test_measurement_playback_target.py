@@ -79,23 +79,34 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
 
     def test_both_scopes_use_real_native_ingress_topology(self):
         target = {"target_name": "fxroute_dsp_sink"}
+        layout = [{"name": "main_l", "routes": [{"input": 0, "gain": 1.0}]},
+                  {"name": "main_r", "routes": [{"input": 1, "gain": 1.0}]}]
         for scope in (MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER):
-            route = self.store._build_measurement_playback_route(
-                "measure", target, measurement_scope=scope, overview=subwoofer_overview())
+            route = self.store._routing._build_measurement_playback_route(
+                "measure", target, measurement_scope=scope, expected_native_layout=layout,
+                expected_native_output_mode="stereo", expected_plan_fingerprint="plan")
             self.assertEqual(route["route"], "direct-sink")
             self.assertEqual(route["playback_target_name"], "fxroute_dsp_sink")
+            self.assertEqual(route["expected_plan_fingerprint"], "plan")
+
+    def test_route_without_a_staged_plan_is_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "staged output plan"):
+            self.store._routing._build_measurement_playback_route(
+                "measure", {"target_name": "fxroute_dsp_sink"})
 
     def test_pre_sweep_validation_uses_native_runtime_config_not_legacy_argv(self):
         layout = [{"name": f"OUT{i}", "routes": [{"input": i - 1, "gain": 1.0}]} for i in range(1, 5)]
         self.store.runtime_snapshot_provider = lambda: {
             "active": True,
-            "config": {"sample_rate": 48000, "output_mode": "subwoofer-2.2", "layout": layout},
+            "config": {"sample_rate": 48000, "output_mode": "stereo-sub", "layout": layout,
+                       "plan_fingerprint": "plan"},
             "effect_bypass": True,
         }
         snapshot = self.store._routing._build_pre_sweep_state_snapshot(
             job_id="job", sample_rate=48000,
             playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_RAW_HELPER,
-                            "output_mode": "subwoofer-2.2", "expected_native_layout": layout})
+                            "output_mode": "stereo-sub", "expected_native_layout": layout,
+                            "expected_plan_fingerprint": "plan"})
         self.assertIsNone(snapshot["validation_failure"])
         self.assertNotIn("parsed", snapshot)
 
@@ -110,20 +121,22 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         ]
         self.store.runtime_snapshot_provider = lambda: {
             "active": True,
-            "config": {"sample_rate": 48000, "output_mode": "subwoofer-2.2", "layout": layout},
+            "config": {"sample_rate": 48000, "output_mode": "stereo-sub", "layout": layout,
+                       "plan_fingerprint": "plan"},
             "effect_bypass": True,
         }
         snapshot = self.store._routing._build_pre_sweep_state_snapshot(
             job_id="job", sample_rate=48000,
             playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_RAW_HELPER,
-                            "output_mode": "subwoofer-2.2", "expected_native_layout": layout})
+                            "output_mode": "stereo-sub", "expected_native_layout": layout,
+                            "expected_plan_fingerprint": "plan"})
         self.assertIsNone(snapshot["validation_failure"])
 
     def test_pre_sweep_validation_fails_closed_when_expected_layout_missing(self):
-        # The route builder always derives the expected layout from the
-        # overview; a missing one must refuse the sweep instead of guessing an
-        # output count (regression guard: the old stereo=>2 fallback caused
-        # refused sweeps and is gone).
+        # The route builder always carries the staged plan's layout; a
+        # missing one must refuse the sweep instead of guessing an output
+        # count (regression guard: the old stereo=>2 fallback caused refused
+        # sweeps and is gone).
         layout = [{"name": f"OUT{i}", "routes": [{"input": i - 1, "gain": 1.0}]} for i in range(1, 5)]
         self.store.runtime_snapshot_provider = lambda: {
             "active": True,
@@ -187,12 +200,14 @@ class MeasurementPlaybackTargetTests(unittest.TestCase):
         ]
         self.store.runtime_snapshot_provider = lambda: {
             "active": True,
-            "config": {"sample_rate": 48000, "output_mode": "stereo", "layout": layout},
+            "config": {"sample_rate": 48000, "output_mode": "stereo", "layout": layout,
+                       "plan_fingerprint": "plan"},
         }
         snapshot = self.store._routing._build_pre_sweep_state_snapshot(
             job_id="job", sample_rate=48000,
             playback_route={"route": "direct-sink", "measurement_scope": MEASUREMENT_SCOPE_ACTIVE_CHAIN,
-                            "output_mode": "stereo", "expected_native_layout": layout})
+                            "output_mode": "stereo", "expected_native_layout": layout,
+                            "expected_plan_fingerprint": "plan"})
         self.assertIsNone(snapshot["validation_failure"])
 
     def test_raw_helper_bypass_is_restored_after_worker_failure(self):

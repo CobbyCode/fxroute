@@ -65,7 +65,8 @@ class _FakeDspRuntime:
             "config": {"sample_rate": self.helper_rate},
         }
 
-    async def sync(self, overview: dict) -> None:
+    async def sync_rendered(self, target) -> None:
+        overview = target.overview
         self.sync_calls.append(dict(overview))
         output_mode = overview.get("output_mode") or {}
         selected = overview.get("selected_output") or {}
@@ -83,7 +84,7 @@ class _FailingSyncRuntime(_FakeDspRuntime):
         super().__init__(helper_rate)
         self.attempts = 0
 
-    async def sync(self, overview: dict) -> None:
+    async def sync_rendered(self, target) -> None:
         self.attempts += 1
         raise RuntimeError("native DSP config could not be prepared")
 
@@ -126,6 +127,9 @@ class _OrchestratorDeps:
 
     def get_dsp_manager(self):
         return None
+
+    async def try_render_v2_target(self, rate, overview):
+        return SimpleNamespace(rate=rate, overview=dict(overview))
 
     def get_audio_output_overview(self):
         return {

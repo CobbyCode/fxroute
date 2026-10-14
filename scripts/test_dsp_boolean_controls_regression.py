@@ -8,7 +8,7 @@ Covers without full suite:
   1. Subwoofer Highpass-Select hat denselben _activeEditing-Guard wie die
      anderen 7 Subwoofer-Controls (sonst überschreibt renderSubwooferPanel
      den gerade gewählten Wert vor dem Save).
-  2. Polarität invert round-trip 2.1 + 2.2 (payload + runtime invert-Flag).
+  2. Polarität invert für einen und zwei Subs (v2-Plan + Layout invert-Flag).
   3. Extras-Merge erhält explizites false für alle 6 Toggles.
 """
 
@@ -20,7 +20,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dsp.effects_extras import merge_effects_extras_from_json
-from dsp.runtime import DSPRuntimeConfig
+from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from dsp.native_config import layout_from_plan
+from dsp.processing_plan import compile_processing_plan
+
+
+def _planned_layout(routing: list[str], processing: dict | None = None,
+                    bass: dict | None = None) -> dict:
+    """Native layout rows by role for a Stereo + Sub state on one device."""
+    state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "k", routing), "stereo-sub")
+    mode = state["modes"]["stereo-sub"]
+    for role, values in (processing or {}).items():
+        mode["processing"][role].update(values)
+    mode["bass_management"].update(bass or {})
+    plan = compile_processing_plan(state, output_key="k", channels=len(routing), sample_rate_hz=48000,
+                                   preset_loader=lambda *_args: {"chain": []})
+    return {row["name"]: row for row in layout_from_plan(plan, resolve_ir=lambda *_args: {})}
 
 
 def _block(text: str, start_marker: str, end_marker: str) -> str:
@@ -67,35 +82,15 @@ def _check_highpass_guard() -> None:
 
 
 def _check_polarity() -> None:
-    def run() -> None:
-        # 2.1 invert
-        sub_21 = {"crossover_frequency_hz": 80, "main_highpass_enabled": True,
-                  "sub_level_db": 0.0, "sub_alignment_ms": 0.0, "sub_polarity": "invert"}
-        loaded = {"mode": "subwoofer-2.1",
-                  "subwoofer": {**sub_21, "slope": "LR24"}}
-        assert loaded["subwoofer"]["sub_polarity"] == "invert", loaded
-        ov = {"output_mode": loaded, "selected_output": {"key": "k"}, "current_output": {"key": "k"}}
-        rt = DSPRuntimeConfig.from_overview(ov)
-        subs = [c for c in rt.layout if c["name"].startswith("SUB")]
-        assert subs and all(c.get("invert") is True for c in subs), subs
-        # 2.2 sub1=invert, sub2=normal
-        sub = {"crossover_frequency_hz": 80, "main_highpass_enabled": True,
-               "sub_level_db": 0.0, "sub_alignment_ms": 0.0, "sub_polarity": "invert"}
-        subs22 = {"sub1": {"level_db": 0.0, "alignment_ms": 0.0, "polarity": "invert"},
-                  "sub2": {"level_db": 0.0, "alignment_ms": 0.0, "polarity": "normal"}}
-        loaded22 = {"mode": "subwoofer-2.2", "crossover_frequency_hz": 80,
-                    "slope": "LR24", "main_highpass_enabled": True,
-                    "subwoofers": dict(subs22)}
-        assert loaded22["subwoofers"]["sub1"]["polarity"] == "invert", loaded22
-        assert loaded22["subwoofers"]["sub2"]["polarity"] == "normal", loaded22
-        ov22 = {"output_mode": loaded22, "selected_output": {"key": "k"}, "current_output": {"key": "k"}}
-        rt22 = DSPRuntimeConfig.from_overview(ov22)
-        by_name = {c["name"]: c for c in rt22.layout}
-        assert by_name["SUB1"].get("invert") is True, by_name["SUB1"]
-        assert by_name["SUB2"].get("invert") is False, by_name["SUB2"]
-
-    run()
-    print("polarity invert round-trip 2.1 + 2.2 + runtime: ok")
+    # Single sub inverted.
+    single = _planned_layout(["main_l", "main_r", "sub1"], {"sub1": {"polarity": "invert"}})
+    assert single["sub1"].get("invert") is True, single["sub1"]
+    # Two subs: sub1 inverted, sub2 normal.
+    dual = _planned_layout(["main_l", "main_r", "sub1", "sub2"],
+                           {"sub1": {"polarity": "invert"}, "sub2": {"polarity": "normal"}})
+    assert dual["sub1"].get("invert") is True, dual["sub1"]
+    assert dual["sub2"].get("invert") is False, dual["sub2"]
+    print("polarity invert single + dual sub reaches the planned layout: ok")
 
 
 def _check_extras_false() -> None:

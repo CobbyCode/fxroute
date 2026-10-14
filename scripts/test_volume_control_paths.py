@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Silent-active recovery uses the live volume; /api/volume never blocks the loop."""
+"""/api/volume never blocks the loop; volume ownership follows the DSP state."""
 
 import asyncio
 import copy
 import pathlib
-from contextlib import ExitStack
 import subprocess
 import sys
 import threading
@@ -15,11 +14,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
 import dsp.api as dsp_api
-import playback.media_readiness as media_readiness
 
 dsp_api.configure_dsp_api(main._make_dsp_api_deps())
 import audio.system_volume as system_volume
-import playback.silent_active as silent_active
 
 
 class _FakePlayer:
@@ -33,76 +30,6 @@ class _FakePlayer:
             "ended": False,
             "volume": 100,
         }
-
-
-class _FakePeakMonitor:
-    def snapshot(self):
-        return {"vu_db": -60.0, "vu_fresh": False}
-
-
-class SilentActiveLiveVolumeTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.original_silent_attempts = dict(main.silent_active_recovery.recovery_attempts)
-        main.silent_active_recovery.recovery_attempts.clear()
-
-    async def asyncTearDown(self):
-        main.silent_active_recovery.recovery_attempts.clear()
-        main.silent_active_recovery.recovery_attempts.update(self.original_silent_attempts)
-
-    def _patches(self):
-        return [
-            mock.patch.object(main.runtime, "peak_monitor", _FakePeakMonitor()),
-            mock.patch.object(main.runtime, "player_instance", _FakePlayer()),
-            mock.patch.object(main, "_current_track_matches", return_value=True),
-            mock.patch.object(media_readiness, "list_mpv_sink_inputs", return_value=[{"muted": False}]),
-        ]
-
-    async def test_status_cache_says_100_but_live_volume_is_zero_blocks_recovery(self):
-        with mock.patch.object(silent_active, "get_output_volume", return_value=0) as live, mock.patch.object(
-            silent_active, "get_audio_output_overview", return_value={}
-        ) as overview, mock.patch.object(main, "_run_debug_command", return_value={"stdout": "", "stderr": ""}) as debug, mock.patch.object(
-            main.silent_active_recovery, "_source_links_present", return_value=False
-        ), ExitStack() as stack:
-            for patch in self._patches():
-                stack.enter_context(patch)
-            await main.silent_active_recovery._check_and_recover(
-                source="local", signature="sig-live-zero", track={"id": "x"}
-            )
-        live.assert_called()
-        overview.assert_not_called()
-        debug.assert_not_called()
-
-    async def test_status_cache_says_zero_but_live_volume_is_positive_continues(self):
-        with mock.patch.object(silent_active, "get_output_volume", return_value=50) as live, mock.patch.object(
-            silent_active, "get_audio_output_overview", return_value={"output_mode": {}}
-        ) as overview, mock.patch.object(main, "_run_debug_command", return_value={"stdout": "", "stderr": ""}) as debug, mock.patch.object(
-            main.silent_active_recovery, "_source_links_present", return_value=False
-        ), ExitStack() as stack:
-            for patch in self._patches():
-                stack.enter_context(patch)
-            await main.silent_active_recovery._check_and_recover(
-                source="local", signature="sig-live-positive", track={"id": "x"}
-            )
-        live.assert_called()
-        overview.assert_called()
-        debug.assert_called()
-
-    async def test_live_read_failure_uses_safe_fallback_like_before(self):
-        with mock.patch.object(
-            silent_active, "get_output_volume", side_effect=RuntimeError("wpctl wedged")
-        ), mock.patch.object(
-            silent_active, "get_audio_output_overview", return_value={}
-        ) as overview, mock.patch.object(
-            main.silent_active_recovery, "_source_links_present", return_value=True
-        ), ExitStack() as stack:
-            for patch in self._patches():
-                stack.enter_context(patch)
-            await main.silent_active_recovery._check_and_recover(
-                source="local", signature="sig-live-failure", track={"id": "x"}
-            )
-            # The fallback value 100 keeps the diagnosis path alive (same
-            # safe default semantics as the previous get_output_volume_safe).
-            overview.assert_called()
 
 
 class VolumeEndpointEventLoopTests(unittest.IsolatedAsyncioTestCase):
@@ -727,81 +654,6 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             await extras_task
 
 
-NATIVE_STEREO_LINKS = (
-    "\tmpv:output_FL\n"
-    "  |-> fxroute_dsp_sink:playback_FL\n"
-    "\tmpv:output_FR\n"
-    "  |-> fxroute_dsp_sink:playback_FR\n"
-    "\tfxroute_dsp_sink:monitor_FL\n"
-    "  |-> fxroute_dsp:input_1\n"
-    "\tfxroute_dsp_sink:monitor_FR\n"
-    "  |-> fxroute_dsp:input_2\n"
-    "\tfxroute_dsp:output_1\n"
-    "  |-> alsa_output.hw:playback_FL\n"
-    "\tfxroute_dsp:output_2\n"
-    "  |-> alsa_output.hw:playback_FR\n"
-)
-
-
-class SilentActiveSourceLinkTests(unittest.TestCase):
-    """Stereo silent-active link check uses the native DSP topology."""
-
-    def stereo(self, **overrides):
-        return {"mode": "stereo", "effective_output_key": "alsa_output.hw", **overrides}
-
-    def test_stereo_native_topology_is_recognized(self):
-        self.assertTrue(main.silent_active_recovery._source_links_present(
-            "local", NATIVE_STEREO_LINKS, self.stereo()))
-
-    def test_stereo_spotify_source_is_recognized(self):
-        text = NATIVE_STEREO_LINKS.replace("mpv:output_FL", "spotify:output_FL") \
-                                  .replace("mpv:output_FR", "spotify:output_FR")
-        self.assertTrue(main.silent_active_recovery._source_links_present(
-            "spotify", text, self.stereo()))
-
-    def test_stereo_without_dsp_to_hardware_link_is_not_recognized(self):
-        text = NATIVE_STEREO_LINKS.replace(
-            "\tfxroute_dsp:output_1\n  |-> alsa_output.hw:playback_FL\n", "")
-        self.assertFalse(main.silent_active_recovery._source_links_present(
-            "local", text, self.stereo()))
-
-    def test_stereo_without_source_to_sink_link_is_not_recognized(self):
-        text = NATIVE_STEREO_LINKS.replace(
-            "\tmpv:output_FL\n  |-> fxroute_dsp_sink:playback_FL\n", "")
-        self.assertFalse(main.silent_active_recovery._source_links_present(
-            "local", text, self.stereo()))
-
-    def test_stereo_obsolete_legacy_ports_are_not_recognized(self):
-        # The pre-native-DSP stereo check would have passed on these legacy
-        # native check must not.
-        text = (
-            "\tmpv:output_FL\n"
-            "  |-> fxroute_dsp_sink:playback_FL\n"
-            "\tee_soe_output_level:output_FL\n"
-            "  |-> alsa_output.hw:playback_FL\n"
-            "\tee_soe_output_level:output_FR\n"
-            "  |-> alsa_output.hw:playback_FR\n"
-        )
-        self.assertFalse(main.silent_active_recovery._source_links_present(
-            "local", text, self.stereo()))
-
-    def test_stereo_interleaved_links_are_recognized(self):
-        text = (
-            "\tfxroute_dsp_sink:playback_FL\n"
-            "  |<- spotify:output_FL\n"
-            "  |<- mpv:output_FL\n"
-            "\tfxroute_dsp:output_1\n"
-            "  |-> alsa_output.hw:playback_FL\n"
-            "\tfxroute_dsp:output_2\n"
-            "  |-> alsa_output.hw:playback_FR\n"
-        )
-        self.assertTrue(main.silent_active_recovery._source_links_present(
-            "local", text, self.stereo()))
-
-    def test_subwoofer_mode_only_requires_source_link(self):
-        self.assertTrue(main.silent_active_recovery._source_links_present(
-            "local", "\tmpv:output_FL\n  |-> fxroute_dsp_sink:playback_FL\n",
-            {"mode": "subwoofer-2.1", "effective_output_key": "alsa_output.hw"}))
 
 
 class _FakeVolumeManager:

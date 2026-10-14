@@ -1919,21 +1919,6 @@ class MeasurementStore:
     ) -> dict[str, Any]:
         return self._routing._resolve_playback_target(measurement_scope=measurement_scope, overview=overview)
 
-    def _build_measurement_playback_route(
-        self,
-        play_node_name: str,
-        playback_target: dict[str, Any],
-        *,
-        measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
-        overview: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return self._routing._build_measurement_playback_route(
-            play_node_name,
-            playback_target,
-            measurement_scope=measurement_scope,
-            overview=overview,
-        )
-
     def _resolve_measurement_sample_rate(self) -> int:
         inputs = self._measurement_inputs_with_sample_rate(self._discover_capture_inputs())
         settings = self._read_settings().get("measure", {})

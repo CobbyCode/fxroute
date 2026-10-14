@@ -139,14 +139,6 @@ class PlannedDiagnosisTests(unittest.IsolatedAsyncioTestCase):
             graph_text(v2_edges()))
         self.assertTrue(diagnosis["links_complete"], diagnosis["signature"])
 
-    async def test_legacy_snapshot_routes_are_ignored(self):
-        diagnosis = await self.diagnose(
-            v2_overview(planned=None),
-            self.snapshot(fingerprint=None, routes=[list(e) for e in PLANNED], ports=[]),
-            graph_text(v2_edges()))
-        self.assertFalse(diagnosis["links_complete"])
-        self.assertEqual(len(list(diagnosis["output_targets"])), 2)
-
     async def test_planned_routes_ignore_overview_mode_label(self):
         """Task-3 contract: equal plans verify identically whatever the label.
 
@@ -772,10 +764,8 @@ class LegacyFilesUntouchedTests(unittest.TestCase):
         self.xdg_patch = mock.patch.dict("os.environ", {"XDG_CONFIG_HOME": xdg.name})
         self.xdg_patch.start()
         self.addCleanup(self.xdg_patch.stop)
-        from audio.samplerate import persistence as legacy_persistence
-        from audio import output_routing as routing_module
-        self.mode_path = legacy_persistence._audio_output_mode_path()
-        self.routing_path = routing_module._path()
+        self.mode_path = Path(xdg.name) / "fxroute" / "audio-output-mode.json"
+        self.routing_path = Path(xdg.name) / "fxroute" / "output-routing.json"
         self.mode_path.parent.mkdir(parents=True, exist_ok=True)
         self.mode_path.write_bytes(b'{"mode": "sentinel"}')
         self.routing_path.write_bytes(b'{"sentinel": [1, 2, 3, 4]}')

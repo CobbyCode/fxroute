@@ -114,8 +114,7 @@ class MeasurementServices:
     # ``stage_bank_v2_context(measurement_bank=..., measurement_rate_hz=...)``;
     # returns {"expected_native_layout", "expected_native_output_mode",
     # "expected_plan_fingerprint"} or None when the head cannot activate.
-    # Without it (or on None) manual measurements keep the legacy overview
-    # route, whose mode/layout check then refuses any crossover/bank graph.
+    # Without a staged plan the store refuses the sweep.
     stage_bank_v2_context: Callable[..., Any] | None = None
     stdin_measurement_acquire: Callable[[], Awaitable[None]] | None = None
     stdin_measurement_release: Callable[[], Awaitable[None]] | None = None
@@ -157,17 +156,12 @@ def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,
                            channel: str = "") -> dict:
     """Stage the committed v2 plan context for one manual measurement.
 
-    Returns kwargs for single/repeat store starts (possibly empty,
-    preserving the legacy overview route). Never raises: an
-    unresolvable bank or unrenderable head falls back to legacy, where the
-    store's own bank validation and the pre-sweep check still fail closed.
+    Returns kwargs for single/repeat store starts, empty when no plan could
+    be staged; the store then refuses the sweep. Never raises.
 
     The factory is consulted even without a named area bank: the committed
     plan describes the whole active topology, so a sweep that only picked a
-    channel (left/right) still has to be checked against it.  Skipping it
-    sent those sweeps to the legacy route, which reports the legacy mode
-    label and always four outputs, so a stereo-sub crossover with more
-    active roles was refused as "does not expose 4 outputs".
+    channel (left/right) still has to be checked against it.
     """
     factory = getattr(_measurement_services(), "stage_bank_v2_context", None)
     if factory is None:
@@ -183,10 +177,10 @@ def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,
             staged = factory(measurement_bank=measurement_bank,
                              measurement_rate_hz=measurement_rate_hz)
         except Exception as exc:
-            logger.warning("Bank v2 staging failed, using legacy measurement route: %s", exc)
+            logger.warning("Bank v2 staging failed: %s", exc)
             return {}
     except Exception as exc:
-        logger.warning("Bank v2 staging failed, using legacy measurement route: %s", exc)
+        logger.warning("Bank v2 staging failed: %s", exc)
         return {}
     if not isinstance(staged, dict):
         return {}
@@ -1090,14 +1084,7 @@ async def _measurement_entry_preflight(
         playback_target = measurement_store._resolve_playback_target(overview=overview)
         if not isinstance(playback_target, Mapping) or not playback_target.get("target_name"):
             raise RuntimeError("measurement entry preflight found no playback target")
-        playback_route = measurement_store._build_measurement_playback_route(
-            "fxroute-measure-preflight",
-            playback_target,
-            overview=overview,
-        )
-        if not isinstance(playback_route, Mapping) or not playback_route.get("route"):
-            raise RuntimeError("measurement entry preflight found no playback route")
-        target_name = str(playback_route.get("playback_target_name") or "").strip()
+        target_name = str(playback_target.get("target_name") or "").strip()
         list_ports = getattr(measurement_store, "_list_pw_ports", None)
         if not target_name or not callable(list_ports):
             raise RuntimeError("measurement entry preflight could not inspect playback route ports")

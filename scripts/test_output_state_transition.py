@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Authoritative output service: guarded mutations, fingerprints, migration."""
+"""Authoritative output service: guarded mutations, fingerprints, loading."""
 
 import struct
 import sys
@@ -16,19 +16,17 @@ from audio.output_state import (
     set_crossover, set_mode_extras, set_mode_routing, set_output_processing, switch_mode,
     select_bank,
 )
-from audio.output_state_migration import migrate_legacy_output_state
 from audio.output_state_store import OutputStateStore, StateConflictError
 from dsp.manager import DSPManager, build_wav_bytes
 
 
-def make_service(path, *, manager=None, active=False, legacy=None):
+def make_service(path, *, manager=None, active=False):
     return OutputService(OutputServiceDeps(
         store=OutputStateStore(path),
         preset_loader=manager.read_preset if manager else (lambda _mode, _bank, name: (_ for _ in ()).throw(
             AssertionError(f"unexpected preset load: {name}"))),
         resolve_ir=lambda _bank, kernel: (_ for _ in ()).throw(AssertionError(f"unexpected IR: {kernel}")),
         measurement_active=lambda: active,
-        legacy_snapshot_loader=legacy,
     ))
 
 
@@ -167,42 +165,23 @@ class FingerprintTests(unittest.TestCase):
         self.assertNotEqual(self.fingerprint(with_bass), first)
 
 
-class EnsureStateTests(unittest.TestCase):
+class LoadTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "output-state.json"
-        self.calls = []
-        home = Path(directory.name) / "home"
-        self.manager = DSPManager(home=home)
-
-    def legacy(self):
-        self.calls.append(1)
-        return {"mode": {"mode": "subwoofer-2.1"}, "routing": {}, "active_preset": "Neutral",
-                "compare": {}, "extras": {}, "output_key": "A", "channels": 4}
-
-    def test_migrates_once_then_restarts_clean(self):
-        service = make_service(self.path, manager=self.manager, legacy=self.legacy)
-        first = service.ensure_state()
-        self.assertEqual(first["revision"], 1)
-        self.assertEqual(first["modes"]["stereo-sub"]["routing"]["A"],
-                         ["main_l", "main_r", "sub1", "sub1"])
-        self.assertEqual(len(self.calls), 1)
-        second = make_service(self.path, manager=self.manager, legacy=self.legacy).ensure_state()
-        self.assertEqual(second, first)
-        self.assertEqual(len(self.calls), 1)
+        self.manager = DSPManager(home=Path(directory.name) / "home")
 
     def test_corrupt_file_raises_and_preserves_bytes(self):
         self.path.write_text("{broken")
-        service = make_service(self.path, manager=self.manager, legacy=self.legacy)
-        with self.assertRaises(ValueError):
-            service.ensure_state()
-        self.assertEqual(self.path.read_text(), "{broken")
-        self.assertEqual(self.calls, [])
-
-    def test_missing_file_without_legacy_returns_defaults_unwritten(self):
         service = make_service(self.path, manager=self.manager)
-        state = service.ensure_state()
+        with self.assertRaises(ValueError):
+            service.load()
+        self.assertEqual(self.path.read_text(), "{broken")
+
+    def test_missing_file_returns_defaults_unwritten(self):
+        service = make_service(self.path, manager=self.manager)
+        state = service.load()
         self.assertEqual(state["revision"], 0)
         self.assertFalse(self.path.exists())
 

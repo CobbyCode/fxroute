@@ -233,15 +233,20 @@ class MeasurementIngressTests(unittest.IsolatedAsyncioTestCase):
         finish_measurement = asyncio.Event()
         rate = {"active_rate": 44100 if carrier_repair else 48000, "force_rate": 48000, "clock_rate": 48000}
 
-        async def sync_engine(overview):
+        async def render(rate, overview):
+            self.assertEqual(rate, 48000)
             self.assertEqual(overview["output_mode"]["effective_output_rate"], 48000)
+            return SimpleNamespace(rate=rate)
+
+        async def sync_engine(target):
+            self.assertEqual(target.rate, 48000)
 
         dsp_orchestrator = DspOrchestrator(SimpleNamespace(
             get_dsp_runtime=lambda: self.fixture.native,
             get_measurement_sr_session=lambda: self.fixture.session,
             get_audio_output_overview=lambda: self.fixture.overview,
             get_samplerate_status=lambda: dict(rate),
-            try_render_v2_target=None,
+            try_render_v2_target=render,
         ))
 
         async def start_decoder(*args, **kwargs):
@@ -308,7 +313,7 @@ class MeasurementIngressTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "_surround_input", SimpleNamespace(start=start_decoder, stop=stop_decoder)), \
                 patch.object(main, "_set_surround_carrier_owned", carrier), \
-                patch.object(self.fixture.native, "sync", sync_engine), \
+                patch.object(self.fixture.native, "sync_rendered", sync_engine), \
                 patch.object(measurement_session, "_services", services), \
                 patch.object(measurement_session, "_playback_state_before_measurement", None):
             monitor = asyncio.create_task(routing.sync())

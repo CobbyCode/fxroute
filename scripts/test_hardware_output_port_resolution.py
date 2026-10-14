@@ -2,12 +2,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Hardware playback-port resolution for DSP, diagnosis and readback.
 
-FXRoute's DSP outputs are fixed (Out 1/2 Main, Out 3/4 Sub), but a sink may
-name its playback ports ``playback_FL/FR/RL/RR`` (UMC204HD) or
-``playback_AUX0…`` (Focusrite Scarlett 16i16 4th Gen).  The runtime must link
-against the ports the device actually exposes, in its own channel order — and
-every consumer (DSP link build, graph diagnosis, silent-active watcher,
-readback) must describe the same resolved topology.  These tests pin both
+A sink may name its playback ports ``playback_FL/FR/RL/RR`` (UMC204HD) or
+``playback_AUX0…`` (Focusrite Scarlett 16i16 4th Gen).  The plan links against
+the ports the device actually exposes, in its own channel order — and every
+consumer (DSP link build, graph diagnosis, readback) must describe the same
+resolved topology.  These tests pin both
 port models, including the natural channel order that keeps ``AUX10`` behind
 ``AUX2``.
 """
@@ -35,9 +34,6 @@ from audio.output_ports import (
     warn_semantic_playback_fallback,
 )
 from audio.samplerate import overview as overview_module
-from dsp.manager import DSPManager
-from dsp.runtime import CommandResult, DSPRuntime, DSPRuntimeConfig
-from playback.silent_active import SilentActiveRecovery
 
 SCARLETT = "alsa_output.usb-Focusrite_Scarlett_16i16_4th_Gen-00.multichannel-output"
 UMC = "alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40"
@@ -170,190 +166,6 @@ class ChannelMapPlaybackPortTests(unittest.TestCase):
         self.assertEqual(hardware_playback_port_fallback_from_mode(None), ())
 
 
-class DSPRuntimeConfigPortTests(unittest.TestCase):
-    """The DSP maps its fixed outputs onto the resolved hardware ports."""
-
-    def setUp(self):
-        self.manager = DSPManager(home=Path(tempfile.mkdtemp()))
-        self.manager.save_global_extras({"limiter": {"enabled": False}})
-
-    def overview(self, mode: str, *, channels: int = 18, ports=None) -> dict:
-        block = {
-            "mode": mode,
-            "effective_output_key": SCARLETT,
-            "effective_output_channels": channels,
-            "effective_output_rate": 48000,
-        }
-        if ports is not None:
-            block["hardware_playback_ports"] = list(ports)
-        if mode == "subwoofer-2.1":
-            block["subwoofer"] = {"crossover_frequency_hz": 80, "main_highpass_enabled": True,
-                                  "sub_level_db": -2, "sub_alignment_ms": 3, "sub_polarity": "normal"}
-        if mode.startswith("subwoofer-2.2"):
-            block.update({"crossover_frequency_hz": 90, "main_highpass_enabled": True,
-                          "subwoofers": {"sub1": {"level_db": -1, "alignment_ms": 0, "polarity": "normal"},
-                                         "sub2": {"level_db": -3, "alignment_ms": 0, "polarity": "normal"}}})
-        return {"output_mode": block, "selected_output": {"key": SCARLETT, "channels": channels}}
-
-    def test_stereo_aux_uses_first_two_ports_for_a_2ch_device(self):
-        config = DSPRuntimeConfig.from_overview(
-            self.overview("stereo", channels=2, ports=AUX_PORTS),
-            hardware_ports=AUX_PORTS,
-        )
-        self.assertEqual(config.hardware_ports, ("playback_AUX0", "playback_AUX1"))
-
-    def test_stereo_aux_multichannel_uses_first_four_ports(self):
-        config = DSPRuntimeConfig.from_overview(
-            self.overview("stereo", ports=AUX_PORTS), hardware_ports=AUX_PORTS
-        )
-        self.assertEqual(config.hardware_ports, AUX_PORTS[:4])
-
-    def test_subwoofer_modes_use_the_first_four_resolved_ports(self):
-        for mode in ("subwoofer-2.1", "subwoofer-2.2", "subwoofer-2.2-stereo"):
-            config = DSPRuntimeConfig.from_overview(
-                self.overview(mode, ports=AUX_PORTS), hardware_ports=AUX_PORTS
-            )
-            self.assertEqual(config.hardware_ports, AUX_PORTS[:4], mode)
-
-    def test_semantic_model_is_unchanged(self):
-        config = DSPRuntimeConfig.from_overview(
-            self.overview("subwoofer-2.1", channels=4, ports=SEMANTIC_PORTS),
-            hardware_ports=SEMANTIC_PORTS,
-        )
-        self.assertEqual(config.hardware_ports, SEMANTIC_PORTS)
-
-    def test_legacy_overview_without_discovery_keeps_semantic_ports(self):
-        config = DSPRuntimeConfig.from_overview(self.overview("subwoofer-2.1", channels=4))
-        self.assertEqual(config.hardware_ports, SEMANTIC_PORTS)
-
-    def test_subwoofer_mode_with_too_few_hardware_ports_is_rejected(self):
-        with self.assertRaises(RuntimeError) as raised:
-            DSPRuntimeConfig.from_overview(
-                self.overview("subwoofer-2.1", channels=2, ports=AUX_PORTS[:2]),
-                hardware_ports=AUX_PORTS[:2],
-            )
-        self.assertIn("requires 4 hardware playback ports", str(raised.exception))
-        self.assertIn(SCARLETT, str(raised.exception))
-
-
-class DSPRuntimeAuxLinkTests(unittest.IsolatedAsyncioTestCase):
-    """The runtime links its DSP outputs to the resolved AUX ports."""
-
-    def setUp(self):
-        self.manager = DSPManager(home=Path(tempfile.mkdtemp()))
-        self.manager.save_global_extras({"limiter": {"enabled": False}})
-
-    def overview(self, mode: str, *, ports=None, channels: int = 18, derived=None) -> dict:
-        block = {
-            "mode": mode,
-            "effective_output_key": SCARLETT,
-            "effective_output_channels": channels,
-            "effective_output_rate": 48000,
-        }
-        if ports is not None:
-            block["hardware_playback_ports"] = list(ports)
-        if derived is not None:
-            block["hardware_playback_ports_from_channel_map"] = list(derived)
-        if mode == "subwoofer-2.1":
-            block["subwoofer"] = {"crossover_frequency_hz": 80, "main_highpass_enabled": True,
-                                  "sub_level_db": -2, "sub_alignment_ms": 0, "sub_polarity": "normal"}
-        return {"output_mode": block, "selected_output": {"key": SCARLETT, "channels": channels}}
-
-    class _Process:
-        returncode = None
-        pid = 4321
-
-        def terminate(self):
-            self.returncode = 0
-
-        async def wait(self):
-            return 0
-
-    async def _sync(self, overview: dict, *, io_listing: str = "") -> list[tuple]:
-        commands: list[tuple] = []
-        with tempfile.TemporaryDirectory() as directory:
-            binary = Path(directory) / "fxroute-dsp"
-            binary.touch()
-            runtime = DSPRuntime(self.manager, binary=binary)
-
-            async def run(command):
-                commands.append(tuple(command))
-                if tuple(command) == ("pw-link", "-io"):
-                    return CommandResult(0, io_listing)
-                return CommandResult(0, "")
-
-            async def control(command, **_kwargs):
-                return "0\n" if command == "effects bypass get" else "ok\n"
-
-            async def launch(_command):
-                return self._Process()
-
-            runtime._run = run
-            runtime._control = control
-            runtime._launch = launch
-            async def wait_for_ports(_config):
-                return None
-
-            runtime._wait_for_ports = wait_for_ports
-            await runtime._sync(overview)
-            await runtime.stop()
-        return commands
-
-    @staticmethod
-    def _links(commands: list[tuple]) -> set[tuple]:
-        return {
-            (command[1], command[2]) for command in commands
-            if len(command) == 3 and command[0] == "pw-link" and not command[1].startswith("-")
-        }
-
-    async def test_stereo_sync_links_out_1_2_to_aux0_1(self):
-        commands = await self._sync(self.overview("stereo", ports=AUX_PORTS))
-        links = self._links(commands)
-        self.assertIn(("fxroute_dsp:output_1", f"{SCARLETT}:playback_AUX0"), links)
-        self.assertIn(("fxroute_dsp:output_2", f"{SCARLETT}:playback_AUX1"), links)
-        self.assertNotIn(("fxroute_dsp:output_1", f"{SCARLETT}:playback_FL"), links)
-
-    async def test_subwoofer_sync_links_out_1_4_to_aux0_3(self):
-        commands = await self._sync(self.overview("subwoofer-2.1", ports=AUX_PORTS))
-        links = self._links(commands)
-        self.assertIn(("fxroute_dsp:output_3", f"{SCARLETT}:playback_AUX2"), links)
-        self.assertIn(("fxroute_dsp:output_4", f"{SCARLETT}:playback_AUX3"), links)
-
-    async def test_sync_without_discovery_reads_live_ports(self):
-        overview = self.overview("stereo")
-        commands = await self._sync(overview, io_listing=_io_listing(SCARLETT, AUX_PORTS))
-        self.assertIn(("pw-link", "-io"), commands)
-        links = self._links(commands)
-        self.assertIn(("fxroute_dsp:output_1", f"{SCARLETT}:playback_AUX0"), links)
-
-    async def test_semantic_device_keeps_fl_fr_rl_rr_links(self):
-        overview = self.overview("stereo", ports=SEMANTIC_PORTS, channels=4)
-        links = self._links(await self._sync(overview))
-        self.assertIn(("fxroute_dsp:output_1", f"{SCARLETT}:playback_FL"), links)
-        self.assertIn(("fxroute_dsp:output_2", f"{SCARLETT}:playback_FR"), links)
-
-    async def test_suspended_aux_device_links_its_channel_map_ports(self):
-        """A suspended sink publishes no ports; the channel map still wins.
-
-        Without the derived fallback this sync would link playback_FL/FR — a
-        topology the raw-channel interface never exposes — and the playback
-        transition would only stall.
-        """
-        overview = self.overview("stereo", derived=AUX_PORTS)
-        with self.assertNoLogs("audio.output_ports", level="WARNING"):
-            commands = await self._sync(overview)
-        links = self._links(commands)
-        self.assertIn(("fxroute_dsp:output_1", f"{SCARLETT}:playback_AUX0"), links)
-        self.assertIn(("fxroute_dsp:output_2", f"{SCARLETT}:playback_AUX1"), links)
-        self.assertNotIn(("fxroute_dsp:output_1", f"{SCARLETT}:playback_FL"), links)
-
-    async def test_suspended_aux_device_resolves_four_ports_for_subwoofer_mode(self):
-        overview = self.overview("subwoofer-2.1", derived=AUX_PORTS)
-        links = self._links(await self._sync(overview))
-        self.assertIn(("fxroute_dsp:output_3", f"{SCARLETT}:playback_AUX2"), links)
-        self.assertIn(("fxroute_dsp:output_4", f"{SCARLETT}:playback_AUX3"), links)
-
-
 class OutputDiscoveryPortTests(unittest.TestCase):
     """Output discovery carries the resolved list every consumer reuses."""
 
@@ -452,6 +264,10 @@ class OutputDiscoveryPortTests(unittest.TestCase):
 class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
     """The graph diagnosis verifies the same resolved hardware links."""
 
+    PLAN_SNAPSHOT = {"active": True, "config": {
+        "output_mode": "stereo", "output_key": SCARLETT, "hardware_ports": list(AUX_PORTS),
+        "output_routes": [[1, "playback_AUX0"], [2, "playback_AUX1"]]}}
+
     def _orchestrator(self, io_text: str, links_text: str, snapshot=None):
         from types import SimpleNamespace
 
@@ -464,7 +280,7 @@ class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
             run_pw_link_command=fake_pw_link,
             output_mode_subwoofer_modes=frozenset({"subwoofer-2.1", "subwoofer-2.2"}),
             output_mode_stereo="stereo",
-            get_dsp_snapshot=lambda: {"active": True} if snapshot is None else snapshot,
+            get_dsp_snapshot=lambda: self.PLAN_SNAPSHOT if snapshot is None else snapshot,
             helper_argument_sample_rate=lambda snapshot: 44100,
             resolve_source_producer_ports=None,
             contains_link=real_contains_link,
@@ -586,33 +402,29 @@ class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(diagnosis["links_complete"])
 
-    async def test_diagnosis_falls_back_to_live_port_resolution(self):
+    async def test_bypass_detection_falls_back_to_live_port_resolution(self):
+        """Without a discovery payload the live read names the ports to guard."""
         io_text = _io_listing(SCARLETT, AUX_PORTS[:4]) + "\n" + "\n".join([
             f"{DSP_SINK}:monitor_FL", f"{DSP_SINK}:monitor_FR",
             "fxroute_dsp:input_1", "fxroute_dsp:input_2",
             "fxroute_dsp:output_1", "fxroute_dsp:output_2",
         ])
         links_text = "\n".join([
+            f"{DSP_SINK}:monitor_FL -> fxroute_dsp:input_1",
+            f"{DSP_SINK}:monitor_FR -> fxroute_dsp:input_2",
             f"fxroute_dsp:output_1 -> {SCARLETT}:playback_AUX0",
             f"fxroute_dsp:output_2 -> {SCARLETT}:playback_AUX1",
+            f"mpv:output_FL -> {SCARLETT}:playback_AUX2",
         ])
         orchestrator = self._orchestrator(io_text, links_text)
         diagnosis = await orchestrator.playback_graph_diagnosis(
             self._overview("stereo"), target_rate=44100
         )
-        self.assertEqual(
-            diagnosis["output_targets"],
-            (f"{SCARLETT}:playback_AUX0", f"{SCARLETT}:playback_AUX1"),
-        )
+        self.assertTrue(diagnosis["direct_source_to_hw_present"])
+        self.assertFalse(diagnosis["links_complete"])
 
-    async def test_stereo_with_four_port_helper_config_accepts_muted_sub_links(self):
-        """Stereo on a multichannel device keeps 4 linked helper outputs.
-
-        The native engine holds its 4-output topology in stereo (subs
-        muted), so the diagnosis must follow the runtime config instead of
-        flagging output_3/4 as bypass — otherwise every 2.2->stereo switch
-        on such a device fails and latches the output gate.
-        """
+    async def test_expected_edges_follow_the_running_plan(self):
+        """A plan that routes four outputs expects all four hardware links."""
         io_text = _io_listing(SCARLETT, AUX_PORTS[:4]) + "\n" + "\n".join([
             f"{DSP_SINK}:monitor_FL", f"{DSP_SINK}:monitor_FR",
             "fxroute_dsp:input_1", "fxroute_dsp:input_2",
@@ -630,9 +442,10 @@ class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
         snapshot = {
             "active": True,
             "config": {
-                "output_mode": "stereo",
+                "output_mode": "stereo-sub",
                 "output_key": SCARLETT,
-                "hardware_ports": list(AUX_PORTS[:4]),
+                "hardware_ports": list(AUX_PORTS),
+                "output_routes": [[index + 1, port] for index, port in enumerate(AUX_PORTS[:4])],
             },
         }
         orchestrator = self._orchestrator(io_text, links_text, snapshot=snapshot)
@@ -646,95 +459,26 @@ class GraphDiagnosisPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(diagnosis["links_complete"])
         self.assertFalse(diagnosis["bypass_only"])
 
-    async def test_stereo_without_helper_config_stays_strict(self):
-        """Without a runtime config the mode default still applies."""
+    async def test_without_a_plan_every_dsp_output_link_is_unexpected(self):
+        """An engine without a plan config expects no hardware edge at all."""
         io_text = _io_listing(SCARLETT, AUX_PORTS[:4]) + "\n" + "\n".join([
             f"{DSP_SINK}:monitor_FL", f"{DSP_SINK}:monitor_FR",
             "fxroute_dsp:input_1", "fxroute_dsp:input_2",
             "fxroute_dsp:output_1", "fxroute_dsp:output_2",
-            "fxroute_dsp:output_3", "fxroute_dsp:output_4",
         ])
         links_text = "\n".join([
             f"{DSP_SINK}:monitor_FL -> fxroute_dsp:input_1",
             f"{DSP_SINK}:monitor_FR -> fxroute_dsp:input_2",
             f"fxroute_dsp:output_1 -> {SCARLETT}:playback_AUX0",
             f"fxroute_dsp:output_2 -> {SCARLETT}:playback_AUX1",
-            f"fxroute_dsp:output_3 -> {SCARLETT}:playback_AUX2",
-            f"fxroute_dsp:output_4 -> {SCARLETT}:playback_AUX3",
         ])
-        orchestrator = self._orchestrator(io_text, links_text)
+        orchestrator = self._orchestrator(io_text, links_text, snapshot={"active": True})
         diagnosis = await orchestrator.playback_graph_diagnosis(
             self._overview("stereo", ports=AUX_PORTS), target_rate=44100
         )
+        self.assertEqual(diagnosis["output_targets"], ())
         self.assertFalse(diagnosis["links_complete"])
         self.assertTrue(diagnosis["bypass_only"])
-
-
-class SilentActiveAuxPortTests(unittest.TestCase):
-    """The silent-active watcher recognizes AUX hardware links."""
-
-    def _recovery(self) -> SilentActiveRecovery:
-        return SilentActiveRecovery.__new__(SilentActiveRecovery)
-
-    def test_aux_stereo_topology_is_recognized(self):
-        links = (
-            "\tmpv:output_FL\n"
-            f"  |-> {DSP_SINK}:playback_FL\n"
-            "\tfxroute_dsp:output_1\n"
-            f"  |-> {SCARLETT}:playback_AUX0\n"
-            "\tfxroute_dsp:output_2\n"
-            f"  |-> {SCARLETT}:playback_AUX1\n"
-        )
-        output_mode = {
-            "mode": "stereo",
-            "effective_output_key": SCARLETT,
-            "hardware_playback_ports": list(AUX_PORTS),
-        }
-        self.assertTrue(self._recovery()._source_links_present("local", links, output_mode))
-
-    def test_aux_topology_without_dsp_link_is_not_recognized(self):
-        links = (
-            "\tmpv:output_FL\n"
-            f"  |-> {DSP_SINK}:playback_FL\n"
-            "\tfxroute_dsp:output_1\n"
-            f"  |-> {SCARLETT}:playback_AUX0\n"
-        )
-        output_mode = {
-            "mode": "stereo",
-            "effective_output_key": SCARLETT,
-            "hardware_playback_ports": list(AUX_PORTS),
-        }
-        self.assertFalse(self._recovery()._source_links_present("local", links, output_mode))
-
-    def test_aux_topology_recognized_from_the_channel_map_alone(self):
-        """The watcher must not check semantic names on a suspended AUX sink."""
-        links = (
-            "\tmpv:output_FL\n"
-            f"  |-> {DSP_SINK}:playback_FL\n"
-            "\tfxroute_dsp:output_1\n"
-            f"  |-> {SCARLETT}:playback_AUX0\n"
-            "\tfxroute_dsp:output_2\n"
-            f"  |-> {SCARLETT}:playback_AUX1\n"
-        )
-        output_mode = {
-            "mode": "stereo",
-            "effective_output_key": SCARLETT,
-            "hardware_playback_ports_from_channel_map": list(AUX_PORTS),
-        }
-        with self.assertNoLogs("audio.output_ports", level="WARNING"):
-            self.assertTrue(self._recovery()._source_links_present("local", links, output_mode))
-
-    def test_semantic_topology_still_recognized_without_discovery(self):
-        links = (
-            "\tmpv:output_FL\n"
-            f"  |-> {DSP_SINK}:playback_FL\n"
-            "\tfxroute_dsp:output_1\n"
-            f"  |-> {UMC}:playback_FL\n"
-            "\tfxroute_dsp:output_2\n"
-            f"  |-> {UMC}:playback_FR\n"
-        )
-        self.assertTrue(self._recovery()._source_links_present(
-            "local", links, {"mode": "stereo", "effective_output_key": UMC}))
 
 
 class RuntimeStateDumpPortTests(unittest.IsolatedAsyncioTestCase):
@@ -871,71 +615,6 @@ class SemanticFallbackWarningTests(unittest.TestCase):
             with self.assertLogs(output_ports.logger, level="WARNING"):
                 warn_semantic_playback_fallback(SCARLETT)  # window elapsed
 
-    def test_dsp_runtime_config_warns_on_semantic_fallback(self):
-        manager = DSPManager(home=Path(tempfile.mkdtemp()))
-        manager.save_global_extras({"limiter": {"enabled": False}})
-        overview = {
-            "output_mode": {
-                "mode": "stereo",
-                "effective_output_key": SCARLETT,
-                "effective_output_channels": 18,
-                "effective_output_rate": 48000,
-            },
-            "selected_output": {"key": SCARLETT, "channels": 18},
-        }
-        with self.assertLogs("audio.output_ports", level="WARNING") as captured:
-            config = DSPRuntimeConfig.from_overview(overview)
-        # Legacy semantic fallback for an 18-channel device: FL/FR plus RL/RR.
-        self.assertEqual(
-            config.hardware_ports,
-            ("playback_FL", "playback_FR", "playback_RL", "playback_RR"),
-        )
-        self.assertEqual(len(captured.output), 1)
-
-    def test_topology_only_probe_stays_quiet(self):
-        """The guarded_rebuild hot-update probe never builds links.
-
-        It calls from_overview without a discovered port list; the sentinel
-        keeps that probe from emitting a fallback warning that would fire on
-        every rebuild even when the real link-build path resolves ports fine.
-        """
-        from dsp.runtime import _TOPOLOGY_ONLY
-
-        manager = DSPManager(home=Path(tempfile.mkdtemp()))
-        manager.save_global_extras({"limiter": {"enabled": False}})
-        overview = {
-            "output_mode": {
-                "mode": "stereo",
-                "effective_output_key": SCARLETT,
-                "effective_output_channels": 18,
-                "effective_output_rate": 48000,
-            },
-            "selected_output": {"key": SCARLETT, "channels": 18},
-        }
-        with self.assertNoLogs("audio.output_ports", level="WARNING"):
-            config = DSPRuntimeConfig.from_overview(overview, hardware_ports=_TOPOLOGY_ONLY)
-        self.assertEqual(
-            config.hardware_ports,
-            ("playback_FL", "playback_FR", "playback_RL", "playback_RR"),
-        )
-
-    def test_dsp_runtime_config_stays_quiet_with_discovered_ports(self):
-        manager = DSPManager(home=Path(tempfile.mkdtemp()))
-        manager.save_global_extras({"limiter": {"enabled": False}})
-        overview = {
-            "output_mode": {
-                "mode": "stereo",
-                "effective_output_key": SCARLETT,
-                "effective_output_channels": 18,
-                "effective_output_rate": 48000,
-                "hardware_playback_ports": list(AUX_PORTS),
-            },
-            "selected_output": {"key": SCARLETT, "channels": 18},
-        }
-        with self.assertNoLogs("audio.output_ports", level="WARNING"):
-            config = DSPRuntimeConfig.from_overview(overview, hardware_ports=AUX_PORTS)
-        self.assertEqual(config.hardware_ports, AUX_PORTS[:4])
-
     def test_diagnosis_warns_only_when_both_sources_failed(self):
         async def _diagnose(overview: dict, io_text: str) -> dict:
             orchestrator = self._diagnosis_orchestrator(io_text, "")
@@ -960,30 +639,6 @@ class SemanticFallbackWarningTests(unittest.TestCase):
         # channel map, which is a real topology — not a semantic guess.
         with self.assertNoLogs("audio.output_ports", level="WARNING"):
             asyncio.run(_diagnose(self._diagnosis_overview(derived=AUX_PORTS), ""))
-        recovery = SilentActiveRecovery.__new__(SilentActiveRecovery)
-        links = f"\tmpv:output_FL\n  |-> {DSP_SINK}:playback_FL\n"
-        with self.assertNoLogs("audio.output_ports", level="WARNING"):
-            recovery._source_links_present(
-                "local", links,
-                {"mode": "stereo", "effective_output_key": SCARLETT,
-                 "hardware_playback_ports_from_channel_map": list(AUX_PORTS)},
-            )
-
-    def test_silent_active_warns_when_payload_lacks_ports(self):
-        recovery = SilentActiveRecovery.__new__(SilentActiveRecovery)
-        output_mode = {"mode": "stereo", "effective_output_key": SCARLETT}
-        # The source→ingress link must be present so the watcher reaches the
-        # DSP→hardware port check; without it the method returns early.
-        links = f"\tmpv:output_FL\n  |-> {DSP_SINK}:playback_FL\n"
-        with self.assertLogs("audio.output_ports", level="WARNING"):
-            recovery._source_links_present("local", links, output_mode)
-        # A semantic device whose payload names the real FL/FR ports stays quiet.
-        with self.assertNoLogs("audio.output_ports", level="WARNING"):
-            recovery._source_links_present(
-                "local", links,
-                {"mode": "stereo", "effective_output_key": SCARLETT,
-                 "hardware_playback_ports": ["playback_FL", "playback_FR"]},
-            )
 
     def _diagnosis_overview(self, ports=None, derived=None) -> dict:
         block = {"mode": "stereo", "effective_output_key": SCARLETT}

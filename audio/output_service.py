@@ -24,7 +24,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from audio.output_state_migration import migrate_legacy_output_state, upgrade_output_state
+from audio.output_state_migration import upgrade_output_state
 from audio.filter_banks import resolve_bank
 from audio.output_state_store import OutputStateStore, StateConflictError
 from audio.output_state import validate_output_state
@@ -56,7 +56,6 @@ class OutputServiceDeps:
     preset_loader: Callable[[str, str, str], dict]
     resolve_ir: Callable[[str, str], dict]
     measurement_active: Callable[[], bool]
-    legacy_snapshot_loader: Callable[[], dict] | None = None
     global_extras_loader: Callable[[], dict] | None = None
 
 
@@ -151,25 +150,6 @@ class OutputService:
                 self.require_activation_token(token)
                 errors.append(str(exc))
         raise RuntimeError("No renderable v2 output state: " + "; ".join(errors))
-
-    def ensure_state(self) -> dict:
-        """Load persisted state, migrating legacy documents exactly once.
-
-        A present file is only ever loaded (corrupt input raises and keeps
-        its bytes); a missing file migrates from the legacy snapshot when a
-        loader is configured, otherwise the unwritten defaults are returned.
-        A lost migration race reloads the winner instead of failing.
-        """
-        if self._deps.store.path.exists():
-            return self._deps.store.load()
-        if self._deps.legacy_snapshot_loader is None:
-            return self._deps.store.load()
-        try:
-            return self._deps.store.commit(
-                migrate_legacy_output_state(**self._deps.legacy_snapshot_loader()),
-                expected_revision=0)
-        except StateConflictError:
-            return self._deps.store.load()
 
     def apply(self, mutate: Callable[[dict], dict], *, expected_revision: int) -> dict:
         """Apply a pure state mutation under the measurement and revision guards."""

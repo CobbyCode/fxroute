@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import playback.queue as playback_queue
 import main
-import playback.media_readiness as media_readiness
 import measurement.session as measurement_session
 import playback.player as player
 from playback_queue_test_support import queue_state, restore_queue_state
@@ -364,7 +363,6 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "_can_send_play_command", return_value=True),
             patch.object(main, "_run_coordinated_transition", coordinated),
             patch.object(main.samplerate_drift, "observe", no_op),
-            patch.object(main.silent_active_recovery, "schedule", lambda **_k: None),
             patch.object(main, "build_playback_payload", lambda state: {}),
             patch.object(playback_queue.random, "shuffle", new=recording_shuffle),
         ]
@@ -634,103 +632,6 @@ class MPVListenerTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(len(received), 2)
         self.assertEqual(received[1]["data"], 0)
-
-
-class SilentActiveDiagnosisTests(unittest.IsolatedAsyncioTestCase):
-    """The silent-active diagnosis must use the real dsp/peak_monitor.snapshot()
-    structure and gate on sample freshness (vu_fresh), not on the peak-hold
-    "detected" flag. Automatic recovery stays disabled (log-only)."""
-
-    def _install(self):
-        originals = {
-            name: (getattr(main.runtime, name) if hasattr(main.runtime, name) else getattr(main.playback_state, name) if hasattr(main.playback_state, name) else getattr(main, name))
-            for name in (
-                "peak_monitor", "player_instance", "current_track_info",
-                "current_playback_owner", "silent_active_recovery",
-                "dsp_preset_load_lock", "_current_track_matches",
-                "get_output_volume_safe",
-                "_run_debug_command", "_is_measurement_window_open",
-            )
-        }
-        originals["media_readiness.list_mpv_sink_inputs"] = media_readiness.list_mpv_sink_inputs
-        originals["media_readiness.list_sink_inputs"] = media_readiness.list_sink_inputs
-        main.runtime.peak_monitor = SimpleNamespace()
-        main.runtime.player_instance = SimpleNamespace(
-            _running=True,
-            state={"current_file": "/music/t1.flac", "paused": False, "ended": False, "volume": 100},
-        )
-        main.playback_state.current_track_info = {"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"}
-        main.playback_state.current_playback_owner = "local"
-        main.silent_active_recovery.recovery_attempts.clear()
-        main.silent_active_recovery.watch_tasks.clear()
-        main.runtime.dsp_preset_load_lock = None
-        main._current_track_matches = lambda track: True
-        media_readiness.list_mpv_sink_inputs = lambda: [
-            {"id": "si1", "volume_percent": 100, "muted": False, "corked": False},
-        ]
-        main.get_output_volume_safe = lambda default: 100
-        main._run_debug_command = lambda cmd, timeout: {
-            "stdout": "mpv:output_FL -> fxroute_dsp_sink:playback_FL\n",
-        }
-        main._is_measurement_window_open = lambda: False
-        media_readiness.list_sink_inputs = lambda: []
-        return originals
-
-    def _restore(self, originals):
-        for name, value in originals.items():
-            if name.startswith("media_readiness."):
-                setattr(media_readiness, name.split(".", 1)[1], value)
-            else:
-                setattr(main.runtime if hasattr(main.runtime, name) else main.playback_state if hasattr(main.playback_state, name) else main, name, value)
-
-    async def test_fresh_samples_reach_diagnosis_and_recovery_stays_suppressed(self):
-        originals = self._install()
-        try:
-            main.runtime.peak_monitor.snapshot = lambda: {
-                "available": True,
-                "detected": True,
-                "vu_db": -60.0,
-                "vu_fresh": True,
-                "vu_age_ms": 120,
-            }
-            with patch.object(main.silent_active_recovery, "_source_links_present", lambda *_a, **_k: True), \
-                    patch.object(main.silent_active_recovery, "_snapshot", lambda **_k: {"diagnosis": True}), \
-                    self.assertLogs("playback.silent_active", level="WARNING") as captured:
-                await main.silent_active_recovery._check_and_recover(
-                    source="local",
-                    signature="sig-fresh",
-                    track={"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"},
-                )
-            joined = "\n".join(captured.output)
-            self.assertIn("Silent-active playback detected", joined)
-            self.assertIn("recovery_suppressed", joined)
-            self.assertIn("sig-fresh", main.silent_active_recovery.recovery_attempts)
-        finally:
-            self._restore(originals)
-
-    async def test_stale_samples_skip_even_when_peak_hold_detected(self):
-        originals = self._install()
-        try:
-            # Stale samples with the peak-hold flag set: freshness decides.
-            main.runtime.peak_monitor.snapshot = lambda: {
-                "available": True,
-                "detected": True,
-                "vu_db": -60.0,
-                "vu_fresh": False,
-                "vu_age_ms": 99999,
-            }
-            with patch.object(main.silent_active_recovery, "_source_links_present", lambda *_a, **_k: True), \
-                    self.assertLogs("playback.silent_active", level="INFO") as captured:
-                await main.silent_active_recovery._check_and_recover(
-                    source="local",
-                    signature="sig-stale",
-                    track={"id": "t1", "title": "T1", "url": "/music/t1.flac", "source": "local"},
-                )
-            joined = "\n".join(captured.output)
-            self.assertIn("peak_samples_stale", joined)
-            self.assertNotIn("Silent-active playback detected", joined)
-        finally:
-            self._restore(originals)
 
 
 if __name__ == "__main__":

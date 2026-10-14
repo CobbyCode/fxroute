@@ -105,8 +105,8 @@ class DspOrchestrationDeps:
     get_current_force_rate: Callable[[], Any] | None = None
     # V2 plan renderer for the live helper sync.  Takes the authoritative
     # rate plus the current overview (device/ports) and returns a prebuilt
-    # sync target. Failure must raise, never authorize a legacy graph.
-    # Absent only in unit tests that cover the legacy path.
+    # sync target. It is the only way to build the helper graph; a sync
+    # without it fails.
     try_render_v2_target: Callable[[int, dict], Awaitable[Any | None]] | None = None
     graph_write_lock: Callable[[], Any] | None = None
 
@@ -227,11 +227,8 @@ class DspOrchestrator:
                 repair_overview = samplerate.audio_output_overview_with_effective_rate(
                     target_overview or overview, requested_rate,
                 )
-                v2_target = await self._render_v2_target(requested_rate, repair_overview)
-                if v2_target is not None:
-                    await dsp_runtime.sync_rendered(v2_target)
-                    return repair_overview
-                await dsp_runtime.sync(repair_overview)
+                await dsp_runtime.sync_rendered(
+                    await self._render_v2_target(requested_rate, repair_overview))
                 return repair_overview
 
             sink_rate = samplerate_status.get("active_rate")
@@ -319,11 +316,8 @@ class DspOrchestrator:
                     reason, requested_rate, authoritative_rate, final_rate,
                 )
                 return current_overview
-            v2_target = await self._render_v2_target(authoritative_rate, current_overview)
-            if v2_target is not None:
-                await dsp_runtime.sync_rendered(v2_target)
-                return current_overview
-            await dsp_runtime.sync(current_overview)
+            await dsp_runtime.sync_rendered(
+                await self._render_v2_target(authoritative_rate, current_overview))
             return current_overview
 
         async def _sync_graph_locked():
@@ -339,14 +333,14 @@ class DspOrchestrator:
         async with measurement_sr_session.lock:
             return await _sync_graph_locked()
 
-    async def _render_v2_target(self, rate: int, overview: dict) -> Any | None:
-        """Render v2 or propagate failure; only an absent renderer is legacy."""
-        render = getattr(self._deps, "try_render_v2_target", None)
+    async def _render_v2_target(self, rate: int, overview: dict) -> Any:
+        """Render the v2 sync target or propagate the failure."""
+        render = self._deps.try_render_v2_target
         if render is None:
-            return None
+            raise RuntimeError("V2 output state renderer is not configured")
         target = await render(rate, overview)
         if target is None:
-            raise RuntimeError("V2 output state cannot render; legacy fallback refused")
+            raise RuntimeError("V2 output state cannot render")
         return target
 
     async def _sync_after_stale_settle(

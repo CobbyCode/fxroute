@@ -1001,7 +1001,8 @@ class GraphDiagnosisTests(unittest.IsolatedAsyncioTestCase):
         deps = SimpleNamespace(
             run_pw_link_command=read, output_mode_subwoofer_modes=frozenset(),
             get_dsp_snapshot=lambda: {"active": True, "mapped_ingress": [list(edge) for edge in edges],
-                                      "config": {"sample_rate": 48000, "output_mode": "surround"}},
+                                      "config": {"sample_rate": 48000, "output_mode": "surround",
+                                                 "output_routes": [[1, "playback_FL"], [2, "playback_FR"]]}},
             contains_link=_contains_link, helper_argument_sample_rate=lambda snapshot: 48000)
         orchestrator = PlaybackOrchestrator(deps)
         diagnosis = await orchestrator.playback_graph_diagnosis(overview, target_rate=48000)

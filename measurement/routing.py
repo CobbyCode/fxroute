@@ -12,7 +12,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from dsp.runtime import DSPRuntimeConfig
 from audio.output_topology import MODES, SUB_ROLES
 from audio.tool_env import c_locale_env
 from measurement.constants import (
@@ -426,11 +425,15 @@ class MeasurementRouting:
         playback_target: dict[str, Any],
         *,
         measurement_scope: str = MEASUREMENT_SCOPE_ACTIVE_CHAIN,
-        overview: dict[str, Any] | None = None,
         expected_native_layout: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         expected_native_output_mode: str | None = None,
         expected_plan_fingerprint: str | None = None,
     ) -> dict[str, Any]:
+        """Route a sweep through the staged v2 plan the engine must be running.
+
+        The staged plan is the only description of the running graph, so a
+        sweep without one is refused here instead of at the pre-sweep check.
+        """
         measurement_scope = self._store._normalize_measurement_scope(measurement_scope)
         expected = freeze_expected_native_context(
             measurement_scope=measurement_scope,
@@ -438,28 +441,17 @@ class MeasurementRouting:
             expected_native_output_mode=expected_native_output_mode,
             expected_plan_fingerprint=expected_plan_fingerprint,
         )
-        if expected:
-            route = {
-                "route": "direct-sink",
-                "measurement_scope": measurement_scope,
-                "output_mode": expected["expected_native_output_mode"],
-                "play_node_name": play_node_name,
-                "playback_target_name": str(playback_target.get("target_name") or ""),
-                "expected_native_layout": expected["expected_native_layout"],
-                "expected_plan_fingerprint": expected["expected_plan_fingerprint"],
-            }
-        else:
-            overview = overview or self._get_output_overview()
-            output_mode = overview.get("output_mode") if isinstance(overview.get("output_mode"), dict) else {}
-            mode = str(output_mode.get("mode") or "")
-            route = {
-                "route": "direct-sink",
-                "measurement_scope": measurement_scope,
-                "output_mode": mode or "stereo",
-                "play_node_name": play_node_name,
-                "playback_target_name": str(playback_target.get("target_name") or ""),
-                "expected_native_layout": [dict(channel) for channel in DSPRuntimeConfig.from_overview(overview).layout],
-            }
+        if not expected:
+            raise RuntimeError("Measurement requires a staged output plan; sweep refused")
+        route = {
+            "route": "direct-sink",
+            "measurement_scope": measurement_scope,
+            "output_mode": expected["expected_native_output_mode"],
+            "play_node_name": play_node_name,
+            "playback_target_name": str(playback_target.get("target_name") or ""),
+            "expected_native_layout": expected["expected_native_layout"],
+            "expected_plan_fingerprint": expected["expected_plan_fingerprint"],
+        }
         if route["output_mode"] == "surround":
             route["surround_playback_inputs"] = self._surround_measurement_inputs(route, playback_target)
         return route
@@ -752,19 +744,13 @@ class MeasurementRouting:
                 failures.append(f"native DSP rate {config.get('sample_rate')} != measurement rate {sample_rate}")
             if str(config.get("output_mode") or "") != output_mode:
                 failures.append(f"native DSP output mode {config.get('output_mode')} != measurement mode {output_mode}")
-            if "expected_plan_fingerprint" in playback_route:
-                expected_fingerprint = playback_route["expected_plan_fingerprint"]
-                if not expected_fingerprint or config.get("plan_fingerprint") != expected_fingerprint:
-                    failures.append("native DSP plan fingerprint does not match expected staged plan")
+            expected_fingerprint = playback_route.get("expected_plan_fingerprint")
+            if not expected_fingerprint or config.get("plan_fingerprint") != expected_fingerprint:
+                failures.append("native DSP plan fingerprint does not match expected staged plan")
             runtime_layout = config.get("layout") or []
             expected_layout = playback_route.get("expected_native_layout") or []
-            # The native engine always runs the full 2.x topology: stereo mode
-            # keeps the two sub channels in the layout muted (route gain 0), so
-            # the expected output count follows the expected layout for the
-            # mode instead of a bare stereo pair.  The expected layout is
-            # supplied by a trusted owner or derived from the output overview;
-            # when it is missing the sweep must fail closed rather than guess
-            # an output count.
+            # The expected layout is the staged plan's; when it is missing the
+            # sweep must fail closed rather than guess an output count.
             if not expected_layout:
                 failures.append("expected native DSP layout is unavailable")
             else:

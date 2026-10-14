@@ -140,6 +140,12 @@ def _finite_or(value: Any, default: float) -> float:
     return number
 
 
+def _neutral_subwoofer() -> dict[str, Any]:
+    """The single-sub block of a payload without a routed sub."""
+    return {"crossover_frequency_hz": 80, "slope": "LR24", "main_highpass_enabled": True,
+            "sub_level_db": 0.0, "sub_alignment_ms": 0.0, "sub_polarity": "normal"}
+
+
 def _derived_sub_settings(processing: Mapping[str, Any], role: str) -> dict[str, Any]:
     entry = processing.get(role) if isinstance(processing, Mapping) else None
     entry = entry if isinstance(entry, Mapping) else {}
@@ -228,7 +234,7 @@ def _derived_output_mode(
     left, right = crossover("left"), crossover("right")
     if topology.sub_mode == "none":
         return {"mode": OUTPUT_MODE_STEREO,
-                "subwoofer": _normalize_subwoofer_config(None)}
+                "subwoofer": _neutral_subwoofer()}
     if topology.sub_mode == "mono":
         settings = _derived_sub_settings(processing, subs[0])
         return {
@@ -250,7 +256,7 @@ def _derived_output_mode(
         # with the payload so the caller can surface them.
         return {
             "mode": None,
-            "subwoofer": _normalize_subwoofer_config(None),
+            "subwoofer": _neutral_subwoofer(),
             "unsupported_sub_roles": list(subs),
             "unsupported_reason": "; ".join(topology.issues) or "unsupported sub configuration",
         }
@@ -292,7 +298,6 @@ from .constants import (
     OUTPUT_MODE_SUBWOOFER_21,
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
-    OUTPUT_MODE_SUBWOOFER_MODES,
     PIPEWIRE_DEFAULT_RATE_OPTIONS,
     SAMPLE_RATE_CANDIDATES,
     SOURCE_MODE_APP_PLAYBACK,
@@ -330,7 +335,6 @@ from .persistence import (
     _load_audio_output_selection,
     _load_audio_source_selection,
     _load_pipewire_clock_rate_config,
-    _normalize_subwoofer_config,
     _save_audio_output_selection,
     _save_audio_source_selection,
     load_sample_rate_policy,
@@ -988,15 +992,13 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
     output_mode = (
         _derived_output_mode_from_head(effective_selection_state)
         or {"mode": OUTPUT_MODE_STEREO,
-            "subwoofer": _normalize_subwoofer_config(None)}
+            "subwoofer": _neutral_subwoofer()}
     )
     # Resolve the effective sink's real playback ports once, here in output
-    # discovery, so DSP link build, graph diagnosis, link repair/readback and
-    # the silent-active watcher all describe the same port topology instead
-    # of each assuming playback_FL/FR/RL/RR.
+    # discovery, so the plan's link build, graph diagnosis and link
+    # repair/readback all describe the same port topology instead of each
+    # assuming playback_FL/FR/RL/RR.
     effective_output_key = str((effective_output or {}).get("key") or "")
-    from audio.output_routing import routing_payload
-    output_routing = routing_payload(effective_output_key, (effective_output or {}).get("channels"))
     member_sinks = list((effective_output or {}).get("member_sinks") or [])
     if member_sinks and is_hifi_combined_key(effective_output_key):
         hardware_playback_ports = list(
@@ -1027,16 +1029,6 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
             (sink_details.get(effective_output_key) or {}).get("channel_map"),
             (effective_output or {}).get("channels"),
         ))
-    output_mode_available = bool((effective_output or {}).get("channels") and (effective_output or {}).get("channels") >= 4)
-    if output_mode.get("mode") in OUTPUT_MODE_SUBWOOFER_MODES and not output_mode_available:
-        label = (
-            "2.1"
-            if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_21
-            else "2.2 Stereo Bass"
-            if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO
-            else "2.2"
-        )
-        notes.append(f"{label} Subwoofer mode requires a selected multichannel output with at least 4 channels.")
     if output_mode.get("unsupported_sub_roles"):
         # Routed sub roles that no subwoofer mode can represent. The payload
         # claims no mode on purpose, so say so here instead of letting a
@@ -1047,11 +1039,6 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
             + " cannot be represented as a subwoofer mode: "
             + str(output_mode.get("unsupported_reason") or "unsupported sub configuration")
         )
-    routing_status = (
-        "Out 1/2 Main · Out 3 Left Sub · Out 4 Right Sub"
-        if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO
-        else "Out 1/2 Main · Out 3/4 Sub"
-    )
 
     return {
         "available": bool(status.get("available")),
@@ -1068,14 +1055,6 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
         "outputs": explicit_outputs,
         "output_mode": {
             **output_mode,
-            "output_routing": output_routing,
-            "routing": {
-                "main_pair": [1, 2],
-                "sub_pair": [3, 4],
-                "status": routing_status,
-            },
-            "available": output_mode_available,
-            "required_channels": 4,
             "hardware_playback_ports": hardware_playback_ports,
             "hardware_playback_ports_from_channel_map": channel_map_playback_ports,
             "effective_output_key": (effective_output or {}).get("key"),

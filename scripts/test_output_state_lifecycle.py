@@ -117,11 +117,6 @@ class FromPlanTests(unittest.TestCase):
             runtime = DSPRuntime(self.manager, command_runner=_unreachable)
             runtime._config = target_for(self.service, self.manager, self.state).config
             self.assertEqual(runtime.snapshot()["config"]["plan_fingerprint"], "fp-new")
-            legacy = DSPRuntimeConfig.from_overview(
-                {"output_mode": {"mode": "stereo", "effective_output_key": "A",
-                                 "effective_output_channels": 2, "effective_output_rate": 48000}})
-            runtime._config = legacy
-            self.assertIsNone(runtime.snapshot()["config"]["plan_fingerprint"])
         asyncio.run(run())
 
     def test_link_build_ignores_overview_mode_label(self):

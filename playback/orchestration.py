@@ -20,7 +20,6 @@ from typing import Any, Awaitable, Callable, Mapping
 import playback.source_policy as source_policy
 import audio.samplerate as samplerate
 from audio.source_native_rate import resolve_active_source_native_rate
-from audio.output_routing import output_route_pairs
 from audio.output_ports import (
     HARDWARE_CHANNEL_ORDER,
     hardware_link_target,
@@ -89,10 +88,9 @@ def _hardware_output_ports(output_mode: Mapping[str, Any], io_text: str, output_
 
 
 def _planned_route_pairs(planned: Any) -> tuple[tuple[int, str], ...] | None:
-    """Validate an explicit (signal, port) route overlay for v2 graphs.
+    """Validate explicit (signal, port) plan routes.
 
-    Returns None when absent or malformed; diagnosis then falls back to the
-    legacy derivation instead of crashing on a bad target.
+    Returns None when absent or malformed instead of crashing on a bad target.
     """
     if planned is None:
         return None
@@ -595,34 +593,20 @@ class PlaybackOrchestrator:
             source_ports = source_policy.graph_port_names(source) or ()
         source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
         snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}
-        # The native engine keeps its 4-output topology in stereo on
-        # multichannel devices (subs muted); the expected link count follows
-        # the runtime config, but never drops below the mode minimum — a
-        # stale/smaller config must not turn required outputs into bypass.
-        # Counting bare mode outputs would flag the muted sub links as
-        # bypass and latch every stereo switch on such devices.
-        mode_minimum = 4 if mode in self._deps.output_mode_subwoofer_modes else 2
-        cfg_ports = ((snapshot.get("config") or {}).get("hardware_ports") or ())
-        output_count = max(mode_minimum, len(cfg_ports)) if cfg_ports else mode_minimum
-        # Resolve the device's real playback ports (playback_FL/FR/RL/RR or
-        # playback_AUX0…) for the mode's DSP outputs.  The diagnosis, the
-        # repair path and the DSP link build then all describe one topology.
-        if output_mode.get("output_routing", {}).get("available"):
-            output_count = int(output_mode.get("effective_output_channels") or output_count)
-        planned_pairs = _planned_route_pairs(output_mode.get("planned_routes"))
-        if planned_pairs is None:
-            snapshot_config = snapshot.get("config") or {}
-            if snapshot_config.get("plan_fingerprint"):
-                planned_pairs = _planned_route_pairs(snapshot_config.get("output_routes"))
-        if planned_pairs is not None:
-            output_count = max(output_count, len({signal for signal, _ in planned_pairs}))
+        snapshot_config = snapshot.get("config") or {}
+        # Resolve every real playback port of the device (playback_FL/FR/RL/RR
+        # or playback_AUX0…): a direct source link to any of them is a bypass.
+        cfg_ports = snapshot_config.get("hardware_ports") or ()
+        channels = output_mode.get("effective_output_channels")
+        output_count = channels if type(channels) is int and channels > 0 else max(2, len(cfg_ports))
         hardware_ports = _hardware_output_ports(output_mode, io_text, output_key, output_count)
-        # v2 graphs carry explicit planned routes on the transition target;
-        # steady-state monitoring reuses the staged snapshot routes while the
-        # engine runs a plan fingerprint.  Either overrides the legacy
-        # signal derivation so wider graphs are not misread as bypass.
-        route_pairs = planned_pairs if planned_pairs is not None else output_route_pairs(
-            output_mode, hardware_ports)
+        # The expected DSP edges are the plan's physical routes: a transition
+        # target carries its staged plan, steady-state monitoring reads the
+        # plan the engine runs.  Without either (engine down) no DSP edge is
+        # expected and the inactive helper keeps the verdict incomplete.
+        route_pairs = _planned_route_pairs(output_mode.get("planned_routes"))
+        if route_pairs is None:
+            route_pairs = _planned_route_pairs(snapshot_config.get("output_routes")) or ()
         output_targets = tuple(hardware_link_target(output_key, port) for _, port in route_pairs)
         dsp_ports = tuple(f"fxroute_dsp:output_{signal}" for signal, _ in route_pairs)
         result["output_targets"] = output_targets

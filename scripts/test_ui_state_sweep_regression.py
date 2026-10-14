@@ -19,9 +19,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dsp.runtime import DSPRuntimeConfig
+from audio.output_state import default_output_state, set_mode_routing, switch_mode
+from dsp.native_config import layout_from_plan
+from dsp.processing_plan import compile_processing_plan
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _planned_layout(routing: list[str], processing: dict | None = None,
+                    bass: dict | None = None) -> dict:
+    """Native layout rows by role for a Stereo + Sub state on one device."""
+    state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "k", routing), "stereo-sub")
+    mode = state["modes"]["stereo-sub"]
+    for role, values in (processing or {}).items():
+        mode["processing"][role].update(values)
+    mode["bass_management"].update(bass or {})
+    plan = compile_processing_plan(state, output_key="k", channels=len(routing), sample_rate_hz=48000,
+                                   preset_loader=lambda *_args: {"chain": []})
+    return {row["name"]: row for row in layout_from_plan(plan, resolve_ir=lambda *_args: {})}
 
 
 def _check_sub_mute_minus80() -> None:
@@ -33,22 +48,10 @@ def _check_sub_mute_minus80() -> None:
     assert "Math.max(-80, Math.min(12, Number(input.sub_level_db" in text, \
         "normalizeSubwooferSettings must keep the -80 mute floor for the 2.2 global display"
 
-    def run() -> None:
-        sub = {"crossover_frequency_hz": 80, "main_highpass_enabled": True,
-               "sub_level_db": 0.0, "sub_alignment_ms": 0.0, "sub_polarity": "normal"}
-        subs = {"sub1": {"level_db": -80.0, "alignment_ms": 0.0, "polarity": "normal"},
-                "sub2": {"level_db": 2.9, "alignment_ms": -0.2, "polarity": "normal"}}
-        loaded = {"mode": "subwoofer-2.2", "crossover_frequency_hz": 80,
-                  "slope": "LR24", "main_highpass_enabled": True,
-                  "subwoofers": dict(subs)}
-        assert loaded["subwoofers"]["sub1"]["level_db"] == -80.0, loaded
-        ov = {"output_mode": loaded, "selected_output": {"key": "k"}, "current_output": {"key": "k"}}
-        rt = DSPRuntimeConfig.from_overview(ov)
-        by_name = {c["name"]: c for c in rt.layout}
-        assert by_name["SUB1"].get("gain_db") == -80.0, by_name["SUB1"]
-        assert by_name["SUB2"].get("gain_db") == 2.9, by_name["SUB2"]
-
-    run()
+    layout = _planned_layout(["main_l", "main_r", "sub1", "sub2"],
+                             {"sub1": {"level_db": -80.0}, "sub2": {"level_db": 2.9}})
+    assert layout["sub1"].get("gain_db") == -80.0, layout["sub1"]
+    assert layout["sub2"].get("gain_db") == 2.9, layout["sub2"]
     print("2.2 sub mute -80 dB persists backend+runtime, frontend keeps floor: ok")
 
 

@@ -8,7 +8,7 @@ the pre-sweep check refused every such measurement: native mode "stereo"
 never equals the derived legacy label and the v2 layout never equals the
 80 Hz overview layout.  The session route now stages the committed plan
 context (layout/mode/fingerprint at the measurement rate) through an
-injected factory; without it (or on None) the legacy route is unchanged.
+injected factory; without it (or on None) the sweep is refused.
 """
 
 import asyncio

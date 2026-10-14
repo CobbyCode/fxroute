@@ -18,7 +18,6 @@ from audio.output_state import default_output_state, set_mode_routing, switch_mo
 from dsp.manager import DSPManager
 from dsp.native_config import layout_from_plan
 from dsp.processing_plan import compile_processing_plan
-from dsp.runtime import DSPRuntimeConfig
 from measurement.store import MeasurementStore
 
 
@@ -93,8 +92,7 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
         return self.store.get_job(job["id"])
 
     async def test_staged_layout_reaches_hardware_despite_false_legacy_overview(self):
-        with patch.object(DSPRuntimeConfig, "from_overview", side_effect=AssertionError("legacy rebase")):
-            job = await self.capture(self.context)
+        job = await self.capture(self.context)
         self.assertIn("hardware boundary reached", job["error"]["detail"])
         self.assertEqual(self.spawned, ["pw-record"])
         self.assertIsNone(self.snapshots[0]["validation_failure"])
@@ -164,8 +162,6 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
         app.include_router(session.router)
         services = SimpleNamespace(get_store=lambda: self.store, get_session=lambda: None,
                                    auto_sub_active=lambda: False)
-        self.runtime["config"] = {"sample_rate": 48000, "output_mode": "stereo",
-                                 "layout": list(DSPRuntimeConfig.from_overview(self.overview).layout)}
         with patch.object(session, "_measurement_services", return_value=services), \
              patch.object(session, "_resolve_measurement_start_sample_rate", return_value=48000), \
              patch.object(session, "_measurement_entry_preflight", new=AsyncMock()):
@@ -181,7 +177,9 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
         job = self.store.get_job(job_id)
         self.assertEqual(job["measurement_scope"], "active_chain")
         self.assertFalse(any(key.startswith("_expected_") for key in job))
-        self.assertIn("hardware boundary reached", job["error"]["detail"])
+        # No staged plan reached the store, so the sweep is refused unspawned.
+        self.assertIn("staged output plan", job["error"]["detail"])
+        self.assertEqual(self.spawned, [])
         for name in self.context:
             self.assertNotIn(name, json.dumps(app.openapi()))
 
@@ -252,22 +250,10 @@ class StagedLayoutTests(unittest.IsolatedAsyncioTestCase):
                 self.store._routing._build_measurement_playback_route("play", {},
                     measurement_scope="raw_helper", **context)
 
-    async def test_regular_measurement_uses_unchanged_legacy_route_and_old_signature(self):
-        self.runtime["config"] = {"sample_rate": 48000, "output_mode": "stereo",
-                                 "layout": list(DSPRuntimeConfig.from_overview(self.overview).layout)}
-        builder = self.store._routing._build_measurement_playback_route
-        routes = []
-
-        def old_builder(play_node_name, playback_target, *, measurement_scope):
-            route = builder(play_node_name, playback_target, measurement_scope=measurement_scope)
-            routes.append(route)
-            return route
-
-        self.store._routing._build_measurement_playback_route = old_builder
+    async def test_measurement_without_a_staged_plan_is_refused_unspawned(self):
         job = await self.capture(scope="active_chain")
-        self.assertIn("hardware boundary reached", job["error"]["detail"])
-        self.assertEqual(set(routes[0]), {"route", "measurement_scope", "output_mode", "play_node_name",
-                                         "playback_target_name", "expected_native_layout"})
+        self.assertIn("staged output plan", job["error"]["detail"])
+        self.assertEqual(self.spawned, [])
         self.assertFalse(any(key.startswith("_expected_") for key in job))
 
 

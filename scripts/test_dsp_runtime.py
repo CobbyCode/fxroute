@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from dsp.manager import DSPManager
 from dsp.runtime import (CommandResult, DSPRuntime, DSPRuntimeConfig, PipeWireLink,
-                         CONTROL_REPLY_MAX_BYTES, DSP_INGRESS_MONITOR_NODE,
+                         PlannedSyncTarget, CONTROL_REPLY_MAX_BYTES, DSP_INGRESS_MONITOR_NODE,
                          RUNTIME_COMMAND_TIMEOUT_RETURNCODE,
                          RUNTIME_COMMAND_TIMEOUT_SECONDS, _contains_link,
                          iter_pw_links, physical_output_links,
@@ -39,38 +39,30 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         self.manager = DSPManager(home=Path(tempfile.mkdtemp()))
         self.manager.save_global_extras({"limiter": {"enabled": False}})
 
-    def overview(self, mode):
-        block = {"mode": mode, "effective_output_key": "hw", "effective_output_channels": 8,
-                 "effective_output_rate": 48000}
-        if mode == "subwoofer-2.1":
-            block["subwoofer"] = {"crossover_frequency_hz": 80, "main_highpass_enabled": True,
-                                  "sub_level_db": -2, "sub_alignment_ms": 3, "sub_polarity": "invert"}
-        if mode.startswith("subwoofer-2.2"):
-            block.update({"crossover_frequency_hz": 90, "main_highpass_enabled": True,
-                          "subwoofers": {"sub1": {"level_db": -1, "alignment_ms": -2, "polarity": "normal"},
-                                          "sub2": {"level_db": -3, "alignment_ms": 4, "polarity": "invert"}}})
-        return {"output_mode": block, "selected_output": {"key": "hw", "channels": 8}}
+    PORTS = ("playback_FL", "playback_FR", "playback_RL", "playback_RR")
 
-    def test_stereo_is_two_output_identity_matrix(self):
-        config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
-        self.assertEqual(config.hardware_ports, ("playback_FL", "playback_FR", "playback_RL", "playback_RR"))
-        self.assertEqual(config.layout[0]["routes"], [{"input": 0, "gain": 1.0}])
-        self.assertEqual(config.layout[1]["routes"], [{"input": 1, "gain": 1.0}])
+    def config(self, mode="stereo", output_key="hw"):
+        """Plan-shaped config: one layout row and one physical route per output."""
+        highpass = [{"type": "highpass", "frequency_hz": 80, "q": 0.70710678, "stages": 2}]
+        rows = [{"name": "main_l", "routes": [{"input": 0, "gain": 1.0}]},
+                {"name": "main_r", "routes": [{"input": 1, "gain": 1.0}]}]
+        if mode == "stereo-sub":
+            for row in rows:
+                row["filters"] = list(highpass)
+            rows.append({"name": "sub1", "routes": [{"input": 0, "gain": .5}, {"input": 1, "gain": .5}],
+                         "filters": [{"type": "lowpass", "frequency_hz": 80, "q": 0.70710678, "stages": 2}]})
+            rows.append({"name": "sub2", "routes": [{"input": 0, "gain": .5}, {"input": 1, "gain": .5}],
+                         "filters": [{"type": "lowpass", "frequency_hz": 80, "q": 0.70710678, "stages": 2}]})
+        routes = tuple((index + 1, port) for index, port in enumerate(self.PORTS[:len(rows)]))
+        return DSPRuntimeConfig(mode, output_key, 48000, self.PORTS, tuple(rows), routes, "plan")
 
-    def test_21_uses_lr24_and_mono_sparse_bass_matrix(self):
-        config = DSPRuntimeConfig.from_overview(self.overview("subwoofer-2.1"))
-        self.assertEqual(config.hardware_ports, ("playback_FL", "playback_FR", "playback_RL", "playback_RR"))
-        self.assertEqual(config.layout[2]["routes"], [{"input": 0, "gain": .5}, {"input": 1, "gain": .5}])
-        self.assertEqual(config.layout[2]["filters"], [{"type": "lowpass", "frequency_hz": 80, "q": 0.70710678, "stages": 2}])
-        self.assertTrue(config.layout[2]["invert"])
-
-    def test_22_stereo_keeps_left_and_right_bass_separate(self):
-        config = DSPRuntimeConfig.from_overview(self.overview("subwoofer-2.2-stereo"))
-        self.assertEqual(config.layout[2]["routes"], [{"input": 0, "gain": 1.0}])
-        self.assertEqual(config.layout[3]["routes"], [{"input": 1, "gain": 1.0}])
+    def target(self, config=None):
+        config = config or self.config()
+        return PlannedSyncTarget(config, self.manager.compile_engine_text(
+            list(config.layout), sample_rate_hz=config.sample_rate))
 
     def test_engine_text_contains_layout_crossovers(self):
-        config = DSPRuntimeConfig.from_overview(self.overview("subwoofer-2.1"))
+        config = self.config("stereo-sub")
         text = self.manager.compile_engine_text(list(config.layout), sample_rate_hz=config.sample_rate)
         self.assertEqual(text.count("peq 0 highpass 80"), 2)
         self.assertEqual(text.count("peq 2 lowpass 80"), 2)
@@ -307,12 +299,12 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 runtime = DSPRuntime(self.manager, binary=binary)
                 runtime._process = FakeProcess()
                 runtime._control_socket = unittest.mock.Mock()
-                runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+                runtime._config = self.config()
                 runtime._run = lambda _command: complete()
                 runtime._stop_orphan_helpers = lambda: complete()
                 runtime._reconcile_output_links = lambda _config: complete()
                 runtime._control = lambda command, **kwargs: record_async(events, ("control", command.split()[0:2]))
-                await runtime.sync(self.overview("stereo"))
+                await runtime.sync_rendered(self.target())
 
         async def record_async(target, event):
             target.append(event)
@@ -367,7 +359,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 runtime = DSPRuntime(self.manager, binary=binary)
                 runtime._process = FakeProcess()
                 runtime._control_socket = unittest.mock.Mock()
-                runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+                runtime._config = self.config()
                 runtime._config_text = "stage_begin 0 headroom native headroom\nparam gain_db -3\nstage_end\n"
                 commands = []
 
@@ -407,10 +399,8 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
     def test_incompatible_config_still_uses_rebuild_path(self):
         runtime = DSPRuntime(self.manager)
-        runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
-        changed = self.overview("stereo")
-        changed["output_mode"]["effective_output_key"] = "other-hw"
-        self.assertFalse(runtime._can_hot_update(DSPRuntimeConfig.from_overview(changed)))
+        runtime._config = self.config()
+        self.assertFalse(runtime._can_hot_update(self.config(output_key="other-hw")))
 
     def test_swap_reconcile_failure_keeps_config_for_fallback_rebuild(self):
         events = []
@@ -422,7 +412,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 runtime = DSPRuntime(self.manager, binary=binary)
                 runtime._process = FakeProcess()
                 runtime._control_socket = unittest.mock.Mock()
-                runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+                runtime._config = self.config()
                 runtime._links = []
 
                 async def run(command):
@@ -454,7 +444,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                     await reconcile(config)
 
                 runtime._reconcile_output_links = fail_once
-                await runtime.sync(self.overview("stereo"))
+                await runtime.sync_rendered(self.target())
                 await runtime.stop()
 
         async def complete():
@@ -467,11 +457,11 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
     def test_runtime_snapshot_reports_actual_layout_and_effect_bypass(self):
         runtime = DSPRuntime(self.manager)
-        runtime._config = DSPRuntimeConfig.from_overview(self.overview("subwoofer-2.1"))
+        runtime._config = self.config("stereo-sub")
         runtime._effect_bypass = True
         snapshot = runtime.snapshot()
         self.assertEqual(snapshot["config"]["sample_rate"], 48000)
-        self.assertEqual(snapshot["config"]["output_mode"], "subwoofer-2.1")
+        self.assertEqual(snapshot["config"]["output_mode"], "stereo-sub")
         self.assertEqual(len(snapshot["config"]["layout"]), 4)
         self.assertTrue(snapshot["effect_bypass"])
 
@@ -607,29 +597,41 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def guarded_runtime(self, events, *, control_socket=True):
+        runtime = DSPRuntime(self.manager)
+        if control_socket:
+            runtime._control_socket = unittest.mock.Mock()
+
+        async def record(event):
+            events.append(event)
+
+        async def operating():
+            return 0.0
+
+        runtime._operating_output_gain_db = operating
+        runtime.set_output_gain_db = lambda value: record(("gain", value))
+        runtime.ramp_output_gain_db = lambda start, target, **_kwargs: record(("ramp", start, target))
+        runtime._settle_output_gain_db = lambda target: record(("settle", target))
+        return runtime
+
     def test_guarded_rebuild_starts_candidate_at_guard_and_ramps(self):
         events = []
 
         async def exercise():
-            runtime = DSPRuntime(self.manager)
-            runtime._control_socket = unittest.mock.Mock()
-            runtime.set_output_gain_db = lambda value: record_async(events, ("gain", value))
-            runtime._sync = lambda overview, **kwargs: record_async(
-                events, ("sync", kwargs["initial_output_gain_db"]))
-            runtime.ramp_output_gain_db = lambda start, target, **kwargs: record_async(
-                events, ("ramp", start, target))
-            await runtime.guarded_rebuild(
-                self.overview("stereo"), guard_db=-18,
+            runtime = self.guarded_runtime(events)
+
+            async def run_sync(_config, _text, **kwargs):
+                events.append(("sync", kwargs["initial_output_gain_db"]))
+            runtime._run_sync = run_sync
+            await runtime.guarded_rebuild_rendered(
+                self.target(), previous=self.target(), guard_db=-18,
                 apply_candidate=lambda: events.append(("apply", "new")),
                 apply_previous=lambda: events.append(("apply", "old")),
                 settle_seconds=0)
 
-        async def record_async(target, event):
-            target.append(event)
-
         asyncio.run(exercise())
         self.assertEqual(events, [
-            ("gain", -18), ("sync", -18), ("ramp", -18, 0.0), ("apply", "new"),
+            ("gain", -18), ("sync", -18), ("ramp", -18, 0.0), ("settle", 0.0), ("apply", "new"),
         ])
 
     def test_guarded_rebuild_on_cold_runtime_pins_guard_through_sync(self):
@@ -640,76 +642,64 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         events = []
 
         async def exercise():
-            runtime = DSPRuntime(self.manager)
-            self.assertIsNone(runtime._control_socket)
-            runtime.set_output_gain_db = lambda value: record_async(events, ("gain", value))
-            runtime._sync = lambda overview, **kwargs: record_async(
-                events, ("sync", kwargs["initial_output_gain_db"]))
-            runtime.ramp_output_gain_db = lambda start, target, **kwargs: record_async(
-                events, ("ramp", start, target))
-            await runtime.guarded_rebuild(
-                self.overview("stereo"), guard_db=-18,
+            runtime = self.guarded_runtime(events, control_socket=False)
+
+            async def run_sync(_config, _text, **kwargs):
+                events.append(("sync", kwargs["initial_output_gain_db"]))
+            runtime._run_sync = run_sync
+            await runtime.guarded_rebuild_rendered(
+                self.target(), previous=self.target(), guard_db=-18,
                 apply_candidate=lambda: events.append(("apply", "new")),
                 apply_previous=lambda: events.append(("apply", "old")),
                 settle_seconds=0)
 
-        async def record_async(target, event):
-            target.append(event)
-
         asyncio.run(exercise())
         self.assertEqual(events, [
-            ("sync", -18), ("ramp", -18, 0.0), ("apply", "new"),
+            ("sync", -18), ("ramp", -18, 0.0), ("settle", 0.0), ("apply", "new"),
         ])
 
     def test_guarded_rebuild_rolls_back_previous_state_on_failure(self):
         events = []
 
         async def exercise():
-            runtime = DSPRuntime(self.manager)
-            runtime._control_socket = unittest.mock.Mock()
-            runtime.set_output_gain_db = lambda value: record(("gain", value))
+            runtime = self.guarded_runtime(events)
             sync_count = 0
-            async def sync(_overview, **kwargs):
+
+            async def run_sync(_config, _text, **kwargs):
                 nonlocal sync_count
                 sync_count += 1
                 events.append(("sync", sync_count, kwargs["initial_output_gain_db"]))
                 if sync_count == 1:
                     raise RuntimeError("candidate failed")
-            runtime._sync = sync
-            runtime.ramp_output_gain_db = lambda start, target, **kwargs: record(("ramp", start, target))
+            runtime._run_sync = run_sync
             with self.assertRaisesRegex(RuntimeError, "candidate failed"):
-                await runtime.guarded_rebuild(
-                    self.overview("stereo"), guard_db=-24,
+                await runtime.guarded_rebuild_rendered(
+                    self.target(), previous=self.target(), guard_db=-24,
                     apply_candidate=lambda: events.append(("apply", "new")),
                     apply_previous=lambda: events.append(("apply", "old")),
                     settle_seconds=0)
 
-        async def record(event):
-            events.append(event)
-
         asyncio.run(exercise())
         self.assertEqual(events, [
             ("gain", -24), ("sync", 1, -24),
-            ("apply", "old"), ("sync", 2, -24), ("ramp", -24, 0.0),
+            ("apply", "old"), ("sync", 2, -24), ("ramp", -24, 0.0), ("settle", 0.0),
         ])
 
     def test_guarded_rebuild_preserves_original_error_when_rollback_fails(self):
+        events = []
+
         async def exercise():
-            runtime = DSPRuntime(self.manager)
-            runtime._control_socket = unittest.mock.Mock()
-            runtime.set_output_gain_db = lambda _value: complete()
-            async def sync(_overview, **_kwargs):
+            runtime = self.guarded_runtime(events)
+
+            async def run_sync(_config, _text, **_kwargs):
                 raise RuntimeError("candidate failed")
-            runtime._sync = sync
+            runtime._run_sync = run_sync
             with self.assertRaisesRegex(RuntimeError, "candidate failed"):
-                await runtime.guarded_rebuild(
-                    self.overview("stereo"), guard_db=-18,
+                await runtime.guarded_rebuild_rendered(
+                    self.target(), previous=self.target(), guard_db=-18,
                     apply_candidate=lambda: None,
                     apply_previous=lambda: (_ for _ in ()).throw(RuntimeError("rollback failed")),
                     settle_seconds=0)
-
-        async def complete():
-            return None
 
         asyncio.run(exercise())
 
@@ -725,7 +715,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             return CommandResult(0, live if tuple(command) == ("pw-link", "-l") else "")
 
         runtime = DSPRuntime(self.manager, command_runner=run)
-        runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+        runtime._config = self.config()
         asyncio.run(runtime._remove_direct_source_links())
         self.assertIn(("pw-link", "-d", "mpv:output_FL", "hw:playback_FL"), commands)
         self.assertIn(("pw-link", "-d", "spotify:output_RR", "hw:playback_RR"), commands)
@@ -752,7 +742,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
         runtime = DSPRuntime(self.manager, command_runner=run)
         runtime._config = DSPRuntimeConfig(
-            "subwoofer-2.2", "hw", 48000,
+            "stereo-sub", "hw", 48000,
             tuple(f"playback_AUX{index}" for index in range(18)), (),
         )
         asyncio.run(runtime._remove_direct_source_links())
@@ -769,7 +759,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             return CommandResult(0, "")
 
         runtime = DSPRuntime(self.manager, command_runner=run)
-        runtime._config = DSPRuntimeConfig.from_overview(self.overview("subwoofer-2.1"))
+        runtime._config = self.config("stereo-sub")
         runtime._links = [
             PipeWireLink("fxroute_dsp:output_1", "hw:playback_FL"),
             PipeWireLink("fxroute_dsp:output_2", "hw:playback_FR"),
@@ -787,41 +777,13 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
         async def exercise():
             runtime = DSPRuntime(self.manager, command_runner=run)
-            runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+            runtime._config = self.config()
             await runtime._lock.acquire()
             task = asyncio.create_task(runtime._reclean_guarded())
             await asyncio.sleep(0)
             self.assertEqual(events, [])
             runtime._lock.release()
             await task
-
-        asyncio.run(exercise())
-
-    def test_compile_failure_preserves_running_runtime(self):
-        async def exercise():
-            with tempfile.TemporaryDirectory() as directory:
-                binary = Path(directory) / "fxroute-dsp"
-                binary.touch()
-                old_config = Path(directory) / "old.conf"
-                old_config.write_text("old")
-                old_process = FakeProcess()
-                runtime = DSPRuntime(self.manager, binary=binary)
-                runtime._process = old_process
-                runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
-                runtime._config_path = old_config
-                runtime._links = [PipeWireLink("old-source", "old-target")]
-                original_compile = self.manager.compile_engine_text
-                self.manager.compile_engine_text = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("compile failed"))
-                try:
-                    with self.assertRaisesRegex(RuntimeError, "compile failed"):
-                        await runtime.sync(self.overview("stereo"))
-                finally:
-                    self.manager.compile_engine_text = original_compile
-                self.assertIs(runtime._process, old_process)
-                self.assertFalse(old_process.terminated)
-                self.assertEqual(runtime._config_path, old_config)
-                self.assertTrue(old_config.exists())
-                self.assertEqual(runtime._links, [PipeWireLink("old-source", "old-target")])
 
         asyncio.run(exercise())
 
@@ -843,11 +805,11 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 old_process = FakeProcess()
                 runtime = DSPRuntime(self.manager, binary=binary, command_runner=run)
                 runtime._process = old_process
-                runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+                runtime._config = self.config()
                 runtime._config_path = old_config
                 runtime._links = [PipeWireLink("old-source", "old-target")]
                 with self.assertRaisesRegex(RuntimeError, "plugin failed"):
-                    await runtime.sync(self.overview("stereo"))
+                    await runtime.sync_rendered(self.target())
                 self.assertIs(runtime._process, old_process)
                 self.assertFalse(old_process.terminated)
                 self.assertEqual(runtime._config_path, old_config)
@@ -878,10 +840,10 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 runtime = DSPRuntime(self.manager, binary=binary, command_runner=run,
                                      process_launcher=launch)
                 runtime._process = old_process
-                runtime._config = DSPRuntimeConfig.from_overview(self.overview("stereo"))
+                runtime._config = self.config()
                 runtime._links = [PipeWireLink("old-source", "old-target")]
                 with self.assertRaisesRegex(RuntimeError, "launch failed"):
-                    await runtime.sync(self.overview("stereo"))
+                    await runtime.sync_rendered(self.target())
                 self.assertTrue(old_process.terminated)
                 self.assertIsNone(runtime._process)
                 self.assertIsNone(runtime._config_path)
