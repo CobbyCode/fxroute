@@ -27,7 +27,8 @@ join is being reconciled:
 
 An explicit FXRoute control during the window ends it (``note_user_intent``):
 a user who presses loop or play has decided, and their value is authoritative
-from then on. Without a stored intent the join is left completely alone.
+from then on (a play that FXRoute itself starts must never be paused as an
+"autoplay"). Without a stored intent the join is left completely alone.
 """
 
 from __future__ import annotations
@@ -41,9 +42,15 @@ from playback.qobuz_intent import QobuzIntent, normalize_loop
 
 logger = logging.getLogger(__name__)
 
-# A fork join is followed by the session's queue/track push and the track
-# download; the restore window bounds the reconciliation of both.
-JOIN_RESTORE_WINDOW_SECONDS = 30.0
+# The session hands the renderer its queue right after the join and the fork
+# then plays the session's track once its download finished (live-verified on
+# .104: join +0.0s, track push +0.4s, audio +3.2s for a 64MB HiRes track).
+# The repeat restore covers the queue adoption; the autoplay suppression covers
+# the playback start, which a slow download can delay, so it gets its own
+# shorter window: every second of it is time in which a play the user starts
+# in the Qobuz app right after a re-join would be paused once.
+LOOP_RESTORE_WINDOW_SECONDS = 30.0
+AUTOPLAY_SUPPRESS_WINDOW_SECONDS = 20.0
 
 
 @dataclass
@@ -64,25 +71,35 @@ class QobuzJoinGuard:
         self,
         deps: QobuzJoinGuardDependencies,
         *,
-        window_seconds: float = JOIN_RESTORE_WINDOW_SECONDS,
+        window_seconds: float = LOOP_RESTORE_WINDOW_SECONDS,
+        autoplay_window_seconds: float = AUTOPLAY_SUPPRESS_WINDOW_SECONDS,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._deps = deps
         self._window_seconds = float(window_seconds)
+        self._autoplay_window_seconds = float(autoplay_window_seconds)
         self._clock = clock
         self._armed_until: float | None = None
+        self._autoplay_until: float | None = None
 
     def note_session_join(self) -> None:
-        """Arm the reconcile window for a fresh Connect session (re)join."""
-        self._armed_until = self._clock() + self._window_seconds
+        """Arm the reconcile windows for a fresh Connect session (re)join."""
+        now = self._clock()
+        self._armed_until = now + self._window_seconds
+        self._autoplay_until = now + self._autoplay_window_seconds
 
     def note_user_intent(self) -> None:
-        """End the window: an explicit user control is authoritative now."""
+        """End the windows: an explicit user control is authoritative now."""
         self._armed_until = None
+        self._autoplay_until = None
 
     def window_active(self) -> bool:
         """Return whether a join is currently being reconciled."""
         return self._armed_until is not None and self._clock() < self._armed_until
+
+    def autoplay_window_active(self) -> bool:
+        """Return whether a join autoplay may still be starting."""
+        return self._autoplay_until is not None and self._clock() < self._autoplay_until
 
     def reconcile_observed(self, *, loop: str, playing: bool) -> None:
         """Record an observed daemon state as the user's intent.
@@ -129,7 +146,7 @@ class QobuzJoinGuard:
             except Exception as exc:
                 logger.warning("Qobuz repeat restore after join failed: %s", exc)
         paused = None
-        if not intent.playing:
+        if not intent.playing and self.autoplay_window_active():
             paused = await self._pause_qobuz("join-autoplay")
         return {"reconciled": True, "loop": intent.loop, "loop_applied": loop_applied,
                 "playing": intent.playing, "paused": paused}
@@ -140,10 +157,10 @@ class QobuzJoinGuard:
         Returns ``True`` when this Playing edge is the daemon's own session-join
         autoplay and must not claim playback. Every edge inside the window is
         covered: the user has not started playback since the join, so none of
-        them is a Connect takeover. A later play (the Qobuz app selecting this
-        device) arrives after the window and claims as before.
+        them is a Connect takeover. A play the user starts after the window (or
+        any FXRoute-initiated control, which ends the window) claims as before.
         """
-        if not self.window_active():
+        if not self.autoplay_window_active():
             return False
         intent = self._deps.load_intent()
         if intent is None or intent.playing:

@@ -98,6 +98,10 @@ class StreamingApiDeps:
     api_spotify_toggle: Callable[[], Awaitable[dict]]
     capture_source_intent: Callable[[], Any] | None = None
     ensure_source_intent_current: Callable[[Any], None] | None = None
+    # A UI-initiated Qobuz control is user intent: it ends the Connect-join
+    # reconcile window so the restore cannot override the user's own action
+    # (playback.qobuz_join_guard).
+    note_qobuz_user_intent: Callable[[], None] | None = None
 
 
 @dataclass
@@ -183,6 +187,9 @@ async def _qobuz_ui_start_action(action: str) -> dict:
     exclusively for external Connect claims; a UI start never waits for it.
     """
     deps = _deps()
+    note_intent = getattr(deps, "note_qobuz_user_intent", None)
+    if callable(note_intent):
+        note_intent()
     capture = getattr(deps, "capture_source_intent", None)
     source_intent = capture() if callable(capture) else None
     qobuz_state = await deps.get_qobuz_ui_state()

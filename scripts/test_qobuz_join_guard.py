@@ -25,7 +25,12 @@ sys.path.insert(0, str(ROOT))
 
 import playback.qobuz_join_guard as join_guard_module
 from playback.qobuz_intent import QobuzIntent, clear, load, observe, save
-from playback.qobuz_join_guard import QobuzJoinGuard, QobuzJoinGuardDependencies
+from playback.qobuz_join_guard import (
+    AUTOPLAY_SUPPRESS_WINDOW_SECONDS,
+    LOOP_RESTORE_WINDOW_SECONDS,
+    QobuzJoinGuard,
+    QobuzJoinGuardDependencies,
+)
 
 
 class QobuzIntentStoreTests(unittest.TestCase):
@@ -87,7 +92,8 @@ class _GuardHarness:
                 apply_loop=self._apply_loop,
                 pause_qobuz=self._pause,
             ),
-            window_seconds=30.0,
+            window_seconds=LOOP_RESTORE_WINDOW_SECONDS,
+            autoplay_window_seconds=AUTOPLAY_SUPPRESS_WINDOW_SECONDS,
             clock=lambda: self.clock_value,
         )
         self.guard = guard
@@ -133,7 +139,7 @@ class QobuzJoinGuardTests(unittest.IsolatedAsyncioTestCase):
     async def test_window_expires(self):
         harness = _GuardHarness(intent=QobuzIntent(loop="none", playing=False))
         harness.guard.note_session_join()
-        harness.advance(31.0)
+        harness.advance(LOOP_RESTORE_WINDOW_SECONDS + 1)
         self.assertFalse(harness.guard.window_active())
         self.assertFalse((await harness.guard.reconcile_join())["reconciled"])
 
@@ -207,15 +213,33 @@ class QobuzJoinGuardTests(unittest.IsolatedAsyncioTestCase):
         harness.guard.note_session_join()
         harness.guard.reconcile_observed(loop="track", playing=True)
         self.assertEqual(harness.recorded, [])
-        harness.advance(31.0)
+        harness.advance(LOOP_RESTORE_WINDOW_SECONDS + 1)
         harness.guard.reconcile_observed(loop="none", playing=False)
         self.assertEqual(harness.recorded, [("none", False)])
+
+    async def test_autoplay_window_ends_before_the_loop_window(self):
+        # Stopping a playback the user starts in the app right after a re-join
+        # is the price of the autoplay fix, so it is only paid while the fork's
+        # own track start can still happen.
+        harness = _GuardHarness(intent=QobuzIntent(loop="none", playing=False))
+        harness.guard.note_session_join()
+        harness.advance(AUTOPLAY_SUPPRESS_WINDOW_SECONDS + 0.1)
+        self.assertTrue(harness.guard.window_active())
+        self.assertFalse(harness.guard.autoplay_window_active())
+        self.assertFalse(await harness.guard.reconcile_join_autoplay())
+        self.assertEqual(harness.pauses, 0)
+        # The repeat restore still runs: the session's value can arrive late.
+        harness.observed_loop = "track"
+        result = await harness.guard.reconcile_join()
+        self.assertTrue(result["loop_applied"])
+        self.assertEqual(harness.applied, ["none"])
 
     async def test_user_control_ends_the_window_and_is_recorded(self):
         harness = _GuardHarness(intent=QobuzIntent(loop="none", playing=False))
         harness.guard.note_session_join()
         harness.guard.note_user_intent()
         self.assertFalse(harness.guard.window_active())
+        self.assertFalse(harness.guard.autoplay_window_active())
         harness.guard.reconcile_observed(loop="track", playing=True)
         self.assertEqual(harness.recorded, [("track", True)])
         # The press also disarms both restores.
@@ -234,8 +258,12 @@ class QobuzJoinGuardTests(unittest.IsolatedAsyncioTestCase):
 class QobuzJoinGuardDefaultWindowTests(unittest.TestCase):
     def test_window_covers_the_session_push_and_track_download(self):
         # Live timing on .104: join +0.0s, track push +0.43s, first audio
-        # frame +3.2s (a 64MB HiRes download). The window must cover that.
-        self.assertGreaterEqual(join_guard_module.JOIN_RESTORE_WINDOW_SECONDS, 10.0)
+        # frame +3.2s (a 64MB HiRes download). Both windows must cover that,
+        # and the autoplay one must not outlive the loop one.
+        self.assertGreaterEqual(join_guard_module.LOOP_RESTORE_WINDOW_SECONDS, 10.0)
+        self.assertGreaterEqual(join_guard_module.AUTOPLAY_SUPPRESS_WINDOW_SECONDS, 10.0)
+        self.assertLessEqual(join_guard_module.AUTOPLAY_SUPPRESS_WINDOW_SECONDS,
+                             join_guard_module.LOOP_RESTORE_WINDOW_SECONDS)
 
 
 if __name__ == "__main__":

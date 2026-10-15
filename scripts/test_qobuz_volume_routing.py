@@ -253,6 +253,41 @@ class QobuzUnityPinTests(unittest.IsolatedAsyncioTestCase):
             streaming_api.configure_streaming_api(orig)
         pin.assert_awaited_once()
 
+    async def test_ui_start_ends_the_join_reconcile_window(self):
+        # A play FXRoute itself starts is user intent: it must never be paused
+        # as a qbzd join autoplay (playback.qobuz_join_guard).
+        playing = _qobuz_state(status="Paused", trackId="42")
+        committed = type("Result", (), {"committed": True, "transition_id": "t3"})()
+        noted = []
+        deps = streaming_api.StreamingApiDeps(
+            get_qobuz_ui_state=mock.AsyncMock(return_value=playing),
+            is_qobuz_playback_active=lambda state: False,
+            qobuz_pause=mock.AsyncMock(),
+            broadcast_qobuz_state=mock.AsyncMock(return_value=playing),
+            qobuz_target_track_from_state=lambda state: {"id": "42"},
+            qobuz_target_rate=lambda state: 44100,
+            qobuz_pin_unity=mock.AsyncMock(),
+            qobuz_volume_action=mock.AsyncMock(),
+            spotify_volume_action=mock.AsyncMock(),
+            publish_committed_playback_owner=mock.AsyncMock(),
+            transition_error_http=lambda exc: exc,
+            request_origin_is_trusted=lambda req: True,
+            coordinator_rate_change=lambda rate: None,
+            run_coordinated_transition=mock.AsyncMock(return_value=committed),
+            get_current_playback_owner=lambda: None,
+            spotify_playerctl_watch=mock.Mock(),
+            api_spotify_play=mock.AsyncMock(),
+            api_spotify_toggle=mock.AsyncMock(),
+            note_qobuz_user_intent=lambda: noted.append(True),
+        )
+        orig = streaming_api._runtime.deps
+        streaming_api.configure_streaming_api(deps)
+        try:
+            await streaming_api._qobuz_ui_start_action("play")
+        finally:
+            streaming_api.configure_streaming_api(orig)
+        self.assertEqual(noted, [True])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -198,6 +198,35 @@ class QobuzBootstrapGuardTests(unittest.IsolatedAsyncioTestCase):
             await watch._bootstrap_device_state()
         self.assertEqual(joins, [True])
 
+    async def test_bootstrap_ignores_a_stale_join(self):
+        # An FXRoute restart hours after the last join must not treat the
+        # session's (possibly user-started) playback as an autoplay.
+        import datetime as _datetime
+
+        joins = []
+        stale = (_datetime.datetime.now(_datetime.timezone.utc)
+                 - _datetime.timedelta(hours=3)).isoformat(timespec="seconds")
+        watch, spawn = self._watch(
+            joins, f"{stale} [qbzd/qconnect] Renderer join complete — visible\n")
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn), mock.patch(
+            "streaming.qobuz.backend.qbzd_installed", return_value=True
+        ):
+            await watch._bootstrap_device_state()
+        self.assertEqual(joins, [])
+
+    async def test_bootstrap_reports_a_fresh_join_with_its_timestamp(self):
+        import datetime as _datetime
+
+        joins = []
+        fresh = _datetime.datetime.now(_datetime.timezone.utc).isoformat(timespec="seconds")
+        watch, spawn = self._watch(
+            joins, f"{fresh} [qbzd/qconnect] Renderer join complete — visible\n")
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn), mock.patch(
+            "streaming.qobuz.backend.qbzd_installed", return_value=True
+        ):
+            await watch._bootstrap_device_state()
+        self.assertEqual(joins, [True])
+
     async def test_bootstrap_ignores_a_disconnected_session(self):
         joins = []
         watch, spawn = self._watch(joins, (

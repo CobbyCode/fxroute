@@ -4262,6 +4262,7 @@ async def _qobuz_global_control(action: str, request: Request | None = None) -> 
     """Global transport for a Qobuz-owned playback context."""
     provider = streaming.get_provider("qobuz")
     if action in {"next", "previous"}:
+        # The handoff is user intent; it ends the join reconcile window there.
         return await streaming_api._qobuz_ui_start_action(action)
     if action == "toggle":
         data = await get_qobuz_ui_state()
@@ -4269,6 +4270,9 @@ async def _qobuz_global_control(action: str, request: Request | None = None) -> 
             data = await qobuz_pause()
         else:
             _refuse_start_while_output_held()
+            # A UI start is user intent: it must never be paused as a join
+            # autoplay, so the reconcile window ends here.
+            qobuz_join_guard.note_user_intent()
             data = await qobuz_play()
         return await broadcast_qobuz_state(data)
     if action == "seek":
@@ -7432,6 +7436,7 @@ def _make_streaming_api_deps() -> streaming_api.StreamingApiDeps:
         api_spotify_toggle=lambda: api_spotify_toggle(),
         capture_source_intent=lambda: _capture_source_intent(),
         ensure_source_intent_current=lambda captured: _ensure_source_intent_current(captured),
+        note_qobuz_user_intent=qobuz_join_guard.note_user_intent,
     )
 
 

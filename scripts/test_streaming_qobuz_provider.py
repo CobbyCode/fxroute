@@ -21,8 +21,14 @@ from streaming.qobuz import connect_state
 from streaming.qobuz.backend import default_base_url, qbzd_installed
 from streaming.qobuz.provider import QobuzProvider, QobuzRepeatError
 
-# Fork repeat values as the daemon echoes them back in /api/queue.
-_REPEAT_ECHO = {"off": "Off", "track": "One", "queue": "All", "all": "All"}
+# Fork repeat values as the daemon echoes them back in /api/queue. The
+# daemon accepts exactly off/one/all and answers any other mode with 200 plus
+# a queue reset to Off (live-verified on qbzd 2.0.2).
+_REPEAT_ECHO = {"off": "Off", "one": "One", "all": "All"}
+
+
+def _repeat_echo(mode):
+    return _REPEAT_ECHO.get(str(mode or "").strip().lower(), "Off")
 
 
 def _status_payload(**overrides):
@@ -512,7 +518,7 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
             calls.append((path, body or {}))
             # The fork applies queue changes to its live queue synchronously.
             if path == "/api/queue/repeat":
-                routes["/api/queue"]["repeat"] = _REPEAT_ECHO[body["mode"]]
+                routes["/api/queue"]["repeat"] = _repeat_echo(body["mode"])
             elif path == "/api/queue/shuffle":
                 routes["/api/queue"]["shuffle"] = body["enabled"]
             return {}
@@ -541,7 +547,7 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_post(base_url, path, body=None, timeout=2.0):
             calls.append((path, body or {}))
-            routes["/api/queue"]["repeat"] = _REPEAT_ECHO[body["mode"]]
+            routes["/api/queue"]["repeat"] = _repeat_echo(body["mode"])
             return {}
 
         getter = _fake_get(routes)
@@ -551,8 +557,31 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)):
             state = await provider.set_loop("track")
 
-        self.assertEqual(calls, [("/api/queue/repeat", {"mode": "track"})])
+        # The fork's wire name for repeat-one is "one": "track" would be an
+        # unknown mode, which the daemon answers by resetting the queue to Off.
+        self.assertEqual(calls, [("/api/queue/repeat", {"mode": "one"})])
         self.assertEqual(state["loop"], "track")
+
+    async def test_set_loop_maps_every_loop_mode_to_a_fork_wire_mode(self):
+        provider = QobuzProvider()
+        routes = _full_routes()
+        calls = []
+
+        async def fake_post(base_url, path, body=None, timeout=2.0):
+            calls.append((path, body or {}))
+            routes["/api/queue"]["repeat"] = _repeat_echo(body["mode"])
+            return {}
+
+        getter = _fake_get(routes)
+        with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter), \
+             mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)):
+            written = {mode: (await provider.set_loop(mode))["loop"]
+                       for mode in ("none", "track", "playlist")}
+
+        self.assertEqual([body["mode"] for _, body in calls], ["off", "one", "all"])
+        self.assertEqual(written, {"none": "none", "track": "track", "playlist": "playlist"})
 
     async def test_set_loop_raises_on_rejected_write(self):
         provider = QobuzProvider()

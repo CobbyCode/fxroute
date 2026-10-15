@@ -52,6 +52,7 @@ emits one line per step) so each debounce window writes the latest value once.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import re
 import time
@@ -110,6 +111,13 @@ _FORK_SESSION_BOUNDARY_RE = re.compile(
 # (see playback.qobuz_join_guard).
 _FORK_SESSION_JOIN_RE = re.compile(r"\[qbzd/qconnect\] Renderer join complete")
 
+# A join recovered from journal history only arms the intent restore while it is
+# fresh. A boot race is seconds old; an FXRoute restart hours after the last
+# join must not treat the session's (possibly user-started) playback as an
+# autoplay. Live-verified on .104: qbzd logs the join about 2s into its own
+# start, while FXRoute's startup is slower, so a reboot needs this path.
+BOOTSTRAP_JOIN_FRESH_SECONDS = 60.0
+
 # Software-mode line: qbzd applies the remote volume itself. The journal
 # coupling needs locked mode, so seeing this line means the config drifted.
 _APPLIED_VOLUME_RE = re.compile(r"Renderer command applied:\s*SetVolume\s*\{")
@@ -159,6 +167,20 @@ def is_fork_session_join(line: str | None) -> bool:
     if not line:
         return False
     return _FORK_SESSION_JOIN_RE.search(line) is not None
+
+
+def parse_journal_timestamp(line: str) -> float | None:
+    """Return the wall-clock seconds of a ``short-iso`` journal line prefix."""
+    if not line:
+        return None
+    stamp = line.split(" ", 1)[0]
+    try:
+        parsed = datetime.datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.timestamp()
 
 
 def parse_engine_volume(value: Any) -> int | None:
@@ -384,13 +406,14 @@ class QobuzVolumeWatch:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "journalctl", "--user-unit=qbzd.service",
-                "-n", "500", "-o", "cat", "--no-pager",
+                "-n", "500", "-o", "short-iso", "--no-pager",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
             last: bool | None = None
             last_boundary_was_join: bool | None = None
+            last_join_at: float | None = None
             for line in stdout.decode("utf-8", errors="replace").splitlines():
                 if is_session_activation(line):
                     last = True
@@ -398,13 +421,19 @@ class QobuzVolumeWatch:
                     last = False
                 if is_fork_session_boundary(line):
                     last_boundary_was_join = is_fork_session_join(line)
+                    if last_boundary_was_join:
+                        last_join_at = parse_journal_timestamp(line)
             if last is not None and self._deps.on_device_active is not None:
                 self._deps.on_device_active(last)
             if last_boundary_was_join and self._deps.on_session_join is not None:
-                try:
-                    self._deps.on_session_join()
-                except Exception as exc:
-                    logger.warning("Qobuz session-join notification failed: %s", exc)
+                age = None if last_join_at is None else time.time() - last_join_at
+                if age is None or age <= BOOTSTRAP_JOIN_FRESH_SECONDS:
+                    try:
+                        self._deps.on_session_join()
+                    except Exception as exc:
+                        logger.warning("Qobuz session-join notification failed: %s", exc)
+                else:
+                    logger.debug("Qobuz join in journal history is %.0fs old; not arming restore", age)
         except (asyncio.TimeoutError, OSError) as exc:
             logger.debug("qbzd device-state bootstrap failed: %s", exc)
         finally:

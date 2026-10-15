@@ -23,8 +23,13 @@ QOBUZ_BACKEND = "qbzd"
 
 # Fork repeat modes -> FXRoute loop vocabulary (Spotify parity: none/track/playlist).
 _REPEAT_TO_LOOP = {"off": "none", "one": "track", "track": "track", "all": "playlist", "queue": "playlist"}
-# Cycle order for the repeat toggle: off -> track -> queue -> off (fork values).
-_LOOP_TO_REPEAT = {"none": "off", "track": "track", "playlist": "queue"}
+# Cycle order for the repeat toggle: off -> one -> all -> off (fork values).
+# The daemon accepts exactly ``off``/``one``/``all``. Any other value is
+# answered with 200 and silently resets the queue to Off (live-verified on
+# qbzd 2.0.2 on .104: mode ``track`` and ``queue`` both came back as
+# ``{"repeat":"Off"}``), so the wire names are pinned here and every write is
+# verified by reading the applied mode back.
+_LOOP_TO_REPEAT = {"none": "off", "track": "one", "playlist": "all"}
 _LOOP_CYCLE = {"none": "track", "track": "playlist", "playlist": "none"}
 
 # Track downloads run server-side before the play-track reply; a 20MB+
