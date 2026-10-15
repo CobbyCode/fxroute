@@ -3,6 +3,8 @@
 
 import asyncio
 import copy
+import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -15,8 +17,10 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
+import measurement.session as measurement_session
 import measurement.spl_calibration as spl_calibration
 from dsp.manager import DSPManager
+from playback.transition import OutputHeldFailure, TransitionRequest
 
 
 class FakeSession:
@@ -141,6 +145,11 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         spl_calibration._runtime.operation = None
         spl_calibration._runtime.operation_lock = asyncio.Lock()
         spl_calibration._runtime.unrestored = None
+        # The pending-restore record must never reach the real state dir.
+        self.state_home = tempfile.TemporaryDirectory(prefix="fxroute-spl-state-")
+        self.state_env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": self.state_home.name})
+        self.state_env.start()
+        self.restore_record = pathlib.Path(self.state_home.name) / "fxroute" / "spl-calibration-restore.json"
 
     async def asyncTearDown(self):
         if spl_calibration._runtime.operation is not None:
@@ -153,6 +162,8 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         spl_calibration._runtime.operation = None
         spl_calibration._runtime.operation_lock = None
         spl_calibration._runtime.unrestored = None
+        self.state_env.stop()
+        self.state_home.cleanup()
 
     async def test_double_start_is_rejected_until_owner_cleanup_finishes(self):
         operation = await spl_calibration._acquire_operation("automatic")
@@ -695,6 +706,73 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(spl_calibration._runtime.unrestored)
         self.assertFalse(self.output.muted)
 
+    async def test_pending_restore_record_rearms_the_hold_after_a_restart(self):
+        _operation, _session, manager = await self._operation_with_failing_restore()
+        self.assertIsNone(spl_calibration.output_hold())
+        with self.assertRaises(main.HTTPException):
+            await spl_calibration._stop_active_operation()
+        self.assertIn("SPL Calibration", spl_calibration.output_hold())
+        record = json.loads(self.restore_record.read_text(encoding="utf-8"))
+        self.assertEqual(record["sink"], FakeOutputMute.sink_name)
+        self.assertFalse(record["output_was_muted"])
+        self.assertEqual(record["previous_volume_percent"], 37.0)
+        self.assertEqual(record["restore_state"]["system_volume_percent"], 37.0)
+
+        # A failed retry keeps the record with its latest error.
+        main.get_output_volume = lambda: 100.0
+
+        def refuse_volume(_value):
+            raise RuntimeError("volume write failed")
+
+        main.set_output_volume = refuse_volume
+        with self.assertRaises(main.HTTPException):
+            await spl_calibration.set_spl_calibration_noise(FakeRequest(enabled=False))
+        record = json.loads(self.restore_record.read_text(encoding="utf-8"))
+        self.assertEqual(record["error"], "volume write failed")
+
+        # A restart drops the in-memory state; the record re-arms it.
+        spl_calibration._runtime.unrestored = None
+        self.assertIsNone(spl_calibration.output_hold())
+        spl_calibration.load_pending_restore()
+        self.assertIsNotNone(spl_calibration.output_hold())
+        status = spl_calibration._unrestored_audio_status()
+        self.assertEqual(status["previous_system_volume_percent"], 37.0)
+        self.assertTrue(status["output_muted"])
+        self.assertIn("volume write failed", status["detail"])
+        with self.assertRaises(main.HTTPException) as refused:
+            await spl_calibration._acquire_operation("automatic")
+        self.assertEqual(refused.exception.status_code, 409)
+
+        # The retry restores the volume, lifts the calibration's own mute
+        # and removes the record.
+        volume = [100.0]
+        main.get_output_volume = lambda: volume[0]
+        main.set_output_volume = lambda value: volume.__setitem__(0, value)
+        manager.fail_restore = False
+        stopped = await spl_calibration.set_spl_calibration_noise(FakeRequest(enabled=False))
+        self.assertEqual(stopped, {"status": "stopped"})
+        self.assertEqual(volume, [37.0])
+        self.assertFalse(self.output.muted)
+        self.assertFalse(self.restore_record.exists())
+        self.assertIsNone(spl_calibration.output_hold())
+        spl_calibration.load_pending_restore()
+        self.assertIsNone(spl_calibration._runtime.unrestored)
+
+    async def test_unreadable_restore_record_holds_without_touching_the_mute(self):
+        self.restore_record.parent.mkdir(parents=True)
+        self.restore_record.write_text("{not json", encoding="utf-8")
+        spl_calibration.load_pending_restore()
+        self.assertIsNotNone(spl_calibration.output_hold())
+        status = spl_calibration._unrestored_audio_status()
+        self.assertIn("unreadable", status["detail"])
+        self.assertIsNone(status["output_muted"])
+
+        stopped = await spl_calibration.set_spl_calibration_noise(FakeRequest(enabled=False))
+        self.assertEqual(stopped, {"status": "stopped"})
+        self.assertEqual(self.output.writes, [])
+        self.assertIsNone(spl_calibration.output_hold())
+        self.assertFalse(self.restore_record.exists())
+
     async def test_stop_keeps_ownership_while_noise_survives_failed_restore(self):
         operation, session, manager = await self._operation_with_failing_restore()
         process = UnkillableProcess()
@@ -870,6 +948,48 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(getattr(raised.exception, "status_code", None), 409)
         self.assertIs(spl_calibration._runtime.operation, operation)
         await spl_calibration._cleanup_operation(operation)
+
+
+class SplOutputHoldWiringTests(unittest.IsolatedAsyncioTestCase):
+    """A pending restore holds main's coordinator and measurement entry."""
+
+    def setUp(self):
+        spl_calibration._runtime.unrestored = None
+
+    def tearDown(self):
+        spl_calibration._runtime.unrestored = None
+
+    def _hold(self):
+        spl_calibration._runtime.unrestored = spl_calibration._UnrestoredSplAudio(
+            restore_state=None, sink="alsa_output.spl-test", output_was_muted=False,
+            previous_volume_percent=40, error="DSP restore unavailable")
+
+    async def test_pending_restore_refuses_audible_play_as_409(self):
+        coordinator = main._make_playback_orchestration_deps().make_transition_coordinator()
+        self.assertIsNone(coordinator.output_hold)
+        self._hold()
+        self.assertEqual(coordinator.output_hold, spl_calibration.output_hold())
+        self.assertTrue(coordinator.transition_blocked)
+        self.assertEqual(coordinator.status()["output_hold"], spl_calibration.output_hold())
+
+        with self.assertRaises(OutputHeldFailure) as refused:
+            await coordinator.execute(TransitionRequest(
+                operation="play", source="local", target_rate=44100,
+                target_url="/music/track.flac", should_play=True))
+        self.assertFalse(coordinator.gate.closed)
+        error = main._transition_error_http(refused.exception)
+        self.assertEqual(error.status_code, 409)
+        self.assertEqual(error.detail, spl_calibration.output_hold())
+
+    async def test_measurement_preflight_reports_the_hold(self):
+        self._hold()
+        coordinator = SimpleNamespace(
+            output_hold=spl_calibration.output_hold(), transition_blocked=True)
+        with mock.patch.object(main, "playback_transition_coordinator", coordinator):
+            with self.assertRaises(main.HTTPException) as refused:
+                await measurement_session._measurement_entry_preflight(48000)
+        self.assertEqual(refused.exception.status_code, 409)
+        self.assertIn("SPL Calibration", refused.exception.detail)
 
 
 class SplCalibrationApplyLockTests(unittest.IsolatedAsyncioTestCase):

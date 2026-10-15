@@ -58,6 +58,21 @@ class PlaybackTransitionFailure(RuntimeError):
             "message": str(self),
         }
 
+
+class OutputHeldFailure(PlaybackTransitionFailure):
+    """An audible transition was refused while a safety hold mutes the output.
+
+    Raised before any transition state is mutated; the API maps it to 409.
+    """
+
+    def __init__(self, message: str, *, transition_id: str) -> None:
+        super().__init__(
+            message,
+            transition_id=transition_id,
+            stage="output-hold",
+            failure_latched=False,
+        )
+
 @dataclass
 class OutputGateState:
     """Persistent ownership state for the FXRoute hardware-output gate."""

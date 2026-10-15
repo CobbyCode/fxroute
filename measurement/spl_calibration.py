@@ -4,14 +4,16 @@
 
 import asyncio
 import copy
+import json
 import logging
 import math
+import os
 import re
 import subprocess
 import tempfile
 import time
 import wave
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -779,12 +781,95 @@ def _finish_unrestored_audio(unrestored: _UnrestoredSplAudio) -> None:
 
 
 def _unrestored_audio_detail(unrestored: _UnrestoredSplAudio) -> str:
+    previous_volume = unrestored.previous_volume_percent
+    volume = (
+        "the system volume"
+        if previous_volume is None
+        else f"the system volume (was {previous_volume}%)"
+    )
     return (
         f"SPL calibration ended without restoring its audio state ({unrestored.error}). "
-        "The output is muted for safety. Check the system volume "
-        f"(was {unrestored.previous_volume_percent}%) and Loudness/AutoGain, "
+        f"The output is muted for safety. Check {volume} and Loudness/AutoGain, "
         "then retry the restore."
     )
+
+
+def output_hold() -> str | None:
+    """Return why the playback output must stay muted, or None.
+
+    Playback, streaming claims and measurements must not reopen the output
+    while the calibration volume and DSP state may still be live.
+    """
+    if _runtime.unrestored is None:
+        return None
+    return (
+        "Output muted for safety: the SPL calibration did not restore its audio "
+        "state. Retry the restore in SPL Calibration."
+    )
+
+
+def _unrestored_audio_path() -> Path:
+    """Record of a pending restore; the calibration volume survives reboots too."""
+    state_root = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return state_root / "fxroute" / "spl-calibration-restore.json"
+
+
+def _save_unrestored_audio(unrestored: _UnrestoredSplAudio) -> None:
+    """Persist the pending restore so a restart keeps the output held."""
+    path = _unrestored_audio_path()
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps({"version": 1, **asdict(unrestored)}, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    except Exception:
+        # The in-memory hold still protects this process.
+        logger.exception("Could not persist the pending SPL calibration restore")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _clear_unrestored_audio_record() -> None:
+    try:
+        _unrestored_audio_path().unlink(missing_ok=True)
+    except OSError:
+        logger.exception("Could not remove the pending SPL calibration restore record")
+
+
+def load_pending_restore() -> None:
+    """Re-arm a restore that an earlier process left pending.
+
+    Runs before the playback coordinator reconciles its startup gate, which
+    then keeps the output muted instead of clearing a stale mute.
+    """
+    path = _unrestored_audio_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("not a JSON object")
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as exc:
+        logger.error("Pending SPL calibration restore record is unreadable: %s", exc)
+        # Hold without a restore: the retry then only releases the hold and
+        # leaves the unknown sink muted.
+        payload = {"error": "the pending restore record is unreadable"}
+    restore_state = payload.get("restore_state")
+    sink = str(payload.get("sink") or "")
+    _runtime.unrestored = _UnrestoredSplAudio(
+        restore_state=restore_state if isinstance(restore_state, dict) else None,
+        sink=sink,
+        output_was_muted=bool(payload.get("output_was_muted", True)) or not sink,
+        previous_volume_percent=payload.get("previous_volume_percent"),
+        error=str(payload.get("error") or "unknown error"),
+    )
+    logger.warning(
+        "SPL calibration audio restore pending from an earlier run; output stays muted: "
+        "sink=%s previous_system_volume=%s",
+        sink, _runtime.unrestored.previous_volume_percent)
 
 
 def _unrestored_audio_status() -> dict[str, Any] | None:
@@ -1027,6 +1112,7 @@ async def _hold_unrestored_audio(
     keep_paused = getattr(operation.session, "keep_playback_paused_on_release", None)
     if callable(keep_paused):
         keep_paused()
+    _save_unrestored_audio(unrestored)
     _runtime.unrestored = unrestored
     operation.restore_state = None
     logger.error(
@@ -1047,9 +1133,11 @@ async def _restore_unrestored_audio() -> None:
         except Exception as exc:
             logger.exception("SPL calibration audio restore retry failed")
             unrestored.error = str(exc)
+            _save_unrestored_audio(unrestored)
             raise HTTPException(
                 status_code=500, detail=_unrestored_audio_detail(unrestored)) from exc
         _runtime.unrestored = None
+        _clear_unrestored_audio_record()
         logger.info("SPL calibration pending audio restore completed: sink=%s", unrestored.sink)
 
 
@@ -1268,7 +1356,8 @@ async def _stop_active_operation() -> None:
 
 async def shutdown() -> None:
     await _stop_active_operation()
-    # A restart drops the pending restore and startup reopens a stale mute.
+    # Finish a pending restore while the DSP is still up; if it fails again,
+    # its record keeps the output held across the restart.
     await _restore_unrestored_audio()
 
 

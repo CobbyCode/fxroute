@@ -135,6 +135,62 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
         player.set_pause.assert_called_once_with(False)
         coordinator.assert_not_awaited()
 
+    async def test_held_output_refuses_direct_resume_but_allows_pause(self):
+        # A pending SPL restore holds the output muted; the same-rate resume
+        # bypasses the Coordinator gate and would report silent playback.
+        coordinator = AsyncMock(side_effect=AssertionError("resume entered coordinator"))
+        track = {"source": "local", "url": "/music/current.flac", "sample_rate_hz": 44100}
+        for paused in (True, False):
+            player = PlayerDouble(paused=paused)
+            with self.subTest(paused=paused), patch.object(
+                main.spl_calibration, "output_hold", return_value="Output muted for safety."
+            ), patch.object(main.runtime, "player_instance", player), patch.object(
+                main.playback_state, "current_track_info", track
+            ), patch.object(main, "_can_send_play_command", return_value=True), patch.object(
+                main, "_coordinator_target_rate", return_value=44100
+            ), patch.object(main, "_coordinator_rate_change", return_value=False), patch.object(
+                main, "_run_coordinated_transition", coordinator
+            ), patch.object(main, "build_playback_payload", side_effect=self._payload), patch.object(
+                main, "_mark_player_state_authoritative"
+            ), patch.object(main, "_mark_playback_intent_changed"):
+                if paused:
+                    with self.assertRaises(main.HTTPException) as refused:
+                        await main.toggle_playback()
+                    self.assertEqual(refused.exception.status_code, 409)
+                    self.assertEqual(refused.exception.detail, "Output muted for safety.")
+                    player.set_pause.assert_not_called()
+                else:
+                    result = await main.toggle_playback()
+                    self.assertEqual(result["status"], "paused")
+        coordinator.assert_not_awaited()
+
+    async def test_held_output_refuses_connect_resume_and_play_requests(self):
+        for owner, state_reader, starter in (
+            ("spotify", "get_spotify_ui_state", "spotify_play"),
+            ("qobuz", "get_qobuz_ui_state", "qobuz_play"),
+        ):
+            start = AsyncMock(return_value={"status": "Playing"})
+            with self.subTest(owner=owner), patch.object(
+                main.spl_calibration, "output_hold", return_value="Output muted for safety."
+            ), patch.object(main.runtime, "player_instance", PlayerDouble()), patch.object(
+                main, "_resolve_playback_owner", return_value=owner
+            ), patch.object(
+                main, state_reader, new=AsyncMock(return_value={"available": True, "status": "Paused"})
+            ), patch.object(main, starter, start):
+                with self.assertRaises(main.HTTPException) as refused:
+                    await main.toggle_playback()
+            self.assertEqual(refused.exception.status_code, 409)
+            start.assert_not_awaited()
+
+        ensure_player = AsyncMock(side_effect=AssertionError("play touched the player"))
+        with patch.object(
+            main.spl_calibration, "output_hold", return_value="Output muted for safety."
+        ), patch.object(main, "_drain_worker", ensure_player):
+            with self.assertRaises(main.HTTPException) as refused:
+                await main.play_track(main.PlayRequest(source="radio", track_id="groovesalad"))
+        self.assertEqual(refused.exception.status_code, 409)
+        ensure_player.assert_not_awaited()
+
     async def test_spotify_transport_commands_do_not_touch_local_context(self):
         player = PlayerDouble()
         local_track = {"source": "local", "url": "/music/current.flac"}

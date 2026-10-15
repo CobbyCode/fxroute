@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from playback.transition import (
+    OutputHeldFailure,
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
     TransitionRequest,
@@ -1185,6 +1186,129 @@ class PlayerLoadContractTests(unittest.TestCase):
         player.loadfile("/music/next.flac", start_paused=False)
         self.assertFalse(player.state["paused"])
         self.assertTrue(player.state["playing"])
+
+
+class OutputHoldTests(unittest.IsolatedAsyncioTestCase):
+    """A safety hold (pending SPL restore) keeps the hardware output muted."""
+
+    def setUp(self):
+        self.hold = {"reason": "Output muted for safety: SPL restore pending."}
+
+    def coordinator(self, runtime, **kwargs):
+        return PlaybackTransitionCoordinator(
+            runtime, gate_settle_seconds=0,
+            get_output_hold=lambda: self.hold["reason"], **kwargs)
+
+    async def test_audible_play_is_refused_before_any_mutation_until_released(self):
+        runtime = FakeRuntime(muted=True)
+        coordinator = self.coordinator(runtime)
+        self.assertTrue(coordinator.transition_blocked)
+        self.assertEqual(coordinator.status()["output_hold"], self.hold["reason"])
+
+        with self.assertRaises(OutputHeldFailure) as refused:
+            await coordinator.execute(request())
+        self.assertEqual(str(refused.exception), self.hold["reason"])
+        self.assertFalse(refused.exception.failure_latched)
+        self.assertEqual(runtime.events, [])
+        self.assertTrue(runtime.muted)
+        self.assertFalse(coordinator.gate.closed)
+        self.assertIsNone(coordinator.last_error)
+
+        # Released: the same play opens the output normally.
+        self.hold["reason"] = None
+        self.assertFalse(coordinator.transition_blocked)
+        result = await coordinator.execute(request())
+        self.assertTrue(result.committed)
+        self.assertFalse(runtime.muted)
+
+    async def test_refused_connect_claim_pauses_the_renderer(self):
+        runtime = FakeRuntime(muted=True)
+        coordinator = self.coordinator(runtime)
+        for source in ("spotify", "qobuz"):
+            with self.assertRaises(OutputHeldFailure):
+                await coordinator.execute(TransitionRequest(
+                    operation=f"{source}-claim", source=source, target_rate=44_100,
+                    should_play=True, reload_source=False))
+        self.assertEqual(runtime.events, ["pause-after-failure", "pause-after-failure"])
+        self.assertTrue(runtime.muted)
+
+    async def test_silent_transition_keeps_the_output_muted(self):
+        runtime = FakeRuntime(muted=False)
+        coordinator = self.coordinator(runtime)
+        self.hold["reason"] = None
+        start_target_source = runtime.start_target_source
+
+        async def hold_mid_transition(req):
+            # The hold begins after the gate captured an unmuted output.
+            self.hold["reason"] = "held"
+            await start_target_source(req)
+
+        runtime.start_target_source = hold_mid_transition
+        result = await coordinator.execute(TransitionRequest(
+            operation="replay", source="local", target_rate=48_000,
+            target_url="/music/target.flac", should_play=False,
+            rate_change=True, reload_source=True))
+        self.assertTrue(result.committed)
+        self.assertTrue(runtime.muted)
+        self.assertFalse(coordinator.gate.closed)
+
+    async def test_hold_beginning_mid_audible_transition_latches_muted(self):
+        runtime = FakeRuntime(muted=False)
+        coordinator = self.coordinator(runtime)
+        self.hold["reason"] = None
+        start_target_source = runtime.start_target_source
+
+        async def hold_mid_transition(req):
+            self.hold["reason"] = "held"
+            await start_target_source(req)
+
+        runtime.start_target_source = hold_mid_transition
+        with self.assertRaises(PlaybackTransitionFailure):
+            await coordinator.execute(request())
+        self.assertNotIn("mute:False", runtime.events)
+        self.assertTrue(runtime.muted)
+        self.assertTrue(coordinator.gate.failure_latched)
+
+    async def test_startup_keeps_and_reestablishes_the_hold_mute(self):
+        for muted in (True, False):
+            with self.subTest(muted=muted), tempfile.TemporaryDirectory(
+                prefix="fxroute-gate-test-"
+            ) as directory:
+                runtime = FakeRuntime(muted=muted, dsp_muted=True)
+                coordinator = self.coordinator(
+                    runtime, gate_state_path=pathlib.Path(directory) / "gate.json")
+                self.assertTrue(await coordinator.reconcile_startup_gate())
+                self.assertTrue(runtime.muted)
+                self.assertNotIn("mute:False", runtime.events)
+                self.assertFalse(runtime.dsp_muted)
+
+    async def test_startup_restores_a_persisted_gate_to_muted_while_held(self):
+        with tempfile.TemporaryDirectory(prefix="fxroute-gate-test-") as directory:
+            gate_path = pathlib.Path(directory) / "gate.json"
+            runtime = FakeRuntime(muted=False, fail_stage="rate")
+            first = PlaybackTransitionCoordinator(
+                runtime, gate_settle_seconds=0, gate_state_path=gate_path)
+            with self.assertRaises(PlaybackTransitionFailure):
+                await first.execute(request())
+            self.assertTrue(gate_path.exists())
+
+            runtime.events.clear()
+            second = self.coordinator(runtime, gate_state_path=gate_path)
+            self.assertTrue(await second.reconcile_startup_gate())
+            self.assertTrue(runtime.muted)
+            self.assertNotIn("mute:False", runtime.events)
+            self.assertFalse(second.gate.closed)
+            self.assertFalse(gate_path.exists())
+
+    async def test_measurement_session_reconcile_is_refused_while_held(self):
+        incomplete = _measurement_graph(signature="missing-dsp-helper")
+        runtime = MeasurementSessionRuntime([incomplete])
+        coordinator = self.coordinator(runtime)
+        with self.assertRaisesRegex(RuntimeError, "reconcile is blocked"):
+            await coordinator.reconcile_measurement_session(
+                target_rate=48_000, initial_graph=incomplete)
+        self.assertEqual(runtime.events, [])
+        self.assertEqual(runtime.reconcile_calls, 0)
 
 
 if __name__ == "__main__":

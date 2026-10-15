@@ -129,6 +129,46 @@ class LifespanOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(main.runtime.measurement_watchdog_task)
         self.assertIsNone(main.measurement_store)
 
+    async def test_pending_spl_restore_is_loaded_before_the_startup_gate_reconcile(self):
+        player = FakePlayer()
+        order = []
+        reconcile_entered = asyncio.Event()
+
+        class Coordinator:
+            async def reconcile_startup_gate(self):
+                order.append("reconcile")
+                reconcile_entered.set()
+                await asyncio.Event().wait()
+
+            def status(self):
+                return {}
+
+        make_coordinator = MagicMock(return_value=Coordinator())
+        settings = SimpleNamespace(MUSIC_ROOT=pathlib.Path("/music"), download_dir=pathlib.Path("/downloads"))
+        effects = SimpleNamespace(load_global_extras=lambda: {})
+        with patch.object(main, "get_settings", return_value=settings), patch.object(
+            main, "get_player", return_value=player
+        ), patch.object(main, "LibraryScanner", FakeScanner), patch.object(
+            main, "Downloader", return_value=FakeDownloader()
+        ), patch.object(main, "DSPManager", return_value=effects), patch.object(
+            main, "MeasurementStore", return_value=FakeMeasurementStore()
+        ), patch.object(
+            main, "MeasurementSampleRateSession", return_value=FakeMeasurementSession()
+        ), patch.object(main, "PlaybackTransitionCoordinator", make_coordinator), patch.object(
+            main.spl_calibration, "load_pending_restore", lambda: order.append("load")
+        ):
+            context = main.lifespan(main.app)
+            enter_task = asyncio.create_task(context.__aenter__())
+            await reconcile_entered.wait()
+            enter_task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await enter_task
+
+        self.assertEqual(order, ["load", "reconcile"])
+        get_output_hold = make_coordinator.call_args.kwargs["get_output_hold"]
+        with patch.object(main.spl_calibration, "output_hold", return_value="held"):
+            self.assertEqual(get_output_hold(), "held")
+
     async def test_external_input_partial_link_is_rolled_back(self):
         connect = AsyncMock(side_effect=[None, RuntimeError("FR failed")])
         disconnect = AsyncMock()

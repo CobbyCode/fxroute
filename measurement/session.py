@@ -38,7 +38,7 @@ from uploads import (
     read_upload,
 )
 import playback.source_policy as source_policy
-from playback.transition import TransitionRequest
+from playback.transition import OutputHeldFailure, TransitionRequest
 from dsp.runtime import DEFAULT_SAMPLE_RATE
 from library.core import path_within_root
 
@@ -375,6 +375,8 @@ class MeasurementSampleRateSession:
                     await release()
                 except Exception:
                     pass
+            if isinstance(exc, OutputHeldFailure):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             raise RuntimeError(
                 f"Could not establish guarded measurement entry at {self.measurement_rate} Hz"
             ) from exc
@@ -1034,6 +1036,10 @@ async def _measurement_entry_preflight(
     coordinator = playback_transition_coordinator
     if coordinator is None:
         raise RuntimeError("PlaybackTransitionCoordinator is not available for measurement entry")
+    output_hold = getattr(coordinator, "output_hold", None)
+    if isinstance(output_hold, str) and output_hold:
+        # An already-open session plays its test signal without a new entry.
+        raise HTTPException(status_code=409, detail=output_hold)
     if coordinator.transition_blocked:
         raise RuntimeError("measurement entry is blocked by an active or latched playback transition")
 

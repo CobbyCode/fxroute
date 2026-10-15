@@ -21,6 +21,7 @@ import playback.source_policy as source_policy
 
 from .models import (
     OutputGateState,
+    OutputHeldFailure,
     PlaybackTransitionFailure,
     RecoveryExecutor,
     RecoveryValidator,
@@ -78,11 +79,15 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
         gate_settle_seconds: float = 0.25,
         gate_state_path: str | Path | None = None,
         get_source_generation: Callable[[], int | None] | None = None,
+        get_output_hold: Callable[[], str | None] | None = None,
     ) -> None:
         self.runtime = runtime
         self.gate_settle_seconds = max(0.0, gate_settle_seconds)
         self.gate_state_path = Path(gate_state_path) if gate_state_path else None
         self.get_source_generation = get_source_generation
+        # Reason an application-level safety hold (a pending SPL calibration
+        # restore) keeps the hardware output muted, or None.
+        self.get_output_hold = get_output_hold
         self.lock = asyncio.Lock()
         self.gate = OutputGateState()
         self.last_error: dict[str, Any] | None = None
@@ -98,10 +103,22 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
     def transition_active(self) -> bool:
         return self.lock.locked()
 
+    @property
+    def output_hold(self) -> str | None:
+        """Return why a safety hold keeps the hardware output muted, if any.
+
+        While held, no transition may leave the output audible: audible
+        requests are refused and the gate restores to muted.
+        """
+        if self.get_output_hold is None:
+            return None
+        return self.get_output_hold() or None
+
     def status(self) -> dict[str, Any]:
         return {
             "active": self.transition_active,
             "transition_blocked": self.transition_blocked,
+            "output_hold": self.output_hold,
             "gate": self.gate.as_dict(),
             "startup_gate_reconciled": self._startup_gate_reconciled,
             "startup_gate_error": self._startup_gate_error,
@@ -116,6 +133,7 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             self.transition_active
             or self.gate.failure_latched
             or self.gate.closed
+            or self.output_hold
         )
 
     @property
@@ -774,6 +792,8 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                 }
             )
             audible_output = self._request_expects_audible_output(request)
+            if audible_output:
+                await self._refuse_audible_while_held(request, transition_id)
             try:
                 if not await self._reconcile_startup_gate_locked():
                     raise RuntimeError(
@@ -1050,6 +1070,37 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                     failure=exc,
                 ) from exc
 
+    async def _refuse_audible_while_held(
+        self, request: TransitionRequest, transition_id: str
+    ) -> None:
+        """Refuse an audible request before it touches the gate or a source.
+
+        An external renderer that already plays (a Connect claim) is paused,
+        as after a failed claim, so it does not report playback into the
+        held output.
+        """
+        held = self.output_hold
+        if not held:
+            return
+        if source_policy.is_external_source(request.source):
+            try:
+                await self.runtime.pause_source_after_failure(request)
+            except Exception:
+                logger.warning(
+                    "Could not pause %s after an output-hold refusal",
+                    request.source,
+                    exc_info=True,
+                )
+        logger.warning(
+            "Playback transition refused while the output is held: operation=%s "
+            "source=%s transition_id=%s hold=%s",
+            request.operation,
+            request.source,
+            transition_id,
+            held,
+        )
+        raise OutputHeldFailure(held, transition_id=transition_id)
+
     async def restore_measurement(
         self,
         *,
@@ -1125,6 +1176,11 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
             if self.gate.failure_latched or self.gate.closed:
                 raise RuntimeError(
                     "measurement session reconcile is blocked by a latched output gate"
+                )
+            if self.output_hold:
+                # The reconcile reopens the gate audibly.
+                raise RuntimeError(
+                    f"measurement session reconcile is blocked: {self.output_hold}"
                 )
 
             stage = "measurement-session-readonly"

@@ -600,6 +600,7 @@ from measurement.target import (
 )
 from dsp.peak_monitor import DSPPeakMonitor, PeakMonitorCoordinator, PeakMonitorCoordinatorDeps, resolve_capture_rate
 from playback.transition import (
+    OutputHeldFailure,
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
     TransitionRequest,
@@ -1606,6 +1607,9 @@ def _spotify_target_track_from_state(state: Mapping[str, Any]) -> dict[str, Any]
 
 
 def _transition_error_http(exc: PlaybackTransitionFailure) -> HTTPException:
+    if isinstance(exc, OutputHeldFailure):
+        # Refused before any mutation; the reason is the user-facing message.
+        return HTTPException(status_code=409, detail=str(exc))
     # 503 only for a transient source that did not come up; other failures stay 500.
     status = 503 if getattr(exc, "transient", False) else 500
     return HTTPException(status_code=status, detail=exc.as_status())
@@ -1684,6 +1688,16 @@ def _source_changed_skip(result: Any) -> bool:
     if not isinstance(state, Mapping):
         return False
     return bool(state.get("skipped")) and str(state.get("reason") or "") == "source-changed"
+
+
+def _refuse_start_while_output_held() -> None:
+    """Refuse a playback start that bypasses the Coordinator's output gate.
+
+    The held mute would keep it silent while the transport reports playback.
+    """
+    output_hold = spl_calibration.output_hold()
+    if output_hold:
+        raise HTTPException(status_code=409, detail=output_hold)
 
 
 def _raise_for_uncommitted_transition(result: Any, *, what: str) -> None:
@@ -2706,7 +2720,9 @@ def build_playback_payload(
             player_state["transition_status"] = (
                 "failure-latched"
                 if gate.get("failure_latched")
-                else "transitioning" if transition_status.get("active") else "safe-muted"
+                else "transitioning" if transition_status.get("active")
+                else "output-held" if transition_status.get("output_hold")
+                else "safe-muted"
             )
 
     # Keep playback/status payloads lightweight. The DSP has dedicated
@@ -3089,10 +3105,13 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Measurement sample-rate session initialized")
 
+        # Before the startup gate reconcile, which must keep its mute.
+        await asyncio.to_thread(spl_calibration.load_pending_restore)
         playback_transition_coordinator = PlaybackTransitionCoordinator(
             FxrouteTransitionRuntime(make_playback_runtime_deps()),
             gate_state_path=_playback_gate_state_path(),
             get_source_generation=lambda: playback_state.source_generation,
+            get_output_hold=lambda: spl_calibration.output_hold(),
         )
         startup_gate_reconciled = await playback_transition_coordinator.reconcile_startup_gate()
         logger.info(
@@ -3538,6 +3557,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
             FxrouteTransitionRuntime(make_playback_runtime_deps()),
             gate_state_path=_playback_gate_state_path(),
             get_source_generation=lambda: playback_state.source_generation,
+            get_output_hold=lambda: spl_calibration.output_hold(),
         ),
         begin_transition_attempt=_begin_playback_transition_attempt,
         end_transition_attempt=_end_playback_transition_attempt,
@@ -3911,6 +3931,7 @@ def _native_mpv_direct_selection_ready(active_queue_ids: list) -> bool:
 @app.post("/api/play")
 async def play_track(req: PlayRequest):
     source_intent = _capture_source_intent()
+    _refuse_start_while_output_held()
     if not _player_is_running():
         if not await _drain_worker(_ensure_player_running):
             raise HTTPException(status_code=503, detail="Player not available")
@@ -4174,6 +4195,7 @@ async def _spotify_global_control(action: str, request: Request | None = None) -
         if data.get("status") == "Playing":
             data = await spotify_pause()
         else:
+            _refuse_start_while_output_held()
             data = await spotify_play()
         return await broadcast_spotify_state(data)
     if action == "next":
@@ -4204,6 +4226,7 @@ async def _qobuz_global_control(action: str, request: Request | None = None) -> 
         if data.get("status") == "Playing":
             data = await qobuz_pause()
         else:
+            _refuse_start_while_output_held()
             data = await qobuz_play()
         return await broadcast_qobuz_state(data)
     if action == "seek":
@@ -4275,6 +4298,7 @@ async def toggle_playback():
                 "status": "playing" if not new_state.get("paused") else "paused",
                 "playback": build_playback_payload(new_state),
             }
+        _refuse_start_while_output_held()
         target_rate = _coordinator_target_rate(source, active_track)
         rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
         if not rate_change and target_rate is not None:

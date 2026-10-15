@@ -29,6 +29,7 @@ from playback.transition.gate import _OutputGateMixin
 from playback.transition.models import (
     DSP_TRANSPORT_SINK,
     OutputGateState,
+    OutputHeldFailure,
     PlaybackTransitionFailure,
     RecoveryExecutor,
     RecoveryValidator,
@@ -42,6 +43,7 @@ from playback.transition.stages import _TransitionStages
 
 __all__ = [
     "OutputGateState",
+    "OutputHeldFailure",
     "PlaybackTransitionCoordinator",
     "PlaybackTransitionFailure",
     "TransitionRequest",

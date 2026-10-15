@@ -32,6 +32,7 @@ class _OutputGateMixin:
     lock: asyncio.Lock
     _startup_gate_reconciled: bool
     _startup_gate_error: str | None
+    output_hold: str | None
 
     def _persist_gate_state(self) -> None:
         """Persist ownership before muting so a restart can resolve stale state."""
@@ -75,6 +76,9 @@ class _OutputGateMixin:
         if self._startup_gate_reconciled:
             return True
         persisted = self._load_gate_state()
+        # A safety hold outlives the process: startup keeps its mute, and
+        # re-establishes one that was lost while FXRoute was down.
+        held = self.output_hold
         if not persisted or persisted.get("owner") != "fxroute" or not persisted.get("closed"):
             self._clear_gate_state()
             try:
@@ -82,7 +86,20 @@ class _OutputGateMixin:
                     "startup-stale-mute-reconcile"
                 )
                 observed_muted = await self.runtime.read_hardware_mute()
-                if observed_muted:
+                if held:
+                    if not observed_muted:
+                        await self.runtime.set_hardware_mute(
+                            True, "startup-output-hold"
+                        )
+                        if not await self.runtime.read_hardware_mute():
+                            raise RuntimeError(
+                                "startup output-hold mute could not be confirmed"
+                            )
+                    logger.warning(
+                        "Playback transition startup keeps the hardware output muted: %s",
+                        held,
+                    )
+                elif observed_muted:
                     await self.runtime.set_hardware_mute(
                         False, "startup-stale-mute-reconcile"
                     )
@@ -111,9 +128,10 @@ class _OutputGateMixin:
             failure_latched=bool(persisted.get("failure_latched")),
             closed_at=persisted.get("closed_at"),
         )
+        restore_muted = original_user_muted or bool(held)
         try:
-            await self.runtime.set_hardware_mute(original_user_muted, transition_id)
-            if await self.runtime.read_hardware_mute() != original_user_muted:
+            await self.runtime.set_hardware_mute(restore_muted, transition_id)
+            if await self.runtime.read_hardware_mute() != restore_muted:
                 raise RuntimeError("startup output-gate restoration was not confirmed")
         except Exception as exc:
             self._startup_gate_error = str(exc)
@@ -288,7 +306,12 @@ class _OutputGateMixin:
             return
         if self.gate.transition_id != transition_id or self.gate.owner != "fxroute":
             raise RuntimeError("hardware output gate ownership changed during transition")
-        restore_muted = False if audible_output else bool(self.gate.original_user_muted)
+        held = self.output_hold
+        if audible_output and held:
+            # Admission refuses audible requests while held; a hold that began
+            # mid-transition fails it here, before the gate opens.
+            raise RuntimeError(f"hardware output is held muted: {held}")
+        restore_muted = False if audible_output else bool(self.gate.original_user_muted or held)
         if audible_output:
             await self._ensure_dsp_sink_unmuted(transition_id)
         await self.runtime.set_hardware_mute(restore_muted, transition_id)
