@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
@@ -125,6 +125,37 @@ class AdoptionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.service.load()['modes']['stereo']['av_sync']['basis_origin'], 'adopted')
             self.assertEqual(self.service.load()['modes']['stereo']['processing'],
                              self.state['modes']['stereo']['processing'])
+
+    async def test_output_mode_switch_in_flight_defers_the_basis_adoption(self):
+        """The switch commit/revert pair owns the head while it is in flight.
+
+        An adoption committing between the switch's commit and its revert
+        moves the head past the revert's expected revision, which would leave
+        a failed switch committed.  The adoption stays off such a window.
+        """
+        native = SimpleNamespace(snapshot=lambda: {"config": {
+            "output_key": "A", "sample_rate": 48000,
+            "hardware_ports": ["playback_FL", "playback_FR"]}})
+        adopt = AsyncMock(return_value=True)
+        with patch.object(main.runtime, "dsp_runtime", native), \
+                patch.object(main, "_measurement_session_owns_live_rate", return_value=False), \
+                patch.object(main, "_playback_transition_is_active", return_value=False), \
+                patch.object(adoption, "adopt_latency_basis", adopt):
+            try:
+                main.runtime.output_mode_switch_depth = 1
+                await main._adopt_av_sync_basis(self.latency)
+                adopt.assert_not_awaited()
+                main.runtime.output_mode_switch_depth = 0
+                await main._adopt_av_sync_basis(self.latency)
+                adopt.assert_awaited_once()
+                # The adoption also refuses at commit time, so a switch that
+                # starts after the entry check still owns the revision.
+                write_owner = adopt.await_args.kwargs["measurement_active"]
+                self.assertFalse(write_owner())
+                main.runtime.output_mode_switch_depth = 1
+                self.assertTrue(write_owner())
+            finally:
+                main.runtime.output_mode_switch_depth = 0
 
     async def test_stale_rendering_broken_links_and_measurement_do_not_adopt(self):
         for reason in ('stale', 'links', 'measurement'):

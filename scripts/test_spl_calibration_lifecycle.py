@@ -2,17 +2,21 @@
 """SPL calibration ownership, cancellation, and cleanup regressions."""
 
 import asyncio
+import copy
 import pathlib
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main
 import measurement.spl_calibration as spl_calibration
+from dsp.manager import DSPManager
 
 
 class FakeSession:
@@ -623,6 +627,71 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(getattr(raised.exception, "status_code", None), 409)
         self.assertIs(spl_calibration._runtime.operation, operation)
         await spl_calibration._cleanup_operation(operation)
+
+
+class SplCalibrationApplyLockTests(unittest.IsolatedAsyncioTestCase):
+    """The calibration apply takes the external DSP mutation ownership."""
+
+    OVERVIEW = {"selected_output": {"key": "dev", "target_label": "Dev"}}
+
+    async def asyncSetUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.manager = DSPManager(home=pathlib.Path(directory.name) / "home")
+        self.applied = []
+        self.volume_lock_held = None
+
+        def apply_autogain(previous, extras, *, persist_all_presets=True):
+            self.volume_lock_held = main._canonical_volume_write_lock().locked()
+            self.applied.append(copy.deepcopy(extras))
+            return {"extras": extras}
+
+        self.manager.apply_autogain_loudness_runtime = apply_autogain
+        self.session = SimpleNamespace(has_active_jobs=False, entry_in_progress=False,
+                                       lock=asyncio.Lock())
+        self.previous_runtime = (main.measurement_sr_session, main.dsp_manager,
+                                 main.measurement_session)
+        main.measurement_sr_session = self.session
+        main.dsp_manager = self.manager
+        main.measurement_session = SimpleNamespace(_read_measurement_setup_settings=lambda: {})
+        self.addCleanup(self._restore_runtime)
+
+    def _restore_runtime(self):
+        (main.measurement_sr_session, main.dsp_manager,
+         main.measurement_session) = self.previous_runtime
+
+    class Request:
+        def __init__(self, measured):
+            self._measured = measured
+
+        async def json(self):
+            return {"measured_spl_db": self._measured}
+
+    async def test_apply_is_refused_while_a_measurement_owns_the_graph(self):
+        self.session.has_active_jobs = True
+        with mock.patch.object(spl_calibration, "get_audio_output_overview",
+                               return_value=self.OVERVIEW):
+            with self.assertRaises(Exception) as raised:
+                await spl_calibration.apply_spl_calibration(self.Request(79.0))
+        self.assertEqual(getattr(raised.exception, "status_code", None), 423)
+        self.assertEqual(self.applied, [])
+
+    async def test_apply_holds_the_canonical_volume_lock_and_persists_the_calibration(self):
+        with mock.patch.object(spl_calibration, "get_audio_output_overview",
+                               return_value=self.OVERVIEW), \
+                mock.patch.object(spl_calibration, "_stop_active_operation", mock.AsyncMock()):
+            result = await spl_calibration.apply_spl_calibration(self.Request(79.0))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["required_adjustment_db"], 4.0)
+        self.assertFalse(result["calibrated"])
+        self.assertTrue(self.volume_lock_held)
+        self.assertFalse(main._canonical_volume_write_lock().locked())
+        calibration = result["calibration"]
+        self.assertEqual(calibration["measuredSplDb"], 79.0)
+        self.assertEqual(calibration["outputProfileId"], "dev")
+        self.assertEqual(self.applied[-1]["loudness"]["params"]["calibration"], calibration)
+        self.assertEqual(self.applied[-1]["loudness"]["params"]["calibrationProfiles"]["dev"],
+                         calibration)
 
 
 if __name__ == "__main__":

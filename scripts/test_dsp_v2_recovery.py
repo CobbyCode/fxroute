@@ -328,6 +328,57 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.guarded_rebuild_rendered.await_count, 2)
 
 
+class FirstInitializationTests(unittest.IsolatedAsyncioTestCase):
+    """A fresh installation initializes its first state document at startup."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.manager = lifecycle.make_manager(directory.name)
+        self.service = lifecycle.make_service(directory.name, self.manager)
+        self.engine = mock.MagicMock()
+        self.engine.snapshot.return_value = {"active": False, "config": {}}
+        self.engine.fail_closed = mock.AsyncMock()
+        self.engine.preflight_rendered = mock.AsyncMock()
+
+    async def test_first_initialization_materializes_the_default_stereo_head(self):
+        self.assertFalse((self.directory / "output-state.json").exists())
+        state = self.service.ensure_state()
+        self.assertEqual((state["revision"], state["active_mode"]), (1, "stereo"))
+        self.assertEqual(self.service.load_for_activation(), state)
+        # The document exists now, so a later start loads it instead of writing one.
+        self.assertEqual(self.service.ensure_state(), state)
+
+    async def test_initialized_head_activates_instead_of_failing_closed(self):
+        with lifecycle.lifecycle_context(self.service, self.manager, self.engine):
+            overview = main.get_audio_output_overview()
+            # Unwritten defaults are still not a production recovery state ...
+            with self.assertRaises(RuntimeError):
+                await main._try_render_v2_sync_target(48000, overview)
+            self.engine.fail_closed.assert_awaited_once()
+            # ... but the first-initialized head renders on the first activation.
+            self.service.ensure_state()
+            target = await main._try_render_v2_sync_target(48000, overview)
+        self.assertEqual([row["name"] for row in target.config.layout], ["main_l", "main_r"])
+
+    async def test_missing_head_with_a_checkpoint_is_left_to_activation_recovery(self):
+        state = self.service.commit(self.service.load(), expected_revision=0)
+        self.service.remember_applied(state, output_key="A", channels=4,
+                                      hardware_ports=PORTS, sample_rate_hz=48000)
+        (self.directory / "output-state.json").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.service.ensure_state()
+        self.assertFalse((self.directory / "output-state.json").exists())
+
+    async def test_corrupt_head_is_never_overwritten_by_initialization(self):
+        path = self.directory / "output-state.json"
+        path.write_text("{broken")
+        with self.assertRaises(ValueError):
+            self.service.ensure_state()
+        self.assertEqual(path.read_text(), "{broken")
+
+
 class FailClosedRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_shutdown_mutes_hardware_removes_helper_and_reports_error(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import wave
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -113,6 +114,12 @@ class FakeDependencies:
 
     def run_dsp_mutation(self, func):
         return func()
+
+    def external_dsp_mutation_scope(self):
+        return nullcontext()
+
+    def canonical_volume_write_lock(self):
+        return asyncio.Lock()
 
 
 class FakeRunResult:
@@ -213,6 +220,8 @@ def configure(store):
         read_measurement_settings=deps.read_measurement_settings,
         measurement_entry_preflight=deps.measurement_entry_preflight,
         run_dsp_mutation=deps.run_dsp_mutation,
+        external_dsp_mutation_scope=deps.external_dsp_mutation_scope,
+        canonical_volume_write_lock=deps.canonical_volume_write_lock,
     ))
     spl_calibration._runtime.operation = None
 

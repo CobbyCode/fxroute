@@ -23,11 +23,12 @@ import copy
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from audio.output_state_migration import upgrade_output_state
 from audio.filter_banks import resolve_bank
 from audio.output_state_store import OutputStateStore, StateConflictError
-from audio.output_state import validate_output_state
+from audio.output_state import default_output_state, validate_output_state
 from common.atomic_write import atomic_write_text
 from dsp.native_config import layout_from_plan
 from dsp.processing_plan import compile_processing_plan
@@ -70,6 +71,32 @@ class OutputService:
         """Unwritten editing defaults are not a safe production recovery state."""
         return self._deps.store.load(required=True)
 
+    def ensure_state(self) -> dict:
+        """First-initialize a fresh installation's state document.
+
+        Only a document that was never written is initialized: the default
+        stereo state becomes its first head, so the first activation has a
+        production document to load. A present document is only loaded --
+        corrupt bytes stay untouched and an unrenderable draft stays the
+        draft -- while a missing document with an applied checkpoint is left
+        to activation recovery, which restores the last applied state
+        instead of unwritten defaults.
+        """
+        try:
+            return self.load_for_activation()
+        except FileNotFoundError:
+            if self._applied_path().exists():
+                raise
+            state = default_output_state()
+            try:
+                return self._deps.store.commit(state, expected_revision=state["revision"])
+            except StateConflictError:
+                # Another start initialized the document first.
+                return self._deps.store.load()
+
+    def _applied_path(self) -> Path:
+        return self._deps.store.path.with_name("output-state-applied.json")
+
     def activation_token(self) -> bytes | None:
         """Include missing/corrupt heads in freshness checks without normalizing them."""
         try:
@@ -90,7 +117,7 @@ class OutputService:
                    "sample_rate_hz": sample_rate_hz,
                    "fingerprint": fingerprint or self.fingerprint(
                        state, output_key=output_key, channels=channels, sample_rate_hz=sample_rate_hz)}
-        atomic_write_text(self._deps.store.path.with_name("output-state-applied.json"),
+        atomic_write_text(self._applied_path(),
                           json.dumps(payload, sort_keys=True, allow_nan=False) + "\n")
 
     def load_applied(self, *, output_key: str, channels: int,
@@ -101,8 +128,7 @@ class OutputService:
 
     def _applied_record(self, *, output_key: str, channels: int,
                         hardware_ports: list[str]) -> dict:
-        payload = json.loads(self._deps.store.path.with_name(
-            "output-state-applied.json").read_text(encoding="utf-8"))
+        payload = json.loads(self._applied_path().read_text(encoding="utf-8"))
         if (not isinstance(payload, dict) or payload.get("output_key") != output_key
                 or payload.get("channels") != channels
                 or payload.get("hardware_ports") != list(hardware_ports)):
@@ -157,6 +183,16 @@ class OutputService:
             raise MeasurementActiveError("Measurement is active; output state is locked")
         candidate = mutate(self._deps.store.load())
         return self.commit_unowned(candidate, expected_revision=expected_revision)
+
+    def require_writable(self) -> None:
+        """Refuse a write while a measurement owns the DSP graph.
+
+        Create and import endpoints guard their preset file with the same
+        check the state commit applies, so nothing is written that could not
+        be assigned to its bank.
+        """
+        if self._deps.measurement_active():
+            raise MeasurementActiveError("Measurement is active; output state is locked")
 
     def commit_unowned(self, candidate: dict, *, expected_revision: int) -> dict:
         """Commit a prepared candidate only while no measurement owns the graph.

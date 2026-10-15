@@ -6,6 +6,7 @@ import asyncio
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -383,7 +384,12 @@ class DspBankApiTests(unittest.TestCase):
         bank = self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]
         self.assertEqual(bank["preset"], "Bank EQ")
 
-    def test_create_peq_binding_conflict_keeps_preset_unassigned(self):
+    def test_create_peq_binding_conflict_creates_nothing(self):
+        """The binding guard covers the creation, not only the assignment.
+
+        A create and its bank assignment are one transaction: refusing the
+        assignment after the preset file exists would leave an orphan behind.
+        """
         with self.assertRaises(dsp_api.HTTPException) as ctx:
             asyncio.run(dsp_api.create_peq_preset(FakeRequest({
                 "presetName": "Bank EQ",
@@ -393,10 +399,28 @@ class DspBankApiTests(unittest.TestCase):
             })))
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertFalse(ctx.exception.detail["assigned"])
-        self.assertEqual(ctx.exception.detail["created"], "Bank EQ")
-        self.assertEqual(stored_in(self.manager, "Bank EQ"), [("sub1", None)])
+        self.assertIsNone(ctx.exception.detail["created"])
+        self.assertEqual(ctx.exception.detail["code"], "bank-assign-conflict")
+        self.assertEqual(ctx.exception.detail["revision"], 1)
+        self.assertEqual(stored_in(self.manager, "Bank EQ"), [])
         bank = self.service.load()["modes"]["stereo-sub"]["banks"]["sub1"]
         self.assertEqual(bank["preset"], "Neutral")
+
+    def test_create_peq_binding_writes_nothing_while_a_measurement_owns_the_graph(self):
+        locked = replace(self.service._deps, measurement_active=lambda: True)
+        with mock.patch.object(self.service, "_deps", locked):
+            with self.assertRaises(dsp_api.HTTPException) as ctx:
+                asyncio.run(dsp_api.create_peq_preset(FakeRequest({
+                    "presetName": "Locked EQ",
+                    "peq": {"enabled": True, "params": {"channelMode": "stereo-linked", "bands": [
+                        {"filterType": "bell", "frequencyHz": 120, "gainDb": -2, "q": 1}]}},
+                    "bank_mode": "stereo-sub", "bank_id": "sub1", "expected_revision": 1,
+                })))
+        self.assertEqual(ctx.exception.status_code, 423)
+        self.assertEqual(ctx.exception.detail["code"], "bank-assign-locked")
+        self.assertFalse(ctx.exception.detail["assigned"])
+        self.assertEqual(stored_in(self.manager, "Locked EQ"), [])
+        self.assertEqual(self.service.load()["revision"], 1)
 
     def test_create_peq_binding_validates_target_before_creation(self):
         with self.assertRaises(dsp_api.HTTPException) as ctx:

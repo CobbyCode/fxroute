@@ -746,6 +746,9 @@ class RuntimeResources:
     # concurrent requests cannot interleave their set -> verified get -> status
     # cache publish sequences.
     canonical_volume_write_lock: Optional[asyncio.Lock] = None
+    # Number of output-mode switches in flight: their commit/rollback pair owns
+    # the head, so the AV Sync basis adoption must not commit into it.
+    output_mode_switch_depth: int = 0
     stdin_input: Any = None
 
     def reset(self) -> None:
@@ -765,6 +768,7 @@ class RuntimeResources:
         self.dsp_graph_write_lock = None
         self.source_transition_lock = None
         self.canonical_volume_write_lock = None
+        self.output_mode_switch_depth = 0
         self.stdin_input = None
 
 
@@ -824,6 +828,23 @@ def _canonical_volume_write_lock() -> asyncio.Lock:
     if runtime.canonical_volume_write_lock is None:
         runtime.canonical_volume_write_lock = asyncio.Lock()
     return runtime.canonical_volume_write_lock
+
+
+@asynccontextmanager
+async def _output_mode_switch_guard():
+    """Keep the AV Sync basis adoption off the head during a mode switch.
+
+    The switch commits the new mode and reverts it when the switch fails.  An
+    adoption committing between the two moves the head past the revert's
+    expected revision, which would leave the failed mode committed while the
+    engine runs the previous one.  The adoption waits for the next settled
+    readback instead.
+    """
+    runtime.output_mode_switch_depth += 1
+    try:
+        yield
+    finally:
+        runtime.output_mode_switch_depth -= 1
 
 
 def _source_transition_lock() -> SourceTransitionLock:
@@ -1081,6 +1102,8 @@ spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
     run_dsp_mutation=lambda func: _run_locked_worker(
         _dsp_mutation_lock(), func
     ),
+    external_dsp_mutation_scope=lambda: _external_dsp_mutation_scope(),
+    canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
 ))
 
 
@@ -3150,6 +3173,19 @@ async def lifespan(app: FastAPI):
         playback_state.latest_qobuz_state = await get_qobuz_ui_state()
         await peak_monitor_coordinator.sync_qobuz_state(playback_state.latest_qobuz_state)
         logger.info("DSP output peak monitor initialized")
+
+        # A fresh installation has no state document yet.  Initialize the
+        # default stereo head before the first activation, which refuses
+        # unwritten defaults; a corrupt or unrenderable document is left
+        # alone for the fail-closed recovery path.
+        try:
+            state = await asyncio.to_thread(get_output_service().ensure_state)
+            logger.info("Output state ready: revision=%s active_mode=%s",
+                        state["revision"], state["active_mode"])
+        except FileNotFoundError:
+            logger.info("Output state document is missing; activation restores the last applied state")
+        except ValueError as exc:
+            logger.warning("Output state document is unusable at startup: %s", exc)
 
         try:
             recovery = await asyncio.to_thread(recover_saved_output_sink)
@@ -5814,7 +5850,7 @@ async def get_av_sync():
 
 async def _adopt_av_sync_basis(latency: dict) -> None:
     if (_measurement_session_owns_live_rate() or _playback_transition_is_active()
-            or runtime.dsp_runtime is None):
+            or runtime.output_mode_switch_depth or runtime.dsp_runtime is None):
         return
     from dsp.av_sync_service import adopt_latency_basis
     async with _dsp_mutation_lock(), _dsp_graph_write_lock():
@@ -5823,9 +5859,16 @@ async def _adopt_av_sync_basis(latency: dict) -> None:
         config = native.snapshot().get('config') or {}
         if not config:
             return
+
+        def write_owner_active() -> bool:
+            # A measurement owns the rendering, and so does an output-mode
+            # switch in flight: its revert expects the revision it committed,
+            # so the adoption must not commit into that window either.
+            return _measurement_session_owns_live_rate() or bool(runtime.output_mode_switch_depth)
+
         await adopt_latency_basis(
             service=service, native=native, latency=latency,
-            measurement_active=lambda: _measurement_session_owns_live_rate(),
+            measurement_active=write_owner_active,
             build_target=lambda plan, fingerprint: _build_plan_target(
                 service, _require_dsp_manager(), plan, output_key=config['output_key'],
                 rate=config['sample_rate'], hardware_ports=config['hardware_ports'], fingerprint=fingerprint))
@@ -6253,26 +6296,36 @@ async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | N
             or body["expected_revision"] != previous_state["revision"]
             or (measurement_sr_session is not None and measurement_sr_session.has_active_jobs)):
         return await _apply_audio_output_state_candidate(body, previous_input=previous_input)
-    try:
-        await external_input.disable()
-        await _set_surround_carrier_owned(*await _digital_carrier_request(None, external=external, mode=mode))
-        result = await _apply_audio_output_state_candidate(body, previous_input=previous_input,
-                                                           input_modes_override=input_modes_override)
-        if sync_ingress:
-            await external_input.sync()
-    except BaseException:
-        service = get_output_service()
-        head = service.load()
-        if head["active_mode"] == mode and head["revision"] == previous_state["revision"] + 1:
-            service.revert(previous_state, expected_revision=head["revision"])
-            await _sync_v2_head_after_bank_assign()
-        await _set_surround_carrier_owned(previous_owned, previous_clock_card)
-        if sync_ingress:
-            await external_input.sync()
+    async with _output_mode_switch_guard():
+        try:
+            await external_input.disable()
+            await _set_surround_carrier_owned(*await _digital_carrier_request(None, external=external, mode=mode))
+            result = await _apply_audio_output_state_candidate(body, previous_input=previous_input,
+                                                               input_modes_override=input_modes_override)
+            if sync_ingress:
+                await external_input.sync()
+        except BaseException:
+            # The revert owns the head.  Take the DSP mutation lock the AV Sync
+            # adoption commits under and re-read the head inside it, so a
+            # concurrent basis commit can neither hide the failed switch from
+            # the revision check nor turn the revert into a conflict inside
+            # the handler (which would skip the carrier and ingress restore).
+            rolled_back = False
+            service = get_output_service()
+            async with _dsp_mutation_lock():
+                head = service.load()
+                if head["active_mode"] == mode and head["revision"] == previous_state["revision"] + 1:
+                    service.revert(previous_state, expected_revision=head["revision"])
+                    rolled_back = True
+            if rolled_back:
+                await _sync_v2_head_after_bank_assign()
+            await _set_surround_carrier_owned(previous_owned, previous_clock_card)
+            if sync_ingress:
+                await external_input.sync()
+            await _resync_stdin_routing()
+            raise
         await _resync_stdin_routing()
-        raise
-    await _resync_stdin_routing()
-    return result
+        return result
 
 
 async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dict | None = None,

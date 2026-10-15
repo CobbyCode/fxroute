@@ -426,6 +426,54 @@ class ApplyLifecycleTests(unittest.TestCase):
         self.runtime.sync_rendered.assert_not_awaited()
         self.runtime.guarded_rebuild_rendered.assert_not_awaited()
 
+    def test_failed_switch_reverts_under_the_dsp_mutation_lock_and_restores_the_input(self):
+        """A failed mode switch reverts even when another writer bumps the head.
+
+        The switch runs as a marked transaction: the AV Sync basis adoption
+        (the other writer of the head) stays off it, and the revert runs
+        under the DSP mutation lock with a fresh head read, so a commit
+        racing on top can neither hide the failed switch from the revision
+        check nor make the revert itself raise (which skipped the carrier and
+        ingress restore).
+        """
+        service = self.service
+        events = []
+
+        async def failing_candidate(body, *, previous_input=None, input_modes_override=None):
+            committed = service.commit(switch_mode(service.load(), "stereo"),
+                                       expected_revision=service.load()["revision"])
+            events.append(("candidate", committed["revision"],
+                           main.runtime.output_mode_switch_depth))
+            raise RuntimeError("ingress sync failed")
+
+        real_revert = service.revert
+
+        def revert(document, *, expected_revision):
+            events.append(("revert", expected_revision, main._dsp_mutation_lock().locked()))
+            return real_revert(document, expected_revision=expected_revision)
+
+        external = SimpleNamespace(disable=mock.AsyncMock(), sync=mock.AsyncMock())
+        with lifecycle_context(service, self.manager, self.runtime), \
+                mock.patch.object(main, "_apply_audio_output_state_candidate", failing_candidate), \
+                mock.patch.object(main, "external_input", external), \
+                mock.patch.object(main, "_digital_carrier_request",
+                                  mock.AsyncMock(return_value=(False, None))), \
+                mock.patch.object(main, "_set_surround_carrier_owned", mock.AsyncMock()), \
+                mock.patch.object(main, "_resync_stdin_routing", mock.AsyncMock()) as resync, \
+                mock.patch.object(service, "revert", revert):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(main._apply_audio_output_state_body({
+                    "expected_revision": 1,
+                    "mutation": {"kind": "switch_mode", "mode": "stereo"}}))
+        # The switch body ran marked, and the revert owned the DSP mutation lock.
+        self.assertIn(("candidate", 2, 1), events)
+        revert_events = [event for event in events if event[0] == "revert"]
+        self.assertEqual(revert_events, [("revert", 2, True)])
+        self.assertEqual(service.load()["active_mode"], "stereo-sub")
+        self.assertEqual(service.load()["revision"], 3)
+        resync.assert_awaited()
+        self.assertEqual(main.runtime.output_mode_switch_depth, 0)
+
     def test_selection_only_change_skips_rebuild(self):
         with lifecycle_context(self.service, self.manager, self.runtime):
             result = asyncio.run(main.apply_audio_output_state(FakeRequest({

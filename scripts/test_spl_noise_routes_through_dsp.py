@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -68,6 +69,12 @@ class FakeDependencies:
 
     def run_dsp_mutation(self, func):
         return func()
+
+    def external_dsp_mutation_scope(self):
+        return nullcontext()
+
+    def canonical_volume_write_lock(self):
+        return asyncio.Lock()
 
 
 class FakePwPlayProcess:
@@ -140,6 +147,8 @@ class SplNoiseRoutingTests(unittest.TestCase):
             read_measurement_settings=FakeDependencies().read_measurement_settings,
             measurement_entry_preflight=FakeDependencies().measurement_entry_preflight,
             run_dsp_mutation=FakeDependencies().run_dsp_mutation,
+            external_dsp_mutation_scope=FakeDependencies().external_dsp_mutation_scope,
+            canonical_volume_write_lock=FakeDependencies().canonical_volume_write_lock,
         ))
         self.tmpdir = tempfile.TemporaryDirectory()
         self.noise_path = Path(self.tmpdir.name) / "fxroute-spl-calibration-pink-noise-v2.wav"
@@ -272,6 +281,8 @@ class SplNoiseCleanupTests(unittest.IsolatedAsyncioTestCase):
             read_measurement_settings=FakeDependencies().read_measurement_settings,
             measurement_entry_preflight=FakeDependencies().measurement_entry_preflight,
             run_dsp_mutation=FakeDependencies().run_dsp_mutation,
+            external_dsp_mutation_scope=FakeDependencies().external_dsp_mutation_scope,
+            canonical_volume_write_lock=FakeDependencies().canonical_volume_write_lock,
         ))
 
     async def test_cleanup_removes_noise_links_best_effort(self):

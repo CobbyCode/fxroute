@@ -96,6 +96,10 @@ class SplCalibrationDependencies:
     read_measurement_settings: Callable[[], dict[str, Any]]
     measurement_entry_preflight: Callable[[int], Any]
     run_dsp_mutation: Callable[[Callable[[], Any]], Any]
+    # The calibration rewrites Loudness state and the live graph, so it takes
+    # the same external DSP mutation ownership as /api/dsp/extras.
+    external_dsp_mutation_scope: Callable[[], Any]
+    canonical_volume_write_lock: Callable[[], asyncio.Lock]
 
 
 @dataclass
@@ -1383,7 +1387,17 @@ async def apply_spl_calibration(request: Request):
             dsp_manager.load_global_extras(), extras, persist_all_presets=False
         )["extras"]
 
-    saved = await run_mutation(_apply_calibration_serialized)
+    # Lock order is session (job-free graph) outermost, then canonical volume
+    # write lock, then the DSP mutation lock inside run_mutation.  A running
+    # measurement owns the graph: the scope refuses the calibration with 423
+    # before the extras are read and the graph is rebuilt.
+    async with _dependencies().external_dsp_mutation_scope():
+        canonical_lock = _dependencies().canonical_volume_write_lock()
+        await canonical_lock.acquire()
+        try:
+            saved = await run_mutation(_apply_calibration_serialized)
+        finally:
+            canonical_lock.release()
     return {
         "status": "ok",
         "required_adjustment_db": adjustment,

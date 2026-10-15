@@ -307,6 +307,33 @@ async def _validate_bank_target(service, binding: dict, *, needs_group: bool = F
     return canonical
 
 
+async def _resolve_bank_binding(service, binding: dict, *, needs_group: bool = False) -> str:
+    """Resolve a create/import bank binding before the preset is written.
+
+    Returns the canonical bank id.  The measurement lock and the binding's
+    revision are checked here too: the preset file and its bank slot are one
+    transaction, so a binding that cannot be assigned yet must fail before
+    the preset exists (see ``_assign_created_preset_to_bank``).
+    """
+    canonical = await _validate_bank_target(service, binding, needs_group=needs_group)
+    try:
+        service.require_writable()
+    except MeasurementActiveError as exc:
+        raise HTTPException(status_code=423, detail={
+            "code": "bank-assign-locked", "message": str(exc),
+            "created": None, "assigned": False}) from exc
+    try:
+        state = service.load()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}") from exc
+    if state["revision"] != binding["expected_revision"]:
+        raise HTTPException(status_code=409, detail={
+            "code": "bank-assign-conflict",
+            "message": "Output state changed; refresh before creating the preset",
+            "revision": state["revision"], "created": None, "assigned": False})
+    return canonical
+
+
 def _binding_kwargs(binding: dict | None) -> dict:
     """Manager keywords of a bank binding: the output mode and a Surround speaker group.
 
@@ -342,10 +369,14 @@ async def _optional_owner(body: dict) -> dict:
 
 
 async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) -> dict:
-    """Assign a just-created preset to its bank; conflicts report partial state.
+    """Assign a just-created preset to its bank; a race reports partial state.
 
     The bank resolves against the routed roles, so only the roles that play
     its library take the preset (see ``_routed_roles``).
+    The binding was already checked before the preset was written (see
+    ``_resolve_bank_binding``): a conflict here is a race with another writer,
+    not a stale client, so it names the created preset to keep the state
+    actionable.
     The assignment persists through OutputService, which never touches the
     runtime; without a follow-up sync the engine would keep serving the
     previous bank content until the next unrelated edit.  The injected
@@ -766,7 +797,7 @@ async def create_convolver_preset(
         bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
     _verify_measurement_commit(source_measurement_targets, binding)
@@ -816,7 +847,7 @@ async def import_dsp_preset_json(
     binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding)
+        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding)
         binding = {**binding, "bank_id": canonical_bank}
 
     try:
@@ -855,7 +886,7 @@ async def import_dsp_preset_bundle(
     binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding)
+        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding)
         binding = {**binding, "bank_id": canonical_bank}
 
     temp_zip_path = None
@@ -1062,7 +1093,7 @@ async def create_convolver_preset_with_ir(
         bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a conflict.
     _verify_measurement_commit(source_measurement_targets, binding)
@@ -1156,7 +1187,7 @@ async def create_peq_preset(request: Request):
         raise HTTPException(status_code=400, detail="peq is required")
     canonical_bank = None
     if binding is not None:
-        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
     _verify_measurement_commit(source_measurement_targets, binding)
@@ -1212,7 +1243,7 @@ async def import_rew_peq_preset(
         bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
 
     try:
@@ -1328,7 +1359,7 @@ async def import_dual_filter_preset(
         bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = await _validate_bank_target(_require_output_state_service(), binding, needs_group=True)
+        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
     # The bank is known to exist now, so a target mismatch is a real conflict.
     _verify_measurement_commit(source_measurement_targets, binding)

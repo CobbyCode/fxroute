@@ -24,11 +24,11 @@ import main
 import dsp.api as dsp_api
 
 OUTPUT_STATE = {
-    "active_mode": "stereo",
+    "active_mode": "stereo", "revision": 4,
     "modes": {"stereo": {"selected_bank": "main_l", "banks": {"global": {}, "main_l": {}}}},
 }
 SURROUND_STATE = {
-    "active_mode": "surround",
+    "active_mode": "surround", "revision": 4,
     "modes": {"surround": {"selected_bank": "global",
                            "banks": {"global": {}, "main_l": {}, "main_r": {}, "rear_l": {}, "rear_r": {}}}},
 }
@@ -41,8 +41,13 @@ FORM_SOURCES = json.dumps(SOURCES)
 
 
 class FakeOutputService:
+    """The service contract the routes' binding pre-flight reads."""
+
     def load(self):
         return OUTPUT_STATE
+
+    def require_writable(self):
+        return None
 
 
 async def routed_roles(state, mode):
