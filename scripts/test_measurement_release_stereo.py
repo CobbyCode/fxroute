@@ -80,7 +80,7 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
 
         sync_reasons = []
 
-        async def fake_sync(*, reason: str, _rate_lock_held: bool = False, **kwargs) -> dict:
+        async def fake_sync(*, reason: str, **kwargs) -> dict:
             sync_reasons.append(reason)
             # Simulate the central sync rebuilding the DSP at the authoritative
             # live rate before returning.
@@ -90,7 +90,7 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             main.dsp_orchestrator, "sync_runtime", AsyncMock(side_effect=fake_sync)
         ) as sync_mock:
-            await main.dsp_orchestrator.sync_runtime_at_rate(44_100, _rate_lock_held=True)
+            await main.dsp_orchestrator.sync_runtime_at_rate(44_100)
 
             # The restore rate was established before the re-sync.
             main._wait_for_selected_output_effective_rate.assert_awaited_once_with(
@@ -106,7 +106,7 @@ class StereoMeasurementReleaseTests(unittest.IsolatedAsyncioTestCase):
                 ["measurement-release", "measurement-release-settle"],
             )
             for call in sync_mock.call_args_list:
-                self.assertTrue(call.kwargs["_rate_lock_held"])
+                self.assertIs(call.kwargs["ownership"], main.DspSyncOwnership.RATE)
 
         # Final runtime rate matches the restored rate.
         self.assertEqual(runtime.rate, 44_100)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from dsp.locks import DspSyncOwnership
 from playback.transition import TransitionRuntime
 
 from .deps import PlaybackRuntimeDependencies
@@ -35,8 +36,7 @@ class FxrouteTransitionRuntime(
         self._quieted_external_source: str | None = None
         self._staged_qobuz_track_id: int | None = None
         self._qobuz_stream_rate: int | None = None
-        self._configuration_locks_held = False
-        self._graph_write_lock_held = False
+        self._configuration_ownership = DspSyncOwnership.UNOWNED
 
     @property
     def _player(self) -> Any:

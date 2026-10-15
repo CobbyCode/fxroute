@@ -17,6 +17,7 @@ from typing import Any, Mapping
 import audio.samplerate as samplerate
 from audio.output_state_store import StateConflictError
 from audio import src_policy
+from dsp.locks import DspSyncOwnership
 from streaming.spotify.provider import play as spotify_play
 import playback.source_policy as source_policy
 from playback.transition import TransitionRequest, stable_graph_readbacks
@@ -55,13 +56,14 @@ class _RuntimeOutputModeMixin:
                 await stack.enter_async_context(self._deps.graph_write_lock())
             if v2 and self._deps.refresh_output_state_transition is not None:
                 self._deps.refresh_output_state_transition(request)
-            self._configuration_locks_held = True
-            self._graph_write_lock_held = v2 and self._deps.graph_write_lock is not None
+            # The coordinator drains delegated cleanup before this scope exits.
+            self._configuration_ownership = (
+                DspSyncOwnership.RATE_AND_GRAPH
+                if v2 and self._deps.graph_write_lock is not None else DspSyncOwnership.RATE)
             try:
                 yield
             finally:
-                self._graph_write_lock_held = False
-                self._configuration_locks_held = False
+                self._configuration_ownership = DspSyncOwnership.UNOWNED
 
     def _output_state_service(self):
         """Return the bound output service for v2 transitions."""
@@ -98,7 +100,7 @@ class _RuntimeOutputModeMixin:
         return await self._replace_src_adapters(request.src_mode, snapshot)
 
     async def _replace_src_adapters(self, mode: str, snapshot: dict) -> dict:
-        if not self._configuration_locks_held:
+        if not self._configuration_ownership.rate_owned:
             raise RuntimeError("SRC adapter replacement requires configuration ownership")
         await asyncio.to_thread(src_policy.persist_policy, mode)
         snapshot["src_applied"] = True

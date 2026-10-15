@@ -31,6 +31,7 @@ sys.path.insert(0, ROOT)
 
 import audio.samplerate as samplerate
 import dsp.orchestration as dsp_orchestration
+from dsp.locks import DspSyncOwnership
 import playback.orchestration as playback_orchestration
 
 OUTPUT_KEY = "alsa_output.usb-BEHRINGER_UMC204HD_192k-00.analog-surround-40"
@@ -151,7 +152,7 @@ class MeasurementEntryRateSyncTests(unittest.IsolatedAsyncioTestCase):
         await self.real_sync(
             dict(self.live_overview),
             reason="coordinator-measurement-entry",
-            _rate_lock_held=True,
+            ownership=DspSyncOwnership.RATE,
         )
         self.assertEqual(self.dsp.sync_calls, [])
 

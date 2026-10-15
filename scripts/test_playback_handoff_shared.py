@@ -287,9 +287,9 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         reconciler = AsyncMock()
         events = []
 
-        async def sync_helper(*_args, _rate_lock_held=False, **_kwargs):
-            lock_flags.append(_rate_lock_held)
-            if not _rate_lock_held:
+        async def sync_helper(*_args, ownership=main.DspSyncOwnership.UNOWNED, **_kwargs):
+            lock_flags.append(ownership.rate_owned)
+            if not ownership.rate_owned:
                 async with measurement_lock:
                     return overview
             return overview
@@ -421,9 +421,9 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             status["force_rate"] = 48000
             return True
 
-        async def sync_helper(*_args, _rate_lock_held=False, **_kwargs):
-            lock_flags.append(_rate_lock_held)
-            if not _rate_lock_held:
+        async def sync_helper(*_args, ownership=main.DspSyncOwnership.UNOWNED, **_kwargs):
+            lock_flags.append(ownership.rate_owned)
+            if not ownership.rate_owned:
                 async with measurement_lock:
                     return overview
             return overview
@@ -552,8 +552,8 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
         lock_flags = []
         reconciler = AsyncMock()
 
-        async def sync_helper(*_args, _rate_lock_held=False, **_kwargs):
-            lock_flags.append(_rate_lock_held)
+        async def sync_helper(*_args, ownership=main.DspSyncOwnership.UNOWNED, **_kwargs):
+            lock_flags.append(ownership.rate_owned)
             return overview
 
         request = TransitionRequest(

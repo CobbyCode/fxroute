@@ -510,6 +510,7 @@ from library.core import (
 from downloader import Downloader
 from dsp.manager import DSPManager, ensure_kernel_supported_ir, parse_wav_frames
 from dsp.runtime import DSPRuntime, _contains_link
+from dsp.locks import DspSyncOwnership
 from dsp.output_render import OutputRenderer, OutputRenderDeps, build_plan_target
 from audio.output_apply import OutputApplication, OutputApplyDeps
 from audio import output_api
@@ -4887,7 +4888,7 @@ async def _restart_src_graph(state):
     output = (restored or {}).get("selected_output") or {}
     if output.get("key") != live or not output.get("target_name") or output["target_name"] == "fxroute_dsp_sink":
         raise RuntimeError("The selected audio output could not be reselected after restart")
-    await dsp_orchestrator.sync_runtime(reason="src-mode", _rate_lock_held=True)
+    await dsp_orchestrator.sync_runtime(reason="src-mode", ownership=DspSyncOwnership.RATE)
     if not await runtime.dsp_runtime.verify():
         raise RuntimeError("DSP graph did not reconnect after SRC mode change")
     if runtime.player_instance:
@@ -5030,7 +5031,7 @@ async def _apply_audio_output_selection(key: str) -> dict:
     try:
         await asyncio.to_thread(samplerate._set_default_sink, selected["name"])
         await dsp_orchestrator.sync_runtime(
-            reason="output-selection", target_overview=target, _rate_lock_held=True,
+            reason="output-selection", target_overview=target, ownership=DspSyncOwnership.RATE,
         )
         await _verify_audio_output_selection(key, target)
         # Re-read the live default before publishing the persistent selection.
@@ -5055,7 +5056,7 @@ async def _apply_audio_output_selection(key: str) -> dict:
                     await _verify_audio_output_selection(previous_graph_key, restore)
                 except RuntimeError:
                     await dsp_orchestrator.sync_runtime(
-                        reason="output-selection-rollback", target_overview=restore, _rate_lock_held=True,
+                        reason="output-selection-rollback", target_overview=restore, ownership=DspSyncOwnership.RATE,
                     )
                 await _verify_audio_output_selection(previous_graph_key, restore)
         except BaseException:

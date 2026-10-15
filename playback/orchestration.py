@@ -30,6 +30,7 @@ from audio.output_ports import (
 )
 from playback.transition import PlaybackTransitionFailure, TransitionRequest, stable_graph_readbacks
 from dsp.runtime import physical_output_links
+from dsp.locks import DspSyncOwnership
 
 logger = logging.getLogger(__name__)
 
@@ -946,7 +947,13 @@ class PlaybackOrchestrator:
         return {"graph_complete": True, "post_start_graph_reconciled": True, "post_start_graph_links_relinked": relinked, "graph_signature": signatures[-1]}
 
     async def establish_effects_and_helper(self, request: TransitionRequest, *, dsp_port_timeout_ms: int | None = None,
-                                         _configuration_locks_held: bool = False) -> dict[str, Any]:
+                                          ownership: DspSyncOwnership = DspSyncOwnership.UNOWNED) -> dict[str, Any]:
+        # Entry/restore run under the measurement session's rate lock. Other
+        # ownership comes from the adapter's configuration scope, including
+        # delegated cleanup whose restore request may no longer carry src_mode.
+        measurement_transition = request.operation in {"measurement-entry", "measurement-restore"}
+        if measurement_transition and not ownership.rate_owned:
+            ownership = DspSyncOwnership.RATE
         target_rate = request.target_rate
         empty = {"dsp_reinitialized": False, "helper_rebuilt": False, "links_reconciled": False}
         if not isinstance(target_rate, int) or target_rate <= 0:
@@ -977,10 +984,7 @@ class PlaybackOrchestrator:
             if not mode_switch and not diagnosis.get("dsp_ports"):
                 await self._deps.sync_runtime(
                     reason=f"coordinator-{request.operation}",
-                    # The measurement entry owns the sample-rate session lock
-                    # for its whole transition; this nested sync must not
-                    # re-enter it (same contract as the helper syncs below).
-                    _rate_lock_held=_configuration_locks_held or request.operation in {"measurement-entry", "measurement-restore"},
+                    ownership=ownership,
                 )
                 dsp_reinitialized = True
             if not mode_switch and not await self.wait_for_dsp_output_ports(timeout):
@@ -999,10 +1003,8 @@ class PlaybackOrchestrator:
                 snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}
                 helper_needs_sync = bool(request.rate_change or not snapshot.get("active") or self._deps.helper_argument_sample_rate(snapshot) != target_rate or not diagnosis.get("helper_ports") or not all(diagnosis.get("links", {}).values()))
                 if helper_needs_sync:
-                    kwargs = {"reason": f"coordinator-{request.operation}"}
-                    if _configuration_locks_held:
-                        kwargs["_rate_lock_held"] = True
-                    if request.operation in {"measurement-entry", "measurement-restore"}:
+                    kwargs = {"reason": f"coordinator-{request.operation}", "ownership": ownership}
+                    if measurement_transition:
                         # The measurement-entry establishes its target rate inside
                         # this same transition (force pin + sink alignment), but
                         # the live audio overview still reflects the pre-rebuild
@@ -1022,7 +1024,6 @@ class PlaybackOrchestrator:
                         kwargs.update(
                             audio_overview=staged_overview,
                             target_overview=staged_overview,
-                            _rate_lock_held=True,
                         )
                     await self._deps.sync_runtime(**kwargs); helper_rebuilt = True
                 if helper_needs_sync or not diagnosis.get("links_complete"):

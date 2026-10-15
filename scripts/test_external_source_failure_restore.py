@@ -164,7 +164,7 @@ class HandoffFixture:
     async def true(self, *_args, **_kwargs):
         return True
 
-    async def effects(self, request):
+    async def effects(self, request, *, ownership):
         if request.source == self.target and self.fail_stage == "effects":
             raise RuntimeError("target effects failed")
         return {"dsp_reinitialized": False, "helper_rebuilt": False}

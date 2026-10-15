@@ -784,7 +784,7 @@ class MeasurementSampleRateSession:
                         except Exception as exc:
                             logger.warning("Measurement Speaker Align release adapter failed: %s", exc)
                     if release_adapter is None and speaker_adapter is None:
-                        await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate, _rate_lock_held=True)
+                        await dsp_orchestrator.sync_runtime_at_rate(runtime_restore_rate)
                 else:
                     logger.warning(
                         "Measurement sample-rate session runtime restore deferred until playback sink aligns: "

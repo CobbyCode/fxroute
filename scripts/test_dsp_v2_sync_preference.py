@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dsp.orchestration import DspOrchestrator
+from dsp.locks import DspSyncOwnership
 
 
 class _FakeDspRuntime:
@@ -186,7 +187,7 @@ class V2SyncPreferenceTests(unittest.TestCase):
             orchestrator = DspOrchestrator(deps)
             token = dict(deps.overview)
             await orchestrator.sync_runtime(
-                token, reason="unit-repair", _rate_lock_held=True,
+                token, reason="unit-repair", ownership=DspSyncOwnership.RATE,
                 allow_unsettled_rate=True)
             self.assertEqual(len(deps.runtime.rendered_calls), 1)
             self.assertEqual(deps.runtime.sync_calls, [])
@@ -200,7 +201,7 @@ class V2SyncPreferenceTests(unittest.TestCase):
             token = dict(deps.overview)
             with self.assertRaises(RuntimeError):
                 await orchestrator.sync_runtime(
-                    token, reason="unit-repair", _rate_lock_held=True,
+                    token, reason="unit-repair", ownership=DspSyncOwnership.RATE,
                     allow_unsettled_rate=True)
             self.assertEqual(deps.runtime.rendered_calls, [])
             self.assertEqual(deps.runtime.sync_calls, [])

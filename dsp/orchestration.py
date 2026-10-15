@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -23,6 +23,7 @@ import playback.source_policy as source_policy
 import audio.samplerate as samplerate
 import audio.samplerate_orchestration as samplerate_orchestration
 from dsp.runtime import BassManagementConfig
+from dsp.locks import DspSyncOwnership
 
 logger = logging.getLogger(__name__)
 
@@ -134,13 +135,22 @@ class DspOrchestrator:
         self._stale_retry_deadline_s = stale_retry_deadline_s
         self._idle_repair_last_attempt_at = 0.0
 
+    @asynccontextmanager
+    async def _sync_locks(self, ownership: DspSyncOwnership):
+        """Borrow caller ownership or acquire the existing rate-before-graph locks."""
+        session = self._deps.get_measurement_sr_session()
+        rate_lock = session.lock if session is not None and not ownership.rate_owned else nullcontext()
+        async with rate_lock:
+            factory = getattr(self._deps, "graph_write_lock", None)
+            async with factory() if factory is not None and not ownership.graph_owned else nullcontext():
+                yield
+
     async def sync_runtime(
         self,
         audio_overview: dict | None = None,
         *,
         reason: str = "unspecified",
-        _rate_lock_held: bool = False,
-        _graph_lock_held: bool = False,
+        ownership: DspSyncOwnership = DspSyncOwnership.UNOWNED,
         target_overview: dict | None = None,
         retry_on_stale: bool = False,
         allow_unsettled_rate: bool = False,
@@ -169,8 +179,6 @@ class DspOrchestrator:
         that target and the gates can therefore never pass.
         """
         overview_was_supplied = audio_overview is not None
-        if _graph_lock_held and not _rate_lock_held:
-            raise RuntimeError("Graph ownership requires sample-rate ownership during DSP sync")
         overview = (
             audio_overview
             if audio_overview
@@ -314,18 +322,8 @@ class DspOrchestrator:
                 await self._render_v2_target(authoritative_rate, current_overview))
             return current_overview
 
-        async def _sync_graph_locked():
-            if _graph_lock_held:
-                return await _sync_locked()
-            factory = getattr(self._deps, "graph_write_lock", None)
-            async with factory() if factory is not None else nullcontext():
-                return await _sync_locked()
-
-        measurement_sr_session = self._deps.get_measurement_sr_session()
-        if _rate_lock_held or measurement_sr_session is None:
-            return await _sync_graph_locked()
-        async with measurement_sr_session.lock:
-            return await _sync_graph_locked()
+        async with self._sync_locks(ownership):
+            return await _sync_locked()
 
     async def _render_v2_target(self, rate: int, overview: dict) -> Any:
         """Render the v2 sync target or propagate the failure."""
@@ -388,9 +386,8 @@ class DspOrchestrator:
         target_rate: int,
         *,
         reason: str = "unspecified",
-        _rate_lock_held: bool = False,
+        ownership: DspSyncOwnership = DspSyncOwnership.UNOWNED,
         allow_measurement_graph_owned: bool = False,
-        _graph_lock_held: bool = False,
     ) -> bool:
         """Rebuild a stale native DSP helper so the hardware sink can move.
 
@@ -419,7 +416,8 @@ class DspOrchestrator:
         is cleared only *after* the re-sync returns) and already holds the
         sample-rate lock, so the ownership guard would otherwise abort the
         repair on exactly the path that has to consume the stale helper. It is
-        only passed together with ``_rate_lock_held``, never on its own.
+        independent of sync-lock ownership: owning locks alone never permits
+        recovery of a measurement-owned graph.
         """
         if not isinstance(target_rate, int) or target_rate <= 0:
             return False
@@ -492,8 +490,7 @@ class DspOrchestrator:
                         audio_overview=staged_overview,
                         target_overview=staged_overview,
                         reason=f"stale-helper-rebuild:{reason}",
-                        _rate_lock_held=_rate_lock_held,
-                        _graph_lock_held=_graph_lock_held,
+                        ownership=ownership,
                         allow_unsettled_rate=True,
                     )
                 except Exception as exc:
@@ -646,8 +643,8 @@ class DspOrchestrator:
             pinned_rate, reason="idle-helper-rate-watch",
         )
 
-    async def sync_runtime_at_rate(self, target_rate: int, *, _rate_lock_held: bool = False) -> None:
-        """Re-sync through the central live-rate helper path after a rate transition."""
+    async def sync_runtime_at_rate(self, target_rate: int) -> None:
+        """Restore measurement runtime while the caller retains the session rate lock."""
         dsp_runtime = self._deps.get_dsp_runtime()
         if dsp_runtime is None:
             logger.info(
@@ -681,8 +678,8 @@ class DspOrchestrator:
                 recovered = await self.recover_stale_helper_samplerate(
                     target_rate,
                     reason="measurement-release",
-                    _rate_lock_held=_rate_lock_held,
-                    allow_measurement_graph_owned=_rate_lock_held,
+                    ownership=DspSyncOwnership.RATE,
+                    allow_measurement_graph_owned=True,
                 )
                 if not recovered:
                     logger.warning(
@@ -693,11 +690,11 @@ class DspOrchestrator:
                     )
                     return
         await self.sync_runtime(
-            reason="measurement-release", _rate_lock_held=_rate_lock_held,
+            reason="measurement-release", ownership=DspSyncOwnership.RATE,
         )
         await self._deps.sleep(0.5)
         await self.sync_runtime(
-            reason="measurement-release-settle", _rate_lock_held=_rate_lock_held,
+            reason="measurement-release-settle", ownership=DspSyncOwnership.RATE,
         )
         runtime_snapshot = dsp_runtime.snapshot()
         try:
@@ -796,7 +793,7 @@ class DspOrchestrator:
                 return
             snapshot = runtime.snapshot()
             if not snapshot.get("active") or (snapshot.get("config") or {}).get("output_key") != selected:
-                await self.sync_runtime(reason="output-authority", _rate_lock_held=True)
+                await self.sync_runtime(reason="output-authority", ownership=DspSyncOwnership.RATE)
                 return
             if await runtime.verify():
                 return
@@ -805,7 +802,7 @@ class DspOrchestrator:
             except Exception as exc:
                 logger.warning("Output authority link repair failed, rebuilding helper: %s", exc)
             if not await runtime.verify():
-                await self.sync_runtime(reason="output-authority-rebuild", _rate_lock_held=True)
+                await self.sync_runtime(reason="output-authority-rebuild", ownership=DspSyncOwnership.RATE)
 
         if coord_lock is None:
             if session is None:

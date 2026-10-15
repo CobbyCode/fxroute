@@ -40,6 +40,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dsp.orchestration import DspOrchestrator  # noqa: E402
+from dsp.locks import DspSyncOwnership
 from playback.runtime import FxrouteTransitionRuntime  # noqa: E402
 from playback.transition import TransitionRequest  # noqa: E402
 
@@ -253,7 +254,7 @@ class MeasurementReleaseRecoveryTests(unittest.IsolatedAsyncioTestCase):
         deps = _OrchestratorDeps(runtime, pinned_rate=TARGET_RATE, owned=True)
         orchestrator = DspOrchestrator(deps)
 
-        await orchestrator.sync_runtime_at_rate(TARGET_RATE, _rate_lock_held=True)
+        await orchestrator.sync_runtime_at_rate(TARGET_RATE)
 
         self.assertEqual(runtime.helper_rate, TARGET_RATE)
         self.assertTrue(runtime.sync_calls, "the stale helper must be rebuilt")
@@ -268,7 +269,7 @@ class MeasurementReleaseRecoveryTests(unittest.IsolatedAsyncioTestCase):
         deps = _OrchestratorDeps(runtime, pinned_rate=MEASUREMENT_RATE, owned=True)
         orchestrator = DspOrchestrator(deps)
 
-        await orchestrator.sync_runtime_at_rate(TARGET_RATE, _rate_lock_held=True)
+        await orchestrator.sync_runtime_at_rate(TARGET_RATE)
 
         self.assertEqual(runtime.helper_rate, TARGET_RATE)
         self.assertEqual(deps.force_rate_writes, [TARGET_RATE])
@@ -348,7 +349,7 @@ class BoundedReRepairTests(unittest.IsolatedAsyncioTestCase):
         deps.nudges_before_sink_settles = 2  # only the second round moves it
         orchestrator = DspOrchestrator(deps)
 
-        await orchestrator.sync_runtime_at_rate(TARGET_RATE, _rate_lock_held=True)
+        await orchestrator.sync_runtime_at_rate(TARGET_RATE)
 
         self.assertEqual(runtime.helper_rate, TARGET_RATE)
         self.assertEqual(
@@ -365,7 +366,7 @@ class BoundedReRepairTests(unittest.IsolatedAsyncioTestCase):
         deps.sink_follows_rebuild = False
         orchestrator = DspOrchestrator(deps)
 
-        await orchestrator.sync_runtime_at_rate(TARGET_RATE, _rate_lock_held=True)
+        await orchestrator.sync_runtime_at_rate(TARGET_RATE)
 
         self.assertEqual(runtime.helper_rate, TARGET_RATE)
         self.assertEqual(deps.sink_rate, TARGET_RATE)
@@ -384,7 +385,7 @@ class BoundedReRepairTests(unittest.IsolatedAsyncioTestCase):
         recovered = await orchestrator.recover_stale_helper_samplerate(
             TARGET_RATE,
             reason="measurement-release",
-            _rate_lock_held=True,
+            ownership=DspSyncOwnership.RATE,
             allow_measurement_graph_owned=True,
         )
 
@@ -405,7 +406,7 @@ class BoundedReRepairTests(unittest.IsolatedAsyncioTestCase):
         recovered = await orchestrator.recover_stale_helper_samplerate(
             TARGET_RATE,
             reason="measurement-release",
-            _rate_lock_held=True,
+            ownership=DspSyncOwnership.RATE,
             allow_measurement_graph_owned=True,
         )
 
@@ -424,7 +425,7 @@ class BoundedReRepairTests(unittest.IsolatedAsyncioTestCase):
         recovered = await orchestrator.recover_stale_helper_samplerate(
             TARGET_RATE,
             reason="measurement-release",
-            _rate_lock_held=True,
+            ownership=DspSyncOwnership.RATE,
             allow_measurement_graph_owned=True,
         )
 

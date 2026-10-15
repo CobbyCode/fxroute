@@ -25,7 +25,7 @@ def _session_owned(request) -> bool:
 class _RuntimeChannelTierMixin:
     async def _change_tier_hardware(self, change, *, rollback=False, session_owned=False):
         lock_factory = self._deps.audio_configuration_lock
-        take_lock = bool(lock_factory) and not session_owned and not self._configuration_locks_held
+        take_lock = bool(lock_factory) and not session_owned and not self._configuration_ownership.rate_owned
         async with lock_factory() if take_lock else nullcontext():
             if not rollback and not session_owned and self._deps.measurement_audio_graph_owned():
                 raise RuntimeError("Measurement is active; channel-tier switch is locked")

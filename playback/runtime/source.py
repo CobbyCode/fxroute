@@ -396,8 +396,7 @@ class _RuntimeSourceMixin:
             aligned = await self._deps.recover_stale_samplerate_helper(
                 request.target_rate,
                 reason=f"coordinator:{request.operation}:{request.source}",
-                _rate_lock_held=self._configuration_locks_held,
-                **({"_graph_lock_held": True} if self._graph_write_lock_held else {}),
+                ownership=self._configuration_ownership,
             )
         if not aligned:
             status = await asyncio.to_thread(self._deps.get_samplerate_status)
@@ -414,8 +413,8 @@ class _RuntimeSourceMixin:
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
         if not isinstance(request.target_rate, int) or request.target_rate <= 0:
             return {"dsp_reinitialized": False, "helper_rebuilt": False}
-        kwargs = {"_configuration_locks_held": True} if self._configuration_locks_held else {}
-        return await self._deps.coordinator_establish_effects_and_helper(request, **kwargs)
+        return await self._deps.coordinator_establish_effects_and_helper(
+            request, ownership=self._configuration_ownership)
 
     async def prepare_target_source(self, request: TransitionRequest) -> None:
         if request.graph_only:

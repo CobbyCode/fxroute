@@ -122,7 +122,7 @@ class QobuzQueueNavigationTests(unittest.IsolatedAsyncioTestCase):
         fixture = self.action_fixture()
         staged_rates = []
 
-        async def effects(req):
+        async def effects(req, *, ownership):
             staged_rates.append(req.target_rate)
             return {'dsp_reinitialized': False}
 
@@ -335,7 +335,7 @@ class QobuzQueueNavigationTests(unittest.IsolatedAsyncioTestCase):
             physical.update(active_rate=rate, force_rate=rate)
             return True
 
-        async def effects(req):
+        async def effects(req, *, ownership):
             self.assertTrue(gate['muted'])
             staged_rates.append(req.target_rate)
             return {'dsp_reinitialized': False}

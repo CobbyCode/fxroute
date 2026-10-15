@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audio import device_profiles as profiles
 from audio import channel_tiers
 from audio import system_volume
+from dsp.locks import DspSyncOwnership
 
 DESCRIPTORS = """Focusrite Scarlett 16i16 4th Gen
 Playback:
@@ -999,7 +1000,7 @@ class TierSessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, deps):
                 self._deps = deps
                 self._dsp_runtime = None
-                self._configuration_locks_held = False
+                self._configuration_ownership = DspSyncOwnership.UNOWNED
 
             def invalidate_gate_sink_resolution(self):
                 pass

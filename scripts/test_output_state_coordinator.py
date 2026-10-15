@@ -230,7 +230,7 @@ class StagingBranchTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(instance, "repair_stereo_output_links_once", new=AsyncMock()):
             result = await instance.establish_effects_and_helper(request)
         self.assertEqual(sync_runtime.await_args_list[0].kwargs,
-                         {"reason": "coordinator-play", "_rate_lock_held": False})
+                          {"reason": "coordinator-play", "ownership": main.DspSyncOwnership.UNOWNED})
         self.assertTrue(result["dsp_reinitialized"])
 
 

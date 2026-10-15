@@ -169,7 +169,7 @@ class _RuntimeVerificationMixin:
         # coordinator validates the live DSP against the very extras it
         # applied, never against a snapshot made stale by a mutation that
         # landed between apply and verify.
-        async with nullcontext() if self._configuration_locks_held else self._deps.dsp_mutation_lock():
+        async with nullcontext() if self._configuration_ownership.rate_owned else self._deps.dsp_mutation_lock():
             extras = manager.load_global_extras()
             loudness_enabled = bool((extras.get("loudness") or {}).get("enabled"))
             autogain_enabled = bool((extras.get("autogain") or {}).get("enabled"))
@@ -492,7 +492,7 @@ class _RuntimeVerificationMixin:
                 # The ownership stays held through the re-validation so the
                 # re-applied runtime is verified against the very extras that
                 # were re-read, not a snapshot a parallel mutation made stale.
-                async with nullcontext() if self._configuration_locks_held else self._deps.dsp_mutation_lock():
+                async with nullcontext() if self._configuration_ownership.rate_owned else self._deps.dsp_mutation_lock():
                     extras = self._dsp_manager.load_global_extras()
                     await self._deps.drain_worker(
                         apply_runtime, extras, extras, persist_all_presets=False
