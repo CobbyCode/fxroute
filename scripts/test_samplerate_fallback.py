@@ -132,6 +132,26 @@ class DriftObserverFallbackTests(_CapabilityCase):
             self._observe(observer)
         recovery.assert_not_called()
 
+    def test_committed_fallback_rate_is_healthy(self):
+        # A committed transition stores its graph rate on the track, so the
+        # 96 kHz file is committed at 48 kHz while MPV still reports 96 kHz.
+        with mock.patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto"}):
+            observer, recovery = _drift_observer(
+                {"active_rate": 48000, "force_rate": 48000}, mpv_rate=96000, track_rate=48000,
+            )
+            self._observe(observer)
+        recovery.assert_not_called()
+
+    def test_changed_source_rate_still_recovers_once(self):
+        # A stream committed at 44.1 kHz that MPV now decodes at 48 kHz.
+        with mock.patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto"}):
+            observer, recovery = _drift_observer(
+                {"active_rate": 44100, "force_rate": 44100}, mpv_rate=48000, track_rate=44100,
+            )
+            self._observe(observer, passes=2)
+        recovery.assert_awaited_once()
+        self.assertEqual(recovery.await_args.kwargs["diagnosis"]["expected_rate"], 48000)
+
     def test_unplayable_foreign_pin_on_the_right_graph_is_healthy(self):
         with mock.patch.object(samplerate, "load_sample_rate_policy", return_value={"mode": "auto"}):
             observer, recovery = _drift_observer(
@@ -157,8 +177,8 @@ class _LiveEngine:
     def snapshot(self):
         return {"active": True, "config": {"sample_rate": 48000}}
 
-    async def sync(self, overview):
-        self.sync_calls.append(dict(overview))
+    async def sync_rendered(self, target):
+        self.sync_calls.append(dict(target.overview))
 
 
 class DspSyncNeverDefersOnUnplayablePinTests(_CapabilityCase):

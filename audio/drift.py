@@ -122,9 +122,12 @@ class SamplerateDriftObserver:
             self.reset()
             return
 
+        # A committed track carries the Coordinator's graph rate, which is the
+        # fallback rate for a source above the output's range (384 kHz on a
+        # 192 kHz device commits 192 kHz): compare both sides after the fit.
         source_metadata_aligned = (
             samplerate.load_sample_rate_policy().get("mode") == "fixed"
-            or track_rate == actual_rate
+            or samplerate.playback_target_rate(track_rate) == target_rate
         )
         healthy = (
             source_metadata_aligned
