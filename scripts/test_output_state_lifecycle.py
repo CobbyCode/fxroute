@@ -17,43 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main
+from output_render_test_support import FakeProcess, make_manager, make_service, pw_link_io
 from audio.output_state import switch_mode, set_bank_preset, set_mode_routing, set_output_processing
 from audio.output_state_store import OutputStateStore
 from dsp.manager import DSPManager
 from dsp.runtime import CommandResult, DSPRuntime, DSPRuntimeConfig, PlannedSyncTarget
-
-
-class FakeProcess:
-    def __init__(self):
-        self.returncode = None
-        self.pid = 123
-        self.stderr = None
-
-    def terminate(self):
-        self.returncode = 0
-
-    async def wait(self):
-        return self.returncode
-
-
-def make_manager(directory):
-    manager = DSPManager(home=Path(directory) / "home")
-    for bank in ("sub1", "global"):
-        manager.library(bank, "stereo-sub").write(
-            "Room", {"schema": "fxroute.dsp.preset", "version": 1, "chain": []})
-    manager.save_global_extras({"limiter": {"enabled": False}})
-    return manager
-
-
-def make_service(directory, manager):
-    from audio.output_service import OutputService, OutputServiceDeps
-    return OutputService(OutputServiceDeps(
-        store=OutputStateStore(Path(directory) / "output-state.json"),
-        preset_loader=manager.read_preset,
-        resolve_ir=lambda _bank, kernel: (_ for _ in ()).throw(AssertionError(kernel)),
-        measurement_active=lambda: False,
-        global_extras_loader=manager.load_global_extras,
-    ))
 
 
 def seed_sub_state(service):
@@ -143,13 +111,6 @@ class FromPlanTests(unittest.TestCase):
 
 async def _unreachable(command):
     raise AssertionError(f"unexpected command: {command[0]}")
-
-
-def pw_link_io(*ports):
-    lines = []
-    for port in ports:
-        lines.append(f"fxroute_dsp:{port}")
-    return "\n".join(lines)
 
 
 class SyncRenderedTests(unittest.TestCase):
@@ -290,7 +251,7 @@ class EffectsTransitionTargetTests(unittest.TestCase):
         candidate = copy.deepcopy(previous)
         candidate["limiter"]["enabled"] = True
         with lifecycle_context(self.service, self.manager, self.runtime):
-            targets = asyncio.run(main._render_effects_transition_targets(previous, candidate))
+            targets = asyncio.run(main.output_renderer.render_effects_targets(previous, candidate))
         self.assertIsNotNone(targets)
         new_target, old_target = targets
         self.assertNotEqual(new_target.config.plan_fingerprint, old_target.config.plan_fingerprint)
@@ -303,7 +264,7 @@ class EffectsTransitionTargetTests(unittest.TestCase):
             with mock.patch.object(main, "get_audio_output_overview", return_value={}):
                 self.runtime.fail_closed = mock.AsyncMock()
                 with self.assertRaises(RuntimeError):
-                    asyncio.run(main._render_effects_transition_targets(previous, previous))
+                    asyncio.run(main.output_renderer.render_effects_targets(previous, previous))
 
 
 def lifecycle_context(service, manager, runtime):
@@ -454,7 +415,7 @@ class ApplyLifecycleTests(unittest.TestCase):
 
         external = SimpleNamespace(disable=mock.AsyncMock(), sync=mock.AsyncMock())
         with lifecycle_context(service, self.manager, self.runtime), \
-                mock.patch.object(main, "_apply_audio_output_state_candidate", failing_candidate), \
+                mock.patch.object(main.output_application, "apply_candidate", failing_candidate), \
                 mock.patch.object(main, "external_input", external), \
                 mock.patch.object(main, "_digital_carrier_request",
                                   mock.AsyncMock(return_value=(False, None))), \
@@ -462,7 +423,7 @@ class ApplyLifecycleTests(unittest.TestCase):
                 mock.patch.object(main, "_resync_stdin_routing", mock.AsyncMock()) as resync, \
                 mock.patch.object(service, "revert", revert):
             with self.assertRaises(RuntimeError):
-                asyncio.run(main._apply_audio_output_state_body({
+                asyncio.run(main.output_application.apply({
                     "expected_revision": 1,
                     "mutation": {"kind": "switch_mode", "mode": "stereo"}}))
         # The switch body ran marked, and the revert owned the DSP mutation lock.
@@ -494,14 +455,14 @@ class ApplyLifecycleTests(unittest.TestCase):
 
         external = SimpleNamespace(disable=mock.AsyncMock(), sync=mock.AsyncMock())
         with lifecycle_context(service, self.manager, self.runtime), \
-                mock.patch.object(main, "_apply_audio_output_state_candidate", candidate), \
+                mock.patch.object(main.output_application, "apply_candidate", candidate), \
                 mock.patch.object(main, "external_input", external), \
                 mock.patch.object(main, "_digital_carrier_request", mock.AsyncMock(return_value=(False, None))), \
                 mock.patch.object(main, "_set_surround_carrier_owned", carrier), \
                 mock.patch.object(main, "_resync_stdin_routing", mock.AsyncMock()) as resync, \
                 mock.patch.object(service, "revert", racing_revert):
             with self.assertRaisesRegex(RuntimeError, "switch failed"):
-                asyncio.run(main._apply_audio_output_state_body({
+                asyncio.run(main.output_application.apply({
                     "expected_revision": 1,
                     "mutation": {"kind": "switch_mode", "mode": "stereo"}}))
         head = service.load()
@@ -534,7 +495,7 @@ class ApplyLifecycleTests(unittest.TestCase):
                 return overview
             main.get_audio_output_overview.side_effect = read_overview
             with self.assertRaises(main.HTTPException) as caught:
-                asyncio.run(main._apply_audio_output_state_body({
+                asyncio.run(main.output_application.apply({
                     "expected_revision": 1, "mutation": {"kind": "switch_mode", "mode": "stereo-sub"}}))
         self.assertEqual(caught.exception.status_code, 409)
         self.assertEqual(self.service.load()["revision"], 2)
@@ -546,7 +507,7 @@ class ApplyLifecycleTests(unittest.TestCase):
             raise main.HTTPException(status_code=423, detail="Measurement is active")
         external = SimpleNamespace(disable=mock.AsyncMock(), sync=mock.AsyncMock())
         with lifecycle_context(self.service, self.manager, self.runtime), \
-                mock.patch.object(main, "_apply_audio_output_state_candidate", candidate), \
+                mock.patch.object(main.output_application, "apply_candidate", candidate), \
                 mock.patch.object(main, "external_input", external), \
                 mock.patch.object(main, "_digital_carrier_request", mock.AsyncMock(return_value=(False, None))), \
                 mock.patch.object(main, "_set_surround_carrier_owned", mock.AsyncMock()) as carrier, \
@@ -554,7 +515,7 @@ class ApplyLifecycleTests(unittest.TestCase):
                 mock.patch.object(main, "_mark_ingress_resync_pending", mock.AsyncMock()) as deferred, \
                 mock.patch.object(main, "_mark_policy_rate_restore_pending", mock.AsyncMock()):
             with self.assertRaises(main.HTTPException) as caught:
-                asyncio.run(main._apply_audio_output_state_body({
+                asyncio.run(main.output_application.apply({
                     "expected_revision": 1, "mutation": {"kind": "switch_mode", "mode": "stereo"}}))
         self.assertEqual(caught.exception.status_code, 423)
         self.assertEqual(self.service.load()["revision"], 1)
@@ -576,13 +537,13 @@ class ApplyLifecycleTests(unittest.TestCase):
         external = SimpleNamespace(disable=mock.AsyncMock(), sync=mock.AsyncMock())
         self.runtime.fail_closed = mock.AsyncMock()
         with lifecycle_context(self.service, self.manager, self.runtime), \
-                mock.patch.object(main, "_apply_audio_output_state_candidate", candidate), \
+                mock.patch.object(main.output_application, "apply_candidate", candidate), \
                 mock.patch.object(main, "external_input", external), \
                 mock.patch.object(main, "_digital_carrier_request", mock.AsyncMock(return_value=(False, None))), \
                 mock.patch.object(main, "_set_surround_carrier_owned", mock.AsyncMock()), \
                 mock.patch.object(main, "_resync_stdin_routing", mock.AsyncMock()):
             with self.assertRaisesRegex(RuntimeError, "switch failed"):
-                asyncio.run(main._apply_audio_output_state_body({
+                asyncio.run(main.output_application.apply({
                     "expected_revision": 1, "mutation": {"kind": "switch_mode", "mode": "stereo"}}))
         self.assertEqual(self.service.load()["revision"], 3)
         self.assertEqual(self.service.load()["modes"]["stereo"]["banks"]["global"]["preset"], "Missing")
@@ -599,14 +560,14 @@ class ApplyLifecycleTests(unittest.TestCase):
         self.runtime.sync_rendered.side_effect = RuntimeError("graph failed")
         self.runtime.fail_closed = mock.AsyncMock()
         with lifecycle_context(self.service, self.manager, self.runtime), \
-                mock.patch.object(main, "_apply_audio_output_state_candidate", candidate), \
+                mock.patch.object(main.output_application, "apply_candidate", candidate), \
                 mock.patch.object(main, "external_input", external), \
                 mock.patch.object(main, "_digital_carrier_request", mock.AsyncMock(return_value=(False, None))), \
                 mock.patch.object(main, "_set_surround_carrier_owned", mock.AsyncMock(side_effect=[None, RuntimeError("carrier failed")])), \
                 mock.patch.object(main, "_resync_stdin_routing", mock.AsyncMock()) as resync, \
                 mock.patch.object(self.service, "revert", side_effect=OSError("disk failed")):
             with self.assertRaisesRegex(RuntimeError, "switch failed"):
-                asyncio.run(main._apply_audio_output_state_body({
+                asyncio.run(main.output_application.apply({
                     "expected_revision": 1,
                     "mutation": {"kind": "switch_mode", "mode": "stereo"}}))
         self.runtime.fail_closed.assert_awaited()

@@ -24,7 +24,7 @@ import audio.pw_link as pw_link_mod
 import audio.samplerate as samplerate
 import playback.media_readiness as media_readiness
 import playback.orchestration as playback_orchestration
-from dsp.runtime import CommandResult, PipeWireLink
+from dsp.runtime import CommandResult, DSPRuntimeConfig, PipeWireLink
 from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
 from playback_transition_test_support import MainCoreTransitionRuntime, make_transition_runtime
 
@@ -132,7 +132,7 @@ class CanonicalGraphTests(unittest.IsolatedAsyncioTestCase):
         runtime = main.DSPRuntime(Mock())
         runtime._process = SimpleNamespace(returncode=None, pid=42) if helper is None or helper.active else None
         routes = STEREO_ROUTES if mode == "stereo" else SUB_ROUTES
-        runtime._config = main.DSPRuntimeConfig(
+        runtime._config = DSPRuntimeConfig(
             mode, OUTPUT_KEY, helper.rate if helper else target_rate,
             tuple(port for _, port in routes), (), tuple(tuple(edge) for edge in routes), "plan")
         runtime._links = [SimpleNamespace(source="source", target="target")] if runtime._process else []
@@ -632,7 +632,7 @@ class CoordinatorGraphAssemblyTests(unittest.IsolatedAsyncioTestCase):
             playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)
         ), patch.object(
             playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=diagnose)
-        ), patch.object(main, "_sync_plan_runtime", side_effect=sync_plan), patch.object(
+        ), patch.object(main.output_renderer, "sync_plan_runtime", side_effect=sync_plan), patch.object(
             playback_orchestration.configured(), "relink_missing_production_links", side_effect=reconcile
         ) as reconciler, patch.object(samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)):
             result = await playback_orchestration.configured().establish_effects_and_helper(request)
@@ -718,7 +718,7 @@ class StereoRateTransitionRegressionTests(unittest.IsolatedAsyncioTestCase):
                 process_launcher=launch,
             )
             runtime._process = old_process
-            runtime._config = main.DSPRuntimeConfig(
+            runtime._config = DSPRuntimeConfig(
                 "stereo", OUTPUT_KEY, 44100, ("playback_FL", "playback_FR"),
                 ({"name": "main_l", "routes": [{"input": 0, "gain": 1.0}]},
                  {"name": "main_r", "routes": [{"input": 1, "gain": 1.0}]}),

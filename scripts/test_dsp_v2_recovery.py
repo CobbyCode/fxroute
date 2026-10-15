@@ -17,8 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import main
-import test_output_state_lifecycle as lifecycle
+import output_render_test_support as lifecycle
 import test_dsp_v2_sync_preference as sync_support
 from audio.output_state import set_crossover, set_mode_routing, set_output_processing, set_bank_preset
 from dsp.runtime import DSPRuntime, CommandResult
@@ -46,10 +45,9 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.engine.snapshot.return_value = {"active": False, "config": {}}
         self.engine.fail_closed = mock.AsyncMock()
         self.engine.preflight_rendered = mock.AsyncMock()
-        self.context = lifecycle.lifecycle_context(self.service, self.manager, self.engine)
-        self.context.__enter__()
-        self.addCleanup(self.context.__exit__, None, None, None)
-        self.overview = main.get_audio_output_overview()
+        self.harness = lifecycle.RenderHarness(self.service, self.manager, self.engine)
+        self.renderer = self.harness.renderer
+        self.overview = self.harness.overview
 
     def remember(self):
         self.service.remember_applied(self.good, output_key="A", channels=4,
@@ -61,7 +59,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             expected_revision=1)
 
     async def render(self, rate=48000):
-        return await main._try_render_v2_sync_target(rate, self.overview)
+        return await self.renderer.render_sync_target(rate, self.overview)
 
     async def test_unrecoverable_draft_raises_instead_of_returning_legacy_permission(self):
         self.draft()
@@ -111,7 +109,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         draft = self.draft()
         # A fresh service proves recovery is durable, not just an in-memory cache.
         service = lifecycle.make_service(str(self.directory), self.manager)
-        with mock.patch.object(main, "get_output_service", return_value=service):
+        with mock.patch.object(self.harness, "service", service):
             target = await self.render(44100)
         self.assertEqual(target.config.sample_rate, 44100)
         self.assertEqual(target.config.route_pairs,
@@ -121,7 +119,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                          ["left_low", "left_high", "right_low", "right_high"])
         self.assertTrue(target.config.layout[1]["sos"])
         self.assertTrue(target.config.layout[3]["sos"])
-        original = await main._try_render_v2_sync_target(48000, self.overview)
+        original = await self.renderer.render_sync_target(48000, self.overview)
         self.assertNotEqual(target.config.layout[1]["sos"], original.config.layout[1]["sos"])
         self.assertEqual(service.load(), draft)
         self.engine.fail_closed.assert_not_awaited()
@@ -144,7 +142,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         bad = set_bank_preset(self.good, "stereo", "global", preset="Missing")
         self.service.commit(bad, expected_revision=1)
         self.engine.sync_rendered = mock.AsyncMock()
-        result = await main._sync_v2_head_after_bank_assign()
+        result = await self.renderer.sync_head_after_bank_assign()
         self.assertFalse(result["live_applied"])
         self.engine.sync_rendered.assert_not_awaited()
 
@@ -156,7 +154,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         bad = set_bank_preset(self.good, "stereo", "left_high", preset="Missing IR")
         self.service.commit(bad, expected_revision=1)
         with mock.patch.object(self.service, "_deps", replace(
-                self.service._deps, resolve_ir=main._resolve_state_ir)):
+                self.service._deps, resolve_ir=lambda bank, kernel: lifecycle.resolve_ir(self.manager, bank, kernel))):
             target = await self.render()
         self.assertEqual(len(target.config.layout), 4)
         self.assertTrue(target.config.layout[1]["sos"])
@@ -171,7 +169,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 overview = copy.deepcopy(self.overview)
                 overview["output_mode"].update(changes)
                 with self.assertRaises(RuntimeError):
-                    await main._try_render_v2_sync_target(48000, overview)
+                    await self.renderer.render_sync_target(48000, overview)
 
     async def test_render_alone_does_not_checkpoint_an_unapplied_state(self):
         target = await self.render()
@@ -233,7 +231,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         binary = self.directory / "fxroute-dsp"
         binary.touch()
         native = DSPRuntime(self.manager, binary=binary, command_runner=command)
-        with mock.patch.object(main.runtime, "dsp_runtime", native):
+        with mock.patch.object(self.harness, "native", native):
             target = await self.render()
         self.assertEqual(target.config.layout[1]["gain_db"], 0)
         self.assertEqual(len(calls), 2)
@@ -249,7 +247,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         binary = self.directory / "fxroute-dsp"
         binary.touch()
         native = DSPRuntime(self.manager, binary=binary, command_runner=command)
-        with mock.patch.object(main.runtime, "dsp_runtime", native):
+        with mock.patch.object(self.harness, "native", native):
             with self.assertRaises(RuntimeError):
                 await self.render()
         self.assertIn(("pactl", "set-sink-mute", "A", "1"), calls)
@@ -277,9 +275,9 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         engine._control = mock.AsyncMock(return_value="0")
         deps = sync_support._FakeDeps()
         deps.runtime = engine
-        deps.try_render_v2_target = main._try_render_v2_sync_target
+        deps.try_render_v2_target = self.renderer.render_sync_target
         orchestrator = DspOrchestrator(deps)
-        with mock.patch.object(main.runtime, "dsp_runtime", engine):
+        with mock.patch.object(self.harness, "native", engine):
             try:
                 await orchestrator.sync_runtime()
                 checkpoint = (self.directory / "output-state-applied.json").read_bytes()
@@ -311,19 +309,16 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         previous = self.manager.load_global_extras()
         candidate = copy.deepcopy(previous)
         candidate["loudness"]["enabled"] = True
-        new, old = await main._render_effects_transition_targets(previous, candidate)
+        new, old = await self.renderer.render_effects_targets(previous, candidate)
         self.assertEqual(new.config.route_pairs, old.config.route_pairs)
         self.assertIn("loud_comp", new.text)
         self.assertNotIn("loud_comp", old.text)
         self.assertTrue(new.config.layout[1]["sos"])
-        with mock.patch.object(main, "dsp_manager", self.manager), \
-             mock.patch.object(main, "_volume_state_for_manager", mock.AsyncMock(return_value=SimpleNamespace(
-                 loudness_in_path=False, preset="Neutral", dsp_guard_db=0.0, master_percent=27))):
-            async def rebuild(*args, apply_candidate, **kwargs):
-                apply_candidate()
-            self.engine.guarded_rebuild_rendered = mock.AsyncMock(side_effect=rebuild)
-            await main._guarded_effects_transition(previous, candidate, False)
-            await main._temporary_effects_transition(previous, candidate)
+        async def rebuild(*args, apply_candidate, **kwargs):
+            apply_candidate()
+        self.engine.guarded_rebuild_rendered = mock.AsyncMock(side_effect=rebuild)
+        await self.renderer.guarded_effects_transition(previous, candidate, False)
+        await self.renderer.temporary_effects_transition(previous, candidate)
         self.engine.guarded_rebuild.assert_not_called()
         self.assertEqual(self.engine.guarded_rebuild_rendered.await_count, 2)
 
@@ -351,15 +346,13 @@ class FirstInitializationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.ensure_state(), state)
 
     async def test_initialized_head_activates_instead_of_failing_closed(self):
-        with lifecycle.lifecycle_context(self.service, self.manager, self.engine):
-            overview = main.get_audio_output_overview()
-            # Unwritten defaults are still not a production recovery state ...
-            with self.assertRaises(RuntimeError):
-                await main._try_render_v2_sync_target(48000, overview)
-            self.engine.fail_closed.assert_awaited_once()
-            # ... but the first-initialized head renders on the first activation.
-            self.service.ensure_state()
-            target = await main._try_render_v2_sync_target(48000, overview)
+        harness = lifecycle.RenderHarness(self.service, self.manager, self.engine)
+        # Unwritten defaults are still not a production recovery state.
+        with self.assertRaises(RuntimeError):
+            await harness.renderer.render_sync_target(48000, harness.overview)
+        self.engine.fail_closed.assert_awaited_once()
+        self.service.ensure_state()
+        target = await harness.renderer.render_sync_target(48000, harness.overview)
         self.assertEqual([row["name"] for row in target.config.layout], ["main_l", "main_r"])
 
     async def test_missing_head_with_a_checkpoint_is_left_to_activation_recovery(self):

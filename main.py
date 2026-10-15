@@ -9,11 +9,8 @@ import os
 # fork, and a threaded BLAS call running at that moment never returns.
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
-import copy
-import cmath
 import json
 import logging
-import math
 import re
 import shutil
 import time
@@ -25,7 +22,7 @@ import subprocess
 import playback.queue as playback_queue
 import playback.media_readiness as media_readiness
 from contextlib import asynccontextmanager, nullcontext
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, unquote, urlparse
@@ -512,8 +509,11 @@ from library.core import (
 )
 from downloader import Downloader
 from dsp.manager import DSPManager, ensure_kernel_supported_ir, parse_wav_frames
-from dsp.crossover import design_crossover
-from dsp.runtime import DSPRuntime, DSPRuntimeConfig, PlannedSyncTarget, _contains_link
+from dsp.runtime import DSPRuntime, _contains_link
+from dsp.output_render import OutputRenderer, OutputRenderDeps, build_plan_target
+from audio.output_apply import OutputApplication, OutputApplyDeps
+from audio import output_api
+from audio.output_context import output_state_device, output_state_topology
 import dsp.api as dsp_api
 import dsp.orchestration as dsp_orchestration
 import dsp.volume_state as volume_state
@@ -522,32 +522,14 @@ from audio import pw_link
 from audio.source_native_rate import resolve_active_source_native_rate
 from audio.input_links import ingress_links_present, input_links_present
 from audio.output_ports import hardware_link_target, hardware_playback_port_fallback_from_mode
-from audio.output_service import MeasurementActiveError, OutputService, OutputServiceDeps
-from audio.output_state import (
-    FILTER_SLOPES,
-    bass_crossover_for_side,
-    effective_crossover_enabled,
-    roles_for_mode,
-    shared_bass_crossover,
-    routing_for_device,
-    select_bank,
-    set_bank_preset,
-    set_bass_management,
-    set_crossover,
-    set_av_sync,
-    set_mode_extras,
-    set_mode_routing,
-    set_output_processing,
-    switch_mode,
-)
-from audio.output_state_store import OutputStateStore, StateConflictError
-from audio.output_topology import MODES, SUB_ROLES, derive_topology, side_for_role
-from audio.filter_banks import bank_catalog, resolve_bank, selected_bank, summarize_all_banks
-from audio.output_state import switch_all_banks
+from audio.output_service import OutputService, OutputServiceDeps
+from audio.output_state_store import OutputStateStore
+from audio.output_topology import SUB_ROLES, side_for_role
+from audio.filter_banks import resolve_bank, selected_bank
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
 from audio.external_input import ExternalInputRouting, ExternalInputRoutingDependencies
-from audio.input_output_mode import input_identity, remember_mode, restore_mode
+from audio.input_output_mode import input_identity, restore_mode
 from audio.input_auto_select import (
     OVERVIEW_MAX_AGE_SECONDS,
     STDIN_KEY,
@@ -665,7 +647,7 @@ from streaming.spotify.provider import (
     loop_cycle as spotify_loop_cycle,
     seek_to as spotify_seek_to,
 )
-from audio.system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor, volume_percent_to_db
+from audio.system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor
 import audio.volume_contract as volume_contract
 
 logger = logging.getLogger(__name__)
@@ -1332,7 +1314,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         sample_rate_policy_request=lambda policy, **kwargs: playback_orchestration.configured().sample_rate_policy_request(policy, **kwargs),
         canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
         graph_write_lock=lambda: _dsp_graph_write_lock(),
-        refresh_output_state_transition=lambda request: _refresh_output_state_transition(request),
+        refresh_output_state_transition=lambda request: output_renderer.refresh_transition(request),
     )
 
 
@@ -2158,63 +2140,6 @@ async def _apply_remote_volume_value(
     """Thin wrapper: canonical master volume lives in audio.canonical_volume (REFACTOR-017)."""
     await canonical_volume._apply_remote_volume_value(
         volume_percent, owner=owner, source_active=source_active)
-
-
-async def _render_effects_transition_targets(previous, candidate):
-    """Render both extras snapshots on one recoverable v2 production state."""
-    overview = await asyncio.to_thread(get_audio_output_overview)
-    status = await asyncio.to_thread(get_samplerate_status)
-    rate = status.get("active_rate")
-    if type(rate) is not int or rate <= 0:
-        rate = status.get("force_rate")
-    return await _render_v2_recovery_targets(rate, overview, (candidate, previous))
-
-
-async def _temporary_effects_transition(previous, candidate):
-    """Apply temporary SPL helpers without replacing v2 routing or filters."""
-    async with _dsp_mutation_lock(), _dsp_graph_write_lock():
-        new_target, old_target = await _render_effects_transition_targets(previous, candidate)
-        await runtime.dsp_runtime.guarded_rebuild_rendered(
-            new_target, previous=old_target, guard_db=-18.0,
-            apply_candidate=lambda: None, apply_previous=lambda: None,
-            settle_seconds=dsp_manager.LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS)
-
-
-async def _guarded_effects_transition(previous, candidate, persist_all_presets):
-    """Apply extras through a guarded DSP rebuild without touching the master."""
-    async with _dsp_graph_write_lock():
-        return await _guarded_effects_transition_locked(previous, candidate, persist_all_presets)
-
-
-async def _guarded_effects_transition_locked(previous, candidate, persist_all_presets):
-    result_holder = {}
-    new_target, old_target = await _render_effects_transition_targets(previous, candidate)
-    start = await _volume_state_for_manager(dsp_manager)
-    if any("loud_comp_stereo" in target.text for target in (new_target, old_target)):
-        guard_db = dsp_manager.loudness_transition_guard_db(previous, candidate)
-    else:
-        guard_db = min(0.0, start.dsp_guard_db, volume_percent_to_db(start.master_percent))
-    settle = float(getattr(dsp_manager, "LOUDNESS_STRENGTH_VOLUME_SETTLE_SECONDS", 0.0) or 0.0)
-
-    def persist_candidate():
-        normalized = dsp_manager.save_global_extras(candidate)
-        # No legacy preset load/notification: the v2 graph was already applied.
-        result_holder["result"] = {
-            "extras": normalized,
-            "updated": (len([p for p in dsp_manager.list_presets()
-                             if p["name"] not in dsp_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS])
-                        if persist_all_presets else 1),
-            "skipped": sorted(dsp_manager.EXCLUDED_GLOBAL_EXTRAS_PRESETS),
-        }
-
-    await runtime.dsp_runtime.guarded_rebuild_rendered(
-        new_target, previous=old_target, guard_db=guard_db,
-        apply_candidate=persist_candidate,
-        apply_previous=lambda: dsp_manager.save_global_extras(previous),
-        settle_seconds=settle)
-    result = result_holder["result"]
-    result["runtime_applied"] = True
-    return result
 
 
 def _commit_spotify_state_direct(data: dict) -> dict:
@@ -3220,7 +3145,7 @@ async def lifespan(app: FastAPI):
 
         def guarded_effects_transition(previous, candidate, persist_all_presets):
             return asyncio.run_coroutine_threadsafe(
-                _guarded_effects_transition(previous, candidate, persist_all_presets),
+                output_renderer.guarded_effects_transition(previous, candidate, persist_all_presets),
                 runtime_loop,
             ).result()
 
@@ -3228,7 +3153,7 @@ async def lifespan(app: FastAPI):
 
         def temporary_effects_transition(previous, candidate):
             asyncio.run_coroutine_threadsafe(
-                _temporary_effects_transition(previous, candidate), runtime_loop).result()
+                output_renderer.temporary_effects_transition(previous, candidate), runtime_loop).result()
 
         dsp_manager.temporary_runtime_transition_callback = temporary_effects_transition
         try:
@@ -3533,10 +3458,10 @@ def _make_dsp_api_deps() -> dsp_api.DspApiDeps:
         volume_state_for_manager=lambda *args, **kwargs: _volume_state_for_manager(*args, **kwargs),
         schedule_peak_monitor_refresh=lambda reason: dsp_orchestrator.schedule_peak_monitor_refresh_after_effects_change(reason),
         get_output_service=lambda: get_output_service(),
-        sync_v2_head_live=lambda: _sync_v2_head_after_bank_assign(),
+        sync_v2_head_live=lambda: output_renderer.sync_head_after_bank_assign(),
         verify_measurement_commit=lambda targets, binding: _verify_measurement_commit(targets, binding),
         routed_roles=lambda state, mode: _routed_roles(state, mode),
-        sync_v2_extras_runtime=lambda: _sync_v2_extras_runtime(),
+        sync_v2_extras_runtime=lambda: output_renderer.sync_extras_runtime(),
         external_mutation_scope=lambda: _external_dsp_mutation_scope(),
     )
 
@@ -3584,7 +3509,7 @@ def _make_dsp_orchestration_deps() -> DspOrchestrationDeps:
         # Idle-graph renegotiation trigger for the stale-helper sink nudge: a
         # fully idle sink ignores force-rate writes and suspend/resume pulses.
         trigger_idle_sink_renegotiation=lambda *a, **k: samplerate.trigger_idle_sink_renegotiation(*a, **k),
-        try_render_v2_target=lambda rate, overview: _try_render_v2_sync_target(rate, overview),
+        try_render_v2_target=lambda rate, overview: output_renderer.render_sync_target(rate, overview),
         graph_write_lock=lambda: _dsp_graph_write_lock(),
     )
 
@@ -3641,7 +3566,7 @@ def _make_playback_orchestration_deps() -> playback_orchestration.PlaybackOrches
         repair_stereo_output_links=None,
         resolve_source_producer_ports=lambda source: _resolve_playback_source_producer_ports(source),
         list_spotify_sink_inputs=lambda: media_readiness.list_spotify_sink_inputs(),
-        sync_plan_runtime=lambda *a, **k: _sync_plan_runtime(*a, **k),
+        sync_plan_runtime=lambda *a, **k: output_renderer.sync_plan_runtime(*a, **k),
         get_source_generation=lambda: playback_state.source_generation,
         get_source_mode=lambda: samplerate._load_audio_source_selection().get("mode"),
         get_bluetooth_overview=lambda: get_audio_source_overview(),
@@ -5199,24 +5124,6 @@ def _active_global_preset() -> str | None:
         return None
 
 
-def _output_state_device(overview: dict) -> tuple[str, int | None]:
-    mode = overview.get("output_mode") or {}
-    selected = overview.get("selected_output") or {}
-    key = str(mode.get("effective_output_key") or selected.get("key") or "")
-    channels = mode.get("effective_output_channels", selected.get("channels"))
-    if not key:
-        raise HTTPException(status_code=400, detail="No audio output device is selected")
-    if channels is None:
-        return key, None
-    try:
-        count = int(channels)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Output channel capacity is unknown")
-    if count < 0:
-        raise HTTPException(status_code=400, detail="Output channel capacity is unknown")
-    return key, count
-
-
 def _measurement_area(bank_id: str) -> tuple[dict, str, str, int]:
     """Committed state, bank, output key and channel count a measurement of ``bank_id`` uses.
 
@@ -5226,9 +5133,9 @@ def _measurement_area(bank_id: str) -> tuple[dict, str, str, int]:
     service = get_output_service()
     state = service.load()
     overview = get_audio_output_overview()
-    output_key, channels = _output_state_device(overview)
+    output_key, channels = output_state_device(overview)
     channel_count = int(channels or 0)
-    topology = _output_state_topology(state, state["active_mode"], output_key, channel_count)
+    topology = output_state_topology(state, state["active_mode"], output_key, channel_count)
     raw_bank = str(bank_id or "").strip() or selected_bank(state["modes"][state["active_mode"]], topology["roles"],
                                                            state["active_mode"])
     # A single actively routed way keeps its own target so per-way captures
@@ -5309,261 +5216,13 @@ def _verify_measurement_commit(targets: list, binding: dict) -> None:
         require_commit_target(target, roles, mode=mode, bank_id=bank_id, group=group)
 
 
-def _require_state_mode(value) -> str:
-    mode = str(value or "").strip()
-    if mode not in MODES:
-        raise HTTPException(status_code=400, detail=f"Unknown output mode: {value}")
-    return mode
-
-
-def _require_bank_id(value) -> str:
-    bank_id = str(value or "").strip()
-    if not bank_id:
-        raise HTTPException(status_code=400, detail="bank_id is required")
-    return bank_id
-
-
-def _require_role(value) -> str:
-    role = str(value or "").strip()
-    if not role:
-        raise HTTPException(status_code=400, detail="role is required")
-    return role
-
-
-def _build_output_state_mutation(mutation: dict, *, output_key: str, channels: int | None):
-    if not isinstance(mutation, dict):
-        raise HTTPException(status_code=400, detail="mutation must be an object")
-    kind = mutation.get("kind")
-    fields = {key: value for key, value in mutation.items() if key != "kind"}
-
-    def strict(allowed: set[str]) -> dict:
-        unknown = set(fields) - allowed
-        if unknown:
-            raise HTTPException(status_code=400, detail=f"Unknown mutation fields: {sorted(unknown)}")
-        return fields
-
-    if kind == "set_routing":
-        args = strict({"mode", "assignments"})
-        mode = _require_state_mode(args.get("mode"))
-        assignments = args.get("assignments")
-        if channels is not None and int(channels) == 2:
-            raise HTTPException(status_code=400,
-                                detail="Output routing is fixed to Out 1 Main L / Out 2 Main R on two-output devices")
-        return lambda state: set_mode_routing(state, mode, output_key, assignments)
-    if kind == "switch_mode":
-        args = strict({"mode"})
-        mode = _require_state_mode(args.get("mode"))
-        return lambda state: switch_mode(state, mode)
-    if kind == "set_crossover":
-        args = strict({"mode", "enabled"})
-        mode = _require_state_mode(args.get("mode"))
-        return lambda state: set_crossover(state, mode, args.get("enabled"))
-    if kind == "set_subwoofers":
-        args = strict({"mode", "frequency_hz", "main_highpass_enabled", "processing",
-                       "family", "slope_db_oct", "sub_link", "sub_filters"})
-        mode = _require_state_mode(args.get("mode"))
-
-        def update_subwoofers(state):
-            topology = _output_state_topology(state, mode, output_key, channels)
-            processing = args.get("processing")
-            if not isinstance(processing, dict) or set(processing) != set(topology["sub_roles"]):
-                raise ValueError("Sub settings must describe exactly the routed sub roles")
-            result = set_bass_management(
-                state, mode, frequency_hz=args.get("frequency_hz"),
-                main_highpass_enabled=args.get("main_highpass_enabled"),
-                family=args.get("family"), slope_db_oct=args.get("slope_db_oct"),
-                sub_link=args.get("sub_link"), sub_filters=args.get("sub_filters"))
-            for role, settings in processing.items():
-                if not isinstance(settings, dict) or set(settings) != {"level_db", "alignment_ms", "polarity"}:
-                    raise ValueError("Sub settings require level, alignment and polarity")
-                result = set_output_processing(result, mode, role, **settings)
-            return result
-        return update_subwoofers
-    if kind == "select_bank":
-        args = strict({"mode", "bank_id"})
-        if channels is None:
-            raise HTTPException(status_code=400, detail="Output channel capacity is unknown")
-        mode = _require_state_mode(args.get("mode"))
-        bank_id = _require_bank_id(args.get("bank_id"))
-        return lambda state: select_bank(state, mode, output_key, channels, bank_id)
-    if kind == "set_bank_preset":
-        args = strict({"mode", "bank_id", "preset", "preset_a", "preset_b", "active_side"})
-        mode = _require_state_mode(args.get("mode"))
-        bank_id = _require_bank_id(args.get("bank_id"))
-        options = {name: args[name] for name in ("preset", "preset_a", "preset_b", "active_side")
-                   if name in args}
-
-        def update_bank(state):
-            topology = _output_state_topology(state, mode, output_key, channels)
-            definition = resolve_bank(state["modes"][mode], bank_id, topology["roles"])
-            for name in ("preset", "preset_a", "preset_b"):
-                if options.get(name) is not None:
-                    try:
-                        get_output_service().validate_bank_preset(state, mode, definition["id"], options[name], roles=topology["roles"])
-                    except FileNotFoundError as exc:
-                        raise ValueError(f"Unknown preset {options[name]!r}") from exc
-            return set_bank_preset(state, mode, definition["id"], roles=topology["roles"], **options)
-        return update_bank
-    if kind == "switch_all_banks":
-        args = strict({"mode", "active_side"})
-        mode = _require_state_mode(args.get("mode"))
-        if channels is None:
-            raise HTTPException(status_code=400, detail="Output channel capacity is unknown")
-        return lambda state: switch_all_banks(state, mode, output_key, channels, args.get("active_side"))
-    if kind == "set_processing":
-        args = strict({"mode", "role", "highpass", "lowpass", "level_db",
-                       "alignment_ms", "polarity", "level_cal_db"})
-        mode = _require_state_mode(args.get("mode"))
-        role = _require_role(args.get("role"))
-        options = {name: args[name] for name in ("highpass", "lowpass") if name in args}
-        options.update({name: args[name] for name in ("level_db", "alignment_ms", "polarity", "level_cal_db")
-                        if args.get(name) is not None})
-        return lambda state: set_output_processing(state, mode, role, **options)
-    if kind == "set_level_calibration":
-        args = strict({"mode", "values", "state_revision", "measurement_job_id"})
-        mode = _require_state_mode(args.get("mode"))
-        values = args.get("values")
-        if not isinstance(values, dict) or not values:
-            raise HTTPException(status_code=400, detail="values must map roles to level calibration slots")
-
-        def update_level_calibration(state):
-            level_match_api.validate_result(args, state)
-            result = state
-            for role, slots in values.items():
-                result = set_output_processing(result, mode, _require_role(role), level_cal_db=slots)
-            return result
-        return update_level_calibration
-    if kind == "set_extras":
-        args = strict({"mode", "extras"})
-        mode = _require_state_mode(args.get("mode"))
-        if not isinstance(args.get("extras"), dict):
-            raise HTTPException(status_code=400, detail="extras must be an object")
-        return lambda state: set_mode_extras(state, mode, args["extras"])
-    if kind == 'set_av_sync':
-        args = strict({'mode', 'target_ms'})
-        mode = _require_state_mode(args.get('mode'))
-        return lambda state: set_av_sync(state, mode, target_ms=args.get('target_ms'))
-    raise HTTPException(status_code=400, detail=f"Unknown mutation kind: {kind}")
-
-
-def _live_topology_key(state: dict, *, output_key: str, channels: int | None,
-                       rate: int | None) -> tuple:
-    """Physical-graph identity for the live fast-path gate.
-
-    Equal keys mean the engine's port graph stays valid: only DSP-internal
-    coefficients, trims and bank content change. Anything else (roles,
-    wiring, channel count, rate) needs the coordinator path.
-    """
-    mode = state.get("active_mode") if isinstance(state, dict) else None
-    assignments = routing_for_device(state, mode, output_key, channels) if mode else []
-    crossover = effective_crossover_enabled(state, mode, channels) if mode else False
-    return (mode, crossover, tuple(assignments[:channels or 0]), channels, rate)
-
-
-def _plan_transition_guard(old_layout, new_layout, previous_gain: float) -> float:
-    """Guard pin for a plan rebuild, mirroring the legacy mode guard."""
-    current_peak = max((float(channel.get("gain_db", 0.0)) for channel in old_layout),
-                       default=0.0)
-    target_peak = max((float(channel.get("gain_db", 0.0)) for channel in new_layout),
-                      default=0.0)
-    positive_gain_delta = max(0.0, target_peak - current_peak)
-    return min(0.0, float(previous_gain or 0.0) - max(1.0, positive_gain_delta + 1.0))
-
-
-def _build_plan_target(service, manager, plan, *, output_key: str, rate: int,
-                       hardware_ports: list, fingerprint: str | None):
-    """Render one plan to a runtime sync target (pre-commit, may raise).
-
-    Extras are resolved into the plan before fingerprinting. Rendering must
-    not reread globals or substitute a different transition snapshot.
-    """
-    layout = service.compile_layout(plan)
-    config = DSPRuntimeConfig.from_plan(
-        plan, layout=layout, output_key=output_key, sample_rate_hz=rate,
-        hardware_ports=hardware_ports, plan_fingerprint=fingerprint)
-    text = manager.compile_engine_text(
-        [dict(entry) for entry in layout], preset_name=plan["global"]["preset"], mode=plan["mode"],
-        sample_rate_hz=rate, extras_override=plan["global"]["extras"])
-    return PlannedSyncTarget(config=config, text=text)
-
-
-async def _try_render_v2_sync_target(rate: int, overview: dict):
-    """Render the head or the last applied v2 state; failure raises."""
-    targets = await _render_v2_recovery_targets(rate, overview, (None,))
-    return targets[0]
-
-
-async def _render_v2_recovery_targets(rate: int, overview: dict, extras_snapshots: tuple):
-    """Render one production state for all targets, preserving editable drafts."""
-    output_key = ""
-    ports = []
-    channels = None
-    service = get_output_service()
-    try:
-        output_key, channels = _output_state_device(overview)
-        ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
-        if type(rate) is not int or rate <= 0:
-            raise ValueError("Output sample rate is unknown")
-        if not channels:
-            raise ValueError("Output channel capacity is unknown")
-        if len(ports) != channels:
-            raise ValueError("Output playback ports are undiscovered or incomplete")
-        manager = _require_dsp_manager()
-        token = service.activation_token()
-        base_extras = manager.load_global_extras()
-
-        def validate_current():
-            service.require_activation_token(token)
-            if manager.load_global_extras() != base_extras:
-                raise StateConflictError("Effects extras changed while preparing the DSP graph")
-        native = runtime.dsp_runtime
-        if native is None:
-            raise RuntimeError("Native DSP runtime is unavailable")
-
-        def render(state):
-            targets = []
-            for extras in extras_snapshots:
-                plan = service.compile_plan(
-                    state, output_key=output_key, channels=channels, sample_rate_hz=rate,
-                    extras_override=base_extras if extras is None else extras)
-                targets.append(_build_plan_target(
-                    service, manager, plan, output_key=output_key, rate=rate,
-                    hardware_ports=ports, fingerprint=service.fingerprint_plan(plan)))
-            return tuple(targets)
-
-        state, targets = await service.render_for_activation(
-            render, preflight=native.preflight_rendered, output_key=output_key,
-            channels=channels, hardware_ports=ports)
-        validate_current()
-
-        def with_checkpoint(target):
-            def remember():
-                service.remember_applied(state, output_key=output_key, channels=channels,
-                                         hardware_ports=ports, sample_rate_hz=rate,
-                                         fingerprint=target.config.plan_fingerprint)
-            return replace(target, on_applied=remember, validate_current=validate_current)
-        return tuple(with_checkpoint(target) for target in targets)
-    except StateConflictError:
-        raise
-    except Exception as exc:
-        logger.error("V2 output render failed: %s", exc)
-        native = runtime.dsp_runtime
-        snapshot = native.snapshot() if native is not None else {}
-        keep_running = service.applied_graph_matches(
-            snapshot, output_key=output_key, channels=channels,
-            hardware_ports=ports, sample_rate_hz=rate)
-        if native is not None and not keep_running:
-            await native.fail_closed(str(exc), output_key=output_key)
-        raise RuntimeError(f"V2 output unavailable: {exc}") from exc
-
-
 def _level_match_capture_scope(job: dict, target: dict, scope: dict, state: dict, *, neutralize: bool):
     service = get_output_service()
     manager = _require_dsp_manager()
     factory = build_level_match_scope(
         output_service=service, get_session=lambda: measurement_sr_session,
         get_native_runtime=lambda: runtime.dsp_runtime,
-        build_target=lambda plan, **kwargs: _build_plan_target(
+        build_target=lambda plan, **kwargs: build_plan_target(
             service, manager, plan, rate=target["sample_rate_hz"], **kwargs),
         prepare_measurement=measurement_session._measurement_entry_preflight)
     return factory(job, target, scope, state, neutralize=neutralize)
@@ -5594,7 +5253,7 @@ def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,
         service = get_output_service()
         overview = get_audio_output_overview()
         try:
-            output_key, channels = _output_state_device(overview)
+            output_key, channels = output_state_device(overview)
         except HTTPException:
             return None
         if not channels:
@@ -5609,58 +5268,6 @@ def _stage_bank_v2_context(*, measurement_bank: str, measurement_rate_hz: int,
     except Exception as exc:
         logger.warning("Bank v2 staging failed for measurement: %s", exc)
         return None
-
-
-async def _sync_v2_head_after_bank_assign() -> dict:
-    """Best-effort live sync after a bank preset assignment (import flows).
-
-    Import/create endpoints persist through OutputService without touching
-    the runtime; without this the engine keeps serving the previous bank
-    content until the next unrelated edit.  Never raises: the assignment
-    stays committed when the head cannot activate or the sync fails.
-    """
-    async with _dsp_graph_write_lock():
-        return await _sync_v2_head_locked()
-
-
-async def _sync_v2_head_locked() -> dict:
-    try:
-        overview = await asyncio.to_thread(get_audio_output_overview)
-        try:
-            output_key, channels = _output_state_device(overview)
-        except HTTPException as exc:
-            detail = exc.detail if isinstance(exc.detail, str) else "No audio output device"
-            return {"live_applied": False, "live_reason": detail}
-        status = await asyncio.to_thread(get_samplerate_status)
-        rate = status.get("active_rate")
-        if not isinstance(rate, int) or rate <= 0:
-            rate = status.get("force_rate")
-        if not isinstance(rate, int) or rate <= 0 or not channels:
-            return {"live_applied": False, "live_reason": "rate-unknown"}
-        if runtime.dsp_runtime is None:
-            return {"live_applied": False, "live_reason": "dsp-runtime-unavailable"}
-        service = get_output_service()
-        try:
-            intended_fingerprint = service.fingerprint(
-                service.load_for_activation(), output_key=output_key,
-                channels=channels, sample_rate_hz=rate)
-        except (FileNotFoundError, ValueError):
-            return {"live_applied": False, "live_reason": "not-activatable"}
-        target = await _try_render_v2_sync_target(rate, overview)
-        if target.config.plan_fingerprint != intended_fingerprint:
-            return {"live_applied": False, "live_reason": "not-activatable"}
-        await runtime.dsp_runtime.sync_rendered(target)
-        return {"live_applied": True, "live_reason": None}
-    except Exception as exc:
-        logger.warning("Bank-assign live sync failed: %s", exc)
-        return {"live_applied": False, "live_reason": "live-apply-failed"}
-
-
-async def _sync_v2_extras_runtime() -> None:
-    """Strict extras reconciliation, also on the last applied v2 recovery state."""
-    async with _dsp_graph_write_lock():
-        target, _ = await _render_effects_transition_targets(None, None)
-        await runtime.dsp_runtime.sync_rendered(target)
 
 
 def _create_autosub_release_adapter(*, service, output_key: str, channels: int):
@@ -5705,7 +5312,7 @@ def _create_auto_sub_candidate_session(*, service, start_state: dict, output_key
 
     def build_target(plan, *, fingerprint):
         require_runtime()
-        return _build_plan_target(
+        return build_plan_target(
             service, manager, plan, output_key=output_key, rate=plan["sample_rate_hz"],
             hardware_ports=ports, fingerprint=fingerprint)
 
@@ -5752,7 +5359,7 @@ def _describe_speaker_align_device(state: dict) -> dict:
     del state
     overview = get_audio_output_overview()
     try:
-        output_key, channels = _output_state_device(overview)
+        output_key, channels = output_state_device(overview)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "No audio output device is selected"
         raise ValueError(detail) from exc
@@ -5771,7 +5378,7 @@ def _live_release_device_context() -> dict:
     """
     overview = get_audio_output_overview()
     try:
-        output_key, channels = _output_state_device(overview)
+        output_key, channels = output_state_device(overview)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "No audio output device is selected"
         raise RuntimeError(detail) from exc
@@ -5840,60 +5447,11 @@ def get_speaker_align_service():
     return _speaker_align_service_instance
 
 
-async def _sync_plan_runtime(target, *, reason: str = "output-state-transition") -> None:
-    """Stage a prebuilt plan target on the native runtime (coordinator use)."""
-    del reason
-    if isinstance(target, Mapping):
-        target = PlannedSyncTarget(config=target["config"], text=target["text"])
-    if runtime.dsp_runtime is None:
-        raise RuntimeError("Native DSP runtime is unavailable")
-    await runtime.dsp_runtime.sync_rendered(target)
-
-
-def _refresh_output_state_transition(request) -> None:
-    """Re-render coordinator targets after configuration and graph ownership."""
-    v2 = request.output_state_transition
-    service = get_output_service()
-    if service.load()["revision"] != v2["expected_revision"]:
-        raise StateConflictError("Output state changed during transition prepare")
-    manager = _require_dsp_manager()
-    extras = manager.load_global_extras()
-    token = service.activation_token()
-    ports = list(v2["target"].config.hardware_ports)
-
-    def validate_current():
-        service.require_activation_token(token)
-        if manager.load_global_extras() != extras:
-            raise StateConflictError("Effects extras changed during transition prepare")
-
-    for key, document in (("target", v2["candidate_state"]),
-                          ("previous_target", v2["previous_state"])):
-        if key == "previous_target" and v2.get(key) is None:
-            continue
-        plan = service.compile_plan(document, output_key=v2["output_key"],
-                                    channels=v2["channels"], sample_rate_hz=request.target_rate,
-                                    extras_override=extras)
-        target = _build_plan_target(
-            service, manager, plan, output_key=v2["output_key"], rate=request.target_rate,
-            hardware_ports=ports, fingerprint=service.fingerprint_plan(plan))
-        v2[key] = replace(target, validate_current=validate_current) if key == "target" else target
-    v2["fingerprint"] = v2["target"].config.plan_fingerprint
-
-
-def _output_state_topology(state: dict, mode: str, output_key: str, channels: int | None) -> dict:
-    topology = derive_topology(mode, routing_for_device(state, mode, output_key, channels), channels=channels,
-                               crossover_enabled=effective_crossover_enabled(state, mode, channels))
-    return {"mode": topology.mode, "crossover_enabled": topology.crossover_enabled, "roles": list(topology.roles),
-            "sub_roles": list(topology.sub_roles), "sub_mode": topology.sub_mode,
-            "left_ways": list(topology.left_ways), "right_ways": list(topology.right_ways),
-            "way_count": topology.way_count, "issues": list(topology.issues)}
-
-
 async def _routed_roles(state: dict, mode: str) -> list[str]:
     """Roles ``mode`` routes on the selected output device, as the bank catalog lists them."""
     overview = await asyncio.to_thread(get_audio_output_overview)
-    output_key, channels = _output_state_device(overview)
-    return _output_state_topology(state, mode, output_key, channels)["roles"]
+    output_key, channels = output_state_device(overview)
+    return output_state_topology(state, mode, output_key, channels)["roles"]
 
 
 @app.get("/api/audio/output-state")
@@ -5904,44 +5462,7 @@ async def get_audio_output_state():
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
     overview = await asyncio.to_thread(get_audio_output_overview)
-    output_key, channels = _output_state_device(overview)
-    modes = {}
-    for mode, config in state["modes"].items():
-        topology = _output_state_topology(state, mode, output_key, channels)
-        banks = bank_catalog(config, topology["roles"])
-        if mode == "surround" and "main" in banks:
-            banks["main"]["label"] = "Front L/R"
-        modes[mode] = {
-            "crossover_enabled": config["crossover_enabled"],
-            "selected_bank": selected_bank(config, topology["roles"], mode),
-            "banks": banks,
-            "all_banks": summarize_all_banks([config["banks"][role] for role in topology["roles"]]),
-            "processing": config["processing"],
-            "bass_management": config["bass_management"],
-            "extras": config["extras"],
-            "av_sync": config['av_sync'],
-            "topology": topology,
-        }
-    return {
-        "status": "ok",
-        "revision": state["revision"],
-        "active_mode": state["active_mode"],
-        "device": {
-            "key": output_key,
-            "channels": channels,
-            "routing": {mode: routing_for_device(state, mode, output_key, channels)
-                        for mode in MODES},
-        },
-        "modes": modes,
-        "capabilities": {
-            "modes": list(MODES),
-            "roles": {mode: list(roles_for_mode(mode, crossover_enabled=state["modes"][mode]["crossover_enabled"]))
-                      for mode in MODES},
-            "filter_families": {family: list(slopes) for family, slopes in FILTER_SLOPES.items()},
-            "max_slope_db_oct": 72,
-            "max_biquads_per_output": DSPManager.OUTPUT_FILTER_MAX_BIQUADS,
-        },
-    }
+    return output_api.output_state_response(state, overview)
 
 
 @app.post("/api/audio/output-state/apply")
@@ -5952,8 +5473,8 @@ async def apply_audio_output_state(request: Request):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"expected_revision": <int>, "mutation": {...}}')
     if isinstance(body, dict) and (body.get("mutation") or {}).get("kind") == "switch_mode":
         async with _source_transition_lock():
-            return await finish_then_cancel(_apply_audio_output_state_body(body), what="Output-mode transition")
-    return await _apply_audio_output_state_body(body)
+            return await finish_then_cancel(output_application.apply(body), what="Output-mode transition")
+    return await output_application.apply(body)
 
 
 @app.get('/api/audio/av-sync')
@@ -5991,7 +5512,7 @@ async def _adopt_av_sync_basis(latency: dict) -> None:
         await adopt_latency_basis(
             service=service, native=native, latency=latency,
             measurement_active=write_owner_active,
-            build_target=lambda plan, fingerprint: _build_plan_target(
+            build_target=lambda plan, fingerprint: build_plan_target(
                 service, _require_dsp_manager(), plan, output_key=config['output_key'],
                 rate=config['sample_rate'], hardware_ports=config['hardware_ports'], fingerprint=fingerprint))
 
@@ -6392,7 +5913,7 @@ async def _restore_input_output_mode(previous: dict, overview: dict, *, saved_st
             await _set_surround_carrier_owned(*await _digital_carrier_request(
                 overview, external=True, mode=candidate["active_mode"]))
         return overview
-    await _apply_audio_output_state_body({"expected_revision": state["revision"],
+    await output_application.apply({"expected_revision": state["revision"],
         "mutation": {"kind": "switch_mode", "mode": candidate["active_mode"]}},
         previous_input=previous, sync_ingress=False,
         input_modes_override=saved_state["input_modes"] if saved_state is not None else None)
@@ -6406,527 +5927,6 @@ def _decorate_source_output_mode(overview: dict) -> dict:
         return overview
 
 
-async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | None = None,
-                                         sync_ingress: bool = True, input_modes_override: dict | None = None):
-    mutation = body.get("mutation") if isinstance(body, dict) else None
-    if not isinstance(mutation, dict) or mutation.get("kind") != "switch_mode":
-        return await _apply_audio_output_state_candidate(body, previous_input=previous_input)
-    mode = _require_state_mode(mutation.get("mode"))
-    selection = samplerate._load_audio_source_selection()
-    external = selection.get("mode") == SOURCE_MODE_EXTERNAL_INPUT
-    previous_owned = _surround_carrier_owned
-    previous_clock_card = _surround_clock_card
-    previous_state = get_output_service().load()
-    _build_output_state_mutation(mutation, output_key="", channels=None)(previous_state)
-    if mode == previous_state["active_mode"]:
-        return await _apply_audio_output_state_candidate(body, previous_input=previous_input,
-                                                        input_modes_override=input_modes_override)
-    if (type(body.get("expected_revision")) is not int
-            or body["expected_revision"] != previous_state["revision"]
-            or (measurement_sr_session is not None and measurement_sr_session.has_active_jobs)):
-        return await _apply_audio_output_state_candidate(body, previous_input=previous_input)
-    async with _output_mode_switch_guard():
-        try:
-            await external_input.disable()
-            await _set_surround_carrier_owned(*await _digital_carrier_request(None, external=external, mode=mode))
-            result = await _apply_audio_output_state_candidate(body, previous_input=previous_input,
-                                                               input_modes_override=input_modes_override)
-            if sync_ingress:
-                await external_input.sync()
-        except BaseException:
-            # Never rewind a newer editor or let a failed revert skip hardware
-            # cleanup. Reconcile the surviving head, not the saved graph.
-            recovery_failed = False
-            recovered_mode = None
-            measurement_owned = False
-            service = get_output_service()
-            rate_lock = measurement_sr_session.lock if measurement_sr_session is not None else nullcontext()
-            try:
-                async with rate_lock:
-                    measurement_owned = (measurement_sr_session is not None and (
-                        measurement_sr_session.has_active_jobs
-                        or getattr(measurement_sr_session, "entry_in_progress", False)))
-                    if not measurement_owned:
-                        async with _dsp_mutation_lock(), _dsp_graph_write_lock():
-                            try:
-                                head = service.load()
-                                if head["active_mode"] == mode and head["revision"] == previous_state["revision"] + 1:
-                                    service.revert(previous_state, expected_revision=head["revision"])
-                            except StateConflictError:
-                                logger.warning("Output-mode rollback superseded by a newer edit")
-                            except Exception:
-                                logger.exception("Output-mode state rollback failed; reconciling the surviving head")
-                            overview = await asyncio.to_thread(get_audio_output_overview)
-                            status = await asyncio.to_thread(get_samplerate_status)
-                            rate = status.get("active_rate") or status.get("force_rate")
-                            target = await _try_render_v2_sync_target(rate, overview)
-                            await runtime.dsp_runtime.sync_rendered(target)
-                            recovered_mode = target.config.output_mode
-            except BaseException:
-                recovery_failed = True
-                logger.exception("Output-mode graph recovery failed")
-            if measurement_owned:
-                # The newer owner also owns carrier/ingress restoration.
-                await _mark_ingress_resync_pending()
-                await _mark_policy_rate_restore_pending()
-                raise
-            try:
-                surviving_mode = recovered_mode or service.load()["active_mode"]
-                carrier = ((previous_owned, previous_clock_card)
-                           if surviving_mode == previous_state["active_mode"] else
-                           await _digital_carrier_request(None, external=external, mode=surviving_mode))
-                await _set_surround_carrier_owned(*carrier)
-            except BaseException:
-                recovery_failed = True
-                logger.exception("Output-mode carrier recovery failed")
-            if sync_ingress:
-                try:
-                    await external_input.sync()
-                except BaseException:
-                    recovery_failed = True
-                    logger.exception("Output-mode ingress recovery failed")
-            try:
-                await _resync_stdin_routing()
-            except BaseException:
-                recovery_failed = True
-                logger.exception("Output-mode STDIN recovery failed")
-            if recovery_failed and runtime.dsp_runtime is not None:
-                try:
-                    async with _dsp_graph_write_lock():
-                        await runtime.dsp_runtime.fail_closed("Output-mode recovery failed")
-                except BaseException:
-                    logger.exception("Output-mode fail-closed cleanup failed")
-            raise
-        await _resync_stdin_routing()
-        return result
-
-
-async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dict | None = None,
-                                              input_modes_override: dict | None = None):
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"expected_revision": <int>, "mutation": {...}}')
-    expected_revision = body.get("expected_revision")
-    if type(expected_revision) is bool or not isinstance(expected_revision, int) or expected_revision < 0:
-        raise HTTPException(status_code=400, detail="expected_revision must be a non-negative integer")
-    if measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
-        raise HTTPException(status_code=423, detail="Measurement is active; output state is locked")
-
-    service = get_output_service()
-    try:
-        state = service.load()
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
-    if state["revision"] != expected_revision:
-        raise HTTPException(status_code=409, detail={
-            "code": "revision-conflict", "message": "Output state changed; refresh before applying",
-            "revision": state["revision"]})
-    overview = await asyncio.to_thread(get_audio_output_overview)
-    output_key, channels = _output_state_device(overview)
-    mutate = _build_output_state_mutation(
-        body.get("mutation"), output_key=output_key, channels=channels)
-    try:
-        candidate = await asyncio.to_thread(mutate, state)
-        if (body.get("mutation") or {}).get("kind") == "switch_mode":
-            selection = samplerate._load_audio_source_selection()
-            if input_modes_override is not None:
-                candidate["input_modes"] = dict(input_modes_override)
-            elif previous_input is not None:
-                candidate["input_modes"] = restore_mode(state, previous_input, selection)["input_modes"]
-            if input_modes_override is None:
-                candidate = remember_mode(candidate, selection)
-    except ValueError as exc:
-        raise bad_request(exc)
-
-    status = await asyncio.to_thread(get_samplerate_status)
-    target_rate = status.get("active_rate")
-    if not isinstance(target_rate, int) or target_rate <= 0:
-        target_rate = status.get("force_rate")
-    live_known = isinstance(target_rate, int) and target_rate > 0 and bool(channels)
-    old_plan = new_plan = None
-    fingerprints: dict[str, str | None] = {"old": None, "new": None}
-    if live_known:
-        # A draft that cannot activate (incomplete routing, unresolvable
-        # bank preset) has no meaningful plan or fingerprint; the commit
-        # below still persists it, activation gates on compilability later.
-        for key, document in (("old", state), ("new", candidate)):
-            try:
-                plan = service.compile_plan(
-                    document, output_key=output_key, channels=channels,
-                    sample_rate_hz=target_rate)
-                fingerprints[key] = service.fingerprint_plan(plan)
-            except (FileNotFoundError, ValueError):
-                plan = None
-            if key == "old":
-                old_plan = plan
-            else:
-                new_plan = plan
-
-    old_fp, new_fp = fingerprints["old"], fingerprints["new"]
-    topology_changed = _live_topology_key(
-        state, output_key=output_key, channels=channels, rate=target_rate) != \
-        _live_topology_key(candidate, output_key=output_key, channels=channels, rate=target_rate)
-    coordinator_path = live_known and new_plan is not None and topology_changed
-
-    if coordinator_path:
-        ports = (overview.get("output_mode") or {}).get("hardware_playback_ports") or []
-        if not ports:
-            raise HTTPException(status_code=500, detail="Planned output has no discovered playback ports")
-        manager = _require_dsp_manager()
-        try:
-            new_target = _build_plan_target(service, manager, new_plan, output_key=output_key,
-                                            rate=target_rate, hardware_ports=list(ports),
-                                            fingerprint=new_fp)
-            old_target = None
-            if old_plan is not None:
-                old_target = _build_plan_target(service, manager, old_plan, output_key=output_key,
-                                                rate=target_rate, hardware_ports=list(ports),
-                                                fingerprint=old_fp)
-        except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
-        live_overview = copy.deepcopy(overview)
-        live_overview["output_mode"] = {
-            **(live_overview.get("output_mode") or {}),
-            "mode": new_plan["mode"],
-            "planned_routes": [[signal, port] for signal, port in new_target.config.route_pairs],
-            "output_state_revision": "pending",
-        }
-        if service.load()["revision"] != expected_revision:
-            raise HTTPException(status_code=409, detail={
-                "code": "revision-conflict", "message": "Output state changed during transition prepare",
-                "revision": service.load()["revision"]})
-        context = await _coordinator_current_playback_context()
-        try:
-            await _run_coordinated_transition(TransitionRequest(
-                operation="output-mode-switch",
-                source=str(context.get("source") or "local"),
-                target_rate=target_rate,
-                target_url=context.get("target_url"),
-                target_track=dict(context.get("target_track") or {}),
-                should_play=bool(context.get("should_play")),
-                rate_change=False,
-                reload_source=False,
-                detail="api-audio-output-state",
-                output_mode_target=live_overview,
-                output_state_transition={
-                    "candidate_state": candidate,
-                    "previous_state": state,
-                    "expected_revision": expected_revision,
-                    "fingerprint": new_fp,
-                    "target": new_target,
-                    "previous_target": old_target,
-                    "output_key": output_key,
-                    "channels": channels,
-                }))
-        except StateConflictError as exc:
-            raise HTTPException(status_code=409, detail={
-                "code": "revision-conflict", "message": str(exc),
-                "revision": service.load()["revision"]}) from exc
-        except PlaybackTransitionFailure as exc:
-            cause = exc.__cause__
-            while cause is not None:
-                if isinstance(cause, StateConflictError):
-                    raise HTTPException(status_code=409, detail={
-                        "code": "revision-conflict", "message": str(cause),
-                        "revision": service.load()["revision"]}) from exc
-                if isinstance(cause, MeasurementActiveError):
-                    raise HTTPException(status_code=423, detail=str(cause)) from exc
-                cause = cause.__cause__
-            raise _transition_error_http(exc) from exc
-        committed = service.load()
-        return {
-            "status": "ok",
-            "revision": committed["revision"],
-            "active_mode": committed["active_mode"],
-            "fingerprint": new_fp,
-            "fingerprint_changed": True,
-            "live_applied": True,
-            "live_reason": None,
-            "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
-        }
-
-    rate_lock = measurement_sr_session.lock if measurement_sr_session is not None else nullcontext()
-    async with rate_lock, _dsp_graph_write_lock():
-        return await _apply_output_state_fast(
-            body, service=service, state=state, candidate=candidate, overview=overview,
-            output_key=output_key, channels=channels, target_rate=target_rate,
-            live_known=live_known, old_plan=old_plan, new_plan=new_plan,
-            old_fp=old_fp, new_fp=new_fp, expected_revision=expected_revision)
-
-
-async def _apply_output_state_fast(body, *, service, state, candidate, overview,
-                                   output_key, channels, target_rate, live_known,
-                                   old_plan, new_plan, old_fp, new_fp, expected_revision):
-    """Render, commit and reconcile one edit under graph-write ownership."""
-    current_overview = await asyncio.to_thread(get_audio_output_overview)
-    current_status = await asyncio.to_thread(get_samplerate_status)
-    current_rate = current_status.get("active_rate") or current_status.get("force_rate")
-    try:
-        current_device = _output_state_device(current_overview)
-    except HTTPException:
-        current_device = None
-    if (current_device != (output_key, channels) or current_rate != target_rate
-            or (current_overview.get("output_mode") or {}).get("hardware_playback_ports")
-            != (overview.get("output_mode") or {}).get("hardware_playback_ports")):
-        raise HTTPException(status_code=409, detail={
-            "code": "output-context-conflict", "message": "Output device or rate changed; retry the edit",
-            "revision": service.load()["revision"]})
-    rendered_extras = None
-    # Stage render targets BEFORE committing: a candidate that compiles but
-    # cannot render (unstable coefficients, unresolvable IR, missing ports)
-    # must fail here with the last good head still live -- never as a
-    # committed-but-unrunnable poison head that every later background sync
-    # trips over.
-    staged_new_target = staged_old_target = None
-    staged_guard = 0.0
-    if (live_known and new_plan is not None
-            and runtime.dsp_runtime is not None
-            and (overview.get("output_mode") or {}).get("hardware_playback_ports")):
-        manager = _require_dsp_manager()
-        rendered_extras = manager.load_global_extras()
-        # The edit may have queued behind an extras writer. Refresh both plan
-        # identities under graph ownership, using the same rendering snapshot.
-        for key, document in (("old", state), ("new", candidate)):
-            try:
-                plan = service.compile_plan(
-                    document, output_key=output_key, channels=channels,
-                    sample_rate_hz=target_rate, extras_override=rendered_extras)
-                fingerprint = service.fingerprint_plan(plan)
-            except (FileNotFoundError, ValueError):
-                plan, fingerprint = None, None
-            if key == "old":
-                old_plan, old_fp = plan, fingerprint
-            else:
-                new_plan, new_fp = plan, fingerprint
-    if (live_known and new_plan is not None and old_fp != new_fp
-            and runtime.dsp_runtime is not None
-            and (overview.get("output_mode") or {}).get("hardware_playback_ports")):
-        ports = list((overview.get("output_mode") or {}).get("hardware_playback_ports") or [])
-        try:
-            staged_new_target = _build_plan_target(
-                service, manager, new_plan, output_key=output_key,
-                rate=target_rate, hardware_ports=ports, fingerprint=new_fp)
-            if old_plan is not None:
-                staged_old_target = _build_plan_target(
-                    service, manager, old_plan, output_key=output_key,
-                    rate=target_rate, hardware_ports=ports, fingerprint=old_fp)
-        except (RuntimeError, ValueError) as exc:
-            logger.warning("Output-state staging failed before commit (head unchanged): %s", exc)
-            raise HTTPException(status_code=500, detail=f"Planned output cannot stage: {exc}")
-        if staged_old_target is not None:
-            previous_gain = float((runtime.dsp_runtime.snapshot() or {}).get("output_gain_db") or 0.0)
-            staged_guard = _plan_transition_guard(
-                staged_old_target.config.layout, staged_new_target.config.layout, previous_gain)
-
-    try:
-        # A measurement job may have taken the graph during the awaits above.
-        mutation = body.get("mutation") or {}
-        if mutation.get("kind") == "set_level_calibration":
-            await asyncio.to_thread(level_match_api.validate_result, mutation, service.load())
-        committed = service.commit_unowned(candidate, expected_revision=expected_revision)
-        if mutation.get("kind") == "set_level_calibration":
-            level_match_api.mark_result_applied(mutation)
-    except StateConflictError as exc:
-        raise HTTPException(status_code=409, detail={
-            "code": "revision-conflict", "message": str(exc),
-            "revision": service.load()["revision"]}) from exc
-    except MeasurementActiveError as exc:
-        raise HTTPException(status_code=423, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise bad_request(exc)
-
-    token = service.activation_token()
-
-    def require_revision(expected_revision, expected_token):
-        if service.load()["revision"] != expected_revision:
-            raise StateConflictError("Output state changed during output-state activation")
-        service.require_activation_token(expected_token)
-        if rendered_extras is not None and manager.load_global_extras() != rendered_extras:
-            raise StateConflictError("Effects extras changed during output-state activation")
-
-    def require_current():
-        require_revision(committed["revision"], token)
-
-    if staged_new_target is not None:
-        staged_new_target = replace(staged_new_target, validate_current=require_current)
-    if staged_old_target is not None:
-        staged_old_target = replace(staged_old_target, validate_current=require_current)
-
-    def draft_response(reason: str) -> dict:
-        return {
-            "status": "ok",
-            "revision": committed["revision"],
-            "active_mode": committed["active_mode"],
-            "fingerprint": new_fp,
-            "fingerprint_changed": None if old_fp is None or new_fp is None else old_fp != new_fp,
-            "live_applied": False,
-            "live_reason": reason,
-            "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
-        }
-
-    if not live_known:
-        return draft_response("rate-unknown" if not target_rate else "output-capacity-unknown")
-    if new_plan is None:
-        return draft_response("not-activatable")
-    if staged_new_target is None:
-        if old_fp is not None and old_fp == new_fp:
-            return draft_response("nothing-to-apply")
-        if runtime.dsp_runtime is None:
-            return draft_response("dsp-runtime-unavailable")
-        return draft_response("output-ports-undiscovered")
-    if staged_old_target is None:
-        # The stored head becomes activatable with this commit (e.g. the
-        # missing crossover starter filters were just supplied).  There is no
-        # previous valid graph to guard against or roll back to: sync the new
-        # plan directly.  Returning "not-activatable" here would persist the
-        # valid head while leaving the stale engine behind, so every later
-        # edit looks like the first audible change.
-        try:
-            await runtime.dsp_runtime.sync_rendered(staged_new_target)
-            service.remember_applied(committed, output_key=output_key, channels=channels,
-                                     hardware_ports=ports, sample_rate_hz=target_rate,
-                                     fingerprint=new_fp)
-        except BaseException as exc:
-            try:
-                require_current()
-                service.revert(state, expected_revision=committed["revision"])
-            except BaseException:
-                logger.exception("Output-state activation rollback failed")
-            logger.warning("Output-state activation failed after commit: %s", exc)
-            raise HTTPException(status_code=500, detail={
-                "code": "live-apply-failed", "message": str(exc),
-                "revision": service.load()["revision"],
-                "rollback": "committed"}) from exc
-        return {
-            "status": "ok",
-            "revision": committed["revision"],
-            "active_mode": committed["active_mode"],
-            "fingerprint": new_fp,
-            "fingerprint_changed": True,
-            "live_applied": True,
-            "live_reason": None,
-            "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
-        }
-    try:
-        await runtime.dsp_runtime.guarded_rebuild_rendered(
-            staged_new_target, previous=staged_old_target, guard_db=staged_guard,
-            apply_candidate=require_current, apply_previous=require_current,
-            settle_seconds=0.0)
-        service.remember_applied(committed, output_key=output_key, channels=channels,
-                                 hardware_ports=ports, sample_rate_hz=target_rate,
-                                 fingerprint=new_fp)
-    except BaseException as exc:
-        rolled_back = False
-        try:
-            require_current()
-            reverted = service.revert(state, expected_revision=committed["revision"])
-            rolled_back = True
-            reverted_token = service.activation_token()
-            rollback_target = replace(staged_old_target, validate_current=lambda: require_revision(
-                reverted["revision"], reverted_token))
-            await runtime.dsp_runtime.sync_rendered(rollback_target, initial_output_gain_db=staged_guard)
-        except BaseException:
-            logger.exception("Output-state fast-path rollback failed")
-        logger.warning("Output-state live apply failed (rollback=%s): %s",
-                       "committed" if rolled_back else "conflicted", exc)
-        raise HTTPException(status_code=500, detail={
-            "code": "live-apply-failed", "message": str(exc),
-            "revision": service.load()["revision"] if rolled_back else committed["revision"],
-            "rollback": "committed" if rolled_back else "conflicted"}) from exc
-    return {
-        "status": "ok",
-        "revision": committed["revision"],
-        "active_mode": committed["active_mode"],
-        "fingerprint": new_fp,
-        "fingerprint_changed": True,
-        "live_applied": True,
-        "live_reason": None,
-        "topology": _output_state_topology(committed, committed["active_mode"], output_key, channels),
-    }
-
-
-def _crossover_bass_highpass(mode_config: dict, topology: dict, role: str) -> dict | None:
-    """Sub crossover high-pass the DSP adds on top of stored way filters.
-
-    Mirrors ``dsp.processing_plan._crossover_filters``: with routed subs and
-    ``main_highpass_enabled`` every speaker way runs through the sub
-    crossover, its type and slope included. A true Stereo sub pair resolves
-    per side while unlinked; Mono and Dual-Mono run the shared crossover.
-    The speaker tile must show the same curve, so the response endpoint
-    reuses this definition.
-    """
-    bass = (mode_config or {}).get("bass_management") or {}
-    sub_roles = (topology or {}).get("sub_roles") or []
-    if not sub_roles or bass.get("main_highpass_enabled") is not True:
-        return None
-    try:
-        definition = (bass_crossover_for_side(bass, side_for_role(role))
-                      if (topology or {}).get("sub_mode") == "stereo"
-                      else shared_bass_crossover(bass))
-        frequency = float(definition["frequency_hz"])
-    except (TypeError, ValueError, KeyError):
-        return None
-    if not 40 <= frequency <= 200:
-        return None
-    return {"family": definition["family"], "slope_db_oct": definition["slope_db_oct"],
-            "frequency_hz": int(round(frequency))}
-
-
-def _crossover_way_required(role: str) -> tuple[str, ...]:
-    """Directions a crossover way defines: Low its low-pass, High its high-pass."""
-    if role.endswith("low"):
-        return ("lowpass",)
-    if role.endswith("high"):
-        return ("highpass",)
-    return ("highpass", "lowpass")
-
-
-def _crossover_way_complete(role: str, role_settings: dict) -> bool:
-    """Whether every direction of the way is stored (any Off direction is not)."""
-    return all(role_settings.get(kind) is not None for kind in _crossover_way_required(role))
-
-
-def _crossover_way_points(role: str, role_settings: dict, sample_rate_hz: int,
-                          point_count: int = 180, extra_highpass: dict | None = None) -> list | None:
-    """Evaluate one way's crossover filters to log-spaced magnitude points.
-
-    Returns None only when a stored filter cannot be evaluated. A cleared
-    (Off) direction is a valid operating state and simply contributes no
-    filter, so the curve shows the band the way actually runs; whether all
-    required directions are set is reported separately as ``complete``.
-    Only crossover filters shape this curve; area-bank PEQ/FIR correction is
-    visualized in the measurement graph instead. ``extra_highpass`` carries
-    the shared bass high-pass from the subwoofer tile; it never satisfies a
-    stored way filter, it only shapes the running curve.
-    """
-    try:
-        sections = []
-        for kind in ("highpass", "lowpass"):
-            definition = role_settings.get(kind)
-            if definition is None:
-                continue
-            sections.extend(design_crossover(
-                {"kind": kind, "family": definition["family"],
-                 "slope_db_oct": definition["slope_db_oct"],
-                 "frequency_hz": definition["frequency_hz"]}, sample_rate_hz))
-        if extra_highpass is not None:
-            sections.extend(design_crossover(
-                {"kind": "highpass", "family": extra_highpass["family"],
-                 "slope_db_oct": extra_highpass["slope_db_oct"],
-                 "frequency_hz": extra_highpass["frequency_hz"]}, sample_rate_hz))
-    except (ValueError, KeyError, TypeError):
-        return None
-    points = []
-    for index in range(point_count):
-        frequency = 20.0 * (20000.0 / 20.0) ** (index / (point_count - 1))
-        total = 1.0 + 0.0j
-        for section in sections:
-            b0, b1, b2, _, a1, a2 = section
-            z = cmath.exp(2j * math.pi * frequency / sample_rate_hz)
-            total *= (b0 + b1 / z + b2 / z / z) / (1.0 + a1 / z + a2 / z / z)
-        points.append([round(frequency, 3), round(20.0 * math.log10(abs(total)), 3)])
-    return points
-
-
 @app.get("/api/audio/output-state/crossover-response")
 async def get_audio_output_state_crossover_response():
     service = get_output_service()
@@ -6935,35 +5935,8 @@ async def get_audio_output_state_crossover_response():
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
     status = await asyncio.to_thread(get_samplerate_status)
-    rate = status.get("active_rate")
-    if not isinstance(rate, int) or rate <= 0:
-        rate = status.get("force_rate")
-    if not isinstance(rate, int) or rate <= 0:
-        rate = 48000
-    mode = state["active_mode"]
-    ways = {}
     overview = await asyncio.to_thread(get_audio_output_overview)
-    output_key, channels = _output_state_device(overview)
-    topology = _output_state_topology(state, mode, output_key, channels)
-    mode_config = state["modes"][mode]
-    for role, settings in mode_config["processing"].items():
-        if not topology["crossover_enabled"] or role not in topology["roles"]:
-            continue
-        if not (role.startswith("left_") or role.startswith("right_")):
-            continue
-        bass_highpass = _crossover_bass_highpass(mode_config, topology, role)
-        points = _crossover_way_points(role, settings, rate, extra_highpass=bass_highpass)
-        ways[role] = {
-            "filters": {"highpass": settings["highpass"], "lowpass": settings["lowpass"]},
-            "derived_highpass": dict(bass_highpass) if bass_highpass else None,
-            "complete": _crossover_way_complete(role, settings),
-            "points": points,
-        }
-    return {"status": "ok", "revision": state["revision"], "mode": mode,
-            "crossover_enabled": topology["crossover_enabled"],
-            "bass_management": dict(mode_config["bass_management"]),
-            "sub_roles": list(topology["sub_roles"]),
-            "sample_rate_hz": rate, "ways": ways}
+    return output_api.crossover_response(state, overview, status)
 
 
 @app.post("/api/debug/21-runtime-state")
@@ -7761,6 +6734,44 @@ def run_server():
     uvicorn_log_level = "debug" if str(settings.LOG_LEVEL).strip().lower() == "verbose" else settings.LOG_LEVEL.lower()
     uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, log_level=uvicorn_log_level, reload=False)
 
+
+# Output owners retain no graph state; getters bind the existing live owners.
+output_renderer = OutputRenderer(OutputRenderDeps(
+    get_service=lambda: get_output_service(),
+    get_manager=lambda: _require_dsp_manager(),
+    get_runtime=lambda: runtime.dsp_runtime,
+    get_overview=lambda: get_audio_output_overview(),
+    get_status=lambda: get_samplerate_status(),
+    graph_write_lock=lambda: _dsp_graph_write_lock(),
+    mutation_lock=lambda: _dsp_mutation_lock(),
+    volume_state_for_manager=lambda manager: _volume_state_for_manager(manager),
+))
+output_application = OutputApplication(OutputApplyDeps(
+    renderer=output_renderer,
+    get_service=lambda: get_output_service(),
+    get_manager=lambda: _require_dsp_manager(),
+    get_runtime=lambda: runtime.dsp_runtime,
+    get_session=lambda: measurement_sr_session,
+    get_overview=lambda: get_audio_output_overview(),
+    get_status=lambda: get_samplerate_status(),
+    graph_write_lock=lambda: _dsp_graph_write_lock(),
+    mutation_lock=lambda: _dsp_mutation_lock(),
+    mode_switch_guard=lambda: _output_mode_switch_guard(),
+    get_carrier=lambda: (_surround_carrier_owned, _surround_clock_card),
+    set_carrier=lambda *args: _set_surround_carrier_owned(*args),
+    carrier_request=lambda *args, **kwargs: _digital_carrier_request(*args, **kwargs),
+    disable_external_input=lambda: external_input.disable(),
+    sync_external_input=lambda: external_input.sync(),
+    resync_stdin=lambda: _resync_stdin_routing(),
+    mark_ingress_pending=lambda: _mark_ingress_resync_pending(),
+    mark_policy_pending=lambda: _mark_policy_rate_restore_pending(),
+    current_playback_context=lambda: _coordinator_current_playback_context(),
+    run_transition=lambda request: _run_coordinated_transition(request),
+    transition_error_http=lambda exc: _transition_error_http(exc),
+    source_selection=lambda: samplerate._load_audio_source_selection(),
+    validate_level_result=lambda *args: level_match_api.validate_result(*args),
+    mark_level_applied=lambda mutation: level_match_api.mark_result_applied(mutation),
+))
 
 dsp_api.register_dsp_routes(app, _make_dsp_api_deps())
 volume_state.configure_volume_state(_make_volume_state_deps())

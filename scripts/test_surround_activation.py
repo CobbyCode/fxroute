@@ -55,14 +55,14 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
                 "mode": "external-input", "selected_input_key": "scarlett::pair:9-10"}),
             patch.object(main, "external_input", self.input),
             patch.object(main, "_set_surround_carrier_owned", AsyncMock()),
-            patch.object(main, "_sync_v2_head_after_bank_assign", AsyncMock()),
+            patch.object(main.output_renderer, "sync_head_after_bank_assign", AsyncMock()),
             patch.object(main, "measurement_sr_session", None),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
 
     async def switch(self):
-        return await main._apply_audio_output_state_body({"expected_revision": self.state["revision"],
+        return await main.output_application.apply({"expected_revision": self.state["revision"],
             "mutation": {"kind": "switch_mode", "mode": "surround"}})
 
     async def test_activation_uses_eight_input_plan_and_remembers_selected_pair(self):
@@ -112,21 +112,27 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
         stdin.resync_routing.assert_awaited_once_with()
 
     async def switch_to(self, mode):
-        return await main._apply_audio_output_state_body({"expected_revision": self.service.load()["revision"],
+        return await main.output_application.apply({"expected_revision": self.service.load()["revision"],
             "mutation": {"kind": "switch_mode", "mode": mode}})
 
     def digital_input(self):
         return {"mode": "external-input",
                 "selected_input": {"key": "scarlett::pair:9-10", "alsa_card": 3}}
 
+    def start_in_surround(self):
+        self.service.commit({**self.state, "active_mode": "surround"},
+                            expected_revision=self.state["revision"])
+
     async def test_external_input_on_a_digital_card_owns_the_carrier_outside_surround(self):
         """The S/PDIF pair needs the borrowed carrier in Stereo and Stereo + Sub too."""
+        self.start_in_surround()
         with patch.object(main, "get_audio_source_overview", return_value=self.digital_input()), \
                 patch.object(main.alsa_ctl, "has_digital_receiver", return_value=True):
             await self.switch_to("stereo")
         main._set_surround_carrier_owned.assert_awaited_with(True, 3)
 
     async def test_automatic_pair_ingress_borrows_48khz_without_a_digital_receiver(self):
+        self.start_in_surround()
         with patch.object(main, "get_audio_source_overview", return_value=self.digital_input()), \
                 patch.object(main.alsa_ctl, "has_digital_receiver", return_value=False):
             await self.switch_to("stereo")
@@ -139,12 +145,19 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
         main._set_surround_carrier_owned.assert_awaited_with(True, None)
 
     async def test_app_playback_switch_releases_the_carrier_without_reading_the_sources(self):
+        self.start_in_surround()
         with patch.object(main.samplerate, "_load_audio_source_selection",
                           return_value={"mode": "app-playback"}), \
                 patch.object(main, "get_audio_source_overview") as overview:
             await self.switch_to("stereo")
         main._set_surround_carrier_owned.assert_awaited_with(False, None)
         overview.assert_not_called()
+
+    async def test_same_mode_edit_does_not_cycle_carrier_or_ingress(self):
+        await self.switch_to("stereo")
+        main._set_surround_carrier_owned.assert_not_awaited()
+        self.input.disable.assert_not_awaited()
+        self.input.sync.assert_not_awaited()
 
     async def test_monitored_digital_input_holds_the_carrier(self):
         """The input sync keeps the carrier, so a start with it selected works too."""
@@ -201,7 +214,7 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_mutation_has_no_ingress_or_clock_side_effects(self):
         with self.assertRaises(main.HTTPException) as raised:
-            await main._apply_audio_output_state_body({"expected_revision": self.state["revision"],
+            await main.output_application.apply({"expected_revision": self.state["revision"],
                 "mutation": {"kind": "switch_mode", "mode": "surround", "unknown": 1}})
         self.assertEqual(raised.exception.status_code, 400)
         self.input.disable.assert_not_awaited()

@@ -625,7 +625,7 @@ class MainTopologyBranchTests(unittest.TestCase):
         fake = mock.MagicMock()
         fake.sync_rendered = AsyncMock()
         with mock.patch.object(main.runtime, "dsp_runtime", fake):
-            asyncio.run(main._sync_plan_runtime({"config": "c", "text": "t"}))
+            asyncio.run(main.output_renderer.sync_plan_runtime({"config": "c", "text": "t"}))
         fake.sync_rendered.assert_awaited_once()
         target = fake.sync_rendered.await_args.args[0]
         self.assertEqual((target.config, target.text), ("c", "t"))
@@ -633,7 +633,7 @@ class MainTopologyBranchTests(unittest.TestCase):
     def test_sync_plan_runtime_without_runtime_fails(self):
         with mock.patch.object(main.runtime, "dsp_runtime", None):
             with self.assertRaises(RuntimeError):
-                asyncio.run(main._sync_plan_runtime({"config": "c", "text": "t"}))
+                asyncio.run(main.output_renderer.sync_plan_runtime({"config": "c", "text": "t"}))
 
 
 class StabilizeStagedGraphTests(unittest.IsolatedAsyncioTestCase):
@@ -683,7 +683,7 @@ class StabilizeStagedGraphTests(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.get_running_loop()
         self.manager.runtime_transition_callback = (
             lambda previous, current, persist: asyncio.run_coroutine_threadsafe(
-                main._guarded_effects_transition(previous, current, persist), loop).result())
+                 main.output_renderer.guarded_effects_transition(previous, current, persist), loop).result())
         with mock.patch.multiple(
                 main,
                 get_output_service=mock.MagicMock(return_value=self.service),

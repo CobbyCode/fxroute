@@ -51,7 +51,7 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
             main.runtime.dsp_mutation_lock = None
             with mock.patch.object(main, "_require_dsp_manager", return_value=manager), mock.patch.object(
                 main, "_drain_worker", new=cancel_after_commit
-            ), mock.patch.object(main, "_sync_v2_extras_runtime", new=reload_active), mock.patch.object(
+            ), mock.patch.object(main.output_renderer, "sync_extras_runtime", new=reload_active), mock.patch.object(
                 main, "_volume_state_for_manager", new=mock.AsyncMock()
             ), mock.patch.object(
                 volume_state, "_restore_volume_state", new=mock.AsyncMock()
@@ -92,7 +92,7 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
         main.runtime.canonical_volume_write_lock = None
         main.runtime.dsp_mutation_lock = None
         with mock.patch.object(main, "_require_dsp_manager", return_value=manager), mock.patch.object(
-            main, "_sync_v2_extras_runtime", new=reload_active
+            main.output_renderer, "sync_extras_runtime", new=reload_active
         ), mock.patch.object(main.runtime, "dsp_runtime", runtime), mock.patch.object(
             main, "_volume_state_for_manager", new=mock.AsyncMock()
         ), mock.patch.object(
@@ -147,7 +147,7 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
             with mock.patch.object(manager, "apply_global_extras_to_all_presets", new=record_apply), mock.patch.object(
                 main, "_require_dsp_manager", return_value=manager
             ), mock.patch.object(
-                main, "_sync_v2_extras_runtime", new=reload_active
+                main.output_renderer, "sync_extras_runtime", new=reload_active
             ), mock.patch.object(main, "_volume_state_for_manager", new=mock.AsyncMock()), mock.patch.object(
                 volume_state, "_restore_volume_state", new=mock.AsyncMock()
             ), mock.patch.object(
@@ -200,7 +200,7 @@ class ExtrasReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 main.runtime.canonical_volume_write_lock = None
                 main.runtime.dsp_mutation_lock = None
                 with mock.patch.object(main, "_require_dsp_manager", return_value=manager), mock.patch.object(
-                    main, "_sync_v2_extras_runtime", new=reload_active
+                    main.output_renderer, "sync_extras_runtime", new=reload_active
                 ), mock.patch.object(
                     main, "_volume_state_for_manager", new=mock.AsyncMock()
                 ), mock.patch.object(

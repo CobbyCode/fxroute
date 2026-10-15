@@ -104,6 +104,7 @@ class UnifiedOutputTests(unittest.TestCase):
 
     def test_api_catalog_and_atomic_sub_edit_use_one_state(self):
         import main
+        from audio.output_api import build_output_state_mutation
         from audio.output_service import OutputService, OutputServiceDeps
         with tempfile.TemporaryDirectory() as directory:
             service = OutputService(OutputServiceDeps(OutputStateStore(Path(directory) / 'state.json'),
@@ -118,10 +119,11 @@ class UnifiedOutputTests(unittest.TestCase):
             self.assertEqual(catalog['capabilities']['modes'], ['stereo', 'stereo-sub', 'surround'])
             self.assertFalse(catalog['modes']['stereo-sub']['crossover_enabled'])
             self.assertEqual(catalog['modes']['stereo-sub']['topology']['sub_mode'], 'stereo')
-            mutation = main._build_output_state_mutation({'kind': 'set_subwoofers', 'mode': 'stereo-sub',
+            mutation = build_output_state_mutation({'kind': 'set_subwoofers', 'mode': 'stereo-sub',
                 'frequency_hz': 95, 'main_highpass_enabled': False, 'processing': {
                     'sub_l': {'level_db': -4, 'alignment_ms': 3, 'polarity': 'normal'},
-                    'sub_r': {'level_db': -7, 'alignment_ms': 2, 'polarity': 'invert'}}}, output_key='A', channels=4)
+                    'sub_r': {'level_db': -7, 'alignment_ms': 2, 'polarity': 'invert'}}}, output_key='A', channels=4,
+                    get_service=lambda: service, validate_level_result=lambda *_args: None)
             updated = service.apply(mutation, expected_revision=1)
             self.assertEqual(updated['revision'], 2)
             self.assertEqual(updated['modes']['stereo-sub']['bass_management']['frequency_hz'], 95)

@@ -2,18 +2,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Crossover way-response endpoint: backend-evaluated filter curves."""
 
-import asyncio
 import math
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import main
+from audio.output_api import crossover_response
 from audio.output_service import OutputService, OutputServiceDeps
 from audio.output_state import (default_bass_management, default_output_state,
                                 set_bass_management, set_crossover, set_mode_routing,
@@ -61,16 +59,10 @@ class WayResponseTests(unittest.TestCase):
         crossover_state(self.service)
 
     def fetch(self, rate=48000):
-        with mock.patch.multiple(
-            main,
-            get_output_service=mock.MagicMock(return_value=self.service),
-            get_samplerate_status=mock.MagicMock(return_value={"active_rate": rate}),
-            get_audio_output_overview=mock.MagicMock(return_value={
-                "selected_output": {"key": "A", "channels": 6},
-                "output_mode": {"effective_output_key": "A", "effective_output_channels": 6},
-            }),
-        ):
-            return asyncio.run(main.get_audio_output_state_crossover_response())
+        return crossover_response(self.service.load(), {
+            "selected_output": {"key": "A", "channels": 6},
+            "output_mode": {"effective_output_key": "A", "effective_output_channels": 6},
+        }, {"active_rate": rate})
 
     def test_lr24_cutoff_and_structure(self):
         payload = self.fetch()

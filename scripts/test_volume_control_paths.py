@@ -541,7 +541,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
         extras_sync = mock.AsyncMock()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main, "dsp_manager", fake
-        ), mock.patch.object(main, "_sync_v2_extras_runtime", extras_sync), mock.patch.object(
+        ), mock.patch.object(main.output_renderer, "sync_extras_runtime", extras_sync), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
             await dsp_api.save_dsp_extras(FakeRequest())
@@ -587,7 +587,7 @@ class DSPExtrasVolumeTests(unittest.IsolatedAsyncioTestCase):
             main, "set_output_volume", side_effect=lambda value: order.append(f"set-{value}") or value
         ), mock.patch.object(
             main, "get_output_volume", return_value=42
-        ), mock.patch.object(main, "_sync_v2_extras_runtime", mock.AsyncMock()):
+        ), mock.patch.object(main.output_renderer, "sync_extras_runtime", mock.AsyncMock()):
             with self.assertRaises(RuntimeError):
                 await dsp_api.save_dsp_extras(FakeExtrasRequest())
 

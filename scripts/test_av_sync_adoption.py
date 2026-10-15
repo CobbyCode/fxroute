@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
+from dsp.output_render import build_plan_target
 from test_output_state_api import make_manager, make_service
 from test_av_sync_src import graph
 from audio.src_latency import graph_src_latency
@@ -46,7 +47,7 @@ class AdoptionTests(unittest.IsolatedAsyncioTestCase):
         self.stages = 0
 
     def build_target(self, plan, *, fingerprint):
-        return main._build_plan_target(self.service, self.manager, plan, output_key='A', rate=48000,
+        return build_plan_target(self.service, self.manager, plan, output_key='A', rate=48000,
                                        hardware_ports=['playback_FL', 'playback_FR'], fingerprint=fingerprint)
 
     def snapshot(self):

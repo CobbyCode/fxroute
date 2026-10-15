@@ -638,7 +638,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", None
         ), patch.object(
             playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main, "_sync_plan_runtime", new=AsyncMock()
+        ), patch.object(main.output_renderer, "sync_plan_runtime", new=AsyncMock()
         ), patch.object(playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
             samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
         ), patch.object(
@@ -704,7 +704,7 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
             main, "dsp_manager", None
         ), patch.object(
             playback_orchestration.configured(), "playback_graph_diagnosis", new=AsyncMock(side_effect=[incomplete, incomplete, complete])
-        ), patch.object(main, "_sync_plan_runtime", new=AsyncMock()
+        ), patch.object(main.output_renderer, "sync_plan_runtime", new=AsyncMock()
         ), patch.object(playback_orchestration.configured(), "wait_for_dsp_output_ports", new=AsyncMock(return_value=True)), patch.object(
             samplerate, "reconcile_transition_sink_rate", new=AsyncMock(return_value=True)
         ), patch.object(

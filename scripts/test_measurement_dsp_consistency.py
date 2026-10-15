@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import main
+from dsp.output_render import build_plan_target
 import test_output_state_lifecycle as lifecycle
 from audio.output_state import set_bank_preset
 from dsp import api as dsp_api
@@ -64,7 +65,7 @@ class MeasurementConsistencyTests(unittest.IsolatedAsyncioTestCase):
         return compile_plan(self.service.load(), output_key="A", channels=4, sample_rate_hz=48000)
 
     def render(self, plan):
-        return main._build_plan_target(
+        return build_plan_target(
             self.service, self.manager, plan, output_key="A", rate=48000,
             hardware_ports=lifecycle.PORTS, fingerprint=self.service.fingerprint_plan(plan))
 
@@ -103,7 +104,7 @@ class MeasurementConsistencyTests(unittest.IsolatedAsyncioTestCase):
         previous = self.manager.load_global_extras()
         candidate = copy.deepcopy(previous)
         candidate["headroom"].update(enabled=True, params={"gainDb": -6})
-        new, old = await main._render_effects_transition_targets(previous, candidate)
+        new, old = await main.output_renderer.render_effects_targets(previous, candidate)
         self.assertNotEqual(new.config.plan_fingerprint, old.config.plan_fingerprint)
         for target in (new, old):
             target.on_applied()

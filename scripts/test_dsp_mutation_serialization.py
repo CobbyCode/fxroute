@@ -262,7 +262,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"), \
-                mock.patch.object(main, "_sync_v2_extras_runtime", mock.AsyncMock()), \
+                mock.patch.object(main.output_renderer, "sync_extras_runtime", mock.AsyncMock()), \
                 mock.patch.object(main, "get_output_volume", return_value=27):
             upload_task = asyncio.create_task(dsp_api.upload_dsp_ir(FakeUploadFile()))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
@@ -381,7 +381,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeManager()
         live_sync = mock.AsyncMock()
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
-            main, "_sync_v2_head_after_bank_assign", live_sync
+            main.output_renderer, "sync_head_after_bank_assign", live_sync
         ), mock.patch.object(main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
             main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"
         ):
@@ -428,7 +428,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         order = []
         fake = await self._extras_fake_manager(order)
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
-            main, "_sync_v2_extras_runtime", fake_extras_sync
+            main.output_renderer, "sync_extras_runtime", fake_extras_sync
         ), mock.patch.object(main, "_volume_state_for_manager", mock.AsyncMock()), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):
@@ -457,7 +457,7 @@ class DSPMutationSerializationTests(unittest.IsolatedAsyncioTestCase):
         order = []
         fake = await self._extras_fake_manager(order)
         with mock.patch.object(main, "_require_dsp_manager", return_value=fake), mock.patch.object(
-            main, "_sync_v2_extras_runtime", fake_extras_sync
+            main.output_renderer, "sync_extras_runtime", fake_extras_sync
         ), mock.patch.object(main, "_volume_state_for_manager", mock.AsyncMock()), mock.patch.object(
             main.manager, "broadcast", mock.AsyncMock()
         ), mock.patch.object(main.dsp_orchestrator, "schedule_peak_monitor_refresh_after_effects_change"):

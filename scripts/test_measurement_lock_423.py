@@ -134,7 +134,7 @@ class LateMeasurementOwnerTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "_require_dsp_manager", return_value=rig.manager),
             patch.object(main.runtime, "dsp_runtime", runtime),
         ):
-            worker = asyncio.create_task(main._apply_audio_output_state_body({
+            worker = asyncio.create_task(main.output_application.apply({
                 "expected_revision": rig.base["revision"],
                 "mutation": {"kind": "set_processing", "mode": "stereo-sub",
                              "role": "left_low", "level_db": -5.0}}))

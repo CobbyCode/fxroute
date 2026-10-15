@@ -212,7 +212,7 @@ class AutoSubBasisTests(unittest.IsolatedAsyncioTestCase):
                              for source, target in self.ingress_fixture.links))
         with patch.object(main.runtime, 'dsp_runtime', native), \
                 patch.object(main, '_require_dsp_manager', return_value=self.fixture.manager), \
-                patch.object(main, '_build_plan_target', side_effect=lambda service, manager, plan, **kwargs:
+                patch.object(main, 'build_plan_target', side_effect=lambda service, manager, plan, **kwargs:
                     self.fixture.build_target(plan, fingerprint=kwargs['fingerprint'])):
             owner = main._create_auto_sub_candidate_session(
                 service=self.fixture.service, start_state=self.fixture.base,

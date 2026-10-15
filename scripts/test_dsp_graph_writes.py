@@ -25,6 +25,7 @@ from audio.output_state_store import StateConflictError
 from dsp import api as dsp_api
 from dsp.orchestration import DspOrchestrator
 from dsp.runtime import CommandResult, DSPRuntime
+from dsp.output_render import build_plan_target
 from playback.runtime import FxrouteTransitionRuntime
 from playback.transition import TransitionRequest
 
@@ -90,6 +91,11 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         patch = mock.patch.object(main, "get_samplerate_status", side_effect=rate_status)
         status_read = patch.start()
         self.addCleanup(patch.stop)
+        # Gate the injected reader, not the composition root's forwarding lambda.
+        reader_patch = mock.patch.object(main.output_application, "_deps", replace(
+            main.output_application._deps, get_status=status_read))
+        reader_patch.start()
+        self.addCleanup(reader_patch.stop)
         real_to_thread = asyncio.to_thread
 
         async def to_thread(func, /, *args, **kwargs):
@@ -132,7 +138,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         candidate["loudness"]["enabled"] = True
         candidate["loudness"]["params"].update(strength=7, volumeDb=-40)
         gate = self.arm_gate(skip=2)
-        effects = asyncio.create_task(main._guarded_effects_transition(previous, candidate, True))
+        effects = asyncio.create_task(main.output_renderer.guarded_effects_transition(previous, candidate, True))
         await asyncio.wait_for(self.preflight_entered.wait(), 2)
         output = asyncio.create_task(self.edit(), name="output-edit")
         await self.settle_tasks(effects, output, gate)
@@ -146,7 +152,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
     async def test_background_render_cannot_activate_after_a_newer_output_edit(self):
         deps = sync_support._FakeDeps()
         deps.runtime = self.engine
-        deps.try_render_v2_target = main._try_render_v2_sync_target
+        deps.try_render_v2_target = main.output_renderer.render_sync_target
         if hasattr(main, "_dsp_graph_write_lock"):
             deps.graph_write_lock = main._dsp_graph_write_lock
         gate = self.arm_gate()
@@ -160,7 +166,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_head_changed_during_render_is_a_conflict_not_recovery(self):
         gate = self.arm_gate()
-        render = asyncio.create_task(main._try_render_v2_sync_target(48000, main.get_audio_output_overview()))
+        render = asyncio.create_task(main.output_renderer.render_sync_target(48000, main.get_audio_output_overview()))
         await asyncio.wait_for(self.preflight_entered.wait(), 2)
         self.service.apply(lambda state: set_output_processing(state, "stereo-sub", "sub1", level_db=-7),
                            expected_revision=1)
@@ -170,7 +176,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.engine.snapshot()["active"])
 
     async def test_prebuilt_target_rechecks_freshness_after_native_preflight(self):
-        target = await main._try_render_v2_sync_target(48000, main.get_audio_output_overview())
+        target = await main.output_renderer.render_sync_target(48000, main.get_audio_output_overview())
         gate = self.arm_gate()
         sync = asyncio.create_task(self.engine.sync_rendered(target))
         await asyncio.wait_for(self.preflight_entered.wait(), 2)
@@ -204,7 +210,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
     def transition_request(self):
         state = self.service.load()
         candidate = set_output_processing(state, "stereo-sub", "sub1", level_db=-7)
-        target = main._build_plan_target(
+        target = build_plan_target(
             self.service, self.manager, lifecycle.plan_for(self.service, candidate),
             output_key="A", rate=48000, hardware_ports=lifecycle.PORTS,
             fingerprint=self.service.fingerprint(candidate, output_key="A", channels=4, sample_rate_hz=48000))
@@ -249,7 +255,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(main._dsp_graph_write_lock().locked())
 
     async def test_prebuilt_target_rejects_changed_extras(self):
-        target = await main._try_render_v2_sync_target(48000, main.get_audio_output_overview())
+        target = await main.output_renderer.render_sync_target(48000, main.get_audio_output_overview())
         extras = self.manager.load_global_extras()
         extras["headroom"]["params"]["gainDb"] = -6
         self.manager.save_global_extras(extras)
@@ -260,7 +266,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_effects_writer_releases_graph_ownership(self):
         previous = self.manager.load_global_extras()
         gate = self.arm_gate()
-        effects = asyncio.create_task(main._guarded_effects_transition(previous, previous, True))
+        effects = asyncio.create_task(main.output_renderer.guarded_effects_transition(previous, previous, True))
         await asyncio.wait_for(self.preflight_entered.wait(), 2)
         effects.cancel()
         with self.assertRaises(asyncio.CancelledError):
@@ -275,7 +281,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
 
         def transition(previous, candidate, persist_all):
             return asyncio.run_coroutine_threadsafe(
-                main._guarded_effects_transition(previous, candidate, persist_all), loop).result(5)
+                main.output_renderer.guarded_effects_transition(previous, candidate, persist_all), loop).result(5)
 
         self.manager.runtime_transition_callback = transition
         with mock.patch.object(main.manager, "broadcast", mock.AsyncMock()), mock.patch.object(
@@ -305,7 +311,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(self.engine, "_preflight_text", side_effect=reject_candidate):
             output = asyncio.create_task(self.edit(), name="output-edit")
             await asyncio.wait_for(entered.wait(), 2)
-            effects = asyncio.create_task(main._guarded_effects_transition(previous, candidate, True))
+            effects = asyncio.create_task(main.output_renderer.guarded_effects_transition(previous, candidate, True))
             try:
                 done, _ = await asyncio.wait({effects}, timeout=0.1)
                 self.assertFalse(done, "Effects must wait until the output rollback finishes")
@@ -319,13 +325,13 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("param gain_db -6\n", self.engine._config_text)
 
     async def test_coordinator_stale_helper_recovery_does_not_reenter_graph_lock(self):
-        target = await main._try_render_v2_sync_target(48000, main.get_audio_output_overview())
+        target = await main.output_renderer.render_sync_target(48000, main.get_audio_output_overview())
         await self.engine.sync_rendered(target)
         request = replace(self.transition_request(), target_rate=44100)
         deps = sync_support._FakeDeps()
         deps.runtime = self.engine
         deps.status = {"active_rate": 48000, "force_rate": 44100}
-        deps.try_render_v2_target = main._try_render_v2_sync_target
+        deps.try_render_v2_target = main.output_renderer.render_sync_target
         deps.graph_write_lock = main._dsp_graph_write_lock
         deps.wait_for_samplerate_alignment = mock.AsyncMock(return_value=True)
         orchestration = DspOrchestrator(deps)
@@ -345,7 +351,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
             output = asyncio.create_task(self.edit(), name="output-edit")
             await asyncio.wait_for(self.output_prepared.wait(), 2)
             self.live_rate = 96000
-            target = await main._try_render_v2_sync_target(96000, main.get_audio_output_overview())
+            target = await main.output_renderer.render_sync_target(96000, main.get_audio_output_overview())
             await self.engine.sync_rendered(target)
         with self.assertRaises(main.HTTPException) as failure:
             await asyncio.wait_for(output, 5)
@@ -354,12 +360,12 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.snapshot()["config"]["sample_rate"], 96000)
 
     async def test_failed_native_extras_rollback_stops_uncertain_candidate(self):
-        initial = await main._try_render_v2_sync_target(48000, main.get_audio_output_overview())
+        initial = await main.output_renderer.render_sync_target(48000, main.get_audio_output_overview())
         await self.engine.sync_rendered(initial)
         previous = self.manager.load_global_extras()
         loop = asyncio.get_running_loop()
         self.manager.runtime_transition_callback = lambda old, new, persist: asyncio.run_coroutine_threadsafe(
-            main._guarded_effects_transition(old, new, persist), loop).result(5)
+            main.output_renderer.guarded_effects_transition(old, new, persist), loop).result(5)
         preflight = self.engine._preflight_text
 
         async def reject_rollback(text):
@@ -406,7 +412,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
     async def commit_newer_external_graph(self, expected_revision):
         newer = self.service.apply(lambda state: set_output_processing(
             state, "stereo-sub", "sub1", level_db=-3), expected_revision=expected_revision)
-        target = main._build_plan_target(
+        target = build_plan_target(
             self.service, self.manager, lifecycle.plan_for(self.service, newer),
             output_key="A", rate=48000, hardware_ports=lifecycle.PORTS,
             fingerprint=self.service.fingerprint(newer, output_key="A", channels=4, sample_rate_hz=48000))
@@ -444,7 +450,7 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_coordinator_rollback_rechecks_reverted_head_after_preflight(self):
         request = self.transition_request()
-        main._refresh_output_state_transition(request)
+        main.output_renderer.refresh_transition(request)
         await self.engine.sync_rendered(request.output_state_transition["target"])
         self.service.commit(request.output_state_transition["candidate_state"], expected_revision=1)
         adapter = FxrouteTransitionRuntime(main.make_playback_runtime_deps())

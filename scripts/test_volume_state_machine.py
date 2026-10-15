@@ -406,7 +406,7 @@ class VolumeTransitionIntegrationTests(unittest.IsolatedAsyncioTestCase):
             candidate["loudness"]["params"]["volumeDb"] = db(30)
             self.recorder.master = 30
             with lifecycle.lifecycle_context(service, manager, native), mock.patch.object(main, "dsp_manager", manager):
-                await main._guarded_effects_transition(previous, candidate, True)
+                await main.output_renderer.guarded_effects_transition(previous, candidate, True)
             self.assertAlmostEqual(native.guarded_rebuild_rendered.await_args.kwargs["guard_db"], db(30))
         self.assertEqual(self.recorder.master, 30)
 
