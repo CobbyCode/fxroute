@@ -205,8 +205,6 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
         self.patchers = []
         # Legacy persist/load/overview/sync entry points are deleted; the
         # service sweep stages through the owner with no legacy fallback.
-        self.patch(measurement_session, "_sync_dsp_runtime_for_measurement_sweep",
-                   explode("orchestration sync in service sweep")[0])
         self.patch(funnel, "_auto_sub_fresh_master_percent", self.master_percent)
         real_predict = autosub_jobs._predict_auto_sub_stage_peaks
 
@@ -254,6 +252,13 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
                     original_config_snapshot={"mode": "subwoofer-2.1"})
         args.update(overrides)
         return await funnel._measure_auto_sub_candidate(**args)
+
+    async def test_capture_without_v2_owner_context_is_refused_before_audio(self):
+        job = self.service_job()
+        del job["output_state_context"]
+        with self.assertRaisesRegex(ValueError, "output-state"):
+            await self.sweep(job)
+        self.assertEqual(self.measure_store.starts, [])
 
     async def test_service_capture_drains_before_exact_mute_restore(self):
         job = self.service_job()
@@ -335,7 +340,6 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(len(self.hardware.transitions), 1)
         self.assertTrue(job["_auto_sub_last_config_ok"])
-        self.assertTrue(job["_auto_sub_last_prearm_ok"])
         self.assertEqual(len(self.measure_store.starts), 1)
         child = self.measure_store.starts[0]
         self.assertEqual(len(child["expected_native_layout"]), 3)
@@ -469,7 +473,6 @@ class OwnerPrearmTests(unittest.IsolatedAsyncioTestCase):
         job = self.service_job()
         result = await self.sweep(job, delay_ms=2.0)
         self.assertEqual(result["status"], "pre_arm_failed")
-        self.assertFalse(job["_auto_sub_last_prearm_ok"])
         self.assertEqual(self.measure_store.starts, [])
 
     async def test_revision_drift_reports_config_failed_without_legacy_fallback(self):

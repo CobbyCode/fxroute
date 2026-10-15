@@ -29,14 +29,14 @@ class SpeakerOwnershipTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(held), 1)
             return await original(alignment, **kwargs)
 
-        service, job_id = self.start(self.service(job_scope=scope, acquire=capture))
+        service, job_id = await self.start(self.service(job_scope=scope, acquire=capture))
         result = await service.wait_for(job_id)
         self.assertEqual(result["status"], "committed", result)
         self.assertEqual(held, [])
         self.assertFalse(service.active)
 
     async def test_cancel_before_worker_runs_releases_slot(self):
-        service, job_id = self.start()
+        service, job_id = await self.start()
         service.cancel(job_id)
         result = await service.wait_for(job_id, timeout_seconds=1)
         self.assertEqual(result["status"], "cancelled")
@@ -51,7 +51,7 @@ class SpeakerOwnershipTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             result["provenance"]["microphone_node"] = f"mic-{len(self.acquire_calls)}"
             return result
 
-        service, job_id = self.start(self.service(acquire=capture))
+        service, job_id = await self.start(self.service(acquire=capture))
         result = await service.wait_for(job_id)
         self.assertEqual(result["status"], "failed")
         self.assertIn("input chain", result["error"])
@@ -77,7 +77,7 @@ class KeeperWiringTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             events.append(("acquire", len(self.acquire_calls)))
             return await original(alignment, **kwargs)
 
-        service, job_id = self.start(self.service(input_keeper=keeper, acquire=capture))
+        service, job_id = await self.start(self.service(input_keeper=keeper, acquire=capture))
         result = await service.wait_for(job_id)
         self.assertEqual(result["status"], "committed", result)
         kinds = [event[0] for event in events]
@@ -92,7 +92,7 @@ class KeeperWiringTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         def failing_keeper(job_id, params):
             raise RuntimeError("keeper down")
 
-        service, job_id = self.start(self.service(input_keeper=failing_keeper))
+        service, job_id = await self.start(self.service(input_keeper=failing_keeper))
         result = await service.wait_for(job_id)
         self.assertEqual(result["status"], "failed")
         self.assertIn("keeper down", result["error"])

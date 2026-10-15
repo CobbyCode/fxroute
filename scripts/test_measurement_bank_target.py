@@ -279,7 +279,11 @@ class MeasurementTargetTests(TargetFixture, unittest.TestCase):
         self.assertEqual(measurement_target_from_context(None), LEGACY_TARGET)
         self.assertEqual(measurement_target_from_context({}), LEGACY_TARGET)
         self.assertEqual(measurement_target_from_context({"measurement_target": {"schema": "other"}}), LEGACY_TARGET)
-        self.assertEqual(attach_measurement_target(None, target), {"measurement_target": target})
+        fresh = attach_measurement_target(None, target)
+        self.assertEqual(fresh["measurement_target"], target)
+        self.assertEqual(fresh["output_mode"], "stereo-sub")
+        self.assertEqual(fresh["output_channels"], 8)
+        self.assertEqual(fresh["sample_rate_hz"], 48000)
         context["measurement_target"]["bank_id"] = "mutated"
         self.assertEqual(target["bank_id"], "left_mid")
         self.assertEqual(measurement_target_from_context(context)["bank_id"], "mutated")

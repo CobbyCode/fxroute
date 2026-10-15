@@ -344,7 +344,7 @@ class SpeakerServiceHookTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_committed_calls_hook_with_device_context(self):
         service = self.make_service()
-        job_id = service.start(
+        job_id = await service.start(
             "left", input_id="mic", reference_input_channel="2",
             reference_id="interface:input-2:upstream",
             microphone_position_id="seat-1-fixed")
@@ -361,7 +361,7 @@ class SpeakerServiceHookTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("registration blew up")
 
         service = self.make_service(on_committed=failing_hook)
-        job_id = service.start(
+        job_id = await service.start(
             "left", input_id="mic", reference_input_channel="2",
             reference_id="interface:input-2:upstream",
             microphone_position_id="seat-1-fixed")
@@ -388,7 +388,7 @@ class SpeakerServiceHookTests(unittest.IsolatedAsyncioTestCase):
             return Session()
 
         service = self.make_service(create_session=create_session)
-        job_id = service.start(
+        job_id = await service.start(
             "left", input_id="mic", reference_input_channel="2",
             reference_id="interface:input-2:upstream",
             microphone_position_id="seat-1-fixed")

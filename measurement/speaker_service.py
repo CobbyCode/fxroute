@@ -224,7 +224,7 @@ def _session_identity(value: object, label: str) -> str:
 class SpeakerAlignService:
     """Own Speaker Align job records, worker tasks and single-active ownership.
 
-    ``start`` must be called with a running event loop: the worker task is
+    ``start`` runs on the event loop: the worker task is
     bound to it, and ``cancel`` must be called from the same loop for the
     task cancellation to take effect (the cooperative flag works
     cross-thread). All blocking boundaries are the composition root's
@@ -315,14 +315,14 @@ class SpeakerAlignService:
         with self._guard:
             return self._public(self._jobs.get(job_id, job))
 
-    def start(self, side: str, *, input_id: str, mic_input_channel: str | int | None = "1",
+    async def start(self, side: str, *, input_id: str, mic_input_channel: str | int | None = "1",
               reference_input_channel: str | int | None,
               reference_input_channel_left: str | int | None = None,
               reference_input_channel_right: str | int | None = None,
               reference_id: str, microphone_position_id: str,
               sweep_profile: dict[str, float] | None = None,
               dry_run: bool = False) -> str:
-        """Validate a request synchronously and launch its worker; return the job id.
+        """Validate a request and launch its worker; return the job id.
 
         Must be called with a running event loop (see the class contract).
         Request validation — including a freshness check of the frozen
@@ -349,7 +349,10 @@ class SpeakerAlignService:
         if state["modes"][state["active_mode"]]["selected_bank"] != "global":
             raise ValueError("Speaker Align is available only from Global")
         self._check_available()
-        context = self._describe(state)
+        # Capture the entry epoch before discovery can yield to a window close.
+        job_id = uuid4().hex
+        scope = self._job_scope(job_id)
+        context = await asyncio.to_thread(self._describe, state)
         alignment = SpeakerAlignment(
             state, side=side, output_key=context["output_key"], channels=context["channels"],
             sample_rate_hz=context["sample_rate_hz"], fingerprint=context["fingerprint"],
@@ -358,7 +361,6 @@ class SpeakerAlignService:
             state, output_key=context["output_key"], channels=context["channels"],
             sample_rate_hz=context["sample_rate_hz"], fingerprint=context["fingerprint"])
         self._require_fresh_live(alignment, live_target)
-        job_id = uuid4().hex
         job = {
             "id": job_id, "side": side, "status": "queued", "message": "Speaker alignment queued.",
             "dry_run": bool(dry_run), "cancel_requested": False,
@@ -382,7 +384,7 @@ class SpeakerAlignService:
                     raise SpeakerAlignBusyError("A speaker alignment is already running")
             self._jobs[job_id] = job
             self._active_id = job_id
-            self._scopes[job_id] = self._job_scope(job_id)
+            self._scopes[job_id] = scope
             self._tasks[job_id] = asyncio.get_running_loop().create_task(self._run(job_id))
         return job_id
 
@@ -497,7 +499,7 @@ class SpeakerAlignService:
             # rebasing the whole run. The frozen-derived live check after
             # it is defense in depth against a lying freeze boundary.
             fresh_state = deepcopy(self._get_state())
-            fresh_context = self._describe(fresh_state)
+            fresh_context = await asyncio.to_thread(self._describe, fresh_state)
             if (fresh_state.get("revision") != frozen["start_state"].get("revision")
                     or fresh_context.get("fingerprint")
                     != frozen["context"].get("fingerprint")):
@@ -519,7 +521,7 @@ class SpeakerAlignService:
                 fingerprint=context["fingerprint"])
             self._require_fresh_live(alignment, live_target)
 
-            session = self._create_session(
+            session = await asyncio.to_thread(self._create_session,
                 state, output_key=context["output_key"], channels=context["channels"],
                 sample_rate_hz=context["sample_rate_hz"])
             await session.stage_candidate(state)

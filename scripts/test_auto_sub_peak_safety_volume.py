@@ -25,6 +25,7 @@ import measurement.autosub as autosub
 import measurement.autosub.jobs as autosub_jobs
 import measurement.autosub.measurement as autosub_measurement
 from dsp.runtime import BassManagementConfig
+from auto_sub_peak_test_support import peak_kwargs
 
 
 def runtime_config(sub_level_db: float = 12.0) -> BassManagementConfig:
@@ -107,7 +108,7 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
             sweep_profile=kwargs["sweep_profile"],
             sample_rate=kwargs["sample_rate"],
             channel=kwargs["channel"],
-            config=runtime_config(),
+            **peak_kwargs(runtime_config()),
             playback_gain=kwargs.get("playback_gain", 1.0),
             sink_gain=kwargs.get("sink_gain", 1.0),
         )
@@ -215,7 +216,7 @@ class AutoSubCandidateSafetyVolumeTests(unittest.IsolatedAsyncioTestCase):
         """Engine-output level prediction (before the sink gain is folded in)."""
         return autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=sweep_profile, sample_rate=48_000, channel="left",
-            config=runtime_config(), sink_gain=sink_gain,
+            **peak_kwargs(runtime_config()), sink_gain=sink_gain,
         )
 
     async def test_above_100_master_blocks_the_unsafe_sweep(self):

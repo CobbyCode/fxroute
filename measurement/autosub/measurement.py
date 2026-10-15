@@ -18,7 +18,6 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22,
     OUTPUT_MODE_SUBWOOFER_22_MODES,
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
-    get_samplerate_status,
 )
 from audio.system_volume import get_output_volume_unclamped
 
@@ -59,8 +58,6 @@ logger = logging.getLogger(__name__)
 
 _AUTO_SUB_CONFIG_FP_KEY = "_auto_sub_last_config_fp"
 _AUTO_SUB_CONFIG_OK_KEY = "_auto_sub_last_config_ok"
-_AUTO_SUB_PREARM_FP_KEY = "_auto_sub_last_prearm_fp"
-_AUTO_SUB_PREARM_OK_KEY = "_auto_sub_last_prearm_ok"
 
 # Settle time a freshly staged candidate waits before its config counts as
 # verified. L and R of one combined candidate share a config fingerprint, so
@@ -130,27 +127,6 @@ def _auto_sub_candidate_config_fingerprint(
         return f"fallback:{output_mode}:{delay_ms}:{sub1_alignment_ms}:{sub2_alignment_ms}"
 
 
-async def _auto_sub_prearm_reusable(auto_sub_rate: int) -> bool:
-    """True when the DSP helper is still settled at the sweep rate.
-
-    Single samplerate read plus local helper snapshot; no sync, no
-    pulse-suspend, no rate wait. Any mismatch returns False so the caller
-    falls back to the full pre-arm.
-    """
-    try:
-        if _dsp_runtime() is None:
-            return True
-        samplerate_status = await asyncio.to_thread(get_samplerate_status)
-        if samplerate_status.get("active_rate") != auto_sub_rate:
-            return False
-        snapshot = _dsp_runtime().snapshot()
-        if not snapshot.get("active"):
-            return False
-        return (snapshot.get("config") or {}).get("sample_rate") == auto_sub_rate
-    except Exception:
-        return False
-
-
 async def _auto_sub_fresh_master_percent() -> int:
     """Live, unclamped sink master percent for the pre-sweep peak safety.
 
@@ -212,7 +188,6 @@ async def _finish_auto_sub_capture(
     *,
     job: dict[str, Any],
     channel: str,
-    service_job: bool,
     sweep_id: str,
     sweep_drained: bool,
     exact_sub_mute_enabled: bool,
@@ -226,7 +201,7 @@ async def _finish_auto_sub_capture(
         # field before arriving here. A terminal status is not a drained
         # task; raw-scope cleanup must finish before releasing exact mute.
         drain_error: BaseException | None = None
-        if service_job and sweep_id and not sweep_drained:
+        if sweep_id and not sweep_drained:
             # drain_job surfaces a cancel-request persist error only
             # AFTER the child task finished, so the restoration below
             # always runs; the deferred error then fails the run.
@@ -244,12 +219,10 @@ async def _finish_auto_sub_capture(
             try:
                 if exact_sub_mute_mask is not None:
                     await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute, mask=exact_sub_mute_mask)
-                elif service_job:
+                else:
                     await _dsp_runtime().set_exact_sub_mute(
                         previous_exact_sub_mute,
                         mask=job["output_state_context"]["sub_mute_mask"])
-                else:
-                    await _dsp_runtime().set_exact_sub_mute(previous_exact_sub_mute)
             except Exception as exc:
                 logger.exception("Auto-sub: failed to restore exact sub mute after %s reference", channel)
                 job["auto_gain"] = {
@@ -262,19 +235,16 @@ async def _finish_auto_sub_capture(
         if drain_error is not None:
             raise drain_error
 
-    if service_job:
-        cleanup = asyncio.create_task(finish_capture())
-        cancelled = False
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                cancelled = True
-        cleanup.result()
-        if cancelled:
-            raise asyncio.CancelledError
-    else:
-        await finish_capture()
+    cleanup = asyncio.create_task(finish_capture())
+    cancelled = False
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            cancelled = True
+    cleanup.result()
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _decode_auto_sub_capture_result(
@@ -338,7 +308,6 @@ async def _prepare_auto_sub_capture(
     active_subs: tuple[str, ...],
     sub1_polarity: str | None,
     sub2_polarity: str | None,
-    service_job: bool,
     exact_sub_mute: bool,
     sub_indices: tuple[int, ...],
     _marks: dict[str, float],
@@ -350,8 +319,6 @@ async def _prepare_auto_sub_capture(
     ``_return_candidate``. Gain and peak-safety errors propagate without a
     result, as before.
     """
-    from measurement.session import _sync_dsp_runtime_for_measurement_sweep
-
     config_success = False
     staged_layout: list[dict[str, Any]] | None = None
     staged_fingerprint: str | None = None
@@ -375,36 +342,31 @@ async def _prepare_auto_sub_capture(
         and job.get(_AUTO_SUB_CONFIG_FP_KEY) == config_fingerprint
     )
     try:
-        if service_job:
-            staged = await _stage_auto_sub_service_candidate(
-                job, delay_ms=delay_ms, fc=fc,
-                sub1_alignment_ms=sub1_alignment_ms,
-                sub2_alignment_ms=sub2_alignment_ms,
-                active_subs=active_subs,
-                sub1_polarity=sub1_polarity,
-                sub2_polarity=sub2_polarity,
-                original_level=original_level,
-                original_polarity=original_polarity,
-                original_highpass=original_highpass,
-                original_config_snapshot=original_config_snapshot,
-            )
-            _marks["config_set"] = time.monotonic()
-            if not config_reused:
-                # The settle wait belongs to the verify window, so config_verify
-                # is stamped after it. Reusing the pre-sleep timestamp charged
-                # the wait to pre-arm and reported verify as 0 ms.
-                await asyncio.sleep(_AUTO_SUB_CONFIG_SETTLE_SECONDS)
-                if _auto_sub_cancel_requested(job):
-                    return (_auto_sub_cancelled_candidate(delay_ms, stage), None)
-            _marks["config_verify"] = time.monotonic()
-            config_success = True
-            job[_AUTO_SUB_CONFIG_FP_KEY] = config_fingerprint
-            job[_AUTO_SUB_CONFIG_OK_KEY] = True
-            staged_layout = staged["expected_native_layout"]
-            staged_fingerprint = staged["fingerprint"]
-            staged_mode = staged["expected_native_output_mode"]
-        if not service_job:
-            raise RuntimeError("AutoSub candidate measurement requires a service job")
+        staged = await _stage_auto_sub_service_candidate(
+            job, delay_ms=delay_ms, fc=fc,
+            sub1_alignment_ms=sub1_alignment_ms,
+            sub2_alignment_ms=sub2_alignment_ms,
+            active_subs=active_subs,
+            sub1_polarity=sub1_polarity,
+            sub2_polarity=sub2_polarity,
+            original_level=original_level,
+            original_polarity=original_polarity,
+            original_highpass=original_highpass,
+            original_config_snapshot=original_config_snapshot,
+        )
+        _marks["config_set"] = time.monotonic()
+        if not config_reused:
+            # Charge settling to verification, not pre-arm.
+            await asyncio.sleep(_AUTO_SUB_CONFIG_SETTLE_SECONDS)
+            if _auto_sub_cancel_requested(job):
+                return (_auto_sub_cancelled_candidate(delay_ms, stage), None)
+        _marks["config_verify"] = time.monotonic()
+        config_success = True
+        job[_AUTO_SUB_CONFIG_FP_KEY] = config_fingerprint
+        job[_AUTO_SUB_CONFIG_OK_KEY] = True
+        staged_layout = staged["expected_native_layout"]
+        staged_fingerprint = staged["fingerprint"]
+        staged_mode = staged["expected_native_output_mode"]
     except Exception as exc:
         logger.warning("Auto-sub: failed to configure delay %.2f ms: %s", delay_ms, exc)
         job[_AUTO_SUB_CONFIG_OK_KEY] = False
@@ -422,33 +384,13 @@ async def _prepare_auto_sub_capture(
             "scan": stage,
         }, None)
 
-    prearm_fingerprint = f"{auto_sub_rate}|{config_fingerprint}"
-    prearm_reused = (
-        job.get(_AUTO_SUB_PREARM_OK_KEY) is True
-        and job.get(_AUTO_SUB_PREARM_FP_KEY) == prearm_fingerprint
-    )
     try:
-        if service_job:
-            await _candidate_owner(job["id"]).ensure_ready(auto_sub_rate)
-            _marks["pre_arm"] = time.monotonic()
-            job[_AUTO_SUB_PREARM_FP_KEY] = prearm_fingerprint
-            job[_AUTO_SUB_PREARM_OK_KEY] = True
-        elif prearm_reused and await _auto_sub_prearm_reusable(auto_sub_rate):
-            _marks["pre_arm"] = time.monotonic()
-            logger.debug(
-                "Auto-sub: reusing settled DSP pre-arm at %s Hz for delay %.2f ms channel=%s",
-                auto_sub_rate, delay_ms, measure_channel or channel,
-            )
-        else:
-            await _sync_dsp_runtime_for_measurement_sweep(auto_sub_rate)
-            _marks["pre_arm"] = time.monotonic()
-            job[_AUTO_SUB_PREARM_FP_KEY] = prearm_fingerprint
-            job[_AUTO_SUB_PREARM_OK_KEY] = True
+        await _candidate_owner(job["id"]).ensure_ready(auto_sub_rate)
+        _marks["pre_arm"] = time.monotonic()
         if _auto_sub_cancel_requested(job):
             return (_auto_sub_cancelled_candidate(delay_ms, stage), None)
     except Exception as exc:
         logger.exception("Auto-sub: pre-arm failed for delay %.2f ms", delay_ms)
-        job[_AUTO_SUB_PREARM_OK_KEY] = False
         return ({
             "delay_ms": delay_ms,
             "name": str(delay_ms),
@@ -528,7 +470,6 @@ async def _start_and_wait_auto_sub_capture(
     staged_layout: list[dict[str, Any]] | None,
     staged_mode: str | None,
     staged_fingerprint: str | None,
-    service_job: bool,
     exact_sub_mute: bool,
     exact_sub_mute_mask: int | None,
     measurement_store: Any,
@@ -552,11 +493,9 @@ async def _start_and_wait_auto_sub_capture(
             raise RuntimeError("Subwoofer runtime unavailable; exact digital mute cannot be enabled")
         if exact_sub_mute_mask is not None:
             previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True, mask=exact_sub_mute_mask)
-        elif service_job:
+        else:
             service_mute_mask = job["output_state_context"]["sub_mute_mask"]
             previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True, mask=service_mute_mask)
-        else:
-            previous_exact_sub_mute = await _dsp_runtime().set_exact_sub_mute(True)
         capture_state["previous_exact_sub_mute"] = previous_exact_sub_mute
         capture_state["exact_sub_mute_enabled"] = True
         if not _dsp_runtime().snapshot().get("exact_sub_mute"):
@@ -573,13 +512,11 @@ async def _start_and_wait_auto_sub_capture(
         sweep_reference_right = configured_reference_channels.get("right") or ""
     else:
         sweep_reference_left = sweep_reference_right = reference_input_channel
-    staged_sweep_context: dict[str, Any] = {}
-    if service_job:
-        staged_sweep_context = {
-            "expected_native_layout": staged_layout,
-            "expected_native_output_mode": staged_mode,
-            "expected_plan_fingerprint": staged_fingerprint,
-        }
+    staged_sweep_context = {
+        "expected_native_layout": staged_layout,
+        "expected_native_output_mode": staged_mode,
+        "expected_plan_fingerprint": staged_fingerprint,
+    }
     sweep_job = await measurement_store.start_measurement(
         input_id=input_id,
         channel=channel,
@@ -688,21 +625,22 @@ async def _measure_auto_sub_candidate(
 ) -> dict[str, Any]:
     """Measure one AutoSub delay candidate with the standard safety checks.
 
-    Service jobs (carrying ``output_state_context``) stage the candidate
+    Jobs carrying ``output_state_context`` stage the candidate
     through their owner, pre-arm with ``owner.ensure_ready`` and predict
-    from the staged compiled layout. Legacy jobs keep the persisted-config
-    sync path. Exact-mute masks stay plumbing: service jobs without an
+    from the staged compiled layout. Jobs without that context are refused.
+    Exact-mute masks stay plumbing: jobs without an
     explicit mask use the context's role-derived sub mask.
     """
     if exact_sub_mute_mask is not None and not exact_sub_mute:
         raise ValueError("An exact sub mute mask requires exact_sub_mute=True")
-    service_job = "output_state_context" in job
+    if "output_state_context" not in job:
+        raise ValueError("AutoSub measurement requires an output-state owner context")
     sub_indices = ()
     if exact_sub_mute:
-        if service_job and exact_sub_mute_mask is None:
+        if exact_sub_mute_mask is None:
             sub_indices = sub_mute_indices(job["output_state_context"]["sub_mute_mask"])
         else:
-            sub_indices = sub_mute_indices(12 if exact_sub_mute_mask is None else exact_sub_mute_mask)
+            sub_indices = sub_mute_indices(exact_sub_mute_mask)
     measurement_store = _measurement_store()
 
     _marks = {"start": time.monotonic()}
@@ -764,7 +702,6 @@ async def _measure_auto_sub_candidate(
         active_subs=active_subs,
         sub1_polarity=sub1_polarity,
         sub2_polarity=sub2_polarity,
-        service_job=service_job,
         exact_sub_mute=exact_sub_mute,
         sub_indices=sub_indices,
         _marks=_marks,
@@ -809,7 +746,6 @@ async def _measure_auto_sub_candidate(
                 staged_layout=staged_layout,
                 staged_mode=staged_mode,
                 staged_fingerprint=staged_fingerprint,
-                service_job=service_job,
                 exact_sub_mute=exact_sub_mute,
                 exact_sub_mute_mask=exact_sub_mute_mask,
                 measurement_store=measurement_store,
@@ -838,17 +774,16 @@ async def _measure_auto_sub_candidate(
             job.get("id") or "", sweep_id, capture_state["poll_iters"],
             capture_state["poll_late_total"], capture_state["poll_late_max"],
         )
-        if service_job:
-            await measurement_store.drain_job(sweep_id)
-            sweep_drained = True
-            capture_state["sweep_drained"] = True
+        await measurement_store.drain_job(sweep_id)
+        sweep_drained = True
+        capture_state["sweep_drained"] = True
         if _dsp_runtime().snapshot().get('latency_tracking'):
             capture = (measurement_store.get_job(sweep_id).get('latency_capture') or {})
             measured_stage_peaks = capture.get('output_peaks')
             if (not capture.get('ready') or capture.get('verified') is not True
                     or capture.get('capture_id') != sweep_id or not capture.get('bypassed')
                     or not isinstance(measured_stage_peaks, dict) or not measured_stage_peaks
-                    or (service_job and (capture.get('context') or {}).get('plan_fingerprint') != staged_fingerprint)):
+                    or (capture.get('context') or {}).get('plan_fingerprint') != staged_fingerprint):
                 raise AutoSubPeakSafetyError('Verified native DSP sweep peak capture unavailable')
         else:
             measured_stage_peaks = await _dsp_runtime().read_output_peaks()
@@ -1015,7 +950,6 @@ async def _measure_auto_sub_candidate(
         await _finish_auto_sub_capture(
             job=job,
             channel=channel,
-            service_job=service_job,
             sweep_id=sweep_id,
             sweep_drained=sweep_drained,
             exact_sub_mute_enabled=exact_sub_mute_enabled,

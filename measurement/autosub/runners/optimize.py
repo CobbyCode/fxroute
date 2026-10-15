@@ -149,7 +149,7 @@ async def _run_auto_sub_optimize(
         auto_sub_sweep_profile = _auto_sub_sweep_profile(fc)
 
         # Resolve sample rate once for all sweeps
-        auto_sub_rate = owned_rate if owned_rate is not None else _resolve_measurement_start_sample_rate()
+        auto_sub_rate = owned_rate if owned_rate is not None else await asyncio.to_thread(_resolve_measurement_start_sample_rate)
         capture = AutoSubCaptureContext(
             input_id=input_id, mic_input_channel=mic_input_channel,
             reference_input_channel=reference_input_channel,

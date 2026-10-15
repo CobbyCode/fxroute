@@ -80,7 +80,6 @@ MUTATION_CALL_NAMES = {
     "_ensure_playback_samplerate_force",
     "sync_runtime",
     "sync_runtime_at_rate",
-    "_sync_dsp_runtime_for_measurement_sweep",
     "ensure_mpv_to_dsp_links",
     "_repair_stereo_output_links_once",
     "_set_hardware_sink_mute",
@@ -239,7 +238,7 @@ def _reason(context: str, name: str) -> str | None:
     if leaf in {"_dsp_output_ports_present", "_mpv_source_ports_present", "_playback_graph_diagnosis"}:
         return "read-only graph diagnosis/readback"
     if leaf in {
-        "_start_locked", "_release", "_sync_dsp_runtime_for_measurement_sweep",
+        "_start_locked", "_release",
         "start_measurement", "start_lr_repeat_measurement",
     }:
         return "measurement workflow, outside playback transitions"

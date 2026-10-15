@@ -23,9 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from dsp.runtime import BassManagementConfig  # noqa: E402
+from auto_sub_peak_test_support import peak_kwargs
 
 from measurement.autosub.jobs import (  # noqa: E402
-    _auto_sub_peak_prediction_cache_key,
     _predict_auto_sub_stage_peaks,
 )
 
@@ -56,9 +56,10 @@ def config_21(*, alignment_ms: float = 2.34, level_db: float = -3.0) -> BassMana
 
 
 def _args(**overrides):
+    config = overrides.pop("config", config_21())
     args = dict(
         sweep_profile=PROFILE, sample_rate=48000, channel="left",
-        config=config_21(), playback_gain=1.0, sink_gain=0.5,
+        **peak_kwargs(config), playback_gain=1.0, sink_gain=0.5,
     )
     args.update(overrides)
     return args
@@ -68,8 +69,8 @@ class PeakPredictionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         # The cache globals live in the jobs module and are rebound there on
         # every prediction, so reset them through the module before each test.
-        autosub_jobs._AUTO_SUB_PEAK_PREDICTION_CACHE_KEY = None
-        autosub_jobs._AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT = None
+        autosub_jobs._AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY = None
+        autosub_jobs._AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_RESULT = None
 
     async def test_prediction_runs_in_a_worker_thread(self) -> None:
         main_thread = threading.get_ident()
@@ -120,27 +121,23 @@ class PeakPredictionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sink_gain_change_recomputes_and_scales_output(self) -> None:
         low_volume = await _predict_auto_sub_stage_peaks(**_args())
+        previous_key = autosub_jobs._AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY
         high_volume = await _predict_auto_sub_stage_peaks(**_args(sink_gain=1.0))
         # The sink gain is a linear amplitude scale on every output.
         self.assertAlmostEqual(
             high_volume["linear"]["output_1"] / low_volume["linear"]["output_1"],
             2.0, places=4,
         )
-        self.assertNotEqual(autosub_jobs._AUTO_SUB_PEAK_PREDICTION_CACHE_KEY, _auto_sub_peak_prediction_cache_key(**_args()))
-        self.assertEqual(autosub_jobs._AUTO_SUB_PEAK_PREDICTION_CACHE_KEY, _auto_sub_peak_prediction_cache_key(**_args(sink_gain=1.0)))
+        self.assertNotEqual(autosub_jobs._AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY, previous_key)
 
     async def test_configuration_change_recomputes(self) -> None:
         base = await _predict_auto_sub_stage_peaks(**_args())
+        previous_key = autosub_jobs._AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY
         moved = await _predict_auto_sub_stage_peaks(
             **_args(config=config_21(alignment_ms=-3.12, level_db=0.0))
         )
         self.assertNotEqual(moved["linear"], base["linear"])
-        self.assertEqual(
-            autosub_jobs._AUTO_SUB_PEAK_PREDICTION_CACHE_KEY,
-            _auto_sub_peak_prediction_cache_key(
-                **_args(config=config_21(alignment_ms=-3.12, level_db=0.0))
-            ),
-        )
+        self.assertNotEqual(autosub_jobs._AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY, previous_key)
 
 
 if __name__ == "__main__":

@@ -726,7 +726,7 @@ class MeasurementStore:
                 "sweep_profile": sweep_profile if isinstance(sweep_profile, dict) and sweep_profile else None,
                 "_skip_pre_sweep_diagnostics": bool(skip_pre_sweep_diagnostics),
             })
-            job.update(self._freeze_measurement_job_target(
+            job.update(await asyncio.to_thread(self._freeze_measurement_job_target,
                 job, measurement_bank, frozen_target, _speaker_group(measurement_group)))
             job.update({f"_{key}": value for key, value in expected.items()})
             if capture_evidence is not None:
@@ -799,7 +799,7 @@ class MeasurementStore:
                 "channel": "stereo",
                 "message": "L/R repeat queued.",
             })
-            job.update(self._freeze_repeat_job_target(
+            job.update(await asyncio.to_thread(self._freeze_repeat_job_target,
                 job, measurement_bank, _speaker_group(measurement_group)))
             job.update({f"_{key}": value for key, value in expected.items()})
             return self._register_measurement_job(job, self._execute_lr_repeat_job)

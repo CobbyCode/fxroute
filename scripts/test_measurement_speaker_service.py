@@ -228,13 +228,13 @@ class ServiceFixture:
         options.update(overrides)
         return SpeakerAlignService(**options)
 
-    def start(self, service=None, **kwargs):
+    async def start(self, service=None, **kwargs):
         service = service if service is not None else self.service()
         params = dict(side="left", input_id="mic", reference_input_channel="2",
                       reference_id="interface:input-2:upstream",
                       microphone_position_id="seat-1-fixed")
         params.update(kwargs)
-        return service, service.start(**params)
+        return service, await service.start(**params)
 
     async def wait_terminal(self, service, job_id):
         async with asyncio.timeout(10):
@@ -244,23 +244,23 @@ class ServiceFixture:
         return service.status(job_id)
 
 
-class StartValidationTests(ServiceFixture, unittest.TestCase):
-    def test_unknown_side_fails_before_job_exists(self):
+class StartValidationTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_unknown_side_fails_before_job_exists(self):
         service = self.service()
         with self.assertRaisesRegex(ValueError, "side"):
-            service.start(side="center", input_id="mic", reference_input_channel="2",
+            await service.start(side="center", input_id="mic", reference_input_channel="2",
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
 
-    def test_non_global_selection_fails_before_job_exists(self):
+    async def test_non_global_selection_fails_before_job_exists(self):
         self.state["modes"]["stereo-sub"]["selected_bank"] = "left_low"
         service = self.service()
         with self.assertRaisesRegex(ValueError, "Global"):
-            service.start(side="left", input_id="mic", reference_input_channel="2",
+            await service.start(side="left", input_id="mic", reference_input_channel="2",
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
 
-    def test_missing_electrical_reference_fails_before_any_sweep(self):
+    async def test_missing_electrical_reference_fails_before_any_sweep(self):
         # Verification only admits the electrical reference: without one the
         # run must stop before its planning sweep, not after verification.
         service = self.service()
@@ -269,13 +269,13 @@ class StartValidationTests(ServiceFixture, unittest.TestCase):
                          {"reference_input_channel": " ", "reference_input_channel_left": "",
                           "reference_input_channel_right": None}):
             with self.assertRaisesRegex(ValueError, "electrical reference"):
-                service.start(side="left", input_id="mic", reference_id="r",
+                await service.start(side="left", input_id="mic", reference_id="r",
                               microphone_position_id="m", **channels)
         self.assertEqual(service.jobs(), [])
         self.assertEqual(self.acquire_calls, [])
         self.assertFalse(service.active)
 
-    def test_reference_on_the_microphone_channel_fails_before_any_sweep(self):
+    async def test_reference_on_the_microphone_channel_fails_before_any_sweep(self):
         # The store would drop a reference that is the microphone channel and
         # the take would fail only after its planning sweep; judge the
         # resolved channel indexes, not the raw fields.
@@ -290,24 +290,24 @@ class StartValidationTests(ServiceFixture, unittest.TestCase):
                            "reference_input_channel_left": "7", "reference_input_channel_right": "1"})):
             with self.subTest(side=side, channels=channels):
                 with self.assertRaisesRegex(ValueError, "the microphone input"):
-                    service.start(side=side, input_id="mic", reference_id="r",
+                    await service.start(side=side, input_id="mic", reference_id="r",
                                   microphone_position_id="m", **channels)
         self.assertEqual(service.jobs(), [])
         self.assertEqual(self.acquire_calls, [])
         self.assertFalse(service.active)
 
-    def test_non_crossover_state_fails_before_job_exists(self):
+    async def test_non_crossover_state_fails_before_job_exists(self):
         self.state["active_mode"] = "stereo"
         service = self.service()
         with self.assertRaises(ValueError):
-            service.start(side="left", input_id="mic", reference_input_channel="2",
+            await service.start(side="left", input_id="mic", reference_input_channel="2",
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
 
-    def test_blank_input_id_fails_before_job_exists(self):
+    async def test_blank_input_id_fails_before_job_exists(self):
         service = self.service()
         with self.assertRaisesRegex(ValueError, "input"):
-            service.start(side="left", input_id="  ", reference_input_channel="2",
+            await service.start(side="left", input_id="  ", reference_input_channel="2",
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
 
@@ -321,7 +321,7 @@ class StartValidationTests(ServiceFixture, unittest.TestCase):
 
 class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
     async def test_confirmed_run_commits_and_reports_summary(self):
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "committed")
         self.assertTrue(job["result"]["confirmed"])
@@ -339,7 +339,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_result_is_json_safe_and_holds_no_waveforms(self):
         import json
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await self.wait_terminal(service, job_id)
         json.dumps(job, allow_nan=False)
         # IR data travels only as the takes' bounded diagnostic previews; the
@@ -354,7 +354,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("samples", impulse)
 
     async def test_result_carries_before_and_after_as_normal_measurements(self):
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await self.wait_terminal(service, job_id)
         before = job["result"]["measurements"]["before"]
         after = job["result"]["measurements"]["after"]
@@ -378,7 +378,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
                 alignment, {"left_low": 5.0, "left_high": 5.0})
             return result
 
-        service, job_id = self.start(self.service(confirm=confirm))
+        service, job_id = await self.start(self.service(confirm=confirm))
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "committed")
         result = job["result"]
@@ -409,7 +409,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertLess(abs(timelines["after"]["arrival_ms"]["left_low"]), 0.05)
 
     async def test_take_without_band_evidence_has_no_timeline(self):
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await self.wait_terminal(service, job_id)
         measurements = job["result"]["measurements"]
         self.assertIn("speaker_align_timeline", measurements["before"]["analysis"])
@@ -417,12 +417,12 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_unconfirmed_and_trial_runs_keep_both_takes(self):
         self.second_arrivals = (500, 548)
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "unconfirmed")
         self.assertEqual(set(job["result"]["measurements"]), {"before", "after"})
         self.second_arrivals = (500, 500)
-        service, job_id = self.start(dry_run=True)
+        service, job_id = await self.start(dry_run=True)
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "trial-done")
         self.assertEqual(set(job["result"]["measurements"]), {"before", "after"})
@@ -436,7 +436,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             result["measurement"] = planning
             return result
 
-        service, job_id = self.start(self.service(acquire=acquire))
+        service, job_id = await self.start(self.service(acquire=acquire))
         with self.assertLogs("measurement.speaker_service", level="WARNING"):
             job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "committed")
@@ -448,14 +448,14 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             result.pop("measurement")
             return result
 
-        service, job_id = self.start(self.service(acquire=acquire))
+        service, job_id = await self.start(self.service(acquire=acquire))
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "committed")
         self.assertEqual(set(job["result"]["measurements"]), {"after"})
 
     async def test_unconfirmed_run_never_commits(self):
         self.second_arrivals = (500, 548)
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "unconfirmed")
         self.assertFalse(job["result"]["confirmed"])
@@ -465,7 +465,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
     async def test_per_side_reference_channels_reach_acquire(self):
         # Scarlett loopbacks 7 (left) / 8 (right): the right run must record
         # the right loopback, never the shared/left one.
-        service, job_id = self.start(side="right", reference_input_channel="7",
+        service, job_id = await self.start(side="right", reference_input_channel="7",
                                      reference_input_channel_left="7",
                                      reference_input_channel_right="8",
                                      dry_run=True)
@@ -485,7 +485,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verified["reference_input_channel_right"], "8")
 
     async def test_per_side_electrical_reference_alone_is_accepted(self):
-        service, job_id = self.start(reference_input_channel="",
+        service, job_id = await self.start(reference_input_channel="",
                                      reference_input_channel_left="7", dry_run=True)
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "trial-done", job)
@@ -494,14 +494,14 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         # A reference configured for one side only is recorded for either
         # side, like a shared one; the take's evidence decides whether it
         # carries the sweep.
-        service, job_id = self.start(side="right", reference_input_channel="",
+        service, job_id = await self.start(side="right", reference_input_channel="",
                                      reference_input_channel_left="7", dry_run=True)
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "trial-done", job)
         self.assertEqual(self.acquire_calls[0]["reference_input_channel_left"], "7")
 
     async def test_dry_run_confirms_without_committing(self):
-        service, job_id = self.start(dry_run=True)
+        service, job_id = await self.start(dry_run=True)
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "trial-done")
         self.assertTrue(job["result"]["confirmed"])
@@ -512,7 +512,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_acquire_failure_fails_the_job_loudly(self):
         self.acquire_queue = [RuntimeError("mic unplugged")]
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "failed")
         self.assertIn("mic unplugged", job["error"])
@@ -532,7 +532,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         async def acquire(alignment, **kwargs):
             return acquire_unseparable(alignment, **kwargs)
 
-        service, job_id = self.start(self.service(acquire=acquire))
+        service, job_id = await self.start(self.service(acquire=acquire))
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "failed")
         self.assertIn("cannot separate the ways", job["error"])
@@ -545,7 +545,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_failure_before_planning_carries_no_result(self):
         self.acquire_queue = [RuntimeError("mic unplugged")]
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await self.wait_terminal(service, job_id)
         self.assertIsNone(job["result"])
 
@@ -553,7 +553,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.live_revision_bump = 1
         service = self.service()
         with self.assertRaises(SpeakerAlignStaleError):
-            service.start(side="left", input_id="mic", reference_input_channel="2",
+            await service.start(side="left", input_id="mic", reference_input_channel="2",
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
         self.assertEqual(self.acquire_calls, [])
@@ -562,7 +562,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         # start() sees a fresh target (freeze call 1); the worker's
         # re-frozen target (call 2) disagrees: the job fails loudly.
         self.stale_from_freeze_call = 2
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await self.wait_terminal(service, job_id)
         self.assertEqual(job["status"], "failed")
         self.assertIn("stale", job["error"].lower())
@@ -589,12 +589,12 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             return await original(alignment, **kwargs)
 
         service = self.service(acquire=paused)
-        _, first = self.start(service)
+        _, first = await self.start(service)
         try:
             async with asyncio.timeout(10):
                 await entered.wait()
             with self.assertRaises(SpeakerAlignBusyError):
-                service.start(side="right", input_id="mic", reference_input_channel="2",
+                await service.start(side="right", input_id="mic", reference_input_channel="2",
                               reference_id="r", microphone_position_id="m")
         finally:
             release.set()
@@ -613,7 +613,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             return await original(alignment, **kwargs)
 
         service = self.service(acquire=paused)
-        _, job_id = self.start(service)
+        _, job_id = await self.start(service)
         try:
             async with asyncio.timeout(10):
                 await entered.wait()
@@ -625,7 +625,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.session.committed)
 
     async def test_cancel_after_terminal_is_harmless(self):
-        service, job_id = self.start()
+        service, job_id = await self.start()
         await service.wait_for(job_id)
         service.cancel(job_id)
         self.assertEqual(service.status(job_id)["status"], "committed")
@@ -649,7 +649,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             return await original(alignment, **kwargs)
 
         service = self.service(acquire=paused)
-        _, job_id = self.start(service)
+        _, job_id = await self.start(service)
         try:
             async with asyncio.timeout(10):
                 await entered.wait()
@@ -677,9 +677,9 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.session.committed)
 
     async def test_post_terminal_start_succeeds_with_new_id(self):
-        service, first = self.start()
+        service, first = await self.start()
         await service.wait_for(first)
-        _, second = self.start(service)
+        _, second = await self.start(service)
         self.assertNotEqual(first, second)
         job = await service.wait_for(second)
         self.assertEqual(job["status"], "committed")
@@ -689,7 +689,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         service.max_retained_jobs = 2
         ids = []
         for _ in range(3):
-            _, job_id = self.start(service)
+            _, job_id = await self.start(service)
             ids.append(job_id)
             await service.wait_for(job_id)
         remaining = [job["id"] for job in service.jobs()]
@@ -698,7 +698,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             service.status(ids[0])
 
     async def test_status_copies_are_detached_and_internal_free(self):
-        service, job_id = self.start()
+        service, job_id = await self.start()
         await service.wait_for(job_id)
         first = service.status(job_id)
         self.assertNotIn("internal", first)
@@ -710,7 +710,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_dry_run_unconfirmed_reports_trial_without_commit(self):
         self.second_arrivals = (500, 548)
-        service, job_id = self.start(dry_run=True)
+        service, job_id = await self.start(dry_run=True)
         job = await service.wait_for(job_id)
         self.assertEqual(job["status"], "trial-done")
         self.assertFalse(job["result"]["confirmed"])
@@ -718,21 +718,21 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.session.committed)
 
     async def test_dry_run_never_touches_commit(self):
-        service, job_id = self.start(dry_run=True)
+        service, job_id = await self.start(dry_run=True)
         job = await service.wait_for(job_id)
         self.assertEqual(job["status"], "trial-done")
         self.assertNotIn("confirm_and_commit", self.session.calls)
 
     async def test_commit_failure_fails_the_job(self):
         self.commit_fails = True
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await service.wait_for(job_id)
         self.assertEqual(job["status"], "failed")
         self.assertIn("commit failed", job["error"])
 
     async def test_verification_failure_fails_the_job(self):
         self.confirm_queue = [RuntimeError("verification sweep lost")]
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await service.wait_for(job_id)
         self.assertEqual(job["status"], "failed")
         self.assertIn("verification sweep lost", job["error"])
@@ -740,7 +740,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_verification_input_chain_change_fails_the_job(self):
         self.verification_provenance = {"job_ids": ["verify-1"], "mic_channel": 2}
-        service, job_id = self.start()
+        service, job_id = await self.start()
         job = await service.wait_for(job_id)
         self.assertEqual(job["status"], "failed")
         self.assertIn("input chain changed", job["error"])
@@ -758,7 +758,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
             return state
 
         service = self.service(get_state=counting_get_state)
-        _, job_id = self.start(service)
+        _, job_id = await self.start(service)
         job = await service.wait_for(job_id)
         self.assertEqual(job["status"], "failed")
         self.assertIn("stale", job["error"].lower())
@@ -777,7 +777,7 @@ class CommitFlowTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
 
         service_module.SpeakerAlignment = RecordingAlignment
         try:
-            service, job_id = self.start()
+            service, job_id = await self.start()
             await service.wait_for(job_id)
         finally:
             service_module.SpeakerAlignment = real_alignment

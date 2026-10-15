@@ -10,7 +10,6 @@ import logging
 
 from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22,
-    get_audio_output_overview,
 )
 from dsp.runtime import BassManagementConfig
 from typing import Any
@@ -35,7 +34,6 @@ from ..deps import (
     _AUTO_SUB_JOBS,
     _auto_sub_cancel_requested,
     _auto_sub_lock,
-    _dsp_runtime,
     _measurement_session,
     activate_candidate_owner,
 )
@@ -160,7 +158,7 @@ async def _run_auto_sub_22_optimize(
             return
 
         auto_sub_sweep_profile = _auto_sub_sweep_profile(fc)
-        auto_sub_rate = owned_rate if owned_rate is not None else _resolve_measurement_start_sample_rate()
+        auto_sub_rate = owned_rate if owned_rate is not None else await asyncio.to_thread(_resolve_measurement_start_sample_rate)
         capture = AutoSubCaptureContext(
             input_id=input_id, mic_input_channel=mic_input_channel,
             reference_input_channel=reference_input_channel,
@@ -210,12 +208,6 @@ async def _run_auto_sub_22_optimize(
             "reason": "summation-first: no pre-alignment Target trim; Gain is single-stage after alignment",
         }
         logger.info("AUTOSUB_BALANCE job=%s mode=2.2_mono %s", job_id, json.dumps(job["balance_check"], sort_keys=True))
-        if "output_state_context" in job:
-            # The graph is already staged through the owner; a legacy
-            # overview sync would clobber it with persisted state.
-            pass
-        elif _dsp_runtime() is not None:
-            await _dsp_runtime().sync(await asyncio.to_thread(get_audio_output_overview))
         coarse1_results: list[dict[str, Any]] = []
         coarse2_results: list[dict[str, Any]] = []
         matrix_results: list[dict[str, Any]] = []

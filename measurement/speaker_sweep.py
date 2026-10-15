@@ -99,13 +99,15 @@ async def measure_unit(store: Any, session: Any, job: dict[str, Any], target: di
     narrowed = narrow_measured_target(target, roles=unit["roles"])
     entry_epoch = job.get("_entry_epoch") if "_entry_epoch" in job else (
         session.capture_entry_epoch() if session is not None else None)
-    def start_take():
-        return store.start_measurement(
+    async def start_take():
+        staged = (expected_native_context if expected_native_context is not None else
+                  await asyncio.to_thread(measurement_session._stage_bank_v2_context,
+                      measurement_bank=target["bank_id"], measurement_rate_hz=rate, channel=unit["channel"]))
+        return await store.start_measurement(
             input_id=params["input_id"], input_key=params["input_key"], channel=unit["channel"],
             mic_input_channel=params["mic_input_channel"], calibration_ref=params["calibration_ref"],
             frozen_target=narrowed,
-            **(expected_native_context if expected_native_context is not None else measurement_session._stage_bank_v2_context(
-                 measurement_bank=target["bank_id"], measurement_rate_hz=rate, channel=unit["channel"])),
+            **staged,
         )
     started = (await start_take() if session_owned else
                await measurement_session._start_registered_manual_measurement(rate, start_take, entry_epoch=entry_epoch))

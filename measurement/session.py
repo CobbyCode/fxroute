@@ -31,6 +31,7 @@ from measurement.store import (
     measurement_setup_settings_from_payload,
     normalize_measurement_optional_input_channel,
 )
+from measurement.target import attach_measurement_target, measurement_target_from_context
 from uploads import (
     MEASUREMENT_TEXT_MAX_BYTES,
     UploadTooLargeError,
@@ -38,13 +39,7 @@ from uploads import (
 )
 import playback.source_policy as source_policy
 from playback.transition import TransitionRequest
-from audio.samplerate import (
-    OUTPUT_MODE_SUBWOOFER_22,
-    OUTPUT_MODE_SUBWOOFER_22_STEREO,
-    OUTPUT_MODE_SUBWOOFER_22_MODES,
-    OUTPUT_MODE_SUBWOOFER_MODES,
-)
-from dsp.runtime import DEFAULT_SAMPLE_RATE, BassManagementConfig
+from dsp.runtime import DEFAULT_SAMPLE_RATE
 from library.core import path_within_root
 
 logger = logging.getLogger(__name__)
@@ -411,7 +406,7 @@ class MeasurementSampleRateSession:
             entry_established = False
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=manual-sweep job_id=%s", job_id)
-                await self._start_locked(_resolve_measurement_start_sample_rate())
+                await self._start_locked(await asyncio.to_thread(_resolve_measurement_start_sample_rate))
                 entry_established = True
             self.active_manual_job_ids.add(job_id)
             if report_entry:
@@ -433,7 +428,7 @@ class MeasurementSampleRateSession:
             self._require_no_speaker_job()
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=auto-sub job_id=%s", job_id)
-                await self._start_locked(_resolve_measurement_start_sample_rate())
+                await self._start_locked(await asyncio.to_thread(_resolve_measurement_start_sample_rate))
             self.active_auto_sub_job_id = job_id
             return self.generation
 
@@ -442,7 +437,7 @@ class MeasurementSampleRateSession:
             self._require_no_speaker_job()
             if not self.active:
                 logger.info("Measurement sample-rate session start requested: caller=spl-meter job_id=%s", job_id)
-                await self._start_locked(_resolve_measurement_start_sample_rate())
+                await self._start_locked(await asyncio.to_thread(_resolve_measurement_start_sample_rate))
             self.active_spl_job_ids.add(job_id)
             return self.generation
 
@@ -467,7 +462,7 @@ class MeasurementSampleRateSession:
                 raise RuntimeError("Another measurement is already running")
             entered = not self.active
             if entered:
-                await self._start_locked(_resolve_measurement_start_sample_rate())
+                await self._start_locked(await asyncio.to_thread(_resolve_measurement_start_sample_rate))
             self.active_speaker_job_id = job_id
             return self.generation, entered
 
@@ -1171,153 +1166,6 @@ def _measurement_helper_snapshot_summary(snapshot: dict | None) -> dict:
     return samplerate.measurement_helper_snapshot_summary(snapshot)
 
 
-def _log_22_measurement_sweep_config(config: BassManagementConfig, snapshot: dict | None) -> None:
-    if config.output_mode not in OUTPUT_MODE_SUBWOOFER_22_MODES:
-        return
-    snapshot = snapshot or {}
-    logger.info(
-        "2.2 measurement sweep config: mode=%s sub1_alignment_ms=%.2f sub2_alignment_ms=%.2f "
-        "derived_main=%.2f derived_sub1=%.2f derived_sub2=%.2f helper_pid=%s helper_args=%s",
-        config.output_mode,
-        config.sub_alignment_ms,
-        config.sub2_alignment_ms,
-        config.derived_main_delay_ms,
-        config.derived_sub1_delay_ms,
-        config.derived_sub2_delay_ms,
-        snapshot.get("helper_pid"),
-        snapshot.get("helper_args"),
-    )
-
-
-def _build_measurement_audio_output_context() -> dict:
-    """Build audio_output_context metadata for measurement saves."""
-    get_audio_output_overview = _measurement_services().get_audio_output_overview
-    context: dict = {}
-    try:
-        overview = get_audio_output_overview()
-        output_mode = overview.get("output_mode") or {}
-        mode = str(output_mode.get("mode", "stereo") or "stereo")
-        if mode in OUTPUT_MODE_SUBWOOFER_MODES:
-            config = BassManagementConfig.from_overview(overview)
-            snapshot = _dsp_runtime().snapshot() if _dsp_runtime() is not None else {}
-            context["output_mode"] = mode
-            context["output_key"] = config.output_key
-            context["output_label"] = config.output_label
-            context["output_channels"] = config.output_channels
-            context["sample_rate_hz"] = config.sample_rate
-            context["crossover_frequency_hz"] = config.crossover_frequency_hz
-            context["crossover_type"] = "LR24"
-            context["main_highpass_enabled"] = config.main_highpass_enabled
-            context["sub_level_db"] = config.sub_level_db
-            context["sub_alignment_ms"] = config.sub_alignment_ms
-            context["derived_main_delay_ms"] = config.derived_main_delay_ms
-            context["derived_sub_delay_ms"] = config.derived_sub_delay_ms
-            context["derived_sub1_delay_ms"] = config.derived_sub1_delay_ms
-            context["derived_sub2_delay_ms"] = config.derived_sub2_delay_ms
-            context["sub_polarity"] = config.sub_polarity
-            context["sub2_level_db"] = config.sub2_level_db
-            context["sub2_alignment_ms"] = config.sub2_alignment_ms
-            context["sub2_polarity"] = config.sub2_polarity
-            context["runtime_active"] = snapshot.get("active")
-            context["helper_pid"] = snapshot.get("helper_pid")
-        else:
-            context["output_mode"] = "stereo"
-    except Exception:
-        logger.warning("Failed to build audio output measurement context", exc_info=True)
-        context["output_mode"] = "unknown"
-    return context
-
-
-async def _sync_dsp_runtime_for_measurement_sweep(measurement_rate: int) -> None:
-    services = _measurement_services()
-    get_audio_output_overview = services.get_audio_output_overview
-    get_samplerate_status = services.get_samplerate_status
-    _pulse_suspend_sink_for_samplerate = services.pulse_suspend_sink_for_samplerate
-    _audio_output_overview_with_effective_rate = services.audio_output_overview_with_effective_rate
-    dsp_orchestrator = services.get_dsp_orchestrator()
-    if _dsp_runtime() is None:
-        return None
-    overview = await asyncio.to_thread(get_audio_output_overview)
-    output_mode = overview.get("output_mode") or {}
-    if output_mode.get("mode") not in OUTPUT_MODE_SUBWOOFER_MODES:
-        return None
-    mode_num = "2.2 Stereo Bass" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22_STEREO else "2.2" if output_mode.get("mode") == OUTPUT_MODE_SUBWOOFER_22 else "2.1"
-    output_key = str(output_mode.get("effective_output_key") or "").strip()
-
-    samplerate_status = await asyncio.to_thread(get_samplerate_status)
-    previous_force_rate = samplerate_status.get("force_rate")
-    previous_active_rate = samplerate_status.get("active_rate")
-    before = _dsp_runtime().snapshot()
-    logger.info(
-        "%s measurement pre-arm starting: measurement_rate=%s samplerate_before=%s helper_before=%s",
-        mode_num,
-        measurement_rate,
-        json.dumps(
-            {
-                "active_rate": previous_active_rate,
-                "force_rate": previous_force_rate,
-            },
-            sort_keys=True,
-        ),
-        json.dumps(_measurement_helper_snapshot_summary(before), sort_keys=True),
-    )
-    logger.info(
-        "%s measurement samplerate session pre-arm: target_rate=%s active_rate=%s force_rate=%s",
-        mode_num,
-        measurement_rate,
-        previous_active_rate,
-        previous_force_rate,
-    )
-    if previous_active_rate != measurement_rate:
-        await asyncio.to_thread(_pulse_suspend_sink_for_samplerate, output_key, "measurement-pre-arm")
-
-    overview = _audio_output_overview_with_effective_rate(
-        await asyncio.to_thread(get_audio_output_overview), measurement_rate,
-    )
-    await dsp_orchestrator.sync_runtime(overview, reason="measurement-pre-arm")
-
-    aligned, overview = await _wait_for_selected_output_effective_rate(measurement_rate, timeout_ms=3500)
-    if not aligned:
-        output_mode = overview.get("output_mode") or {}
-        effective_rate = output_mode.get("effective_output_rate")
-        raise RuntimeError(
-            f"{mode_num} measurement pre-arm failed: selected output did not reach "
-            f"{measurement_rate} Hz before sweep start (effective_rate={effective_rate})"
-        )
-
-    await dsp_orchestrator.sync_runtime(overview, reason="measurement-pre-arm")
-    after = _dsp_runtime().snapshot()
-    samplerate_after = await asyncio.to_thread(get_samplerate_status)
-    after_config = after.get("config") or {}
-    runtime_config = BassManagementConfig.from_overview(overview)
-    helper_rate = after_config.get("sample_rate")
-    if not after.get("active") or helper_rate != measurement_rate:
-        raise RuntimeError(
-            f"{mode_num} measurement pre-arm failed: helper did not settle at "
-            f"{measurement_rate} Hz before sweep start (active={after.get('active')} sample_rate={helper_rate})"
-        )
-
-    logger.info(
-        "%s measurement helper pre-armed before sweep: target_rate=%s helper_rate_before=%s helper_rate_after=%s "
-        "helper_pid=%s samplerate_after=%s helper_after=%s",
-        mode_num,
-        measurement_rate,
-        (before.get("config") or {}).get("sample_rate"),
-        helper_rate,
-        after.get("helper_pid"),
-        json.dumps(
-            {
-                "active_rate": samplerate_after.get("active_rate"),
-                "force_rate": samplerate_after.get("force_rate"),
-            },
-            sort_keys=True,
-        ),
-        json.dumps(_measurement_helper_snapshot_summary(after), sort_keys=True),
-    )
-    _log_22_measurement_sweep_config(runtime_config, after)
-    return None
-
-
 async def _unregister_measurement_job_after_completion(
     job_id: str,
     generation: int,
@@ -1695,29 +1543,24 @@ async def start_measurement(
         except UploadTooLargeError as e:
             raise HTTPException(status_code=413, detail=str(e))
 
-    measurement_rate = _resolve_measurement_start_sample_rate()
+    measurement_rate = await asyncio.to_thread(_resolve_measurement_start_sample_rate)
+    async def start_job():
+        staged = await asyncio.to_thread(
+            _stage_bank_v2_context, measurement_bank=measurement_bank,
+            measurement_rate_hz=measurement_rate, channel=channel)
+        return await measurement_store.start_measurement(
+            input_id=input_id, input_key=input_key, channel=channel,
+            mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
+            reference_input_channel_left=reference_input_channel_left,
+            reference_input_channel_right=reference_input_channel_right,
+            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
+            calibration_ref=calibration_ref, measurement_role=measurement_role,
+            measurement_bank=measurement_bank, measurement_group=measurement_group, **staged)
+
     try:
         job = await _start_registered_manual_measurement(
-            measurement_rate,
-            lambda: measurement_store.start_measurement(
-                input_id=input_id,
-                input_key=input_key,
-                channel=channel,
-                mic_input_channel=mic_input_channel,
-                reference_input_channel=reference_input_channel,
-                reference_input_channel_left=reference_input_channel_left,
-                reference_input_channel_right=reference_input_channel_right,
-                calibration_filename=calibration_filename,
-                calibration_bytes=calibration_bytes,
-                calibration_ref=calibration_ref,
-                measurement_role=measurement_role,
-                measurement_bank=measurement_bank,
-                measurement_group=measurement_group,
-                **_stage_bank_v2_context(measurement_bank=measurement_bank,
-                                         measurement_rate_hz=measurement_rate,
-                                         channel=channel),
-            ),
-            entry_epoch=entry_epoch,
+            measurement_rate, start_job, entry_epoch=entry_epoch,
         )
     except MeasurementEntryInvalidated:
         raise HTTPException(
@@ -1767,27 +1610,24 @@ async def start_lr_repeat_measurement(
         except UploadTooLargeError as e:
             raise HTTPException(status_code=413, detail=str(e))
 
-    measurement_rate = _resolve_measurement_start_sample_rate()
+    measurement_rate = await asyncio.to_thread(_resolve_measurement_start_sample_rate)
+    async def start_job():
+        staged = await asyncio.to_thread(
+            _stage_bank_v2_context, measurement_bank=measurement_bank,
+            measurement_rate_hz=measurement_rate, channel="stereo")
+        return await measurement_store.start_lr_repeat_measurement(
+            input_id=input_id, input_key=input_key, base_name=base_name,
+            mic_input_channel=mic_input_channel,
+            reference_input_channel=reference_input_channel,
+            reference_input_channel_left=reference_input_channel_left,
+            reference_input_channel_right=reference_input_channel_right,
+            calibration_filename=calibration_filename, calibration_bytes=calibration_bytes,
+            calibration_ref=calibration_ref, measurement_bank=measurement_bank,
+            measurement_group=measurement_group, **staged)
+
     try:
         job = await _start_registered_manual_measurement(
-            measurement_rate,
-            lambda: measurement_store.start_lr_repeat_measurement(
-                input_id=input_id,
-                input_key=input_key,
-                base_name=base_name,
-                mic_input_channel=mic_input_channel,
-                reference_input_channel=reference_input_channel,
-                reference_input_channel_left=reference_input_channel_left,
-                reference_input_channel_right=reference_input_channel_right,
-                calibration_filename=calibration_filename,
-                calibration_bytes=calibration_bytes,
-                calibration_ref=calibration_ref,
-                measurement_bank=measurement_bank,
-                measurement_group=measurement_group,
-                **_stage_bank_v2_context(measurement_bank=measurement_bank,
-                                         measurement_rate_hz=measurement_rate, channel="stereo"),
-            ),
-            entry_epoch=entry_epoch,
+            measurement_rate, start_job, entry_epoch=entry_epoch,
         )
     except MeasurementEntryInvalidated:
         raise HTTPException(
@@ -1838,22 +1678,24 @@ async def save_measurement(request: Request):
     measurement_name = body.get("name") if isinstance(body, dict) else ""
     measurements = body.get("measurements") if isinstance(body, dict) else None
     trace_count = len(body.get("traces") or []) if isinstance(body, dict) and isinstance(body.get("traces"), list) else 0
-    audio_output_context = _build_measurement_audio_output_context()
-    if isinstance(body, dict) and not body.get("audio_output_context"):
-        body["audio_output_context"] = audio_output_context
-
     logger.info(
-        "Measurement save request received: id=%s name=%s traces=%s audio_output_mode=%s",
+        "Measurement save request received: id=%s name=%s traces=%s",
         measurement_id,
         measurement_name,
         trace_count,
-        audio_output_context.get("output_mode", "unknown"),
     )
     try:
+        for item in (measurements if isinstance(measurements, list) else [body]):
+            if not isinstance(item, dict):
+                continue
+            target = measurement_target_from_context(item)
+            if target.get("legacy"):
+                target = measurement_target_from_context(item.get("audio_output_context"))
+            if not target.get("legacy"):
+                item["audio_output_context"] = attach_measurement_target(item.get("audio_output_context"), target)
+            elif not item.get("audio_output_context"):
+                item["audio_output_context"] = {"output_mode": "unknown"}
         if isinstance(measurements, list):
-            for item in measurements:
-                if isinstance(item, dict) and not item.get("audio_output_context"):
-                    item["audio_output_context"] = audio_output_context
             saved_measurements = measurement_store.save_measurements(measurements)
             logger.info("Measurement set save completed: count=%s", len(saved_measurements))
             return {"status": "ok", "measurements": saved_measurements}

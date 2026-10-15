@@ -23,6 +23,7 @@ graph or recovery logic.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from dataclasses import dataclass
@@ -205,6 +206,7 @@ class PlaybackQueue:
         self.loop: bool = False
         self.shuffle: bool = False
         self.single_track_loop: bool = False
+        self._edit_generation = 0
         self.stream_prefetch = StreamQueuePrefetch(self)
 
     @property
@@ -213,6 +215,7 @@ class PlaybackQueue:
 
     def commit(self, candidate: QueueCandidate) -> None:
         """Publish a prepared queue candidate to the committed state."""
+        self._edit_generation += 1
         self.stream_prefetch.invalidate()
         self.tracks = [dict(item) for item in candidate.queue]
         self.original = [dict(item) for item in candidate.original]
@@ -224,6 +227,7 @@ class PlaybackQueue:
 
     def reset(self, *, guarded: bool = False) -> None:
         """Clear the committed queue, trimming a native MPV playlist first."""
+        self._edit_generation += 1
         self.stream_prefetch.reconcile_current(guarded=guarded)
         self.stream_prefetch.invalidate(trim=True, guarded=guarded)
         was_native = self.mode == "native_mpv"
@@ -290,6 +294,7 @@ class PlaybackQueue:
         else:
             new_index = -1
 
+        self._edit_generation += 1
         self.tracks = new_tracks
         self.original = new_original
         self.index = new_index
@@ -453,6 +458,16 @@ class PlaybackQueue:
             ensure(captured)
 
     @staticmethod
+    def _source_intent_generation(captured: Any) -> int | None:
+        source = getattr(captured, "source", captured)
+        return (source[1] if isinstance(source, tuple) and len(source) == 2
+                and type(source[1]) is int else None)
+
+    def _ensure_queue_intent_current(self, captured: tuple[int, QueueSnapshot]) -> None:
+        if captured != (self._edit_generation, self.snapshot()):
+            raise HTTPException(status_code=409, detail="Playback queue changed during preparation")
+
+    @staticmethod
     def _is_source_changed_skip(result: Any) -> bool:
         state = getattr(result, "state", None) or {}
         if not isinstance(state, dict):
@@ -483,10 +498,12 @@ class PlaybackQueue:
                 set_playlist_pos = getattr(player, "set_playlist_pos", None)
                 if not callable(set_playlist_pos):
                     return False
+                self._edit_generation += 1
                 set_playlist_pos(index)
                 self.index = index
                 self._deps.set_track_context(next_track, next_track)
                 return True
+        queue_intent = (self._edit_generation, self.snapshot())
         source = str(next_track.get("source") or "local")
         # Native streaming providers (TIDAL) carry short-lived stream URLs;
         # resolve them as late as possible, right before the transition.
@@ -501,7 +518,14 @@ class PlaybackQueue:
         target_url = str(next_track.get("url") or "")
         if not target_url:
             return False
+        self._ensure_source_intent_current(source_intent)
+        self._ensure_queue_intent_current(queue_intent)
+        self._edit_generation += 1
+        queue_intent = (self._edit_generation, self.snapshot())
         target_rate = self._deps.coordinator_target_rate(source, next_track)
+        rate_change = await asyncio.to_thread(self._deps.coordinator_rate_change, target_rate)
+        self._ensure_source_intent_current(source_intent)
+        self._ensure_queue_intent_current(queue_intent)
         request = TransitionRequest(
             operation="queue",
             source=source,
@@ -509,7 +533,8 @@ class PlaybackQueue:
             target_url=target_url,
             target_track=next_track,
             should_play=True,
-            rate_change=self._deps.coordinator_rate_change(target_rate),
+            rate_change=rate_change,
+            source_generation=self._source_intent_generation(source_intent),
             reload_source=True,
             detail=transition_reason,
         )
@@ -524,6 +549,7 @@ class PlaybackQueue:
                 raise HTTPException(status_code=409, detail="Audio source changed during playback transition")
             raise HTTPException(status_code=500, detail="Playback transition was not committed")
         self._ensure_source_intent_current(source_intent)
+        self._ensure_queue_intent_current(queue_intent)
         rate_updated = False
         if self._deps.sample_rate_policy_is_auto() and source_policy.is_mpv_source(source) and isinstance(result.target_rate, int) and result.target_rate > 0:
             next_track["sample_rate_hz"] = result.target_rate
@@ -685,6 +711,7 @@ class PlaybackQueue:
     async def set_shuffle(self, enabled: bool) -> bool:
         if self._deps.transition_is_active():
             raise HTTPException(status_code=409, detail="A playback transition is in progress")
+        self._edit_generation += 1
         self.stream_prefetch.reconcile_current()
         shuffle_source_intent = self._capture_source_intent()
         if len(self.tracks) <= 1:
@@ -694,6 +721,7 @@ class PlaybackQueue:
             # MPV may start the successor during playlist-clear. Determine the
             # shuffle anchor only after the retained native entry is verified.
             self.stream_prefetch.invalidate(trim=True)
+        queue_intent = (self._edit_generation, self.snapshot())
         current_index = self.index if 0 <= self.index < len(self.tracks) else 0
         current_track = dict(self.tracks[current_index])
         current_track_id = current_track.get("id")
@@ -729,6 +757,8 @@ class PlaybackQueue:
             # is permuted.  Rebuild the native playlist directly so changing
             # order does not enter the full output-graph transition path.
             if await self._reorder_native_mpv_playlist(target_queue, target_index):
+                self._ensure_source_intent_current(shuffle_source_intent)
+                self._ensure_queue_intent_current(queue_intent)
                 self.tracks = target_queue
                 self.index = target_index
                 self.shuffle = bool(enabled)
@@ -750,6 +780,9 @@ class PlaybackQueue:
                 and not player_state.get("ended")
             )
             target_rate = self._deps.coordinator_target_rate("local", target_track)
+            rate_change = await asyncio.to_thread(self._deps.coordinator_rate_change, target_rate)
+            self._ensure_source_intent_current(shuffle_source_intent)
+            self._ensure_queue_intent_current(queue_intent)
             try:
                 result = await self._deps.run_transition(TransitionRequest(
                     operation="queue",
@@ -758,7 +791,8 @@ class PlaybackQueue:
                     target_url=target_url,
                     target_track=target_track,
                     should_play=should_play,
-                    rate_change=self._deps.coordinator_rate_change(target_rate),
+                    rate_change=rate_change,
+                    source_generation=self._source_intent_generation(shuffle_source_intent),
                     reload_source=True,
                     detail="queue-shuffle-on" if enabled else "queue-shuffle-off",
                     native_queue=tuple(target_queue),
@@ -775,6 +809,7 @@ class PlaybackQueue:
                     raise HTTPException(status_code=409, detail="Audio source changed during playback transition")
                 raise HTTPException(status_code=500, detail="Playback transition was not committed")
             self._ensure_source_intent_current(shuffle_source_intent)
+            self._ensure_queue_intent_current(queue_intent)
 
             committed_rate = getattr(result, "target_rate", None)
             if isinstance(committed_rate, int) and committed_rate > 0:
@@ -795,6 +830,7 @@ class PlaybackQueue:
     def set_loop(self, enabled: bool) -> bool:
         if self._deps.transition_is_active():
             raise HTTPException(status_code=409, detail="A playback transition is in progress")
+        self._edit_generation += 1
         self.stream_prefetch.reconcile_current()
         has_local_track = bool(self._deps.get_current_track_info() and self._deps.get_current_track_info().get("source") in {"local", "tidal"})
         if not has_local_track:
@@ -905,6 +941,7 @@ class PlaybackQueue:
         """
         if self.mode != "native_mpv":
             return
+        self._edit_generation += 1
         try:
             self.reduce_native_playlist_to_current()
             self.reset_mpv_loop_state()

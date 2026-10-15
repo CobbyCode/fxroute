@@ -25,15 +25,6 @@ sys.path.insert(0, str(ROOT))
 import audio.samplerate.alignment as alignment
 import audio.samplerate_orchestration as orchestration
 import measurement.session as measurement_session
-from dsp.runtime import BassManagementConfig
-
-
-CONFIG_21 = BassManagementConfig(
-    output_mode="subwoofer-2.1", output_key="mock", output_label="Mock",
-    output_channels=4, sample_rate=48_000, crossover_frequency_hz=80,
-    main_highpass_enabled=True, sub_level_db=0.0, sub_alignment_ms=2.0,
-    sub_polarity="normal",
-)
 
 MAIN_THREAD = threading.current_thread()
 
@@ -220,9 +211,9 @@ class AlignmentOffloadTests(unittest.IsolatedAsyncioTestCase):
         _assert_all_off_loop(self, seen, "reconcile_transition_sink_rate status read")
 
 
-class MeasurementPreArmOffloadTests(unittest.IsolatedAsyncioTestCase):
-    async def test_sync_dsp_runtime_for_measurement_sweep_stays_off_loop(self):
-        """The AutoSub pre-arm must build overviews/status and pulse off-loop."""
+class MeasurementRateReadbackOffloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_selected_output_readback_stays_off_loop(self):
+        """Measurement release must read the effective output rate off-loop."""
         seen: list[tuple[str, bool]] = []
 
         def overview():
@@ -236,50 +227,17 @@ class MeasurementPreArmOffloadTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
 
-        def status():
-            seen.append(("status", threading.current_thread() is MAIN_THREAD))
-            # The sink is on the default rate, so the pre-arm pulse path fires.
-            return {
-                "active_rate": 44100, "force_rate": 0, "clock_rate": 48000,
-            }
-
-        def pulse(_output_key, _reason):
-            seen.append(("pulse", threading.current_thread() is MAIN_THREAD))
-
-        class FakeRuntime:
-            def snapshot(self):
-                return {"active": True, "config": {"sample_rate": 48000}}
-
-        orchestrator = AsyncMock()
-        orchestrator.sync_runtime = AsyncMock(return_value={})
         services = {
-            "get_dsp_runtime": lambda: FakeRuntime(),
-            "get_samplerate_status": status,
             "get_audio_output_overview": overview,
-            "pulse_suspend_sink_for_samplerate": pulse,
-            "get_dsp_orchestrator": lambda: orchestrator,
-            "get_store": lambda: None,
-            "audio_output_overview_with_effective_rate": lambda ov, rate: ov,
+            "pipewire_handoff_poll_interval_ms": 1,
         }
         with (
             patch.object(measurement_session, "_measurement_services", return_value=SimpleNamespace(**services)),
-            patch.object(
-                measurement_session, "_wait_for_selected_output_effective_rate",
-                new=AsyncMock(return_value=(
-                    True, {"output_mode": {"effective_output_rate": 48000}},
-                )),
-            ),
-            patch.object(BassManagementConfig, "from_overview", return_value=CONFIG_21),
         ):
-            result = await measurement_session._sync_dsp_runtime_for_measurement_sweep(48000)
-        self.assertIsNone(result)
-        for label in ("overview", "status", "pulse"):
-            entries = [on_loop for name, on_loop in seen if name == label]
-            self.assertTrue(entries, f"pre-arm {label} helper was never invoked")
-            self.assertFalse(
-                any(entries),
-                f"pre-arm {label} helper ran on the event-loop thread",
-            )
+            aligned, result = await measurement_session._wait_for_selected_output_effective_rate(48000)
+        self.assertTrue(aligned)
+        self.assertEqual(result["output_mode"]["effective_output_rate"], 48000)
+        _assert_all_off_loop(self, [on_loop for _, on_loop in seen], "measurement output readback")
 
 
 if __name__ == "__main__":

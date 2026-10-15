@@ -777,7 +777,7 @@ class ServiceRestoreOwnershipTests(SessionFixture, unittest.IsolatedAsyncioTestC
             acquire=acquire, confirm=confirm, create_session=lambda *a, **k: session,
             freeze_live=lambda state, **ctx: freeze_measurement_target(state, bank_id="global", **ctx),
             job_scope=scope)
-        job_id = service.start("left", input_id="mic", reference_input_channel="2",
+        job_id = await service.start("left", input_id="mic", reference_input_channel="2",
                                reference_id="interface:input-2:upstream",
                                microphone_position_id="seat-1-fixed", dry_run=dry_run)
         async with asyncio.timeout(5):

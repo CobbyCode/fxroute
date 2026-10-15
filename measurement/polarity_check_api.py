@@ -108,7 +108,7 @@ async def _run(job: dict[str, Any], target: dict, area: dict) -> None:
 
 @router.get("/api/measurements/polarity-check")
 async def get_polarity_check(bank_id: str):
-    target, area = _resolve_area(bank_id)
+    target, area = await asyncio.to_thread(_resolve_area, bank_id)
     return {"status": "ok", "mode": target["mode"], "bank_id": bank_id,
             "units": [unit["label"] for unit in area["units"]],
             "job": speaker_sweep.public_job(_slot.job)}
@@ -123,7 +123,8 @@ async def start_polarity_check(
     bank_id: str = Form(...),
 ):
     _slot.ensure_startable(auto_sub_active=_dependencies().auto_sub_active())
-    target, area = _resolve_area(bank_id)
+    target, area = await asyncio.to_thread(_resolve_area, bank_id)
+    _slot.ensure_startable(auto_sub_active=_dependencies().auto_sub_active())
     job = speaker_sweep.new_job(
         "polarity-check", mode=target["mode"], bank_id=bank_id, units=area["units"],
         params={"input_id": input_id, "input_key": input_key,

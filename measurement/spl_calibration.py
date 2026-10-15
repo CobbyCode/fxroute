@@ -1118,9 +1118,9 @@ async def get_spl_calibration():
         "target_spl_db": 83.0,
         "noise_lufs": -23.0,
         "meter_hint": "C-weighted / Slow",
-        "output_profile": _spl_output_profile(),
+        "output_profile": await asyncio.to_thread(_spl_output_profile),
         "loudness": extras["loudness"],
-        "automatic": _spl_auto_capability(),
+        "automatic": await asyncio.to_thread(_spl_auto_capability),
         "noise_active": bool(
             _runtime.operation is not None
             and _runtime.operation.noise_process is not None
@@ -1171,7 +1171,7 @@ async def measure_spl_automatically():
     dependencies = _dependencies()
     operation = await _acquire_operation("automatic")
     try:
-        capability = _spl_auto_capability()
+        capability = await asyncio.to_thread(_spl_auto_capability)
         if not capability["available"]:
             raise HTTPException(status_code=409, detail=capability["reason"])
         selected = capability["selected_input"]
@@ -1238,7 +1238,7 @@ async def measure_spl_automatically():
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
 
-        use_sample_count = _spl_recorder_supports_sample_count(
+        use_sample_count = await asyncio.to_thread(_spl_recorder_supports_sample_count,
             dependencies.get_measurement_store()
         )
         operation.recorder = subprocess.Popen(

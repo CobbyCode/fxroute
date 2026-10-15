@@ -248,7 +248,7 @@ def mark_result_applied(mutation: dict) -> None:
 
 @router.get("/api/measurements/level-match")
 async def get_level_match(bank_id: str):
-    target, scope = _resolve_scope(bank_id)
+    target, scope = await asyncio.to_thread(_resolve_scope, bank_id)
     entries = _routed_entries(target, _dependencies().get_table().entries(target["mode"]))
     valid = level_match.valid_entries(entries)
     try:
@@ -278,7 +278,8 @@ async def start_level_match(
     session = dependencies.get_session()
     entry_epoch = session.capture_entry_epoch() if session is not None else None
     _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
-    target, scope = _resolve_scope(bank_id)
+    target, scope = await asyncio.to_thread(_resolve_scope, bank_id)
+    _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
     if not _reference_ready(target, scope, dependencies.get_table().entries(target["mode"])):
         raise HTTPException(status_code=409, detail="Measure Front L/R first to set the level reference")
     job = speaker_sweep.new_job(
@@ -295,7 +296,8 @@ async def reset_level_match(bank_id: str = Form(...)):
     """Forget the stored raw levels of the area's family; the client commits the 0 dB slots."""
     dependencies = _dependencies()
     _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
-    target, scope = _resolve_scope(bank_id)
+    target, scope = await asyncio.to_thread(_resolve_scope, bank_id)
+    _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
     table = dependencies.get_table()
     mode = target["mode"]
     table.save_entries(mode, level_match.drop_family(table.entries(mode), scope["family"])

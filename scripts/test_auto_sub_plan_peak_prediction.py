@@ -8,8 +8,8 @@ ways). The layout path processes every compiled output instead: route sums,
 crossover SOS plus bank PEQ, the mono convolver, delay/trim/polarity, the
 runtime output gain and the sink gain. Regression coverage:
 
-* exactly one of ``config`` xor ``layout`` selects the model; a layout needs
-  its plan fingerprint and a bounded runtime output gain,
+* a compiled layout is required, with its plan fingerprint and a bounded
+  runtime output gain; legacy configs are rejected,
 * route gains sum the driven inputs (a mono-summed sub sees half a
   single-sided sweep, the full peak of a stereo sweep),
 * crossover SOS shapes the band (a lowpassed sub stays below its flat main),
@@ -88,8 +88,6 @@ def layout_args(outputs, **overrides):
 
 class PlanPeakPredictionTests(unittest.TestCase):
     def setUp(self) -> None:
-        autosub_jobs._AUTO_SUB_PEAK_PREDICTION_CACHE_KEY = None
-        autosub_jobs._AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT = None
         autosub_jobs._AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_KEY = None
         autosub_jobs._AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_RESULT = None
         directory = tempfile.TemporaryDirectory(prefix="plan-peak-ir-")
@@ -104,7 +102,7 @@ class PlanPeakPredictionTests(unittest.TestCase):
         path.write_bytes(build_wav_bytes(channels, RATE, 32, 3, struct.pack(f"<{len(flat)}f", *flat)))
         return str(path)
 
-    def test_layout_and_config_are_mutually_exclusive(self) -> None:
+    def test_legacy_config_cannot_bypass_the_compiled_layout(self) -> None:
         overview = {
             "selected_output": {"key": "mock", "channels": 4, "active_rate": 48000},
             "output_mode": {
@@ -117,10 +115,10 @@ class PlanPeakPredictionTests(unittest.TestCase):
         }
         from dsp.runtime import BassManagementConfig
         config = BassManagementConfig.from_overview(overview)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TypeError):
             _auto_sub_stage_peak_prediction(**layout_args(
                 [flat_output("main_l", [{"input": 0, "gain": 1.0}])], config=config))
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TypeError):
             _auto_sub_stage_peak_prediction(
                 sweep_profile=PROFILE, sample_rate=RATE, channel="left")
 

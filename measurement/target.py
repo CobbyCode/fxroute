@@ -397,7 +397,11 @@ def attach_measurement_target(context: object, target: dict) -> dict:
     """Return a detached audio-output context carrying the frozen target."""
     if not isinstance(target, dict) or target.get("schema") != SCHEMA:
         raise ValueError("Measurement target must be a frozen target document")
+    if not {"mode", "device_key", "channels", "sample_rate_hz"}.issubset(target):
+        raise ValueError("Measurement target has no complete v2 output context")
     result = copy.deepcopy(context) if isinstance(context, dict) else {}
+    result.update(output_mode=target["mode"], output_key=target["device_key"],
+                  output_channels=target["channels"], sample_rate_hz=target["sample_rate_hz"])
     result["measurement_target"] = copy.deepcopy(target)
     return result
 

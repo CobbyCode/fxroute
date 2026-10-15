@@ -12,6 +12,7 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
 )
 from dsp.runtime import BassManagementConfig
+from auto_sub_peak_test_support import peak_kwargs
 import measurement.autosub as autosub
 import measurement.autosub.jobs as autosub_jobs
 import measurement.autosub.measurement as autosub_measurement
@@ -129,10 +130,10 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             **{**safe_config.__dict__, "sub_level_db": 6.0, "sub2_level_db": 6.0},
         )
         safe = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="stereo", config=safe_config,
+            sweep_profile=profile, sample_rate=48000, channel="stereo", **peak_kwargs(safe_config),
         )
         unsafe = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="stereo", config=unsafe_config,
+            sweep_profile=profile, sample_rate=48000, channel="stereo", **peak_kwargs(unsafe_config),
         )
         self.assertTrue(safe["safe"])
         self.assertFalse(unsafe["safe"])
@@ -151,10 +152,10 @@ class AutoGainApplyRevertTests(unittest.TestCase):
             sub_polarity="normal",
         )
         full = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="stereo", config=config,
+            sweep_profile=profile, sample_rate=48000, channel="stereo", **peak_kwargs(config),
         )
         quiet = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="stereo", config=config,
+            sweep_profile=profile, sample_rate=48000, channel="stereo", **peak_kwargs(config),
             sink_gain=0.31,
         )
         self.assertEqual(quiet["sink_gain"], 0.31)
@@ -177,7 +178,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         # At reduced master volume the +2 dB candidate is safely below the
         # DAC full-scale (the user scenario: loud listening volume turned down).
         at_31 = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sweep_profile=profile, sample_rate=48000, channel="left", **peak_kwargs(config),
             sink_gain=0.31,
         )
         self.assertTrue(at_31["safe"])
@@ -185,7 +186,7 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         # The same candidate must also be safe at full master volume: the
         # LR24 lowpass peak of the short sweep stays under full-scale.
         at_full = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sweep_profile=profile, sample_rate=48000, channel="left", **peak_kwargs(config),
         )
         self.assertTrue(at_full["safe"])
 
@@ -219,27 +220,27 @@ class AutoGainApplyRevertTests(unittest.TestCase):
         # At reduced master the real cubic sink gain leaves plenty of
         # headroom (31% -> 0.31**3 = 0.0298): +6 dB stays far below 0 dBFS.
         moderate = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sweep_profile=profile, sample_rate=48000, channel="left", **peak_kwargs(config),
             sink_gain=autosub.auto_sub_sink_gain_from_master_percent(31),
         )
         self.assertTrue(moderate["safe"])
         # At full master volume the same +6 dB candidate genuinely clips the
         # float→integer conversion and must stay blocked.
         full = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sweep_profile=profile, sample_rate=48000, channel="left", **peak_kwargs(config),
         )
         self.assertFalse(full["safe"])
         # The same candidate is also unsafe at 90% master (0.9**3 = 0.729):
         # 0.8 * 1.995 * 0.729 = 1.16 exceeds 0 dBFS at the DAC.
         near_full = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sweep_profile=profile, sample_rate=48000, channel="left", **peak_kwargs(config),
             sink_gain=autosub.auto_sub_sink_gain_from_master_percent(90),
         )
         self.assertFalse(near_full["safe"])
         # At 70% master (0.7**3 = 0.343) the same candidate is safe:
         # 0.8 * 1.995 * 0.343 = 0.55 (-5.2 dBFS).
         reduced = autosub_jobs._auto_sub_stage_peak_prediction(
-            sweep_profile=profile, sample_rate=48000, channel="left", config=config,
+            sweep_profile=profile, sample_rate=48000, channel="left", **peak_kwargs(config),
             sink_gain=autosub.auto_sub_sink_gain_from_master_percent(70),
         )
         self.assertTrue(reduced["safe"])

@@ -17,6 +17,7 @@ job instead of reporting success (the AutoSub restore-or-fail-job contract).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -100,7 +101,7 @@ async def start_speaker_alignment(request: Request):
             "code": "speaker-align-invalid", "message": "dry_run must be a boolean"})
     service = _service()
     try:
-        job_id = service.start(
+        job_id = await service.start(
             body.get("side"),
             input_id=body.get("input_id", ""),
             mic_input_channel=body.get("mic_input_channel", "1"),
@@ -276,9 +277,9 @@ def build_speaker_align_service(
         """
         if build_release_adapter is None:
             raise SpeakerAlignTeardownError("Speaker Align plan restore is not wired")
-        device = describe_device(output_service.load())
-        rate = int(get_measurement_rate())
-        adapter = build_release_adapter(
+        device = await asyncio.to_thread(describe_device, output_service.load())
+        rate = await asyncio.to_thread(get_measurement_rate)
+        adapter = await asyncio.to_thread(build_release_adapter,
             output_key=device["output_key"], channels=device["channels"])
         rendered = await adapter(rate)
         logger.info("Speaker Align restored the measurement plan: %s", rendered)
@@ -322,7 +323,8 @@ def build_speaker_align_service(
                     _, entered = await session.register_speaker_job(job_id, entry_epoch=epoch)
                     registered = True
                     if prepare_measurement is not None:
-                        await prepare_measurement(int(get_measurement_rate()), graph_already_verified=entered)
+                        rate = await asyncio.to_thread(get_measurement_rate)
+                        await prepare_measurement(int(rate), graph_already_verified=entered)
                 yield
             finally:
                 if registered:
@@ -410,7 +412,7 @@ def build_speaker_align_service(
             session = get_measurement_session()
             if session is None:
                 return
-            adapter = build_release_adapter(
+            adapter = await asyncio.to_thread(build_release_adapter,
                 output_key=context["output_key"], channels=context["channels"])
             await session.register_speaker_align_release_adapter(adapter)
 

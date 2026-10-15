@@ -16,6 +16,7 @@ from audio.samplerate import (
     OUTPUT_MODE_SUBWOOFER_22_STEREO,
 )
 from dsp.runtime import BassManagementConfig
+from auto_sub_peak_test_support import peak_kwargs
 import measurement.autosub.jobs as autosub_jobs
 from measurement.store import MEASUREMENT_SCOPE_ACTIVE_CHAIN, MEASUREMENT_SCOPE_RAW_HELPER
 from measurement.routing import MeasurementRouting
@@ -92,14 +93,14 @@ class AutoSubPlaybackGainTests(unittest.TestCase):
             sweep_profile=profile,
             sample_rate=48000,
             channel="stereo",
-            config=runtime_config(),
+            **peak_kwargs(runtime_config()),
             playback_gain=1.0,
         )
         quiet = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=profile,
             sample_rate=48000,
             channel="stereo",
-            config=runtime_config(),
+            **peak_kwargs(runtime_config()),
             playback_gain=0.1,
         )
 

@@ -575,7 +575,7 @@ def create_speaker_release_adapter(
         if resolve_live_device is not None:
             check_release_device(
                 output_key=output_key, channels=channels,
-                hardware_ports=ports, live=resolve_live_device(),
+                hardware_ports=ports, live=await asyncio.to_thread(resolve_live_device),
                 owner="Speaker Align")
         native_runtime = get_native_runtime()
         if native_runtime is None:

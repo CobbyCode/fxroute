@@ -12,6 +12,7 @@ concurrent writer is consumed as-is.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -66,7 +67,7 @@ def create_release_adapter(
         if resolve_live_device is not None:
             check_release_device(
                 output_key=output_key, channels=channels,
-                hardware_ports=ports, live=resolve_live_device(),
+                hardware_ports=ports, live=await asyncio.to_thread(resolve_live_device),
                 owner="AutoSub")
         native_runtime = get_native_runtime()
         if native_runtime is None:

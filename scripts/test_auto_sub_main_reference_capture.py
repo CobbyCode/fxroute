@@ -25,6 +25,7 @@ import measurement.autosub.jobs as autosub_jobs
 import measurement.autosub.measurement as autosub_measurement
 from measurement.autosub import deps as autosub_deps
 from dsp.runtime import DSPRuntime, BassManagementConfig
+from auto_sub_peak_test_support import peak_kwargs
 
 
 class FakeProcess:
@@ -179,7 +180,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
         sweep_profile = {"sweep_seconds": 0.1, "sweep_start_hz": 20.0, "sweep_end_hz": 200.0}
         prediction = autosub_jobs._auto_sub_stage_peak_prediction(
             sweep_profile=sweep_profile, sample_rate=48_000, channel="left",
-            config=runtime_config(),
+            **peak_kwargs(runtime_config()),
         )
         # exact_sub_mute zeroes the muted sub outputs; measured peaks must
         # match that (single-sub mask mutes output_3 only).
@@ -257,7 +258,7 @@ class MainReferenceSnapshotTests(unittest.IsolatedAsyncioTestCase):
                 sweep_profile=kwargs["sweep_profile"],
                 sample_rate=kwargs["sample_rate"],
                 channel=kwargs["channel"],
-                config=runtime_config(),
+                **peak_kwargs(runtime_config()),
                 playback_gain=kwargs.get("playback_gain", 1.0),
                 sink_gain=kwargs.get("sink_gain", 1.0),
             )

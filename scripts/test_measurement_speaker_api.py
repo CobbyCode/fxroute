@@ -36,7 +36,7 @@ class FakeService:
         self.status_result = job_summary()
         self.cancel_result = None
 
-    def start(self, side, **kwargs):
+    async def start(self, side, **kwargs):
         self.calls.append(("start", side, deepcopy(kwargs)))
         if isinstance(self.start_result, BaseException):
             raise self.start_result
@@ -408,7 +408,7 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
             capture_runner=capture_runner,
             verification_runner=verification_runner, **session_wiring)
         self.assertIsInstance(service, SpeakerAlignService)
-        job_id = service.start(
+        job_id = await service.start(
             "left", input_id="mic", reference_input_channel="2",
             reference_id="interface:input-2:upstream",
             microphone_position_id="seat-1-fixed")

@@ -23,7 +23,6 @@ from fastapi import APIRouter, HTTPException
 
 from dsp.manager import ensure_kernel_supported_ir, parse_wav_frames
 from dsp.native_config import PEQ_Q_MAX, PEQ_Q_MIN
-from dsp.runtime import BassManagementConfig
 
 from .candidates import _restore_original_config_or_fail_job
 from .deps import (
@@ -59,18 +58,7 @@ _AUTO_SUB_STAGE_PEAK_MISMATCH_DB = 1.0
 # Persisted autosub-job-<id>.json snapshots kept in the measurements jobs dir.
 _AUTO_SUB_SNAPSHOT_KEEP = 40
 
-# Single-slot peak-prediction cache. The prediction is expensive (pure-Python
-# cascaded biquads over the full sweep) and runs once per sweep; consecutive
-# sweeps of a scan share the DSP config, sample rate and sink volume, so the
-# last result is reused when every input that affects the DAC-level peaks is
-# unchanged. Any change of those inputs (alignment, level, polarity, sweep
-# profile, rate, channel, source/sink gain) produces a new key and recomputes.
-# Stored and returned values are deep copies: callers mutate the returned
-# dict (exact-sub-mute peak zeroing) without poisoning the cached entry.
-_AUTO_SUB_PEAK_PREDICTION_CACHE_KEY: tuple | None = None
-_AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT: dict[str, Any] | None = None
-
-# Same single-slot pattern for the compiled-layout model below. The key
+# Single-slot cache for the compiled-layout model. The key
 # carries the model tag, the plan fingerprint, the canonical layout
 # signature, the IR content identity of every convolver, the rate, the sweep,
 # the channel and every gain, so any audible change recomputes.
@@ -82,37 +70,6 @@ _AUTO_SUB_PLAN_PEAK_PREDICTION_CACHE_RESULT: dict[str, Any] | None = None
 _AUTO_SUB_PLAN_PEAK_FILTER_TYPES = frozenset({
     "bell", "notch", "lowpass", "highpass", "lowshelf", "highshelf",
 })
-
-
-def _auto_sub_peak_prediction_cache_key(
-    *,
-    sweep_profile: dict[str, Any],
-    sample_rate: int,
-    channel: str,
-    config: BassManagementConfig,
-    playback_gain: float,
-    sink_gain: float,
-) -> tuple:
-    """Immutable key over every input the prediction reads."""
-    return (
-        round(float(sweep_profile["sweep_start_hz"]), 6),
-        round(float(sweep_profile["sweep_end_hz"]), 6),
-        round(float(sweep_profile["sweep_seconds"]), 6),
-        int(sample_rate),
-        str(channel),
-        int(config.crossover_frequency_hz),
-        bool(config.main_highpass_enabled),
-        round(float(config.derived_main_delay_ms), 4),
-        str(config.bass_routing),
-        round(float(config.derived_sub1_delay_ms), 4),
-        round(float(config.derived_sub2_delay_ms), 4),
-        round(float(config.sub_level_db), 4),
-        round(float(config.sub2_level_db), 4),
-        str(config.sub_polarity),
-        str(config.sub2_polarity),
-        round(float(playback_gain), 8),
-        round(float(sink_gain), 8),
-    )
 
 
 def _capture_auto_sub_playback_gain() -> dict[str, Any]:
@@ -521,10 +478,10 @@ def _auto_sub_validated_layout_output(
             "crossover": crossover, "groups": groups, "post_routes": post_routes}
 
 
-def _auto_sub_layout_peak_prediction(
+def _auto_sub_stage_peak_prediction(
     *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,
-    layout: list[dict[str, Any]], plan_fingerprint: str | None,
-    output_gain_db: float, playback_gain: float = 1.0,
+    layout: list[dict[str, Any]], plan_fingerprint: str | None = None,
+    output_gain_db: float = 0.0, playback_gain: float = 1.0,
     sink_gain: float = 1.0,
 ) -> dict[str, Any]:
     """Run the known measurement PCM through one compiled output layout.
@@ -669,139 +626,12 @@ def _auto_sub_layout_peak_prediction(
     return result
 
 
-def _auto_sub_stage_peak_prediction(
-    *, sweep_profile: dict[str, Any], sample_rate: int, channel: str,
-    config: BassManagementConfig | None = None,
-    layout: list[dict[str, Any]] | None = None,
-    plan_fingerprint: str | None = None,
-    output_gain_db: float = 0.0,
-    playback_gain: float = 1.0,
-    sink_gain: float = 1.0,
-) -> dict[str, Any]:
-    """Run the known measurement PCM through the native DSP topology.
-
-    ``sink_gain`` is the linear amplitude gain the hardware sink applies to
-    the engine output (0..1) before the float→integer conversion that clips.
-    Use :func:`auto_sub_sink_gain_from_master_percent` to convert the master
-    percent to this linear gain. The engine chain is linear, so folding it
-    into the sweep yields the true DAC-level peaks without touching the
-    Mono/Stereo routing.
-
-    Exactly one of ``config`` (legacy four-output bass management) or
-    ``layout`` (compiled multichannel output layout, with ``plan_fingerprint``
-    and the runtime ``output_gain_db`` in [-80, 0]) selects the model.
-    """
-    if (config is None) == (layout is None):
-        raise ValueError("Peak prediction requires exactly one of config or layout")
-    if layout is not None:
-        return _auto_sub_layout_peak_prediction(
-            sweep_profile=sweep_profile, sample_rate=sample_rate, channel=channel,
-            layout=layout, plan_fingerprint=plan_fingerprint,
-            output_gain_db=output_gain_db,
-            playback_gain=playback_gain, sink_gain=sink_gain,
-        )
-    rate = int(sample_rate)
-    duration = float(sweep_profile["sweep_seconds"])
-    try:
-        source_gain = float(playback_gain)
-        sink_linear = float(sink_gain)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("playback_gain and sink_gain must be finite non-negative numbers") from exc
-    if not math.isfinite(source_gain) or source_gain < 0.0:
-        raise ValueError("playback_gain must be a finite non-negative number")
-    if not math.isfinite(sink_linear) or sink_linear < 0.0:
-        raise ValueError("sink_gain must be a finite non-negative number")
-    global _AUTO_SUB_PEAK_PREDICTION_CACHE_KEY, _AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT
-    cache_key = _auto_sub_peak_prediction_cache_key(
-        sweep_profile=sweep_profile,
-        sample_rate=sample_rate,
-        channel=channel,
-        config=config,
-        playback_gain=source_gain,
-        sink_gain=sink_linear,
-    )
-    if _AUTO_SUB_PEAK_PREDICTION_CACHE_KEY == cache_key and _AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT is not None:
-        return copy.deepcopy(_AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT)
-    # Only a cache miss pays for synthesizing the sweep PCM and filtering it.
-    count = max(2048, int(round(rate * duration)))
-    t = np.arange(count, dtype=np.float64) / rate
-    start_hz = float(sweep_profile["sweep_start_hz"])
-    end_hz = float(sweep_profile["sweep_end_hz"])
-    log_ratio = math.log(end_hz / start_hz)
-    phase = 2.0 * math.pi * start_hz * duration / log_ratio * (np.exp(t * log_ratio / duration) - 1.0)
-    sweep = np.sin(phase)
-    fade_len = min(count // 8, max(64, int(round(rate * 0.01))))
-    if fade_len > 1:
-        sweep[:fade_len] *= np.linspace(0.0, 1.0, fade_len)
-        sweep[-fade_len:] *= np.linspace(1.0, 0.0, fade_len)
-    sweep *= 0.8 / max(float(np.max(np.abs(sweep))), 1e-12)
-    sweep *= source_gain * sink_linear
-    zeros = np.zeros_like(sweep)
-    left = sweep if channel in ("left", "stereo") else zeros
-    right = sweep if channel in ("right", "stereo") else zeros
-
-    def coefficients(kind: str) -> tuple[list[float], list[float]]:
-        w0 = 2.0 * math.pi * config.crossover_frequency_hz / rate
-        cos_w0, sin_w0 = math.cos(w0), math.sin(w0)
-        alpha = sin_w0 / (2.0 * math.sqrt(0.5))
-        a0 = 1.0 + alpha
-        if kind == "low":
-            b = [(1.0 - cos_w0) * 0.5 / a0, (1.0 - cos_w0) / a0,
-                 (1.0 - cos_w0) * 0.5 / a0]
-        else:
-            b = [(1.0 + cos_w0) * 0.5 / a0, -(1.0 + cos_w0) / a0,
-                 (1.0 + cos_w0) * 0.5 / a0]
-        return b, [1.0, -2.0 * cos_w0 / a0, (1.0 - alpha) / a0]
-
-    def lr24(signal: np.ndarray, kind: str, enabled: bool = True) -> np.ndarray:
-        if not enabled:
-            return signal.copy()
-        b, a = coefficients(kind)
-        stage = (b[0], b[1], b[2], a[1], a[2])
-        return _auto_sub_run_plan_biquad(
-            _auto_sub_run_plan_biquad(np.ascontiguousarray(signal), stage), stage)
-
-    def delay(signal: np.ndarray, delay_ms: float) -> np.ndarray:
-        samples = int(float(delay_ms) * rate / 1000.0 + 0.5)
-        if samples <= 0:
-            return signal
-        return np.concatenate((np.zeros(samples), signal))[:signal.size]
-
-    main_l = delay(lr24(left, "high", config.main_highpass_enabled), config.derived_main_delay_ms)
-    main_r = delay(lr24(right, "high", config.main_highpass_enabled), config.derived_main_delay_ms)
-    if config.bass_routing == "stereo":
-        sub1_source, sub2_source = left, right
-    else:
-        sub1_source = sub2_source = (left + right) * 0.5
-    sub1 = delay(lr24(sub1_source, "low"), config.derived_sub1_delay_ms)
-    sub2 = delay(lr24(sub2_source, "low"), config.derived_sub2_delay_ms)
-    sub1 *= (-1.0 if config.sub_polarity == "invert" else 1.0) * 10.0 ** (config.sub_level_db / 20.0)
-    sub2 *= (-1.0 if config.sub2_polarity == "invert" else 1.0) * 10.0 ** (config.sub2_level_db / 20.0)
-    peaks = {
-        f"output_{index + 1}": float(np.max(np.abs(signal))) if signal.size else 0.0
-        for index, signal in enumerate((main_l, main_r, sub1, sub2))
-    }
-    peak_dbfs = {key: round(20.0 * math.log10(max(value, 1e-12)), 3) for key, value in peaks.items()}
-    result = {
-        "linear": peaks,
-        "dbfs": peak_dbfs,
-        "maximum_dbfs": max(peak_dbfs.values()),
-        "limit_dbfs": _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
-        "safe": max(peak_dbfs.values()) <= _AUTO_SUB_STAGE_PEAK_LIMIT_DBFS,
-        "playback_gain": source_gain,
-        "sink_gain": sink_linear,
-    }
-    _AUTO_SUB_PEAK_PREDICTION_CACHE_KEY = cache_key
-    _AUTO_SUB_PEAK_PREDICTION_CACHE_RESULT = copy.deepcopy(result)
-    return result
-
 async def _predict_auto_sub_stage_peaks(
     *,
     sweep_profile: dict[str, Any],
     sample_rate: int,
     channel: str,
-    config: BassManagementConfig | None = None,
-    layout: list[dict[str, Any]] | None = None,
+    layout: list[dict[str, Any]],
     plan_fingerprint: str | None = None,
     output_gain_db: float = 0.0,
     playback_gain: float = 1.0,
@@ -821,7 +651,6 @@ async def _predict_auto_sub_stage_peaks(
         sweep_profile=sweep_profile,
         sample_rate=sample_rate,
         channel=channel,
-        config=config,
         layout=layout,
         plan_fingerprint=plan_fingerprint,
         output_gain_db=output_gain_db,
@@ -1124,7 +953,7 @@ async def _register_autosub_release_adapter(job: dict[str, Any]) -> None:
             job.get("id") or "",
         )
         return
-    adapter = services.build_autosub_release_adapter(
+    adapter = await asyncio.to_thread(services.build_autosub_release_adapter,
         output_key=context["output_key"], channels=context["channels"])
     await session.register_autosub_release_adapter(adapter)
 

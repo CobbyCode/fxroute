@@ -6292,6 +6292,9 @@ async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | N
     previous_clock_card = _surround_clock_card
     previous_state = get_output_service().load()
     _build_output_state_mutation(mutation, output_key="", channels=None)(previous_state)
+    if mode == previous_state["active_mode"]:
+        return await _apply_audio_output_state_candidate(body, previous_input=previous_input,
+                                                        input_modes_override=input_modes_override)
     if (type(body.get("expected_revision")) is not int
             or body["expected_revision"] != previous_state["revision"]
             or (measurement_sr_session is not None and measurement_sr_session.has_active_jobs)):
@@ -6305,24 +6308,68 @@ async def _apply_audio_output_state_body(body: dict, *, previous_input: dict | N
             if sync_ingress:
                 await external_input.sync()
         except BaseException:
-            # The revert owns the head.  Take the DSP mutation lock the AV Sync
-            # adoption commits under and re-read the head inside it, so a
-            # concurrent basis commit can neither hide the failed switch from
-            # the revision check nor turn the revert into a conflict inside
-            # the handler (which would skip the carrier and ingress restore).
-            rolled_back = False
+            # Never rewind a newer editor or let a failed revert skip hardware
+            # cleanup. Reconcile the surviving head, not the saved graph.
+            recovery_failed = False
+            recovered_mode = None
+            measurement_owned = False
             service = get_output_service()
-            async with _dsp_mutation_lock():
-                head = service.load()
-                if head["active_mode"] == mode and head["revision"] == previous_state["revision"] + 1:
-                    service.revert(previous_state, expected_revision=head["revision"])
-                    rolled_back = True
-            if rolled_back:
-                await _sync_v2_head_after_bank_assign()
-            await _set_surround_carrier_owned(previous_owned, previous_clock_card)
+            rate_lock = measurement_sr_session.lock if measurement_sr_session is not None else nullcontext()
+            try:
+                async with rate_lock:
+                    measurement_owned = (measurement_sr_session is not None and (
+                        measurement_sr_session.has_active_jobs
+                        or getattr(measurement_sr_session, "entry_in_progress", False)))
+                    if not measurement_owned:
+                        async with _dsp_mutation_lock(), _dsp_graph_write_lock():
+                            try:
+                                head = service.load()
+                                if head["active_mode"] == mode and head["revision"] == previous_state["revision"] + 1:
+                                    service.revert(previous_state, expected_revision=head["revision"])
+                            except StateConflictError:
+                                logger.warning("Output-mode rollback superseded by a newer edit")
+                            except Exception:
+                                logger.exception("Output-mode state rollback failed; reconciling the surviving head")
+                            overview = await asyncio.to_thread(get_audio_output_overview)
+                            status = await asyncio.to_thread(get_samplerate_status)
+                            rate = status.get("active_rate") or status.get("force_rate")
+                            target = await _try_render_v2_sync_target(rate, overview)
+                            await runtime.dsp_runtime.sync_rendered(target)
+                            recovered_mode = target.config.output_mode
+            except BaseException:
+                recovery_failed = True
+                logger.exception("Output-mode graph recovery failed")
+            if measurement_owned:
+                # The newer owner also owns carrier/ingress restoration.
+                await _mark_ingress_resync_pending()
+                await _mark_policy_rate_restore_pending()
+                raise
+            try:
+                surviving_mode = recovered_mode or service.load()["active_mode"]
+                carrier = ((previous_owned, previous_clock_card)
+                           if surviving_mode == previous_state["active_mode"] else
+                           await _digital_carrier_request(None, external=external, mode=surviving_mode))
+                await _set_surround_carrier_owned(*carrier)
+            except BaseException:
+                recovery_failed = True
+                logger.exception("Output-mode carrier recovery failed")
             if sync_ingress:
-                await external_input.sync()
-            await _resync_stdin_routing()
+                try:
+                    await external_input.sync()
+                except BaseException:
+                    recovery_failed = True
+                    logger.exception("Output-mode ingress recovery failed")
+            try:
+                await _resync_stdin_routing()
+            except BaseException:
+                recovery_failed = True
+                logger.exception("Output-mode STDIN recovery failed")
+            if recovery_failed and runtime.dsp_runtime is not None:
+                try:
+                    async with _dsp_graph_write_lock():
+                        await runtime.dsp_runtime.fail_closed("Output-mode recovery failed")
+                except BaseException:
+                    logger.exception("Output-mode fail-closed cleanup failed")
             raise
         await _resync_stdin_routing()
         return result
@@ -6352,7 +6399,7 @@ async def _apply_audio_output_state_candidate(body: dict, *, previous_input: dic
     mutate = _build_output_state_mutation(
         body.get("mutation"), output_key=output_key, channels=channels)
     try:
-        candidate = mutate(state)
+        candidate = await asyncio.to_thread(mutate, state)
         if (body.get("mutation") or {}).get("kind") == "switch_mode":
             selection = samplerate._load_audio_source_selection()
             if input_modes_override is not None:
@@ -6548,7 +6595,7 @@ async def _apply_output_state_fast(body, *, service, state, candidate, overview,
         # A measurement job may have taken the graph during the awaits above.
         mutation = body.get("mutation") or {}
         if mutation.get("kind") == "set_level_calibration":
-            level_match_api.validate_result(mutation, service.load())
+            await asyncio.to_thread(level_match_api.validate_result, mutation, service.load())
         committed = service.commit_unowned(candidate, expected_revision=expected_revision)
         if mutation.get("kind") == "set_level_calibration":
             level_match_api.mark_result_applied(mutation)

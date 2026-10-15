@@ -140,16 +140,13 @@ class MeasurementDependencyInjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["intent_generation"], 42)
         self.assertEqual(snapshot["position"], 12.5)
 
-    def test_build_context_uses_injected_dsp_runtime(self):
+    def test_runtime_accessor_uses_injected_dsp_runtime(self):
         fake_dsp = _FakeDSPRuntime()
         measurement_session.configure_services(_services(
             get_dsp_runtime=lambda: fake_dsp,
             get_audio_output_overview=lambda: subwoofer_overview(),
         ))
-        context = measurement_session._build_measurement_audio_output_context()
-        self.assertTrue(context["runtime_active"])
-        self.assertEqual(context["helper_pid"], 7777)
-        self.assertEqual(context["output_mode"], "subwoofer-2.1")
+        self.assertIs(measurement_session._dsp_runtime(), fake_dsp)
 
     async def test_restore_intent_uses_injected_callbacks(self):
         matcher = AsyncMock(return_value=True)
