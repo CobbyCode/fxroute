@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import pathlib
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
@@ -363,31 +364,49 @@ class CoordinatorTransactionTests(unittest.IsolatedAsyncioTestCase):
         persist.assert_called_once_with({"mode": "fixed", "rate": 44100})
         self.assertEqual(restored_pins, [44100])
 
-    async def test_sample_rate_policy_rollback_clears_pin_for_auto_policy(self):
+    async def _rollback_auto_policy(self, force_rate, active_rate=44100):
+        # Real pin writer boundary: records the restored pin and its thread.
         runtime = make_transition_runtime()
         snapshot = {
             "sample_rate_policy": {"mode": "auto", "rate": None},
-            "active_rate": 44100,
-            "force_rate": 48000,
+            "active_rate": active_rate,
+            "force_rate": force_rate,
         }
-        cleared = []
+        writes = []
 
-        def clear_pin(expected_rate, **kwargs):
-            cleared.append(expected_rate)
-            return True
+        def write_pin(rate):
+            writes.append((rate, threading.get_ident()))
 
-        with patch.object(
-            main.samplerate, "clear_auto_policy_force_rate", new=clear_pin
-        ), patch.object(
-            # The production rollback persists the snapshot policy for real;
-            # never let it reach the product config file from a test.
-            main.samplerate, "persist_sample_rate_policy",
-            return_value={"mode": "auto", "rate": None},
-        ) as persist:
+        with patch.object(main.samplerate, "set_pipewire_force_rate", new=write_pin), \
+                patch.object(samplerate.alignment, "get_audio_source_overview",
+                             side_effect=AssertionError("rollback must not probe sources")), \
+                patch.object(
+                    # The production rollback persists the snapshot policy for real;
+                    # never let it reach the product config file from a test.
+                    main.samplerate, "persist_sample_rate_policy",
+                    return_value={"mode": "auto", "rate": None},
+                ) as persist:
             await runtime.rollback_sample_rate_policy(None, snapshot)
-
         persist.assert_called_once_with({"mode": "auto", "rate": None})
-        self.assertEqual(cleared, [44100])
+        return writes
+
+    async def test_sample_rate_policy_rollback_restores_auto_source_pin(self):
+        # Active playback held its 44.1 kHz pin before the failed transition
+        # re-pinned the target: the pin must come back, not be released.
+        writes = await self._rollback_auto_policy(force_rate=44100)
+        self.assertEqual([rate for rate, _thread in writes], [44100])
+        self.assertNotIn(threading.get_ident(), [thread for _rate, thread in writes])
+
+    async def test_sample_rate_policy_rollback_restores_idle_auto_release(self):
+        # An idle auto graph had no pin: the failed target pin is cleared,
+        # even when the suspended sink reports no active rate.
+        writes = await self._rollback_auto_policy(force_rate=0, active_rate=None)
+        self.assertEqual([rate for rate, _thread in writes], [0])
+        self.assertNotIn(threading.get_ident(), [thread for _rate, thread in writes])
+
+    async def test_sample_rate_policy_rollback_keeps_pin_without_snapshot_reading(self):
+        writes = await self._rollback_auto_policy(force_rate=None, active_rate=None)
+        self.assertEqual(writes, [])
 
     async def test_spotify_play_clears_stale_hardware_and_internal_mutes(self):
         runtime = TransactionRuntime(

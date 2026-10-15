@@ -741,7 +741,10 @@ class _RuntimeVerificationMixin:
             return False
         if snapshot.get("active_rate") != target_rate:
             return False
-        if snapshot.get("force_rate") not in {None, 0, target_rate}:
+        # Same binding as the target-rate stage's no-op: only a held pin may
+        # skip it.  An unpinned graph at the target (after an idle release)
+        # can drift on the next helper rebuild.
+        if snapshot.get("force_rate") != target_rate:
             return False
         current_track = dict(snapshot.get("current_track") or {})
         if current_track.get("source") != "local":

@@ -847,6 +847,10 @@ async def _acquire_operation(kind: str) -> _SplCalibrationOperation:
                     existing.id,
                 )
                 _runtime.operation = None
+            elif existing.completed.is_set():
+                raise HTTPException(
+                    status_code=409,
+                    detail="The previous SPL calibration did not finish its cleanup; stop it first")
             else:
                 raise HTTPException(status_code=409, detail="SPL calibration is already active")
         operation_id = uuid4().hex
@@ -913,7 +917,15 @@ async def _run_operation_thread(
     return thread_task.result()
 
 
-async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
+async def _cleanup_operation(
+    operation: _SplCalibrationOperation, *, release_unrestored: bool = False
+) -> None:
+    """Release the operation's resources; a failed audio restore keeps ownership.
+
+    ``release_unrestored`` ends the operation anyway once nothing else is
+    held: an explicit stop retrying a failed restore must not leave the SPL
+    job blocking calibration and the measurement session until a restart.
+    """
     async with operation.cleanup_lock:
         if operation.completed.is_set() and _runtime.operation is not operation:
             return
@@ -962,11 +974,22 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
                     cleanup_failed = True
             operation.noise_links = remaining_links or None
 
+        restore_abandoned = None
         try:
             await asyncio.to_thread(_restore_spl_calibration_audio, operation)
-        except BaseException:
+        except BaseException as exc:
             logger.exception("Failed to restore SPL calibration audio state")
-            cleanup_failed = True
+            if release_unrestored and not cleanup_failed and isinstance(exc, Exception):
+                previous_volume = (operation.restore_state or {}).get("system_volume_percent")
+                logger.error(
+                    "SPL calibration ended without audio restore: operation=%s "
+                    "previous_system_volume=%s", operation.id, previous_volume)
+                operation.restore_state = None
+                restore_abandoned = (
+                    f"SPL calibration stopped without restoring its audio state ({exc}). "
+                    f"Check the system volume (was {previous_volume}%) and Loudness/AutoGain.")
+            else:
+                cleanup_failed = True
 
         if operation.registration_attempted and operation.restore_state is None:
             released = operation.session is None
@@ -1053,10 +1076,15 @@ async def _cleanup_operation(operation: _SplCalibrationOperation) -> None:
         operation.completed.set()
         if cleanup_failed:
             raise RuntimeError("SPL calibration cleanup did not release every owned resource")
+        if restore_abandoned is not None:
+            raise HTTPException(status_code=500, detail=restore_abandoned)
 
 
-async def _cleanup_operation_shielded(operation: _SplCalibrationOperation) -> None:
-    cleanup_task = asyncio.create_task(_cleanup_operation(operation))
+async def _cleanup_operation_shielded(
+    operation: _SplCalibrationOperation, *, release_unrestored: bool = False
+) -> None:
+    cleanup_task = asyncio.create_task(
+        _cleanup_operation(operation, release_unrestored=release_unrestored))
     cancelled = False
     while not cleanup_task.done():
         try:
@@ -1103,7 +1131,9 @@ async def _stop_active_operation() -> None:
     except asyncio.TimeoutError as exc:
         raise RuntimeError("Timed out waiting for SPL calibration cleanup") from exc
     if _runtime.operation is operation:
-        await _cleanup_operation_shielded(operation)
+        # The operation's own cleanup failed: this explicit stop retries it
+        # and ends the operation even if only the audio restore still fails.
+        await _cleanup_operation_shielded(operation, release_unrestored=True)
 
 
 async def shutdown() -> None:

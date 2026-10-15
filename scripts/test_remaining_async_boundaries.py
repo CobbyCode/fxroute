@@ -225,6 +225,25 @@ class AsyncBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("recorder boundary", caught.exception.detail)
         self.assert_off_loop()
 
+    async def test_calibration_area_target_rate_resolution_off_loop(self):
+        # freeze_area_target resolves the measurement rate through blocking
+        # capture-input discovery; every endpoint reaches it on a worker.
+        target = {"mode": "stereo", "roles": ["main_l", "main_r"], "revision": 1}
+        store = SimpleNamespace(measurement_target_provider=lambda bank_id, rate: dict(target))
+        table = SimpleNamespace(entries=lambda mode: {}, save_entries=lambda *args: None)
+        deps = SimpleNamespace(get_store=lambda: store, get_table=lambda: table,
+                               auto_sub_active=lambda: False)
+        with patch.object(session, "_resolve_measurement_start_sample_rate", self.probe(48000)), \
+                patch.object(level_api, "_dependencies", return_value=deps), \
+                patch.object(polarity_api, "_dependencies", return_value=deps), \
+                patch.object(level_api, "_slot", JobSlot("regression")), \
+                patch.object(polarity_api, "_slot", JobSlot("regression")):
+            self.assertEqual((await level_api.get_level_match(bank_id="global"))["mode"], "stereo")
+            self.assertEqual((await polarity_api.get_polarity_check(bank_id="global"))["mode"], "stereo")
+            await level_api.reset_level_match(bank_id="global")
+        self.assertEqual(len(self.seen), 3)
+        self.assert_off_loop()
+
     async def test_concurrent_calibration_starts_keep_exactly_one_visible_worker(self):
         for api, resolve_name, start_name in (
                 (level_api, "_resolve_scope", "start_level_match"),

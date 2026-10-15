@@ -381,7 +381,7 @@ def make_production_runtime(deps):
 
 
 class ProductionEvaluateTests(unittest.IsolatedAsyncioTestCase):
-    def _snapshot(self, *, active_rate=44_100, force_rate=0, source="local", current_file="/music/current.flac", ended=False):
+    def _snapshot(self, *, active_rate=44_100, force_rate=44_100, source="local", current_file="/music/current.flac", ended=False):
         return {
             "active_rate": active_rate,
             "force_rate": force_rate,
@@ -413,6 +413,22 @@ class ProductionEvaluateTests(unittest.IsolatedAsyncioTestCase):
         runtime = make_production_runtime(_FastPathDeps())
         request = make_request()
         snapshot = self._snapshot(active_rate=48_000)
+        self.assertFalse(await runtime.evaluate_same_graph_fast_path(request, snapshot))
+
+    async def test_evaluate_false_on_unpinned_matching_rate(self):
+        # After an idle auto-policy release the graph still runs at the
+        # target rate without a pin: only the full transition re-pins it.
+        runtime = make_production_runtime(_FastPathDeps())
+        request = make_request(audio_overview={"output_mode": {"mode": "stereo"}})
+        for force_rate in (0, None):
+            with self.subTest(force_rate=force_rate):
+                snapshot = self._snapshot(force_rate=force_rate)
+                self.assertFalse(await runtime.evaluate_same_graph_fast_path(request, snapshot))
+
+    async def test_evaluate_false_on_foreign_pin(self):
+        runtime = make_production_runtime(_FastPathDeps())
+        request = make_request(audio_overview={"output_mode": {"mode": "stereo"}})
+        snapshot = self._snapshot(force_rate=48_000)
         self.assertFalse(await runtime.evaluate_same_graph_fast_path(request, snapshot))
 
     async def test_evaluate_false_on_committed_source_mismatch(self):

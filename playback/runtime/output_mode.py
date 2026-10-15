@@ -159,24 +159,23 @@ class _RuntimeOutputModeMixin:
         if not isinstance(previous_policy, Mapping):
             raise RuntimeError("sample-rate rollback has no previous policy")
         samplerate.persist_sample_rate_policy(previous_policy)
-        previous_rate = (snapshot or {}).get("active_rate")
         previous_force = (snapshot or {}).get("force_rate")
-        if isinstance(previous_rate, int) and previous_rate > 0:
-            if previous_policy.get("mode") == "fixed" and isinstance(previous_force, int) and previous_force > 0:
-                try:
-                    samplerate.set_pipewire_force_rate(previous_force)
-                except Exception as exc:
-                    logger.warning(
-                        "Sample-rate rollback force-rate restore failed: rate=%s error=%s",
-                        previous_force,
-                        exc,
-                    )
-            elif previous_policy.get("mode") == "auto":
-                samplerate.clear_auto_policy_force_rate(
-                    previous_rate,
-                    app_policy=previous_policy,
-                    status={"active_rate": previous_rate},
-                )
+        mode = previous_policy.get("mode")
+        # Restore the exact pre-transition pin (0: an idle auto graph had
+        # none).  The idle-release helper is no restore: it refuses outside
+        # idle and would drop a pin that playback or an input owned.
+        restorable = isinstance(previous_force, int) and (
+            previous_force > 0 if mode == "fixed" else mode == "auto" and previous_force >= 0)
+        if not restorable:
+            return
+        try:
+            await asyncio.to_thread(samplerate.set_pipewire_force_rate, previous_force)
+        except Exception as exc:
+            logger.warning(
+                "Sample-rate rollback force-rate restore failed: rate=%s error=%s",
+                previous_force,
+                exc,
+            )
 
     async def rollback_output_mode_runtime(
         self,

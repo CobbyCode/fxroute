@@ -82,6 +82,11 @@ class StubbornProcess(FakeProcess):
         return self.returncode
 
 
+class UnkillableProcess(StubbornProcess):
+    def kill(self):
+        self.kill_calls += 1
+
+
 class FakeRequest:
     def __init__(self, enabled=True):
         self.enabled = enabled
@@ -468,6 +473,78 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(spl_calibration._runtime.operation)
         successor = await spl_calibration._acquire_operation("automatic")
         await spl_calibration._cleanup_operation(successor)
+
+    async def _operation_with_failing_restore(self):
+        class Manager:
+            restores = 0
+
+            def load_global_extras(self):
+                return {"autogain": {"enabled": True}, "loudness": {"enabled": True}}
+
+            def apply_temporary_effects_runtime(self, _previous, _candidate):
+                self.restores += 1
+                raise RuntimeError("DSP restore unavailable")
+
+        manager = Manager()
+        main.dsp_manager = manager
+        main.get_output_volume = lambda: 37.0
+        main.set_output_volume = lambda value: None
+        operation = await spl_calibration._acquire_operation("manual-noise")
+        operation.restore_state = {
+            "system_volume_percent": 37.0,
+            "native_effects_extras": {"autogain": {"enabled": True}},
+            "neutral_effects_extras": {"autogain": {"enabled": False}},
+        }
+        session = FakeSession()
+        session.active_spl_job_ids = session.active_ids
+        operation.session = session
+        operation.registration_attempted = True
+        session.active_ids.add(operation.session_job_id)
+        with self.assertRaisesRegex(RuntimeError, "cleanup did not release"):
+            await spl_calibration._cleanup_operation(operation)
+        done = asyncio.create_task(asyncio.sleep(0))
+        await done
+        operation.worker_task = done
+        return operation, session, manager
+
+    async def test_stop_ends_operation_when_restore_retry_fails(self):
+        operation, session, manager = await self._operation_with_failing_restore()
+        with self.assertRaises(main.HTTPException) as refused:
+            await spl_calibration._acquire_operation("automatic")
+        self.assertEqual(refused.exception.status_code, 409)
+        self.assertIn("did not finish its cleanup", refused.exception.detail)
+
+        with self.assertRaises(main.HTTPException) as stopped:
+            await spl_calibration._stop_active_operation()
+
+        self.assertEqual(stopped.exception.status_code, 500)
+        self.assertIn("without restoring its audio state", stopped.exception.detail)
+        self.assertIn("37.0%", stopped.exception.detail)
+        self.assertEqual(manager.restores, 2)
+        self.assertIsNone(operation.restore_state)
+        self.assertEqual(session.active_ids, set())
+        self.assertEqual(session.unregistered, [operation.session_job_id])
+        self.assertIsNone(spl_calibration._runtime.operation)
+        await spl_calibration._stop_active_operation()
+        successor = await spl_calibration._acquire_operation("automatic")
+        await spl_calibration._cleanup_operation(successor)
+
+    async def test_stop_keeps_ownership_while_noise_survives_failed_restore(self):
+        operation, session, manager = await self._operation_with_failing_restore()
+        process = UnkillableProcess()
+        operation.noise_process = process
+
+        with self.assertRaisesRegex(RuntimeError, "cleanup did not release"):
+            await spl_calibration._stop_active_operation()
+
+        self.assertIs(spl_calibration._runtime.operation, operation)
+        self.assertIsNotNone(operation.restore_state)
+        self.assertEqual(session.active_ids, {operation.session_job_id})
+        process.returncode = 0
+        manager.apply_temporary_effects_runtime = lambda _previous, _candidate: None
+        await spl_calibration._stop_active_operation()
+        self.assertIsNone(spl_calibration._runtime.operation)
+        self.assertEqual(session.active_ids, set())
 
     async def test_manual_noise_watcher_exception_is_logged(self):
         class FailingProcess:
