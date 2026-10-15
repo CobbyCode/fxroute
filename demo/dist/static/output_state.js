@@ -419,10 +419,13 @@ function mergeNumberedBanks(items) {
 
 // Active preset of every bank in the active mode's chain, Global first.
 // A bank whose channels listen to different presets has no single preset.
+// Pure stereo shows no bank selector, so the A/B tile shows no bank chips.
 function activePresetOverview(catalog) {
     const mode = catalog?.active_mode;
-    const banks = catalog?.modes?.[mode]?.banks;
+    const modeConfig = catalog?.modes?.[mode];
+    const banks = modeConfig?.banks;
     if (!banks) return [];
+    if (!bankSelectorVisible(modeConfig)) return [];
     const ids = Object.keys(banks).sort((a, b) => (b === 'global') - (a === 'global'));
     return mergeNumberedBanks(ids.map((id) => {
         const bank = banks[id] || {};
