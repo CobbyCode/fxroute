@@ -610,7 +610,10 @@ from playback.runtime import (
     PlaybackRuntimeDependencies,
     RADIO_EXPECTED_SAMPLE_RATE_HZ,
     SOURCE_HANDOFF_SETTLE_MS,
+    _hardware_sink_for_transition,
     _playback_gate_state_path,
+    _read_sink_mute,
+    _set_sink_mute,
 )
 
 
@@ -1104,7 +1107,15 @@ spl_calibration.configure_runtime(spl_calibration.SplCalibrationDependencies(
     ),
     external_dsp_mutation_scope=lambda: _external_dsp_mutation_scope(),
     canonical_volume_write_lock=lambda: _canonical_volume_write_lock(),
+    get_output_mute_sink=lambda: _spl_output_mute_sink(),
+    read_sink_mute=lambda sink: _read_sink_mute(sink),
+    set_sink_mute=lambda sink, muted: _set_sink_mute(sink, muted),
 ))
+
+
+def _spl_output_mute_sink() -> str:
+    """Hardware sink the playback output gate mutes."""
+    return _hardware_sink_for_transition(make_playback_runtime_deps())
 
 
 async def _noop_async() -> None:

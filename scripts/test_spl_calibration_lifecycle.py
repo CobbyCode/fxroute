@@ -20,9 +20,10 @@ from dsp.manager import DSPManager
 
 
 class FakeSession:
-    def __init__(self):
+    def __init__(self, events=None):
         self.active_ids = set()
         self.unregistered = []
+        self.events = events if events is not None else []
 
     async def register_spl_job(self, job_id, entry_epoch=None):
         self.active_ids.add(job_id)
@@ -30,6 +31,36 @@ class FakeSession:
     async def unregister_spl_job(self, job_id):
         self.active_ids.discard(job_id)
         self.unregistered.append(job_id)
+        self.events.append("unregister")
+
+    def keep_playback_paused_on_release(self):
+        self.events.append("keep-paused")
+
+
+class FakeOutputMute:
+    """Gate sink mute behind the SPL dependencies; never touches PipeWire."""
+
+    sink_name = "alsa_output.spl-test"
+
+    def __init__(self, events):
+        self.muted = False
+        self.writes = []
+        self.ignore_writes = False
+        self.events = events
+
+    def sink(self):
+        return self.sink_name
+
+    def read(self, sink):
+        assert sink == self.sink_name
+        return self.muted
+
+    def set(self, sink, muted):
+        assert sink == self.sink_name
+        self.writes.append(muted)
+        self.events.append(("mute", muted))
+        if not self.ignore_writes:
+            self.muted = muted
 
 
 class FakeProcess:
@@ -101,8 +132,15 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.original_manager = main.dsp_manager
         self.original_get_volume = main.get_output_volume
         self.original_set_volume = main.set_output_volume
+        self.original_mute = (main._spl_output_mute_sink, main._read_sink_mute, main._set_sink_mute)
+        self.events = []
+        self.output = FakeOutputMute(self.events)
+        main._spl_output_mute_sink = self.output.sink
+        main._read_sink_mute = self.output.read
+        main._set_sink_mute = self.output.set
         spl_calibration._runtime.operation = None
         spl_calibration._runtime.operation_lock = asyncio.Lock()
+        spl_calibration._runtime.unrestored = None
 
     async def asyncTearDown(self):
         if spl_calibration._runtime.operation is not None:
@@ -111,8 +149,10 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         main.dsp_manager = self.original_manager
         main.get_output_volume = self.original_get_volume
         main.set_output_volume = self.original_set_volume
+        main._spl_output_mute_sink, main._read_sink_mute, main._set_sink_mute = self.original_mute
         spl_calibration._runtime.operation = None
         spl_calibration._runtime.operation_lock = None
+        spl_calibration._runtime.unrestored = None
 
     async def test_double_start_is_rejected_until_owner_cleanup_finishes(self):
         operation = await spl_calibration._acquire_operation("automatic")
@@ -474,20 +514,22 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         successor = await spl_calibration._acquire_operation("automatic")
         await spl_calibration._cleanup_operation(successor)
 
-    async def _operation_with_failing_restore(self):
+    async def _operation_with_failing_restore(self, volume=37.0):
         class Manager:
             restores = 0
+            fail_restore = True
 
             def load_global_extras(self):
                 return {"autogain": {"enabled": True}, "loudness": {"enabled": True}}
 
             def apply_temporary_effects_runtime(self, _previous, _candidate):
                 self.restores += 1
-                raise RuntimeError("DSP restore unavailable")
+                if self.fail_restore:
+                    raise RuntimeError("DSP restore unavailable")
 
         manager = Manager()
         main.dsp_manager = manager
-        main.get_output_volume = lambda: 37.0
+        main.get_output_volume = lambda: volume
         main.set_output_volume = lambda value: None
         operation = await spl_calibration._acquire_operation("manual-noise")
         operation.restore_state = {
@@ -495,19 +537,21 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "native_effects_extras": {"autogain": {"enabled": True}},
             "neutral_effects_extras": {"autogain": {"enabled": False}},
         }
-        session = FakeSession()
+        session = FakeSession(self.events)
         session.active_spl_job_ids = session.active_ids
         operation.session = session
         operation.registration_attempted = True
         session.active_ids.add(operation.session_job_id)
         with self.assertRaisesRegex(RuntimeError, "cleanup did not release"):
             await spl_calibration._cleanup_operation(operation)
+        # The operation's own failed cleanup keeps ownership; it does not mute.
+        self.assertEqual(self.output.writes, [])
         done = asyncio.create_task(asyncio.sleep(0))
         await done
         operation.worker_task = done
         return operation, session, manager
 
-    async def test_stop_ends_operation_when_restore_retry_fails(self):
+    async def test_stop_ends_operation_behind_confirmed_mute_when_restore_retry_fails(self):
         operation, session, manager = await self._operation_with_failing_restore()
         with self.assertRaises(main.HTTPException) as refused:
             await spl_calibration._acquire_operation("automatic")
@@ -519,15 +563,137 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stopped.exception.status_code, 500)
         self.assertIn("without restoring its audio state", stopped.exception.detail)
+        self.assertIn("muted for safety", stopped.exception.detail)
         self.assertIn("37.0%", stopped.exception.detail)
         self.assertEqual(manager.restores, 2)
         self.assertIsNone(operation.restore_state)
         self.assertEqual(session.active_ids, set())
         self.assertEqual(session.unregistered, [operation.session_job_id])
         self.assertIsNone(spl_calibration._runtime.operation)
-        await spl_calibration._stop_active_operation()
+        # The mute is confirmed and playback held paused before the session
+        # job is released (its release could otherwise resume playback).
+        self.assertEqual(self.events, [("mute", True), "keep-paused", "unregister"])
+        self.assertTrue(self.output.muted)
+        status = spl_calibration._unrestored_audio_status()
+        self.assertEqual(status["output_muted"], True)
+        self.assertEqual(status["previous_system_volume_percent"], 37.0)
+        self.assertFalse(status["audio_restored"])
+        self.assertIn("muted for safety", status["detail"])
+
+        # A new start would capture the unrestored state as its baseline.
+        with self.assertRaises(main.HTTPException) as refused:
+            await spl_calibration._acquire_operation("automatic")
+        self.assertEqual(refused.exception.status_code, 409)
+        self.assertIn("retry the restore first", refused.exception.detail)
+
+        # A failing restore retry keeps the mute and the pending state.
+        with self.assertRaises(main.HTTPException) as retried:
+            await spl_calibration.set_spl_calibration_noise(FakeRequest(enabled=False))
+        self.assertEqual(retried.exception.status_code, 500)
+        self.assertEqual(manager.restores, 3)
+        self.assertTrue(self.output.muted)
+        self.assertIsNotNone(spl_calibration._runtime.unrestored)
+
+        # A successful retry restores the audio, then lifts its own mute.
+        manager.fail_restore = False
+        stopped = await spl_calibration.set_spl_calibration_noise(FakeRequest(enabled=False))
+        self.assertEqual(stopped, {"status": "stopped"})
+        self.assertEqual(manager.restores, 4)
+        self.assertFalse(self.output.muted)
+        self.assertEqual(self.output.writes, [True, False])
+        self.assertIsNone(spl_calibration._runtime.unrestored)
+        self.assertIsNone(spl_calibration._unrestored_audio_status())
         successor = await spl_calibration._acquire_operation("automatic")
         await spl_calibration._cleanup_operation(successor)
+
+    async def test_unconfirmed_mute_keeps_ownership_and_restore_state(self):
+        operation, session, manager = await self._operation_with_failing_restore()
+        self.output.ignore_writes = True
+
+        with self.assertRaisesRegex(RuntimeError, "cleanup did not release"):
+            await spl_calibration._stop_active_operation()
+
+        self.assertIs(spl_calibration._runtime.operation, operation)
+        self.assertIsNotNone(operation.restore_state)
+        self.assertEqual(session.active_ids, {operation.session_job_id})
+        self.assertIsNone(spl_calibration._runtime.unrestored)
+        self.assertNotIn("keep-paused", self.events)
+        with self.assertRaises(main.HTTPException) as refused:
+            await spl_calibration._acquire_operation("automatic")
+        self.assertIn("did not finish its cleanup", refused.exception.detail)
+
+        self.output.ignore_writes = False
+        with self.assertRaises(main.HTTPException):
+            await spl_calibration._stop_active_operation()
+        self.assertIsNone(spl_calibration._runtime.operation)
+        self.assertTrue(self.output.muted)
+        self.assertEqual(session.active_ids, set())
+
+    async def test_unavailable_mute_control_keeps_ownership(self):
+        operation, session, _manager = await self._operation_with_failing_restore()
+
+        def refuse(_sink, _muted):
+            raise RuntimeError("pactl set-sink-mute failed")
+
+        main._set_sink_mute = refuse
+        with self.assertRaisesRegex(RuntimeError, "cleanup did not release"):
+            await spl_calibration._stop_active_operation()
+        self.assertIs(spl_calibration._runtime.operation, operation)
+        self.assertIsNotNone(operation.restore_state)
+        self.assertEqual(session.active_ids, {operation.session_job_id})
+        self.assertIsNone(spl_calibration._runtime.unrestored)
+
+        main._set_sink_mute = self.output.set
+        with self.assertRaises(main.HTTPException):
+            await spl_calibration._stop_active_operation()
+        self.assertIsNone(spl_calibration._runtime.operation)
+
+    async def test_failed_volume_restore_keeps_calibration_volume_behind_mute(self):
+        volume = [100.0]
+        operation, session, manager = await self._operation_with_failing_restore()
+        main.get_output_volume = lambda: volume[0]
+
+        def refuse_volume(_value):
+            raise RuntimeError("volume write failed")
+
+        main.set_output_volume = refuse_volume
+        with self.assertRaises(main.HTTPException) as stopped:
+            await spl_calibration._stop_active_operation()
+        self.assertIn("volume write failed", stopped.exception.detail)
+        self.assertTrue(self.output.muted)
+        self.assertIsNone(spl_calibration._runtime.operation)
+
+        # The retry restores the calibration volume before unmuting.
+        main.set_output_volume = lambda value: volume.__setitem__(0, value)
+        manager.fail_restore = False
+        await spl_calibration.set_spl_calibration_noise(FakeRequest(enabled=False))
+        self.assertEqual(volume, [37.0])
+        self.assertFalse(self.output.muted)
+        self.assertIsNone(spl_calibration._runtime.unrestored)
+
+    async def test_restore_retry_keeps_a_mute_that_predates_the_calibration(self):
+        self.output.muted = True
+        operation, session, manager = await self._operation_with_failing_restore()
+        with self.assertRaises(main.HTTPException):
+            await spl_calibration._stop_active_operation()
+        self.assertEqual(self.output.writes, [])
+        self.assertIsNone(spl_calibration._runtime.operation)
+
+        manager.fail_restore = False
+        stopped = await spl_calibration.set_spl_calibration_noise(FakeRequest(enabled=False))
+        self.assertEqual(stopped, {"status": "stopped"})
+        self.assertTrue(self.output.muted)
+        self.assertEqual(self.output.writes, [])
+        self.assertIsNone(spl_calibration._runtime.unrestored)
+
+    async def test_shutdown_retries_a_pending_restore(self):
+        _operation, _session, manager = await self._operation_with_failing_restore()
+        with self.assertRaises(main.HTTPException):
+            await spl_calibration._stop_active_operation()
+        manager.fail_restore = False
+        await spl_calibration.shutdown()
+        self.assertIsNone(spl_calibration._runtime.unrestored)
+        self.assertFalse(self.output.muted)
 
     async def test_stop_keeps_ownership_while_noise_survives_failed_restore(self):
         operation, session, manager = await self._operation_with_failing_restore()

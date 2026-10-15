@@ -446,6 +446,23 @@ class MeasurementSampleRateSession:
             self.active_spl_job_ids.discard(job_id)
             await self._check_release()
 
+    def keep_playback_paused_on_release(self) -> None:
+        """Restore the captured playback paused instead of resuming it.
+
+        An SPL calibration that ends without restoring its audio state mutes
+        the output; an audible resume at release would reopen that mute.
+        """
+        global _playback_state_before_measurement
+        snapshot = _playback_state_before_measurement
+        if snapshot and snapshot.get("was_playing"):
+            _playback_state_before_measurement = {
+                **snapshot, "was_playing": False, "was_paused": True,
+            }
+            logger.warning(
+                "Measurement release will restore playback paused: source=%s",
+                snapshot.get("source"),
+            )
+
     async def unregister_auto_sub(self, job_id: str) -> None:
         async with self.lock:
             if self.active_auto_sub_job_id == job_id:

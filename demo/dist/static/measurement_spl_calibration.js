@@ -20,6 +20,7 @@
     let splCalibrationAutomaticAvailable = false;
     let splCalibrationAutomaticRunning = false;
     let splCalibrationStopFailed = false;
+    let splCalibrationRestorePending = null;
     let splCalibrationStartRequest = null;
     let splCalibrationStopRequest = null;
     let splCalibrationApplying = false;
@@ -59,7 +60,25 @@
         if (!deps.getElements().splCalibrationNoise) return;
         deps.getElements().splCalibrationNoise.disabled = !!splCalibrationStopRequest || splCalibrationApplying;
         deps.getElements().splCalibrationNoise.textContent = splCalibrationStopFailed
-            ? 'Retry stop' : (splCalibrationNoiseActive ? 'Stop noise' : 'Start noise');
+            ? 'Retry stop'
+            : (splCalibrationRestorePending ? 'Retry restore' : (splCalibrationNoiseActive ? 'Stop noise' : 'Start noise'));
+    }
+
+    // The operation ended, but its audio restore is still pending.
+    function splCalibrationRestorePendingLine() {
+        return splCalibrationRestorePending?.output_muted === false
+            ? 'Audio not restored. Retry restore.'
+            : 'Audio not restored. Output muted. Retry restore.';
+    }
+
+    function applySplCalibrationServerState(data) {
+        splCalibrationNoiseActive = !!data.noise_active;
+        splCalibrationStopFailed = !!data.operation_active && !data.noise_active;
+        splCalibrationRestorePending = !data.operation_active && data.restore_pending ? data.restore_pending : null;
+    }
+
+    function setSplCalibrationRestoreActionLine() {
+        setSplCalibrationActionLine(splCalibrationRestorePending ? splCalibrationRestorePendingLine() : '');
     }
 
     async function runSplCalibrationNoiseCountdown(generation) {
@@ -139,11 +158,21 @@
             await stopRequest;
             splCalibrationNoiseActive = false;
             splCalibrationStopFailed = false;
+            splCalibrationRestorePending = null;
             setSplCalibrationActionLine();
             if (statusText) setSplCalibrationStatus(statusText);
         } catch (error) {
+            // A failed stop may still have ended the operation with only its
+            // audio restore pending (which also refuses a late start).
             splCalibrationStopFailed = true;
-            setSplCalibrationActionLine('Cleanup pending. Retry stop.');
+            try {
+                const { response, data } = await requestSplCalibration('/api/measurements/spl-calibration');
+                if (response.ok && !data.operation_active && data.restore_pending) applySplCalibrationServerState(data);
+            } catch (_) {
+                // Keep a stop retry available while server state is unknown.
+            }
+            if (splCalibrationStopFailed) setSplCalibrationActionLine('Cleanup pending. Retry stop.');
+            else setSplCalibrationRestoreActionLine();
             throw error;
         } finally {
             splCalibrationStopRequest = null;
@@ -163,12 +192,12 @@
             const { response, data } = await requestSplCalibration('/api/measurements/spl-calibration');
             if (generation !== splCalibrationOperationGeneration) return;
             if (!response.ok) throw new Error(data.detail || 'Failed to load SPL calibration');
-            splCalibrationNoiseActive = !!data.noise_active;
-            splCalibrationStopFailed = !!data.operation_active && !data.noise_active;
+            applySplCalibrationServerState(data);
             splCalibrationAutomaticAvailable = !!data.automatic?.available;
             resetSplCalibrationNoiseButton();
             splCalibrationModeText = splCalibrationModeLabel(data);
-            setSplCalibrationActionLine();
+            setSplCalibrationRestoreActionLine();
+            if (splCalibrationRestorePending?.detail) setSplCalibrationStatus(splCalibrationRestorePending.detail);
         } catch (error) {
             if (generation === splCalibrationOperationGeneration) setSplCalibrationStatus(error.message);
         }
@@ -201,9 +230,10 @@
             });
             return;
         }
-        const next = !splCalibrationNoiseActive && !splCalibrationStopFailed;
+        const next = !splCalibrationNoiseActive && !splCalibrationStopFailed && !splCalibrationRestorePending;
         if (!next) {
-            await stopSplCalibrationOperation('Noise stopped. Volume restored.').catch((error) => {
+            const stoppedText = splCalibrationRestorePending ? 'Audio restored.' : 'Noise stopped. Volume restored.';
+            await stopSplCalibrationOperation(stoppedText).catch((error) => {
                 setSplCalibrationStatus(error.message);
             });
             return;
@@ -249,15 +279,12 @@
                 try {
                     const { response, data } = await requestSplCalibration('/api/measurements/spl-calibration');
                     if (generation !== splCalibrationOperationGeneration) return;
-                    if (response.ok) {
-                        splCalibrationNoiseActive = !!data.noise_active;
-                        splCalibrationStopFailed = !!data.operation_active && !data.noise_active;
-                    }
+                    if (response.ok) applySplCalibrationServerState(data);
                 } catch (_) {
                     // Keep a stop retry available while server state is unknown.
                 }
                 if (generation !== splCalibrationOperationGeneration) return;
-                setSplCalibrationActionLine();
+                setSplCalibrationRestoreActionLine();
                 setSplCalibrationStatus(error.message);
             }
         } finally {

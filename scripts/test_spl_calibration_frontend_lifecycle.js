@@ -117,6 +117,59 @@ async function testConcurrentStopsShareCleanup() {
     assert.equal(f.button.textContent, 'Start noise');
 }
 
+async function testEndedOperationWithPendingRestoreOffersRestoreRetry() {
+    const pending = { detail: 'SPL calibration ended without restoring its audio state (DSP restore unavailable). The output is muted for safety.', output_muted: true };
+    let restored = false;
+    let stops = 0;
+    const f = fixture((url, _options, enabled) => {
+        if (url.endsWith('/spl-calibration')) {
+            return response({ noise_active: false, operation_active: false, restore_pending: restored ? null : pending,
+                automatic: { available: false } });
+        }
+        if (enabled === false && ++stops <= 2) return response({ detail: pending.detail }, false);
+        if (enabled === false) restored = true;
+    });
+    await f.spl.openSplCalibration();
+    assert.equal(f.button.textContent, 'Retry restore', 'an ended operation with a pending restore offers its retry');
+    assert.equal(f.action.textContent, 'Audio not restored. Output muted. Retry restore.');
+    assert.match(f.status.textContent, /muted for safety/);
+    await f.spl.toggleSplCalibrationNoise();
+    assert.equal(f.calls.at(-2).enabled, false, 'the retry must stop/restore, never start');
+    assert.equal(f.button.textContent, 'Retry restore');
+    assert.doesNotMatch(f.action.textContent, /Cleanup pending/, 'the operation itself has ended');
+    assert.match(f.status.textContent, /DSP restore unavailable/);
+    await f.spl.toggleSplCalibrationNoise();
+    assert.equal(f.button.textContent, 'Retry restore');
+    await f.spl.toggleSplCalibrationNoise();
+    assert.equal(f.calls.filter((c) => c.enabled === true).length, 0);
+    assert.equal(f.button.textContent, 'Start noise');
+    assert.equal(f.status.textContent, 'Audio restored.');
+    assert.equal(f.action.textContent, 'Manual SPL measurement');
+}
+
+async function testFailedStopReportsAbandonedRestoreInsteadOfCleanup() {
+    let abandoned = false;
+    const f = fixture((url, _options, enabled) => {
+        if (url.endsWith('/spl-calibration')) {
+            return response(abandoned
+                ? { noise_active: false, operation_active: false, automatic: { available: false },
+                    restore_pending: { detail: 'Restore failed. The output is muted for safety.', output_muted: true } }
+                : { noise_active: false, operation_active: false, automatic: { available: false } });
+        }
+        if (enabled === false) {
+            abandoned = true;
+            return response({ detail: 'SPL calibration ended without restoring its audio state' }, false);
+        }
+    });
+    await f.spl.openSplCalibration();
+    await f.spl.toggleSplCalibrationNoise();
+    assert.equal(f.button.textContent, 'Stop noise');
+    await f.spl.toggleSplCalibrationNoise();
+    assert.equal(f.button.textContent, 'Retry restore');
+    assert.equal(f.action.textContent, 'Audio not restored. Output muted. Retry restore.');
+    assert.match(f.status.textContent, /without restoring its audio state/);
+}
+
 async function testSilentBackendOwnerOffersCleanupNotStart() {
     const f = fixture((url) => url.endsWith('/spl-calibration') ? response({
         noise_active: false, operation_active: true, automatic: { available: false },
@@ -298,6 +351,7 @@ async function testApplyTimeoutReleasesControlsAndReportsFailure() {
 
 (async () => {
     const tests = [testFailedStopKeepsRetryableState, testFailedCloseRemainsVisible, testIdleCloseStillRequestsIdempotentStop,
+        testEndedOperationWithPendingRestoreOffersRestoreRetry, testFailedStopReportsAbandonedRestoreInsteadOfCleanup,
         testCloseDrainsPendingStartAndStopsLateNoise, testConcurrentStopsShareCleanup,
         testSilentBackendOwnerOffersCleanupNotStart, testCloseDuringCountdownPreventsStart,
         testLateOpenResponseCannotOverwriteStop, testLostStartResponseKeepsServerOwnerRetryable,

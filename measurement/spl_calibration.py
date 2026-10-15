@@ -85,6 +85,16 @@ class _SplCalibrationOperation:
     completed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+@dataclass
+class _UnrestoredSplAudio:
+    """Audio state an ended operation could not restore, held behind a mute."""
+    restore_state: dict[str, Any] | None
+    sink: str
+    output_was_muted: bool
+    previous_volume_percent: Any
+    error: str
+
+
 @dataclass(frozen=True)
 class SplCalibrationDependencies:
     get_measurement_store: Callable[[], Any]
@@ -100,6 +110,12 @@ class SplCalibrationDependencies:
     # the same external DSP mutation ownership as /api/dsp/extras.
     external_dsp_mutation_scope: Callable[[], Any]
     canonical_volume_write_lock: Callable[[], asyncio.Lock]
+    # Hardware sink of the playback output gate and its mute control.  An
+    # operation that cannot restore its audio state ends only behind a
+    # confirmed mute; without these it keeps its ownership instead.
+    get_output_mute_sink: Callable[[], str] | None = None
+    read_sink_mute: Callable[[str], bool] | None = None
+    set_sink_mute: Callable[[str, bool], None] | None = None
 
 
 @dataclass
@@ -107,6 +123,7 @@ class _SplCalibrationRuntime:
     dependencies: SplCalibrationDependencies | None = None
     operation: _SplCalibrationOperation | None = None
     operation_lock: asyncio.Lock | None = None
+    unrestored: _UnrestoredSplAudio | None = None
 
 
 _runtime = _SplCalibrationRuntime()
@@ -689,7 +706,9 @@ def _link_spl_noise_to_dsp_sink(operation: _SplCalibrationOperation) -> None:
             operation.noise_links.append((source, target))
 
 
-def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
+def _restore_spl_calibration_audio(
+    operation: _SplCalibrationOperation | _UnrestoredSplAudio,
+) -> None:
     dependencies = _dependencies()
     dsp_manager = dependencies.get_dsp_manager()
     restore = operation.restore_state
@@ -724,6 +743,66 @@ def _restore_spl_calibration_audio(operation: _SplCalibrationOperation) -> None:
             logger.exception("Failed to restore native DSP after SPL calibration")
             raise
     operation.restore_state = None
+
+
+def _output_mute_controls() -> tuple[Callable[[str], bool], Callable[[str, bool], None]]:
+    dependencies = _dependencies()
+    if dependencies.read_sink_mute is None or dependencies.set_sink_mute is None:
+        raise RuntimeError("Hardware output mute control is unavailable")
+    return dependencies.read_sink_mute, dependencies.set_sink_mute
+
+
+def _mute_output_for_unrestored_audio() -> tuple[str, bool]:
+    """Mute the gate's hardware sink and confirm it; return (sink, was_muted)."""
+    dependencies = _dependencies()
+    if dependencies.get_output_mute_sink is None:
+        raise RuntimeError("Hardware output mute control is unavailable")
+    read_mute, set_mute = _output_mute_controls()
+    sink = dependencies.get_output_mute_sink()
+    was_muted = bool(read_mute(sink))
+    if not was_muted:
+        set_mute(sink, True)
+    if not read_mute(sink):
+        raise RuntimeError(f"Hardware output mute could not be confirmed: {sink}")
+    return sink, was_muted
+
+
+def _finish_unrestored_audio(unrestored: _UnrestoredSplAudio) -> None:
+    """Retry the pending restore, then lift the mute this calibration set."""
+    _restore_spl_calibration_audio(unrestored)
+    if unrestored.output_was_muted:
+        return
+    read_mute, set_mute = _output_mute_controls()
+    set_mute(unrestored.sink, False)
+    if read_mute(unrestored.sink):
+        raise RuntimeError(f"Hardware output unmute could not be confirmed: {unrestored.sink}")
+
+
+def _unrestored_audio_detail(unrestored: _UnrestoredSplAudio) -> str:
+    return (
+        f"SPL calibration ended without restoring its audio state ({unrestored.error}). "
+        "The output is muted for safety. Check the system volume "
+        f"(was {unrestored.previous_volume_percent}%) and Loudness/AutoGain, "
+        "then retry the restore."
+    )
+
+
+def _unrestored_audio_status() -> dict[str, Any] | None:
+    unrestored = _runtime.unrestored
+    if unrestored is None:
+        return None
+    try:
+        read_mute, _set_mute = _output_mute_controls()
+        output_muted = bool(read_mute(unrestored.sink))
+    except Exception:
+        output_muted = None
+    return {
+        "detail": _unrestored_audio_detail(unrestored),
+        "previous_system_volume_percent": unrestored.previous_volume_percent,
+        "audio_restored": unrestored.restore_state is None,
+        "output": unrestored.sink,
+        "output_muted": output_muted,
+    }
 
 
 def _start_spl_calibration_noise(operation: _SplCalibrationOperation) -> dict[str, Any]:
@@ -853,6 +932,11 @@ async def _acquire_operation(kind: str) -> _SplCalibrationOperation:
                     detail="The previous SPL calibration did not finish its cleanup; stop it first")
             else:
                 raise HTTPException(status_code=409, detail="SPL calibration is already active")
+        if _runtime.unrestored is not None:
+            # A new start would capture the unrestored state as its baseline.
+            raise HTTPException(
+                status_code=409,
+                detail="The previous SPL calibration did not restore its audio state; retry the restore first")
         operation_id = uuid4().hex
         operation = _SplCalibrationOperation(
             id=operation_id,
@@ -917,14 +1001,67 @@ async def _run_operation_thread(
     return thread_task.result()
 
 
+async def _hold_unrestored_audio(
+    operation: _SplCalibrationOperation, error: Exception
+) -> str | None:
+    """Mute the output so the operation can end with its restore pending.
+
+    Ownership is released only behind a confirmed hardware mute, and the
+    measurement release restores the captured playback paused, so nothing
+    resumes at the calibration volume.  Returns the error detail, or None
+    when the mute could not be confirmed and the operation keeps ownership.
+    """
+    try:
+        sink, was_muted = await asyncio.to_thread(_mute_output_for_unrestored_audio)
+    except Exception:
+        logger.exception("SPL calibration could not mute the output; keeping ownership")
+        return None
+    restore_state = operation.restore_state
+    unrestored = _UnrestoredSplAudio(
+        restore_state=restore_state,
+        sink=sink,
+        output_was_muted=was_muted,
+        previous_volume_percent=(restore_state or {}).get("system_volume_percent"),
+        error=str(error),
+    )
+    keep_paused = getattr(operation.session, "keep_playback_paused_on_release", None)
+    if callable(keep_paused):
+        keep_paused()
+    _runtime.unrestored = unrestored
+    operation.restore_state = None
+    logger.error(
+        "SPL calibration ended without audio restore; output muted: operation=%s "
+        "sink=%s previous_system_volume=%s",
+        operation.id, sink, unrestored.previous_volume_percent)
+    return _unrestored_audio_detail(unrestored)
+
+
+async def _restore_unrestored_audio() -> None:
+    """Retry the restore an ended operation left pending; keep it on failure."""
+    async with _operation_lock():
+        unrestored = _runtime.unrestored
+        if unrestored is None:
+            return
+        try:
+            await asyncio.to_thread(_finish_unrestored_audio, unrestored)
+        except Exception as exc:
+            logger.exception("SPL calibration audio restore retry failed")
+            unrestored.error = str(exc)
+            raise HTTPException(
+                status_code=500, detail=_unrestored_audio_detail(unrestored)) from exc
+        _runtime.unrestored = None
+        logger.info("SPL calibration pending audio restore completed: sink=%s", unrestored.sink)
+
+
 async def _cleanup_operation(
     operation: _SplCalibrationOperation, *, release_unrestored: bool = False
 ) -> None:
     """Release the operation's resources; a failed audio restore keeps ownership.
 
     ``release_unrestored`` ends the operation anyway once nothing else is
-    held: an explicit stop retrying a failed restore must not leave the SPL
-    job blocking calibration and the measurement session until a restart.
+    held and the output mute is confirmed: an explicit stop retrying a failed
+    restore must not leave the SPL job blocking calibration and the
+    measurement session until a restart.  The restore stays pending.
     """
     async with operation.cleanup_lock:
         if operation.completed.is_set() and _runtime.operation is not operation:
@@ -980,15 +1117,8 @@ async def _cleanup_operation(
         except BaseException as exc:
             logger.exception("Failed to restore SPL calibration audio state")
             if release_unrestored and not cleanup_failed and isinstance(exc, Exception):
-                previous_volume = (operation.restore_state or {}).get("system_volume_percent")
-                logger.error(
-                    "SPL calibration ended without audio restore: operation=%s "
-                    "previous_system_volume=%s", operation.id, previous_volume)
-                operation.restore_state = None
-                restore_abandoned = (
-                    f"SPL calibration stopped without restoring its audio state ({exc}). "
-                    f"Check the system volume (was {previous_volume}%) and Loudness/AutoGain.")
-            else:
+                restore_abandoned = await _hold_unrestored_audio(operation, exc)
+            if restore_abandoned is None:
                 cleanup_failed = True
 
         if operation.registration_attempted and operation.restore_state is None:
@@ -1138,6 +1268,8 @@ async def _stop_active_operation() -> None:
 
 async def shutdown() -> None:
     await _stop_active_operation()
+    # A restart drops the pending restore and startup reopens a stale mute.
+    await _restore_unrestored_audio()
 
 
 @router.get("/api/measurements/spl-calibration")
@@ -1157,6 +1289,7 @@ async def get_spl_calibration():
             and _runtime.operation.noise_process.poll() is None
         ),
         "operation_active": _runtime.operation is not None,
+        "restore_pending": await asyncio.to_thread(_unrestored_audio_status),
     }
 
 
@@ -1166,6 +1299,7 @@ async def set_spl_calibration_noise(request: Request):
     enabled = bool(body.get("enabled"))
     if not enabled:
         await _stop_active_operation()
+        await _restore_unrestored_audio()
         return {"status": "stopped"}
 
     operation = await _acquire_operation("manual-noise")

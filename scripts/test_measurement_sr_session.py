@@ -632,6 +632,36 @@ class TestCentralCapture:
         finally:
             ts.cleanup()
 
+    def test_unrestored_spl_release_restores_captured_playback_paused(self) -> None:
+        """An SPL job ending behind a safety mute must not resume playback at release."""
+        ts = _TestSession()
+        try:
+            import main
+            ts.set_track_playing(source="local", sample_rate=44100)
+            coordinator = SimpleNamespace(
+                restore_measurement=AsyncMock(
+                    return_value=SimpleNamespace(committed=True)
+                )
+            )
+            main.playback_transition_coordinator = coordinator
+
+            asyncio.get_event_loop().run_until_complete(
+                ts._session.register_spl_job("spl-calibration:test")
+            )
+            ts._session.keep_playback_paused_on_release()
+            asyncio.get_event_loop().run_until_complete(ts._session.request_close())
+            asyncio.get_event_loop().run_until_complete(
+                ts._session.unregister_spl_job("spl-calibration:test")
+            )
+
+            coordinator.restore_measurement.assert_awaited_once()
+            kwargs = coordinator.restore_measurement.await_args.kwargs
+            assert kwargs["should_play"] is False
+            assert kwargs["restore_position"] == 10.0
+            assert kwargs["target_url"] == "file:///test.flac"
+        finally:
+            ts.cleanup()
+
     def test_same_rate_snapshot_still_uses_coordinator_without_source_reload(self) -> None:
         """A valid 48-kHz snapshot is restored even when measurement changed no rate."""
         ts = _TestSession()
