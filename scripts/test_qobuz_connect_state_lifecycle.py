@@ -160,6 +160,56 @@ class QobuzBootstrapGuardTests(unittest.IsolatedAsyncioTestCase):
             await watch._bootstrap_device_state()
         self.assertEqual(seen, [True])
 
+    def _watch(self, joins, history):
+        from playback.qbzd_volume_watch import QobuzVolumeWatch, QobuzVolumeWatchDependencies
+
+        class HistoryProc:
+            returncode = 0
+
+            async def communicate(self):
+                return history.encode(), b""
+
+        async def spawn(*args, **kwargs):
+            return HistoryProc()
+
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_value=lambda value: None,
+                current_master=lambda: 37,
+                on_session_join=lambda: joins.append(True),
+            ),
+            debounce_seconds=0.0,
+        )
+        return watch, spawn
+
+    async def test_bootstrap_reports_a_join_that_preceded_fxroute(self):
+        # qbzd logs the join ~2s into its own start; FXRoute's startup is
+        # slower, so the cursor-anchored tail can miss it. The restore must
+        # still be armed after a reboot.
+        joins = []
+        watch, spawn = self._watch(joins, (
+            "[qbzd/qconnect] Renderer join complete — visible to other devices\n"
+            "[qbzd/qconnect] New track from renderer: 198555 (was 0)\n"
+        ))
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn), mock.patch(
+            "streaming.qobuz.backend.qbzd_installed", return_value=True
+        ):
+            await watch._bootstrap_device_state()
+        self.assertEqual(joins, [True])
+
+    async def test_bootstrap_ignores_a_disconnected_session(self):
+        joins = []
+        watch, spawn = self._watch(joins, (
+            "[qbzd/qconnect] Renderer join complete — visible to other devices\n"
+            "[qbzd/qconnect] WebSocket disconnected\n"
+        ))
+        with mock.patch("asyncio.create_subprocess_exec", new=spawn), mock.patch(
+            "streaming.qobuz.backend.qbzd_installed", return_value=True
+        ):
+            await watch._bootstrap_device_state()
+        self.assertEqual(joins, [])
+
 
 if __name__ == "__main__":
     unittest.main()

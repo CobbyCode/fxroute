@@ -40,6 +40,8 @@ TRIGGERS = (
     "audio-output-mode.json",
     "audio-output-selection.json",
     "sample-rate-policy.json",
+    # Qobuz repeat/transport intent (restored after a Connect session (re)join).
+    "qobuz-intent.json",
 )
 
 # Writes that are not FXRoute product configuration and therefore out of

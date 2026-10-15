@@ -55,7 +55,7 @@ class TranslatorSurfaceTests(unittest.TestCase):
         self.assertEqual(
             set(QobuzVolumeWatchDependencies.__dataclass_fields__.keys()),
             {"is_active", "apply_volume_value", "current_master", "on_device_active",
-             "pin_unity", "read_engine_playback"},
+             "pin_unity", "read_engine_playback", "on_session_join"},
         )
 
     def test_spotify_deps_pin_pickup_surface(self):

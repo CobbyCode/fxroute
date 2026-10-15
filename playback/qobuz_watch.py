@@ -61,6 +61,11 @@ class QobuzWatchDependencies:
     claim_qobuz_playback: Callable[[str], Any]
     # Read transport without peak setup delaying the ownership claim.
     read_qobuz_state: Callable[..., Any] | None = None
+    # Join reconciliation (playback.qobuz_join_guard): re-applies the stored
+    # repeat mode and stops a session-join autoplay while the join window is
+    # open. The second call suppresses the ownership claim for such an edge.
+    reconcile_join: Callable[[], Any] | None = None
+    reconcile_join_autoplay: Callable[[], Any] | None = None
 
 
 class QobuzPlayerWatch:
@@ -80,6 +85,31 @@ class QobuzPlayerWatch:
         except Exception as exc:
             logger.warning("Qobuz state broadcast failed: %s", exc)
 
+    async def _reconcile_join(self) -> None:
+        """Re-apply the stored intent while a Connect join is reconciled."""
+        reconcile = self._deps.reconcile_join
+        if reconcile is None:
+            return
+        try:
+            await reconcile()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Qobuz join reconciliation failed: %s", exc)
+
+    async def _join_autoplay_suppresses_claim(self) -> bool:
+        """Return whether a join autoplay replaced the ownership claim."""
+        suppress = self._deps.reconcile_join_autoplay
+        if suppress is None:
+            return False
+        try:
+            return bool(await suppress())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Qobuz join transport restore failed: %s", exc)
+            return False
+
     async def run_watch_loop(self) -> None:
         logger.info("Qobuz qbzd claim watch loop entered")
         was_playing = False
@@ -95,18 +125,29 @@ class QobuzPlayerWatch:
                 line_selected = getattr(playback, "source_mode", None) in {
                     "bluetooth-input", "external-input", "stdin-input",
                 }
+                await self._reconcile_join()
                 playing = bool(self._deps.is_qobuz_playback_active(state))
                 if playing and (not was_playing or source_changed or line_selected):
                     # Rising edge: qbzd started playing externally (Qobuz
                     # Connect). Claim ownership; the claim is a no-op when
                     # qobuz already owns playback, and paused/stopped events
                     # never reclaim.
-                    logger.info("Qobuz Playing claim observed: source_mode=%s generation=%s source_changed=%s",
-                                getattr(playback, "source_mode", None), source_generation, source_changed)
-                    await self._deps.claim_qobuz_playback("qbzd-playing")
-                    self._backoff_seconds = 0.0
-                    if reader is not None:
-                        state = await reader()
+                    if await self._join_autoplay_suppresses_claim():
+                        # The daemon's own session-join autoplay while the
+                        # stored intent says playback was stopped: pause it
+                        # instead of taking the output over. A later play
+                        # (the Qobuz app selecting this device) claims as
+                        # before.
+                        logger.info("Qobuz join autoplay paused instead of claimed")
+                        if reader is not None:
+                            state = await reader()
+                    else:
+                        logger.info("Qobuz Playing claim observed: source_mode=%s generation=%s source_changed=%s",
+                                    getattr(playback, "source_mode", None), source_generation, source_changed)
+                        await self._deps.claim_qobuz_playback("qbzd-playing")
+                        self._backoff_seconds = 0.0
+                        if reader is not None:
+                            state = await reader()
                 was_playing = bool(self._deps.is_qobuz_playback_active(state))
                 observed_source_generation = getattr(self._deps.get_playback_state(), "source_generation", None)
                 if reader is not None and (self._broadcast_task is None or self._broadcast_task.done()):

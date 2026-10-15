@@ -33,6 +33,15 @@ PLAY_TRACK_TIMEOUT = 120.0
 PLAY_TRACK_CONFIRM_TIMEOUT_S = 3.0
 SEEK_CONFIRM_TIMEOUT_S = 3.0
 SEEK_CONFIRM_INTERVAL_S = 0.05
+# An absolute repeat write is read back from the queue state: the fork applies
+# it to its live queue synchronously, so a bounded poll separates "applied"
+# from "rejected". The write reply itself is only a bare ack.
+REPEAT_APPLY_TIMEOUT_S = 1.5
+REPEAT_APPLY_INTERVAL_S = 0.05
+
+
+class QobuzRepeatError(RuntimeError):
+    """The daemon did not apply a queue repeat mode."""
 
 
 class QobuzSeekError(RuntimeError):
@@ -399,11 +408,38 @@ class QobuzProvider(StreamingProvider):
         return await self.status()
 
     async def repeat(self) -> dict:
-        # The fork switches repeat on the queue with its own mode names.
+        # The fork switches repeat on the queue with its own mode names. The
+        # UI control is a cycle; the write itself is absolute (set_loop).
         current = await self.status()
         next_loop = _LOOP_CYCLE.get(str(current.get("loop") or "none"), "none")
-        await backend.post_json(self._base_url, "/api/queue/repeat", {"mode": _LOOP_TO_REPEAT[next_loop]})
-        return await self.status()
+        return await self.set_loop(next_loop)
+
+    async def set_loop(self, mode: str) -> dict:
+        """Set the queue repeat to an absolute FXRoute loop mode.
+
+        The cycle form is unusable for a target state (a restore cannot know
+        how many steps it needs), so the absolute write is the primitive. The
+        daemon reply is a bare ack, so the applied mode is read back from the
+        queue state; a rejected or ignored write raises instead of returning
+        the unchanged state, which made a lost write look like a no-op.
+        """
+        normalized = str(mode or "").strip().lower()
+        if normalized not in _LOOP_TO_REPEAT:
+            raise ValueError(f"unknown loop mode: {mode!r}")
+        repeat_mode = _LOOP_TO_REPEAT[normalized]
+        written = await backend.post_json(self._base_url, "/api/queue/repeat", {"mode": repeat_mode})
+        if written is None:
+            raise QobuzRepeatError(f"qbzd rejected repeat mode {repeat_mode}")
+        deadline = time.monotonic() + REPEAT_APPLY_TIMEOUT_S
+        while True:
+            state = await self.status()
+            if str(state.get("loop") or "none") == normalized:
+                return state
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(REPEAT_APPLY_INTERVAL_S, remaining))
+        raise QobuzRepeatError(f"qbzd did not apply repeat mode {repeat_mode}")
 
     async def seek(self, position_sec: float) -> dict:
         if not math.isfinite(position_sec):

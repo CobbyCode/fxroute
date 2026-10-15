@@ -323,6 +323,7 @@ class EngineUnityGuardTests(unittest.IsolatedAsyncioTestCase):
     async def test_fork_rejoin_rearms_pickup_without_touching_selection(self):
         applied = []
         device_events = []
+        joins = []
 
         async def apply_value(value):
             applied.append(value)
@@ -333,6 +334,7 @@ class EngineUnityGuardTests(unittest.IsolatedAsyncioTestCase):
                 apply_volume_value=apply_value,
                 current_master=lambda: 37,
                 on_device_active=lambda value: device_events.append(value),
+                on_session_join=lambda: joins.append(True),
             ),
             debounce_seconds=0.0,
         )
@@ -361,6 +363,42 @@ class EngineUnityGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(translator.submit(99))
         self.assertEqual(applied, [36])
         self.assertEqual(device_events, [])
+        # The completed join arms the intent restore (playback.qobuz_join_guard).
+        self.assertEqual(joins, [True])
+
+    async def test_fork_disconnect_does_not_arm_the_join_restore(self):
+        joins = []
+
+        async def apply_value(value):
+            pass
+
+        watch = QobuzVolumeWatch(
+            QobuzVolumeWatchDependencies(
+                is_active=lambda: True,
+                apply_volume_value=apply_value,
+                current_master=lambda: 37,
+                on_session_join=lambda: joins.append(True),
+            ),
+            debounce_seconds=0.0,
+        )
+        batches = iter([
+            (["[qbzd/qconnect] WebSocket disconnected"], "c1"),
+            (["[qbzd/qconnect] Renderer join with session_uuid=abc"], "c2"),
+        ])
+
+        async def poll(_cursor):
+            try:
+                return next(batches)
+            except StopIteration:
+                await asyncio.Event().wait()
+
+        with mock.patch.object(watch, "_poll_journal_lines", new=poll), \
+                mock.patch.object(watch, "_bootstrap_device_state", new=mock.AsyncMock()):
+            try:
+                await asyncio.wait_for(watch.run_watch_loop(), timeout=0.3)
+            except asyncio.TimeoutError:
+                pass
+        self.assertEqual(joins, [], "only a completed rejoin restores the intent")
 
 
 class PickupTranslatorTests(unittest.IsolatedAsyncioTestCase):
@@ -998,12 +1036,12 @@ class RemoteVolumeRegressionTests(unittest.IsolatedAsyncioTestCase):
         # The bridge's only output is the canonical master writer; it has no
         # handle on loudness state by construction. Pin the dependency
         # surface: exactly is_active + apply_volume_value + current_master +
-        # the optional device-selection notifier + the fork unity guard's
-        # engine reader and qbzd unity pin, nothing else.
+        # the optional device-selection and Connect-join notifiers + the fork
+        # unity guard's engine reader and qbzd unity pin, nothing else.
         self.assertEqual(
             set(QobuzVolumeWatchDependencies.__dataclass_fields__.keys()),
             {"is_active", "apply_volume_value", "current_master", "on_device_active",
-             "pin_unity", "read_engine_playback"},
+             "pin_unity", "read_engine_playback", "on_session_join"},
         )
         applied = []
         watch, proc = self._watch(applied, [

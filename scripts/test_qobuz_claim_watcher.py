@@ -208,6 +208,38 @@ class QobuzClaimWatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(_is_playing(state))
         self.assertEqual(read.await_args.args[1], "/api/playback")
 
+    async def test_join_autoplay_edge_is_not_claimed(self):
+        # qbzd re-joins the Connect session and plays the session's track even
+        # though FXRoute recorded a stopped intent; that edge is the daemon's
+        # own autoplay and must not take the output over.
+        watch, calls = make_watch([{"available": True, "status": "Playing"}])
+        reconciled = []
+
+        async def reconcile_join():
+            reconciled.append(True)
+            return {"reconciled": True}
+
+        async def suppress():
+            return True
+
+        watch._deps.reconcile_join = reconcile_join
+        watch._deps.reconcile_join_autoplay = suppress
+        await _run_until(watch, calls, passes=3)
+        self.assertEqual(calls["claims"], [])
+        self.assertGreaterEqual(len(reconciled), 3, "every pass reconciles while the join window is open")
+
+    async def test_join_reconcile_failure_still_claims(self):
+        # A broken join restore must not silently disable Connect takeovers.
+        watch, calls = make_watch([{"available": True, "status": "Playing"}])
+
+        async def reconcile_join():
+            raise RuntimeError("intent unreadable")
+
+        watch._deps.reconcile_join = reconcile_join
+        with self.assertLogs("playback.qobuz_watch", level="WARNING"):
+            await _run_until(watch, calls, claims_count=1)
+        self.assertEqual(calls["claims"], ["qbzd-playing"])
+
     async def test_paused_and_stopped_never_claim(self):
         watch, calls = make_watch(
             [

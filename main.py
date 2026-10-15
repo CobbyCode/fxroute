@@ -571,6 +571,8 @@ from playback.qobuz_watch import (
     QobuzWatchDependencies,
     read_claim_state as read_qobuz_claim_state,
 )
+from playback import qobuz_intent
+from playback.qobuz_join_guard import QobuzJoinGuard, QobuzJoinGuardDependencies
 from playback.qbzd_volume_watch import (
     QobuzVolumeWatch,
     QobuzVolumeWatchDependencies,
@@ -644,7 +646,12 @@ import streaming
 from streaming.tidal import auth as tidal_auth
 from streaming.tidal import playback as tidal_playback
 from streaming.qobuz import connect_state
-from streaming.qobuz.provider import QobuzSeekError, QobuzSeekNotConfirmed, QobuzSeekPositionError
+from streaming.qobuz.provider import (
+    QobuzRepeatError,
+    QobuzSeekError,
+    QobuzSeekNotConfirmed,
+    QobuzSeekPositionError,
+)
 from streaming.spotify import mpris as spotify_mpris
 from streaming.spotify.mpris import playerctl_available, spotify_installed
 from streaming.spotify.provider import (
@@ -1040,12 +1047,40 @@ spotify_playerctl_watch = SpotifyPlayerctlWatch(SpotifyWatchDependencies(
     schedule_spotify_state_refresh=lambda reason: _schedule_spotify_state_refresh(reason),
     claim_spotify_playback=lambda *args, **kwargs: _claim_spotify_playback(*args, **kwargs),
 ))
+
+
+async def _read_qobuz_loop_mode() -> str | None:
+    """Read the daemon's current queue repeat as an FXRoute loop mode.
+
+    Used only while a Connect join is reconciled (playback.qobuz_join_guard),
+    so the heavier full-provider read is confined to that window.
+    """
+    try:
+        state = await streaming.get_provider("qobuz").status()
+    except Exception as exc:
+        logger.debug("Qobuz loop readback failed: %s", exc)
+        return None
+    loop = state.get("loop")
+    return loop if isinstance(loop, str) else None
+
+
+# Restores the repeat mode and transport state the user had set before a qbzd
+# Connect session (re)join; the session otherwise enforces its own values.
+qobuz_join_guard = QobuzJoinGuard(QobuzJoinGuardDependencies(
+    load_intent=qobuz_intent.load,
+    record_intent=qobuz_intent.observe,
+    read_loop=_read_qobuz_loop_mode,
+    apply_loop=lambda mode: streaming.get_provider("qobuz").set_loop(mode),
+    pause_qobuz=lambda: qobuz_pause(),
+))
 qobuz_player_watch = QobuzPlayerWatch(QobuzWatchDependencies(
     get_playback_state=lambda: playback_state,
     broadcast_qobuz_state=lambda *args, **kwargs: broadcast_qobuz_state(*args, **kwargs),
     is_qobuz_playback_active=lambda *args, **kwargs: _is_qobuz_playback_active(*args, **kwargs),
     claim_qobuz_playback=lambda detail: _claim_qobuz_playback(detail, observed_playing=True),
     read_qobuz_state=read_qobuz_claim_state,
+    reconcile_join=qobuz_join_guard.reconcile_join,
+    reconcile_join_autoplay=qobuz_join_guard.reconcile_join_autoplay,
 ))
 qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
     is_active=lambda: _resolve_playback_owner() == "qobuz" and connect_state.is_device_active() is not False,
@@ -1056,6 +1091,7 @@ qobuz_volume_watch = QobuzVolumeWatch(QobuzVolumeWatchDependencies(
     ),
     current_master=lambda: get_output_volume_safe(),
     on_device_active=lambda value: connect_state.set_device_active(value),
+    on_session_join=qobuz_join_guard.note_session_join,
     pin_unity=lambda: _qobuz_pin_unity(),
 ))
 spotifyd_volume_watch = SpotifydVolumeWatch(SpotifydVolumeWatchDependencies(
@@ -2234,6 +2270,12 @@ async def get_qobuz_ui_state(data: Optional[dict] = None) -> dict:
         "ok" if qobuz_unity_pin_state.get("ok") else "error"
     ) if qobuz_unity_pin_state else None
     status["playback_owner"] = _resolve_playback_owner()
+    # The daemon keeps no session state: record the user's repeat and transport
+    # intent so a Connect (re)join can restore it (playback.qobuz_join_guard).
+    qobuz_join_guard.reconcile_observed(
+        loop=status.get("loop") or "",
+        playing=_is_qobuz_playback_active(status),
+    )
     playback_state.qobuz_state_commit_sequence = read_sequence
     playback_state.latest_qobuz_state = status
     return status
@@ -4247,7 +4289,14 @@ async def _qobuz_global_control(action: str, request: Request | None = None) -> 
     if action == "shuffle":
         return await broadcast_qobuz_state(await provider.shuffle())
     if action == "loop":
-        return await broadcast_qobuz_state(await provider.repeat())
+        try:
+            data = await provider.repeat()
+        except QobuzRepeatError as exc:
+            raise HTTPException(status_code=502, detail=f"Qobuz repeat change failed: {exc}") from exc
+        # An explicit user control is authoritative: it ends a join restore
+        # window so the stored intent cannot revert the user's own press.
+        qobuz_join_guard.note_user_intent()
+        return await broadcast_qobuz_state(data)
     return {}
 
 

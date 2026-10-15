@@ -16,9 +16,13 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import streaming.qobuz.provider as provider_module
 from streaming.qobuz import connect_state
 from streaming.qobuz.backend import default_base_url, qbzd_installed
-from streaming.qobuz.provider import QobuzProvider
+from streaming.qobuz.provider import QobuzProvider, QobuzRepeatError
+
+# Fork repeat values as the daemon echoes them back in /api/queue.
+_REPEAT_ECHO = {"off": "Off", "track": "One", "queue": "All", "all": "All"}
 
 
 def _status_payload(**overrides):
@@ -502,23 +506,85 @@ class QobuzTransportDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_repeat_cycles_and_shuffle_toggles(self):
         provider = QobuzProvider()
         calls = []
+        routes = _full_routes()
 
         async def fake_post(base_url, path, body=None, timeout=2.0):
             calls.append((path, body or {}))
+            # The fork applies queue changes to its live queue synchronously.
+            if path == "/api/queue/repeat":
+                routes["/api/queue"]["repeat"] = _REPEAT_ECHO[body["mode"]]
+            elif path == "/api/queue/shuffle":
+                routes["/api/queue"]["shuffle"] = body["enabled"]
             return {}
 
-        getter = _fake_get(_full_routes())
+        getter = _fake_get(routes)
         with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post), \
              mock.patch("streaming.qobuz.backend.get_json", side_effect=getter), \
              mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
              mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)):
             await provider.shuffle()
-            await provider.repeat()
+            state = await provider.repeat()
 
         # Fixture shuffle is on: shuffle switches it off on the queue.
         self.assertIn(("/api/queue/shuffle", {"enabled": False}), calls)
         # Current loop is "playlist" (repeat "All"), so the next cycle is "none" -> "off".
         self.assertIn(("/api/queue/repeat", {"mode": "off"}), calls)
+        self.assertEqual(state["loop"], "none")
+
+    async def test_set_loop_writes_absolute_mode_and_confirms_readback(self):
+        # A restore needs a target state, not a cycle step: the absolute write
+        # is the primitive and the reply is a bare ack, so the applied mode is
+        # read back from the queue state.
+        provider = QobuzProvider()
+        calls = []
+        routes = _full_routes()
+
+        async def fake_post(base_url, path, body=None, timeout=2.0):
+            calls.append((path, body or {}))
+            routes["/api/queue"]["repeat"] = _REPEAT_ECHO[body["mode"]]
+            return {}
+
+        getter = _fake_get(routes)
+        with mock.patch("streaming.qobuz.backend.post_json", side_effect=fake_post), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=getter), \
+             mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)):
+            state = await provider.set_loop("track")
+
+        self.assertEqual(calls, [("/api/queue/repeat", {"mode": "track"})])
+        self.assertEqual(state["loop"], "track")
+
+    async def test_set_loop_raises_on_rejected_write(self):
+        provider = QobuzProvider()
+        with mock.patch("streaming.qobuz.backend.post_json",
+                        new=mock.AsyncMock(return_value=None)), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=_fake_get(_full_routes())), \
+             mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)):
+            with self.assertRaises(QobuzRepeatError):
+                await provider.set_loop("none")
+
+    async def test_set_loop_raises_when_daemon_keeps_another_mode(self):
+        # A write the daemon ignores must surface as a failure; returning the
+        # unchanged state made a lost "Repeat Off" look like a successful
+        # no-op in the UI.
+        provider = QobuzProvider()
+        with mock.patch("streaming.qobuz.backend.post_json",
+                        new=mock.AsyncMock(return_value={})), \
+             mock.patch("streaming.qobuz.backend.get_json", side_effect=_fake_get(_full_routes())), \
+             mock.patch("streaming.qobuz.backend.qbzd_installed", return_value=True), \
+             mock.patch("streaming.qobuz.backend.is_reachable", new=_reachable(True)):
+            with mock.patch.object(provider_module, "REPEAT_APPLY_TIMEOUT_S", 0.0):
+                with self.assertRaises(QobuzRepeatError):
+                    await provider.set_loop("none")
+
+    async def test_set_loop_rejects_unknown_mode_before_writing(self):
+        provider = QobuzProvider()
+        post = mock.AsyncMock()
+        with mock.patch("streaming.qobuz.backend.post_json", new=post):
+            with self.assertRaises(ValueError):
+                await provider.set_loop("forever")
+        post.assert_not_awaited()
 
 
 class QobuzQueueAndArtworkTests(unittest.IsolatedAsyncioTestCase):

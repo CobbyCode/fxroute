@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import asyncio
+import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -17,6 +19,12 @@ from unittest.mock import AsyncMock, patch
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# FXRoute persists the Qobuz repeat/transport intent under
+# $XDG_CONFIG_HOME/fxroute and reads it from main's Qobuz state path. A
+# standalone run must not write the invoking user's configuration.
+_XDG_SANDBOX = tempfile.TemporaryDirectory(prefix="fxroute-qobuz-seek-")
+os.environ["XDG_CONFIG_HOME"] = _XDG_SANDBOX.name
 
 from fastapi.testclient import TestClient
 import main

@@ -105,6 +105,11 @@ _FORK_SESSION_BOUNDARY_RE = re.compile(
     r"\[qbzd/qconnect\] (?:Renderer join complete|WebSocket disconnected|Disconnected\b)"
 )
 
+# The completed (re)join is the only point where the session hands the renderer
+# its queue and track again, so it is also the trigger for the join restore
+# (see playback.qobuz_join_guard).
+_FORK_SESSION_JOIN_RE = re.compile(r"\[qbzd/qconnect\] Renderer join complete")
+
 # Software-mode line: qbzd applies the remote volume itself. The journal
 # coupling needs locked mode, so seeing this line means the config drifted.
 _APPLIED_VOLUME_RE = re.compile(r"Renderer command applied:\s*SetVolume\s*\{")
@@ -147,6 +152,13 @@ def is_fork_session_boundary(line: str | None) -> bool:
     if not line:
         return False
     return _FORK_SESSION_BOUNDARY_RE.search(line) is not None
+
+
+def is_fork_session_join(line: str | None) -> bool:
+    """Return whether the line completes a fork QConnect renderer (re)join."""
+    if not line:
+        return False
+    return _FORK_SESSION_JOIN_RE.search(line) is not None
 
 
 def parse_engine_volume(value: Any) -> int | None:
@@ -197,6 +209,10 @@ class QobuzVolumeWatchDependencies:
     # pin writer the guard does not run.
     pin_unity: Callable[[], Awaitable[Any]] | None = None
     read_engine_playback: Callable[[], Awaitable[Mapping[str, Any] | None]] = read_engine_playback
+    # Notified when the renderer completes a Connect session (re)join. The
+    # session then owns the queue/repeat/transport the daemon adopts; the
+    # join guard restores FXRoute's intent from this signal.
+    on_session_join: Callable[[], None] | None = None
 
 
 class QobuzVolumeWatch:
@@ -337,7 +353,7 @@ class QobuzVolumeWatch:
             self._drain_task = None
 
     async def _bootstrap_device_state(self) -> None:
-        """Recover the last selection state from recent journal history.
+        """Recover the last selection state and Connect join from the journal.
 
         The tail starts at ``-n 0`` (no replay), so without this one-shot scan
         a fresh FXRoute start would not know whether the device is currently
@@ -345,8 +361,16 @@ class QobuzVolumeWatch:
         (provider uninstalled) the journal still holds pre-uninstall
         SET_ACTIVE lines: trusting them would republish a removed daemon as
         the active renderer, so the bootstrap stays unknown instead.
+
+        The same scan recovers a renderer join that completed *before*
+        FXRoute started: qbzd logs the join about two seconds into its own
+        start (bundle extraction, then QConnect), while FXRoute's startup is
+        slower, so the cursor-anchored tail can miss the line that arms the
+        intent restore (playback.qobuz_join_guard). Reporting the most recent
+        boundary seen in recent history closes that boot race; a stale join is
+        harmless because the restore only writes on a real mismatch.
         """
-        if self._deps.on_device_active is None:
+        if self._deps.on_device_active is None and self._deps.on_session_join is None:
             return
         try:
             from streaming.qobuz import backend as _qobuz_backend
@@ -366,13 +390,21 @@ class QobuzVolumeWatch:
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
             last: bool | None = None
+            last_boundary_was_join: bool | None = None
             for line in stdout.decode("utf-8", errors="replace").splitlines():
                 if is_session_activation(line):
                     last = True
                 elif is_session_deactivation(line):
                     last = False
-            if last is not None:
+                if is_fork_session_boundary(line):
+                    last_boundary_was_join = is_fork_session_join(line)
+            if last is not None and self._deps.on_device_active is not None:
                 self._deps.on_device_active(last)
+            if last_boundary_was_join and self._deps.on_session_join is not None:
+                try:
+                    self._deps.on_session_join()
+                except Exception as exc:
+                    logger.warning("Qobuz session-join notification failed: %s", exc)
         except (asyncio.TimeoutError, OSError) as exc:
             logger.debug("qbzd device-state bootstrap failed: %s", exc)
         finally:
@@ -459,6 +491,11 @@ class QobuzVolumeWatch:
                         # selection signal, so the device state is untouched.
                         expect_ignore = False
                         self._translator.observe_activation()
+                        if is_fork_session_join(text) and self._deps.on_session_join is not None:
+                            try:
+                                self._deps.on_session_join()
+                            except Exception as exc:
+                                logger.warning("Qobuz session-join notification failed: %s", exc)
                         continue
                     if is_session_activation(text) or is_session_deactivation(text):
                         # A fresh Connect session re-anchors the controller scale;
