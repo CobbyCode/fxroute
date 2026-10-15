@@ -100,11 +100,12 @@ class GraphWriteTests(unittest.IsolatedAsyncioTestCase):
 
         async def to_thread(func, /, *args, **kwargs):
             # The edit reads the rate off the event loop; the worker thread
-            # has no task, so mark the edit's preparation point here.
+            # has no task. Mark preparation only after its rate was captured.
             task = asyncio.current_task()
+            result = await real_to_thread(func, *args, **kwargs)
             if func is status_read and task is not None and task.get_name() == "output-edit":
                 self.output_prepared.set()
-            return await real_to_thread(func, *args, **kwargs)
+            return result
 
         thread_patch = mock.patch.object(asyncio, "to_thread", to_thread)
         thread_patch.start()
