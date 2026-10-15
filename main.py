@@ -3626,6 +3626,9 @@ async def _follow_active_source_native_rate(committed: dict, *, reason: str) -> 
     orchestrator so line-native and playback rates share one policy path, and
     only transitions on a real rate change.
     """
+    epoch = _capture_playback_transition_epoch()
+    if epoch is None:
+        return
     try:
         live = await asyncio.to_thread(samplerate._load_audio_source_selection)
     except Exception:
@@ -3654,9 +3657,37 @@ async def _follow_active_source_native_rate(committed: dict, *, reason: str) -> 
         logger.warning("Native-rate follow (%s) could not build a request: %s", reason, exc)
         return
     if not request.rate_change:
+        if not request.target_url and not request.should_play:
+            # Revalidate after the awaited probes, then reserve the same locks
+            # as a policy transition before releasing its live clock pin.
+            try:
+                async with _manual_transport_guard(expected_epoch=epoch):
+                    lock = measurement_sr_session.lock if measurement_sr_session is not None else None
+                    if lock is not None and lock.locked():
+                        return
+                    async with lock if lock is not None else nullcontext():
+                        if _measurement_session_owns_live_rate() or _surround_carrier_owned:
+                            return
+                        await asyncio.to_thread(
+                            samplerate.clear_auto_policy_force_rate,
+                            request.target_rate, idle=True,
+                        )
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
         return
+    if not _playback_transition_context_is_current(epoch):
+        return
+
+    async def follow_superseded() -> bool:
+        # Admission runs under the Coordinator lock: a queued native-rate
+        # follow must never undo a newer fixed policy or measurement owner.
+        return (_measurement_session_owns_live_rate() or _surround_carrier_owned
+                or samplerate.load_sample_rate_policy().get("mode") != "auto")
+
     try:
-        await _transition_sample_rate_policy(policy, detail=reason)
+        await _transition_sample_rate_policy(
+            policy, detail=reason, skip_if_committed_owner=follow_superseded)
     except (ValueError, PlaybackTransitionFailure, RuntimeError) as exc:
         logger.warning("Native-rate follow (%s) failed: %s", reason, exc)
 
@@ -3673,12 +3704,14 @@ async def _on_stdin_state_changed() -> None:
     snapshot = runtime.stdin_input.snapshot() if runtime.stdin_input else {}
     native = resolve_active_source_native_rate("stdin-input", stdin_snapshot=snapshot)
     if not isinstance(native, int) or native <= 0:
+        await _follow_active_source_native_rate(
+            {"mode": SOURCE_MODE_STDIN_INPUT}, reason="stdin-session-ended")
         return
     try:
         status = await asyncio.to_thread(get_samplerate_status)
     except Exception:
         return
-    if status.get("active_rate") == native and status.get("force_rate") in {None, 0, native}:
+    if status.get("active_rate") == native and status.get("force_rate") == native:
         return
     await _follow_active_source_native_rate({"mode": SOURCE_MODE_STDIN_INPUT}, reason="stdin-native-rate")
 
@@ -4379,7 +4412,8 @@ async def stop_playback():
                 status = await asyncio.to_thread(get_samplerate_status)
             except Exception:
                 status = None
-            samplerate.clear_auto_policy_force_rate(
+            await asyncio.to_thread(
+                samplerate.clear_auto_policy_force_rate,
                 int((status or {}).get("active_rate") or 0),
                 status=status,
                 idle=True,
@@ -6238,6 +6272,10 @@ async def _resync_stdin_routing() -> None:
     """Move a live multichannel STDIN stream to the route of the new output mode."""
     if runtime.stdin_input is not None:
         await runtime.stdin_input.resync_routing()
+        # EOF may have arrived while the output-mode transition owned the
+        # graph. Its final routing hook also settles that deferred rate release.
+        await _follow_active_source_native_rate(
+            {"mode": SOURCE_MODE_STDIN_INPUT}, reason="stdin-output-mode-settled")
 
 
 @app.get("/api/audio/surround")

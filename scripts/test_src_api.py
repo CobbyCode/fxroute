@@ -403,7 +403,7 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.player.state["paused"])
         self.assertIsNone(main.playback_state.current_playback_owner)
 
-    async def test_auto_default_and_idle_handoffs_do_not_leave_a_force_pin(self):
+    async def test_auto_handoffs_keep_active_pins_and_release_idle_pins(self):
         for loaded, rate in ((True, 48000), (False, 44100)):
             with self.subTest(loaded=loaded, rate=rate):
                 self.configure_playback(loaded=loaded)
@@ -418,7 +418,7 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
                       patch.object(main.samplerate, "playback_target_rate", return_value=rate),
                       patch.object(self.adapter, "establish_target_rate", side_effect=establish)):
                     await self.post("high")
-                self.assertEqual(self.force_rate, 0)
+                self.assertEqual(self.force_rate, rate if loaded else 0)
                 self.assertEqual(main.samplerate.load_sample_rate_policy(), {"mode": "auto", "rate": None})
 
     async def test_queued_src_uses_the_sample_rate_policy_committed_before_admission(self):

@@ -237,7 +237,9 @@ class BluetoothMidStreamFollowTests(unittest.IsolatedAsyncioTestCase):
         monitor._deps.request_native_rate_follow.assert_awaited_once_with("bluetooth-native-rate")
 
     async def test_aligned_graph_never_fires(self):
-        monitor = BluetoothInputMonitor(_bt_monitor_deps(get_pw_dump=self._dump_441))
+        monitor = BluetoothInputMonitor(_bt_monitor_deps(
+            get_pw_dump=self._dump_441,
+            get_samplerate_status=lambda: {"active_rate": 44100, "force_rate": 44100}))
         overview = _bt_streaming_overview()
         await monitor._maybe_follow_native_rate(overview)
         await monitor._maybe_follow_native_rate(overview)
@@ -247,6 +249,30 @@ class BluetoothMidStreamFollowTests(unittest.IsolatedAsyncioTestCase):
         monitor = BluetoothInputMonitor(_bt_monitor_deps(sample_rate_policy_is_auto=lambda: False))
         overview = _bt_streaming_overview()
         await monitor._maybe_follow_native_rate(overview)
+        await monitor._maybe_follow_native_rate(overview)
+        monitor._deps.request_native_rate_follow.assert_not_awaited()
+
+    async def test_unpinned_matching_rate_is_repaired_after_two_ticks(self):
+        monitor = BluetoothInputMonitor(_bt_monitor_deps(get_pw_dump=self._dump_441))
+        overview = _bt_streaming_overview()
+        await monitor._maybe_follow_native_rate(overview)
+        await monitor._maybe_follow_native_rate(overview)
+        monitor._deps.request_native_rate_follow.assert_awaited_once_with("bluetooth-native-rate")
+
+    async def test_ended_session_requests_auto_policy_release(self):
+        monitor = BluetoothInputMonitor(_bt_monitor_deps(
+            get_samplerate_status=lambda: {"active_rate": 48000, "force_rate": 48000}))
+        overview = _bt_streaming_overview()
+        overview["bluetooth"].update(state="idle", source_name=None)
+        await monitor._maybe_follow_native_rate(overview)
+        monitor._deps.request_native_rate_follow.assert_awaited_once_with("bluetooth-session-ended")
+
+    async def test_failed_inventory_does_not_request_session_end(self):
+        monitor = BluetoothInputMonitor(_bt_monitor_deps(
+            get_samplerate_status=lambda: {"active_rate": 48000, "force_rate": 48000}))
+        overview = _bt_streaming_overview()
+        overview["bluetooth"].update(state="idle", source_name=None,
+            notes=["Bluetooth source inventory unavailable: probe failed"])
         await monitor._maybe_follow_native_rate(overview)
         monitor._deps.request_native_rate_follow.assert_not_awaited()
 
@@ -288,12 +314,14 @@ class FollowGuardTests(unittest.IsolatedAsyncioTestCase):
     async def test_aligned_graph_skips_transition(self):
         guards = self._guards()
         patches = self._patch_guards(guards)
-        fake_request = SimpleNamespace(rate_change=False, target_rate=48000)
+        fake_request = SimpleNamespace(rate_change=False, target_rate=48000,
+                                       target_url=None, should_play=False)
         request = AsyncMock(return_value=fake_request)
         transition = AsyncMock()
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
                 patch.object(orchestration.configured(), "sample_rate_policy_request", request), \
-                patch.object(main, "_transition_sample_rate_policy", transition):
+                patch.object(main, "_transition_sample_rate_policy", transition), \
+                patch.object(main.samplerate, "clear_auto_policy_force_rate", return_value=False):
             await main._follow_active_source_native_rate({"mode": "bluetooth-input"},
                                                          reason="test-aligned")
         request.assert_awaited_once()

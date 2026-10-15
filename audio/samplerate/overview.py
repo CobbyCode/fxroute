@@ -1329,7 +1329,8 @@ def get_audio_source_overview() -> dict[str, Any]:
             "connected_device": ((bluetooth_overview.get("receiver_session") or {}).get("device_name")),
             "active_codec": ((bluetooth_overview.get("receiver_session") or {}).get("active_codec")),
             "active_rate": ((bluetooth_overview.get("receiver_session") or {}).get("active_rate")),
-            "notes": list((((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("notes") or [])),
+            "notes": list(bluetooth_overview.get("notes") or []) + list(
+                (((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("notes") or [])),
         },
         "stdin": stdin_status,
         "notes": notes,

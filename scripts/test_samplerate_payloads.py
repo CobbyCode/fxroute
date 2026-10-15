@@ -531,13 +531,13 @@ class SampleRatePolicyTransitionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
-    """An auto policy must not leave a leftover force-rate pin at the graph default.
+    """Auto-policy pins protect active playback and are released only at idle."""
 
-    The live force-rate is the status payload's ``mode`` source (0 -> auto),
-    so a leftover pin after a fixed -> auto restore keeps reporting
-    ``mode=fixed`` while the persisted policy is auto.  Once the sink sits at
-    the graph default under an auto policy, the pin is cleared.
-    """
+    def setUp(self):
+        patcher = patch.object(samplerate.alignment, "get_audio_source_overview",
+                               return_value={"mode": "app-playback"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _status(self, active_rate: int, force_rate: int, default_rate: int = 44100) -> dict:
         return {
@@ -550,14 +550,14 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
             "default_rate": default_rate,
         }
 
-    async def test_clear_helper_writes_zero_for_auto_at_default(self):
+    async def test_clear_helper_keeps_auto_playback_pin_at_default(self):
         written = []
         with patch.object(samplerate.alignment, "set_pipewire_force_rate", side_effect=lambda rate: written.append(rate)), \
              patch.object(samplerate.alignment, "load_sample_rate_policy", return_value={"mode": "auto", "rate": None}):
-            self.assertTrue(
+            self.assertFalse(
                 samplerate.clear_auto_policy_force_rate(44100, status=self._status(44100, 44100))
             )
-        self.assertEqual(written, [0])
+        self.assertEqual(written, [])
 
     async def test_clear_helper_skips_non_default_target(self):
         written = []
@@ -615,6 +615,7 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
                     44100,
                     app_policy={"mode": "auto", "rate": None},
                     status=self._status(44100, 44100),
+                    idle=True,
                 )
             )
         self.assertEqual(written, [0])
@@ -623,10 +624,7 @@ class AutoPolicyForceRateClearTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(samplerate.alignment, "get_samplerate_status", side_effect=RuntimeError("no pipewire")):
             self.assertFalse(samplerate.clear_auto_policy_force_rate(44100))
 
-    async def test_commit_sample_rate_policy_clears_force_for_auto_at_default(self):
-        # The persist stage runs after the guarded commit readback (graph
-        # stable at the target), so clearing the pin there is safe where a
-        # mid-transition clear is not.
+    async def test_idle_policy_commit_requests_pin_release(self):
         from playback.transition import TransitionRequest
         from playback_transition_test_support import make_transition_runtime
 

@@ -470,8 +470,11 @@ class PlaybackOrchestrator:
         )
 
     async def transition_sample_rate_policy(self, policy: Mapping[str, Any], *, detail: str,
-                                          src_mode: str | None = None):
+                                          src_mode: str | None = None,
+                                          skip_if_committed_owner: Callable[[], Awaitable[bool]] | None = None):
         request = await self.sample_rate_policy_request(policy, detail=detail, src_mode=src_mode)
+        if skip_if_committed_owner is not None:
+            request = replace(request, skip_if_committed_owner=skip_if_committed_owner)
         result = await self._deps.run_transition(request)
         if (
             getattr(result, "committed", False)
@@ -493,7 +496,10 @@ class PlaybackOrchestrator:
         selected = overview.get("selected_output") or overview.get("current_output") or {}
         if policy.get("mode") == "fixed" and policy.get("rate") not in (selected.get("supported_rates") or []):
             raise ValueError("Selected output does not support this sample rate")
-        context = await self.current_playback_context()
+        mode = self._read_opt("get_source_mode")
+        # A selected input owns the graph, not a retained/paused app track.
+        context = ({} if mode in {"bluetooth-input", "external-input", "stdin-input"}
+                   else await self.current_playback_context())
         source = str(context.get("source") or "local")
         source_rate = self.coordinator_source_rate(source, context.get("target_track"))
         if source_policy.is_mpv_source(source) and context.get("target_url"):
@@ -515,6 +521,9 @@ class PlaybackOrchestrator:
         if not isinstance(target_rate, int) or target_rate <= 0:
             raise RuntimeError("current hardware sample rate is unavailable")
         rate_change = await asyncio.to_thread(self.coordinator_rate_change, target_rate)
+        if line_native is not None and not rate_change:
+            status = await asyncio.to_thread(self._deps.get_samplerate_status)
+            rate_change = status.get("force_rate") != target_rate
         is_running = getattr(self._deps, "player_is_running", None)
         player_missing = bool(is_running is not None and not is_running())
         return TransitionRequest(

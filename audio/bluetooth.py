@@ -432,6 +432,11 @@ class BluetoothInputMonitor:
             bluetooth = overview.get("bluetooth") or {}
             if bluetooth.get("state") != "streaming":
                 self._reset_native_rate_follow()
+                if (not bluetooth.get("source_name") and not bluetooth.get("notes")
+                        and not overview.get("notes") and self._deps.get_samplerate_status is not None):
+                    status = await asyncio.to_thread(self._deps.get_samplerate_status)
+                    if status.get("force_rate"):
+                        await self._deps.request_native_rate_follow("bluetooth-session-ended")
                 return
             source_name = str(bluetooth.get("source_name") or "").strip()
             if not source_name or self._deps.get_pw_dump is None or self._deps.get_samplerate_status is None:
@@ -447,7 +452,7 @@ class BluetoothInputMonitor:
             if not isinstance(status, dict):
                 self._reset_native_rate_follow()
                 return
-            if status.get("active_rate") == native and status.get("force_rate") in {None, 0, native}:
+            if status.get("active_rate") == native and status.get("force_rate") == native:
                 self._reset_native_rate_follow()
                 return
             signature = (source_name, native, status.get("active_rate"), status.get("force_rate"))

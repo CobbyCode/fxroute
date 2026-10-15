@@ -18,6 +18,7 @@ from .constants import COMMAND_TIMEOUT_SECONDS
 
 from .overview import (
     get_audio_output_overview,
+    get_audio_source_overview,
     get_samplerate_status,
     playback_rate_aligned,
 )
@@ -186,36 +187,39 @@ def clear_auto_policy_force_rate(
     status: Mapping[str, Any] | None = None,
     idle: bool = False,
 ) -> bool:
-    """Clear the live force-rate when an auto policy holds the graph at its default rate.
+    """Release an auto-policy pin only after its source has become idle.
 
-    With an auto policy the force-rate is only needed to pin a target that
-    differs from the graph default.  A leftover pin (e.g. after a
-    fixed -> auto policy restore) otherwise keeps the samplerate status
-    payload reporting ``mode=fixed`` while the persisted policy is auto.
-
-    ``app_policy`` carries the in-flight policy of a policy-change transition
-    (the persisted policy is still the old one at rate-application time); it
-    defaults to the persisted policy.  ``status`` avoids a re-read when the
-    caller already holds a fresh samplerate status (the ``default_rate`` field
-    is stable across the reconciliation, so a pre-write snapshot is safe).
-
-    ``idle`` marks an explicit stop/idle path: there is no active source, so
-    any leftover pin is stale and is cleared regardless of the current rate
-    (the default-rate guard below only applies to live playback, where a
-    non-default pin is what keeps the sink on the source rate).
+    Active playback needs its pin even at the default rate: other graph nodes
+    can negotiate a different clock during a helper rebuild. ``idle`` describes
+    app transport only, so current input sessions must also be checked.
+    ``app_policy`` supplies an in-flight policy; ``status`` avoids a rate read.
     """
     policy = dict(app_policy) if app_policy else load_sample_rate_policy()
-    if policy.get("mode") != "auto":
+    if policy.get("mode") != "auto" or not idle:
+        return False
+    try:
+        source = get_audio_source_overview()
+    except Exception:
+        return False
+    mode = source.get("mode")
+    if mode == "stdin-input":
+        stdin = source.get("stdin") or {}
+        if stdin.get("session_id") or not stdin.get("available"):
+            return False
+    if mode == "bluetooth-input":
+        bluetooth = source.get("bluetooth") or {}
+        if (bluetooth.get("source_name") or not bluetooth.get("selectable")
+                or bluetooth.get("notes") or source.get("notes")):
+            return False
+    if mode == "external-input" and source.get("external_input_state") != "unavailable":
         return False
     if status is None:
         try:
             status = get_samplerate_status()
         except Exception:
             return False
-    if not idle:
-        default_rate = status.get("default_rate")
-        if not isinstance(default_rate, int) or expected_rate != default_rate:
-            return False
+    if status.get("force_rate") == 0:
+        return False
     try:
         set_pipewire_force_rate(0)
     except Exception as exc:
@@ -225,7 +229,7 @@ def clear_auto_policy_force_rate(
         )
         return False
     logger.info(
-        "Auto-policy force-rate cleared at default rate=%s (expected=%s idle=%s)",
+        "Idle auto-policy force-rate cleared: default_rate=%s expected=%s idle=%s",
         status.get("default_rate"), expected_rate, idle,
     )
     return True
@@ -557,4 +561,3 @@ async def reconcile_transition_sink_rate(
     except Exception:
         status = {}
     return bool(playback_rate_aligned(status, target_rate))
-
