@@ -383,6 +383,36 @@ class HardwareTierTests(unittest.TestCase):
         self.assertEqual((self.channels, self.rate, self.volume, self.mute), (18, 48000, 23, True))
         self.assertFalse(change.rule_path.exists())
 
+    def test_rollback_reprobes_the_old_tier_after_a_stalled_release(self):
+        # .104, 2026-10-15: PipeWire stopped answering for ~40 s after the
+        # WirePlumber restart; the reprobe ran out of time and the rollback
+        # failed on its first command, leaving the 14ch rule in place.
+        change = self.change()
+        change.capture()
+        with patch("audio.channel_tiers.time.sleep", return_value=None):
+            change.apply()
+        real_run = self.run_command
+        stalled = []
+
+        def stalling(command):
+            if command[:2] == ["pactl", "set-card-profile"] and command[-1] == "off" and not stalled:
+                stalled.append(command)
+                raise RuntimeError("Command timed out: " + " ".join(command))
+            if command == ["systemctl", "--user", "restart", "wireplumber.service"]:
+                self.profile = "off"  # Restarting WirePlumber tears the card down.
+            return real_run(command)
+
+        change.run = stalling
+        with patch("audio.channel_tiers.time.sleep", return_value=None), \
+                self.assertLogs("audio.channel_tiers", level="WARNING"):
+            change.rollback()
+        self.assertTrue(stalled)
+        from audio.samplerate.persistence import _load_audio_output_selection
+        self.assertEqual(_load_audio_output_selection()["selected_key"], self.old_key)
+        self.assertEqual((self.key, self.channels, self.volume, self.mute), (self.old_key, 18, 23, True))
+        self.assertEqual(self.profile, "output:multichannel-output+input:multichannel-input")
+        self.assertFalse(change.rule_path.exists())
+
     async def _monitor_during_reprobe(self, *, rollback=False, pending_read=False, failed_apply=False):
         change = self.change()
         change.capture()

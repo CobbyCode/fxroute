@@ -281,7 +281,14 @@ class ChannelTierChange:
             return
         try:
             with pause_volume_read_monitor():
-                self._release_and_pin(self.old_rate)
+                try:
+                    self._release_and_pin(self.old_rate)
+                except RuntimeError as exc:
+                    # A PipeWire that stalled during the failed reprobe times
+                    # out here as well. The WirePlumber restart below releases
+                    # the card anyway, the reprobe loop waits out the stall,
+                    # and the Coordinator pins the old rate after it.
+                    logger.warning("Channel-tier rollback release failed; reprobing the old tier: %s", exc)
                 self._write_rule(self.old_rule)
                 self._reopen(self.old_key, self.old_profile, self.old_channels)
                 if self.old_source_selection is not None:
