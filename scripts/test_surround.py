@@ -3,6 +3,8 @@
 """Position routing, separate LFE, shared subs and lossless Surround migration."""
 
 import copy
+import json
+import struct
 import sys
 import unittest
 from pathlib import Path
@@ -10,15 +12,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.filter_banks import bank_catalog, bank_definitions, selected_bank
-from audio.output_state import (default_output_state, select_bank, set_bank_preset, set_bass_management,
-                                set_crossover, set_mode_routing, switch_mode, validate_output_state)
+from audio.output_state import (default_output_state, referenced_presets, release_bank_preset, select_bank,
+                                set_bank_preset, set_bass_management, set_crossover, set_mode_routing,
+                                switch_mode, validate_output_state)
 from audio.output_state_migration import upgrade_output_state
 from audio.output_topology import derive_topology, roles_for_mode
 from audio.output_service import OutputService, OutputServiceDeps
 from dsp.native_config import layout_from_plan
 from dsp.processing_plan import FOLD_GAIN, compile_processing_plan, rendered_crossover_filters
-from dsp.manager import DSPManager
+from dsp.manager import DSPManager, build_wav_bytes
 from dsp.runtime import DSPRuntimeConfig
+from dsp.surround_global import neutral_selection
 import tempfile
 
 
@@ -267,8 +271,9 @@ class SurroundTests(unittest.TestCase):
         self.assertEqual(selected_bank(gone, QUAD_SUBS, "surround"), "all")
         selected = select_bank(state, "surround", "A", 16, "global")
         self.assertEqual(selected["modes"]["surround"]["selected_bank"], "global")
-        assigned = set_bank_preset(selected, "surround", "global", preset="Room")
-        self.assertEqual(assigned["modes"]["surround"]["banks"]["global"]["preset"], "Room")
+        assigned = set_bank_preset(selected, "surround", "global", preset="Room", group="rear")
+        self.assertEqual(assigned["modes"]["surround"]["banks"]["global"]["preset"],
+                         {**neutral_selection(), "rear": "Room"})
         # Other banks stay untouched by a Global assignment.
         self.assertEqual(assigned["modes"]["surround"]["banks"]["main_l"]["preset"], "Neutral")
         self.assertEqual(select_bank(state, "surround", "A", 16, "main")["modes"]["surround"]["selected_bank"], "main")
@@ -279,20 +284,36 @@ class SurroundTests(unittest.TestCase):
         rerouted = set_mode_routing(selected, "surround", "A", ROLES)
         self.assertEqual(rerouted["modes"]["surround"]["selected_bank"], "global")
 
-    def test_surround_global_without_surround_layout_renders_neutral(self):
+    def test_surround_global_slots_are_group_selections(self):
         state = self.state(QUAD_SUBS)
-        state["modes"]["surround"]["banks"]["global"] = {"preset": "Room", "preset_a": "Room", "preset_b": None}
-        state = validate_output_state(state)
-        loaded = []
+        self.assertEqual(state["modes"]["surround"]["banks"]["global"],
+                         {"preset": neutral_selection(), "preset_a": neutral_selection(), "preset_b": None})
+        self.assertEqual(state["modes"]["stereo"]["banks"]["global"]["preset"], "Neutral")
+        for slot in ("Room", "Neutral", {"front": "Room"}, {**neutral_selection(), "front": "Direct"}):
+            broken = copy.deepcopy(state)
+            broken["modes"]["surround"]["banks"]["global"] = {"preset": slot, "preset_a": slot, "preset_b": None}
+            with self.subTest(slot=slot), self.assertRaises(ValueError):
+                validate_output_state(broken)
+        broken = copy.deepcopy(state)
+        broken["modes"]["stereo"]["banks"]["global"] = {"preset": neutral_selection(),
+                                                        "preset_a": neutral_selection(), "preset_b": None}
+        with self.assertRaisesRegex(ValueError, "Only Surround Global"):
+            validate_output_state(broken)
 
-        def loader(_mode, _bank, name):
-            loaded.append(name)
-            return {"chain": [{"type": "equalizer", "params": {}}] if name == "Room" else [], "metadata": {}}
-
-        with self.assertLogs("dsp.processing_plan", level="WARNING"):
-            plan = compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000, preset_loader=loader)
-        self.assertEqual((plan["global"]["preset"], plan["global"]["chain"]), ("Neutral", []))
-        self.assertFalse(plan["global"]["bypass"])
+    def test_version_six_surround_global_slots_become_group_selections(self):
+        state = self.state(QUAD_SUBS)
+        state["version"] = 6
+        state["modes"]["surround"]["banks"]["global"] = {"preset": "Rear FIR", "preset_a": "Rear FIR",
+                                                         "preset_b": "Neutral"}
+        upgraded = upgrade_output_state(state)
+        self.assertEqual(upgraded["version"], 7)
+        # A named preset has no known group: it starts without filters, and a B equal to A is cleared.
+        self.assertEqual(upgraded["modes"]["surround"]["banks"]["global"],
+                         {"preset": neutral_selection(), "preset_a": neutral_selection(), "preset_b": None})
+        state["modes"]["surround"]["banks"]["global"] = {"preset": "Direct", "preset_a": "Room", "preset_b": "Direct"}
+        self.assertEqual(upgrade_output_state(state)["modes"]["surround"]["banks"]["global"],
+                         {"preset": "Direct", "preset_a": neutral_selection(), "preset_b": "Direct"})
+        self.assertEqual(upgraded["modes"]["stereo"], state["modes"]["stereo"])
 
     def test_side_and_rear_banks_project_dual_peq_to_correct_side(self):
         state = self.state()
@@ -305,90 +326,151 @@ class SurroundTests(unittest.TestCase):
         self.assertEqual(layout["side_r"]["gain_db"], -3)
 
 
-def eq_plugin(group, identifier, **extra):
-    band = {"enabled": True, "filterType": "bell", "frequencyHz": 100.0, "gainDb": -3.0, "q": 2.0, "delayMs": 0.0}
+def eq_plugin(group, identifier, gain_db=-3.0, **extra):
+    band = {"enabled": True, "filterType": "bell", "frequencyHz": 100.0, "gainDb": gain_db, "q": 2.0, "delayMs": 0.0}
     return {"id": identifier, "type": "equalizer", "enabled": True, "group": group,
             "params": {"channelMode": "stereo-linked", "eqMode": "IIR", "bands": [band]}, **extra}
 
 
+def group_preset(group, gain_db=-3.0):
+    return {"chain": [eq_plugin(group, "equalizer#0", gain_db)], "metadata": {"layout": "surround"}}
+
+
+def selection(**groups):
+    return {**neutral_selection(), **groups}
+
+
 class SurroundGlobalPresetTests(unittest.TestCase):
-    """Surround Global: one preset, plugins scoped to speaker groups."""
+    """Surround Global: each A/B slot selects one preset per speaker group."""
 
     ALL_GROUPS = ["front", "center", "side", "rear"]
+    EVERY_GROUP = {group: f"EQ {group}" for group in ALL_GROUPS}
 
-    def state(self, roles, preset="Room"):
+    def state(self, roles, slot=None):
         state = switch_mode(set_mode_routing(default_output_state(), "surround", "A", roles), "surround")
-        state["modes"]["surround"]["banks"]["global"] = {"preset": preset, "preset_a": preset, "preset_b": None}
+        slot = slot or selection(**self.EVERY_GROUP)
+        state["modes"]["surround"]["banks"]["global"] = {"preset": slot, "preset_a": slot, "preset_b": None}
         return validate_output_state(state)
 
-    def preset(self, groups=None):
-        chain = [eq_plugin(group, f"equalizer#{index}") for index, group in enumerate(groups or self.ALL_GROUPS)]
-        return {"chain": chain, "metadata": {"layout": "surround", "bank": "global"}}
+    def presets(self, **extra):
+        return {**{f"EQ {group}": group_preset(group) for group in self.ALL_GROUPS}, **extra}
 
-    def plan(self, state, preset=None):
-        payload = preset or self.preset()
+    def plan(self, state, presets=None):
+        payloads = presets or self.presets()
         return compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
-                                       preset_loader=lambda _mode, _bank, name: payload if name == "Room" else {"chain": [], "metadata": {}})
+                                       preset_loader=lambda _mode, _bank, name: payloads.get(name, {"chain": [], "metadata": {}}))
 
-    def test_plan_keeps_only_groups_with_a_routed_speaker(self):
+    def test_plan_runs_the_selected_preset_of_every_routed_group(self):
         plan = self.plan(self.state(QUAD_SUBS))
         self.assertEqual([plugin["group"] for plugin in plan["global"]["chain"]], ["front", "rear"])
-        self.assertEqual(plan["global"]["preset"], "Room")
+        self.assertEqual(plan["global"]["preset"], selection(**self.EVERY_GROUP))
         self.assertEqual(plan["global"]["extras"], {})
         everything = self.plan(self.state(ROLES))
-        self.assertEqual([plugin["group"] for plugin in everything["global"]["chain"]], self.ALL_GROUPS)
+        # Each group's preset numbers its plugins from zero; the chain renumbers them.
+        self.assertEqual([(plugin["group"], plugin["id"]) for plugin in everything["global"]["chain"]],
+                         [(group, f"equalizer#{index}") for index, group in enumerate(self.ALL_GROUPS)])
+        nothing = self.plan(self.state(ROLES, neutral_selection()))
+        self.assertEqual((nothing["global"]["chain"], nothing["global"]["bypass"]), ([], False))
 
-    def test_global_compare_switches_every_group_without_changing_area_banks(self):
-        state = set_bank_preset(self.state(ROLES), "surround", "global", preset_b="Room B")
+    def test_group_assignment_replaces_only_its_group_in_the_slot(self):
+        state = self.state(QUAD_SUBS, selection(front="EQ front"))
+        state = set_bank_preset(state, "surround", "global", preset="EQ rear", group="rear")
+        bank = state["modes"]["surround"]["banks"]["global"]
+        self.assertEqual(bank["preset_a"], selection(front="EQ front", rear="EQ rear"))
+        self.assertEqual(bank["preset"], bank["preset_a"])
+        # An unassigned B starts from A; A and B must still differ.
+        state = set_bank_preset(state, "surround", "global", preset_b="EQ rear B", group="rear")
+        with self.assertRaisesRegex(ValueError, "differ in at least one speaker group"):
+            set_bank_preset(state, "surround", "global", preset_b="EQ rear", group="rear")
+        # Editing the listened A keeps listening to it.
+        state = set_bank_preset(state, "surround", "global", preset_a="Neutral", group="front")
+        bank = state["modes"]["surround"]["banks"]["global"]
+        self.assertEqual(bank["preset_b"], selection(front="EQ front", rear="EQ rear B"))
+        self.assertEqual(bank["preset"], selection(rear="EQ rear"))
+        self.assertEqual(bank["preset"], bank["preset_a"])
+        with self.assertRaisesRegex(ValueError, "name the group"):
+            set_bank_preset(state, "surround", "global", preset="EQ rear")
+        with self.assertRaisesRegex(ValueError, "Surround Global bank only"):
+            set_bank_preset(state, "surround", "main", preset="Room", group="front")
+        # Direct replaces the whole selection; a group pick starts a fresh one.
+        direct = set_bank_preset(state, "surround", "global", preset_b="Direct", group="rear")
+        self.assertEqual(direct["modes"]["surround"]["banks"]["global"]["preset_b"], "Direct")
+        picked = set_bank_preset(direct, "surround", "global", preset_b="EQ front", group="front")
+        self.assertEqual(picked["modes"]["surround"]["banks"]["global"]["preset_b"], selection(front="EQ front"))
+
+    def test_global_compare_switches_the_whole_selection_without_changing_area_banks(self):
+        state = self.state(ROLES, selection(front="EQ front", rear="EQ rear"))
+        state = set_bank_preset(state, "surround", "global", preset_b="EQ rear B", group="rear")
         before = copy.deepcopy(state)
+        presets = self.presets(**{"EQ rear B": group_preset("rear", -6.0)})
+        gains = lambda plan: [(plugin["group"], plugin["params"]["bands"][0]["gainDb"]) for plugin in plan["global"]["chain"]]
+        self.assertEqual(gains(self.plan(state, presets)), [("front", -3.0), ("rear", -3.0)])
         switched = set_bank_preset(state, "surround", "global", active_side="B")
-        payload_b = self.preset()
-        for plugin in payload_b["chain"]:
-            plugin["params"]["bands"][0]["gainDb"] = -6.0
-        plan = compile_processing_plan(switched, output_key="A", channels=16, sample_rate_hz=48000,
-                                       preset_loader=lambda _mode, _bank, name: payload_b if name == "Room B" else {"chain": []})
-        self.assertEqual(plan["global"]["preset"], "Room B")
-        self.assertEqual([plugin["group"] for plugin in plan["global"]["chain"]], ["front", "center", "side", "rear"])
-        self.assertTrue(all(plugin["params"]["bands"][0]["gainDb"] == -6.0 for plugin in plan["global"]["chain"]))
-        self.assertEqual([output["role"] for output in plan["outputs"]], ROLES)
+        self.assertEqual(gains(self.plan(switched, presets)), [("front", -3.0), ("rear", -6.0)])
         for role in ROLES:
             self.assertEqual(switched["modes"]["surround"]["banks"][role], before["modes"]["surround"]["banks"][role])
         self.assertEqual(switched["modes"]["stereo"], before["modes"]["stereo"])
+
+    def test_deleting_a_preset_releases_only_its_group(self):
+        state = self.state(QUAD_SUBS, selection(front="EQ front", rear="EQ rear"))
+        state = set_bank_preset(state, "surround", "global", preset_b="EQ rear B", group="rear")
+        state = set_bank_preset(state, "surround", "global", active_side="B")
+        self.assertEqual(referenced_presets(state, "surround", "global"), {"EQ front", "EQ rear", "EQ rear B", "Neutral"})
+        released, changes = release_bank_preset(state, "surround", "global", "EQ front")
+        bank = released["modes"]["surround"]["banks"]["global"]
+        self.assertEqual((bank["preset_a"], bank["preset_b"]), (selection(rear="EQ rear"), selection(rear="EQ rear B")))
+        self.assertEqual(bank["preset"], bank["preset_b"])
+        self.assertEqual(len(changes), 1)
+        # The group falls back to Neutral; B keeps its other groups and stays listened.
+        released, _ = release_bank_preset(released, "surround", "global", "EQ rear B")
+        bank = released["modes"]["surround"]["banks"]["global"]
+        self.assertEqual((bank["preset_b"], bank["preset"]), (neutral_selection(), neutral_selection()))
+        # A B left equal to A is cleared and the bank falls back to A.
+        state = self.state(QUAD_SUBS, selection(rear="EQ rear"))
+        state = set_bank_preset(state, "surround", "global", preset_b="EQ front", group="front", active_side="B")
+        released, _ = release_bank_preset(state, "surround", "global", "EQ front")
+        self.assertEqual(released["modes"]["surround"]["banks"]["global"],
+                         {"preset": selection(rear="EQ rear"), "preset_a": selection(rear="EQ rear"), "preset_b": None})
 
     def test_crossover_ways_count_as_the_front_group(self):
         state = set_crossover(self.state(QUAD_SUBS), "surround", True)
         state = set_mode_routing(state, "surround", "A",
                                  ["left_low", "left_high", "right_low", "right_high", *QUAD_SUBS[2:]])
-        state["modes"]["surround"]["banks"]["global"] = {"preset": "Room", "preset_a": "Room", "preset_b": None}
         plan = self.plan(validate_output_state(state))
         self.assertEqual([plugin["group"] for plugin in plan["global"]["chain"]], ["front", "rear"])
 
     def test_direct_bypasses_and_changes_with_the_routed_speakers(self):
-        direct = self.plan(self.state(QUAD_SUBS, preset="Direct"))
+        direct = self.plan(self.state(QUAD_SUBS, "Direct"))
         self.assertEqual((direct["global"]["bypass"], direct["global"]["chain"]), (True, []))
         before = self.plan(self.state(QUAD_SUBS))
         after = self.plan(self.state(ROLES))
         self.assertNotEqual(before["global"]["chain"], after["global"]["chain"])
 
     def test_surround_chain_must_be_tagged_peq_or_convolver(self):
-        state = self.state(QUAD_SUBS)
+        state = self.state(QUAD_SUBS, selection(front="Bad"))
         untagged = {"chain": [{k: v for k, v in eq_plugin("front", "equalizer#0").items() if k != "group"}],
                     "metadata": {"layout": "surround"}}
         with self.assertRaisesRegex(ValueError, "needs a speaker group"):
-            self.plan(state, untagged)
+            self.plan(state, {"Bad": untagged})
         limiter = {"chain": [{"id": "limiter#0", "type": "limiter", "enabled": True, "group": "front", "params": {}}],
                    "metadata": {"layout": "surround"}}
         with self.assertRaisesRegex(ValueError, "only PEQ and convolver"):
-            self.plan(state, limiter)
+            self.plan(state, {"Bad": limiter})
         delayed = eq_plugin("front", "equalizer#0")
         delayed["params"]["bands"].append({"enabled": True, "filterType": "delay", "delayMs": 1.0})
         with self.assertRaisesRegex(ValueError, "delay band"):
-            self.plan(state, {"chain": [delayed], "metadata": {"layout": "surround"}})
+            self.plan(state, {"Bad": {"chain": [delayed], "metadata": {"layout": "surround"}}})
+        mixed = {"chain": [eq_plugin("front", "equalizer#0"), eq_plugin("rear", "equalizer#1")],
+                 "metadata": {"layout": "surround"}}
+        with self.assertRaisesRegex(ValueError, "mixes speaker groups"):
+            self.plan(state, {"Bad": mixed})
+        with self.assertRaisesRegex(ValueError, "holds rear filters, not front filters"):
+            self.plan(state, {"Bad": group_preset("rear")})
 
     def manager(self, directory):
         return DSPManager(Path(directory) / "presets", Path(directory) / "irs")
 
-    def test_global_slot_accepts_only_presets_of_its_own_mode(self):
+    def test_global_slot_accepts_only_presets_of_its_own_mode_and_group(self):
         # Surround Global holds speaker-group presets, the other modes stereo
         # ones; each mode's Global bank lists and accepts only its own.
         with tempfile.TemporaryDirectory() as directory:
@@ -399,39 +481,69 @@ class SurroundGlobalPresetTests(unittest.TestCase):
                                                       resolve_ir=lambda *_: {}, measurement_active=lambda: False))
             surround, stereo = self.state(QUAD_SUBS), validate_output_state(default_output_state())
             for name in ("Front EQ", "Neutral", "Direct"):
-                service.validate_bank_preset(surround, "surround", "global", name)
+                service.validate_bank_preset(surround, "surround", "global", name, group="front")
+            with self.assertRaisesRegex(ValueError, "holds front filters, not rear filters"):
+                service.validate_bank_preset(surround, "surround", "global", "Front EQ", group="rear")
             with self.assertRaises(FileNotFoundError):
-                service.validate_bank_preset(surround, "surround", "global", "Room")
+                service.validate_bank_preset(surround, "surround", "global", "Room", group="front")
             for name in ("Room", "Neutral", "Direct"):
                 service.validate_bank_preset(stereo, "stereo", "global", name)
             with self.assertRaises(FileNotFoundError):
                 service.validate_bank_preset(stereo, "stereo", "global", "Front EQ")
+            listed = {entry["name"]: entry["group"] for entry in manager.list_presets()}
+            self.assertEqual((listed["Front EQ"], listed["Room"], listed["Neutral"]), ("front", None, None))
 
     def peq(self):
         band = {"enabled": True, "filterType": "bell", "frequencyHz": 120.0, "gainDb": -4.0, "q": 3.0}
         return {"enabled": True, "params": {"channelMode": "stereo-linked", "eqMode": "IIR", "bands": [band]}}
 
-    def test_engine_text_runs_tagged_plugins_on_their_effect_pairs_only(self):
+    def engine_lines(self, manager, state):
+        plan = compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
+                                       preset_loader=manager.read_preset)
+        layout = layout_from_plan(plan, resolve_ir=lambda *_: {})
+        text = manager.compile_engine_text(layout, preset_name=plan["global"]["preset"], mode=plan["mode"])
+        return [Path(json.loads(line[len("param path "):])).name if line.startswith("param path") else line
+                for line in text.splitlines() if line.startswith(("stage_begin", "pairs", "param path"))]
+
+    def test_engine_text_runs_each_group_preset_on_its_effect_pairs_only(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(directory)
-            for group in ("front", "center", "rear", "side"):
+            for group in self.ALL_GROUPS:
                 manager.create_peq_preset(f"EQ {group}", self.peq(), bank="global", mode="surround", group=group)
-            manager.combine_presets("Room", ["EQ front", "EQ center", "EQ side", "EQ rear"],
-                                    bank="global", mode="surround")
-            self.assertEqual(manager.library("global", "surround").read("Room")["metadata"]["layout"], "surround")
-            state = self.state(QUAD_SUBS)
-            plan = compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
-                                           preset_loader=manager.read_preset)
-            layout = layout_from_plan(plan, resolve_ir=lambda *_: {})
-            text = manager.compile_engine_text(layout, preset_name=plan["global"]["preset"], mode=plan["mode"])
-        stages = [line for line in text.splitlines() if line.startswith(("stage_begin", "pairs"))]
+            stages = [line for line in self.engine_lines(manager, self.state(QUAD_SUBS))
+                      if line.startswith(("stage_begin", "pairs"))]
         # Center and Side have no routed speaker in QUAD_SUBS, so only Front (1) and Rear (16) render.
         eq = "lv2 http://lsp-plug.in/plugins/lv2/para_equalizer_x32_lr"
         # The global helpers (default limiter) stay untagged and run on every pair.
         self.assertEqual(stages[:4], [f"stage_begin 0 equalizer#0 {eq}", "pairs 1",
-                                      f"stage_begin 1 equalizer#3 {eq}", "pairs 16"])
+                                      f"stage_begin 1 equalizer#1 {eq}", "pairs 16"])
         self.assertEqual([line for line in stages[4:] if line.startswith("pairs")], [])
         self.assertEqual(len(stages), 5)
+
+    def ir(self, path, channels=2):
+        frames = [1.0] + [0.0] * 63
+        data = b"".join(struct.pack("<f", value) * channels for value in frames)
+        path.write_bytes(build_wav_bytes(channels=channels, rate=48000, bits=32, format_tag=3, data=data))
+        return path
+
+    def test_front_and_rear_convolvers_run_together_and_switch_as_one_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(directory)
+            source = self.ir(Path(directory) / "ir.wav")
+            for name, group in (("Front FIR", "front"), ("Rear FIR", "rear"), ("Rear FIR B", "rear")):
+                manager.create_convolver_preset_with_upload(name, source, "ir.wav", bank="global",
+                                                            mode="surround", group=group)
+            state = self.state(QUAD_SUBS, selection(front="Front FIR", rear="Rear FIR"))
+            state = set_bank_preset(state, "surround", "global", preset_b="Rear FIR B", group="rear")
+            # Slot A: both groups' convolvers at once, each on its own effect pairs.
+            self.assertEqual(self.engine_lines(manager, state)[:6], [
+                "stage_begin 0 convolver#0 native convolver", "pairs 1", "Front FIR.wav",
+                "stage_begin 1 convolver#1 native convolver", "pairs 16", "Rear FIR.wav"])
+            # A/B switches the whole selection: B keeps Front and changes Rear.
+            switched = set_bank_preset(state, "surround", "global", active_side="B")
+            self.assertEqual(self.engine_lines(manager, switched)[:6], [
+                "stage_begin 0 convolver#0 native convolver", "pairs 1", "Front FIR.wav",
+                "stage_begin 1 convolver#1 native convolver", "pairs 16", "Rear FIR B.wav"])
 
     def test_group_tag_is_only_valid_on_the_surround_global_bank_and_known_groups(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -451,26 +563,31 @@ class SurroundGlobalPresetTests(unittest.TestCase):
             manager = self.manager(directory)
             manager.create_peq_preset("Stereo EQ", self.peq(), bank="global")
             manager.create_peq_preset("Front EQ", self.peq(), bank="global", mode="surround", group="front")
+            manager.create_peq_preset("Front EQ 2", self.peq(), bank="global", mode="surround", group="front")
             manager.create_peq_preset("Rear EQ", self.peq(), bank="global", mode="surround", group="rear")
             # The same name may exist in both banks, each with its own layout.
             manager.create_peq_preset("Front EQ", self.peq(), bank="global")
             self.assertIsNone(manager.library("global", "stereo").read("Front EQ")["metadata"].get("layout"))
             self.assertEqual(manager.library("global", "surround").read("Front EQ")["metadata"]["layout"], "surround")
-            # Combine reads its sources from the bank it writes to.
+            # Combine reads its sources from the bank it writes to, within one speaker group.
             with self.assertRaises(FileNotFoundError):
                 manager.combine_presets("Mixed", ["Stereo EQ", "Rear EQ"], bank="global", mode="surround")
-            combined = manager.combine_presets("Both", ["Front EQ", "Rear EQ"], bank="global", mode="surround")
-            chain = manager.library("global", "surround").read("Both")["chain"]
-            self.assertEqual([plugin["group"] for plugin in chain], ["front", "rear"])
+            with self.assertRaisesRegex(ValueError, "mixes speaker groups"):
+                manager.combine_presets("Both", ["Front EQ", "Rear EQ"], bank="global", mode="surround")
+            combined = manager.combine_presets("Fronts", ["Front EQ", "Front EQ 2"], bank="global", mode="surround")
+            chain = manager.library("global", "surround").read("Fronts")["chain"]
+            self.assertEqual([plugin["group"] for plugin in chain], ["front", "front"])
             self.assertEqual(combined["plugin_count"], 2)
 
     def test_surround_preset_cannot_drive_a_stereo_graph(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = self.manager(directory)
             manager.create_peq_preset("Front EQ", self.peq(), bank="global", mode="surround", group="front")
+            stereo = [{"name": "left", "source": 0}, {"name": "right", "source": 1}]
+            with self.assertRaisesRegex(ValueError, "select it per group"):
+                manager.compile_engine_text(stereo, preset_name="Front EQ", mode="surround")
             with self.assertRaisesRegex(ValueError, "needs the Surround output mode"):
-                manager.compile_engine_text([{"name": "left", "source": 0}, {"name": "right", "source": 1}],
-                                            preset_name="Front EQ", mode="surround")
+                manager.compile_engine_text(stereo, preset_name=selection(front="Front EQ"), mode="surround")
 
     def test_store_refuses_group_tags_without_the_surround_layout(self):
         with tempfile.TemporaryDirectory() as directory:

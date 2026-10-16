@@ -201,6 +201,8 @@
         if (!measurement || measurement[field] === group) return;
         measurement[field] = group;
         renderEffectsBankSelector();
+        // Surround Global deletes the listened preset of the selected group.
+        syncEffectsDeleteButton();
     }
 
     function syncBankActionButtons() {
@@ -451,14 +453,17 @@
         effectsCompareLoadInFlight = !!isBusy;
         const compare = getEffectsCompareState();
         const busy = effectsCompareLoadInFlight || !!deps.getState().outputSystem?.busy;
-        if (deps.getElements().effectsCompareA) deps.getElements().effectsCompareA.disabled = busy || !!compare.aggregate;
-        if (deps.getElements().effectsCompareB) deps.getElements().effectsCompareB.disabled = busy || !!compare.aggregate;
-        // All Banks lists the bank presets of each slot in place of the picker.
+        // All Banks lists the bank presets of each slot in place of the picker;
+        // Surround Global lists one picker per speaker group instead.
+        const slotRows = !!compare.aggregate || !!compare.groupSlots;
+        if (deps.getElements().effectsCompareA) deps.getElements().effectsCompareA.disabled = busy || slotRows;
+        if (deps.getElements().effectsCompareB) deps.getElements().effectsCompareB.disabled = busy || slotRows;
         [deps.getElements().effectsCompareA, deps.getElements().effectsCompareB].forEach(select => {
-            select?.closest?.('.select-tooltip-wrap')?.classList.toggle('hidden', !!compare.aggregate);
+            select?.closest?.('.select-tooltip-wrap')?.classList.toggle('hidden', slotRows);
         });
         [deps.getElements().effectsCompareABanks, deps.getElements().effectsCompareBBanks].forEach(list => {
-            list?.classList?.toggle('hidden', !compare.aggregate);
+            list?.classList?.toggle('hidden', !slotRows);
+            list?.querySelectorAll?.('select').forEach(select => { select.disabled = busy; });
         });
         const unavailable = !!deps.getState().outputSystem?.catalog && !(compare.effectiveActiveSide === 'A' ? compare.canB : compare.canA);
         if (deps.getElements().effectsCompareToggle) {
@@ -539,6 +544,67 @@
         });
     }
 
+    // Surround Global rows (null elsewhere): per routed speaker group, the
+    // preset each slot selects and the presets of that group.
+    function globalGroupRows() {
+        const catalog = deps.getState().outputSystem?.catalog;
+        const mod = outputState();
+        if (!catalog || typeof mod?.globalGroupSlots !== 'function') return null;
+        return mod.globalGroupSlots(catalog, visiblePresetEntriesForBank());
+    }
+
+    function groupSlotOptions(row, slot) {
+        const selected = slot === 'A' ? row.presetA : row.presetB;
+        const option = (value, label) => `<option value="${deps.escapeHtml(value)}"${value === selected ? ' selected' : ''}>`
+            + `${deps.escapeHtml(label)}</option>`;
+        // Generated names differ at their end, so a long one keeps its last
+        // word; the picker tooltip names the selected preset in full.
+        const compact = name => outputState().compactPresetName(name, 28);
+        // An unassigned B starts from A; "No preset B" clears B for every group.
+        return (slot === 'B' ? option('', 'No preset B') : '') + option('Neutral', 'Neutral')
+            + row.options.map(name => option(name, compact(name))).join('') + option('Direct', 'Direct · all groups');
+    }
+
+    // Surround Global slots: one preset picker per speaker group in A and B.
+    // A/B switches the whole selection; every listed group plays at once.
+    function renderGlobalGroupSlots(rows) {
+        [['A', deps.getElements().effectsCompareABanks], ['B', deps.getElements().effectsCompareBBanks]].forEach(([slot, target]) => {
+            if (!target) return;
+            const html = rows.map((row) => {
+                const preset = slot === 'A' ? row.presetA : row.presetB;
+                const tooltip = `Preset ${slot} · ${row.label}: ${preset || 'no preset B'}`;
+                return `<li class="effects-compare-slot-bank effects-compare-slot-group" data-group="${row.group}">`
+                    + `<label class="effects-compare-slot-bank-key" for="effects-compare-${slot.toLowerCase()}-${row.group}">${deps.escapeHtml(row.label)}</label>`
+                    + `<select id="effects-compare-${slot.toLowerCase()}-${row.group}" class="url-input compare-select compare-group-select"`
+                    + ` data-slot="${slot}" data-group="${row.group}" data-tooltip="${deps.escapeHtml(tooltip)}">`
+                    + `${groupSlotOptions(row, slot)}</select></li>`;
+            }).join('') || '<li class="effects-compare-slot-bank is-fixed">No speaker groups</li>';
+            // Rebuilding an open <select> on every push would close it.
+            if (target.innerHTML !== html) target.innerHTML = html;
+        });
+    }
+
+    async function handleGlobalGroupChange(select) {
+        if (effectsCompareLoadInFlight) return;
+        const catalog = deps.getState().outputSystem?.catalog;
+        const current = getEffectsCompareState();
+        if (!catalog || !current.groupSlots) return;
+        const { slot, group } = select.dataset;
+        const fields = { mode: catalog.active_mode, bank_id: 'global' };
+        if (slot === 'B' && !select.value) {
+            fields.preset_b = null;
+            if (current.effectiveActiveSide === 'B') fields.active_side = 'A';
+        } else {
+            Object.assign(fields, { [slot === 'A' ? 'preset_a' : 'preset_b']: select.value, group });
+            if (!current.effectiveActiveSide) fields.active_side = slot;
+        }
+        try {
+            await deps.applyMutation('set_bank_preset', fields, false);
+        } finally {
+            renderEffectsCompare();
+        }
+    }
+
     function renderEffectsCompare() {
         const fx = deps.getState().dsp;
         const presetEntries = fx.presets || [];
@@ -546,7 +612,7 @@
         const presets = visibleEntries.map(p => p.name);
         // The selected bank's entries: another bank may hold a preset of the same name.
         const presetMap = new Map(visibleEntries.map(preset => [preset.name, preset]));
-        const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate, canA, canB } = getEffectsCompareState();
+        const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate, groupSlots, canA, canB } = getEffectsCompareState();
 
         if (!deps.getElements().effectsCompareRow) return;
         renderEffectsBankPresets();
@@ -606,6 +672,14 @@
             if (deps.getElements().effectsCompareActive) deps.getElements().effectsCompareActive.textContent = effectiveActiveSide
                 ? `Listening: ${effectiveActiveSide} · All Banks` : 'Listening: Mixed A/B';
             renderAllBanksSlots(effectiveActiveSide);
+        } else if (groupSlots) {
+            // Surround Global: the slots list each group's preset; the chain names
+            // the groups the listened selection filters.
+            if (deps.getElements().effectsCompareActive) deps.getElements().effectsCompareActive.textContent = effectiveActiveSide
+                ? `Listening: ${effectiveActiveSide}` : `Listening: ${activePreset || '—'}`;
+            if (deps.getElements().effectsCompareChain) deps.getElements().effectsCompareChain.textContent = activePreset === 'Direct'
+                ? 'Filters: bypassed (Direct)' : activePreset && activePreset !== 'Neutral' ? `Filters: ${activePreset}` : 'Filters: none';
+            renderGlobalGroupSlots(globalGroupRows() || []);
         }
         if (deps.getElements().effectsCompareToggle) deps.getElements().effectsCompareToggle.textContent = 'Compare A/B';
         syncEffectsDeleteButton();
@@ -616,7 +690,7 @@
         }
         document.querySelectorAll('.effects-compare-slot').forEach((slotEl) => {
             const slot = slotEl.dataset.compareSlot;
-            const slotAvailable = aggregate ? !!(slot === 'A' ? canA : canB) : !!(slot === 'A' ? presetA : presetB);
+            const slotAvailable = aggregate || groupSlots ? !!(slot === 'A' ? canA : canB) : !!(slot === 'A' ? presetA : presetB);
             slotEl.classList.toggle('is-active', effectiveActiveSide === slot && (slotAvailable || aggregate));
             slotEl.classList.toggle('is-armed', effectiveActiveSide !== slot && slotAvailable);
         });
@@ -624,15 +698,30 @@
         setEffectsCompareLoadBusy(effectsCompareLoadInFlight);
     }
 
+    // The preset Delete removes: the selected bank's listened preset; in
+    // Surround Global the listened slot's preset of the speaker group the
+    // measurement targets.
+    function activeDeletablePreset() {
+        const { activePreset, effectiveActiveSide, groupSlots } = getEffectsCompareState();
+        if (!groupSlots) return { name: activePreset, label: '' };
+        const group = deps.measurementArea()?.group;
+        const row = (globalGroupRows() || []).find(item => item.group === group);
+        if (!row) return { name: '', label: '' };
+        return { name: effectiveActiveSide === 'B' ? row.presetB : row.presetA, label: row.label };
+    }
+
     // Delete targets the selected bank's active preset, as in Global; All
     // Banks has no Delete.
     function syncEffectsDeleteButton() {
         const button = deps.getElements().effectsDeleteBtn;
         if (!button) return;
-        const { activePreset, aggregate } = getEffectsCompareState();
+        const { aggregate, groupSlots } = getEffectsCompareState();
+        const { name, label } = activeDeletablePreset();
         button.classList.toggle('hidden', !!aggregate);
-        button.disabled = !deps.getState().dsp?.available || !activePreset
-            || activePreset === 'Direct' || activePreset === 'Neutral';
+        button.disabled = !deps.getState().dsp?.available || !name || name === 'Direct' || name === 'Neutral';
+        const tooltip = groupSlots ? `Delete active ${label || 'speaker group'} preset` : 'Delete active preset';
+        if (button.dataset) button.dataset.tooltip = tooltip;
+        button.setAttribute?.('aria-label', tooltip);
     }
 
     function getEffectsCombineValidationState() {
@@ -844,6 +933,17 @@
         if (deps.getElements().effectsCompareToggle) {
             deps.getElements().effectsCompareToggle.addEventListener('click', toggleComparePreset);
         }
+        [deps.getElements().effectsCompareABanks, deps.getElements().effectsCompareBBanks].forEach(list => {
+            list?.addEventListener?.('change', async (event) => {
+                if (!event.target?.classList?.contains('compare-group-select')) return;
+                try {
+                    await handleGlobalGroupChange(event.target);
+                } catch (e) {
+                    console.error('compare group preset change error:', e);
+                    deps.showToast(e.message || 'Failed to select preset', 'error');
+                }
+            });
+        });
         if (deps.getElements().effectsCompareA) {
             deps.getElements().effectsCompareA.addEventListener('change', async () => {
                 try {
@@ -1061,7 +1161,7 @@
     }
 
     async function deleteEffectsPreset() {
-        const presetName = getEffectsCompareState().activePreset;
+        const { name: presetName, label } = activeDeletablePreset();
         if (!presetName) {
             deps.showToast('No active preset to delete', 'warning');
             return;
@@ -1070,7 +1170,7 @@
             deps.showToast(`Preset "${presetName}" is built-in and cannot be deleted`, 'error');
             return;
         }
-        if (!deps.confirmDialog(`Delete preset "${presetName}"?`)) return;
+        if (!deps.confirmDialog(`Delete ${label ? `${label} ` : ''}preset "${presetName}"?`)) return;
         deps.getElements().effectsDeleteBtn.disabled = true;
         try {
             const resp = await fetch('/api/dsp/presets/delete', {

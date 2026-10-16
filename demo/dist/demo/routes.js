@@ -420,6 +420,50 @@
         return [...fronts, ...(mode === 'stereo-sub' ? subRoles : [])];
     }
     const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
+    // Surround Global slots select one preset per speaker group (mirror of
+    // dsp.surround_global); Direct bypasses every group.
+    const neutralSelection = () => Object.fromEntries(SURROUND_GROUPS.map(group => [group, 'Neutral']));
+    const isSelection = slot => !!slot && typeof slot === 'object';
+    const sameSlot = (a, b) => isSelection(a) && isSelection(b)
+        ? SURROUND_GROUPS.every(group => a[group] === b[group]) : a === b;
+    const neutralGroupBank = () => ({ preset: neutralSelection(), preset_a: neutralSelection(), preset_b: null, active_side: 'A' });
+    function demoSelectionLabel(slot) {
+        if (!isSelection(slot)) return slot;
+        return SURROUND_GROUPS.filter(group => slot[group] !== 'Neutral').map(group => `${group}: ${slot[group]}`).join(' · ') || 'Neutral';
+    }
+    function demoSurroundGroup(role) {
+        if (/^(main_[lr]|left_|right_)/.test(role)) return 'front';
+        return role === 'center' ? 'center' : String(role).replace(/_[lr]$/, '');
+    }
+    // Mirror of output_state._group_slot.
+    function demoGroupSlot(slot, group, name) {
+        if (name === 'Direct') return name;
+        if (!SURROUND_GROUPS.includes(group)) throw new Error('Surround Global selects a preset per speaker group; name the group');
+        return { ...(isSelection(slot) ? slot : neutralSelection()), [group]: name };
+    }
+    // Mirror of set_bank_preset for Surround Global: a group's preset replaces
+    // only that group, an unassigned B starts from A, editing the listened
+    // slot keeps listening to it, and A and B must differ.
+    function demoGroupMutation(bank, mutation, slot) {
+        const result = { ...mutation };
+        delete result.group;
+        const listened = sameSlot(bank.preset, bank.preset_a) ? 'A' : sameSlot(bank.preset, bank.preset_b) ? 'B' : null;
+        if (mutation.preset) result.preset = demoGroupSlot(bank[`preset_${slot.toLowerCase()}`], mutation.group, mutation.preset);
+        if (mutation.preset_a) {
+            result.preset_a = demoGroupSlot(bank.preset_a, mutation.group, mutation.preset_a);
+            if (!result.active_side && listened === 'A') result.active_side = 'A';
+        }
+        if (mutation.preset_b) {
+            result.preset_b = demoGroupSlot(bank.preset_b || bank.preset_a, mutation.group, mutation.preset_b);
+            if (!result.active_side && listened === 'B') result.active_side = 'B';
+        }
+        const slots = { A: bank.preset_a, B: bank.preset_b };
+        if (result.preset) slots[slot] = result.preset;
+        if (result.preset_a) slots.A = result.preset_a;
+        if ('preset_b' in result) slots.B = result.preset_b;
+        if (slots.B && sameSlot(slots.A, slots.B)) throw new Error('Preset A and B must differ in at least one speaker group');
+        return result;
+    }
     const bankPairs = { main: ['main_l', 'main_r'], low: ['left_low', 'right_low'],
         low_mid: ['left_low_mid', 'right_low_mid'], mid: ['left_mid', 'right_mid'],
         high: ['left_high', 'right_high'], sub: ['sub_l', 'sub_r'],
@@ -447,10 +491,12 @@
         return definitions;
     }
     function demoBankSummary(bindings) {
-        const common = values => new Set(values).size === 1 ? values[0] : null;
+        // Compared by value: a Surround Global slot is a group selection.
+        const common = values => values.length && values.every(value => sameSlot(value, values[0])) ? values[0] : null;
         return { preset: common(bindings.map(bank => bank.preset)), preset_a: common(bindings.map(bank => bank.preset_a)),
             preset_b: common(bindings.map(bank => bank.preset_b)),
-            active_side: common(bindings.map(bank => bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null)),
+            active_side: common(bindings.map(bank => sameSlot(bank.preset, bank.preset_a) ? 'A'
+                : sameSlot(bank.preset, bank.preset_b) ? 'B' : null)),
             can_a: bindings.length > 0, can_b: bindings.length > 0 && bindings.every(bank => !!bank.preset_b) };
     }
     // Mirror of summarize_all_banks: B needs one bank with a B; banks
@@ -470,9 +516,14 @@
             config.banks[role] = { ...bank, preset: comparable.includes(role) && side === 'B' ? bank.preset_b : bank.preset_a };
         }
     }
-    function updateDemoBanks(config, roles, mutation) {
+    function updateDemoBanks(config, roles, mutation, mode) {
         const slot = mutation.active_side || demoBankSummary(roles.map(role => config.banks[role])).active_side || 'A';
         if (!['A', 'B'].includes(slot)) throw new Error('Compare side must be A or B');
+        if (mode === 'surround' && roles.length === 1 && roles[0] === 'global') {
+            mutation = demoGroupMutation(config.banks.global, mutation, slot);
+        } else if (mutation.group) {
+            throw new Error('A speaker group applies to the Surround Global bank only');
+        }
         const updated = {};
         for (const role of roles) {
             const bank = { ...config.banks[role] };
@@ -482,7 +533,7 @@
                 if (!bank[`preset_${slot.toLowerCase()}`]) throw new Error(`Compare side ${slot} has no assigned preset`);
                 bank.preset = bank[`preset_${slot.toLowerCase()}`];
             }
-            if (bank.preset_a === bank.preset_b) throw new Error('Compare slots must use distinct presets');
+            if (sameSlot(bank.preset_a, bank.preset_b)) throw new Error('Compare slots must use distinct presets');
             updated[role] = bank;
         }
         Object.assign(config.banks, updated);
@@ -578,7 +629,7 @@
     // the mode is explorable without touching the stereo-sub configuration;
     // turning Crossover Off maps the low ways back to Front L/R.
     const surroundSpeakerBanks = () => ({
-        global: neutralBank(),
+        global: neutralGroupBank(),
         main_l: neutralBank(), main_r: neutralBank(),
         left_low: neutralBank(), right_low: neutralBank(),
         left_low_mid: neutralBank(), right_low_mid: neutralBank(),
@@ -647,8 +698,9 @@
             },
         },
     };
+    // A Surround Global group selection reads as its short text (main.py).
     function activeGlobalPreset() {
-        return outputStateStore.modes[outputStateStore.active_mode].banks.global.preset;
+        return demoSelectionLabel(outputStateStore.modes[outputStateStore.active_mode].banks.global.preset);
     }
     for (const config of Object.values(outputStateStore.modes)) {
         config.av_sync = { target_ms: 0, basis: {}, source_basis: {}, basis_origin: 'adopted', basis_context: {} };
@@ -786,7 +838,12 @@
         const globalPreset = config.banks.global.preset || 'Neutral';
         const direct = globalPreset === 'Direct';
         const presetLatency = name => /Hyb|Lin/i.test(name || '') ? 4096 * 1000 / rate : 0;
-        let shared = direct ? 0 : presetLatency(globalPreset);
+        // A Surround Global group preset delays only its own group's speakers;
+        // the shared subs follow the longest group.
+        const globalLatency = role => !isSelection(globalPreset) ? presetLatency(globalPreset)
+            : subRoles.includes(role) ? Math.max(0, ...SURROUND_GROUPS.map(group => presetLatency(globalPreset[group])))
+                : presetLatency(globalPreset[demoSurroundGroup(role)]);
+        let shared = 0;
         if (!direct && dspExtras.limiter.enabled) shared += dspExtras.limiter.params.lookaheadMs;
         if (!direct && dspExtras.loudness.enabled) shared += dspExtras.loudness.params.fftSize * 1000 / rate;
         if (!direct && dspExtras.tone_effect.enabled) shared += (dspExtras.tone_effect.mode === 'maximizer' ? 480 : 1904) * 1000 / rate;
@@ -797,7 +854,7 @@
         const input = automaticInput ? 2818 / 48 : 0;
         const offset = Math.max(0, -Math.min(0, ...roles.map(role => config.processing[role]?.alignment_ms || 0)));
         const rows = roles.map(role => {
-            const dsp = shared + presetLatency(config.banks[role]?.preset);
+            const dsp = shared + (direct ? 0 : globalLatency(role)) + presetLatency(config.banks[role]?.preset);
             if (!(role in config.av_sync.basis)) config.av_sync.basis[role] = input + dsp;
             return { role, dsp_ms: dsp, intentional_ms: 0, align_ms: offset + (config.processing[role]?.alignment_ms || 0),
                 balance_ms: 0, total_ms: 0, unknown: 0, mixed: 0, basis_known: 1 };
@@ -848,7 +905,7 @@
             // A Surround Global preset carries its group plugins and the surround layout.
             Object.assign(findDemoPreset(createdName, demoPresetOwner(body)), { layout: 'surround', group });
         }
-        updateDemoBanks(config, bank.roles, { preset: createdName });
+        updateDemoBanks(config, bank.roles, { preset: createdName, ...(group ? { group } : {}) }, mode);
         outputStateStore.revision += 1;
         syncDspToState();
         return { assigned: true, mode, bank_id: bankId, revision: outputStateStore.revision };
@@ -3163,7 +3220,7 @@
                 if (bank.id !== 'global' && ['preset', 'preset_a', 'preset_b'].some(key => mutation[key] === 'Direct')) {
                     return fail('Direct is available only in the Global bank');
                 }
-                try { updateDemoBanks(config, bank.roles, mutation); } catch (error) { return fail(error.message); }
+                try { updateDemoBanks(config, bank.roles, mutation, mode); } catch (error) { return fail(error.message); }
             } else if (mutation.kind === 'switch_all_banks') {
                 const roles = outputStateCatalog().modes[mode].topology.roles;
                 try { switchDemoAllBanks(config, roles, mutation.active_side); } catch (error) { return fail(error.message); }
@@ -3485,8 +3542,12 @@
             const owner = demoPresetOwner(body);
             const missing = presetNames.find(source => !findDemoPreset(source, owner));
             if (missing) return err(`Preset not found: ${missing}`, 404);
+            const groups = new Set(presetNames.map(source => findDemoPreset(source, owner).group).filter(Boolean));
+            if (owner.mode === 'surround' && groups.size > 1) {
+                return err(`Surround preset "${name}" mixes speaker groups; a preset holds the filters of one group`, 400);
+            }
             addDemoPreset(name, body, { source_presets: presetNames,
-                ...(owner.mode === 'surround' ? { layout: 'surround' } : {}) });
+                ...(owner.mode === 'surround' ? { layout: 'surround', group: [...groups][0] || null } : {}) });
             syncDspToState();
             return j({ success: true, preset: { name } });
         }
@@ -3504,14 +3565,21 @@
             for (const [mode, config] of Object.entries(outputStateStore.modes)) {
                 const roles = owner.bank === 'global' ? (mode === owner.mode ? ['global'] : [])
                     : (outputStateCatalog().modes[mode].banks[owner.bank]?.roles || []);
+                const holds = slot => isSelection(slot) ? Object.values(slot).includes(name) : slot === name;
+                const release = slot => isSelection(slot)
+                    ? Object.fromEntries(Object.entries(slot).map(([group, preset]) => [group, preset === name ? 'Neutral' : preset]))
+                    : slot === name ? 'Neutral' : slot;
                 for (const role of roles) {
                     const bank = config.banks[role];
-                    if (!bank || ![bank.preset, bank.preset_a, bank.preset_b].includes(name)) continue;
-                    const side = bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null;
-                    if (bank.preset_a === name) bank.preset_a = 'Neutral';
-                    if (bank.preset_b === name || bank.preset_b === bank.preset_a) bank.preset_b = null;
+                    if (!bank || ![bank.preset, bank.preset_a, bank.preset_b].some(holds)) continue;
+                    const side = sameSlot(bank.preset, bank.preset_a) ? 'A' : sameSlot(bank.preset, bank.preset_b) ? 'B' : null;
+                    const listened = bank.preset;
+                    bank.preset_a = release(bank.preset_a);
+                    if (isSelection(bank.preset_b)) bank.preset_b = release(bank.preset_b);
+                    else if (bank.preset_b === name) bank.preset_b = null;
+                    if (sameSlot(bank.preset_b, bank.preset_a)) bank.preset_b = null;
                     bank.preset = side === 'B' && bank.preset_b ? bank.preset_b
-                        : side === null && bank.preset !== name ? bank.preset : bank.preset_a;
+                        : side === null && !holds(listened) ? listened : bank.preset_a;
                     released = true;
                 }
             }

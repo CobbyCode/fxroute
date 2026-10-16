@@ -6134,6 +6134,47 @@ select.url-input {
     color: var(--accent);
 }
 
+/* Surround Global slots: one preset picker per speaker group, group left.
+   A long preset name is clipped; the picker tooltip carries the full name. */
+.effects-compare-slot-group {
+    align-items: center;
+}
+
+.effects-compare-slot-group .effects-compare-slot-bank-key {
+    min-width: 4.5rem;
+}
+
+.effects-compare-slot-group .compare-group-select {
+    flex: 1 1 0;
+    min-height: 34px;
+    padding-block: 0.3rem;
+    padding-left: 0.6rem;
+    font-size: 0.82rem;
+}
+
+/* Group pickers need the width: Preset A and B stack instead of sitting
+   side by side. */
+.effects-compare-fields:has(.effects-compare-slot-banks:not(.hidden) .effects-compare-slot-group) {
+    grid-template-columns: 1fr;
+}
+
+/* A narrow slot (phones) puts the group above its picker, so the picker
+   keeps room for a compact preset name. */
+.effects-compare-slot {
+    container: compare-slot / inline-size;
+}
+
+@container compare-slot (max-width: 380px) {
+    .effects-compare-slot-group {
+        flex-wrap: wrap;
+        row-gap: 0.15rem;
+    }
+
+    .effects-compare-slot-group .effects-compare-slot-bank-key {
+        flex-basis: 100%;
+    }
+}
+
 .compare-select {
     cursor: pointer;
     width: 100%;

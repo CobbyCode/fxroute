@@ -10,11 +10,12 @@ from audio.output_routing import device_key
 from audio.filter_banks import bank_definitions, owning_bank_ids, resolve_bank, summarize_banks
 from audio.output_topology import (MAIN_ROLES, MODES, SURROUND_GROUPS, derive_topology, dormant_roles,
                                    roles_for_mode, validate_assignments)
-from dsp.banks import BankState
+from dsp.banks import BankState, slot_presets
 from dsp.latency import default_av_sync, validate_av_sync
+from dsp.surround_global import neutral_selection
 
 SCHEMA = "fxroute.output-state"
-VERSION = 6
+VERSION = 7
 # Level Calibration slots per role: "global" holds the whole-speaker match
 # (Global measurement; Surround Front), "bank" the match of the role's own bank.
 LEVEL_CAL_SLOTS = ("global", "bank")
@@ -58,13 +59,20 @@ def default_bass_management() -> dict:
             "sub_link": True, "sub_filters": {}}
 
 
+def default_global_bank(mode: str) -> dict:
+    """Global bank without filters; Surround selects a preset per speaker group."""
+    if mode == "surround":
+        return BankState(neutral_selection(), neutral_selection()).to_dict()
+    return BankState().to_dict()
+
+
 def default_output_state() -> dict:
     modes = {}
     for mode in MODES:
         roles = MAIN_ROLES
         modes[mode] = {
             "routing": {}, "crossover_enabled": False, "selected_bank": "global",
-            "banks": {role: BankState().to_dict() for role in ("global", *roles)},
+            "banks": {"global": default_global_bank(mode), **{role: BankState().to_dict() for role in roles}},
             "processing": {role: default_processing() for role in roles},
             "bass_management": default_bass_management(),
             "extras": {},
@@ -214,6 +222,18 @@ def _validate_bass_overrides(mode: str, overrides: object) -> None:
             raise ValueError(f"Sub crossover override {key}: {exc}") from exc
 
 
+def _validate_slot_kinds(mode: str, role: str, binding: dict) -> None:
+    """Surround Global slots select one preset per speaker group (or Direct); others name one preset."""
+    group_slots = mode == "surround" and role == "global"
+    for slot in (binding["preset"], binding["preset_a"], binding["preset_b"]):
+        if slot is None:
+            continue
+        if group_slots and slot != "Direct" and (not isinstance(slot, dict) or set(slot) != set(SURROUND_GROUPS)):
+            raise ValueError("Surround Global slots select one preset per speaker group")
+        if not group_slots and isinstance(slot, dict):
+            raise ValueError("Only Surround Global slots select presets per speaker group")
+
+
 def validate_output_state(payload: object) -> dict:
     """Validate inactive modes too; never discard unknown or invalid settings."""
     _validate_json(payload)
@@ -242,8 +262,9 @@ def validate_output_state(payload: object) -> dict:
             raise ValueError("Every mode requires a Global bank")
         if any(role not in ("global", *allowed) for role in banks):
             raise ValueError("Bank role is not valid for its output mode")
-        for bank in banks.values():
+        for role, bank in banks.items():
             BankState.from_dict(bank)
+            _validate_slot_kinds(mode, role, bank)
         selected = config["selected_bank"]
         if not isinstance(selected, str) or selected not in {"all", *banks, *bank_definitions(banks)}:
             raise ValueError("Selected bank is not stored in its output mode")
@@ -416,15 +437,31 @@ def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
 _UNCHANGED: object = object()
 
 
+def _group_slot(slot: object, group: str | None, name: str) -> str | dict:
+    """Surround Global slot with ``name`` selected for ``group``; Direct replaces the selection."""
+    if name == "Direct":
+        return name
+    if group not in SURROUND_GROUPS:
+        raise ValueError("Surround Global selects a preset per speaker group; name the group")
+    selection = dict(slot) if isinstance(slot, dict) else neutral_selection()
+    selection[group] = name
+    return selection
+
+
 def set_bank_preset(state: dict, mode: str, bank_id: str, *, preset: str | None = None,
                     preset_a: str | None = None, preset_b: object = _UNCHANGED,
-                    active_side: str | None = None, roles=None) -> dict:
+                    active_side: str | None = None, roles=None, group: str | None = None) -> dict:
     """Assign bank presets without touching routing or other banks.
 
     ``preset`` writes the currently listened slot (slot A when the bank
     listens to neither slot yet) and listens to it. ``active_side`` alone
     switches listening; an unassigned B side is rejected. Slot arguments
     set compare slots directly; an explicit ``preset_b=None`` clears B.
+
+    Surround Global selects one preset per speaker group: ``group`` names
+    the group a preset replaces in its slot, the other groups keep theirs.
+    An unassigned B starts from A's selection, and editing the listened slot
+    keeps listening to it.
     """
     result = validate_output_state(state)
     roles_for_mode(mode)
@@ -433,6 +470,26 @@ def set_bank_preset(state: dict, mode: str, bank_id: str, *, preset: str | None 
     if active_side is not None and active_side not in {"A", "B"}:
         raise ValueError("Compare side must be A or B")
     slot = active_side or summarize_banks([banks[role] for role in members])["active_side"] or "A"
+    if mode == "surround" and members == ["global"]:
+        current = banks["global"]
+        listened = BankState.from_dict(current).active_side
+        if preset is not None:
+            preset = _group_slot(current[f"preset_{slot.lower()}"], group, preset)
+        if preset_a is not None:
+            preset_a = _group_slot(current["preset_a"], group, preset_a)
+            active_side = active_side or ("A" if listened == "A" else None)
+        if preset_b is not _UNCHANGED and preset_b is not None:
+            preset_b = _group_slot(current["preset_b"] or current["preset_a"], group, preset_b)
+            active_side = active_side or ("B" if listened == "B" else None)
+        slots = {"A": current["preset_a"], "B": current["preset_b"]}
+        if preset is not None:
+            slots[slot] = preset
+        slots.update({side: value for side, value in (("A", preset_a), ("B", preset_b))
+                      if value is not None and value is not _UNCHANGED})
+        if slots["B"] is not None and slots["B"] == slots["A"]:
+            raise ValueError("Preset A and B must differ in at least one speaker group")
+    elif group is not None:
+        raise ValueError("A speaker group applies to the Surround Global bank only")
     for role in members:
         current = dict(banks[role])
         if preset_a is not None:
@@ -584,23 +641,31 @@ def release_bank_preset(state: dict, mode: str | None, bank_id: str, name: str) 
 
     The compare rules for a preset that goes away: a released A falls back
     to Neutral, a released B is cleared, and a role listening to a released
-    slot falls back to A. Returns the new state and one line per touched
-    role.
+    slot falls back to A. A Surround Global selection releases only the
+    group holding the preset; a B left equal to A is cleared. Returns the
+    new state and one line per touched role.
     """
     result = validate_output_state(state)
     changes = []
+
+    def released(slot):
+        if isinstance(slot, dict):
+            return {group: "Neutral" if preset == name else preset for group, preset in slot.items()}
+        return "Neutral" if slot == name else slot
+
     for slot_mode, config in result["modes"].items():
         for role, binding in config["banks"].items():
-            if not _uses_library(slot_mode, role, mode, bank_id) or name not in binding.values():
+            if (not _uses_library(slot_mode, role, mode, bank_id)
+                    or name not in {preset for slot in binding.values() for preset in slot_presets(slot)}):
                 continue
             side = BankState.from_dict(binding).active_side
-            preset_a = "Neutral" if binding["preset_a"] == name else binding["preset_a"]
-            preset_b = binding["preset_b"]
+            preset_a = released(binding["preset_a"])
+            preset_b = released(binding["preset_b"]) if isinstance(binding["preset_b"], dict) else binding["preset_b"]
             if preset_b in (name, preset_a):
                 preset_b = None
             if side == "B" and preset_b is not None:
                 preset = preset_b
-            elif side is None and binding["preset"] != name:
+            elif side is None and name not in slot_presets(binding["preset"]):
                 preset = binding["preset"]
             else:
                 preset = preset_a
@@ -615,4 +680,4 @@ def referenced_presets(state: dict, mode: str | None, bank_id: str) -> set[str]:
     validated = validate_output_state(state)
     return {name for slot_mode, config in validated["modes"].items()
             for role, bank in config["banks"].items() if _uses_library(slot_mode, role, mode, bank_id)
-            for name in bank.values() if name is not None}
+            for slot in bank.values() for name in slot_presets(slot)}

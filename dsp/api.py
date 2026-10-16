@@ -39,7 +39,7 @@ from audio.filter_banks import resolve_bank
 from audio.output_state import referenced_presets, release_bank_preset, set_bank_preset
 from audio.output_state_store import StateConflictError
 from audio.output_topology import SURROUND_GROUPS
-from dsp.surround_global import BUILTIN_PRESETS
+from dsp.surround_global import BUILTIN_PRESETS, preset_group
 from library.core import path_within_root
 from library.api import _cleanup_temp_file
 from uploads import (
@@ -372,7 +372,8 @@ async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) ->
     """Assign a just-created preset to its bank; a race reports partial state.
 
     The bank resolves against the routed roles, so only the roles that play
-    its library take the preset (see ``_routed_roles``).
+    its library take the preset (see ``_routed_roles``). In Surround Global
+    the preset replaces only its speaker group in the listened slot.
     The binding was already checked before the preset was written (see
     ``_resolve_bank_binding``): a conflict here is a race with another writer,
     not a stale client, so it names the created preset to keep the state
@@ -387,11 +388,18 @@ async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) ->
     try:
         state = service.load()
         roles = await _routed_roles(state, binding["mode"], binding["bank_id"])
-        service.validate_bank_preset(state, binding["mode"], binding["bank_id"], created_name, roles=roles)
+        group = binding.get("bank_group")
+        if binding["mode"] == "surround" and binding["bank_id"] == "global":
+            # A Surround Global preset is selected for the group whose filters
+            # it holds; an imported preset file brings its own.
+            payload = _deps().require_dsp_manager().read_preset("surround", "global", created_name)
+            group = preset_group(payload) or group
+        service.validate_bank_preset(state, binding["mode"], binding["bank_id"], created_name, roles=roles,
+                                     group=group)
         committed = await _deps().drain_worker(
             service.apply,
             lambda state: set_bank_preset(
-                state, binding["mode"], binding["bank_id"], preset=created_name, roles=roles),
+                state, binding["mode"], binding["bank_id"], preset=created_name, roles=roles, group=group),
             expected_revision=binding["expected_revision"])
     except MeasurementActiveError as exc:
         raise HTTPException(status_code=423, detail={

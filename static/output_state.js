@@ -362,6 +362,35 @@ function presetsForBank(presets, bankId, mode) {
     });
 }
 
+// Surround Global slots select one preset per speaker group; Direct bypasses them all.
+function isGroupSelection(slot) {
+    return !!slot && typeof slot === 'object' && !Array.isArray(slot);
+}
+
+// Short text of a Global slot: its preset, or the groups a selection filters.
+function globalSlotLabel(slot) {
+    if (!isGroupSelection(slot)) return typeof slot === 'string' ? slot : '';
+    const groups = SURROUND_GROUPS.filter(group => slot[group] && slot[group] !== 'Neutral');
+    return groups.map(group => SURROUND_GROUP_LABELS[group].replace(/ L\/R$/, '')).join(' + ') || 'Neutral';
+}
+
+// Surround Global A/B rows, one per routed speaker group: the preset each slot
+// selects ('' for an unassigned B) and the presets of that group. Null outside
+// Surround Global.
+function globalGroupSlots(catalog, presets) {
+    const modeConfig = catalog?.modes?.[catalog?.active_mode];
+    const bank = modeConfig?.banks?.global;
+    if (catalog?.active_mode !== 'surround' || (modeConfig?.selected_bank || 'global') !== 'global' || !bank) return null;
+    const pick = (slot, group) => slot === 'Direct' ? 'Direct' : isGroupSelection(slot) ? slot[group] || 'Neutral' : '';
+    return surroundGroups(modeConfig.topology).map(group => ({
+        group,
+        label: SURROUND_GROUP_LABELS[group],
+        presetA: pick(bank.preset_a, group),
+        presetB: pick(bank.preset_b, group),
+        options: (Array.isArray(presets) ? presets : []).filter(entry => entry?.group === group).map(entry => entry.name),
+    }));
+}
+
 function peqParams(channelMode, leftBands, rightBands, eqMode) {
     return channelMode === 'mono'
         ? { channelMode: 'stereo-linked', eqMode, bands: leftBands }
@@ -374,12 +403,14 @@ function compareState(catalog) {
     const aggregate = config.selected_bank === 'all';
     const bank = aggregate ? config.all_banks : config.banks?.[config.selected_bank];
     if (!bank) return null;
-    const presetA = bank.preset_a || '';
-    const presetB = bank.preset_b || '';
+    // Surround Global slots read as their short text; the rows list each group.
+    const groupSlots = catalog.active_mode === 'surround' && config.selected_bank === 'global';
+    const presetA = globalSlotLabel(bank.preset_a);
+    const presetB = globalSlotLabel(bank.preset_b);
     return {
         compare: { presetA, presetB, activeSide: bank.active_side },
-        activePreset: bank.preset || '', effectiveActiveSide: bank.active_side,
-        presetA, presetB, aggregate, canA: bank.can_a ?? !!presetA, canB: bank.can_b ?? !!presetB,
+        activePreset: globalSlotLabel(bank.preset), effectiveActiveSide: bank.active_side,
+        presetA, presetB, aggregate, groupSlots, canA: bank.can_a ?? !!presetA, canB: bank.can_b ?? !!presetB,
     };
 }
 
@@ -429,7 +460,7 @@ function activePresetOverview(catalog) {
     const ids = Object.keys(banks).sort((a, b) => (b === 'global') - (a === 'global'));
     return mergeNumberedBanks(ids.map((id) => {
         const bank = banks[id] || {};
-        const preset = typeof bank.preset === 'string' && bank.preset ? bank.preset : null;
+        const preset = globalSlotLabel(bank.preset) || null;
         return { ids: [id], label: bank.label || roleLabel(id, mode), preset, key: preset };
     }));
 }
@@ -586,6 +617,9 @@ function renderBankSelector(select, catalog, mode) {
         bankOwner,
         isBuiltinBankPreset,
         presetsForBank,
+        isGroupSelection,
+        globalSlotLabel,
+        globalGroupSlots,
         peqParams,
         compareState,
         compactPresetName,

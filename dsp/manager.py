@@ -15,8 +15,8 @@ from typing import Any, Callable, Dict, List, Optional
 from dsp.native_config import PEQ_Q_MAX, PEQ_Q_MIN
 from dsp.latency import ir_latency, render_av_sync, validate_ir_latency
 from dsp.persistence import DSPPresetLibrary, DSPPresetStore, DSPStateStore, clean_name, kernel_name
-from dsp.surround_global import (BUILTIN_PRESETS as SURROUND_BUILTINS, GROUP_PAIR_MASK, LAYOUT as SURROUND_LAYOUT, preset_layout,
-                                 routed_chain, routed_groups, validate_surround_chain)
+from dsp.surround_global import (BUILTIN_PRESETS as SURROUND_BUILTINS, GROUP_PAIR_MASK, LAYOUT as SURROUND_LAYOUT,
+                                 preset_layout, routed_groups, selection_chain, selection_label)
 
 logger = logging.getLogger(__name__)
 
@@ -598,7 +598,7 @@ class DSPManager:
         """Global Direct, shared Neutral, then every bank's own presets."""
         builtins = [{"name": name, "filename": None, "path": None,
                      "bank": "global" if name == "Direct" else None, "mode": None,
-                     "layout": None, "source_presets": []} for name in SURROUND_BUILTINS]
+                     "layout": None, "group": None, "source_presets": []} for name in SURROUND_BUILTINS]
         return builtins + [entry for store in self.presets.stores() for entry in store.list()]
 
     def list_irs(self, bank: Any = None, mode: Any = None) -> List[dict]:
@@ -812,14 +812,15 @@ class DSPManager:
         return {"path": str(path), "channel": channel, **gains}
 
     def compile_engine_config(self, output_layout: List[Dict[str, Any]], *,
-                               preset_name: Optional[str] = None,
+                               preset_name: Optional[str | Dict[str, str]] = None,
                                mode: Optional[str] = None,
                                sample_rate_hz: int = 48000,
                                extras_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Engine configuration of one Global preset (Neutral when none is named).
 
         ``mode`` names the output mode whose Global bank holds the preset;
-        without it the Stereo Global one.
+        without it the Stereo Global one. In Surround ``preset_name`` may be
+        a Global slot's group selection instead.
         """
         if not isinstance(sample_rate_hz, int) or sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be a positive integer")
@@ -902,14 +903,19 @@ class DSPManager:
                 if channel["input_positions"] != list(SURROUND_POSITIONS):
                     raise ValueError("Surround requires the canonical eight input positions")
                 outputs[-1]["input_positions"] = list(SURROUND_POSITIONS)
-        active = clean_name(preset_name or "Neutral")
-        payload = self.library("global", mode).read(active)
-        chain = copy.deepcopy(payload["chain"])
-        if preset_layout(payload) == SURROUND_LAYOUT:
+        if isinstance(preset_name, dict):
+            # A Surround Global slot: one preset per speaker group.
             if not any("input_positions" in output for output in outputs):
-                raise ValueError(f'Preset "{active}" is a Surround preset and needs the Surround output mode')
-            validate_surround_chain(chain, preset=active)
-            chain = routed_chain(chain, routed_groups(channel["name"] for channel in output_layout))
+                raise ValueError("A speaker group selection needs the Surround output mode")
+            active = selection_label(preset_name)
+            chain = selection_chain(preset_name, routed_groups(channel["name"] for channel in output_layout),
+                                    self.library("global", mode).read)
+        else:
+            active = clean_name(preset_name or "Neutral")
+            payload = self.library("global", mode).read(active)
+            chain = copy.deepcopy(payload["chain"])
+            if preset_layout(payload) == SURROUND_LAYOUT:
+                raise ValueError(f'Preset "{active}" holds speaker group filters; select it per group')
         self._validate_supported_chain(chain)
         upmixer = None
         if active not in self.EXCLUDED_GLOBAL_EXTRAS_PRESETS:
@@ -927,7 +933,7 @@ class DSPManager:
                  "outputs": outputs, "chain": chain}
 
     def compile_engine_text(self, output_layout: List[Dict[str, Any]], *,
-                            preset_name: Optional[str] = None,
+                            preset_name: Optional[str | Dict[str, str]] = None,
                             mode: Optional[str] = None,
                             sample_rate_hz: int = 48000,
                             extras_override: Optional[Dict[str, Any]] = None) -> str:

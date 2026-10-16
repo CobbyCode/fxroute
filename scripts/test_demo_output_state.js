@@ -252,5 +252,49 @@ async function request(url, body) {
     assert.equal(stereoMode.topology.sub_mode, 'none');
     assert.equal(stereoMode.topology.way_count, null);
 
+    // Surround Global: a group filter fills its group of the listened slot,
+    // B starts from A, A/B switches the whole selection, and a delete
+    // releases only the group holding the preset.
+    const surroundApply = async (mutation) => {
+        const state = await request('/api/audio/output-state');
+        return request('/api/audio/output-state/apply',
+            { expected_revision: state.revision, mutation: { mode: 'surround', ...mutation } });
+    };
+    await surroundApply({ kind: 'switch_mode' });
+    await surroundApply({ kind: 'select_bank', bank_id: 'global' });
+    const createGroup = async (presetName, bankGroup) => request('/api/dsp/presets/create-peq', {
+        presetName, bank_mode: 'surround', bank_id: 'global', bank_group: bankGroup,
+        expected_revision: (await request('/api/audio/output-state')).revision,
+        peq: { params: { channelMode: 'stereo-linked', bands: [{ filterType: 'bell' }] } } });
+    await createGroup('Front EQ', 'front');
+    await createGroup('Rear EQ', 'rear');
+    await createGroup('Rear EQ B', 'rear');
+    const neutral = { front: 'Neutral', center: 'Neutral', side: 'Neutral', rear: 'Neutral' };
+    const surroundGlobal = async () => (await request('/api/audio/output-state')).modes.surround.banks.global;
+    assert.deepEqual((await surroundGlobal()).preset_a, { ...neutral, front: 'Front EQ', rear: 'Rear EQ B' });
+    const groups = (await request('/api/dsp/presets')).presets.filter(entry => entry.mode === 'surround')
+        .map(entry => [entry.name, entry.group]);
+    assert.deepEqual(groups, [['Front EQ', 'front'], ['Rear EQ', 'rear'], ['Rear EQ B', 'rear']]);
+    await surroundApply({ kind: 'set_bank_preset', bank_id: 'global', preset_b: 'Rear EQ', group: 'rear' });
+    assert.deepEqual((await surroundGlobal()).preset_b, { ...neutral, front: 'Front EQ', rear: 'Rear EQ' });
+    const same = await rawRequest('/api/audio/output-state/apply', { expected_revision: (await request('/api/audio/output-state')).revision,
+        mutation: { kind: 'set_bank_preset', mode: 'surround', bank_id: 'global', preset_b: 'Rear EQ B', group: 'rear' } });
+    assert.equal(same.status, 400);
+    await surroundApply({ kind: 'set_bank_preset', bank_id: 'global', active_side: 'B' });
+    assert.equal((await surroundGlobal()).active_side, 'B');
+    assert.equal((await request('/api/dsp/presets')).active_preset, 'front: Front EQ · rear: Rear EQ');
+    await request('/api/dsp/presets/delete', { preset_name: 'Front EQ', bank_mode: 'surround', bank_id: 'global' });
+    const released = await surroundGlobal();
+    assert.deepEqual([released.preset_a, released.preset_b, released.active_side],
+        [{ ...neutral, rear: 'Rear EQ B' }, { ...neutral, rear: 'Rear EQ' }, 'B']);
+    // Combine stays within one speaker group.
+    await createGroup('Front EQ 2', 'front');
+    const mixed = await rawRequest('/api/dsp/presets/combine', { presetName: 'Both', presetNames: ['Rear EQ', 'Front EQ 2'],
+        bank_mode: 'surround', bank_id: 'global' });
+    assert.equal(mixed.status, 400);
+    await request('/api/dsp/presets/combine', { presetName: 'Rears', presetNames: ['Rear EQ', 'Rear EQ B'],
+        bank_mode: 'surround', bank_id: 'global' });
+    assert.equal((await request('/api/dsp/presets')).presets.find(entry => entry.name === 'Rears').group, 'rear');
+
     console.log('Demo output-state flow passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

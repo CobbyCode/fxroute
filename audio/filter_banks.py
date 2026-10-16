@@ -71,8 +71,9 @@ def resolve_bank(config: dict, bank_id: str, roles=None) -> dict:
 def summarize_banks(bindings: list[dict]) -> dict:
     """Aggregate compare slots without inventing a preset for mixed bindings."""
     def common(key):
-        values = {binding[key] for binding in bindings}
-        return next(iter(values)) if len(values) == 1 else None
+        # Compared by value: a Surround Global slot is a group selection.
+        values = [binding[key] for binding in bindings]
+        return values[0] if values and all(value == values[0] for value in values) else None
 
     sides = {BankState.from_dict(binding).active_side for binding in bindings}
     return {"preset": common("preset"), "preset_a": common("preset_a"),

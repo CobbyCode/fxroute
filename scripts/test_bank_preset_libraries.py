@@ -26,6 +26,7 @@ from audio.output_state_store import OutputStateStore
 from audio.output_topology import BANK_IDS, MODES, derive_topology
 from dsp.manager import DSPManager, build_wav_bytes, parse_wav_frames
 from dsp.persistence import clean_bank
+from dsp.surround_global import neutral_selection
 
 STEREO_SUB = ("global", "stereo-sub")
 BANKS = (("global", "stereo"), STEREO_SUB, ("global", "surround"), ("main", None), ("sub1", None))
@@ -296,7 +297,9 @@ class OutputStateTests(Fixture):
                 state = state_api.set_mode_routing(state, mode, "A", routing)
                 state = state_api.switch_mode(state, mode)
                 config = state["modes"][mode]
-                config["banks"]["global"] = {"preset": "Global EQ", "preset_a": "Global EQ", "preset_b": None}
+                # Surround Global selects the preset for its speaker group.
+                slot = {**neutral_selection(), "front": "Global EQ"} if mode == "surround" else "Global EQ"
+                config["banks"]["global"] = {"preset": slot, "preset_a": slot, "preset_b": None}
                 for index, role in enumerate(routing):
                     config["processing"][role].update(level_db=-index, alignment_ms=index / 2,
                                                        polarity="invert" if index % 2 else "normal")
@@ -313,10 +316,10 @@ class OutputStateTests(Fixture):
                 neutral_layout = self.service.compile_layout(plan)
                 self.assertEqual(neutral_layout, self.service.compile_layout(legacy))
                 extras = {"headroom": {"enabled": True, "params": {"gainDb": -4}}}
-                text = self.manager.compile_engine_text(neutral_layout, preset_name="Global EQ", mode=mode,
+                text = self.manager.compile_engine_text(neutral_layout, preset_name=slot, mode=mode,
                                                         extras_override=extras)
                 old_text = self.manager.compile_engine_text(self.service.compile_layout(legacy),
-                                                            preset_name="Global EQ", mode=mode, extras_override=extras)
+                                                            preset_name=slot, mode=mode, extras_override=extras)
                 self.assertEqual(text.encode(), old_text.encode())
                 self.assertTrue(plan["global"]["chain"])
                 self.assertTrue(any(row["gain_db"] < 0 and row["delay_ms"] > 0 for row in neutral_layout))
@@ -362,12 +365,14 @@ class ReleaseTests(unittest.TestCase):
                 for role, binding in config["banks"].items()}, changes
 
     def test_a_global_preset_is_released_in_its_own_output_mode_only(self):
-        state = bank_state({(mode, "global"): self.ROOM for mode in ("stereo", "stereo-sub", "surround")}
-                           | {("stereo-sub", "main_l"): self.ROOM})
+        room = {**neutral_selection(), "front": "Room"}
+        state = bank_state({(mode, "global"): self.ROOM for mode in ("stereo", "stereo-sub")}
+                           | {("surround", "global"): (room, room, None), ("stereo-sub", "main_l"): self.ROOM})
         banks, changes = self.release(state, "stereo-sub", "global")
         self.assertEqual(banks[("stereo-sub", "global")], self.FREE)
-        for slot in (("stereo", "global"), ("surround", "global"), ("stereo-sub", "main_l")):
+        for slot in (("stereo", "global"), ("stereo-sub", "main_l")):
             self.assertEqual(banks[slot]["preset"], "Room")
+        self.assertEqual(banks[("surround", "global")]["preset"], room)
         self.assertEqual(len(changes), 1)
         self.assertIn("stereo-sub/global", changes[0])
 
@@ -477,6 +482,27 @@ class ApiTests(Fixture):
         listed = {(entry["bank"], entry["mode"]) for entry in self.client.get("/api/dsp/presets").json()["presets"]
                   if entry["name"] == "Room"}
         self.assertEqual(listed, {("global", "stereo"), ("global", "stereo-sub"), ("main", None)})
+
+    def test_surround_global_filters_fill_their_group_of_the_listened_slot(self):
+        self.route("main_l", "main_r", "rear_l", "rear_r", "sub1", mode="surround")
+        state = self.service.load()
+        self.service.commit(state_api.switch_mode(state, "surround"), expected_revision=state["revision"])
+        self.create_peq("Front EQ", -1.0, "global", "surround", bank_group="front")
+        self.create_peq("Rear EQ", -2.0, "global", "surround", bank_group="rear")
+        bank = self.service.load()["modes"]["surround"]["banks"]["global"]
+        self.assertEqual(bank["preset"], {**neutral_selection(), "front": "Front EQ", "rear": "Rear EQ"})
+        self.assertEqual(bank["preset_a"], bank["preset"])
+        listed = {entry["name"]: entry["group"] for entry in self.client.get("/api/dsp/presets").json()["presets"]
+                  if entry["mode"] == "surround"}
+        self.assertEqual(listed, {"Front EQ": "front", "Rear EQ": "rear"})
+        # A preset file carries no measurement group; it fills the group it holds.
+        exported = self.manager.export_preset_json("Rear EQ", bank="global", mode="surround")
+        response = self.client.post("/api/dsp/presets/import-json", data={
+            "bank_mode": "surround", "bank_id": "global", "expected_revision": str(self.service.load()["revision"])},
+            files={"file": ("Rear copy.json", exported.encode(), "application/json")})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.service.load()["modes"]["surround"]["banks"]["global"]["preset"],
+                         {**neutral_selection(), "front": "Front EQ", "rear": "Rear copy"})
 
     def test_a_lone_sub_l_lists_its_presets_and_irs(self):
         """Stereo + Sub with one mono sub on sub_l: its bank is sub_l, not the Sub L/R pair."""

@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from audio.output_topology import BANK_IDS, MODES, SURROUND_GROUPS
 from common.atomic_write import atomic_write_text
-from dsp.surround_global import (BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, preset_layout,
+from dsp.surround_global import (BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, preset_group, preset_layout,
                                  validate_preset_layout)
 from typing import Any, Dict, List, Optional, Set
 
@@ -149,8 +149,10 @@ class DSPPresetStore:
                 logger.warning("Skipping unreadable preset %s: %s", path.name, exc)
                 continue
             sources = payload.get("metadata", {}).get("source_presets", [])
+            # A Surround Global preset names the speaker group it is selectable for.
             result.append({"name": path.stem, "filename": path.name, "path": str(path),
                            "bank": self.bank, "mode": self.mode, "layout": preset_layout(payload),
+                           "group": preset_group(payload),
                            "source_presets": list(sources) if isinstance(sources, list) else []})
         return result
 

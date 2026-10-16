@@ -98,10 +98,11 @@ def build_output_state_mutation(mutation: dict, *, output_key: str, channels: in
         bank_id = _require_bank_id(args.get("bank_id"))
         return lambda state: select_bank(state, mode, output_key, channels, bank_id)
     if kind == "set_bank_preset":
-        args = strict({"mode", "bank_id", "preset", "preset_a", "preset_b", "active_side"})
+        # Surround Global names the speaker group a preset is selected for.
+        args = strict({"mode", "bank_id", "preset", "preset_a", "preset_b", "active_side", "group"})
         mode = require_state_mode(args.get("mode"))
         bank_id = _require_bank_id(args.get("bank_id"))
-        options = {name: args[name] for name in ("preset", "preset_a", "preset_b", "active_side")
+        options = {name: args[name] for name in ("preset", "preset_a", "preset_b", "active_side", "group")
                    if name in args}
 
         def update_bank(state):
@@ -110,7 +111,8 @@ def build_output_state_mutation(mutation: dict, *, output_key: str, channels: in
             for name in ("preset", "preset_a", "preset_b"):
                 if options.get(name) is not None:
                     try:
-                        get_service().validate_bank_preset(state, mode, definition["id"], options[name], roles=topology["roles"])
+                        get_service().validate_bank_preset(state, mode, definition["id"], options[name],
+                                                           roles=topology["roles"], group=options.get("group"))
                     except FileNotFoundError as exc:
                         raise ValueError(f"Unknown preset {options[name]!r}") from exc
             return set_bank_preset(state, mode, definition["id"], roles=topology["roles"], **options)

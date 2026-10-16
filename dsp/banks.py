@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""A/B selection of one correction bank over that bank's own preset library."""
+"""A/B selection of one correction bank over that bank's own preset library.
+
+A slot names one preset. Surround Global slots instead select one preset per
+speaker group (``{"front": name, ...}``); the output state checks the groups.
+"""
 
 from __future__ import annotations
 
@@ -13,17 +17,36 @@ def _validate_name(value: object) -> None:
         raise ValueError("Preset name must be a non-empty filename without control characters")
 
 
+def _validate_slot(value: object) -> None:
+    if not isinstance(value, dict):
+        _validate_name(value)
+        return
+    if not value or any(not isinstance(group, str) for group in value):
+        raise ValueError("A group selection maps speaker groups to presets")
+    for name in value.values():
+        _validate_name(name)
+        if name == "Direct":
+            raise ValueError("Direct bypasses every speaker group; it is no group selection")
+
+
+def slot_presets(slot: object) -> tuple[str, ...]:
+    """Preset names one slot holds (every group of a group selection)."""
+    if slot is None:
+        return ()
+    return tuple(slot.values()) if isinstance(slot, dict) else (slot,)
+
+
 @dataclass(frozen=True)
 class BankState:
-    preset: str = "Neutral"
-    preset_a: str = "Neutral"
-    preset_b: str | None = None
+    preset: str | dict = "Neutral"
+    preset_a: str | dict = "Neutral"
+    preset_b: str | dict | None = None
 
     def __post_init__(self) -> None:
-        _validate_name(self.preset)
-        _validate_name(self.preset_a)
+        _validate_slot(self.preset)
+        _validate_slot(self.preset_a)
         if self.preset_b is not None:
-            _validate_name(self.preset_b)
+            _validate_slot(self.preset_b)
             if self.preset_b == self.preset_a:
                 raise ValueError("Compare slots must use distinct presets")
 
@@ -40,7 +63,9 @@ class BankState:
         return replace(self, preset=name)
 
     def to_dict(self) -> dict:
-        return {"preset": self.preset, "preset_a": self.preset_a, "preset_b": self.preset_b}
+        def copy(slot):
+            return dict(slot) if isinstance(slot, dict) else slot
+        return {"preset": copy(self.preset), "preset_a": copy(self.preset_a), "preset_b": copy(self.preset_b)}
 
     @classmethod
     def from_dict(cls, payload: object) -> BankState:

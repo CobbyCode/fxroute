@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Surround Global presets: PEQ/convolver plugins scoped to a speaker group.
+"""Surround Global: one PEQ/convolver preset per speaker group in each A/B slot.
 
-A Surround Global preset is one preset whose plugins each carry the speaker
-group they correct (front, center, side, rear). The native engine runs a
-tagged plugin only on the effect pairs of its group, ahead of the matrix and
-the bass-management split, so the correction covers the speaker and its share
-of the sub bus. LFE is no speaker group: no plugin targets it.
+A Surround Global preset holds the filters of one speaker group (front,
+center, side, rear); every plugin carries that group. A Global A/B slot is a
+group selection that names one preset (or Neutral) per group, and the filters
+of all routed groups run at the same time. The native engine runs a tagged
+plugin only on the effect pairs of its group, ahead of the matrix and the
+bass-management split, so the correction covers the speaker and its share of
+the sub bus. LFE is no speaker group: no plugin targets it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+import copy
+from collections.abc import Callable, Iterable, Sequence
 
 from audio.output_topology import SUB_ROLES, SURROUND_GROUPS, surround_group
 
@@ -56,6 +59,8 @@ def validate_surround_chain(chain: Sequence[dict], *, preset: str) -> None:
             raise ValueError(f"{label} needs a speaker group ({', '.join(SURROUND_GROUPS)})")
         if plugin["type"] == "equalizer" and _delay_band(plugin):
             raise ValueError(f"{label}: a delay band would shift every speaker group")
+    if len({plugin.get("group") for plugin in chain if plugin.get("enabled", True)}) > 1:
+        raise ValueError(f'Surround preset "{preset}" mixes speaker groups; a preset holds the filters of one group')
 
 
 def validate_preset_layout(payload: dict) -> None:
@@ -67,10 +72,47 @@ def validate_preset_layout(payload: dict) -> None:
         raise ValueError("Plugin speaker groups require the Surround preset layout")
 
 
-def routed_chain(chain: Sequence[dict], routed: frozenset[str]) -> list[dict]:
-    """Plugins whose group has a routed speaker, in chain order.
+def neutral_selection() -> dict[str, str]:
+    """Group selection without any filter."""
+    return {group: "Neutral" for group in SURROUND_GROUPS}
 
-    A group without its own speaker folds down into another one; its filter
-    was measured on that missing speaker and must not shape the fold-down.
+
+def preset_group(payload: object) -> str | None:
+    """Speaker group of a Surround preset (None without plugins or layout)."""
+    chain = payload.get("chain") if isinstance(payload, dict) and preset_layout(payload) == LAYOUT else None
+    groups = {plugin.get("group") for plugin in chain or [] if isinstance(plugin, dict) and plugin.get("enabled", True)}
+    return next(iter(groups)) if len(groups) == 1 and None not in groups else None
+
+
+def selection_label(selection: dict) -> str:
+    """Short text of a group selection, e.g. "front: Room FIR · rear: Rear PEQ"."""
+    chosen = [f"{group}: {selection[group]}" for group in SURROUND_GROUPS if selection.get(group, "Neutral") != "Neutral"]
+    return " · ".join(chosen) or "Neutral"
+
+
+def selection_chain(selection: dict, routed: frozenset[str], load: Callable[[str], dict]) -> list[dict]:
+    """Global chain of a group selection: the preset of every routed group, in group order.
+
+    ``load`` reads a preset of the Surround Global library. A group without a
+    routed speaker folds down into another one; its filter was measured on
+    that missing speaker and must not shape the fold-down. Plugin ids are
+    renumbered per type, as Combine numbers them.
     """
-    return [plugin for plugin in chain if plugin.get("group") in routed or not plugin.get("enabled", True)]
+    chain: list[dict] = []
+    for group in SURROUND_GROUPS:
+        name = selection.get(group, "Neutral")
+        if group not in routed or name == "Neutral":
+            continue
+        payload = load(name)
+        if preset_layout(payload) != LAYOUT:
+            raise ValueError(f'Preset "{name}" is no Surround Global preset')
+        validate_surround_chain(payload["chain"], preset=name)
+        if preset_group(payload) not in (None, group):
+            raise ValueError(f'Preset "{name}" holds {preset_group(payload)} filters, not {group} filters')
+        chain.extend(copy.deepcopy(plugin) for plugin in payload["chain"])
+    counters: dict[str, int] = {}
+    for plugin in chain:
+        number = counters.get(plugin["type"], 0)
+        counters[plugin["type"]] = number + 1
+        plugin["id"] = f"{plugin['type']}#{number}"
+    return chain

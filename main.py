@@ -511,6 +511,7 @@ from downloader import Downloader
 from dsp.manager import DSPManager, ensure_kernel_supported_ir, parse_wav_frames
 from dsp.runtime import DSPRuntime, _contains_link
 from dsp.locks import DspSyncOwnership
+from dsp.surround_global import selection_label
 from dsp.output_render import OutputRenderer, OutputRenderDeps, build_plan_target
 from audio.output_apply import OutputApplication, OutputApplyDeps
 from audio import output_api
@@ -5095,12 +5096,16 @@ samplerate.configure_output_state_head(_v2_head_for_overview)
 
 
 def _active_global_preset() -> str | None:
-    """Global preset of the active output mode (None if the head is unusable)."""
+    """Global preset of the active output mode (None if the head is unusable).
+
+    A Surround Global group selection reads as its short text.
+    """
     head = _v2_head_for_overview()
     try:
-        return head["modes"][head["active_mode"]]["banks"]["global"]["preset"]
+        preset = head["modes"][head["active_mode"]]["banks"]["global"]["preset"]
     except (KeyError, TypeError):
         return None
+    return selection_label(preset) if isinstance(preset, dict) else preset
 
 
 def _measurement_area(bank_id: str) -> tuple[dict, str, str, int]:

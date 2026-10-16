@@ -32,6 +32,7 @@ from audio.output_state import default_output_state, validate_output_state
 from common.atomic_write import atomic_write_text
 from dsp.native_config import layout_from_plan
 from dsp.processing_plan import compile_processing_plan
+from dsp.surround_global import preset_group
 
 logger = logging.getLogger(__name__)
 
@@ -255,15 +256,20 @@ class OutputService:
         """Map a compiled plan to a native engine output layout."""
         return layout_from_plan(plan, resolve_ir=self._deps.resolve_ir)
 
-    def validate_bank_preset(self, state: dict, mode: str, bank_id: str, preset: str, *, roles=None) -> None:
+    def validate_bank_preset(self, state: dict, mode: str, bank_id: str, preset: str, *, roles=None,
+                             group: str | None = None) -> None:
         """Check that a bank has the preset and that it fits the bank's shape.
 
         Every bank has its own preset library, Global one per output mode;
-        a name from another bank raises FileNotFoundError.
+        a name from another bank raises FileNotFoundError. A Surround Global
+        preset is selected for the speaker ``group`` whose filters it holds.
         """
         definition = resolve_bank(state["modes"][mode], bank_id, roles)
         payload = self._deps.preset_loader(mode, definition["id"], preset)
         if definition["id"] == "global":
+            held = preset_group(payload)
+            if mode == "surround" and preset != "Direct" and held not in (None, group):
+                raise ValueError(f'Preset "{preset}" holds {held} filters, not {group or "ungrouped"} filters')
             return
         self.compile_layout({
             "sample_rate_hz": 48000,

@@ -8,7 +8,6 @@ coefficient/IR compilation must consume this plan before it can be activated.
 from __future__ import annotations
 
 import copy
-import logging
 from collections.abc import Callable
 
 from audio.filter_banks import bank_definitions
@@ -20,41 +19,30 @@ from audio.output_topology import (MAIN_ROLES, SUB_ROLES, SURROUND_POSITIONS, de
                                    side_for_role, surround_group)
 from audio.samplerate.constants import FXROUTE_MAX_PROCESSING_RATE
 from dsp.banks import BankState
-from dsp.surround_global import (BUILTIN_PRESETS, LAYOUT as SURROUND_LAYOUT, preset_layout,
-                                 routed_chain, routed_groups, validate_surround_chain)
-
-logger = logging.getLogger(__name__)
+from dsp.surround_global import routed_groups, selection_chain
 
 
 def _bank_plan(bank_id: str, payload: dict, load: Callable[[str], dict],
                 *, neutralized: bool = False, surround_groups: frozenset[str] | None = None) -> dict:
-    """Plan one bank; ``surround_groups`` marks the Surround Global bank.
+    """Plan one bank; ``surround_groups`` are the routed groups of Surround Global.
 
-    ``load`` reads a preset of the bank's own library. Surround Global keeps
-    only plugins of speaker groups with a routed speaker. A stored preset
-    without the Surround layout cannot be assigned any more and renders as
-    Neutral instead of blocking the activation.
+    ``load`` reads a preset of the bank's own library. A Surround Global slot
+    selects one preset per speaker group; only the routed groups play.
     """
     if neutralized:
         return {"bank_id": bank_id, "preset": "Direct",
                 "bypass": True, "chain": []}
     bank = BankState.from_dict(payload)
-    preset = load(bank.preset)
-    chain = copy.deepcopy(preset["chain"])
-    name = bank.preset
-    if surround_groups is not None and name not in BUILTIN_PRESETS:
-        if preset_layout(preset) != SURROUND_LAYOUT:
-            logger.warning('Surround Global preset "%s" has no Surround layout; rendering Neutral', name)
-            name, chain = "Neutral", []
-        else:
-            validate_surround_chain(chain, preset=name)
-            chain = routed_chain(chain, surround_groups)
-    elif bank_id != "global":
+    if isinstance(bank.preset, dict):
+        return {"bank_id": bank_id, "preset": dict(bank.preset), "bypass": False,
+                "chain": selection_chain(bank.preset, surround_groups or frozenset(), load)}
+    chain = copy.deepcopy(load(bank.preset)["chain"])
+    if bank_id != "global":
         if any(plugin["type"] not in {"equalizer", "convolver"}
                for plugin in chain if plugin.get("enabled", True)):
             raise ValueError(f"Area bank {bank_id} supports only PEQ and convolver presets")
-    bypass = name == "Direct"
-    return {"bank_id": bank_id, "preset": name,
+    bypass = bank.preset == "Direct"
+    return {"bank_id": bank_id, "preset": bank.preset,
             "bypass": bypass, "chain": [] if bypass else chain}
 
 
@@ -227,8 +215,8 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
     topology.require_activatable()
     processing = config["processing"]
     delay_offset = max(0.0, -min(processing[role]["alignment_ms"] for role in topology.roles))
-    # Surround Global holds group-tagged PEQ/convolver plugins; groups without
-    # a routed speaker render nothing (see dsp.surround_global).
+    # Surround Global selects one preset per speaker group; groups without a
+    # routed speaker render nothing (see dsp.surround_global).
     surround_groups = routed_groups(topology.roles) if mode == "surround" else None
     global_bank = _bank_plan("global", config["banks"]["global"],
                              lambda name: preset_loader(mode, "global", name),

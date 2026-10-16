@@ -7,6 +7,7 @@ import copy
 
 from audio.output_state import default_level_cal, default_output_state, validate_output_state
 from dsp.latency import default_av_sync
+from dsp.surround_global import neutral_selection
 
 
 def _upgrade_v3_surround(payload: dict) -> dict:
@@ -56,13 +57,41 @@ def _upgrade_v5_av_sync(payload: dict) -> dict:
     return result
 
 
-_UPGRADES = {3: _upgrade_v3_surround, 4: _upgrade_v4_level_calibration, 5: _upgrade_v5_av_sync}
+def _upgrade_v6_surround_global_groups(payload: dict) -> dict:
+    """Give the Surround Global slots a preset selection per speaker group.
+
+    A slot that named one preset cannot be mapped to its group without the
+    preset library: it starts without filters, Direct stays Direct. A B equal
+    to A is cleared; the listened side is kept.
+    """
+    result = copy.deepcopy(payload)
+    result["version"] = 7
+    try:
+        binding = result["modes"]["surround"]["banks"]["global"]
+        preset, preset_a, preset_b = binding["preset"], binding["preset_a"], binding["preset_b"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("Invalid version-six output state") from exc
+
+    def selection(slot):
+        return slot if slot is None or slot == "Direct" or isinstance(slot, dict) else neutral_selection()
+
+    listened_b = preset_b is not None and preset == preset_b and preset != preset_a
+    preset_a, preset_b = selection(preset_a), selection(preset_b)
+    if preset_b == preset_a:
+        preset_b = None
+    binding.update(preset=preset_b if listened_b and preset_b is not None else preset_a,
+                   preset_a=preset_a, preset_b=preset_b)
+    return result
+
+
+_UPGRADES = {3: _upgrade_v3_surround, 4: _upgrade_v4_level_calibration, 5: _upgrade_v5_av_sync,
+             6: _upgrade_v6_surround_global_groups}
 
 
 def upgrade_output_state(payload: dict) -> dict:
     """Upgrade a released document step by step and validate the result.
 
-    Releases wrote version three; versions four and five are the steps of
+    Releases wrote version three; versions four to six are the steps of
     that chain. Loading does not write; the next revision-checked commit
     atomically persists the upgraded document.
     """
