@@ -45,7 +45,11 @@ logger = logging.getLogger(__name__)
 
 
 async def _drain_qobuz_operation(operation: Awaitable[Any]) -> Any:
-    """Keep daemon mutations and their readback inside transition ownership."""
+    """Drain daemon mutations; a delivered caller cancel wins over late errors.
+
+    Unlike the ordinary worker drain, retain the original cancellation and
+    log even an error raised by shield after that cancellation.
+    """
     task = asyncio.create_task(operation, name="qobuz-transition-operation")
     cancelled = None
     while not task.done():

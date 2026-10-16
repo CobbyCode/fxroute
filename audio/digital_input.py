@@ -11,6 +11,7 @@ import tempfile
 
 from audio import pw_link
 from common.process_stop import run_stop_shielded
+from common.run_to_completion import wait_for_completion
 from dsp.runtime import _contains_link
 
 NODE_NAME = "fxroute_surround_input"
@@ -64,12 +65,7 @@ class DigitalInput:
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         ))
-        cancelled = False
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
+        cancelled = await wait_for_completion(task)
         self.process = task.result()
         self._stderr_task = asyncio.create_task(self._read_stderr(self.process), name="digital-input-stderr")
         if cancelled:

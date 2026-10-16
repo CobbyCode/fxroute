@@ -23,6 +23,7 @@ import numpy as np
 
 from audio.custom_input_mapping import card_base
 from audio.tool_env import c_locale_env
+from common.run_to_completion import wait_for_completion
 from measurement.reference_channels import resolve_reference_channels
 from measurement.audio import MeasurementAudioAdapter
 from measurement.file_store import MeasurementFileStore
@@ -894,12 +895,7 @@ class MeasurementStore:
             if cancel_error is not None:
                 raise cancel_error
             return
-        cancelled = False
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
+        cancelled = await wait_for_completion(task)
         if not task.cancelled():
             task.result()
         if cancelled:

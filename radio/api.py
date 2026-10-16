@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from safe_http import RADIO_BROWSER_FETCH_MAX_BYTES, safe_get
 
 from library.core import path_within_root
+from common.run_to_completion import finish_then_cancel
 from radio.stations import (
     StationStoreCorruptedError,
     add_catalog_station,
@@ -62,33 +63,6 @@ def _get_station_mutation_lock() -> asyncio.Lock:
     return _station_mutation_lock
 
 
-async def _drain_worker(func, *args, **kwargs):
-    """Run a sync station worker off the event loop, surviving caller cancellation.
-
-    Mirrors main._drain_worker semantics; it cannot be imported from main.py
-    because main.py imports this module (import cycle).  A cancelled caller
-    must not release the surrounding critical section while the worker thread
-    is still running: threads cannot be cancelled, so this helper waits until
-    the worker actually finished, then re-raises CancelledError.  Worker
-    exceptions are re-raised in the normal path and logged on the
-    cancellation path (the cancellation takes precedence).
-    """
-    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
-    cancelled = False
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            cancelled = True
-    if cancelled:
-        try:
-            worker.result()
-        except BaseException:
-            logger.exception("Station worker failed while its caller was cancelled")
-        raise asyncio.CancelledError
-    return worker.result()
-
-
 async def _run_locked_station_worker(func, *args, **kwargs):
     """Run a sync station store operation inside the app-wide mutation lock.
 
@@ -96,7 +70,8 @@ async def _run_locked_station_worker(func, *args, **kwargs):
     the caller is cancelled.
     """
     async with _get_station_mutation_lock():
-        return await _drain_worker(func, *args, **kwargs)
+        return await finish_then_cancel(
+            asyncio.to_thread(func, *args, **kwargs), what="Station worker")
 
 
 class StationUpsertRequest(BaseModel):

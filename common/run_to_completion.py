@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 T = TypeVar("T")
@@ -21,12 +21,34 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
+async def wait_for_completion(
+    task: asyncio.Future[Any], *, on_cancel: Callable[[], None] | None = None,
+) -> asyncio.CancelledError | None:
+    """Drain an owned task, returning the last cancellation delivered while waiting.
+
+    Do not create work or consume its final result here: the owner decides
+    error/cancellation precedence and may need to register resources first.
+    Repeated cancels cannot interrupt the task. Each delivered cancel also
+    invokes ``on_cancel`` when supplied. Exceptions raised by ``shield`` still
+    propagate; an already-completed task is left untouched.
+    """
+    caller_cancel: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            caller_cancel = exc
+            if on_cancel is not None:
+                on_cancel()
+    return caller_cancel
+
+
 async def run_to_completion(awaitable: Awaitable[T]) -> T:
     """Await ``awaitable`` to its end; a cancel received meanwhile is re-raised after.
 
-    Same contract as ``MeasurementStore.drain_job``: every cancel that reaches
-    the caller while it waits is remembered, also when the work finishes in
-    the same event-loop tick, and re-raised once the work is done. Repeated
+    Every cancel that reaches the caller while it waits is remembered, also
+    when the work finishes in the same event-loop tick, and re-raised once
+    the work is done. Repeated
     cancels cannot interrupt the work. The work's own exception or its own
     cancellation wins over a pending cancel, so a failed restore still
     surfaces loudly.
@@ -37,13 +59,7 @@ async def run_to_completion(awaitable: Awaitable[T]) -> T:
     their normal meaning.
     """
     task: asyncio.Future[Any] = asyncio.ensure_future(awaitable)
-    caller_cancel: asyncio.CancelledError | None = None
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as exc:
-            # A work that finished in this tick does not make the cancel moot.
-            caller_cancel = exc
+    caller_cancel = await wait_for_completion(task)
     result = task.result()
     if caller_cancel is not None:
         raise caller_cancel
@@ -51,20 +67,16 @@ async def run_to_completion(awaitable: Awaitable[T]) -> T:
 
 
 async def finish_then_cancel(awaitable: Awaitable[T], *, what: str) -> T:
-    """Await ``awaitable`` to its end; a caller cancel then wins over its result.
+    """Finish critical work, then propagate a delivered cancel without its message.
 
     For a caller that owns a critical section (a lock) and must not release
-    it while the work still mutates state. Unlike ``run_to_completion``, a
-    cancel received meanwhile takes precedence even over the work's own
-    exception, which is logged instead.
+    it while the work still mutates state. Errors delivered by ``shield``
+    propagate, even after a caller cancel. Unlike ``run_to_completion``, if
+    cancellation wakes the waiter with work already done, it takes precedence
+    over the final result/exception; an exception is logged in that case.
     """
     task: asyncio.Future[Any] = asyncio.ensure_future(awaitable)
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
+    cancelled = await wait_for_completion(task)
     if cancelled:
         try:
             task.result()

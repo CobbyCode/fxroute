@@ -25,6 +25,7 @@ from http_errors import bad_request
 from measurement.session import MeasurementEntryInvalidated
 from audio.samplerate import get_audio_output_overview
 from audio.tool_env import c_locale_env
+from common.run_to_completion import wait_for_completion
 
 logger = logging.getLogger(__name__)
 SPL_STOP_TIMEOUT_SECONDS = 40.0
@@ -1070,13 +1071,8 @@ async def _run_operation_thread(
 ) -> Any:
     """Drain owner-mutating thread work before propagating request cancellation."""
     thread_task = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
-    cancelled = False
-    while not thread_task.done():
-        try:
-            await asyncio.shield(thread_task)
-        except asyncio.CancelledError:
-            cancelled = True
-            _request_operation_process_stop(operation)
+    cancelled = await wait_for_completion(
+        thread_task, on_cancel=lambda: _request_operation_process_stop(operation))
     if cancelled:
         try:
             thread_task.result()
@@ -1303,12 +1299,7 @@ async def _cleanup_operation_shielded(
 ) -> None:
     cleanup_task = asyncio.create_task(
         _cleanup_operation(operation, release_unrestored=release_unrestored))
-    cancelled = False
-    while not cleanup_task.done():
-        try:
-            await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError:
-            cancelled = True
+    cancelled = await wait_for_completion(cleanup_task)
     cleanup_task.result()
     if cancelled:
         raise asyncio.CancelledError

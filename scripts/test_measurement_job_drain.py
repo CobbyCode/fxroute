@@ -151,6 +151,46 @@ class MeasurementJobDrainTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(KeyError):
             await self.store.drain_job("missing")
 
+    async def test_already_cancelled_child_is_not_a_caller_cancellation(self):
+        self.store._jobs["child"] = {"id": "child", "status": "cancelled"}
+        child = asyncio.create_task(asyncio.sleep(0))
+        child.cancel("child stopped")
+        await asyncio.gather(child, return_exceptions=True)
+        self.store._job_tasks["child"] = child
+        await self.store.drain_job("child")
+
+    async def test_child_cancelled_while_draining_propagates_cancellation(self):
+        self.store._jobs["child"] = {"id": "child", "status": "completed"}
+        child = asyncio.create_task(asyncio.Event().wait())
+        self.store._job_tasks["child"] = child
+        caller = asyncio.create_task(self.store.drain_job("child"))
+        await asyncio.sleep(0)
+        child.cancel("child stopped")
+        with self.assertRaises(asyncio.CancelledError) as raised:
+            await caller
+        self.assertEqual(raised.exception.args, ())
+
+    async def test_child_failure_wins_over_cancel_request_persistence_failure(self):
+        self.store._jobs["child"] = {"id": "child", "status": "running"}
+        gate = asyncio.Future()
+
+        async def work():
+            await gate
+            raise RuntimeError("child cleanup failed")
+
+        child = asyncio.create_task(work())
+        self.store._job_tasks["child"] = child
+        with patch.object(self.store, "cancel_job", side_effect=OSError("disk full")):
+            with self.assertLogs("measurement.store", level="ERROR"):
+                caller = asyncio.create_task(self.store.drain_job("child"))
+                await asyncio.sleep(0)
+                caller.cancel("caller stopped")
+                await asyncio.sleep(0)
+                self.assertFalse(caller.done())
+                gate.set_result(None)
+                with self.assertRaisesRegex(RuntimeError, "child cleanup failed"):
+                    await caller
+
 
 if __name__ == "__main__":
     unittest.main()

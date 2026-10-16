@@ -543,7 +543,7 @@ from audio.stdin_pipewire import PipeWirePcmSink, StdinIngress, pcm_adapter_erro
 from audio.stdin_protocol import socket_path
 from audio.source_feed import SourceOverviewFeed, SourceTransitionLock
 from audio.source_transitions import SourceTransitionDependencies, SourceTransitions
-from common.run_to_completion import finish_then_cancel
+from common.run_to_completion import finish_then_cancel, wait_for_completion
 from playback.radio_reconnect import RadioReconnect, RadioReconnectDependencies
 from playback.spotify_watch import (
     SpotifyPlayerctlWatch,
@@ -848,29 +848,8 @@ def _source_transition_lock() -> SourceTransitionLock:
 
 
 async def _drain_worker(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Run a sync worker off the event loop, surviving caller cancellation.
-
-    The caller owns the surrounding critical section (lock).  A cancelled
-    caller must not release that section while the worker thread is still
-    running: threads cannot be cancelled, so this helper waits until the
-    worker actually finished, then re-raises CancelledError.  Worker
-    exceptions are re-raised in the normal path and logged on the
-    cancellation path (the cancellation takes precedence).
-    """
-    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
-    cancelled = False
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            cancelled = True
-    if cancelled:
-        try:
-            worker.result()
-        except BaseException:
-            logger.exception("Worker failed while its caller was cancelled")
-        raise asyncio.CancelledError
-    return worker.result()
+    """Run a thread worker without releasing its caller's locks before it ends."""
+    return await finish_then_cancel(asyncio.to_thread(func, *args, **kwargs), what="Worker")
 
 
 async def _run_locked_worker(lock: asyncio.Lock, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -896,12 +875,7 @@ async def _finish_despite_cancellation(coro, *, name: str) -> Any:
     cancellation.
     """
     task = asyncio.create_task(coro, name=name)
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
+    cancelled = await wait_for_completion(task)
     if task.cancelled():
         raise asyncio.CancelledError
     error = task.exception()

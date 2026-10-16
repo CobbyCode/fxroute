@@ -11,6 +11,8 @@ import time
 from copy import deepcopy
 from typing import Any, Callable
 
+from common.run_to_completion import run_to_completion
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,18 +119,11 @@ class MeasurementJobRunner:
                     self.cancel_job(job_id, job)
                 except Exception:
                     logger.exception("Failed to persist cancelling measurement job %s", job_id)
-                while not worker_task.done():
-                    try:
-                        await asyncio.shield(worker_task)
-                    except asyncio.CancelledError:
-                        continue
-                    except Exception:
-                        break
-                if worker_task.done() and not worker_task.cancelled():
-                    try:
-                        worker_task.result()
-                    except Exception:
-                        pass
+                # The original cancellation wins here; drain before scope exit.
+                try:
+                    await run_to_completion(worker_task)
+                except (Exception, asyncio.CancelledError):
+                    pass
                 raise
 
             _rm["worker_back"] = time.monotonic()

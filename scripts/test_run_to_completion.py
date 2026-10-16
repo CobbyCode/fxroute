@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.run_to_completion import run_to_completion
+import common.run_to_completion as completion
 
 
 async def settle(turns: int = 5) -> None:
@@ -155,6 +156,95 @@ class RunToCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([type(error) for error in raised.exception.exceptions], [ValueError])
         self.assertEqual(after_work, [], "the cancelled child did not carry on")
         self.assertEqual(asyncio.current_task().cancelling(), 0)
+
+
+class WaitForCompletionTests(unittest.IsolatedAsyncioTestCase):
+    def waiter(self):
+        wait = getattr(completion, "wait_for_completion", None)
+        self.assertTrue(callable(wait), "A shared shield-and-drain primitive is required")
+        return wait
+
+    async def test_repeated_cancels_notify_and_are_returned_after_completion(self):
+        wait = self.waiter()
+        task = asyncio.create_task(asyncio.Event().wait())
+        notifications = []
+        caller = asyncio.create_task(wait(task, on_cancel=lambda: notifications.append("stop")))
+        try:
+            await settle()
+            for message in ("first", "last"):
+                caller.cancel(message)
+                await settle()
+                self.assertFalse(caller.done())
+                self.assertFalse(task.cancelled())
+            # A child cancellation still wakes the waiter, just as shield did.
+            task.cancel("child")
+            cancelled = await caller
+            self.assertIsInstance(cancelled, asyncio.CancelledError)
+            self.assertEqual(notifications, ["stop", "stop", "stop"])
+        finally:
+            task.cancel()
+            await asyncio.gather(task, caller, return_exceptions=True)
+
+    async def test_same_tick_cancel_is_returned_without_consuming_work_result(self):
+        wait = self.waiter()
+        task = asyncio.Future()
+        caller = asyncio.create_task(wait(task))
+        await settle()
+        task.set_result(7)
+        caller.cancel("last")
+        cancelled = await caller
+        self.assertEqual(cancelled.args, ("last",))
+        self.assertEqual(task.result(), 7)
+
+    async def test_last_caller_cancel_is_retained_after_successful_work(self):
+        wait = self.waiter()
+        gate = asyncio.Event()
+        task = asyncio.create_task(gate.wait())
+        caller = asyncio.create_task(wait(task))
+        try:
+            await settle()
+            for message in ("first", "last"):
+                caller.cancel(message)
+                await settle()
+                self.assertFalse(caller.done())
+            gate.set()
+            cancelled = await caller
+            self.assertEqual(cancelled.args, ("last",))
+            self.assertTrue(task.result())
+        finally:
+            gate.set()
+            await asyncio.gather(task, caller, return_exceptions=True)
+
+    async def test_completed_tasks_are_not_awaited_or_consumed(self):
+        wait = self.waiter()
+        for state in ("result", "error", "cancelled"):
+            with self.subTest(state=state):
+                task = asyncio.Future()
+                if state == "result":
+                    task.set_result(7)
+                elif state == "error":
+                    task.set_exception(RuntimeError("work failed"))
+                else:
+                    task.cancel("child")
+                self.assertIsNone(await wait(task))
+                if state == "error":
+                    with self.assertRaisesRegex(RuntimeError, "work failed"):
+                        task.result()
+                elif state == "result":
+                    self.assertEqual(task.result(), 7)
+                else:
+                    self.assertTrue(task.cancelled())
+
+    async def test_error_delivered_by_shield_still_propagates(self):
+        wait = self.waiter()
+        task = asyncio.Future()
+        caller = asyncio.create_task(wait(task))
+        await settle()
+        caller.cancel("stop")
+        await settle()
+        task.set_exception(RuntimeError("work failed"))
+        with self.assertRaisesRegex(RuntimeError, "work failed"):
+            await caller
 
 
 if __name__ == "__main__":
