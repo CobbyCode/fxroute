@@ -535,8 +535,8 @@ class SourceRouteTests(SourceRaceCase):
             bluetooth_module, "get_audio_source_overview",
             side_effect=lambda: {"mode": persisted["mode"]},
         ), patch.object(bluetooth_module, "set_bluetooth_receiver_enabled"), patch.object(
-            bluetooth_module, "disconnect_connected_bluetooth_audio_sources", return_value=[]
-        ), patch.object(main, "_pause_all_app_playback_for_external_input", AsyncMock()), patch.object(
+            main, "_pause_all_app_playback_for_external_input", AsyncMock()
+        ), patch.object(
             main.peak_monitor_coordinator, "sync_source_mode_state", AsyncMock()
         ):
             older = asyncio.create_task(monitor.sync({

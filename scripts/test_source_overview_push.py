@@ -260,20 +260,20 @@ class SourcePushTests(unittest.IsolatedAsyncioTestCase):
             bluetooth={"selectable": False, "state": "unavailable"},
             notes=["Bluetooth input is not currently available on this host; staying on App playback."],
         )
-        disable = AsyncMock()
         with patch.object(main.samplerate, "_load_audio_source_selection",
                           return_value={"mode": "bluetooth-input", "selected_input_key": None}), patch.object(
             bluetooth_module, "get_audio_source_overview", Mock(return_value=fallback)
         ), patch.object(main.bluetooth_input, "input_source_name", None), patch.object(
             main.bluetooth_input, "agent_process", None
-        ), patch.object(main.bluetooth_input, "disable", disable):
+        ), patch.object(bluetooth_module, "set_bluetooth_receiver_enabled"):
             await main.bluetooth_input._monitor_once()
             await main.bluetooth_input._monitor_once()
         pushed = self._pushed()
         self.assertEqual([(item["mode"], item["bluetooth"]["state"]) for item in pushed],
                          [("app-playback", "unavailable")],
                          "the first tick pushes the fallback, the unchanged second tick does not")
-        disable.assert_not_awaited()
+        self.assertIsNone(main.bluetooth_input.input_source_name)
+        self.assertIsNone(main.bluetooth_input.agent_process)
 
     async def test_external_fallback_without_an_ingress_is_pushed(self):
         """External selected but never linked, inputs gone: push the fallback once, then recover."""

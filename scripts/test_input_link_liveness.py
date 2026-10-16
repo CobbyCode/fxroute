@@ -56,8 +56,8 @@ class InputLinkLivenessTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(pw_link, "disconnect_ports", graph.disconnect), patch.object(
             bluetooth_module, "get_audio_source_overview", return_value=overview
         ), patch.object(monitor, "_ensure_agent", AsyncMock()), patch.object(
-            bluetooth_module, "disconnect_connected_bluetooth_audio_sources", return_value=[]
-        ), patch.object(bluetooth_module, "BLUETOOTH_INPUT_MONITOR_INTERVAL_SECONDS", 0.01, create=True):
+            bluetooth_module, "BLUETOOTH_INPUT_MONITOR_INTERVAL_SECONDS", 0.01, create=True
+        ):
             monitor.monitor_task = asyncio.create_task(monitor.run_monitor_loop())
             try:
                 await self._wait_for_links(graph, 2)

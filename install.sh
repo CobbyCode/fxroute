@@ -4867,6 +4867,11 @@ wireplumber.profiles = {
     monitor.bluez.seat-monitoring = disabled
   }
 }
+# FXRoute is a stereo audio appliance, not a headset or telephone gateway.
+# Keep classic and LE Audio input/output, without advertising HFP/HSP mics.
+monitor.bluez.properties = {
+  bluez5.roles = [ a2dp_sink a2dp_source bap_sink bap_source ]
+}
 # FXRoute links Bluetooth capture sources to the DSP ingress sink itself
 # (audio/bluetooth.py). WirePlumber would otherwise also autoconnect every
 # new bluez_input node to the default hardware sink (standard policy for

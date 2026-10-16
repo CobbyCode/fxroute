@@ -4,11 +4,11 @@
 - The BlueZ presence probe asks the bus daemon (NameHasOwner), never
   org.bluez itself: a message to org.bluez D-Bus-activates a stopped
   bluetoothd and may hang while bluetoothd shuts down.
-- bluetoothctl work (receiver toggle, device disconnect, overviews) runs in
+- bluetoothctl work (receiver toggle, reconnect, overviews) runs in
   worker threads, not on the event loop.
 - The monitor tick probes outside the source-transition lock, so a hanging
   probe never delays a source switch.
-- bluetoothctl actions (receiver toggle, device disconnect) are only
+- bluetoothctl actions (receiver toggle, reconnect) are only
   recorded under the source-transition lock and run off it, so a command
   hanging on a vanished BlueZ never delays a source switch either.
 - A recorded bluetoothctl action is never lost before it ran: a tick that
@@ -99,11 +99,11 @@ class OffLoopTests(unittest.IsolatedAsyncioTestCase):
             get_persisted_source_mode=lambda: persisted,
         ))
 
-    async def test_receiver_toggle_and_device_disconnect_run_off_the_loop(self):
+    async def test_receiver_toggle_runs_off_the_loop(self):
         monitor = self._monitor()
         with patch.object(bluetooth_module, "set_bluetooth_receiver_enabled", self._record()), patch.object(
-            bluetooth_module, "disconnect_connected_bluetooth_audio_sources", self._record([])
-        ), patch.object(monitor, "_ensure_agent", AsyncMock()):
+            monitor, "_ensure_agent", AsyncMock()
+        ):
             await monitor.sync({"mode": "bluetooth-input", "bluetooth": {"selectable": True, "discoverable": False}})
             await monitor.sync({"mode": "app-playback"})
             # sync() only records the bluetoothctl actions; they run off the
@@ -220,8 +220,8 @@ class LockHoldTests(unittest.IsolatedAsyncioTestCase):
                 ), patch.object(bluetooth_module.pw_link, "disconnect_ports", AsyncMock()), patch.object(
                     bluetooth_module, "input_links_present", AsyncMock(return_value=True)
                 ), patch.object(bluetooth_module, "set_bluetooth_receiver_enabled", receiver_modes.append), patch.object(
-                    bluetooth_module, "disconnect_connected_bluetooth_audio_sources", return_value=[]
-                ), patch.object(monitor, "finish_bluetoothctl_actions", finish_tick):
+                    monitor, "finish_bluetoothctl_actions", finish_tick
+                ):
                     task = asyncio.create_task(monitor.run_monitor_loop())
                     try:
                         # A removed redundant read reaches publication instead.
@@ -314,15 +314,15 @@ class LockHoldTests(unittest.IsolatedAsyncioTestCase):
                 loop_task.cancel()
                 await asyncio.gather(loop_task, return_exceptions=True)
 
-    async def test_hanging_device_disconnect_does_not_hold_the_source_transition_lock(self):
-        """Same for the device disconnect recorded while leaving Bluetooth input."""
+    async def test_hanging_receiver_disable_does_not_hold_the_source_transition_lock(self):
+        """Discovery changes while leaving must not hold up source selection."""
         lock = SourceTransitionLock()
         started, release = threading.Event(), threading.Event()
 
-        def hanging_disconnect():
+        def hanging_toggle(enabled):
+            self.assertFalse(enabled)
             started.set()
             release.wait(5)
-            return []
 
         overview = {"mode": "app-playback", "bluetooth": {"selectable": False}}
         monitor = BluetoothInputMonitor(BluetoothInputDependencies(
@@ -332,12 +332,12 @@ class LockHoldTests(unittest.IsolatedAsyncioTestCase):
         ))
         monitor.input_source_name = "bluez_input.phone"
         with patch.object(bluetooth_module, "get_audio_source_overview", return_value=overview), patch.object(
-            bluetooth_module, "disconnect_connected_bluetooth_audio_sources", side_effect=hanging_disconnect
+            bluetooth_module, "set_bluetooth_receiver_enabled", side_effect=hanging_toggle
         ), patch.object(bluetooth_module.pw_link, "disconnect_ports", AsyncMock()):
             loop_task = asyncio.create_task(monitor.run_monitor_loop())
             try:
                 self.assertTrue(await asyncio.to_thread(started.wait, 5),
-                                "the recorded device disconnect never ran")
+                                "the recorded receiver disable never ran")
                 await asyncio.wait_for(lock.acquire(), 0.5)
                 lock.release()
             finally:
@@ -348,19 +348,15 @@ class LockHoldTests(unittest.IsolatedAsyncioTestCase):
 
 class DeferredActionTests(unittest.IsolatedAsyncioTestCase):
     async def test_actions_skipped_by_a_failed_tick_run_on_the_next_tick(self):
-        """A tick failing after disable() skips its finish; the next tick runs it.
-
-        Without the pending actions the monitor is idle once Bluetooth input
-        is left, so nothing else would ever run the device disconnect.
-        """
+        """A failed publication must not lose its deferred discovery change."""
         lock = SourceTransitionLock()
         loop = asyncio.get_running_loop()
-        kicked = asyncio.Event()
+        toggled = asyncio.Event()
         publish = AsyncMock(side_effect=RuntimeError("publish failed"))
 
-        def disconnect():
-            loop.call_soon_threadsafe(kicked.set)
-            return []
+        def toggle(enabled):
+            self.assertFalse(enabled)
+            loop.call_soon_threadsafe(toggled.set)
 
         monitor = BluetoothInputMonitor(BluetoothInputDependencies(
             sync_peak_monitor_for_source_mode_state=publish,
@@ -372,14 +368,14 @@ class DeferredActionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(bluetooth_module, "BLUETOOTH_INPUT_MONITOR_INTERVAL_SECONDS", 0.01), patch.object(
             bluetooth_module, "get_audio_source_overview", return_value=overview
         ), patch.object(
-            bluetooth_module, "disconnect_connected_bluetooth_audio_sources", side_effect=disconnect
+            bluetooth_module, "set_bluetooth_receiver_enabled", side_effect=toggle
         ), patch.object(bluetooth_module.pw_link, "disconnect_ports", AsyncMock()):
             task = asyncio.create_task(monitor.run_monitor_loop())
             try:
                 try:
-                    await asyncio.wait_for(kicked.wait(), 2)
+                    await asyncio.wait_for(toggled.wait(), 2)
                 except asyncio.TimeoutError:
-                    self.fail("the device disconnect recorded by the failed tick never ran")
+                    self.fail("the discovery change recorded by the failed tick never ran")
             finally:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -387,7 +383,7 @@ class DeferredActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(monitor.input_source_name)
 
     async def test_an_interrupted_finish_puts_back_what_it_had_not_run(self):
-        """A cancel during the device disconnect keeps receiver-off pending.
+        """A cancel during a receiver toggle keeps the unfinished action pending.
 
         A newer decision recorded meanwhile (entering Bluetooth input again)
         wins over the interrupted leftovers.
@@ -395,22 +391,20 @@ class DeferredActionTests(unittest.IsolatedAsyncioTestCase):
         for newer_decision in (False, True):
             with self.subTest(newer_decision=newer_decision):
                 started, release = threading.Event(), threading.Event()
-                kicks, receiver_modes = [], []
+                receiver_modes = []
 
-                def hanging_disconnect():
-                    kicks.append(True)
+                def hanging_toggle(enabled):
+                    receiver_modes.append(enabled)
                     started.set()
                     release.wait(5)
-                    return []
 
                 monitor = BluetoothInputMonitor(BluetoothInputDependencies(
                     sync_peak_monitor_for_source_mode_state=AsyncMock(),
                     get_persisted_source_mode=lambda: "app-playback",
                 ))
                 with patch.object(
-                    bluetooth_module, "disconnect_connected_bluetooth_audio_sources", side_effect=hanging_disconnect
-                ), patch.object(bluetooth_module, "set_bluetooth_receiver_enabled", receiver_modes.append):
-                    # Leaving Bluetooth input records the device disconnect and receiver off.
+                    bluetooth_module, "set_bluetooth_receiver_enabled", side_effect=hanging_toggle
+                ):
                     await monitor.sync({"mode": "app-playback"})
                     finish = asyncio.create_task(monitor.finish_bluetoothctl_actions())
                     try:
@@ -422,13 +416,13 @@ class DeferredActionTests(unittest.IsolatedAsyncioTestCase):
                             await finish
                     finally:
                         release.set()
-                    self.assertEqual(receiver_modes, [], "the cancel landed before receiver off ran")
+                    self.assertEqual(receiver_modes, [False])
                     self.assertFalse(monitor._idle(), "pending actions must keep the monitor ticking")
                     await monitor.finish_bluetoothctl_actions()
                 if newer_decision:
-                    self.assertEqual((len(kicks), receiver_modes), (1, [True]))
+                    self.assertEqual(receiver_modes, [False, True])
                 else:
-                    self.assertEqual((len(kicks), receiver_modes), (2, [False]))
+                    self.assertEqual(receiver_modes, [False, False])
                 self.assertTrue(monitor._idle())
 
 

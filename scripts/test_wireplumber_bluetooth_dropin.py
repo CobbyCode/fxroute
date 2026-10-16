@@ -108,6 +108,10 @@ class WireplumberBluetoothDropinTests(unittest.TestCase):
             content = dropin.read_text()
             for snippet in EXPECTED_SNIPPETS:
                 self.assertIn(snippet, content)
+            roles = re.search(r"bluez5\.roles\s*=\s*\[([^]]*)\]", content)
+            self.assertIsNotNone(roles, "the appliance must not advertise telephony profiles")
+            self.assertEqual(set(roles.group(1).split()),
+                             {"a2dp_sink", "a2dp_source", "bap_sink", "bap_source"})
             self.assertIn("wireplumber.service", calls.read_text())
 
     def test_dropin_disables_autoconnect_only_for_capture_nodes(self) -> None:

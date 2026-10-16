@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import audio.bluetooth as bluetooth_module
+import audio.samplerate.bluetooth as bluez_mod
 import audio.samplerate.overview as overview_mod
 from audio.source_monitor import UnavailabilityConfirmation
 import main
@@ -179,7 +180,7 @@ class MonitorScenarioTests(unittest.IsolatedAsyncioTestCase):
             patch.object(self.monitor, "availability",
                          UnavailabilityConfirmation(monotonic=lambda: self.host.now)),
             patch.object(bluetooth_module, "set_bluetooth_receiver_enabled", self.receiver),
-            patch.object(bluetooth_module, "disconnect_connected_bluetooth_audio_sources",
+            patch.object(bluez_mod, "disconnect_connected_bluetooth_audio_sources",
                          self.disconnect_devices),
             patch.object(bluetooth_module.pw_link, "disconnect_ports", AsyncMock()),
             patch.object(bluetooth_module.asyncio, "create_subprocess_exec", spawn),
@@ -267,7 +268,7 @@ class MonitorScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.disconnect_devices.assert_not_called()
         self.assertEqual(self.monitor.input_source_name, "bluez_input.phone")
         await self._tick(available=False)
-        self.disconnect_devices.assert_called_once()
+        self.disconnect_devices.assert_not_called()
         self.assertIsNone(self.monitor.input_source_name)
         self.assertIsNone(self.monitor.agent_process)
         self.assertEqual(self._pushed_modes()[-1], "app-playback")

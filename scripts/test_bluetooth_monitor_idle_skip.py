@@ -6,9 +6,8 @@ b04d35b: the 3 s monitor unconditionally built the full bluetoothctl/pactl/
 pw-cli source overview even with app-playback selected, triggering recurring
 Amlogic audio-fabric kernel bursts on .126):
 
-- a tick with persisted mode != bluetooth-input and no active agent/linked
-  source must not build the source overview at all (preventing the costly
-  subprocess pipeline is itself the contract);
+- an inactive healthy agent or a recent failed availability probe must skip
+  the costly overview; missing agents retry only after a backoff;
 - a tick with bluetooth-input selected still runs the existing sync path.
 
 Only the loop dispatch is pinned here (overview builder call count plus sync
@@ -21,6 +20,7 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -88,14 +88,27 @@ class BluetoothMonitorIdleSkipTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_tick_builds_no_source_overview(self):
         monitor = _make_monitor(mode=SOURCE_MODE_APP_PLAYBACK)
         with patch.object(
-            bluetooth_module, "get_audio_source_overview", new=Mock()
-        ) as overview:
+            bluetooth_module, "get_audio_source_overview",
+            new=Mock(return_value={"mode": "app-playback", "bluetooth": {"selectable": False}})
+        ) as overview, patch.object(bluetooth_module, "set_bluetooth_receiver_enabled"):
+            # Startup already probed the unavailable adapter; subsequent idle
+            # ticks must not repeat that inventory before the retry interval.
+            await monitor._monitor_once()
+            overview.reset_mock()
             await self._run_loop_briefly(monitor)
         self.assertEqual(
             overview.call_count,
             0,
             "an idle bluetooth tick must not start the subprocess overview pipeline",
         )
+
+    async def test_healthy_idle_agent_builds_no_source_overview(self):
+        monitor = _make_monitor(mode=SOURCE_MODE_APP_PLAYBACK)
+        monitor.agent_process = SimpleNamespace(returncode=None)
+        with patch.object(bluetooth_module, "get_audio_source_overview", new=Mock()) as overview:
+            await self._run_loop_briefly(monitor)
+        self.assertEqual(overview.call_count, 0,
+                         "a healthy authorization agent must not trigger idle inventories")
 
     async def test_active_bluetooth_mode_still_syncs(self):
         monitor = _make_monitor(mode=SOURCE_MODE_BLUETOOTH_INPUT)

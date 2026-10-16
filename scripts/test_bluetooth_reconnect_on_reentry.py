@@ -1,34 +1,21 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Bluetooth input comes back by itself after leaving the mode.
-
-Selecting Bluetooth input kicks the connected A2DP source (the peer keeps
-playing to its own speakers). Selecting the mode again therefore has to
-reconnect that device without a manual ``bluetoothctl connect``:
-
-- Leaving the mode remembers the devices it disconnected (and the device a
-  stream was linked for), and entering it again records a reconnect that runs
-  off the source-transition lock, after the receiver toggle.
-- The reconnect is bounded and spaced out, so a peer that is switched off is
-  not probed by bluetoothctl on every 3 s monitor tick; a peer that streams
-  again retires the retry budget and drops a recorded reconnect.
-- A quick toggle (leaving and entering before the recorded kick ran) drops the
-  kick instead of disconnecting a device the caller just re-selected.
-- Only paired/trusted devices are connected; an already-connected one counts
-  as reconnected instead of being connected again.
-"""
+"""Bluetooth connections outlive source selection; A2DP recovery stays bounded."""
 
 import asyncio
 import sys
+import threading
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import audio.bluetooth as bluetooth_module
 import audio.samplerate.bluetooth as bluez_mod
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
+from audio.source_feed import SourceOverviewFeed, SourceTransitionLock
+from audio.source_transitions import SourceTransitionDependencies, SourceTransitions
 
 ADDRESS = "84:9E:56:57:19:94"
 SOURCE_NAME = "bluez_input.84_9E_56_57_19_94.2"
@@ -65,12 +52,15 @@ class ReconnectHelperTests(unittest.TestCase):
     def test_connects_a_paired_disconnected_device(self):
         connected, calls = self._run({ADDRESS: _info()}, [ADDRESS])
         self.assertEqual(connected, [ADDRESS])
-        self.assertEqual([call[1] for call in calls], ["info", "connect"])
+        self.assertEqual(calls, [["bluetoothctl", "info", ADDRESS],
+                                 ["bluetoothctl", "connect", ADDRESS,
+                                  "0000110a-0000-1000-8000-00805f9b34fb"]])
 
-    def test_an_already_connected_device_is_not_connected_again(self):
+    def test_acl_connection_without_stream_still_requests_a2dp(self):
         connected, calls = self._run({ADDRESS: _info(connected=True)}, [ADDRESS])
         self.assertEqual(connected, [ADDRESS])
-        self.assertEqual([call[1] for call in calls], ["info"])
+        self.assertEqual(calls[-1], ["bluetoothctl", "connect", ADDRESS,
+                                     "0000110a-0000-1000-8000-00805f9b34fb"])
 
     def test_an_unpaired_device_is_never_paired_implicitly(self):
         connected, calls = self._run(
@@ -101,44 +91,181 @@ class ReconnectHelperTests(unittest.TestCase):
                 bluez_mod.reconnect_bluetooth_audio_devices([ADDRESS])
 
 
+class ConnectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    """Source selection changes routing, not the peer connection/authorization."""
+
+    async def asyncSetUp(self):
+        self.mode = "app-playback"
+        self.links = set()
+        self.agents = []
+        self.monitor = BluetoothInputMonitor(BluetoothInputDependencies(
+            sync_peak_monitor_for_source_mode_state=AsyncMock(),
+            get_persisted_source_mode=lambda: self.mode,
+        ))
+
+        class Agent:
+            returncode = None
+
+            def terminate(self):
+                self.returncode = 0
+
+            async def wait(self):
+                return self.returncode
+
+        async def spawn(*args, **kwargs):
+            agent = Agent()
+            self.agents.append(agent)
+            return agent
+
+        self.spawn = spawn
+
+        async def connect(ports, sink):
+            self.links.add((ports[0], sink))
+
+        async def disconnect(ports, sink):
+            self.links.discard((ports[0], sink))
+
+        async def present(source, channels):
+            return all((f"{source}:capture_{left}", f"fxroute_dsp_sink:playback_{right}")
+                       in self.links for left, right in channels)
+
+        self.kick = Mock(return_value=[])
+        self.reconnect = Mock(return_value=[])
+        for patcher in (
+            patch.object(bluetooth_module.asyncio, "create_subprocess_exec", spawn),
+            patch.object(bluetooth_module.pw_link, "connect_ports", connect),
+            patch.object(bluetooth_module.pw_link, "disconnect_ports", disconnect),
+            patch.object(bluetooth_module, "input_links_present", present),
+            patch.object(bluez_mod, "disconnect_connected_bluetooth_audio_sources", self.kick),
+            patch.object(bluetooth_module, "reconnect_bluetooth_audio_devices", self.reconnect),
+            patch.object(bluetooth_module, "set_bluetooth_receiver_enabled"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def overview(self, mode, *, source=SOURCE_NAME):
+        self.mode = mode
+        return {"mode": mode, "bluetooth": {"selectable": True,
+                "discoverable": mode == "bluetooth-input", "pairable": mode == "bluetooth-input",
+                "source_name": source}}
+
+    async def test_inactive_startup_keeps_authorization_available_without_audio_links(self):
+        await self.monitor.sync(self.overview("app-playback"))
+        await self.monitor.finish_bluetoothctl_actions()
+        self.assertIsNotNone(self.monitor.agent_process, "inactive input still needs authorization")
+        self.assertIsNone(self.monitor.agent_process.returncode)
+        self.assertEqual(self.links, set())
+        self.kick.assert_not_called()
+
+    async def test_switch_away_and_back_only_unlinks_and_relinks_stereo(self):
+        await self.monitor.sync(self.overview("bluetooth-input"))
+        agent = self.monitor.agent_process
+        expected = {(f"{SOURCE_NAME}:capture_{channel}", f"fxroute_dsp_sink:playback_{channel}")
+                    for channel in ("FL", "FR")}
+        self.assertEqual(self.links, expected)
+        await self.monitor.sync(self.overview("app-playback"))
+        await self.monitor.finish_bluetoothctl_actions()
+        self.assertEqual(self.links, set())
+        self.assertIs(self.monitor.agent_process, agent)
+        self.assertIsNone(agent.returncode)
+        self.kick.assert_not_called()
+        await self.monitor.sync(self.overview("bluetooth-input"))
+        await self.monitor.finish_bluetoothctl_actions()
+        self.assertEqual(self.links, expected)
+        self.assertIs(self.monitor.agent_process, agent)
+        self.reconnect.assert_not_called()
+
+    async def test_inactive_monitor_repairs_an_exited_agent(self):
+        await self.monitor.sync(self.overview("bluetooth-input"))
+        await self.monitor.sync(self.overview("app-playback"))
+        await self.monitor.finish_bluetoothctl_actions()
+        self.assertIsNotNone(self.monitor.agent_process)
+        self.assertTrue(self.monitor._idle(), "healthy inactive input must skip expensive inventories")
+        self.monitor.agent_process.returncode = 1
+        self.assertFalse(self.monitor._idle(), "a dead authorization agent needs recovery")
+        await self.monitor._act(self.overview("app-playback"))
+        self.assertIs(self.monitor.agent_process, self.agents[-1])
+        self.assertEqual(len(self.agents), 2)
+        self.assertIsNone(self.monitor.agent_process.returncode)
+
+    async def test_shutdown_stops_idle_agent_without_disconnecting_peer(self):
+        await self.monitor.sync(self.overview("app-playback"))
+        agent = self.monitor.agent_process
+        self.assertIsNotNone(agent)
+        await self.monitor.stop()
+        self.assertEqual(agent.returncode, 0)
+        self.assertIsNone(self.monitor.agent_process)
+        self.kick.assert_not_called()
+
+    async def test_agent_failure_does_not_roll_back_an_app_switch(self):
+        await self.monitor.sync(self.overview("bluetooth-input"))
+        self.monitor.agent_process.returncode = 1
+        lock = SourceTransitionLock()
+        transitions = SourceTransitions(SourceTransitionDependencies(
+            get_lock=lambda: lock, feed=SourceOverviewFeed(AsyncMock()),
+            build_overview=lambda: self.overview(self.mode),
+            save_selection=lambda mode, key: self.overview(mode),
+            load_selection=lambda: {"mode": self.mode, "selected_input_key": None},
+            with_current_stdin_status=lambda value: value,
+            sync_external_input=AsyncMock(side_effect=lambda value: value),
+            sync_bluetooth_input=self.monitor.sync, get_stdin_input=lambda: None,
+            note_source_selection=lambda mode: None, pause_app_playback=AsyncMock(),
+            sync_peak_monitor=AsyncMock(), sync_peak_monitor_for_stdin=AsyncMock(),
+            finish_bluetoothctl_actions=self.monitor.finish_bluetoothctl_actions,
+        ))
+        with patch.object(bluetooth_module.asyncio, "create_subprocess_exec", side_effect=OSError("agent unavailable")):
+            result = await transitions.save_selection("app-playback", None)
+        self.assertEqual(result["mode"], "app-playback")
+        self.assertEqual(self.mode, "app-playback")
+        self.assertEqual(self.links, set())
+        self.assertIsNone(self.monitor.agent_process, "a failed replacement must not retain a dead process")
+        self.assertTrue(self.monitor._idle(), "failed replacement must respect the inactive retry interval")
+
+    async def test_adapter_appearing_after_inactive_startup_starts_authorization(self):
+        unavailable = self.overview("app-playback", source=None)
+        unavailable["bluetooth"]["selectable"] = False
+        await self.monitor.sync(unavailable)
+        await self.monitor.finish_bluetoothctl_actions()
+        self.assertIsNone(self.monitor.agent_process)
+        self.assertTrue(self.monitor._idle(), "unavailable adapter must not be polled on every tick")
+        self.monitor._last_inactive_probe_at = 0.0
+        self.assertFalse(self.monitor._idle(), "an inactive missing agent must eventually retry")
+        with patch.object(bluetooth_module, "get_audio_source_overview",
+                          return_value=self.overview("app-playback", source=None)):
+            await self.monitor._monitor_once()
+        self.assertIsNotNone(self.monitor.agent_process)
+        self.assertIsNone(self.monitor.agent_process.returncode)
+        self.assertTrue(self.monitor._idle())
+
+    async def test_immediate_agent_exit_is_retried_while_inactive(self):
+        async def exited(*args, **kwargs):
+            agent = await self.spawn(*args, **kwargs)
+            agent.returncode = 1
+            agent.stderr = AsyncMock()
+            agent.stderr.read.return_value = b"registration failed"
+            return agent
+
+        with patch.object(bluetooth_module.asyncio, "create_subprocess_exec", exited):
+            await self.monitor.sync(self.overview("app-playback", source=None))
+        await self.monitor.finish_bluetoothctl_actions()
+        self.assertIsNone(self.monitor.agent_process)
+        self.assertTrue(self.monitor._idle(), "agent retries must be bounded")
+        self.monitor._last_inactive_probe_at = 0.0
+        self.assertFalse(self.monitor._idle())
+        await self.monitor._act(self.overview("app-playback", source=None))
+        self.assertIsNotNone(self.monitor.agent_process)
+        self.assertIsNone(self.monitor.agent_process.returncode)
+        self.assertEqual(len(self.agents), 2)
+
+
 class ReentryTests(unittest.IsolatedAsyncioTestCase):
-    """Leaving and re-selecting Bluetooth input brings the device back."""
+    """Recover dropped streams, never reconnect an intact source on selection."""
 
     def _monitor(self, persisted="bluetooth-input"):
         return BluetoothInputMonitor(BluetoothInputDependencies(
             sync_peak_monitor_for_source_mode_state=AsyncMock(),
             get_persisted_source_mode=lambda: persisted,
         ))
-
-    async def test_reentering_reconnects_the_kicked_device(self):
-        """The regression: leaving and selecting again must not need a host connect."""
-        monitor = self._monitor()
-        reconnects = []
-        with patch.object(monitor, "_ensure_agent", AsyncMock()), patch.object(
-            bluetooth_module, "input_links_present", AsyncMock(return_value=True)
-        ), patch.object(bluetooth_module.pw_link, "connect_ports", AsyncMock()), patch.object(
-            bluetooth_module.pw_link, "disconnect_ports", AsyncMock()
-        ), patch.object(bluetooth_module, "disconnect_connected_bluetooth_audio_sources",
-                        return_value=[ADDRESS.lower().replace(":", "_")]), patch.object(
-            bluetooth_module, "reconnect_bluetooth_audio_devices",
-            side_effect=lambda addresses: reconnects.append(list(addresses)) or list(addresses)
-        ), patch.object(bluetooth_module, "set_bluetooth_receiver_enabled") as receiver:
-            await monitor.sync({"mode": "bluetooth-input",
-                                "bluetooth": {"selectable": True, "discoverable": True,
-                                              "pairable": True, "source_name": SOURCE_NAME}})
-            await monitor.sync({"mode": "app-playback"})
-            await monitor.finish_bluetoothctl_actions()
-            self.assertEqual(reconnects, [], "leaving Bluetooth input must not reconnect")
-            self.assertEqual(monitor._reconnect_addresses, [ADDRESS])
-
-            await monitor.sync({"mode": "bluetooth-input",
-                                "bluetooth": {"selectable": True, "discoverable": True,
-                                              "pairable": True}})
-            await monitor.finish_bluetoothctl_actions()
-        self.assertEqual(reconnects, [[ADDRESS]], "re-entering must reconnect the kicked device")
-        self.assertEqual(monitor._reconnect_addresses, [], "a connected device retires its retry")
-        self.assertEqual(receiver.call_args_list[-1].args, (False,),
-                         "an already advertising adapter is not toggled again")
 
     async def test_a_streamed_device_is_reconnected_after_leaving(self):
         """A peer that dropped on its own is remembered from its stream."""
@@ -148,9 +275,7 @@ class ReentryTests(unittest.IsolatedAsyncioTestCase):
             bluetooth_module, "input_links_present", AsyncMock(return_value=True)
         ), patch.object(bluetooth_module.pw_link, "connect_ports", AsyncMock()), patch.object(
             bluetooth_module.pw_link, "disconnect_ports", AsyncMock()
-        ), patch.object(bluetooth_module, "disconnect_connected_bluetooth_audio_sources",
-                        return_value=[]), patch.object(
-            bluetooth_module, "reconnect_bluetooth_audio_devices",
+        ), patch.object(bluetooth_module, "reconnect_bluetooth_audio_devices",
             side_effect=lambda addresses: reconnects.append(list(addresses)) or []):
             await monitor.sync({"mode": "bluetooth-input",
                                 "bluetooth": {"selectable": True, "discoverable": True,
@@ -164,40 +289,52 @@ class ReentryTests(unittest.IsolatedAsyncioTestCase):
             await monitor.finish_bluetoothctl_actions()
         self.assertEqual(reconnects, [[ADDRESS]])
 
-    async def test_a_quick_toggle_drops_the_kick_and_reconnects(self):
-        """Entering again before the recorded kick ran must not disconnect."""
-        started, reconnects = [], []
+    async def test_leaving_cancels_a_recorded_reconnect(self):
+        """Deferred recovery must not connect a peer after another input wins."""
+        reconnects = []
         monitor = self._monitor()
-
-        def disconnected_once():
-            started.append(1)
-            return [ADDRESS]
-
+        monitor._reconnect_addresses = [ADDRESS]
         with patch.object(monitor, "_ensure_agent", AsyncMock()), patch.object(
-            bluetooth_module, "input_links_present", AsyncMock(return_value=True)
-        ), patch.object(bluetooth_module.pw_link, "disconnect_ports", AsyncMock()), patch.object(
-            bluetooth_module.pw_link, "connect_ports", AsyncMock()
-        ), patch.object(
-            bluetooth_module, "disconnect_connected_bluetooth_audio_sources",
-            side_effect=disconnected_once
-        ), patch.object(bluetooth_module, "reconnect_bluetooth_audio_devices",
+            bluetooth_module, "reconnect_bluetooth_audio_devices",
                         side_effect=lambda addresses: reconnects.append(list(addresses)) or []), patch.object(
             bluetooth_module, "set_bluetooth_receiver_enabled") as receiver:
-            # The device streamed before, so it is a reconnect target.
             await monitor.sync({"mode": "bluetooth-input",
                                 "bluetooth": {"selectable": True, "discoverable": True,
-                                              "pairable": True, "source_name": SOURCE_NAME}})
+                                              "pairable": True}})
+            self.assertTrue(monitor._pending_device_reconnect)
             await monitor.sync({"mode": "app-playback"})
-            self.assertTrue(monitor._pending_device_kick)
-            # Re-selecting drops the recorded kick and asks for a reconnect;
-            # the adapter is off again, so the receiver enable is recorded too.
-            await monitor.sync({"mode": "bluetooth-input",
-                                "bluetooth": {"selectable": True, "discoverable": False,
-                                              "pairable": False}})
             await monitor.finish_bluetoothctl_actions()
-        self.assertEqual(started, [], "a re-selected device must not be disconnected")
-        self.assertEqual(reconnects, [[ADDRESS]])
-        self.assertEqual(receiver.call_args_list[-1].args, (True,))
+        self.assertEqual(reconnects, [])
+        self.assertEqual(receiver.call_args_list[-1].args, (False,))
+
+    async def test_leaving_during_receiver_enable_cancels_captured_reconnect(self):
+        monitor = self._monitor()
+        monitor._reconnect_addresses = [ADDRESS]
+        started, release = threading.Event(), threading.Event()
+        reconnects, receiver_modes = [], []
+
+        def toggle(enabled):
+            receiver_modes.append(enabled)
+            if enabled:
+                started.set()
+                if not release.wait(5):
+                    raise RuntimeError("receiver test was not released")
+
+        with patch.object(monitor, "_ensure_agent", AsyncMock()), patch.object(
+            bluetooth_module, "set_bluetooth_receiver_enabled", side_effect=toggle
+        ), patch.object(bluetooth_module, "reconnect_bluetooth_audio_devices",
+                        side_effect=lambda addresses: reconnects.append(list(addresses)) or []):
+            await monitor.sync({"mode": "bluetooth-input", "bluetooth": {
+                "selectable": True, "discoverable": False, "pairable": False}})
+            finish = asyncio.create_task(monitor.finish_bluetoothctl_actions())
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                await monitor.sync({"mode": "app-playback"})
+            finally:
+                release.set()
+                await asyncio.wait_for(finish, 2)
+        self.assertEqual(receiver_modes, [True, False])
+        self.assertEqual(reconnects, [], "deselection must invalidate an already captured reconnect")
 
     async def test_reconnect_attempts_are_bounded_and_spaced(self):
         """A peer that stays away is not probed on every monitor tick."""

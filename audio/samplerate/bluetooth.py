@@ -72,19 +72,13 @@ def _normalized_bluetooth_addresses(addresses: Any) -> list[str]:
 
 
 def reconnect_bluetooth_audio_devices(addresses: Any) -> list[str]:
-    """Connect the paired audio sources we disconnected when leaving Bluetooth input.
+    """Recover only the remote A2DP source profile of paired/trusted peers.
 
-    Leaving Bluetooth input mode kicks the connected A2DP source so the peer
-    keeps playing to its own speakers. Selecting the mode again has to bring
-    that device back without a manual ``bluetoothctl connect``: the same
-    addresses are connected here, in order, off the source-transition lock.
-
-    Only already paired (or trusted) devices are touched; an unpaired one is
-    skipped instead of being paired implicitly, and an address that vanished
-    from BlueZ is left to the next bounded attempt. A device that is connected
-    again counts as reconnected, so a peer that came back on its own retires
-    its retry. Returns the addresses that are connected afterwards; fails only
-    when every attempt failed, like the disconnect helper.
+    Device-level Connected also covers HFP/AVRCP alone, so it cannot prove
+    that an A2DP transport exists. Request Audio Source explicitly, even for
+    an ACL-connected peer; a generic connect would also negotiate telephony
+    and the reverse audio direction. Callers skip recovery when a source
+    stream already exists and bound retries for absent peers.
     """
     targets = _normalized_bluetooth_addresses(addresses)
     if not targets:
@@ -102,13 +96,11 @@ def reconnect_bluetooth_audio_devices(addresses: Any) -> list[str]:
         except Exception as exc:
             failures.append(f"info {address}: {exc}")
             continue
-        if info.get("connected"):
-            connected.append(address)
-            continue
         if not info.get("paired") and not info.get("trusted"):
             continue
         try:
-            _run_command(["bluetoothctl", "connect", address])
+            _run_command(["bluetoothctl", "connect", address,
+                          "0000110a-0000-1000-8000-00805f9b34fb"])
             connected.append(address)
         except Exception as exc:
             failures.append(f"connect {address}: {exc}")
@@ -506,4 +498,3 @@ def get_bluetooth_audio_overview() -> dict[str, Any]:
         "receiver_session": receiver_session,
         "notes": notes,
     }
-
