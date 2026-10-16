@@ -231,6 +231,30 @@
         }
     }
 
+    // Surround Global: a filter created for a speaker group completes the
+    // listened set; the other groups keep their filters.
+    function groupSetTargetNote(area) {
+        if (!area?.group || area.bank_id !== 'global' || area.importable === false) return '';
+        const groupLabel = outputState()?.SURROUND_GROUP_LABELS?.[area.group] || area.group;
+        const { activePreset, effectiveActiveSide } = getEffectsCompareState();
+        const listened = [effectiveActiveSide, activePreset].filter(Boolean).join(' · ');
+        return `Replaces only the ${groupLabel} filters of the listened preset${listened ? ` (${listened})` : ''}; `
+            + 'the other speaker groups keep theirs.';
+    }
+
+    function renderGroupSetTargetNotes(area) {
+        const note = groupSetTargetNote(area);
+        // A preset file is a whole set of its own; only filters complete the listened one.
+        const notes = { 'effects-import-group-note': note && `${note} A preset file replaces the whole set.`,
+            'effects-peq-group-note': note, 'measurement-peq-group-note': note, 'measurement-convolver-group-note': note };
+        Object.entries(notes).forEach(([id, text]) => {
+            const element = document.getElementById(id);
+            if (!element) return;
+            if (element.textContent !== text) element.textContent = text;
+            element.hidden = !text;
+        });
+    }
+
     function renderBankImportTarget() {
         const area = deps.measurementArea();
         const mono = area?.channel_mode === 'mono';
@@ -238,6 +262,7 @@
         const importable = area?.available !== false && area?.importable !== false;
         if (note) note.textContent = !importable ? 'Select a filter bank before importing.'
             : `Target: ${area?.label || 'Global'} · ${mono ? 'Mono' : 'Stereo L/R'}`;
+        renderGroupSetTargetNotes(area);
         // Mono banks get a single import field: the stereo file area is hidden
         // and the remaining pane accepts every mono-supported format. A stale
         // file selection from the other mode is cleared on switching only, so
@@ -457,8 +482,10 @@
         [deps.getElements().effectsCompareA, deps.getElements().effectsCompareB].forEach(select => {
             select?.closest?.('.select-tooltip-wrap')?.classList.toggle('hidden', !!compare.aggregate);
         });
+        // Surround Global lists each slot's set per speaker group under its picker.
+        const groupSets = !compare.aggregate && !!globalGroupRows(null);
         [deps.getElements().effectsCompareABanks, deps.getElements().effectsCompareBBanks].forEach(list => {
-            list?.classList?.toggle('hidden', !compare.aggregate);
+            list?.classList?.toggle('hidden', !compare.aggregate && !(groupSets && list.innerHTML));
         });
         const unavailable = !!deps.getState().outputSystem?.catalog && !(compare.effectiveActiveSide === 'A' ? compare.canB : compare.canA);
         if (deps.getElements().effectsCompareToggle) {
@@ -480,6 +507,51 @@
             return `Chain: ${sourcePresets.join(' → ')}`;
         }
         return 'Chain: Single preset';
+    }
+
+    // Group rows of a Surround Global set (null outside Surround Global).
+    function globalGroupRows(entry) {
+        const mod = outputState();
+        const catalog = deps.getState().outputSystem?.catalog;
+        return catalog && typeof mod?.globalGroupFilters === 'function' ? mod.globalGroupFilters(catalog, entry) : null;
+    }
+
+    // A generated IR name differs at its end, so a long one keeps its last word.
+    function groupFilterText(filter, compact = false) {
+        const detail = compact && filter.detail ? outputState().compactPresetName(filter.detail, 30) : filter.detail;
+        return [filter.kind, detail].filter(Boolean).join(' · ') + (filter.enabled ? '' : ' (off)');
+    }
+
+    // Listened Surround Global set: the groups that hold a filter.
+    function getGroupSetChainLabel(presetName, rows) {
+        if (presetName === 'Direct') return 'Filters: bypassed (Direct)';
+        const active = rows.filter(row => row.filters.length);
+        if (!active.length) return 'Filters: none';
+        return `Filters: ${active.map(row => `${row.label} ${row.filters.map(filter => filter.kind).join(' + ')}`
+            + (row.routed ? '' : ' (not routed)')).join(' · ')}`;
+    }
+
+    function groupSlotRow(presetName, row) {
+        const direct = presetName === 'Direct';
+        const text = direct ? 'Bypass' : row.filters.map(filter => groupFilterText(filter, true)).join(' + ') || 'No filter';
+        const full = row.filters.map(filter => groupFilterText(filter)).join(' + ') || 'no filter';
+        const state = row.routed ? '' : ' · not routed, stays inactive';
+        const tooltip = `${row.label}: ${direct ? 'Direct bypasses every group' : full}${state}`;
+        const fixed = direct || !row.filters.length || !row.routed;
+        return `<li class="effects-compare-slot-bank${fixed ? ' is-fixed' : ''}" data-group="${row.group}" data-tooltip="${deps.escapeHtml(tooltip)}">`
+            + `<span class="effects-compare-slot-bank-key">${deps.escapeHtml(row.label)}</span>`
+            + `<span class="effects-compare-slot-bank-preset">${deps.escapeHtml(text)}</span></li>`;
+    }
+
+    // Surround Global: each slot lists the filters its set holds per speaker
+    // group, so Preset and A/B visibly switch the whole set.
+    function renderGlobalGroupSlots(presetMap, presetA, presetB) {
+        [[presetA, deps.getElements().effectsCompareABanks], [presetB, deps.getElements().effectsCompareBBanks]].forEach(([name, target]) => {
+            if (!target) return;
+            const rows = name ? globalGroupRows(presetMap.get(name) || { name }) : null;
+            const html = (rows || []).map(row => groupSlotRow(name, row)).join('');
+            if (target.innerHTML !== html) target.innerHTML = html;
+        });
     }
 
     function getCompactDisplayName(name = '', maxChars = 24) {
@@ -597,7 +669,10 @@
             }
         }
         if (deps.getElements().effectsCompareChain) {
-            const chainLabel = getEffectsChainLabelForPreset(chainPresetName, presetMap);
+            const groupRows = !aggregate && chainPresetName
+                ? globalGroupRows(presetMap.get(chainPresetName) || { name: chainPresetName }) : null;
+            const chainLabel = groupRows ? getGroupSetChainLabel(chainPresetName, groupRows)
+                : getEffectsChainLabelForPreset(chainPresetName, presetMap);
             deps.getElements().effectsCompareChain.textContent = chainLabel;
         }
         // All Banks: the status names the side only; the slots list the banks.
@@ -606,6 +681,8 @@
             if (deps.getElements().effectsCompareActive) deps.getElements().effectsCompareActive.textContent = effectiveActiveSide
                 ? `Listening: ${effectiveActiveSide} · All Banks` : 'Listening: Mixed A/B';
             renderAllBanksSlots(effectiveActiveSide);
+        } else {
+            renderGlobalGroupSlots(presetMap, presetA, presetB);
         }
         if (deps.getElements().effectsCompareToggle) deps.getElements().effectsCompareToggle.textContent = 'Compare A/B';
         syncEffectsDeleteButton();

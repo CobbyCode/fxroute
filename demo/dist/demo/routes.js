@@ -845,8 +845,20 @@
             return { conflict: true, created: createdName };
         }
         if (group) {
-            // A Surround Global preset carries its group plugins and the surround layout.
-            Object.assign(findDemoPreset(createdName, demoPresetOwner(body)), { layout: 'surround', group });
+            // Mirror of DSPManager._create_chain: a group filter completes the
+            // listened Global set, replacing that group's filters only.
+            const owner = demoPresetOwner(body);
+            const created = findDemoPreset(createdName, owner);
+            const base = findDemoPreset(bank.preset, owner);
+            const params = created.peq?.params || {};
+            const filter = created.peq
+                ? { group, type: 'equalizer', enabled: true, bands: params.channelMode === 'dual'
+                    ? Math.max((params.leftBands || []).length, (params.rightBands || []).length) : (params.bands || []).length }
+                : { group, type: 'convolver', enabled: true, kernel: createdName };
+            const order = ['front', 'center', 'side', 'rear'];
+            const filters = [...(base?.group_filters || []).filter(item => item.group !== group), filter]
+                .sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
+            Object.assign(created, { layout: 'surround', group_filters: filters });
         }
         updateDemoBanks(config, bank.roles, { preset: createdName });
         outputStateStore.revision += 1;
@@ -3485,8 +3497,10 @@
             const owner = demoPresetOwner(body);
             const missing = presetNames.find(source => !findDemoPreset(source, owner));
             if (missing) return err(`Preset not found: ${missing}`, 404);
+            // A Surround combine stacks the sources' group filters in order.
             addDemoPreset(name, body, { source_presets: presetNames,
-                ...(owner.mode === 'surround' ? { layout: 'surround' } : {}) });
+                ...(owner.mode === 'surround' ? { layout: 'surround', group_filters: presetNames
+                    .flatMap(source => findDemoPreset(source, owner).group_filters || []) } : {}) });
             syncDspToState();
             return j({ success: true, preset: { name } });
         }

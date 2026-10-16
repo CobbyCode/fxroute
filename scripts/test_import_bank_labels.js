@@ -133,6 +133,32 @@ vm.runInContext('renderBankImportTarget();', context);
 assert.equal(context.elements.effectsRewLeftFile.value, '');
 assert.equal(hiddenOf('effects-import-area'), false);
 
+// Surround Global: every create surface names the group a filter replaces in
+// the listened set; the other groups keep theirs. Elsewhere the notes stay hidden.
+{
+    const notes = ['effects-import-group-note', 'effects-peq-group-note', 'measurement-peq-group-note',
+        'measurement-convolver-group-note'];
+    catalog.modes.surround = {
+        selected_bank: 'global',
+        banks: { global: { ...bank('global', 'Global', ['global']), preset: 'Room', preset_a: 'Room' } },
+        topology: { mode: 'surround', roles: ['main_l', 'main_r', 'rear_l', 'rear_r', 'sub1'], sub_roles: ['sub1'] },
+        all_banks: {},
+    };
+    catalog.active_mode = 'surround';
+    vm.runInContext('renderBankImportTarget();', context);
+    assert.equal(documentStub.getElementById('effects-import-bank-target').textContent,
+        'Target: Global · Front L/R + Sub · Stereo L/R');
+    const note = 'Replaces only the Front L/R filters of the listened preset (A · Room); the other speaker groups keep theirs.';
+    assert.equal(documentStub.getElementById('effects-import-group-note').textContent,
+        `${note} A preset file replaces the whole set.`);
+    for (const id of notes.slice(1)) assert.equal(documentStub.getElementById(id).textContent, note);
+    assert.ok(notes.every(id => documentStub.getElementById(id).hidden === false));
+    catalog.active_mode = 'stereo-sub';
+    delete catalog.modes.surround;
+    vm.runInContext('renderBankImportTarget();', context);
+    assert.ok(notes.every(id => documentStub.getElementById(id).hidden === true && !documentStub.getElementById(id).textContent));
+}
+
 // Mono routing: one field reaches the matching endpoint with its bank.
 class FakeFormData {
     constructor() { this.fields = {}; }

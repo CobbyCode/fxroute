@@ -362,6 +362,28 @@ function presetsForBank(presets, bankId, mode) {
     });
 }
 
+// Surround Global presets are filter sets: each speaker group has its own
+// filters, all of them run at once. One row per routed group, plus an unrouted
+// group that still holds filters (they stay dormant); null outside Surround Global.
+function globalGroupFilters(catalog, entry) {
+    const modeConfig = catalog?.modes?.[catalog?.active_mode];
+    if (catalog?.active_mode !== 'surround' || (modeConfig?.selected_bank || 'global') !== 'global') return null;
+    const filters = Array.isArray(entry?.group_filters) ? entry.group_filters : [];
+    const routed = surroundGroups(modeConfig.topology);
+    return SURROUND_GROUPS.filter(group => routed.includes(group) || filters.some(filter => filter.group === group))
+        .map(group => ({
+            group,
+            label: SURROUND_GROUP_LABELS[group],
+            routed: routed.includes(group),
+            filters: filters.filter(filter => filter.group === group).map(filter => ({
+                kind: filter.type === 'convolver' ? 'Convolver' : filter.type === 'equalizer' ? 'PEQ' : String(filter.type || ''),
+                detail: filter.type === 'convolver' ? String(filter.kernel || '')
+                    : filter.type === 'equalizer' ? `${filter.bands} band${filter.bands === 1 ? '' : 's'}` : '',
+                enabled: filter.enabled !== false,
+            })),
+        }));
+}
+
 function peqParams(channelMode, leftBands, rightBands, eqMode) {
     return channelMode === 'mono'
         ? { channelMode: 'stereo-linked', eqMode, bands: leftBands }
@@ -586,6 +608,7 @@ function renderBankSelector(select, catalog, mode) {
         bankOwner,
         isBuiltinBankPreset,
         presetsForBank,
+        globalGroupFilters,
         peqParams,
         compareState,
         compactPresetName,
