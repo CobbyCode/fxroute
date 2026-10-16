@@ -79,6 +79,7 @@ def reconnect_bluetooth_audio_devices(addresses: Any) -> list[str]:
     an ACL-connected peer; a generic connect would also negotiate telephony
     and the reverse audio direction. Callers skip recovery when a source
     stream already exists and bound retries for absent peers.
+    Returns successful profile requests, not confirmed PipeWire sources.
     """
     targets = _normalized_bluetooth_addresses(addresses)
     if not targets:

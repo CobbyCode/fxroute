@@ -242,11 +242,6 @@ class BluetoothInputMonitor:
                 self._reconnect_addresses.pop(0)
             self._reconnect_addresses.append(address)
 
-    def _forget_reconnect_targets(self, addresses: Any) -> None:
-        forgotten = {_extract_bluetooth_address(str(value or "")) for value in list(addresses or [])}
-        self._reconnect_addresses = [address for address in self._reconnect_addresses
-                                     if address not in forgotten]
-
     def _reset_reconnect_progress(self) -> None:
         """Drop the retry budget and a recorded reconnect for the next entry."""
         self._reconnect_generation += 1
@@ -285,8 +280,9 @@ class BluetoothInputMonitor:
             logger.warning("Failed to reconnect Bluetooth audio source devices: %s", exc)
             return
         if connected:
-            logger.info("Reconnected Bluetooth audio source devices: %s", ", ".join(connected))
-            self._forget_reconnect_targets(connected)
+            # Profile success does not prove that a PipeWire source exists.
+            # Source observations stop retries; keep targets for later losses.
+            logger.info("Bluetooth audio source profile connection succeeded for: %s", ", ".join(connected))
 
     async def _ensure_loopback(self, source_name: str) -> None:
         normalized = (source_name or "").strip()

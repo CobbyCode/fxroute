@@ -175,6 +175,82 @@ class ConnectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.monitor.agent_process, agent)
         self.reconnect.assert_not_called()
 
+    async def test_profile_success_without_source_keeps_spaced_bounded_recovery(self):
+        await self.monitor.sync(self.overview("bluetooth-input"))
+        self.reconnect.return_value = [ADDRESS]
+        clock = [100.0]
+        missing = self.overview("bluetooth-input", source=None)
+        with patch.object(bluetooth_module, "time", Mock(monotonic=lambda: clock[0])):
+            for attempt in range(bluetooth_module.BLUETOOTH_RECONNECT_ATTEMPTS):
+                await self.monitor.sync(missing)
+                await self.monitor.finish_bluetoothctl_actions()
+                self.assertEqual(self.reconnect.call_count, attempt + 1,
+                                 "profile success without a source must not stop recovery")
+                self.assertIsNone(self.monitor.input_source_name)
+                self.assertEqual(self.links, set())
+                clock[0] += bluetooth_module.BLUETOOTH_RECONNECT_INTERVAL_SECONDS / 2
+                await self.monitor.sync(missing)
+                await self.monitor.finish_bluetoothctl_actions()
+                self.assertEqual(self.reconnect.call_count, attempt + 1,
+                                 "profile success must not bypass retry spacing")
+                clock[0] += bluetooth_module.BLUETOOTH_RECONNECT_INTERVAL_SECONDS / 2
+            await self.monitor.sync(missing)
+            await self.monitor.finish_bluetoothctl_actions()
+        self.assertEqual(self.reconnect.call_count, bluetooth_module.BLUETOOTH_RECONNECT_ATTEMPTS)
+        self.assertTrue(all(call.args == ([ADDRESS],) for call in self.reconnect.call_args_list))
+        self.kick.assert_not_called()
+
+    async def test_late_source_after_recovery_budget_is_linked_on_monitor_tick(self):
+        await self.monitor.sync(self.overview("bluetooth-input"))
+        self.reconnect.return_value = [ADDRESS]
+        with patch.object(bluetooth_module, "BLUETOOTH_RECONNECT_INTERVAL_SECONDS", 0.0):
+            missing = self.overview("bluetooth-input", source=None)
+            for _ in range(bluetooth_module.BLUETOOTH_RECONNECT_ATTEMPTS):
+                await self.monitor.sync(missing)
+                await self.monitor.finish_bluetoothctl_actions()
+        self.assertEqual(self.reconnect.call_count, bluetooth_module.BLUETOOTH_RECONNECT_ATTEMPTS)
+        self.assertEqual(self.links, set())
+        late_source = self.overview("bluetooth-input")
+        with patch.object(bluetooth_module, "get_audio_source_overview", return_value=late_source):
+            await self.monitor._monitor_once()
+            await self.monitor._monitor_once()
+        self.assertEqual(self.monitor.input_source_name, SOURCE_NAME)
+        self.assertEqual(self.links, {
+            (f"{SOURCE_NAME}:capture_FL", "fxroute_dsp_sink:playback_FL"),
+            (f"{SOURCE_NAME}:capture_FR", "fxroute_dsp_sink:playback_FR"),
+        })
+        self.assertEqual(self.reconnect.call_count, bluetooth_module.BLUETOOTH_RECONNECT_ATTEMPTS,
+                         "an available source must not trigger another profile request")
+        self.kick.assert_not_called()
+
+    async def test_source_returning_during_profile_connect_remains_recoverable(self):
+        await self.monitor.sync(self.overview("bluetooth-input"))
+        started, release = threading.Event(), threading.Event()
+
+        def connect(addresses):
+            if not started.is_set():
+                started.set()
+                if not release.wait(5):
+                    raise RuntimeError("profile connect test was not released")
+            return [ADDRESS]
+
+        self.reconnect.side_effect = connect
+        await self.monitor.sync(self.overview("bluetooth-input", source=None))
+        finish = asyncio.create_task(self.monitor.finish_bluetoothctl_actions())
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            await self.monitor.sync(self.overview("bluetooth-input"))
+        finally:
+            release.set()
+            await asyncio.wait_for(finish, 2)
+        self.assertEqual(len(self.links), 2)
+        self.assertEqual(self.reconnect.call_count, 1)
+        await self.monitor.sync(self.overview("bluetooth-input", source=None))
+        await self.monitor.finish_bluetoothctl_actions()
+        self.assertEqual(self.reconnect.call_count, 2,
+                         "a returned source must allow recovery of a later loss")
+        self.kick.assert_not_called()
+
     async def test_inactive_monitor_repairs_an_exited_agent(self):
         await self.monitor.sync(self.overview("bluetooth-input"))
         await self.monitor.sync(self.overview("app-playback"))
