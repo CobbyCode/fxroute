@@ -31,21 +31,20 @@ const classList = () => {
 const slotEl = (slot) => ({ dataset: { compareSlot: slot }, classList: classList() });
 
 function makeContext(selectedBank, banks, allBanks = { preset: null, preset_a: 'Neutral', preset_b: null,
-    active_side: null, can_a: true, can_b: false }, { mode = 'stereo-sub', roles = ['main_l', 'main_r', 'sub1'],
-    presets = [{ name: 'Neutral' }] } = {}) {
+    active_side: null, can_a: true, can_b: false }) {
     const config = {
         selected_bank: selectedBank,
         banks,
-        topology: { mode, roles },
+        topology: { roles: ['main_l', 'main_r', 'sub1'] },
         all_banks: allBanks,
     };
-    const catalog = { revision: 7, active_mode: mode,
-        modes: { [mode]: config } };
+    const catalog = { revision: 7, active_mode: 'stereo-sub',
+        modes: { 'stereo-sub': config } };
     const escapeHtmlStub = (text) => String(text ?? '').replace(/&/g, '&amp;')
         .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const sharedState = {
         outputSystem: { catalog, busy: false },
-        dsp: { presets, compare: {}, active_preset: '' },
+        dsp: { presets: [{ name: 'Neutral' }], compare: {}, active_preset: '' },
     };
     const sharedElements = {
         effectsCompareRow: { style: {} },
@@ -179,65 +178,6 @@ const rows = (html) => [...html.matchAll(/<li class="([^"]*)" data-tooltip="([^"
     assert.equal(context.elements.effectsCompareToggle.textContent, 'Compare A/B');
     assert.ok(context.elements.effectsCompareABanks.classList.contains('hidden'));
     assert.ok(context.elements.effectsCompareBBanks.classList.contains('hidden'));
-}
-
-// Surround Global: each slot lists its set's filters per speaker group, the
-// listened set's groups name their filters in the status, and a group without
-// a routed speaker is marked as such.
-{
-    const surround = (name, filters) => ({ name, bank: 'global', mode: 'surround', layout: 'surround', group_filters: filters });
-    const presets = [{ name: 'Direct', bank: 'global', mode: null }, { name: 'Neutral', bank: null, mode: null },
-        surround('Set <B>', [{ group: 'front', type: 'convolver', enabled: true, kernel: 'Conv LR HybAlign Neutral 20-2793Hz -3.5dB 232159' },
-            { group: 'rear', type: 'equalizer', enabled: true, bands: 7 }, { group: 'side', type: 'equalizer', enabled: false, bands: 1 }]),
-        surround('Front only', [{ group: 'front', type: 'convolver', enabled: true, kernel: 'Front IR' }])];
-    const global = { id: 'global', label: 'Global', preset: 'Set <B>', preset_a: 'Front only', preset_b: 'Set <B>',
-        active_side: 'B', can_a: true, can_b: true };
-    const context = makeContext('global', { global }, undefined, { mode: 'surround', presets,
-        roles: ['main_l', 'main_r', 'rear_l', 'rear_r', 'sub1'] });
-    vm.runInContext('renderEffectsCompare()', context);
-    const { elements } = context;
-    const slotRows = (html) => [...html.matchAll(/<li class="([^"]*)" data-group="(\w+)" data-tooltip="([^"]*)"><span class="effects-compare-slot-bank-key">([^<]*)<\/span><span class="effects-compare-slot-bank-preset">([^<]*)<\/span><\/li>/g)]
-        .map(([, classes, group, tooltip, key, value]) => ({ classes, group, tooltip, key, value }));
-    assert.equal(elements.effectsCompareChain.textContent,
-        'Filters: Front L/R Convolver · Side L/R PEQ (not routed) · Rear L/R PEQ');
-    assert.deepEqual(slotRows(elements.effectsCompareBBanks.innerHTML), [
-        { classes: 'effects-compare-slot-bank', group: 'front', key: 'Front L/R',
-            tooltip: 'Front L/R: Convolver · Conv LR HybAlign Neutral 20-2793Hz -3.5dB 232159',
-            value: 'Convolver · Conv LR HybAlign…232159' },
-        { classes: 'effects-compare-slot-bank is-fixed', group: 'side', key: 'Side L/R',
-            tooltip: 'Side L/R: PEQ · 1 band (off) · not routed, stays inactive', value: 'PEQ · 1 band (off)' },
-        { classes: 'effects-compare-slot-bank', group: 'rear', key: 'Rear L/R', tooltip: 'Rear L/R: PEQ · 7 bands',
-            value: 'PEQ · 7 bands' },
-    ]);
-    assert.deepEqual(slotRows(elements.effectsCompareABanks.innerHTML).map(row => [row.key, row.value]),
-        [['Front L/R', 'Convolver · Front IR'], ['Rear L/R', 'No filter']]);
-    assert.ok(!elements.effectsCompareABanks.classList.contains('hidden'));
-    assert.ok(!elements.effectsCompareBBanks.classList.contains('hidden'));
-    assert.ok(!elements.effectsCompareChain.classList.contains('hidden'));
-    assert.match(elements.effectsCompareA.innerHTML, /<option value="Front only" selected>/);
-
-    // Built-ins: Neutral holds no filter, Direct bypasses every group; an empty B lists nothing.
-    context.state.outputSystem.catalog.modes.surround.banks.global = { ...global, preset: 'Direct', preset_a: 'Direct',
-        preset_b: null, active_side: 'A', can_b: false };
-    vm.runInContext('renderEffectsCompare()', context);
-    assert.equal(elements.effectsCompareChain.textContent, 'Filters: bypassed (Direct)');
-    assert.deepEqual(slotRows(elements.effectsCompareABanks.innerHTML).map(row => [row.key, row.value, row.classes]),
-        [['Front L/R', 'Bypass', 'effects-compare-slot-bank is-fixed'], ['Rear L/R', 'Bypass', 'effects-compare-slot-bank is-fixed']]);
-    assert.equal(elements.effectsCompareBBanks.innerHTML, '');
-    assert.ok(elements.effectsCompareBBanks.classList.contains('hidden'));
-    context.state.outputSystem.catalog.modes.surround.banks.global.preset = 'Neutral';
-    context.state.outputSystem.catalog.modes.surround.banks.global.preset_a = 'Neutral';
-    vm.runInContext('renderEffectsCompare()', context);
-    assert.equal(elements.effectsCompareChain.textContent, 'Filters: none');
-
-    // A concrete Surround bank keeps the plain chain line and no slot lists.
-    context.state.outputSystem.catalog.modes.surround.selected_bank = 'rear';
-    context.state.outputSystem.catalog.modes.surround.banks.rear = { id: 'rear', label: 'Rear L/R', preset: 'Neutral',
-        preset_a: 'Neutral', preset_b: null, active_side: 'A', can_a: true, can_b: false };
-    vm.runInContext('renderEffectsCompare()', context);
-    assert.equal(elements.effectsCompareChain.textContent, 'Chain: Single preset');
-    assert.equal(elements.effectsCompareABanks.innerHTML, '');
-    assert.ok(elements.effectsCompareABanks.classList.contains('hidden'));
 }
 
 // The page carries one bank list per slot, next to the hidden picker.

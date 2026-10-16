@@ -252,29 +252,5 @@ async function request(url, body) {
     assert.equal(stereoMode.topology.sub_mode, 'none');
     assert.equal(stereoMode.topology.way_count, null);
 
-    // Surround Global: a group filter completes the listened set (other
-    // groups kept, its own group replaced), and A/B switches whole sets.
-    const surroundApply = async (mutation) => {
-        const state = await request('/api/audio/output-state');
-        await request('/api/audio/output-state/apply',
-            { expected_revision: state.revision, mutation: { mode: 'surround', ...mutation } });
-    };
-    await surroundApply({ kind: 'switch_mode' });
-    await surroundApply({ kind: 'select_bank', bank_id: 'global' });
-    const createGroup = async (presetName, bankGroup, bands) => request('/api/dsp/presets/create-peq', {
-        presetName, bank_mode: 'surround', bank_id: 'global', bank_group: bankGroup,
-        expected_revision: (await request('/api/audio/output-state')).revision,
-        peq: { params: { channelMode: 'stereo-linked', bands: Array(bands).fill({ filterType: 'bell' }) } } });
-    await createGroup('Front Set', 'front', 1);
-    await createGroup('Front+Rear Set', 'rear', 2);
-    await createGroup('New Front Set', 'front', 3);
-    const groupFilters = async (name) => (await request('/api/dsp/presets')).presets
-        .find(entry => entry.name === name && entry.mode === 'surround').group_filters.map(item => [item.group, item.bands]);
-    assert.deepEqual(await groupFilters('Front+Rear Set'), [['front', 1], ['rear', 2]]);
-    assert.deepEqual(await groupFilters('New Front Set'), [['front', 3], ['rear', 2]]);
-    await surroundApply({ kind: 'set_bank_preset', bank_id: 'global', preset_b: 'Front Set' });
-    await surroundApply({ kind: 'set_bank_preset', bank_id: 'global', active_side: 'B' });
-    assert.equal((await request('/api/audio/output-state')).modes.surround.banks.global.preset, 'Front Set');
-
     console.log('Demo output-state flow passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

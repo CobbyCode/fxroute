@@ -337,19 +337,12 @@ async def _resolve_bank_binding(service, binding: dict, *, needs_group: bool = F
 def _binding_kwargs(binding: dict | None) -> dict:
     """Manager keywords of a bank binding: the output mode and a Surround speaker group.
 
-    The mode selects the Global bank the preset is stored in. A group filter
-    completes the listened Global set (``base_preset``): the created preset
-    keeps every other group's filters, and its assignment replaces that set
-    in the listened slot.
+    The mode selects the Global bank the preset is stored in.
     """
     if not binding:
         return {}
     group = binding.get("bank_group")
-    if not group:
-        return {"mode": binding["mode"]}
-    state = _require_output_state_service().load()
-    return {"mode": binding["mode"], "group": group,
-            "base_preset": state["modes"][binding["mode"]]["banks"]["global"].get("preset")}
+    return {"mode": binding["mode"], **({"group": group} if group else {})}
 
 
 async def _optional_owner(body: dict) -> dict:

@@ -30,8 +30,7 @@ OUTPUT_STATE = {
 SURROUND_STATE = {
     "active_mode": "surround", "revision": 4,
     "modes": {"surround": {"selected_bank": "global",
-                           "banks": {"global": {"preset": "Front set"}, "main_l": {}, "main_r": {},
-                                     "rear_l": {}, "rear_r": {}}}},
+                           "banks": {"global": {}, "main_l": {}, "main_r": {}, "rear_l": {}, "rear_r": {}}}},
 }
 BINDING_FIELDS = {"bank_mode": "stereo", "bank_id": "main_l", "expected_revision": 4}
 EXTRAS = {"limiter": {"enabled": False}, "headroom": {"enabled": False}}
@@ -79,7 +78,6 @@ class FakeDspManager:
         self.calls = []
         self.groups = []
         self.modes = []
-        self.bases = []
 
     def load_global_extras(self):
         return {}
@@ -90,29 +88,29 @@ class FakeDspManager:
     def get_status(self):
         return {"status": "ok", "active_preset": None}
 
-    def record(self, kind, name, bank, group, mode, base_preset):
-        self.calls.append((kind, name, bank))
+    def create_peq_preset(self, name, peq, extras=None, bank=None, group=None, mode=None):
+        self.calls.append(("create-peq", name, bank))
         self.groups.append(group)
         self.modes.append(mode)
-        self.bases.append(base_preset)
-
-    def create_peq_preset(self, name, peq, extras=None, bank=None, group=None, mode=None, base_preset=None):
-        self.record("create-peq", name, bank, group, mode, base_preset)
         return {"name": name, "chain": []}
 
-    def create_convolver_preset(self, name, ir_filename, extras=None, bank=None, group=None, mode=None,
-                                base_preset=None):
-        self.record("create-convolver", name, bank, group, mode, base_preset)
+    def create_convolver_preset(self, name, ir_filename, extras=None, bank=None, group=None, mode=None):
+        self.calls.append(("create-convolver", name, bank))
+        self.groups.append(group)
+        self.modes.append(mode)
         return {"name": name, "chain": []}
 
     def create_convolver_preset_with_upload(self, name, path, filename, extras=None, bank=None, group=None,
-                                            mode=None, base_preset=None):
-        self.record("create-with-ir", name, bank, group, mode, base_preset)
+                                            mode=None):
+        self.calls.append(("create-with-ir", name, bank))
+        self.groups.append(group)
+        self.modes.append(mode)
         return {"ir": {"name": filename}, "preset": {"name": name, "chain": []}}
 
-    def create_convolver_preset_with_dual_uploads(self, name, *args, bank=None, group=None, mode=None,
-                                                  base_preset=None, **kwargs):
-        self.record("import-filter-dual", name, bank, group, mode, base_preset)
+    def create_convolver_preset_with_dual_uploads(self, name, *args, bank=None, group=None, mode=None, **kwargs):
+        self.calls.append(("import-filter-dual", name, bank))
+        self.groups.append(group)
+        self.modes.append(mode)
         return {"preset": {"name": name, "chain": []}}
 
 
@@ -278,8 +276,6 @@ class MeasurementCommitGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.groups, ["front", "front", "front"])
         # The bank's output mode travels along: it makes a Global preset that mode's own.
         self.assertEqual(self.manager.modes, ["surround", "surround", "surround"])
-        # A group filter completes the listened Global set.
-        self.assertEqual(self.manager.bases, ["Front set", "Front set", "Front set"])
 
     async def test_surround_global_needs_a_group_and_other_banks_take_none(self):
         with mock.patch.object(FakeOutputService, "load", return_value=SURROUND_STATE):

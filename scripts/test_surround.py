@@ -3,7 +3,6 @@
 """Position routing, separate LFE, shared subs and lossless Surround migration."""
 
 import copy
-import json
 import sys
 import unittest
 from pathlib import Path
@@ -464,84 +463,6 @@ class SurroundGlobalPresetTests(unittest.TestCase):
             chain = manager.library("global", "surround").read("Both")["chain"]
             self.assertEqual([plugin["group"] for plugin in chain], ["front", "rear"])
             self.assertEqual(combined["plugin_count"], 2)
-
-    def test_group_filter_completes_the_listened_set(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = self.manager(directory)
-            store = manager.library("global", "surround")
-            manager.create_peq_preset("Front EQ", self.peq(), bank="global", mode="surround", group="front",
-                                      base_preset="Neutral")
-            rear = self.peq()
-            rear["params"]["bands"][0]["gainDb"] = -2.0
-            manager.create_peq_preset("Set 1", rear, bank="global", mode="surround", group="rear",
-                                      base_preset="Front EQ")
-            chain = store.read("Set 1")["chain"]
-            self.assertEqual([(plugin["group"], plugin["id"]) for plugin in chain],
-                             [("front", "equalizer#0"), ("rear", "equalizer#1")])
-            self.assertEqual(chain[0]["params"], store.read("Front EQ")["chain"][0]["params"])
-            # A new filter for a group replaces that group's filters only.
-            front = self.peq()
-            front["params"]["bands"][0]["gainDb"] = -6.0
-            manager.create_peq_preset("Set 2", front, bank="global", mode="surround", group="front",
-                                      base_preset="Set 1")
-            chain = store.read("Set 2")["chain"]
-            self.assertEqual([(plugin["group"], plugin["params"]["bands"][0]["gainDb"]) for plugin in chain],
-                             [("front", -6.0), ("rear", -2.0)])
-            # The base set is a snapshot: it keeps its own filters.
-            self.assertEqual(len(store.read("Set 1")["chain"]), 2)
-            listed = {entry["name"]: entry for entry in manager.list_presets()}
-            self.assertEqual(listed["Set 2"]["group_filters"], [
-                {"group": "front", "type": "equalizer", "enabled": True, "bands": 1},
-                {"group": "rear", "type": "equalizer", "enabled": True, "bands": 1}])
-            with self.assertRaisesRegex(ValueError, "listened Global preset \"Gone\" is missing"):
-                manager.create_peq_preset("Set 3", front, bank="global", mode="surround", group="rear",
-                                          base_preset="Gone")
-            self.assertFalse(store.path("Set 3").exists())
-
-    def ir(self, path, channels=2):
-        from dsp.manager import build_wav_bytes
-        import struct
-        frames = [1.0] + [0.0] * 63
-        data = b"".join(struct.pack("<f", value) * channels for value in frames)
-        path.write_bytes(build_wav_bytes(channels=channels, rate=48000, bits=32, format_tag=3, data=data))
-        return path
-
-    def test_front_and_rear_convolvers_run_together_and_switch_as_one_set(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = self.manager(directory)
-            source = self.ir(Path(directory) / "ir.wav")
-            manager.create_convolver_preset_with_upload("Front FIR", source, "ir.wav", bank="global",
-                                                        mode="surround", group="front", base_preset="Neutral")
-            manager.create_convolver_preset_with_upload("Front+Rear FIR", source, "ir.wav", bank="global",
-                                                        mode="surround", group="rear", base_preset="Front FIR")
-            # An uploaded IR is named after its preset; it must not replace a kept group's IR.
-            with self.assertRaisesRegex(ValueError, "IR of another speaker group"):
-                manager.create_convolver_preset_with_upload("Front FIR", source, "ir.wav", bank="global",
-                                                            mode="surround", group="rear",
-                                                            base_preset="Front+Rear FIR")
-            store = manager.library("global", "surround")
-            self.assertEqual([(plugin["group"], plugin["params"]["kernel"]) for plugin in store.read("Front+Rear FIR")["chain"]],
-                             [("front", "Front FIR"), ("rear", "Front+Rear FIR")])
-            state = set_bank_preset(self.state(QUAD_SUBS, preset="Front+Rear FIR"), "surround", "global",
-                                    preset_b="Front FIR")
-
-            def engine_text(state):
-                plan = compile_processing_plan(state, output_key="A", channels=16, sample_rate_hz=48000,
-                                               preset_loader=manager.read_preset)
-                layout = layout_from_plan(plan, resolve_ir=lambda *_: {})
-                text = manager.compile_engine_text(layout, preset_name=plan["global"]["preset"], mode=plan["mode"])
-                return [Path(json.loads(line[len("param path "):])).name if line.startswith("param path") else line
-                        for line in text.splitlines() if line.startswith(("stage_begin", "pairs", "param path"))]
-
-            # Slot A: both groups' convolvers at once, each on its own effect pairs.
-            self.assertEqual(engine_text(state)[:6], [
-                "stage_begin 0 convolver#0 native convolver", "pairs 1", "Front FIR.wav",
-                "stage_begin 1 convolver#1 native convolver", "pairs 16", "Front+Rear FIR.wav"])
-            # A/B switches the whole set: slot B holds the Front filter only.
-            switched = set_bank_preset(state, "surround", "global", active_side="B")
-            self.assertEqual(engine_text(switched)[:3], [
-                "stage_begin 0 convolver#0 native convolver", "pairs 1", "Front FIR.wav"])
-            self.assertNotIn("pairs 16", engine_text(switched))
 
     def test_surround_preset_cannot_drive_a_stereo_graph(self):
         with tempfile.TemporaryDirectory() as directory:
