@@ -500,20 +500,17 @@
         return `<a href="${deps.escapeHtml(deps.presetFileUrl(cleanName, outputSystemBankOwner()))}" data-tooltip="${deps.escapeHtml(cleanName)}">${deps.escapeHtml(displayName)}</a>`;
     }
 
-    // Under Listening/Chain: the active preset of every bank in the chain.
-    // All Banks lists them in its A and B slots instead.
+    // Under Listening/Chain: active presets outside the current bank selection.
     function renderEffectsBankPresets() {
         const target = deps.getElements().effectsCompareBanks;
         if (!target) return;
         const catalog = deps.getState().outputSystem?.catalog;
         const mod = outputState();
-        const selected = catalog?.modes?.[catalog.active_mode]?.selected_bank;
-        const entries = catalog && selected !== 'all' && typeof mod?.activePresetOverview === 'function'
+        const entries = catalog && typeof mod?.activePresetOverview === 'function'
             ? mod.activePresetOverview(catalog) : [];
         const html = entries.map((entry) => {
             const name = entry.preset || 'Per-channel';
-            const selectedClass = entry.ids.includes(selected) ? ' is-selected' : '';
-            return `<span class="effects-compare-bank${selectedClass}" data-tooltip="${deps.escapeHtml(`${entry.label}: ${name}`)}">`
+            return `<span class="effects-compare-bank" data-tooltip="${deps.escapeHtml(`${entry.label}: ${name}`)}">`
                 + `<span class="effects-compare-bank-key">${deps.escapeHtml(entry.label)}</span> `
                 + `<span class="effects-compare-bank-preset">${deps.escapeHtml(mod.compactPresetName(name))}</span></span>`;
         }).join(' ');
@@ -560,8 +557,7 @@
         // Generated names differ at their end, so a long one keeps its last
         // word; the picker tooltip names the selected preset in full.
         const compact = name => outputState().compactPresetName(name, 28);
-        // An unassigned B starts from A; "No preset B" clears B for every group.
-        return (slot === 'B' ? option('', 'No preset B') : '') + option('Neutral', 'Neutral')
+        return option('Neutral', 'Neutral')
             + row.options.map(name => option(name, compact(name))).join('') + option('Direct', 'Direct · all groups');
     }
 
@@ -572,7 +568,7 @@
             if (!target) return;
             const html = rows.map((row) => {
                 const preset = slot === 'A' ? row.presetA : row.presetB;
-                const tooltip = `Preset ${slot} · ${row.label}: ${preset || 'no preset B'}`;
+                const tooltip = `Preset ${slot} · ${row.label}: ${preset}`;
                 return `<li class="effects-compare-slot-bank effects-compare-slot-group" data-group="${row.group}">`
                     + `<label class="effects-compare-slot-bank-key" for="effects-compare-${slot.toLowerCase()}-${row.group}">${deps.escapeHtml(row.label)}</label>`
                     + `<select id="effects-compare-${slot.toLowerCase()}-${row.group}" class="url-input compare-select compare-group-select"`
@@ -591,13 +587,8 @@
         if (!catalog || !current.groupSlots) return;
         const { slot, group } = select.dataset;
         const fields = { mode: catalog.active_mode, bank_id: 'global' };
-        if (slot === 'B' && !select.value) {
-            fields.preset_b = null;
-            if (current.effectiveActiveSide === 'B') fields.active_side = 'A';
-        } else {
-            Object.assign(fields, { [slot === 'A' ? 'preset_a' : 'preset_b']: select.value, group });
-            if (!current.effectiveActiveSide) fields.active_side = slot;
-        }
+        Object.assign(fields, { [slot === 'A' ? 'preset_a' : 'preset_b']: select.value, group });
+        if (!current.effectiveActiveSide) fields.active_side = slot;
         try {
             await deps.applyMutation('set_bank_preset', fields, false);
         } finally {
@@ -632,9 +623,9 @@
         if (deps.getElements().effectsCompareA.innerHTML !== optionsA) {
             deps.getElements().effectsCompareA.innerHTML = optionsA;
         }
-        const optionsB = aggregate ? '<option>All Banks · B</option>' : [`<option value="" ${!presetB ? 'selected' : ''}>${!presetB && getEffectsCompareState().canB ? 'Per-channel presets' : 'Select preset…'}</option>`].concat(
-                presets.map(n => `<option value="${deps.escapeHtml(n)}" ${n === presetB ? 'selected' : ''}>${deps.escapeHtml(n)}</option>`)
-            ).join('');
+        const optionsB = aggregate ? '<option>All Banks · B</option>' :
+            (!presetB && canB ? '<option value="" selected>Per-channel presets</option>' : '')
+            + presets.map(n => `<option value="${deps.escapeHtml(n)}" ${n === (presetB || (canB ? '' : 'Neutral')) ? 'selected' : ''}>${deps.escapeHtml(n)}</option>`).join('');
         if (deps.getElements().effectsCompareB.innerHTML !== optionsB) {
             deps.getElements().effectsCompareB.innerHTML = optionsB;
         }
@@ -880,20 +871,10 @@
         const current = getEffectsCompareState();
         if (current.aggregate) return;
         const selectedValue = (slot === 'A' ? deps.getElements().effectsCompareA?.value : deps.getElements().effectsCompareB?.value) || null;
-        if (slot === 'B' && selectedValue && selectedValue === current.presetA) {
-            deps.showToast('A and B must use different presets', 'warning');
-            renderEffectsCompare();
-            return;
-        }
         const fields = { mode: catalog.active_mode, bank_id: catalog.modes[catalog.active_mode].selected_bank,
             [slot === 'A' ? 'preset_a' : 'preset_b']: selectedValue };
         if (selectedValue && (!current.effectiveActiveSide || current.effectiveActiveSide === slot)) fields.active_side = slot;
         if (!selectedValue && slot === 'B' && current.effectiveActiveSide === 'B') fields.active_side = 'A';
-        if (slot === 'A' && selectedValue && selectedValue === current.presetB) {
-            // Global's compare always did this: A takes B's preset and B is cleared.
-            fields.preset_b = null;
-            fields.active_side = 'A';
-        }
         await deps.applyMutation('set_bank_preset', fields, false);
         renderEffectsCompare();
     }

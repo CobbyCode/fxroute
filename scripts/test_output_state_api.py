@@ -376,14 +376,14 @@ class DspBankApiTests(unittest.TestCase):
         state = self.service.load()
         banks = state["modes"]["stereo-sub"]["banks"]
         self.assertEqual(state["revision"], 4)
-        self.assertEqual(banks["sub1"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
+        self.assertEqual(banks["sub1"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": "Neutral"})
         self.assertEqual(banks["global"], {"preset": "Room", "preset_a": "Neutral", "preset_b": "Room"})
         sync.assert_awaited_once()
         asyncio.run(dsp_api.delete_dsp_preset(FakeRequest(
             {"preset_name": "Room", "bank_mode": "stereo-sub", "bank_id": "global"})))
         self.assertEqual(stored_in(self.manager, "Room"), [("global", "stereo")])
         self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["global"],
-                         {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
+                         {"preset": "Neutral", "preset_a": "Neutral", "preset_b": "Neutral"})
 
     def test_delete_keeps_slots_when_the_preset_cannot_be_deleted(self):
         self.service.apply(

@@ -27,6 +27,7 @@ from audio.output_topology import BANK_IDS, MODES, derive_topology
 from dsp.manager import DSPManager, build_wav_bytes, parse_wav_frames
 from dsp.persistence import clean_bank
 from dsp.surround_global import neutral_selection
+from preset_test_support import seed_bound_preset
 
 STEREO_SUB = ("global", "stereo-sub")
 BANKS = (("global", "stereo"), STEREO_SUB, ("global", "surround"), ("main", None), ("sub1", None))
@@ -78,6 +79,12 @@ class Fixture(unittest.TestCase):
 
 
 class LibraryTests(Fixture):
+    def test_seeding_ignores_compare_side_metadata(self):
+        state = state_api.set_bank_preset(state_api.default_output_state(), "stereo", "global", preset="B")
+        state = state_api.set_bank_preset(state, "stereo", "main", active_side="B")
+        seed_bound_preset(self.manager, "B", state)
+        self.assertEqual(self.stored("B"), [("global", "stereo")])
+
     def test_a_bank_id_is_one_an_output_mode_can_define(self):
         for bank in ("global", "low", "  low_mid  ", "sub_l", "rear_r", "left_high"):
             self.assertEqual(clean_bank(bank), bank.strip())
@@ -397,7 +404,7 @@ class ReleaseTests(unittest.TestCase):
                 (("Room", "Neutral", "Room"), ("Neutral", "Neutral", None)),
                 (("Keep", "Room", "Keep"), ("Keep", "Neutral", "Keep")),
                 (("Room", "Room", "Keep"), ("Neutral", "Neutral", "Keep")),
-                (("Room", "Room", "Neutral"), ("Neutral", "Neutral", None)),
+                (("Room", "Room", "Neutral"), ("Neutral", "Neutral", "Neutral")),
                 (("Other", "Direct", "Room"), ("Other", "Direct", None)),
                 (("Room", "Direct", "Keep"), ("Direct", "Direct", "Keep"))):
             with self.subTest(binding=binding):
@@ -624,7 +631,7 @@ class ApiTests(Fixture):
         self.assertEqual(deleted.status_code, 200, deleted.text)
         self.assertEqual(self.stored("A"), [("main", None)])
         banks = self.service.load()["modes"]["stereo-sub"]["banks"]
-        self.assertEqual(banks["global"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": None})
+        self.assertEqual(banks["global"], {"preset": "Neutral", "preset_a": "Neutral", "preset_b": "Neutral"})
         self.assertEqual(banks["main_l"]["preset"], "B")
         deleted = self.client.post("/api/dsp/presets/delete", json={"preset_name": "B", **self.owner("main")})
         self.assertEqual(deleted.status_code, 200, deleted.text)

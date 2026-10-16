@@ -873,7 +873,9 @@ const radio = state.getPlayback();
     assert.equal(surround0.banks.center.label, 'Center');
     assert.equal(surround0.banks.sub1.label, 'Sub 1');
     assert.equal(surround0.banks.sub2.label, 'Sub 2');
-    assert.equal(surround0.all_banks.can_b, false);
+    assert.equal(surround0.all_banks.can_b, true);
+    assert.equal(surround0.banks.rear.preset_b, 'Neutral');
+    assert.equal(surround0.banks.global.preset_b.rear, 'Neutral');
     // Bass management is keyed by speaker group in Surround, all four groups
     // linked to the 80 Hz split.
     sameList(Object.keys(surround0.bass_management.sub_filters), ['front', 'center', 'side', 'rear'], 'surround groups');
@@ -912,12 +914,45 @@ const radio = state.getPlayback();
     assert.equal(switchSurround.status, 200);
     const surroundActive = await (await demoFetch('/api/audio/output-state')).json();
     assert.equal(surroundActive.active_mode, 'surround');
+    // Equal Neutral choices retain B, both jointly and in Surround Global.
+    const compareApply = async (mutation) => {
+        const current = await (await demoFetch('/api/audio/output-state')).json();
+        const response = await demoFetch('/api/audio/output-state/apply', { method: 'POST',
+            body: JSON.stringify({ expected_revision: current.revision, mutation: { mode: 'surround', ...mutation } }) });
+        assert.equal(response.status, 200);
+        return (await (await demoFetch('/api/audio/output-state')).json()).modes.surround;
+    };
+    let compared = await compareApply({ kind: 'switch_all_banks', active_side: 'B' });
+    assert.equal(compared.all_banks.active_side, 'B');
+    assert.equal(compared.banks.rear.active_side, 'B');
+    await compareApply({ kind: 'switch_all_banks', active_side: 'A' });
+    await compareApply({ kind: 'set_bank_preset', bank_id: 'global', preset_b: 'Neutral', group: 'rear' });
+    compared = await compareApply({ kind: 'set_bank_preset', bank_id: 'global', active_side: 'B' });
+    assert.equal(compared.banks.global.active_side, 'B');
+    // Deleting B's group preset returns that group to Neutral, without clearing B.
+    const beforeCreate = await (await demoFetch('/api/audio/output-state')).json();
+    const createdGroup = await demoFetch('/api/dsp/presets/create-peq', { method: 'POST', body: JSON.stringify({
+        presetName: 'A/B Rear regression', bank_mode: 'surround', bank_id: 'global', bank_group: 'rear',
+        expected_revision: beforeCreate.revision, peq: { params: { channelMode: 'stereo-linked', bands: [] } },
+    }) });
+    assert.equal(createdGroup.status, 200);
+    const deletedGroup = await demoFetch('/api/dsp/presets/delete', { method: 'POST', body: JSON.stringify({
+        preset_name: 'A/B Rear regression', bank_mode: 'surround', bank_id: 'global',
+    }) });
+    assert.equal(deletedGroup.status, 200);
+    const afterDelete = (await (await demoFetch('/api/audio/output-state')).json()).modes.surround.banks.global;
+    assert.ok(afterDelete.preset_b, 'a released group does not clear B');
+    assert.equal(afterDelete.preset_b.rear, 'Neutral');
+    assert.equal(afterDelete.active_side, 'B');
+    assert.equal(afterDelete.can_b, true);
+    await compareApply({ kind: 'set_bank_preset', bank_id: 'global', active_side: 'A' });
+    const afterCompare = await (await demoFetch('/api/audio/output-state')).json();
     // A half-routed Side pair is saved but not activated, with the Surround
     // wording; the incomplete state is revertible from the same routing.
     const partialRouting = surroundActive.device.routing.surround.slice();
     partialRouting[6] = 'off';
     const partialApply = await demoFetch('/api/audio/output-state/apply',
-        { method: 'POST', body: JSON.stringify({ expected_revision: surroundActive.revision,
+        { method: 'POST', body: JSON.stringify({ expected_revision: afterCompare.revision,
             mutation: { kind: 'set_routing', mode: 'surround', assignments: partialRouting } }) });
     assert.equal(partialApply.status, 200);
     const partial = await partialApply.json();

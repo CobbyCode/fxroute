@@ -77,8 +77,10 @@ class FilterBankGroupsTests(unittest.TestCase):
 
     def test_all_without_any_b_refuses_the_switch(self):
         state = sub_state()
-        before = copy.deepcopy(state)
         banks = state["modes"]["stereo-sub"]["banks"]
+        for bank in banks.values():
+            bank["preset_b"] = None
+        before = copy.deepcopy(state)
         self.assertFalse(summarize_all_banks([banks[role] for role in ("main_l", "sub_l")])["can_b"])
         with self.assertRaisesRegex(ValueError, "no assigned preset in any configured bank"):
             state_api.switch_all_banks(state, "stereo-sub", "A", 4, "B")

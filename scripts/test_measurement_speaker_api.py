@@ -254,8 +254,10 @@ class CompositionFactoryTests(unittest.IsolatedAsyncioTestCase):
             processing[f"{side}_high"]["highpass"] = {
                 "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2000,
             }
-        for config in state["modes"].values():
-            for bank in config["banks"].values():
+        for mode, config in state["modes"].items():
+            for role, bank in config["banks"].items():
+                if mode == "surround" and role == "global":
+                    continue
                 bank.update(preset="Room", preset_a="Neutral", preset_b="Room")
         seed_bound_preset(manager, "Room", state)
         head = store.commit(state, expected_revision=0)

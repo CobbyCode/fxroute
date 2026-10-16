@@ -89,8 +89,8 @@ const rows = (html) => [...html.matchAll(/<li class="effects-compare-slot-bank e
     const { catalog } = makeContext({ preset: selection({ front: 'Front FIR', rear: 'Rear FIR' }),
         preset_a: selection({ front: 'Front FIR', rear: 'Rear FIR' }), preset_b: null });
     assert.deepEqual(OutputState.globalGroupSlots(catalog, PRESETS), [
-        { group: 'front', label: 'Front L/R', presetA: 'Front FIR', presetB: '', options: ['Front FIR'] },
-        { group: 'rear', label: 'Rear L/R', presetA: 'Rear FIR', presetB: '', options: ['Rear FIR', 'Rear FIR B'] },
+        { group: 'front', label: 'Front', presetA: 'Front FIR', presetB: 'Neutral', options: ['Front FIR'] },
+        { group: 'rear', label: 'Rear', presetA: 'Rear FIR', presetB: 'Neutral', options: ['Rear FIR', 'Rear FIR B'] },
     ]);
     assert.equal(OutputState.globalSlotLabel(selection({ front: 'Front FIR', rear: 'Rear FIR' })), 'Front + Rear');
     assert.equal(OutputState.globalSlotLabel(NEUTRAL), 'Neutral');
@@ -102,7 +102,7 @@ const rows = (html) => [...html.matchAll(/<li class="effects-compare-slot-bank e
         banks: { global: { preset: 'Room', preset_a: 'Room', preset_b: null, active_side: 'A' } } } } };
     assert.equal(OutputState.globalGroupSlots(stereo, PRESETS), null);
     assert.equal(OutputState.compareState(stereo).groupSlots, false);
-    assert.equal(OutputState.activePresetOverview(catalog)[0].preset, 'Front + Rear');
+    assert.deepEqual(OutputState.activePresetOverview(catalog), [], 'Global does not repeat its own status chip');
 }
 
 // A and B list one picker per routed group; the slot pickers hide.
@@ -122,17 +122,17 @@ const rows = (html) => [...html.matchAll(/<li class="effects-compare-slot-bank e
     ]);
     const rowsB = rows(elements.effectsCompareBBanks.innerHTML);
     assert.deepEqual(rowsB.map(row => [row.group, row.selected]), [['front', 'Front FIR'], ['rear', 'Rear FIR B']]);
-    assert.equal(rowsB[0].options[0], '', 'B offers to clear the whole B selection');
-    assert.equal(rowsB[1].tooltip, 'Preset B · Rear L/R: Rear FIR B');
+    assert.equal(rowsB[0].options[0], 'Neutral', 'B starts with Neutral, not an empty choice');
+    assert.equal(rowsB[1].tooltip, 'Preset B · Rear: Rear FIR B');
     assert.ok(!elements.effectsCompareBBanks.innerHTML.includes('Center'), 'an unrouted group gets no picker');
-    assert.deepEqual(rowsB[1].labels, ['No preset B', 'Neutral', 'Rear FIR', 'Rear FIR B', 'Direct · all groups']);
+    assert.deepEqual(rowsB[1].labels, ['Neutral', 'Rear FIR', 'Rear FIR B', 'Direct · all groups']);
     const [tileA, tileB] = context.slots;
     assert.ok(tileB.classList.contains('is-active') && tileA.classList.contains('is-armed'));
     // Delete removes the listened preset of the measured group.
     assert.equal(elements.effectsDeleteBtn.disabled, false);
-    assert.equal(elements.effectsDeleteBtn.dataset.tooltip, 'Delete active Rear L/R preset');
+    assert.equal(elements.effectsDeleteBtn.dataset.tooltip, 'Delete active Rear preset');
     BankUI.deleteEffectsPreset();
-    assert.deepEqual(context.confirmations, ['Delete Rear L/R preset "Rear FIR B"?']);
+    assert.deepEqual(context.confirmations, ['Delete Rear preset "Rear FIR B"?']);
 }
 
 // A long generated name keeps its start and its distinguishing last word.
@@ -144,15 +144,30 @@ const rows = (html) => [...html.matchAll(/<li class="effects-compare-slot-bank e
     const side = rows(context.elements.effectsCompareABanks.innerHTML).find(row => row.group === 'side');
     assert.equal(side.selected, 'Conv LR HybAlign Neutral 20-2793Hz -3.5dB 233224');
     assert.equal(side.labels[1], 'Conv LR HybAlign…233224');
-    assert.equal(side.tooltip, 'Preset A · Side L/R: Conv LR HybAlign Neutral 20-2793Hz -3.5dB 233224');
+    assert.equal(side.tooltip, 'Preset A · Side: Conv LR HybAlign Neutral 20-2793Hz -3.5dB 233224');
 }
 
-// An unassigned B shows "No preset B"; a Neutral group disables Delete.
+// Global A/B uses short group names only; bank and measurement labels keep L/R.
+{
+    const { catalog, elements } = makeContext({ preset: NEUTRAL, preset_a: NEUTRAL, preset_b: NEUTRAL },
+        { roles: ['main_l', 'main_r', 'rear_l', 'rear_r', 'side_l', 'side_r', 'center', 'sub1', 'sub2'] });
+    BankUI.renderEffectsCompare();
+    assert.deepEqual(OutputState.globalGroupSlots(catalog, PRESETS).map(row => row.label),
+        ['Front', 'Center', 'Side', 'Rear']);
+    for (const target of [elements.effectsCompareABanks, elements.effectsCompareBBanks]) {
+        assert.doesNotMatch(target.innerHTML, /L\/R|Sub|No preset|Select preset/);
+        assert.ok(rows(target.innerHTML).every(row => row.selected === 'Neutral'));
+    }
+    assert.equal(elements.effectsCompareToggle.disabled, false);
+    assert.equal(OutputState.SURROUND_GROUP_LABELS.front, 'Front L/R');
+}
+
+// A legacy empty B displays Neutral; a Neutral group disables Delete.
 {
     const slotA = selection({ front: 'Front FIR' });
     const context = makeContext({ preset: slotA, preset_a: slotA, preset_b: null });
     BankUI.renderEffectsCompare();
-    assert.deepEqual(rows(context.elements.effectsCompareBBanks.innerHTML).map(row => row.selected), ['', '']);
+    assert.deepEqual(rows(context.elements.effectsCompareBBanks.innerHTML).map(row => row.selected), ['Neutral', 'Neutral']);
     assert.equal(context.elements.effectsDeleteBtn.disabled, true);
     assert.equal(context.elements.effectsCompareToggle.disabled, true);
 }
@@ -166,7 +181,7 @@ const rows = (html) => [...html.matchAll(/<li class="effects-compare-slot-bank e
     assert.deepEqual(rows(context.elements.effectsCompareBBanks.innerHTML).map(row => row.selected), ['Neutral', 'Neutral']);
 }
 
-// A pick sends its slot and group; "No preset B" clears B and returns to A.
+// A pick sends its slot and group, including Neutral in B.
 (async () => {
     const slotA = selection({ front: 'Front FIR', rear: 'Rear FIR' });
     const slotB = selection({ front: 'Front FIR', rear: 'Rear FIR B' });
@@ -176,10 +191,10 @@ const rows = (html) => [...html.matchAll(/<li class="effects-compare-slot-bank e
     const change = (list, dataset, value) => list.listeners.find(([type]) => type === 'change')[1]({
         target: { dataset, value, classList: { contains: (name) => name === 'compare-group-select' } } });
     await change(context.elements.effectsCompareABanks, { slot: 'A', group: 'rear' }, 'Rear FIR B');
-    await change(context.elements.effectsCompareBBanks, { slot: 'B', group: 'front' }, '');
+    await change(context.elements.effectsCompareBBanks, { slot: 'B', group: 'front' }, 'Neutral');
     assert.deepEqual(context.mutations, [
         ['set_bank_preset', { mode: 'surround', bank_id: 'global', preset_a: 'Rear FIR B', group: 'rear' }],
-        ['set_bank_preset', { mode: 'surround', bank_id: 'global', preset_b: null, active_side: 'A' }],
+        ['set_bank_preset', { mode: 'surround', bank_id: 'global', preset_b: 'Neutral', group: 'front' }],
     ]);
     console.log('surround global slot tests passed');
 })().catch((error) => {

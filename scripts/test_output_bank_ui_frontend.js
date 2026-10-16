@@ -238,8 +238,7 @@ const realFetch = globalThis.fetch;
         }
     }
 
-    // Picking B's preset for A works like Global's compare: A takes it and B
-    // is cleared. B cannot take A's preset.
+    // Equal A/B picks keep the other slot and the currently listened side.
     {
         const bank = (id, preset, preset_a, preset_b) => ({ id, label: id, preset, preset_a, preset_b,
             active_side: preset === preset_a ? 'A' : 'B', can_a: true, can_b: !!preset_b });
@@ -256,11 +255,28 @@ const realFetch = globalThis.fetch;
         elements.effectsCompareA.value = '3';
         await BankUI.handleEffectsCompareSelectionChange('A');
         assert.deepEqual(mutations, [['set_bank_preset', { mode: 'stereo-sub', bank_id: 'main',
-            preset_a: '3', preset_b: null, active_side: 'A' }]]);
+            preset_a: '3' }]]);
         elements.effectsCompareB.value = '2';
         await BankUI.handleEffectsCompareSelectionChange('B');
-        assert.equal(mutations.length, 1, 'B cannot take A\'s preset');
-        assert.deepEqual(toasts.at(-1), ['A and B must use different presets', 'warning']);
+        assert.deepEqual(mutations[1], ['set_bank_preset', { mode: 'stereo-sub', bank_id: 'main',
+            preset_b: '2', active_side: 'B' }]);
+        assert.deepEqual(toasts, []);
+    }
+
+    // Both preset pickers expose Neutral directly, without an empty choice.
+    {
+        const catalog = bankCatalog('main');
+        const bank = catalog.modes['stereo-sub'].banks.main;
+        bank.preset_b = 'Neutral';
+        bank.can_b = true;
+        const elements = bankElements();
+        initBankUI({ outputSystem: { catalog }, dsp: { presets: [{ name: 'Neutral' }] } }, elements);
+        BankUI.renderEffectsCompare();
+        for (const select of [elements.effectsCompareA, elements.effectsCompareB]) {
+            assert.match(select.innerHTML, /value="Neutral" selected/);
+            assert.doesNotMatch(select.innerHTML, /value=""|Select preset|No preset/i);
+        }
+        assert.equal(elements.effectsCompareToggle.disabled, false);
     }
 
     // All Banks switches to B once one bank has a B; the others stay on A.
@@ -280,6 +296,21 @@ const realFetch = globalThis.fetch;
         await BankUI.toggleComparePreset();
         assert.equal(mutations.length, 1);
         assert.deepEqual(toasts.at(-1), ['Assign preset B in at least one bank first.', 'warning']);
+    }
+
+    // Mixed legacy per-channel slots remain visible instead of claiming Neutral.
+    {
+        const catalog = bankCatalog('main');
+        const bank = catalog.modes['stereo-sub'].banks.main;
+        bank.preset_a = null;
+        bank.preset_b = null;
+        bank.can_b = true;
+        const elements = bankElements();
+        initBankUI({ outputSystem: { catalog }, dsp: { presets: [{ name: 'Neutral' }] } }, elements);
+        BankUI.renderEffectsCompare();
+        assert.match(elements.effectsCompareA.innerHTML, /value="">Per-channel presets/);
+        assert.match(elements.effectsCompareB.innerHTML, /value="" selected>Per-channel presets/);
+        assert.doesNotMatch(elements.effectsCompareB.innerHTML, /value="Neutral" selected/);
     }
 
     // Preset delete guards the empty and built-in cases before confirming.

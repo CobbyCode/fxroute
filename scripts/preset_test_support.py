@@ -12,7 +12,7 @@ def seed_bound_preset(manager, name, state, chain=()):
     """
     for mode, config in state["modes"].items():
         for role, binding in config["banks"].items():
-            if name not in binding.values():
+            if name not in (binding["preset"], binding["preset_a"], binding["preset_b"]):
                 continue
             libraries = [("global", mode)] if role == "global" else [(bank, None) for bank in owning_bank_ids(role)]
             for bank, owner in libraries:

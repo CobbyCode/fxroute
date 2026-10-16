@@ -40,18 +40,22 @@ def slot_presets(slot: object) -> tuple[str, ...]:
 class BankState:
     preset: str | dict = "Neutral"
     preset_a: str | dict = "Neutral"
-    preset_b: str | dict | None = None
+    preset_b: str | dict | None = "Neutral"
+    _side: str | None = None
 
     def __post_init__(self) -> None:
         _validate_slot(self.preset)
         _validate_slot(self.preset_a)
         if self.preset_b is not None:
             _validate_slot(self.preset_b)
-            if self.preset_b == self.preset_a:
-                raise ValueError("Compare slots must use distinct presets")
+        if self._side is not None:
+            if self._side not in ("A", "B") or self.preset != (self.preset_a if self._side == "A" else self.preset_b):
+                raise ValueError("Stored compare side must match the listened preset")
 
     @property
     def active_side(self) -> str | None:
+        if self._side is not None:
+            return self._side
         return "A" if self.preset == self.preset_a else "B" if self.preset == self.preset_b else None
 
     def select(self, side: str) -> BankState:
@@ -60,15 +64,18 @@ class BankState:
         name = self.preset_a if side == "A" else self.preset_b
         if name is None:
             raise ValueError(f"Compare side {side} has no assigned preset")
-        return replace(self, preset=name)
+        # Only equal slots need a persisted tie-break; other bindings keep their shape.
+        return replace(self, preset=name, _side="B" if side == "B" and self.preset_a == self.preset_b else None)
 
     def to_dict(self) -> dict:
         def copy(slot):
             return dict(slot) if isinstance(slot, dict) else slot
-        return {"preset": copy(self.preset), "preset_a": copy(self.preset_a), "preset_b": copy(self.preset_b)}
+        return {"preset": copy(self.preset), "preset_a": copy(self.preset_a), "preset_b": copy(self.preset_b),
+                **({"active_side": "B"} if self.preset_a == self.preset_b and self.active_side == "B" else {})}
 
     @classmethod
     def from_dict(cls, payload: object) -> BankState:
-        if not isinstance(payload, dict) or set(payload) != {"preset", "preset_a", "preset_b"}:
+        fields = {"preset", "preset_a", "preset_b"}
+        if not isinstance(payload, dict) or set(payload) not in (fields, fields | {"active_side"}):
             raise ValueError("Bank requires preset, preset_a, and preset_b")
-        return cls(**payload)
+        return cls(**{key: payload[key] for key in fields}, _side=payload.get("active_side"))

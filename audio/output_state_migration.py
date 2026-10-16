@@ -61,8 +61,7 @@ def _upgrade_v6_surround_global_groups(payload: dict) -> dict:
     """Give the Surround Global slots a preset selection per speaker group.
 
     A slot that named one preset cannot be mapped to its group without the
-    preset library: it starts without filters, Direct stays Direct. A B equal
-    to A is cleared; the listened side is kept.
+    preset library: it starts without filters, Direct stays Direct.
     """
     result = copy.deepcopy(payload)
     result["version"] = 7
@@ -77,10 +76,10 @@ def _upgrade_v6_surround_global_groups(payload: dict) -> dict:
 
     listened_b = preset_b is not None and preset == preset_b and preset != preset_a
     preset_a, preset_b = selection(preset_a), selection(preset_b)
-    if preset_b == preset_a:
-        preset_b = None
     binding.update(preset=preset_b if listened_b and preset_b is not None else preset_a,
-                   preset_a=preset_a, preset_b=preset_b)
+                    preset_a=preset_a, preset_b=preset_b)
+    if listened_b and preset_b == preset_a:
+        binding["active_side"] = "B"
     return result
 
 
@@ -97,4 +96,10 @@ def upgrade_output_state(payload: dict) -> dict:
     """
     while isinstance(payload, dict) and payload.get("version") in _UPGRADES:
         payload = _UPGRADES[payload["version"]](payload)
-    return validate_output_state(payload)
+    result = validate_output_state(payload)
+    # Older banks left B empty; Neutral fills the slot without changing listening.
+    for mode, config in result["modes"].items():
+        for role, bank in config["banks"].items():
+            if bank["preset_b"] is None:
+                bank["preset_b"] = neutral_selection() if mode == "surround" and role == "global" else "Neutral"
+    return result

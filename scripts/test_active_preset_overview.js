@@ -35,12 +35,11 @@ for (const name of [CONV, 'PEQ LR Measurement 2f 233800', 'MyVeryLongPresetNameW
     assert.ok(ui.compactPresetName(name).length <= 20, `${name} must fit the budget`);
 }
 
-// Only the active mode's banks, Global first even when the catalog lists it later.
+// Global shows only the active mode's area banks.
 assert.deepEqual(ui.activePresetOverview(catalog('stereo-sub', {
     main: bank('Main L/R', 'Neutral'), global: bank('Global', CONV, 'B'),
     sub1: bank('Sub 1', 'PEQ', 'B'), sub2: bank('Sub 2', 'PEQ', 'B'),
 })), [
-    { ids: ['global'], label: 'Global', preset: CONV },
     { ids: ['main'], label: 'Main L/R', preset: 'Neutral' },
     { ids: ['sub1', 'sub2'], label: 'Sub 1/2', preset: 'PEQ' },
 ]);
@@ -48,21 +47,21 @@ assert.deepEqual(ui.activePresetOverview(catalog('stereo-sub', {
 // Numbered banks merge only in a row, of one family, on the same preset.
 assert.deepEqual(ui.activePresetOverview(catalog('stereo-sub', {
     global: bank('Global', 'Neutral'), sub1: bank('Sub 1', 'PEQ'), sub2: bank('Sub 2', 'Direct'),
-})).map(entry => `${entry.label}=${entry.preset}`), ['Global=Neutral', 'Sub 1=PEQ', 'Sub 2=Direct']);
+})).map(entry => `${entry.label}=${entry.preset}`), ['Sub 1=PEQ', 'Sub 2=Direct']);
 assert.deepEqual(ui.activePresetOverview(catalog('surround', {
     global: bank('Global', 'Neutral'), sub1: bank('Sub 1', 'Direct'), center: bank('Center', 'Direct'),
     sub2: bank('Sub 2', 'Direct'), sub3: bank('Sub 3', 'Direct'),
-})).map(entry => entry.label), ['Global', 'Sub 1', 'Center', 'Sub 2/3']);
+})).map(entry => entry.label), ['Sub 1', 'Center', 'Sub 2/3']);
 
 // Channels on different presets have no single preset; they never merge.
 assert.deepEqual(ui.activePresetOverview(catalog('stereo-sub', {
     global: bank('Global', 'Neutral'), sub1: bank('Sub 1', null), sub2: bank('Sub 2', null),
-})).map(entry => [entry.label, entry.preset]), [['Global', 'Neutral'], ['Sub 1', null], ['Sub 2', null]]);
+})).map(entry => [entry.label, entry.preset]), [['Sub 1', null], ['Sub 2', null]]);
 
 // A bank without a label falls back to the role label of the mode.
 assert.deepEqual(ui.activePresetOverview(catalog('surround', {
     global: { preset: 'Neutral' }, main: { preset: 'Direct' },
-})).map(entry => entry.label), ['Global', 'Front L/R']);
+})).map(entry => entry.label), ['Front L/R']);
 assert.deepEqual(ui.activePresetOverview(null), []);
 assert.deepEqual(ui.activePresetOverview({ active_mode: 'stereo', modes: {} }), []);
 
@@ -97,7 +96,7 @@ assert.deepEqual(ui.allBanksCompareOverview(catalog('surround', { global: {}, ma
     .map(row => [row.label, row.canB]), [['Front L/R', false]]);
 assert.deepEqual(ui.allBanksCompareOverview(null), []);
 
-// Rendered into the compare badge: one chip per entry, the selected bank marked.
+// Rendered into the compare badge: only banks outside the current selection.
 function render(state) {
     const elements = {
         effectsCompareRow: { style: {} },
@@ -130,19 +129,22 @@ const banks = {
     const html = render({ outputSystem: { catalog: catalog('stereo-sub', banks, 'main') }, dsp: { presets } });
     assert.deepEqual(chips(html), [
         { selected: false, tooltip: `Global: ${CONV}`, text: 'Global Conv LR…233313' },
-        { selected: true, tooltip: 'Main L/R: A&amp;B &lt;x&gt;', text: 'Main L/R A&amp;B &lt;x&gt;' },
         { selected: false, tooltip: 'Sub 1/2: Direct', text: 'Sub 1/2 Direct' },
     ]);
-    assert.ok(!html.includes('<x>'), 'preset names are escaped');
+    const escaped = render({ outputSystem: { catalog: catalog('stereo-sub', banks, 'global') }, dsp: { presets } });
+    assert.ok(!escaped.includes('<x>'), 'preset names are escaped');
+    assert.match(escaped, /A&amp;B &lt;x&gt;/);
 }
-// A merged entry is marked when one of its banks is the selected one; All Banks
-// lists the banks in its A/B slots, so the badge carries no chips there.
+// Filter before merging: selecting Sub 2 leaves Sub 1, not Sub 1/2.
 assert.deepEqual(chips(render({ outputSystem: { catalog: catalog('stereo-sub', banks, 'sub2') }, dsp: { presets } }))
-    .map(chip => chip.selected), [false, false, true]);
-assert.equal(render({ outputSystem: { catalog: {
-    ...catalog('stereo-sub', banks, 'all'), modes: { 'stereo-sub': { selected_bank: 'all', banks,
-        all_banks: { preset: null, preset_a: null, preset_b: null, active_side: null, can_a: true, can_b: true } } },
-} }, dsp: { presets } }), '');
+    .map(chip => [chip.selected, chip.text]), [[false, 'Global Conv LR…233313'],
+        [false, 'Main L/R A&amp;B &lt;x&gt;'], [false, 'Sub 1 Direct']]);
+const allCatalog = catalog('stereo-sub', banks, 'all');
+allCatalog.modes['stereo-sub'].all_banks = { preset: null, preset_a: null, preset_b: null,
+    active_side: null, can_a: true, can_b: true };
+assert.deepEqual(chips(render({ outputSystem: { catalog: allCatalog }, dsp: { presets } })), [
+    { selected: false, tooltip: `Global: ${CONV}`, text: 'Global Conv LR…233313' },
+]);
 // Mixed channel bindings read as per-channel; without a catalog the line is empty.
 assert.match(render({ outputSystem: { catalog: catalog('stereo-sub', { global: bank('Global', 'Neutral'),
     main: bank('Main L/R', null) }) }, dsp: { presets } }), /Main L\/R<\/span> <span class="effects-compare-bank-preset">Per-channel</);

@@ -170,7 +170,7 @@ const rows = (html) => [...html.matchAll(/<li class="([^"]*)" data-tooltip="([^"
     context.elements.effectsCompareChain.classList.toggle('hidden', true);
     vm.runInContext('renderEffectsCompare()', context);
     assert.match(context.elements.effectsCompareA.innerHTML, /<option value="Neutral" selected>Neutral<\/option>/);
-    assert.match(context.elements.effectsCompareB.innerHTML, /Select preset…/);
+    assert.doesNotMatch(context.elements.effectsCompareB.innerHTML, /Select preset|No preset/);
     assert.notEqual(context.elements.effectsCompareA.innerHTML, '<option>All Banks · A</option>');
     // The single-bank view keeps its chain line and toggle label, the lists stay hidden.
     assert.ok(!context.elements.effectsCompareChain.classList.contains('hidden'));

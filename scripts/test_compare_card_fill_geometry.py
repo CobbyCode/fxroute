@@ -148,6 +148,7 @@ ALL_BANKS_MEASURE_JS = """
     });
     return { slots, chainShown: visible(document.getElementById('effects-compare-chain')),
         chipsShown: visible(document.getElementById('effects-compare-banks')),
+        chipBanks: [...document.querySelectorAll('#effects-compare-banks .effects-compare-bank-key')].map(el => el.textContent),
         active: document.getElementById('effects-compare-active').textContent,
         toggle: document.getElementById('effects-compare-toggle').textContent };
 }
@@ -245,8 +246,8 @@ def _run():
                 tag = f"[{width}px/all banks]"
                 g = gaps(m["blocks"])
                 check(f"{tag} status, slots, actions and info line ({[b['id'] for b in m['blocks']]})", len(m["blocks"]) == 4)
-                check(f"{tag} the status names the side only", a["active"] == "Listening: A · All Banks"
-                      and not a["chainShown"] and not a["chipsShown"])
+                check(f"{tag} the status names the side and shows only Global", a["active"] == "Listening: A · All Banks"
+                      and not a["chainShown"] and a["chipsShown"] and a["chipBanks"] == ["Global"])
                 check(f"{tag} the toggle reads as in a single bank", a["toggle"] == "Compare A/B")
                 check(f"{tag} both slots list the switched banks without a picker",
                       all(not slot["pickerShown"] and slot["rows"] == ["Front L/R", "Center", "Rear L/R", "Sub 1/2"]

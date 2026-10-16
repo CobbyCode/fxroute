@@ -419,14 +419,17 @@
         if (mode === 'surround') return [...fronts, ...surroundSpeakers, 'sub1', 'sub2'];
         return [...fronts, ...(mode === 'stereo-sub' ? subRoles : [])];
     }
-    const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
+    const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: 'Neutral', active_side: 'A' });
     // Surround Global slots select one preset per speaker group (mirror of
     // dsp.surround_global); Direct bypasses every group.
     const neutralSelection = () => Object.fromEntries(SURROUND_GROUPS.map(group => [group, 'Neutral']));
     const isSelection = slot => !!slot && typeof slot === 'object';
     const sameSlot = (a, b) => isSelection(a) && isSelection(b)
         ? SURROUND_GROUPS.every(group => a[group] === b[group]) : a === b;
-    const neutralGroupBank = () => ({ preset: neutralSelection(), preset_a: neutralSelection(), preset_b: null, active_side: 'A' });
+    const neutralGroupBank = () => ({ preset: neutralSelection(), preset_a: neutralSelection(), preset_b: neutralSelection(), active_side: 'A' });
+    const demoBankSide = bank => sameSlot(bank.preset_a, bank.preset_b) && bank.active_side === 'B'
+        && sameSlot(bank.preset, bank.preset_b) ? 'B' : sameSlot(bank.preset, bank.preset_a) ? 'A'
+            : sameSlot(bank.preset, bank.preset_b) ? 'B' : null;
     function demoSelectionLabel(slot) {
         if (!isSelection(slot)) return slot;
         return SURROUND_GROUPS.filter(group => slot[group] !== 'Neutral').map(group => `${group}: ${slot[group]}`).join(' · ') || 'Neutral';
@@ -443,11 +446,11 @@
     }
     // Mirror of set_bank_preset for Surround Global: a group's preset replaces
     // only that group, an unassigned B starts from A, editing the listened
-    // slot keeps listening to it, and A and B must differ.
+    // slot keeps listening to it; equal selections are allowed.
     function demoGroupMutation(bank, mutation, slot) {
         const result = { ...mutation };
         delete result.group;
-        const listened = sameSlot(bank.preset, bank.preset_a) ? 'A' : sameSlot(bank.preset, bank.preset_b) ? 'B' : null;
+        const listened = demoBankSide(bank);
         if (mutation.preset) result.preset = demoGroupSlot(bank[`preset_${slot.toLowerCase()}`], mutation.group, mutation.preset);
         if (mutation.preset_a) {
             result.preset_a = demoGroupSlot(bank.preset_a, mutation.group, mutation.preset_a);
@@ -457,11 +460,6 @@
             result.preset_b = demoGroupSlot(bank.preset_b || bank.preset_a, mutation.group, mutation.preset_b);
             if (!result.active_side && listened === 'B') result.active_side = 'B';
         }
-        const slots = { A: bank.preset_a, B: bank.preset_b };
-        if (result.preset) slots[slot] = result.preset;
-        if (result.preset_a) slots.A = result.preset_a;
-        if ('preset_b' in result) slots.B = result.preset_b;
-        if (slots.B && sameSlot(slots.A, slots.B)) throw new Error('Preset A and B must differ in at least one speaker group');
         return result;
     }
     const bankPairs = { main: ['main_l', 'main_r'], low: ['left_low', 'right_low'],
@@ -495,8 +493,7 @@
         const common = values => values.length && values.every(value => sameSlot(value, values[0])) ? values[0] : null;
         return { preset: common(bindings.map(bank => bank.preset)), preset_a: common(bindings.map(bank => bank.preset_a)),
             preset_b: common(bindings.map(bank => bank.preset_b)),
-            active_side: common(bindings.map(bank => sameSlot(bank.preset, bank.preset_a) ? 'A'
-                : sameSlot(bank.preset, bank.preset_b) ? 'B' : null)),
+            active_side: common(bindings.map(demoBankSide)),
             can_a: bindings.length > 0, can_b: bindings.length > 0 && bindings.every(bank => !!bank.preset_b) };
     }
     // Mirror of summarize_all_banks: B needs one bank with a B; banks
@@ -513,7 +510,8 @@
         if (side === 'B' && !comparable.length) throw new Error('Compare side B has no assigned preset in any configured bank');
         for (const role of roles) {
             const bank = config.banks[role];
-            config.banks[role] = { ...bank, preset: comparable.includes(role) && side === 'B' ? bank.preset_b : bank.preset_a };
+            const selected = comparable.includes(role) ? side : 'A';
+            config.banks[role] = { ...bank, preset: selected === 'B' ? bank.preset_b : bank.preset_a, active_side: selected };
         }
     }
     function updateDemoBanks(config, roles, mutation, mode) {
@@ -527,13 +525,15 @@
         const updated = {};
         for (const role of roles) {
             const bank = { ...config.banks[role] };
+            const listened = demoBankSide(bank);
             for (const key of ['preset_a', 'preset_b']) if (key in mutation) bank[key] = mutation[key];
             if (mutation.preset) { bank[`preset_${slot.toLowerCase()}`] = mutation.preset; bank.preset = mutation.preset; }
             else if (mutation.active_side) {
                 if (!bank[`preset_${slot.toLowerCase()}`]) throw new Error(`Compare side ${slot} has no assigned preset`);
                 bank.preset = bank[`preset_${slot.toLowerCase()}`];
             }
-            if (sameSlot(bank.preset_a, bank.preset_b)) throw new Error('Compare slots must use distinct presets');
+            bank.active_side = mutation.preset || mutation.active_side ? slot
+                : listened === 'B' && sameSlot(bank.preset, bank.preset_b) ? 'B' : null;
             updated[role] = bank;
         }
         Object.assign(config.banks, updated);
@@ -576,7 +576,7 @@
     // LR24 crossover at 3 kHz across an 18-channel Scarlett in Stereo + Sub
     // mode with two subs behind an 80 Hz bass-management split.
     // Compare slots are stored per role and projected to banks in the
-    // catalog, like the backend: Neutral on A, without a redundant B slot.
+    // catalog, like the backend: Neutral is the default for both slots.
     const stereoSubBanks = () => ({
         global: { preset: 'Neutral', preset_a: 'Neutral', preset_b: 'Conv LR HybAlign BK 30-3000Hz -7dB', active_side: 'A' },
         main_l: neutralBank(), main_r: neutralBank(),
@@ -3572,14 +3572,17 @@
                 for (const role of roles) {
                     const bank = config.banks[role];
                     if (!bank || ![bank.preset, bank.preset_a, bank.preset_b].some(holds)) continue;
-                    const side = sameSlot(bank.preset, bank.preset_a) ? 'A' : sameSlot(bank.preset, bank.preset_b) ? 'B' : null;
+                    const side = demoBankSide(bank);
                     const listened = bank.preset;
                     bank.preset_a = release(bank.preset_a);
                     if (isSelection(bank.preset_b)) bank.preset_b = release(bank.preset_b);
                     else if (bank.preset_b === name) bank.preset_b = null;
-                    if (sameSlot(bank.preset_b, bank.preset_a)) bank.preset_b = null;
                     bank.preset = side === 'B' && bank.preset_b ? bank.preset_b
                         : side === null && !holds(listened) ? listened : bank.preset_a;
+                    bank.active_side = side === 'B' && bank.preset_b ? 'B' : null;
+                    // The backend fills a cleared legacy B with Neutral when loading.
+                    if (bank.preset_b === null) bank.preset_b = mode === 'surround' && role === 'global'
+                        ? neutralSelection() : 'Neutral';
                     released = true;
                 }
             }

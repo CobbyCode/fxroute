@@ -287,7 +287,7 @@ class SurroundTests(unittest.TestCase):
     def test_surround_global_slots_are_group_selections(self):
         state = self.state(QUAD_SUBS)
         self.assertEqual(state["modes"]["surround"]["banks"]["global"],
-                         {"preset": neutral_selection(), "preset_a": neutral_selection(), "preset_b": None})
+                         {"preset": neutral_selection(), "preset_a": neutral_selection(), "preset_b": neutral_selection()})
         self.assertEqual(state["modes"]["stereo"]["banks"]["global"]["preset"], "Neutral")
         for slot in ("Room", "Neutral", {"front": "Room"}, {**neutral_selection(), "front": "Direct"}):
             broken = copy.deepcopy(state)
@@ -307,9 +307,9 @@ class SurroundTests(unittest.TestCase):
                                                          "preset_b": "Neutral"}
         upgraded = upgrade_output_state(state)
         self.assertEqual(upgraded["version"], 7)
-        # A named preset has no known group: it starts without filters, and a B equal to A is cleared.
+        # A named preset has no known group: both slots start without filters.
         self.assertEqual(upgraded["modes"]["surround"]["banks"]["global"],
-                         {"preset": neutral_selection(), "preset_a": neutral_selection(), "preset_b": None})
+                         {"preset": neutral_selection(), "preset_a": neutral_selection(), "preset_b": neutral_selection()})
         state["modes"]["surround"]["banks"]["global"] = {"preset": "Direct", "preset_a": "Room", "preset_b": "Direct"}
         self.assertEqual(upgrade_output_state(state)["modes"]["surround"]["banks"]["global"],
                          {"preset": "Direct", "preset_a": neutral_selection(), "preset_b": "Direct"})
@@ -378,10 +378,11 @@ class SurroundGlobalPresetTests(unittest.TestCase):
         bank = state["modes"]["surround"]["banks"]["global"]
         self.assertEqual(bank["preset_a"], selection(front="EQ front", rear="EQ rear"))
         self.assertEqual(bank["preset"], bank["preset_a"])
-        # An unassigned B starts from A; A and B must still differ.
+        # A legacy unassigned B starts from A; equal selections are allowed.
         state = set_bank_preset(state, "surround", "global", preset_b="EQ rear B", group="rear")
-        with self.assertRaisesRegex(ValueError, "differ in at least one speaker group"):
-            set_bank_preset(state, "surround", "global", preset_b="EQ rear", group="rear")
+        equal = set_bank_preset(state, "surround", "global", preset_b="EQ rear", group="rear")
+        self.assertEqual(equal["modes"]["surround"]["banks"]["global"]["preset_a"],
+                         equal["modes"]["surround"]["banks"]["global"]["preset_b"])
         # Editing the listened A keeps listening to it.
         state = set_bank_preset(state, "surround", "global", preset_a="Neutral", group="front")
         bank = state["modes"]["surround"]["banks"]["global"]
@@ -425,12 +426,13 @@ class SurroundGlobalPresetTests(unittest.TestCase):
         released, _ = release_bank_preset(released, "surround", "global", "EQ rear B")
         bank = released["modes"]["surround"]["banks"]["global"]
         self.assertEqual((bank["preset_b"], bank["preset"]), (neutral_selection(), neutral_selection()))
-        # A B left equal to A is cleared and the bank falls back to A.
+        # A B left equal to A stays assigned and listened.
         state = self.state(QUAD_SUBS, selection(rear="EQ rear"))
         state = set_bank_preset(state, "surround", "global", preset_b="EQ front", group="front", active_side="B")
         released, _ = release_bank_preset(state, "surround", "global", "EQ front")
         self.assertEqual(released["modes"]["surround"]["banks"]["global"],
-                         {"preset": selection(rear="EQ rear"), "preset_a": selection(rear="EQ rear"), "preset_b": None})
+                         {"preset": selection(rear="EQ rear"), "preset_a": selection(rear="EQ rear"),
+                          "preset_b": selection(rear="EQ rear"), "active_side": "B"})
 
     def test_crossover_ways_count_as_the_front_group(self):
         state = set_crossover(self.state(QUAD_SUBS), "surround", True)

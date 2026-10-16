@@ -375,16 +375,16 @@ function globalSlotLabel(slot) {
 }
 
 // Surround Global A/B rows, one per routed speaker group: the preset each slot
-// selects ('' for an unassigned B) and the presets of that group. Null outside
+// selects (Neutral for a legacy unassigned B) and the presets of that group. Null outside
 // Surround Global.
 function globalGroupSlots(catalog, presets) {
     const modeConfig = catalog?.modes?.[catalog?.active_mode];
     const bank = modeConfig?.banks?.global;
     if (catalog?.active_mode !== 'surround' || (modeConfig?.selected_bank || 'global') !== 'global' || !bank) return null;
-    const pick = (slot, group) => slot === 'Direct' ? 'Direct' : isGroupSelection(slot) ? slot[group] || 'Neutral' : '';
+    const pick = (slot, group) => slot === 'Direct' ? 'Direct' : isGroupSelection(slot) ? slot[group] || 'Neutral' : 'Neutral';
     return surroundGroups(modeConfig.topology).map(group => ({
         group,
-        label: SURROUND_GROUP_LABELS[group],
+        label: SURROUND_GROUP_LABELS[group].replace(/ L\/R$/, ''),
         presetA: pick(bank.preset_a, group),
         presetB: pick(bank.preset_b, group),
         options: (Array.isArray(presets) ? presets : []).filter(entry => entry?.group === group).map(entry => entry.name),
@@ -448,7 +448,7 @@ function mergeNumberedBanks(items) {
     return entries.map(({ family, key, ...entry }) => entry);
 }
 
-// Active preset of every bank in the active mode's chain, Global first.
+// Active presets outside the selected bank: All Banks shows Global only.
 // A bank whose channels listen to different presets has no single preset.
 // Pure stereo shows no bank selector, so the A/B tile shows no bank chips.
 function activePresetOverview(catalog) {
@@ -457,7 +457,9 @@ function activePresetOverview(catalog) {
     const banks = modeConfig?.banks;
     if (!banks) return [];
     if (!bankSelectorVisible(modeConfig)) return [];
-    const ids = Object.keys(banks).sort((a, b) => (b === 'global') - (a === 'global'));
+    const selected = modeConfig.selected_bank || 'global';
+    const ids = Object.keys(banks).filter(id => selected === 'all' ? id === 'global' : id !== selected)
+        .sort((a, b) => (b === 'global') - (a === 'global'));
     return mergeNumberedBanks(ids.map((id) => {
         const bank = banks[id] || {};
         const preset = globalSlotLabel(bank.preset) || null;

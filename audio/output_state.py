@@ -62,7 +62,7 @@ def default_bass_management() -> dict:
 def default_global_bank(mode: str) -> dict:
     """Global bank without filters; Surround selects a preset per speaker group."""
     if mode == "surround":
-        return BankState(neutral_selection(), neutral_selection()).to_dict()
+        return BankState(neutral_selection(), neutral_selection(), neutral_selection()).to_dict()
     return BankState().to_dict()
 
 
@@ -481,17 +481,12 @@ def set_bank_preset(state: dict, mode: str, bank_id: str, *, preset: str | None 
         if preset_b is not _UNCHANGED and preset_b is not None:
             preset_b = _group_slot(current["preset_b"] or current["preset_a"], group, preset_b)
             active_side = active_side or ("B" if listened == "B" else None)
-        slots = {"A": current["preset_a"], "B": current["preset_b"]}
-        if preset is not None:
-            slots[slot] = preset
-        slots.update({side: value for side, value in (("A", preset_a), ("B", preset_b))
-                      if value is not None and value is not _UNCHANGED})
-        if slots["B"] is not None and slots["B"] == slots["A"]:
-            raise ValueError("Preset A and B must differ in at least one speaker group")
     elif group is not None:
         raise ValueError("A speaker group applies to the Surround Global bank only")
     for role in members:
         current = dict(banks[role])
+        listened = BankState.from_dict(current).active_side
+        current.pop("active_side", None)
         if preset_a is not None:
             current["preset_a"] = preset_a
         if preset_b is not _UNCHANGED:
@@ -504,7 +499,12 @@ def set_bank_preset(state: dict, mode: str, bank_id: str, *, preset: str | None 
             if target is None:
                 raise ValueError("Compare side B has no assigned preset")
             current["preset"] = target
-        banks[role] = BankState.from_dict(current).to_dict()
+        bank = BankState.from_dict(current)
+        if preset is not None or active_side is not None:
+            bank = bank.select(slot)
+        elif listened == "B" and bank.preset == bank.preset_b:
+            bank = bank.select("B")
+        banks[role] = bank.to_dict()
     return validate_output_state(result)
 
 
@@ -642,7 +642,7 @@ def release_bank_preset(state: dict, mode: str | None, bank_id: str, name: str) 
     The compare rules for a preset that goes away: a released A falls back
     to Neutral, a released B is cleared, and a role listening to a released
     slot falls back to A. A Surround Global selection releases only the
-    group holding the preset; a B left equal to A is cleared. Returns the
+    group holding the preset; equal A/B selections stay assigned. Returns the
     new state and one line per touched role.
     """
     result = validate_output_state(state)
@@ -656,12 +656,13 @@ def release_bank_preset(state: dict, mode: str | None, bank_id: str, name: str) 
     for slot_mode, config in result["modes"].items():
         for role, binding in config["banks"].items():
             if (not _uses_library(slot_mode, role, mode, bank_id)
-                    or name not in {preset for slot in binding.values() for preset in slot_presets(slot)}):
+                    or name not in {preset for key in ("preset", "preset_a", "preset_b")
+                                    for preset in slot_presets(binding[key])}):
                 continue
             side = BankState.from_dict(binding).active_side
             preset_a = released(binding["preset_a"])
             preset_b = released(binding["preset_b"]) if isinstance(binding["preset_b"], dict) else binding["preset_b"]
-            if preset_b in (name, preset_a):
+            if preset_b == name:
                 preset_b = None
             if side == "B" and preset_b is not None:
                 preset = preset_b
@@ -669,7 +670,10 @@ def release_bank_preset(state: dict, mode: str | None, bank_id: str, name: str) 
                 preset = binding["preset"]
             else:
                 preset = preset_a
-            config["banks"][role] = BankState(preset, preset_a, preset_b).to_dict()
+            bank = BankState(preset, preset_a, preset_b)
+            if side == "B" and preset_b is not None:
+                bank = bank.select("B")
+            config["banks"][role] = bank.to_dict()
             changes.append(f"{slot_mode}/{role}: released {name!r}; "
                            f"A={preset_a!r} B={preset_b!r} listening={preset!r}")
     return validate_output_state(result), changes
@@ -680,4 +684,4 @@ def referenced_presets(state: dict, mode: str | None, bank_id: str) -> set[str]:
     validated = validate_output_state(state)
     return {name for slot_mode, config in validated["modes"].items()
             for role, bank in config["banks"].items() if _uses_library(slot_mode, role, mode, bank_id)
-            for slot in bank.values() for name in slot_presets(slot)}
+             for key in ("preset", "preset_a", "preset_b") for name in slot_presets(bank[key])}

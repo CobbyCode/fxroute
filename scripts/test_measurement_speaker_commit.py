@@ -122,8 +122,10 @@ class SessionFixture:
                 AssertionError(f"fixture has no IR presets: {name}")),
             measurement_active=lambda: False))
         base = crossover_state()
-        for config in base["modes"].values():
-            for bank in config["banks"].values():
+        for mode, config in base["modes"].items():
+            for role, bank in config["banks"].items():
+                if mode == "surround" and role == "global":
+                    continue
                 bank.update(preset="Room", preset_a="Neutral", preset_b="Room")
         seed_bound_preset(self.manager, "Room", base)
         self.base = self.store.commit(base, expected_revision=0)
