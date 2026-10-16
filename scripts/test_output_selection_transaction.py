@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -15,8 +16,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 import audio.samplerate.overview as output_overview
+import measurement.session as measurement_session
 from audio.output_state import default_output_state, set_mode_routing, switch_mode
 from audio.samplerate import _load_audio_output_selection, _save_audio_output_selection
+from dsp.orchestration import DspOrchestrator
+from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
+from test_dsp_v2_sync_preference import _FakeDeps
+from test_playback_transition_coordinator import FakeRuntime
 
 
 class OutputSelectionTransactionTests(unittest.IsolatedAsyncioTestCase):
@@ -164,6 +170,204 @@ class OutputSelectionTransactionTests(unittest.IsolatedAsyncioTestCase):
         await selection
         self.assertEqual(self.state, {"default": "B", "graph": "B"})
         self.assertEqual(_load_audio_output_selection()["selected_key"], "B")
+
+    async def test_last_measurement_release_completes_with_queued_output_selection(self):
+        release_entered = asyncio.Event()
+        continue_release = asyncio.Event()
+        selection_attempted = asyncio.Event()
+
+        class ObservedLock(asyncio.Lock):
+            async def acquire(self):
+                selection_attempted.set()
+                return await super().acquire()
+
+        session = measurement_session.MeasurementSampleRateSession()
+        session.lock = ObservedLock()
+        session.active = True
+        session.active_manual_job_ids.add("last-sweep")
+        session._rate_changed = True
+        await session.request_close()
+        self.assertTrue(session.deferred_release_pending)
+
+        runtime = FakeRuntime()
+        runtime.rate = 48000
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        coordinator.lock = ObservedLock()
+        track = {"source": "local", "id": "track-a", "url": "/music/current.flac"}
+        snapshot = {
+            **track, "track_info": track, "expected_rate": 44100,
+            "was_playing": True, "position": 12.5,
+        }
+
+        async def validate_intent(**kwargs):
+            self.assertTrue(session.lock.locked())
+            self.assertEqual(kwargs["expected_id"], "track-a")
+            release_entered.set()
+            await continue_release.wait()
+            return True
+
+        async def sync_owned_graph(*args, **kwargs):
+            self.assertTrue(session.lock.locked())
+            self.assertTrue(coordinator.lock.locked())
+            self.assertEqual(kwargs["ownership"], main.DspSyncOwnership.RATE)
+            self.assertFalse(session.active)
+            self.assertTrue(coordinator.last_result.committed)
+            await self.sync_graph(*args, **kwargs)
+
+        services = replace(
+            main._make_measurement_services(),
+            get_current_track_info=lambda: track,
+            measurement_restore_intent_matches_live_state=validate_intent,
+            begin_playback_transition_attempt=lambda: 1,
+            end_playback_transition_attempt=lambda: None,
+            stdin_measurement_release=None,
+            post_release_input_resync=None,
+            post_release_policy_rate_restore=None,
+        )
+        with mock.patch.object(main, "measurement_sr_session", session), mock.patch.object(
+            main, "playback_transition_coordinator", coordinator
+        ), mock.patch.object(measurement_session, "_services", services), mock.patch.object(
+            measurement_session, "_playback_state_before_measurement", snapshot
+        ), mock.patch.object(main.dsp_orchestrator, "sync_runtime", side_effect=sync_owned_graph):
+            release_task = asyncio.create_task(session.unregister_manual_job("last-sweep"))
+            selection_task = None
+            try:
+                await asyncio.wait_for(release_entered.wait(), 1)
+                selection_attempted.clear()
+                selection_task = asyncio.create_task(self.select())
+                await asyncio.wait_for(selection_attempted.wait(), 1)
+                self.assertFalse(release_task.done())
+                self.assert_old()
+                continue_release.set()
+                _, pending = await asyncio.wait({release_task, selection_task}, timeout=2)
+                self.assertFalse(pending, "Measurement release and output selection must both complete")
+                await release_task
+                with self.assertRaises(HTTPException) as busy:
+                    await selection_task
+                self.assertEqual(busy.exception.status_code, 423)
+                self.assert_old()
+                # Once release is complete, the same selection can commit normally.
+                await self.select()
+            finally:
+                continue_release.set()
+                tasks = [task for task in (release_task, selection_task) if task is not None]
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            self.assertIsNone(measurement_session._playback_state_before_measurement)
+        self.assertEqual(self.state, {"default": "B", "graph": "B"})
+        self.assertEqual(_load_audio_output_selection()["selected_key"], "B")
+        self.assertEqual(coordinator.last_result.source, "local")
+        self.assertEqual(coordinator.last_result.target_rate, 44100)
+        self.assertEqual(runtime.rate, 44100)
+        self.assertEqual(runtime.current_file, "/music/current.flac")
+        self.assertEqual(runtime.position, 12.5)
+        self.assertTrue(runtime.playing)
+        self.assertFalse(session.active)
+        self.assertFalse(session.has_active_jobs)
+        self.assertFalse(session.close_requested)
+        self.assertFalse(session.deferred_release_pending)
+        self.assertEqual(session.generation, 1)
+        self.assertFalse(session.lock.locked())
+        self.assertFalse(coordinator.lock.locked())
+
+    async def test_playback_dsp_sync_completes_with_queued_output_selection(self):
+        playback_entered = asyncio.Event()
+        continue_playback = asyncio.Event()
+        selection_waiting = asyncio.Event()
+        graph_lock = asyncio.Lock()
+        deps = _FakeDeps(v2_target=object())
+        deps.get_measurement_sr_session = lambda: self.rate_session
+        deps.graph_write_lock = lambda: graph_lock
+        dsp = DspOrchestrator(deps)
+
+        class ObservedCoordinatorLock(asyncio.Lock):
+            async def acquire(self):
+                if self.locked():
+                    selection_waiting.set()
+                return await super().acquire()
+
+        class PlaybackRuntime(FakeRuntime):
+            async def read_transition_snapshot(self, request):
+                playback_entered.set()
+                await continue_playback.wait()
+                return await super().read_transition_snapshot(request)
+
+            async def establish_effects_and_helper(self, request):
+                # Normal playback must take the real session and graph locks.
+                await dsp.sync_runtime(reason="coordinator-play")
+                return await super().establish_effects_and_helper(request)
+
+        runtime = PlaybackRuntime()
+        runtime.rate = 48000
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        coordinator.lock = ObservedCoordinatorLock()
+        request = TransitionRequest(operation="play", source="local", target_rate=48000,
+                                    target_url="/music/current.flac", should_play=True)
+        with mock.patch.object(main, "playback_transition_coordinator", coordinator):
+            playback_task = asyncio.create_task(coordinator.execute(request))
+            selection_task = None
+            try:
+                await asyncio.wait_for(playback_entered.wait(), 1)
+                selection_task = asyncio.create_task(self.select())
+                await asyncio.wait_for(selection_waiting.wait(), 1)
+                continue_playback.set()
+                done, pending = await asyncio.wait({playback_task, selection_task}, timeout=2)
+                self.assertFalse(pending, "Playback DSP sync and output selection must both complete")
+                await asyncio.gather(*done)
+            finally:
+                continue_playback.set()
+                tasks = [task for task in (playback_task, selection_task) if task is not None]
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        self.assertTrue(coordinator.last_result.committed)
+        self.assertTrue(runtime.playing)
+        self.assertEqual(deps.runtime.rendered_calls, [deps._v2_target])
+        self.assertEqual(self.state, {"default": "B", "graph": "B"})
+        self.assertEqual(_load_audio_output_selection()["selected_key"], "B")
+        self.assertFalse(self.rate_session.lock.locked())
+        self.assertFalse(coordinator.lock.locked())
+        self.assertFalse(graph_lock.locked())
+
+    async def test_output_selection_refuses_session_lock_with_pending_handoff(self):
+        session_waiting = asyncio.Event()
+
+        class ObservedSessionLock(asyncio.Lock):
+            async def acquire(self):
+                if self.locked():
+                    session_waiting.set()
+                return await super().acquire()
+
+        lock = self.rate_session.lock = ObservedSessionLock()
+
+        async def finish_session():
+            async with lock, self.coordinator.lock:
+                return None
+
+        await lock.acquire()
+        task = asyncio.create_task(finish_session())
+        try:
+            await asyncio.wait_for(session_waiting.wait(), 1)
+            # Release has woken the waiter, but it has not claimed the lock yet.
+            lock.release()
+            self.assertFalse(lock.locked())
+            async with asyncio.timeout(1):
+                with self.assertRaises(HTTPException) as busy:
+                    await self.select()
+            self.assertEqual(busy.exception.status_code, 423)
+            await asyncio.wait_for(task, 1)
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assert_old()
+        self.assertFalse(lock.locked())
+        self.assertFalse(self.coordinator.lock.locked())
 
     async def test_cancelled_switch_never_releases_ownership_mid_apply(self):
         entered = asyncio.Event()

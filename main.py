@@ -4963,7 +4963,11 @@ async def save_audio_output_selection_route(request: Request):
         if coordinator is None:
             raise RuntimeError("Playback transition coordinator is unavailable")
         async with coordinator.lock:
-            async with measurement_sr_session.lock:
+            lock = measurement_sr_session.lock
+            # Never wait here: measurement entry/release needs Coordinator.
+            if lock.locked() or any(not waiter.cancelled() for waiter in (lock._waiters or ())):
+                raise HTTPException(status_code=423, detail="Measurement audio configuration is busy")
+            async with lock:
                 if measurement_sr_session.has_active_jobs:
                     raise HTTPException(status_code=423, detail="Measurement is active; output selection is locked")
                 result = await finish_then_cancel(
