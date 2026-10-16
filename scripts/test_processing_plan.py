@@ -119,14 +119,14 @@ class ProcessingPlanTests(unittest.TestCase):
         self.assertIn({"kind": "highpass", **crossover_filter(80)}, outputs["left_low"]["crossover"])
         self.assertEqual(outputs["sub1"]["crossover"], [{"kind": "lowpass", **crossover_filter(80)}])
 
-    def test_direct_does_not_remove_speaker_crossover(self):
+    def test_global_direct_and_area_neutral_keep_speaker_crossover(self):
         state = self.crossover_state()
-        for bank in state["modes"]["stereo-sub"]["banks"].values():
-            bank["preset"] = "Direct"
+        state["modes"]["stereo-sub"]["banks"]["global"]["preset"] = "Direct"
         plan = self.compile(state)
         self.assertTrue(plan["global"]["bypass"])
         self.assertEqual(plan["global"]["extras"], {})
-        self.assertTrue(plan["outputs"][0]["bank"]["bypass"])
+        self.assertEqual(plan["outputs"][0]["bank"]["preset"], "Neutral")
+        self.assertEqual(plan["outputs"][0]["bank"]["chain"], [])
         self.assertEqual(plan["outputs"][0]["crossover"], [{"kind": "lowpass", **crossover_filter(300)}])
 
     def sub_crossover_state(self, subs, **bass):

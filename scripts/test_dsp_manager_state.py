@@ -35,10 +35,10 @@ class DSPManagerStateTests(unittest.TestCase):
         self.assertEqual(manager.irs_dir, manager.base_dir / "irs")
         self.assertEqual(manager.state_dir, manager.base_dir / "state")
         self.assertEqual([item["name"] for item in manager.list_presets()][:2], ["Direct", "Neutral"])
-        # The built-ins are no files: every bank's library serves them.
+        # Neutral exists in every bank; Direct exists only in Global.
         self.assertEqual(list(manager.output_dir.iterdir()), [])
         for bank, mode in ((None, None), ("global", "surround"), ("sub1", None)):
-            payload = manager.library(bank, mode).read("Direct")
+            payload = manager.library(bank, mode).read("Neutral" if bank == "sub1" else "Direct")
             self.assertEqual((payload["schema"], payload["version"], payload["chain"]),
                              ("fxroute.dsp.preset", 1, []))
 

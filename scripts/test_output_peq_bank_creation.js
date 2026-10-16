@@ -37,9 +37,9 @@ const presets = [
 ];
 const cases = [
     { bank: 'global', name: 'Global PEQ', revision: 7, visible: ['Direct', 'Neutral', 'Global PEQ'] },
-    { bank: 'main', name: 'Main PEQ', revision: 8, visible: ['Direct', 'Neutral', 'Main PEQ'] },
-    { bank: 'sub1', name: 'Sub 1 PEQ', revision: 9, visible: ['Direct', 'Neutral', 'Sub 1 PEQ'] },
-    { bank: 'sub2', name: 'Sub 2 PEQ', revision: 10, visible: ['Direct', 'Neutral', 'Sub 2 PEQ'] },
+    { bank: 'main', name: 'Main PEQ', revision: 8, visible: ['Neutral', 'Main PEQ'] },
+    { bank: 'sub1', name: 'Sub 1 PEQ', revision: 9, visible: ['Neutral', 'Sub 1 PEQ'] },
+    { bank: 'sub2', name: 'Sub 2 PEQ', revision: 10, visible: ['Neutral', 'Sub 2 PEQ'] },
 ];
 const state = {
     outputSystem: { catalog: { revision: 7, active_mode: 'stereo-sub', modes: {

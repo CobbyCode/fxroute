@@ -351,13 +351,13 @@ function isBuiltinBankPreset(name) {
 }
 
 // Every bank lists its own presets, Global one set per output mode; a preset
-// name is unique within its bank only. The built-ins belong to every bank.
+// name is unique within its bank only. Neutral is shared; Direct is Global-only.
 function presetsForBank(presets, bankId, mode) {
     if (!Array.isArray(presets)) return [];
     // All Banks owns no presets: it only switches A/B jointly.
     if (!bankId || bankId === 'all') return [];
     return presets.filter((entry) => {
-        if (isBuiltinBankPreset(entry?.name)) return true;
+        if (isBuiltinBankPreset(entry?.name)) return entry.name !== 'Direct' || bankId === 'global';
         return entry?.bank === bankId && (bankId !== 'global' || entry.mode === mode);
     });
 }

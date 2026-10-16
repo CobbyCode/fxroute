@@ -60,8 +60,8 @@ def clean_bank(value: Any) -> str | None:
 class DSPPresetStore:
     """Versioned native presets of one filterbank, with its IR files.
 
-    A preset name is unique within its store only. The built-ins exist in
-    every store without a file.
+    A preset name is unique within its store only. Neutral exists in every
+    store without a file; Direct exists only in Global.
     """
 
     SCHEMA = "fxroute.dsp.preset"
@@ -116,6 +116,8 @@ class DSPPresetStore:
         return payload
 
     def read(self, name: str) -> Dict[str, Any]:
+        if clean_name(name) == "Direct" and self.bank != "global":
+            raise ValueError("Direct is available only in the Global bank")
         if clean_name(name) in BUILTIN_PRESETS:
             return {"schema": self.SCHEMA, "version": self.VERSION, "chain": [], "metadata": {}}
         path = self.path(name)

@@ -214,10 +214,9 @@ class BankCompileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.compile(self._plan_with_channels(state, 4))
 
-    def test_direct_bank_keeps_crossover_without_bank_processing(self):
+    def test_global_direct_and_area_neutral_keep_crossover_without_bank_processing(self):
         state = self.crossover_state()
-        for bank in state["modes"]["stereo-sub"]["banks"].values():
-            bank["preset"] = "Direct"
+        state["modes"]["stereo-sub"]["banks"]["global"]["preset"] = "Direct"
         rows = {row["name"]: row for row in self.compile(self.plan_for(state))}
         self.assertTrue(rows["left_low"]["sos"])
         self.assertEqual(rows["left_low"]["filters"], [])

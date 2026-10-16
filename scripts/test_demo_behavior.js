@@ -873,7 +873,7 @@ const radio = state.getPlayback();
     assert.equal(surround0.banks.center.label, 'Center');
     assert.equal(surround0.banks.sub1.label, 'Sub 1');
     assert.equal(surround0.banks.sub2.label, 'Sub 2');
-    assert.equal(surround0.all_banks.can_b, true);
+    assert.equal(surround0.all_banks.can_b, false);
     // Bass management is keyed by speaker group in Surround, all four groups
     // linked to the 80 Hz split.
     sameList(Object.keys(surround0.bass_management.sub_filters), ['front', 'center', 'side', 'rear'], 'surround groups');

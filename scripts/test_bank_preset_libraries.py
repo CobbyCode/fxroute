@@ -3,6 +3,7 @@
 """Every filterbank has its own preset library; Global has one per output mode."""
 
 import asyncio
+import copy
 import io
 import json
 import struct
@@ -22,7 +23,7 @@ import dsp.api as api
 from audio import output_state as state_api
 from audio.output_service import OutputService, OutputServiceDeps
 from audio.output_state_store import OutputStateStore
-from audio.output_topology import derive_topology
+from audio.output_topology import BANK_IDS, MODES, derive_topology
 from dsp.manager import DSPManager, build_wav_bytes, parse_wav_frames
 from dsp.persistence import clean_bank
 
@@ -117,14 +118,19 @@ class LibraryTests(Fixture):
         self.assertEqual(self.stored("Area"), [("main", None)])
         self.assertEqual(gain(self.manager.read_preset("stereo-sub", "main", "Area")), -3.0)
 
-    def test_builtins_exist_in_every_bank_without_a_file(self):
+    def test_direct_is_global_only_and_neutral_exists_in_every_bank(self):
         self.assertEqual([(entry["name"], entry["bank"], entry["mode"]) for entry in self.manager.list_presets()],
-                         [("Direct", None, None), ("Neutral", None, None)])
-        for bank, mode in BANKS:
+                         [("Direct", "global", None), ("Neutral", None, None)])
+        for mode in MODES:
             for name in ("Direct", "Neutral"):
-                self.assertEqual(self.manager.library(bank, mode).read(name)["chain"], [])
-            with self.assertRaisesRegex(ValueError, "built-in preset"):
-                self.create("Neutral", -1.0, bank, mode)
+                self.assertEqual(self.manager.read_preset(mode, "global", name)["chain"], [])
+            for bank in BANK_IDS:
+                with self.subTest(mode=mode, bank=bank):
+                    self.assertEqual(self.manager.read_preset(mode, bank, "Neutral")["chain"], [])
+                    with self.assertRaisesRegex(ValueError, "Global"):
+                        self.manager.read_preset(mode, bank, "Direct")
+                    with self.assertRaisesRegex(ValueError, "built-in preset"):
+                        self.create("Neutral", -1.0, bank, mode)
         self.assertEqual(list(self.manager.output_dir.iterdir()), [])
 
     def test_a_bank_folder_nobody_created_yet_is_a_library(self):
@@ -159,7 +165,7 @@ class LibraryTests(Fixture):
         self.create("Room", -1.0, "main")
         status = self.manager.get_status()
         self.assertEqual([(entry["name"], entry["bank"], entry["mode"]) for entry in status["presets"]],
-                         [("Direct", None, None), ("Neutral", None, None), ("Room", "main", None)])
+                          [("Direct", "global", None), ("Neutral", None, None), ("Room", "main", None)])
         self.assertEqual(status["irs"], [])
         self.assertEqual([store.presets_dir.name for store in self.manager.presets.stores()],
                          ["stereo", "stereo-sub", "surround", "main"])
@@ -233,9 +239,12 @@ class OutputStateTests(Fixture):
                                  ("stereo-sub", "sub1", "MainCorr")):
             with self.subTest(mode=mode, bank=bank, name=name), self.assertRaises(FileNotFoundError):
                 self.service.validate_bank_preset(state, mode, bank, name)
-        for name in ("Direct", "Neutral"):
-            for bank in ("global", "main", "sub1"):
-                self.service.validate_bank_preset(state, "stereo-sub", bank, name)
+        for bank in ("global", "main", "sub1"):
+            self.service.validate_bank_preset(state, "stereo-sub", bank, "Neutral")
+        self.service.validate_bank_preset(state, "stereo-sub", "global", "Direct")
+        for bank in ("main", "sub1"):
+            with self.subTest(bank=bank), self.assertRaisesRegex(ValueError, "Global"):
+                self.service.validate_bank_preset(state, "stereo-sub", bank, "Direct")
 
     def test_the_plan_reads_every_slot_from_its_own_bank(self):
         for (bank, mode), gain_db in zip((STEREO_SUB, ("main", None), ("sub1", None)), (-1.0, -2.0, -3.0)):
@@ -269,6 +278,48 @@ class OutputStateTests(Fixture):
         self.assertEqual({name: str(path) for name, path in paths.items()},
                          {"main_l": "main/Room.wav", "main_r": "main/Room.wav", "sub1": "sub1/Room.wav"})
         self.service.validate_bank_preset(self.service.load(), "stereo-sub", "sub1", "Room")
+
+    def test_neutral_preserves_the_former_area_direct_engine_text(self):
+        cases = (
+            ("stereo", False, ["main_l", "main_r"]),
+            ("stereo-sub", False, ["main_l", "main_r", "sub1"]),
+            ("stereo-sub", False, ["main_l", "main_r", "sub1", "sub2"]),
+            ("stereo-sub", False, ["main_l", "main_r", "sub_l", "sub_r"]),
+            ("stereo-sub", True, ["left_low", "right_low", "left_high", "right_high", "sub1", "sub2"]),
+            ("surround", False, ["main_l", "main_r", "center", "side_l", "side_r", "rear_l", "rear_r", "sub1", "sub2"]),
+            ("surround", True, ["left_low", "right_low", "left_high", "right_high", "center", "rear_l", "rear_r", "sub1"]),
+        )
+        for mode, crossover, routing in cases:
+            with self.subTest(mode=mode, crossover=crossover, routing=routing):
+                self.create("Global EQ", -3.0, "global", mode)
+                state = state_api.set_crossover(state_api.default_output_state(), mode, crossover)
+                state = state_api.set_mode_routing(state, mode, "A", routing)
+                state = state_api.switch_mode(state, mode)
+                config = state["modes"][mode]
+                config["banks"]["global"] = {"preset": "Global EQ", "preset_a": "Global EQ", "preset_b": None}
+                for index, role in enumerate(routing):
+                    config["processing"][role].update(level_db=-index, alignment_ms=index / 2,
+                                                       polarity="invert" if index % 2 else "normal")
+                    if role.endswith("low"):
+                        config["processing"][role]["lowpass"] = {
+                            "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2500}
+                    elif role.endswith("high"):
+                        config["processing"][role]["highpass"] = {
+                            "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": 2500}
+                plan = self.service.compile_plan(state, output_key="A", channels=len(routing), sample_rate_hz=48000)
+                legacy = copy.deepcopy(plan)
+                for output in legacy["outputs"]:
+                    output["bank"].update(preset="Direct", bypass=True)
+                neutral_layout = self.service.compile_layout(plan)
+                self.assertEqual(neutral_layout, self.service.compile_layout(legacy))
+                extras = {"headroom": {"enabled": True, "params": {"gainDb": -4}}}
+                text = self.manager.compile_engine_text(neutral_layout, preset_name="Global EQ", mode=mode,
+                                                        extras_override=extras)
+                old_text = self.manager.compile_engine_text(self.service.compile_layout(legacy),
+                                                            preset_name="Global EQ", mode=mode, extras_override=extras)
+                self.assertEqual(text.encode(), old_text.encode())
+                self.assertTrue(plan["global"]["chain"])
+                self.assertTrue(any(row["gain_db"] < 0 and row["delay_ms"] > 0 for row in neutral_layout))
 
     def test_combined_bank_preset_is_an_independent_b_slot(self):
         self.create("A1", -1.0, "main")
@@ -440,7 +491,7 @@ class ApiTests(Fixture):
         self.assertEqual(response.status_code, 200, response.text)
         status = self.client.get("/api/dsp/presets").json()
         self.assertEqual([(entry["name"], entry["bank"]) for entry in status["presets"] if entry["bank"]],
-                         [("Conv", "sub_l"), ("Room", "sub_l")])
+                         [("Direct", "global"), ("Conv", "sub_l"), ("Room", "sub_l")])
         self.assertEqual([(ir["name"], ir["bank"]) for ir in status["irs"]], [("Conv.wav", "sub_l")])
         self.assertEqual(self.service.load()["modes"]["stereo-sub"]["banks"]["sub_l"]["preset"], "Conv")
 

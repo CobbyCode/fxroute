@@ -49,9 +49,9 @@ const catalog = (selectedBank) => ({
 // bank's presets — asserted after an explicit switch across all banks.
 const expected = {
     global: ['Direct', 'Neutral', 'GlobCorr'],
-    low: ['Direct', 'Neutral', 'LowCorr'],
-    high: ['Direct', 'Neutral', 'HighCorr'],
-    main: ['Direct', 'Neutral', 'MainCorr'],
+    low: ['Neutral', 'LowCorr'],
+    high: ['Neutral', 'HighCorr'],
+    main: ['Neutral', 'MainCorr'],
 };
 const order = ['global', 'low', 'high', 'main'];
 const seen = new Set();

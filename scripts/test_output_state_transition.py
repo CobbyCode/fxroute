@@ -164,6 +164,26 @@ class FingerprintTests(unittest.TestCase):
         with_bass = set_bass_management(self.base, "stereo-sub", frequency_hz=90)
         self.assertNotEqual(self.fingerprint(with_bass), first)
 
+    def test_area_neutral_reassignment_and_inactive_slots_keep_fingerprint(self):
+        first = self.fingerprint(self.base)
+        neutral = set_bank_preset(self.base, "stereo-sub", "sub1", preset="Neutral")
+        self.assertEqual(self.fingerprint(neutral), first)
+        with_b = set_bank_preset(neutral, "stereo-sub", "sub1", preset_b="Room")
+        self.assertEqual(self.fingerprint(with_b), first)
+
+    def test_global_direct_remains_distinct_and_bypasses_only_global(self):
+        state = set_mode_extras(self.base, "stereo-sub", {"headroom": {"enabled": True}})
+        direct = set_bank_preset(state, "stereo-sub", "global", preset="Direct")
+        neutral_plan = self.service.compile_plan(state, output_key="A", channels=4, sample_rate_hz=48000)
+        direct_plan = self.service.compile_plan(direct, output_key="A", channels=4, sample_rate_hz=48000)
+        self.assertNotEqual(self.fingerprint(direct), self.fingerprint(state))
+        self.assertFalse(neutral_plan["global"]["bypass"])
+        self.assertEqual(neutral_plan["global"]["extras"], {"headroom": {"enabled": True}})
+        self.assertTrue(direct_plan["global"]["bypass"])
+        self.assertEqual(direct_plan["global"]["extras"], {})
+        self.assertEqual(direct_plan["outputs"], neutral_plan["outputs"])
+        self.assertEqual(direct_plan["physical_routes"], neutral_plan["physical_routes"])
+
 
 class LoadTests(unittest.TestCase):
     def setUp(self):

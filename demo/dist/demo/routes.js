@@ -61,7 +61,7 @@
     // stock belongs to Stereo + Sub Global, the mode the demo starts in.
     dspPresets.forEach((entry) => {
         Object.assign(entry, ['Direct', 'Neutral'].includes(entry.name)
-            ? { bank: null, mode: null } : { bank: 'global', mode: 'stereo-sub' });
+            ? { bank: entry.name === 'Direct' ? 'global' : null, mode: null } : { bank: 'global', mode: 'stereo-sub' });
     });
     // Mirror of dsp.api._optional_owner: the bank a request addresses, Stereo
     // Global without one. A preset name is unique within its bank only.
@@ -71,7 +71,7 @@
     }
     function findDemoPreset(name, owner) {
         return dspPresets.find(entry => entry.name === name
-            && (entry.bank === null || (entry.bank === owner.bank && entry.mode === owner.mode)));
+            && (entry.bank === null || (entry.bank === owner.bank && (entry.mode === null || entry.mode === owner.mode))));
     }
     function addDemoPreset(name, body, extra) {
         const owner = demoPresetOwner(body);
@@ -525,18 +525,16 @@
     // LR24 crossover at 3 kHz across an 18-channel Scarlett in Stereo + Sub
     // mode with two subs behind an 80 Hz bass-management split.
     // Compare slots are stored per role and projected to banks in the
-    // catalog, like the backend: Neutral on A, Direct on B, with the low,
-    // high and both sub ways actually holding B.
-    const demoWayBank = (onB) => ({ preset: onB ? 'Direct' : 'Neutral', preset_a: 'Neutral', preset_b: onB ? 'Direct' : null, active_side: onB ? 'B' : 'A' });
+    // catalog, like the backend: Neutral on A, without a redundant B slot.
     const stereoSubBanks = () => ({
         global: { preset: 'Neutral', preset_a: 'Neutral', preset_b: 'Conv LR HybAlign BK 30-3000Hz -7dB', active_side: 'A' },
         main_l: neutralBank(), main_r: neutralBank(),
-        left_low: demoWayBank(true), right_low: demoWayBank(true),
+        left_low: neutralBank(), right_low: neutralBank(),
         left_low_mid: neutralBank(), right_low_mid: neutralBank(),
         left_mid: neutralBank(), right_mid: neutralBank(),
-        left_high: demoWayBank(true), right_high: demoWayBank(true),
+        left_high: neutralBank(), right_high: neutralBank(),
         sub_l: neutralBank(), sub_r: neutralBank(),
-        sub1: demoWayBank(true), sub2: demoWayBank(true),
+        sub1: neutralBank(), sub2: neutralBank(),
     });
     const wayProcessing = (lowpass_hz, level_db, alignment_ms) => ({
         ...defaultProcessing(),
@@ -582,13 +580,13 @@
     const surroundSpeakerBanks = () => ({
         global: neutralBank(),
         main_l: neutralBank(), main_r: neutralBank(),
-        left_low: demoWayBank(true), right_low: demoWayBank(true),
+        left_low: neutralBank(), right_low: neutralBank(),
         left_low_mid: neutralBank(), right_low_mid: neutralBank(),
         left_mid: neutralBank(), right_mid: neutralBank(),
-        left_high: demoWayBank(true), right_high: demoWayBank(true),
+        left_high: neutralBank(), right_high: neutralBank(),
         center: neutralBank(), side_l: neutralBank(), side_r: neutralBank(),
         rear_l: neutralBank(), rear_r: neutralBank(),
-        sub1: demoWayBank(true), sub2: demoWayBank(true),
+        sub1: neutralBank(), sub2: neutralBank(),
     });
     const surroundProcessing = () => ({
         main_l: defaultProcessing(), main_r: defaultProcessing(),
@@ -3162,6 +3160,9 @@
             } else if (mutation.kind === 'set_bank_preset') {
                 const bank = outputStateCatalog().modes[mode].banks[mutation.bank_id];
                 if (!bank) return fail(`Unknown bank ${mutation.bank_id}`);
+                if (bank.id !== 'global' && ['preset', 'preset_a', 'preset_b'].some(key => mutation[key] === 'Direct')) {
+                    return fail('Direct is available only in the Global bank');
+                }
                 try { updateDemoBanks(config, bank.roles, mutation); } catch (error) { return fail(error.message); }
             } else if (mutation.kind === 'switch_all_banks') {
                 const roles = outputStateCatalog().modes[mode].topology.roles;
@@ -3440,6 +3441,12 @@
 
         // ── DSP ─────────────────────────────────────────────────────────
         if (p === '/api/dsp/presets') return j(dspPayload());
+        if (post && /^\/api\/dsp\/presets\/(?:create-|import-|combine$)/.test(p)) {
+            const name = [body.presetName, body.preset_name, body.name]
+                .map(value => String(value || '').trim().replace(/\.json$/i, '').trim())
+                .find(value => value === 'Direct' || value === 'Neutral');
+            if (name === 'Direct' || name === 'Neutral') return err(`Preset "${name}" is a built-in preset and cannot be overwritten`, 400);
+        }
         if (p === '/api/dsp/presets/create-peq' && post) {
             const name = String(body.presetName || body.preset_name || '').trim();
             if (!name) return err('Preset name required', 400);

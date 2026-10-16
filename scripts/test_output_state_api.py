@@ -142,6 +142,35 @@ class AudioStateApiTests(unittest.TestCase):
         self.assertEqual(result["revision"], 2)
         self.assertFalse(result["fingerprint_changed"])
 
+    def test_area_direct_is_rejected_without_commit_or_transition(self):
+        seed_sub_state(self.service)
+        before = Path(self.directory, "output-state.json").read_bytes()
+        with audio_context(self.service), mock.patch.object(main.runtime, "dsp_runtime", mock.Mock()) as runtime:
+            for bank in ("main", "main_l", "sub1"):
+                for field in ("preset", "preset_a", "preset_b"):
+                    with self.subTest(bank=bank, field=field):
+                        with self.assertRaises(main.HTTPException) as error:
+                            asyncio.run(main.apply_audio_output_state(FakeRequest({
+                                "expected_revision": 1,
+                                "mutation": {"kind": "set_bank_preset", "mode": "stereo-sub",
+                                             "bank_id": bank, field: "Direct"},
+                            })))
+                        self.assertEqual(error.exception.status_code, 400)
+            self.assertEqual(runtime.mock_calls, [])
+        self.assertEqual(Path(self.directory, "output-state.json").read_bytes(), before)
+
+    def test_reassigning_area_neutral_does_not_start_a_live_transition(self):
+        seed_sub_state(self.service)
+        with audio_context(self.service), mock.patch.object(main.runtime, "dsp_runtime", mock.Mock()) as runtime:
+            result = asyncio.run(main.apply_audio_output_state(FakeRequest({
+                "expected_revision": 1,
+                "mutation": {"kind": "set_bank_preset", "mode": "stereo-sub",
+                             "bank_id": "sub1", "preset": "Neutral"},
+            })))
+            self.assertEqual(runtime.mock_calls, [])
+        self.assertFalse(result["fingerprint_changed"])
+        self.assertFalse(result["live_applied"])
+
     def test_apply_stale_revision_is_409_without_write(self):
         seed_sub_state(self.service)
         before = Path(self.directory, "output-state.json").read_bytes()
@@ -358,7 +387,7 @@ class DspBankApiTests(unittest.TestCase):
 
     def test_delete_keeps_slots_when_the_preset_cannot_be_deleted(self):
         self.service.apply(
-            lambda state: set_bank_preset(state, "stereo-sub", "sub1", preset_b="Direct"),
+            lambda state: set_bank_preset(state, "stereo-sub", "global", preset_b="Direct"),
             expected_revision=1)
         before = self.service.load()
         for name, status in (("Direct", 400), ("Missing", 404)):

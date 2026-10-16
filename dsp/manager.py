@@ -595,8 +595,9 @@ class DSPManager:
         return group
 
     def list_presets(self) -> List[dict]:
-        """The built-ins, valid in every bank, then every bank's own presets."""
-        builtins = [{"name": name, "filename": None, "path": None, "bank": None, "mode": None,
+        """Global Direct, shared Neutral, then every bank's own presets."""
+        builtins = [{"name": name, "filename": None, "path": None,
+                     "bank": "global" if name == "Direct" else None, "mode": None,
                      "layout": None, "source_presets": []} for name in SURROUND_BUILTINS]
         return builtins + [entry for store in self.presets.stores() for entry in store.list()]
 

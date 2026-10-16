@@ -22,11 +22,15 @@ const presets = [
 ];
 const names = (bankId, mode) => ui.presetsForBank(presets, bankId, mode).map(p => p.name);
 
-assert.deepEqual(names('low', 'stereo-sub'), ['Direct', 'Neutral', 'LowCorr']);
-assert.deepEqual(names('high', 'stereo-sub'), ['Direct', 'Neutral', 'HighCorr']);
+assert.deepEqual(names('low', 'stereo-sub'), ['Neutral', 'LowCorr']);
+assert.deepEqual(names('high', 'stereo-sub'), ['Neutral', 'HighCorr']);
 // An area bank is the same library in every output mode.
 for (const mode of ['stereo', 'stereo-sub', 'surround']) {
-    assert.deepEqual(names('main', mode), ['Direct', 'Neutral', 'MainCorr', 'Room']);
+    assert.deepEqual(names('main', mode), ['Neutral', 'MainCorr', 'Room']);
+    for (const bank of ui.rolesForMode(mode).concat(['low', 'low_mid', 'mid', 'high', 'main', 'side', 'rear', 'sub'])) {
+        assert.equal(names(bank, mode).includes('Direct'), false, `${mode}/${bank} excludes Direct`);
+        assert.equal(names(bank, mode).includes('Neutral'), true, `${mode}/${bank} offers Neutral`);
+    }
 }
 // Every output mode lists its own Global presets and no other mode's.
 assert.deepEqual(names('global', 'stereo'), ['Direct', 'Neutral', 'StereoRoom', 'Room']);

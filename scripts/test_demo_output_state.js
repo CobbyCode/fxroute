@@ -54,6 +54,12 @@ async function request(url, body) {
     assert.ok(current.capabilities.roles.surround.includes('center'));
     assert.ok(current.capabilities.roles.surround.includes('sub1'));
     assert.ok(!current.capabilities.roles['stereo-sub'].includes('center'));
+    for (const [mode, config] of Object.entries(current.modes)) {
+        for (const [id, bank] of Object.entries(config.banks)) {
+            if (id === 'global') continue;
+            assert.equal([bank.preset, bank.preset_a, bank.preset_b].includes('Direct'), false, `${mode}/${id} has no Direct assignment`);
+        }
+    }
 
     // Revisions are tracked relative to the seed, so the test does not hard
     // code the seeded number.
@@ -65,6 +71,29 @@ async function request(url, body) {
         current = await request('/api/audio/output-state');
         return response;
     };
+
+    for (const field of ['preset', 'preset_a', 'preset_b']) {
+        await apply({ kind: 'set_bank_preset', bank_id: 'low', [field]: 'Direct' }, 400);
+        assert.equal(current.revision, startRevision);
+    }
+    const beforeBuiltinCreate = JSON.stringify(await request('/api/dsp/presets'));
+    for (const action of ['create-peq', 'create-with-ir', 'combine', 'import-json', 'import-bundle',
+        'import-filter-dual', 'import-rew-peq']) {
+        for (const name of ['Direct', 'Neutral', 'Direct.json']) {
+            const response = await rawRequest(`/api/dsp/presets/${action}`, {
+                presetName: name, preset_name: name, presetNames: ['Neutral'],
+                bank_mode: 'stereo-sub', bank_id: 'low', expected_revision: revision,
+            });
+            assert.equal(response.status, 400, `${action} cannot create a built-in ${name}`);
+        }
+        const conflict = await rawRequest(`/api/dsp/presets/${action}`, {
+            presetName: 'Custom', preset_name: 'Direct',
+            bank_mode: 'stereo-sub', bank_id: 'low', expected_revision: revision,
+        });
+        assert.equal(conflict.status, 400, `${action} rejects a built-in through conflicting name fields`);
+    }
+    assert.equal((await request('/api/audio/output-state')).revision, revision);
+    assert.equal(JSON.stringify(await request('/api/dsp/presets')), beforeBuiltinCreate);
 
     // A stale revision is refused and changes nothing.
     const beforeStale = JSON.stringify(current);
@@ -192,7 +221,8 @@ async function request(url, body) {
     // The routed sub pair carries no B slot yet: All Banks still switches the
     // ways that have one and keeps the sub pair on A.
     assert.equal(current.modes['stereo-sub'].banks.sub.preset_b, null);
-    assert.ok(current.modes['stereo-sub'].banks.low.preset_b, 'the seeded ways carry a B slot');
+    assert.equal(current.modes['stereo-sub'].banks.low.preset_b, null);
+    await apply({ kind: 'set_bank_preset', bank_id: 'low', preset_b: 'Low B' });
     await apply({ kind: 'switch_all_banks', active_side: 'B' });
     const partial = current.modes['stereo-sub'];
     assert.equal(partial.banks.low.preset, partial.banks.low.preset_b);
