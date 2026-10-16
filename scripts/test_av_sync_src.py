@@ -209,6 +209,40 @@ class SrcLatencyTests(unittest.TestCase):
             self.assertEqual(reader.read(ingress_nodes=('fxroute_dsp_sink',)), 750)
             self.assertEqual(reader.read(ingress_nodes=('digital-helper',)), 0)
 
+    def test_restarted_ingress_is_read_fresh_after_a_transient_missing_path(self):
+        restored = graph() + [node(5, 'digital-helper', latency=250000000), link(5, 3)]
+        outputs = [subprocess.CompletedProcess([], 0, json.dumps(value), '')
+                   for value in (graph(), restored)]
+        with patch.object(src.subprocess, 'run', side_effect=outputs), \
+                patch.object(src.time, 'monotonic', side_effect=[0, .1]):
+            reader = src.SrcLatencyReader()
+            with self.assertRaisesRegex(RuntimeError, 'ingress path is unavailable'):
+                reader.read(owner=(123, 'same-plan'), ingress_nodes=('digital-helper',))
+            self.assertEqual(reader.read(owner=(123, 'same-plan'), ingress_nodes=('digital-helper',)), 250)
+
+    def test_expired_success_does_not_cache_a_helper_restart_gap(self):
+        before = graph() + [node(5, 'digital-helper', latency=250000000), link(5, 3)]
+        after = graph() + [node(6, 'digital-helper', latency=500000000), link(6, 3)]
+        outputs = [subprocess.CompletedProcess([], 0, json.dumps(value), '')
+                   for value in (before, graph(), after)]
+        with patch.object(src.subprocess, 'run', side_effect=outputs), \
+                patch.object(src.time, 'monotonic', side_effect=[0, .6, .7]):
+            reader = src.SrcLatencyReader()
+            self.assertEqual(reader.read(ingress_nodes=('digital-helper',)), 250)
+            with self.assertRaisesRegex(RuntimeError, 'ingress path is unavailable'):
+                reader.read(ingress_nodes=('digital-helper',))
+            self.assertEqual(reader.read(ingress_nodes=('digital-helper',)), 500)
+
+    def test_permanently_missing_ingress_keeps_failing_on_fresh_reads(self):
+        output = subprocess.CompletedProcess([], 0, json.dumps(graph()), '')
+        with patch.object(src.subprocess, 'run', return_value=output) as run, \
+                patch.object(src.time, 'monotonic', side_effect=[0, .1, .2]):
+            reader = src.SrcLatencyReader()
+            for _ in range(3):
+                with self.assertRaisesRegex(RuntimeError, 'ingress path is unavailable'):
+                    reader.read(ingress_nodes=('digital-helper',))
+            self.assertEqual(run.call_count, 3)
+
     def test_replacement_rendering_gets_fresh_graph_even_within_cache_window(self):
         bypass = graph(); bypass[0] = node(1, 'mpv', 'Stream/Output/Audio', 0, bypass=True)
         outputs = [subprocess.CompletedProcess([], 0, json.dumps(graph()), ''),

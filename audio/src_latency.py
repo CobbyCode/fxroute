@@ -106,7 +106,7 @@ def graph_src_latency(graph: list[dict], *, include_ingress: bool = True,
 
 
 class SrcLatencyReader:
-    """Bound graph sampling cost without caching obsolete path ownership."""
+    """Cache validated graphs briefly, scoped to the current path ownership."""
     def __init__(self):
         self._cache = None
 
@@ -129,8 +129,8 @@ class SrcLatencyReader:
         cache = self._cache
         if cache is not None and scope == cache[2] and now - cache[1] < 0.5:
             return graph_src_latency(cache[0], include_ingress=include_ingress, ingress_nodes=ingress_nodes)
-        # A graph caught mid-negotiation says nothing about the path: it is
-        # read again and never cached, so no other reader is handed it.
+        # Only validated graphs are cached: a helper restart can briefly remove
+        # ingress links that the next caller has already restored.
         for reads_left in range(SETTLE_READS - 1, -1, -1):
             graph = self._dump()
             try:
@@ -142,8 +142,5 @@ class SrcLatencyReader:
                 # The cache window starts at the dump that is kept.
                 now = time.monotonic()
                 continue
-            except RuntimeError:
-                self._cache = graph, now, scope
-                raise
             self._cache = graph, now, scope
             return value

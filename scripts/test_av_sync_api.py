@@ -13,9 +13,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 from audio.digital_input import DigitalInput
-from audio.src_latency import graph_src_latency
-from dsp.runtime import DSPRuntime, DSPRuntimeConfig
-from test_av_sync_src import node
+from audio.src_latency import SrcLatencyReader, graph_src_latency
+from dsp.runtime import CommandResult, DSPRuntime, DSPRuntimeConfig
+from test_av_sync_src import link, node
 from test_output_state_api import audio_context, FakeRequest, make_manager, make_service
 
 
@@ -85,6 +85,40 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(native.snapshot()['active'])
             with self.assertRaisesRegex(RuntimeError, 'path|unavailable'):
                 await main._electronic_input_latency_ms()
+
+    async def test_reconciled_helper_ingress_survives_a_background_latency_failure(self):
+        links = set()
+        async def run(args):
+            if args == ('pw-link', '-l'):
+                return CommandResult(0, '\n'.join(f'{a} -> {b}' for a, b in links))
+            links.add(tuple(args[1:]))
+            return CommandResult(0)
+        def dump():
+            value = [node(3, 'fxroute_dsp'), node(4, 'hardware', 'Audio/Sink'),
+                     node(5, 'fxroute_surround_input'), link(3, 4)]
+            if ('fxroute_surround_input:output_stereo_FL', 'fxroute_dsp:input_1') in links:
+                value.append(link(5, 3))
+            return value
+        helper = DigitalInput()
+        helper.process = SimpleNamespace(returncode=None, pid=456)
+        native = DSPRuntime(object(), command_runner=run)
+        native._process = SimpleNamespace(returncode=None, pid=123)
+        native._config = DSPRuntimeConfig('stereo', 'test', 48000, (), ())
+        native._surround_input = True
+        native.configure_latency_tracking(input_latency_provider=main._electronic_input_latency_ms)
+        reader = SrcLatencyReader()
+        with patch.object(main.runtime, 'dsp_runtime', native), patch.object(main, '_surround_input', helper), \
+                patch.object(main, '_src_latency_reader', reader), patch.object(reader, '_dump', side_effect=dump), \
+                patch.object(main, '_measurement_session_owns_live_rate', return_value=False), \
+                patch('audio.src_latency.time', SimpleNamespace(monotonic=lambda: 0)), \
+                patch.object(native, '_control_unlocked', return_value='OK'):
+            with self.assertRaisesRegex(RuntimeError, 'ingress path is unavailable'):
+                await native.update_input_latency()
+            await native.set_surround_input(True)
+            self.assertEqual({edge for edge in links if edge[0].startswith('fxroute_surround_input:')}, {
+                ('fxroute_surround_input:output_stereo_FL', 'fxroute_dsp:input_1'),
+                ('fxroute_surround_input:output_stereo_FR', 'fxroute_dsp:input_2')})
+            self.assertAlmostEqual(native._last_input_latency_ms, 2818 / 48)
 
     async def test_stopped_engine_with_retained_config_can_bootstrap_without_graph(self):
         native = DSPRuntime(object())
