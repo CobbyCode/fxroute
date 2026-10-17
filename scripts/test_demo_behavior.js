@@ -17,6 +17,7 @@ const stateSource = fs.readFileSync(path.join(root, 'demo', 'state.js'), 'utf8')
 const bootSource = fs.readFileSync(path.join(root, 'demo', 'boot.js'), 'utf8');
 const buildSource = fs.readFileSync(path.join(root, 'scripts', 'build_demo.py'), 'utf8');
 const routesSource = fs.readFileSync(path.join(root, 'demo', 'routes.js'), 'utf8');
+const xhrSource = fs.readFileSync(path.join(root, 'demo', 'xhr.js'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "app.js"), 'utf8');
 const settingsSystemSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "settings_system.js"), 'utf8');
 const libraryUiSource = fs.readFileSync(path.join(root, "demo", "dist", "static", "library_ui.js"), 'utf8');
@@ -62,6 +63,7 @@ function makeDemoContext(storage = makeStorage(), intervals = null) {
     vm.runInContext(alignmentSource, ctx);
     vm.runInContext(stateSource, ctx);
     vm.runInContext(routesSource, ctx);
+    vm.runInContext(xhrSource, ctx);
     return ctx;
 }
 
@@ -240,6 +242,13 @@ assert.ok(marlowe && marlowe.image_url === '/static/demo/t-the-marlowe-ensemble-
 assert.ok(fs.existsSync(path.join(root, 'static', 'demo', 't-the-marlowe-ensemble-velvet-skyline.jpg')));
 assert.match(libraryUiSource, /album\.demo_cover_url/);
 assert.match(buildSource, /static_src\s*\/\s*['"]demo['"]|demo_art/);
+// The library upload posts through XMLHttpRequest; the demo layer routes that
+// through the same simulated API as fetch (see demo/xhr.js).
+assert.match(xhrSource, /window\.FXROUTE_DEMO_XHR_LOADED/);
+assert.match(xhrSource, /window\.fetch\(this\._url/);
+assert.match(routesSource, /'\/api\/library\/upload' && post/);
+assert.match(buildSource, /\.\/demo\/xhr\.js\?v=\d+/);
+assert.match(buildSource, /routes\|xhr\|streaming/);
 assert.match(routesSource, /suspend_supported: true/);
 assert.match(routesSource, /power_off_supported: true/);
 assert.match(routesSource, /\/api\/system\/power\/suspend.*post/s);

@@ -75,7 +75,16 @@
     }
     function addDemoPreset(name, body, extra) {
         const owner = demoPresetOwner(body);
-        if (!findDemoPreset(name, owner)) dspPresets.push({ ...presetEntry(name, extra), ...owner });
+        const existing = findDemoPreset(name, owner);
+        // Writing over a name replaces the stored preset (DSPPresetStore.write),
+        // it does not leave the previous filters behind.
+        if (existing) {
+            Object.assign(existing, extra || {});
+            return existing;
+        }
+        const entry = { ...presetEntry(name, extra), ...owner };
+        dspPresets.push(entry);
+        return entry;
     }
     let dspExtras = {
         limiter: { enabled: true, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
@@ -875,20 +884,22 @@
                 limited: Math.abs(minimum + common - config.av_sync.target_ms) > 0.02, balance_limited: 0, balance_unavailable: 0,
                 outputs: rows, sources: [] } };
     }
-    // Assigns a just-created preset to its bank when the request carries
-    // a bank target (multipart fields arrive as strings, JSON as
-    // numbers). Mirrors the backend binding contract.
-    function assignDemoBankTarget(body, createdName) {
+    // Resolves the bank target of a create/import before anything is written
+    // (dsp.api._resolve_bank_binding): the preset file and its bank slot are
+    // one transaction, so a client whose revision is stale is refused without
+    // leaving a preset behind. Multipart fields arrive as strings, JSON as
+    // numbers. Returns {binding}, {error, status} or {conflict} (the backend's
+    // 409 body).
+    function demoBankTarget(body) {
         const mode = String(body.bank_mode || '');
         const bankId = String(body.bank_id || '');
-        if (!mode && !bankId) return null;
+        if (!mode && !bankId) return { binding: null };
         if (!mode || !bankId) return { error: 'bank_mode and bank_id are required together', status: 400 };
         const revision = Number(body.expected_revision);
         if (!Number.isInteger(revision) || revision < 0) {
             return { error: 'expected_revision must be a non-negative integer', status: 400 };
         }
-        const config = outputStateStore.modes[mode];
-        const bank = config && outputStateCatalog().modes[mode].banks[bankId];
+        const bank = outputStateCatalog().modes?.[mode]?.banks?.[bankId];
         if (!bank) return { error: `Unknown bank ${bankId}`, status: 400 };
         // Mirror of dsp.api._validate_bank_target: a speaker group belongs to
         // the Surround Global bank, which needs one.
@@ -899,16 +910,263 @@
         }
         if (surroundGlobal && !group) return { error: 'Surround Global presets need a speaker group', status: 400 };
         if (revision !== outputStateStore.revision) {
-            return { conflict: true, created: createdName };
+            return { conflict: { code: 'bank-assign-conflict',
+                message: 'Output state changed; refresh before creating the preset',
+                revision: outputStateStore.revision, created: null, assigned: false } };
         }
-        if (group) {
+        return { binding: { mode, bank_id: bankId, group, roles: bank.roles } };
+    }
+
+    // Commits a created preset into the resolved bank, the way
+    // dsp.api._assign_created_preset_to_bank follows the write: a Surround
+    // Global preset replaces only its speaker group in the listened slot,
+    // every other bank takes it as a whole.
+    function commitDemoBankTarget(body, binding, createdName) {
+        if (!binding) return null;
+        if (binding.group) {
             // A Surround Global preset carries its group plugins and the surround layout.
-            Object.assign(findDemoPreset(createdName, demoPresetOwner(body)), { layout: 'surround', group });
+            Object.assign(findDemoPreset(createdName, demoPresetOwner(body)), { layout: 'surround', group: binding.group });
         }
-        updateDemoBanks(config, bank.roles, { preset: createdName, ...(group ? { group } : {}) }, mode);
+        updateDemoBanks(outputStateStore.modes[binding.mode], binding.roles,
+            { preset: createdName, ...(binding.group ? { group: binding.group } : {}) }, binding.mode);
         outputStateStore.revision += 1;
         syncDspToState();
-        return { assigned: true, mode, bank_id: bankId, revision: outputStateStore.revision };
+        return { assigned: true, mode: binding.mode, bank_id: binding.bank_id,
+            revision: outputStateStore.revision, live_applied: true, live_reason: 'applied' };
+    }
+
+    // Answer of a create/import that may commit into a bank, in the shape
+    // dsp.api sends (import_dsp_preset_json, create_peq_preset, ...).
+    function demoCreatedPresetResponse(name, body, binding, extra) {
+        const owner = demoPresetOwner(body);
+        const entry = findDemoPreset(name, owner) || {};
+        const bank = commitDemoBankTarget(body, binding, name);
+        if (bank) {
+            // A committed bank assignment moves the output-state revision, so
+            // the page's cached catalog is one revision behind afterwards. The
+            // product forces that refresh after a convolver creation (see
+            // createConvolverPreset) but not after the JSON/bundle imports;
+            // without it the next create or import would be refused as stale.
+            // The demo layer keeps the client current for every creation it
+            // assigned, in the background and only as a client-side nudge.
+            demoRefreshOutputCatalog();
+        }
+        return {
+            status: 'ok', success: true,
+            preset: { name, filename: name + '.json', path: `/demo/presets/${owner.bank}/${name}.json`,
+                bank: owner.bank, source_presets: entry.source_presets || [] },
+            active_preset: activeGlobalPreset(),
+            ...(extra || {}),
+            ...(bank ? { bank } : {}),
+        };
+    }
+
+    // ── Uploaded files ──────────────────────────────────────────────────
+    // Create/import endpoints take multipart uploads; the demo reads the very
+    // File the browser sent, so a preset is named after the upload as
+    // DSPManager._ensure_overwritable_name names it and the imported filters
+    // reach the preset entry the UI renders.
+    const DEMO_PRESET_SCHEMA = 'fxroute.dsp.preset';
+    const DEMO_UPLOAD_AUDIO_EXTENSIONS = ['.mp3', '.flac', '.ogg', '.oga', '.opus', '.m4a', '.aac',
+        '.wav', '.wma', '.webm', '.weba'];
+    const DEMO_UPLOAD_PLAYLIST_EXTENSIONS = ['.m3u', '.m3u8'];
+
+    function demoUploadFile(body, key) {
+        const value = body[key || 'file'];
+        return value && typeof value === 'object' && typeof value.name === 'string'
+            && (typeof value.text === 'function' || typeof value.slice === 'function') ? value : null;
+    }
+    function demoUploadFileName(file) {
+        return String((file && file.name) || '').split(/[\\/]/).pop().trim();
+    }
+    function demoUploadStem(file) {
+        return demoUploadFileName(file).replace(/\.[^.]+$/, '').trim();
+    }
+    function demoUploadExtension(name) {
+        const match = String(name || '').toLowerCase().match(/\.[^.]+$/);
+        return match ? match[0] : '';
+    }
+    async function demoUploadText(file) {
+        if (!file || typeof file.text !== 'function') return '';
+        try { return await file.text(); } catch (e) { return ''; }
+    }
+    async function demoUploadHead(file, bytes) {
+        if (!file || typeof file.slice !== 'function') return '';
+        try { return await file.slice(0, bytes).text(); } catch (e) { return ''; }
+    }
+
+    // First member name of a ZIP, read from its local file header (the demo
+    // never unpacks: one header is enough for the bundle's naming rule).
+    function demoZipFirstName(head) {
+        if (typeof head !== 'string' || head.length < 30) return '';
+        const view = head.slice(0, 30);
+        const length = view.charCodeAt(26) | (view.charCodeAt(27) << 8);
+        return length > 0 ? head.slice(30, 30 + length) : '';
+    }
+
+    // REW PEQ text, parsed like DSPManager.import_rew_peq_text: only lines
+    // that start a filter entry are read (preamble and table headers are
+    // skipped), a malformed or unsupported line is an error, and only PK/PEQ
+    // filters become bands.
+    function demoRewPeqParse(text) {
+        if (!String(text || '').trim()) return { error: 'REW PEQ text is empty' };
+        const number = '[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?';
+        const entry = new RegExp('^\\s*(?:Filter\\s+\\d+\\s*:|(?:Filter\\s+)?\\d+\\s+(?:true|false|on|off)(?=\\s|$))', 'i');
+        const header = new RegExp('^\\s*(?:Filter\\s+\\d+\\s*:\\s*|\\d+\\s+)(true|false|on|off)\\s+(?:auto\\s+)?(\\S+)(.*)$', 'i');
+        const compact = new RegExp('^\\s*(' + number + ')\\s+(' + number + ')\\s+(' + number + ')(?:\\s+' + number + ')?\\s*$');
+        const exported = new RegExp('^\\s*Fc\\s+(' + number + ')\\s+Hz\\s+Gain\\s+(' + number + ')\\s+dB\\s+Q\\s+(' + number + ')\\s*$', 'i');
+        // The parser is line-based and anchored, so `.match` (exec-like with
+        // capture groups) is enough; nothing here spawns a process.
+        const bands = [];
+        const unsupported = [];
+        const lines = String(text).split(/\r?\n/);
+        for (let index = 0; index < lines.length; index += 1) {
+            const line = lines[index];
+            if (!entry.test(line)) continue;
+            const match = line.match(header);
+            if (!match) return { error: `REW PEQ line ${index + 1} is malformed` };
+            const kind = match[2].toUpperCase();
+            if (kind === 'NONE' && !match[3].trim()) continue;
+            if (kind !== 'PK' && kind !== 'PEQ') {
+                unsupported.push(`line ${index + 1}: filter type ${match[2]}`);
+                continue;
+            }
+            const values = match[3].match(compact) || match[3].match(exported);
+            if (!values) return { error: `REW PEQ line ${index + 1} has invalid frequency, gain or Q` };
+            bands.push({ filterType: 'bell', frequencyHz: Number(values[1]), gainDb: Number(values[2]),
+                q: Number(values[3]), enabled: ['true', 'on'].includes(match[1].toLowerCase()) });
+        }
+        if (unsupported.length) {
+            return { error: 'Unsupported REW PEQ filter type(s): ' + unsupported.join('; ') + ' (supported: PK/PEQ)' };
+        }
+        if (!bands.length) return { error: 'No supported REW PEQ filters found' };
+        return { bands };
+    }
+
+    // The two payload shapes DSPManager.import_preset_json accepts: the native
+    // preset schema and an EasyEffects output preset. Empty string means the
+    // text is importable.
+    function demoPresetPayloadError(text) {
+        let source = null;
+        try { source = JSON.parse(text); } catch (e) { return `Preset JSON is invalid: ${e.message}`; }
+        if (source && typeof source === 'object' && !Array.isArray(source) && source.schema === DEMO_PRESET_SCHEMA) return '';
+        const output = source && typeof source === 'object' && !Array.isArray(source) ? source.output : null;
+        if (output && typeof output === 'object' && !Array.isArray(output) && Array.isArray(output.plugins_order)) return '';
+        return 'Preset JSON is neither a native nor EasyEffects output preset';
+    }
+
+    // Legacy EasyEffects equalizer bands (DSPManager._legacy_eq_bands).
+    function demoLegacyEqBands(plugin, side) {
+        const channel = plugin && plugin[side];
+        const count = Number((plugin && plugin['num-bands']) || 0);
+        if (!channel || typeof channel !== 'object') return [];
+        const types = { Bell: 'bell', Notch: 'notch', 'Lo-shelf': 'low_shelf', 'Hi-shelf': 'high_shelf',
+            'Lo-pass': 'low_pass', 'Hi-pass': 'high_pass' };
+        const bands = [];
+        for (let index = 0; index < Math.max(0, count); index += 1) {
+            const band = channel[`band${index}`];
+            if (!band || typeof band !== 'object') break;
+            bands.push({ enabled: !band.mute, filterType: types[band.type] || 'bell',
+                frequencyHz: Number(band.frequency ?? 1000), gainDb: Number(band.gain || 0), q: Number(band.q || 1) });
+        }
+        return bands;
+    }
+
+    // What an imported preset carries into its demo entry: the PEQ workspace
+    // and the IR pool follow a preset by the filters it ships.
+    function demoImportedFilters(text) {
+        let source = null;
+        try { source = JSON.parse(text); } catch (e) { return {}; }
+        const found = {};
+        const chain = source && typeof source === 'object' && Array.isArray(source.chain) ? source.chain : [];
+        for (const plugin of chain) {
+            if (!plugin || typeof plugin !== 'object') continue;
+            if (plugin.type === 'equalizer' && plugin.params && !found.peq) {
+                found.peq = { enabled: plugin.enabled !== false, params: plugin.params };
+            }
+            if (plugin.type === 'convolver' && !found.convolver) {
+                found.convolver = true;
+                const kernel = plugin.params && (plugin.params.kernel || plugin.params.kernelName);
+                if (kernel) found.kernel = String(kernel);
+            }
+        }
+        const output = source && typeof source === 'object' ? source.output : null;
+        const legacy = output && typeof output === 'object' ? output['equalizer#0'] : null;
+        if (!found.peq && legacy && typeof legacy === 'object') {
+            const split = !!legacy['split-channels'];
+            found.peq = { enabled: !legacy.bypass, params: {
+                channelMode: split ? 'dual' : 'stereo-linked',
+                eqMode: String(legacy.mode || 'IIR').toUpperCase(),
+                ...(split ? { leftBands: demoLegacyEqBands(legacy, 'left'), rightBands: demoLegacyEqBands(legacy, 'right') }
+                    : { bands: demoLegacyEqBands(legacy, 'left') }),
+                inputGainDb: Number(legacy['input-gain'] || 0), outputGainDb: Number(legacy['output-gain'] || 0),
+            } };
+        }
+        const legacyKernel = output && typeof output === 'object' ? output['convolver#0'] : null;
+        if (!found.convolver && legacyKernel && typeof legacyKernel === 'object') {
+            found.convolver = true;
+            if (legacyKernel['kernel-name']) found.kernel = String(legacyKernel['kernel-name']);
+        }
+        return found;
+    }
+
+    // ── Uploaded library files ──────────────────────────────────────────
+    // An audio upload lands in an upload folder of the active catalog (the
+    // real scan groups by folder, library/api.py upload_track), a ZIP as its
+    // own album folder, so both show up in the library views right away.
+    function demoUploadAlbum(catalog, label) {
+        const name = String(label || 'Uploads').trim() || 'Uploads';
+        const id = 'upload_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        catalog.albums = catalog.albums || [];
+        let album = catalog.albums.find(entry => entry.id === id);
+        if (!album) {
+            const cover = lib.demoImage('album:' + name);
+            album = { id, name, artist: 'Uploaded Files', track_count: 0, genres: ['Uploads'], years: [],
+                year: new Date().getFullYear(), release_type: 'Album', favorite: false,
+                cover_source: 'folder', has_external_cover: true, coverUrl: cover, demo_cover_url: cover };
+            catalog.albums.unshift(album);
+        }
+        return album;
+    }
+    function demoUploadTrack(catalog, album, filename) {
+        const stem = String(filename || 'Track').replace(/\.[^.]+$/, '').trim() || 'Track';
+        const title = stem.replace(/^\d+\s*[-–]\s*/, '').trim() || stem;
+        const id = `upload_${album.name}/${filename}`;
+        catalog.tracks = catalog.tracks || [];
+        const existing = catalog.tracks.find(track => track.id === id || track.upload_name === filename);
+        if (existing) return existing;
+        const cover = album.coverUrl || lib.demoImage('album:' + album.name);
+        const track = { id, title, artist: album.artist, album: album.name, album_artist: album.artist,
+            genre: 'Uploads', year: album.year, track_number: album.track_count + 1, disc_number: 1,
+            source: 'local', url: `file://demo/uploads/${filename}`, duration: 0, path: `Uploads/${filename}`,
+            upload_name: filename, sample_rate_hz: Number(samplerate.active_rate || 48000),
+            cover_available: true, cover_url: cover, cover_info_url: `/api/tracks/cover-info/${id}`,
+            artwork_available: true, artwork_url: cover, artwork_source: 'library', favorite: false };
+        catalog.tracks.unshift(track);
+        album.track_count = catalog.tracks.filter(entry => entry.album === album.name).length;
+        return track;
+    }
+
+    function demoRefreshOutputCatalog() {
+        const refresh = () => {
+            const controller = window.FXRouteOutputSystemController;
+            if (controller && typeof controller.fetchOutputSystemCatalog === 'function') {
+                controller.fetchOutputSystemCatalog(true);
+            }
+        };
+        if (typeof setTimeout === 'function') setTimeout(() => { try { refresh(); } catch (e) { /* keep the response */ } }, 0);
+        else { try { refresh(); } catch (e) { /* keep the response */ } }
+    }
+
+    // A request's own preset name, cleaned the way DSPManager intends it:
+    // basename without a trailing .json (dsp/persistence.clean_name).
+    function demoRequestPresetName(body) {
+        const raw = String(body.preset_name || body.presetName || body.name || '').trim();
+        const base = raw.split(/[\\/]/).pop().trim();
+        return base.toLowerCase().endsWith('.json') ? base.slice(0, -5).trim() : base;
+    }
+    function demoProtectedPresetName(name) {
+        return name === 'Direct' || name === 'Neutral';
     }
     function demoButterworthDb(frequency, cutoff, slopeDbOct, kind) {
         const order = Math.max(1, Math.round(slopeDbOct / 6));
@@ -2777,6 +3035,66 @@
             return j({ status: 'ok', ...libraryScanStatus() });
         }
         if (p === '/api/library/folders/delete' && post) return j({ status: 'ok' });
+        if (p === '/api/library/upload' && post) {
+            // Mirror of library/api.py upload_track: audio files land in the
+            // active catalog as their own upload folder, a playlist file
+            // imports the library tracks it names, a ZIP lands as one album.
+            // The upload itself is read (the browser posts it via
+            // XMLHttpRequest, see demo/xhr.js), so its name and size reach the
+            // response the UI reports.
+            const file = demoUploadFile(body);
+            const filename = demoUploadFileName(file);
+            if (!filename) return err('A filename is required', 400);
+            const suffix = demoUploadExtension(filename);
+            if (!DEMO_UPLOAD_AUDIO_EXTENSIONS.includes(suffix)
+                    && !DEMO_UPLOAD_PLAYLIST_EXTENSIONS.includes(suffix) && suffix !== '.zip') {
+                return err('Unsupported file type', 400);
+            }
+            const catalog = activeLib();
+            const root = String(musicLibraries.active_id || 'local');
+            if (suffix === '.zip') {
+                return demoUploadHead(file, 4).then((head) => {
+                    if (!head.startsWith('PK')) return err('Invalid ZIP archive', 400);
+                    const album = demoUploadAlbum(catalog, demoUploadStem(file));
+                    demoUploadTrack(catalog, album, `${demoUploadStem(file)}.flac`);
+                    return j({ status: 'imported', kind: 'zip', filename, folder: album.name,
+                        path: `demo/${root}/${album.name}`, track_count: (catalog.tracks || []).length,
+                        imported_track_count: 1, imported_playlist_count: 0, playlists: [],
+                        skipped_entry_count: 0,
+                        message: `Imported 1 track from ${filename}` });
+                });
+            }
+            if (DEMO_UPLOAD_PLAYLIST_EXTENSIONS.includes(suffix)) {
+                return demoUploadText(file).then((text) => {
+                    const wanted = String(text || '').split(/\r?\n/)
+                        .map(line => line.trim()).filter(line => line && !line.startsWith('#'))
+                        .map(line => line.split(/[\\/]/).pop().toLowerCase());
+                    const matched = (catalog.tracks || []).filter(track =>
+                        wanted.includes(String(track.path || '').split(/[\\/]/).pop().toLowerCase())
+                        || wanted.includes(String(track.title || '').toLowerCase()));
+                    if (!matched.length) return err('Playlist did not match any library tracks', 400);
+                    const id = 'playlist_upload_' + Date.now();
+                    const name = demoUploadStem(file) || 'Imported Playlist';
+                    const playlist = { id, name, track_ids: matched.map(track => track.id), track_count: matched.length };
+                    catalog.playlists = catalog.playlists || [];
+                    catalog.playlists.push(playlist);
+                    return j({ status: 'imported', kind: 'playlist', filename,
+                        track_count: (catalog.tracks || []).length, imported_playlist_count: 1,
+                        playlist,
+                        message: `Imported playlist ${name} with ${matched.length} track${matched.length === 1 ? '' : 's'}` });
+                });
+            }
+            if ((catalog.tracks || []).some(track => track.upload_name === filename)) {
+                return err('A file with that name already exists', 409);
+            }
+            return demoUploadHead(file, 4).then(() => {
+                const album = demoUploadAlbum(catalog, 'Uploads');
+                const track = demoUploadTrack(catalog, album, filename);
+                return j({ status: 'uploaded', kind: 'audio', filename, path: `demo/Uploads/${filename}`,
+                    track_count: (catalog.tracks || []).length, track_id: track.id,
+                    message: `Uploaded ${filename}` });
+            });
+        }
         if (p === '/api/tracks/delete' && post) return j({ status: 'ok' });
         if (p === '/api/tracks/download' && post) {
             // Selection download: a downloadable body for the POSTed ids so
@@ -3507,31 +3825,32 @@
         if (p === '/api/dsp/presets/create-peq' && post) {
             const name = String(body.presetName || body.preset_name || '').trim();
             if (!name) return err('Preset name required', 400);
+            const target = demoBankTarget(body);
+            if (target.error) return err(target.error, target.status);
+            if (target.conflict) return j({ detail: target.conflict }, 409);
             addDemoPreset(name, body, { peq: body.peq && body.peq.params ? { enabled: true, params: body.peq.params } : null });
             syncDspToState();
-            const created = { success: true, preset: { name } };
-            const binding = assignDemoBankTarget(body, name);
-            if (binding && binding.error) return err(binding.error, binding.status);
-            if (binding && binding.conflict) {
-                created.bank = { assigned: false, created: name };
-                return j(created, 409);
-            }
-            if (binding) created.bank = binding;
-            return j(created);
+            return j(demoCreatedPresetResponse(name, body, target.binding));
         }
         if (p === '/api/dsp/presets/create-with-ir' && post) {
-            const name = String(body.preset_name || body.name || 'Convolver Preset').trim() || 'Convolver Preset';
-            addDemoPreset(name, body, { convolver: true });
-            syncDspToState();
-            const created = { success: true, preset: { name } };
-            const binding = assignDemoBankTarget(body, name);
-            if (binding && binding.error) return err(binding.error, binding.status);
-            if (binding && binding.conflict) {
-                created.bank = { assigned: false, created: name };
-                return j(created, 409);
+            const ir = demoUploadFile(body);
+            const irExt = demoUploadExtension(demoUploadFileName(ir));
+            if (!ir) return err('An IR file is required', 400);
+            if (irExt !== '.irs' && irExt !== '.wav') {
+                return err(`Unsupported IR file type: ${irExt || 'no extension'} (use .irs or .wav)`, 400);
             }
-            if (binding) created.bank = binding;
-            return j(created);
+            if (Number(ir.size || 0) === 0) return err('The IR file is empty', 400);
+            const name = demoRequestPresetName(body);
+            if (!name) return err('preset_name is required', 400);
+            if (demoProtectedPresetName(name)) {
+                return err(`Preset "${name}" is a built-in preset and cannot be overwritten`, 400);
+            }
+            const target = demoBankTarget(body);
+            if (target.error) return err(target.error, target.status);
+            if (target.conflict) return j({ detail: target.conflict }, 409);
+            addDemoPreset(name, body, { convolver: true, kernel: demoUploadStem(ir) });
+            syncDspToState();
+            return j(demoCreatedPresetResponse(name, body, target.binding));
         }
         if (p === '/api/dsp/presets/combine' && post) {
             const name = String(body.presetName || 'Combined Preset').trim();
@@ -3659,45 +3978,122 @@
             return j({ status: 'ok', extras: dspExtras, excluded_presets: [] });
         }
         if (p === '/api/dsp/presets/import-json' && post) {
-            const name = String(body.preset_name || body.name || 'Imported Preset').trim() || 'Imported Preset';
-            addDemoPreset(name, body);
-            syncDspToState();
-            const binding = assignDemoBankTarget(body, name);
-            if (binding?.error) return err(binding.error, binding.status);
-            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
-            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
+            const file = demoUploadFile(body);
+            if (!file) return err('A preset JSON file is required', 400);
+            // The uploaded file names the preset; a form field never does
+            // (dsp.api.import_dsp_preset_json passes the file name).
+            const name = demoUploadFileName(file).toLowerCase() === 'preset.json'
+                ? 'preset' : demoUploadStem(file);
+            if (!name) return err('Invalid preset name', 400);
+            if (demoProtectedPresetName(name)) {
+                return err(`Preset "${name}" is a built-in preset and cannot be overwritten`, 400);
+            }
+            // The upload is read like the backend reads it: text first, then
+            // the payload shape, then the bank binding — a rejected import
+            // never leaves a preset behind.
+            return demoUploadText(file).then((text) => {
+                const problem = demoPresetPayloadError(text);
+                if (problem) return err(problem, 400);
+                const target = demoBankTarget(body);
+                if (target.error) return err(target.error, target.status);
+                if (target.conflict) return j({ detail: target.conflict }, 409);
+                addDemoPreset(name, body, demoImportedFilters(text));
+                syncDspToState();
+                return j(demoCreatedPresetResponse(name, body, target.binding));
+            });
         }
         if (p === '/api/dsp/presets/import-bundle' && post) {
-            const name = String(body.preset_name || body.name || 'Imported Bundle').trim() || 'Imported Bundle';
-            addDemoPreset(name, body);
-            syncDspToState();
-            const binding = assignDemoBankTarget(body, name);
-            if (binding?.error) return err(binding.error, binding.status);
-            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
-            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
+            const file = demoUploadFile(body);
+            if (!file) return err('A preset bundle is required', 400);
+            if (demoUploadExtension(demoUploadFileName(file)) !== '.zip') {
+                return err('Preset bundles are .zip archives', 400);
+            }
+            // The demo reads the archive's first local entry instead of
+            // unpacking it: enough for the backend's naming rule (a member
+            // named preset.json falls back to the upload's own name) and for
+            // rejecting a file that is not a ZIP at all.
+            return demoUploadHead(file, 4096).then((head) => {
+                if (!head.startsWith('PK')) return err('Invalid ZIP archive', 400);
+                const member = demoZipFirstName(head);
+                const fallback = demoUploadStem(file);
+                const name = (member && member.toLowerCase().endsWith('.json') && !['preset.json', 'manifest.json'].includes(member.toLowerCase())
+                    ? member.replace(/\.json$/i, '').trim() : fallback);
+                if (!name) return err('Invalid preset name', 400);
+                if (demoProtectedPresetName(name)) {
+                    return err(`Preset "${name}" is a built-in preset and cannot be overwritten`, 400);
+                }
+                const target = demoBankTarget(body);
+                if (target.error) return err(target.error, target.status);
+                if (target.conflict) return j({ detail: target.conflict }, 409);
+                addDemoPreset(name, body);
+                syncDspToState();
+                return j({ ...demoCreatedPresetResponse(name, body, target.binding), irs: [] });
+            });
         }
         if (p === '/api/dsp/presets/import-filter-dual' && post) {
-            const name = String(body.preset_name || body.name || 'Dual Filter Preset').trim() || 'Dual Filter Preset';
-            addDemoPreset(name, body, { convolver: true });
+            const name = String(body.preset_name || body.name || '').trim();
+            if (!name) return err('preset_name is required', 400);
+            // Upload kind per side (dsp.api._detect_upload_kind): .txt is REW
+            // text, .irs/.wav a convolver; anything else is refused.
+            const kindOf = (upload) => {
+                if (!upload) return null;
+                const ext = demoUploadExtension(demoUploadFileName(upload));
+                if (ext === '.txt') return 'rew-text';
+                if (ext === '.irs' || ext === '.wav') return 'convolver';
+                return 'unsupported';
+            };
+            const leftFile = demoUploadFile(body, 'left_file');
+            const rightFile = demoUploadFile(body, 'right_file');
+            const leftKind = kindOf(leftFile);
+            const rightKind = kindOf(rightFile);
+            const badUpload = [leftFile, rightFile].find(file => kindOf(file) === 'unsupported');
+            if (badUpload) return err(`Unsupported file type: ${demoUploadFileName(badUpload)}`, 400);
+            if (!!leftKind !== !!rightKind) return err('Provide both Left and Right files, or neither', 400);
+            const dualConvolver = leftKind === 'convolver' && rightKind === 'convolver';
+            const leftText = String(body.left_text || '').trim();
+            const rightText = String(body.right_text || '').trim();
+            if (!dualConvolver && (!leftText || !rightText)) {
+                return err('Provide Left and Right REW text, or Left and Right .irs/.wav files', 400);
+            }
+            const left = dualConvolver ? null : demoRewPeqParse(leftText);
+            if (left && left.error) return err(left.error, 400);
+            const right = dualConvolver ? null : demoRewPeqParse(rightText);
+            if (right && right.error) return err(right.error, 400);
+            const target = demoBankTarget(body);
+            if (target.error) return err(target.error, target.status);
+            if (target.conflict) return j({ detail: target.conflict }, 409);
+            if (dualConvolver) {
+                addDemoPreset(name, body, { convolver: true, kernel: demoUploadStem(leftFile) });
+                syncDspToState();
+                return j(demoCreatedPresetResponse(name, body, target.binding,
+                    { import_kind: 'dual-convolver', ir: demoUploadFileName(leftFile) }));
+            }
+            addDemoPreset(name, body, { peq: { enabled: true, params: {
+                channelMode: 'dual', eqMode: 'IIR', leftBands: left.bands, rightBands: right.bands,
+            } } });
             syncDspToState();
-            const binding = assignDemoBankTarget(body, name);
-            if (binding?.error) return err(binding.error, binding.status);
-            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
-            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
+            return j(demoCreatedPresetResponse(name, body, target.binding,
+                { import_kind: 'dual-peq', ir: null }));
         }
         if (p === '/api/dsp/presets/import-rew-peq' && post) {
-            const name = String(body.preset_name || body.name || 'REW PEQ Preset').trim() || 'REW PEQ Preset';
-            addDemoPreset(name, body, { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } });
-            syncDspToState();
-            const created = { success: true, preset: { name } };
-            const binding = assignDemoBankTarget(body, name);
-            if (binding && binding.error) return err(binding.error, binding.status);
-            if (binding && binding.conflict) {
-                created.bank = { assigned: false, created: name };
-                return j(created, 409);
-            }
-            if (binding) created.bank = binding;
-            return j(created);
+            const name = String(body.preset_name || body.name || '').trim();
+            if (!name) return err('preset_name is required', 400);
+            const file = demoUploadFile(body);
+            if (!file) return err('A REW PEQ text file is required', 400);
+            // dsp.api reads the uploaded text and runs it through the same
+            // parser as the dual import before the preset exists.
+            return demoUploadText(file).then((text) => {
+                const parsed = demoRewPeqParse(text);
+                if (parsed.error) return err(parsed.error, 400);
+                const target = demoBankTarget(body);
+                if (target.error) return err(target.error, target.status);
+                if (target.conflict) return j({ detail: target.conflict }, 409);
+                addDemoPreset(name, body, { peq: { enabled: true, params: {
+                    channelMode: 'stereo-linked', eqMode: 'IIR', bands: parsed.bands,
+                } } });
+                syncDspToState();
+                return j(demoCreatedPresetResponse(name, body, target.binding));
+            });
         }
 
         // ── Measurements ────────────────────────────────────────────────

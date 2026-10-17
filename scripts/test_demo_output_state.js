@@ -133,16 +133,26 @@ async function request(url, body) {
     assert.equal(flat.topology.way_count, null);
     assert.equal(Object.keys(flat.banks).includes('low'), false, 'no way banks without the crossover');
 
-    // Bank-bound preset creation assigns the target; conflicts keep the preset.
+    // Bank-bound preset creation assigns the target under its revision. A
+    // stale revision is refused before anything is written, the way
+    // dsp.api._resolve_bank_binding refuses it: the preset file and its bank
+    // slot are one transaction, so no preset exists afterwards.
     const created = await request('/api/dsp/presets/create-peq',
         { presetName: 'Demo Bank EQ', peq: { params: {} }, bank_mode: 'stereo-sub', bank_id: 'sub', expected_revision: revision });
+    assert.equal(created.status, 'ok');
+    assert.equal(created.preset.name, 'Demo Bank EQ');
     assert.equal(created.bank.assigned, true);
     assert.equal(created.bank.revision, revision + 1);
     revision += 1;
     const conflicted = await rawRequest('/api/dsp/presets/create-peq',
         { presetName: 'Demo Bank EQ 2', peq: { params: {} }, bank_mode: 'stereo-sub', bank_id: 'sub', expected_revision: revision - 1 });
     assert.equal(conflicted.status, 409);
-    assert.equal(conflicted.data.bank.assigned, false);
+    assert.equal(conflicted.data.detail.code, 'bank-assign-conflict');
+    assert.equal(conflicted.data.detail.assigned, false);
+    assert.equal(conflicted.data.detail.revision, revision);
+    assert.equal((await request('/api/dsp/presets')).presets.some(entry => entry.name === 'Demo Bank EQ 2'), false,
+        'a conflicted create leaves no preset behind');
+    assert.equal((await request('/api/audio/output-state')).revision, revision);
 
     // Deleting a bank preset releases its slots like Global's compare.
     await apply({ kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'sub', preset: 'Demo Bank EQ' });

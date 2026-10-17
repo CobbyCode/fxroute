@@ -8,7 +8,7 @@ adds only a demo/simulation layer on top.
 
 The demo layer lives in the same checkout as the product frontend:
 
-- `demo/` — simulation source (`state.js`, `routes.js`,
+- `demo/` — simulation source (`state.js`, `routes.js`, `xhr.js`,
   `streaming.js`, `ws.js`, `boot.js`, `demo.css`), fixtures
   (`data/`), `README.md` and the built `dist/` snapshot.
 - `static/demo/` — demo-owned artwork pool (not part of the product UI).
@@ -101,6 +101,48 @@ run once the routed topology has three ways per side (re-route the outputs
 to Low/Mid/High and give the mid ways their highpass); both pairs ship as
 saved runs, and a commit moves the way trim of the side that ran.
 
+## Uploads
+
+Two upload surfaces drive the simulated backend with a real file body.
+
+**Presets and IRs.** The create/import endpoints read the upload the browser
+sent, so a preset is named and shaped the way `DSPManager` names it: the
+uploaded file names it (`Measured Front LR.json` becomes `Measured Front
+LR`, a form field never wins), a bundle keeps the name of its preset member
+and falls back to the archive name for a `preset.json`, and a `.irs`/`.wav`
+upload creates the convolver preset its `preset_name` names. The content is
+validated first: invalid JSON, a JSON that is neither a native nor an
+EasyEffects output preset, a file that is not a ZIP, a missing or empty IR,
+an unsupported dual-import file and a malformed REW line all fail with the
+backend's message, and the imported filters reach the preset entry the UI
+renders (native and legacy EasyEffects equalizer chains, the REW PK/PEQ
+parser, dual PEQ or dual convolver).
+
+The bank binding is resolved **before** anything is written
+(`dsp.api._resolve_bank_binding`): a client whose cached output-state
+revision is stale is refused with the backend's 409
+(`bank-assign-conflict`) and no preset exists afterwards. That is the one
+place where the demo adds client bookkeeping of its own: after a committed
+assignment the demo layer asks `FXRouteOutputSystemController` to refresh the
+output state, the call the product itself makes after a convolver creation
+but not after the JSON/bundle imports — without it the page's cached
+revision would stay one behind and the next import would be refused as
+stale.
+
+**Library files.** The library upload of the product frontend posts through
+`XMLHttpRequest`, not `fetch`, so `demo/xhr.js` replaces `window.XMLHttpRequest`
+with a shim that routes every `/api/` request through the same simulated API
+(and reports upload progress the way a real upload does); anything else falls
+back to the real object. `POST /api/library/upload` answers like
+`library/api.py`: an audio file lands in the active catalog's `Uploads`
+folder, a `.zip` as its own album folder, a playlist file imports the library
+tracks it names (and is refused when none match), a duplicate name is a 409,
+an unsupported type a 400 — each with the backend's `status`/`kind`/
+`message`/`track_count` fields so the UI reports the real wording.
+
+The demo reads ZIP uploads only far enough to name them: signature plus the
+first local entry of a bundle, no extraction.
+
 ## Auto Sub job discovery
 
 The backend keeps its Auto Sub jobs in a process-wide map, so a reloaded page
@@ -138,8 +180,9 @@ current frontend changes appear in the demo automatically. Set
 
 The simulation layer:
 
-- `demo/state.js`, `routes.js`, `streaming.js`, `ws.js`, `boot.js`,
-  `demo.css` — the fake-backend/state/interceptor.
+- `demo/state.js`, `routes.js`, `xhr.js`, `streaming.js`, `ws.js`,
+  `boot.js`, `demo.css` — the fake-backend/state/interceptor (and the
+  XMLHttpRequest shim the library upload needs).
 - `demo/data/` — fixtures (library, radio, measurements).
 - `static/demo/` — demo-owned artwork pool.
 
