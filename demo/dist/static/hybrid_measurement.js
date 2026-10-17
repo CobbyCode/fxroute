@@ -77,6 +77,8 @@
             wholeSystem,
             includesSubs,
             group: String(area.group || ''),
+            // Display placement must not change the routing-facing group.
+            diagramGroup: String(area.group || ({ main: 'front', center: 'center', side: 'side', rear: 'rear' }[bankId]) || ''),
             groupName: name,
         };
     }
@@ -461,7 +463,7 @@
         }
         return {
             layout,
-            group: scope.group || '',
+            group: scope.diagramGroup || scope.group || '',
             speakers: {
                 left: layout === 'pair' && (stereoStep || activeChannel === 'left'),
                 right: layout === 'pair' && (stereoStep || activeChannel === 'right'),

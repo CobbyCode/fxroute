@@ -5125,14 +5125,17 @@ select.url-input {
 /* The sub circles keep clear of the speakers and 1 m microphones.  Two subs
    sit at 11% / 89% of the room; the front pair keeps half a speaker, a gap
    and the sub's width (57px) from them, which only matters in a narrow room.
+   Keep this spacing without subs too, so individual banks match Global.
    A single sub of a one-speaker layout stands at the wall instead of on the
    speaker's microphone. */
-.hybrid-room-view[data-hybrid-group="front"]:has(.hybrid-sub-right:not(.hidden)) {
+.hybrid-room-view[data-hybrid-group="front"] {
     --hybrid-speaker-left: max(23%, calc(11% + 57px));
     --hybrid-speaker-right: min(77%, calc(89% - 57px));
     --hybrid-direct-left: var(--hybrid-speaker-left);
     --hybrid-direct-right: var(--hybrid-speaker-right);
 }
+/* A centered mono sub clears the shared Front speaker/microphone spacing. */
+.hybrid-room-view[data-hybrid-group="front"][data-hybrid-layout="pair"] .hybrid-sub-left.is-single { top: 52%; }
 .hybrid-room-view[data-hybrid-layout="single"] .hybrid-sub-left.is-single { left: max(11%, 26px); }
 .hybrid-mic-left { left: calc(50% - var(--hybrid-listen-spread)); top: calc(69% + var(--hybrid-listen-shift)); }
 .hybrid-mic-mlp { left: 50%; top: calc(66% + var(--hybrid-listen-shift)); }

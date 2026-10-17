@@ -323,6 +323,44 @@ ROOM_COMBOS = (
     ("rear", "pair", "none"), ("rear", "pair", "one"), ("rear", "pair", "two"),
 )
 
+# Exercise real area-to-scope-to-renderer selection, not manually assigned room
+# attributes: individual Side/Rear banks once fell back to the front wall.
+ROOM_AREA_PARITY = """
+([bankId, group, label, channelMode, subMode]) => {
+    const room = document.querySelector('.hybrid-room-view');
+    const Hybrid = FXRouteHybridMeasurement;
+    const geometry = (area) => {
+        const scope = Hybrid.buildScope(area, {sub_mode: subMode});
+        const step = Hybrid.buildSequence(scope).steps[0];
+        FXRouteMeasurementFlows.renderHybridRoomDiagram(step, scope);
+        const rb = room.getBoundingClientRect();
+        const items = [...room.querySelectorAll('.hybrid-speaker, .hybrid-mic, .hybrid-seat')]
+            .filter(node => getComputedStyle(node).display !== 'none')
+            .map(node => {
+                const b = node.getBoundingClientRect();
+                return {name: node.classList[0] + ':' + (node.dataset.hybridSpeaker || node.dataset.hybridPosition || 'seat'),
+                    x: b.x - rb.x, y: b.y - rb.y, width: b.width, height: b.height,
+                    active: node.classList.contains('is-active'), target: node.classList.contains('is-target'),
+                    text: node.classList.contains('hybrid-seat') ? '' : node.textContent};
+            });
+        return {group: room.dataset.hybridGroup, layout: room.dataset.hybridLayout, items,
+            subs: [...room.querySelectorAll('.hybrid-sub')].filter(node => getComputedStyle(node).display !== 'none').length,
+            height: rb.height};
+    };
+    return {
+        global: geometry({bank_id: 'global', group, label: 'Global · ' + label, channel_mode: channelMode}),
+        bank: geometry({bank_id: bankId, label, channel_mode: channelMode}),
+    };
+}
+"""
+
+ROOM_AREAS = (
+    ("main", "front", "Front L/R", "stereo"),
+    ("center", "center", "Center", "mono"),
+    ("side", "side", "Side L/R", "stereo"),
+    ("rear", "rear", "Rear L/R", "stereo"),
+)
+
 # The speaker row is filled by the app only for a Surround system with several
 # routed groups; the same markup is written here to audit its layout.
 SCOPE_ROW_AUDIT = """
@@ -567,6 +605,33 @@ def _run():
                           not room["touching"], room)
                     check(f"[{width}px] {label}: everything stays inside the room",
                           not room["outside"], room)
+
+                for bank_id, group, label, channel_mode in ROOM_AREAS:
+                    for sub_mode, sub_count in (("none", 0), ("mono", 1), ("dual-mono", 2), ("stereo", 2)):
+                        views = page.evaluate(ROOM_AREA_PARITY, [bank_id, group, label, channel_mode, sub_mode])
+                        global_view, bank_view = views["global"], views["bank"]
+                        context = f"[{width}px] {group} {sub_mode}"
+                        check(f"{context}: bank and Global use the same speaker group",
+                              global_view["group"] == bank_view["group"] == group, views)
+                        check(f"{context}: only Global shows participating subs",
+                              global_view["subs"] == sub_count and bank_view["subs"] == 0, views)
+                        check(f"{context}: speaker, microphone and seat geometry agrees",
+                              global_view["items"] == bank_view["items"], views)
+                        items = {item["name"]: item for item in bank_view["items"]}
+                        speakers = [item for name, item in items.items() if name.startswith("hybrid-speaker:")]
+                        direct = [item for name, item in items.items() if name.startswith("hybrid-mic:direct-")]
+                        main = items["hybrid-mic:mlp"]
+                        seat = items["hybrid-seat:seat"]
+                        center_y = lambda item: item["y"] + item["height"] / 2
+                        if group in ("front", "center"):
+                            placed = max(center_y(item) for item in speakers) < min(center_y(item) for item in direct) < center_y(main)
+                        elif group == "rear":
+                            placed = center_y(main) < min(center_y(item) for item in direct) < min(center_y(item) for item in speakers)
+                            placed = placed and min(item["y"] for item in speakers) > seat["y"] + seat["height"]
+                        else:
+                            placed = all(abs(center_y(item) - center_y(main)) < bank_view["height"] * 0.15 for item in speakers)
+                            placed = placed and speakers[0]["x"] < direct[0]["x"] < main["x"] < direct[1]["x"] < speakers[1]["x"]
+                        check(f"{context}: microphones follow the spatial speaker arrangement", placed, views)
 
                 # The speaker row: one line, the locked selection stays readable.
                 row = page.evaluate(SCOPE_ROW_AUDIT)

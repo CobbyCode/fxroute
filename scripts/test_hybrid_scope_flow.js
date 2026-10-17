@@ -26,11 +26,22 @@ function makeFlows({ area, topology, state }) {
         node.getAttribute = () => item.speaker;
         return node;
     });
+    const positions = ['direct-left', 'direct-right', 'direct-stereo', 'mlp', 'left', 'right'].map(position => {
+        const node = element();
+        node.getAttribute = () => position;
+        return node;
+    });
+    const subs = ['left', 'right'].map(branch => {
+        const node = element();
+        node.getAttribute = () => branch;
+        return node;
+    });
     const layout = { attributes: {}, setAttribute(name, value) { this.attributes[name] = value; } };
     const panel = {
         classList: element().classList,
         querySelector: (selector) => (selector === '.hybrid-room-view' ? layout : null),
-        querySelectorAll: (selector) => (selector.includes('data-hybrid-speaker') ? speakers : []),
+        querySelectorAll: (selector) => selector.includes('data-hybrid-speaker') ? speakers
+            : selector.includes('data-hybrid-position') ? positions : selector.includes('data-hybrid-sub') ? subs : [],
     };
     const elements = { measurementHybridPanel: panel, measurementHybridSummary: element(), measurementHybridMode: element(),
         measurementHybridProgress: element(), measurementHybridTitle: element(), measurementHybridInstruction: element(),
@@ -54,7 +65,7 @@ function makeFlows({ area, topology, state }) {
         renderMeasurementPanelDefensively: () => {},
         showToast: () => {},
     });
-    return { Flows: ctx.FXRouteMeasurementFlows, elements, layout, calls };
+    return { Flows: ctx.FXRouteMeasurementFlows, elements, layout, speakers, positions, subs, calls };
 }
 
 function catalogState(subMode) {
@@ -73,6 +84,41 @@ function model(channel) {
     return { channel, points: points(), constraints: [], modelBlend: { gatedDirectLowerLimitHz: 310 },
         timingMeasurement: { input_device: { label: 'Mic' }, input_channels: { mic: 1 }, calibration: {},
             audio_output_context: {}, analysis: { reference_path: {} }, measurement_target: target } };
+}
+
+// A concrete bank must not fall back to the front-wall diagram or acquire a
+// routing group. Only Global shows the subs; speaker/microphone states agree.
+for (const [bankId, group, label, channelMode, labels] of [
+    ['rear', 'rear', 'Rear L/R', 'stereo', ['RL', 'RR', 'C']],
+    ['side', 'side', 'Side L/R', 'stereo', ['SL', 'SR', 'C']],
+    ['center', 'center', 'Center', 'mono', ['L', 'R', 'C']],
+    ['main', 'front', 'Front L/R', 'stereo', ['L', 'R', 'C']],
+]) {
+    const globalArea = { bank_id: 'global', group, label: `Global · ${label} + Sub`, channel_mode: channelMode };
+    const bankArea = { bank_id: bankId, label, channel_mode: channelMode };
+    const global = makeFlows({ area: globalArea, state: catalogState('dual-mono') });
+    const bank = makeFlows({ area: bankArea, state: catalogState('dual-mono') });
+    const globalScope = global.Flows.getCurrentHybridScope();
+    const bankScope = bank.Flows.getCurrentHybridScope();
+    assert.equal(bankScope.group, '', `${bankId}: display group must not become a routing group`);
+    assert.equal(bankScope.id, `${bankId}||${channelMode === 'mono' ? 'stereo' : 'left,right'}|subwoofer-2.2`);
+    const steps = Hybrid.buildSequence(bankScope).steps;
+    assert.deepEqual(steps.map(({ id, role, position, channel }) => [id, role, position, channel]),
+        Hybrid.buildSequence(globalScope).steps.map(({ id, role, position, channel }) => [id, role, position, channel]),
+        'display metadata must not change the measurement sequence');
+    for (const [step, complete] of [...steps.map(step => [step, false]), [{}, true]]) {
+        global.Flows.renderHybridRoomDiagram(step, globalScope, complete);
+        bank.Flows.renderHybridRoomDiagram(step, bankScope, complete);
+        assert.equal(bank.layout.attributes['data-hybrid-group'], group, `${bankId}: bank speaker placement`);
+        assert.deepEqual(bank.layout.attributes, global.layout.attributes, `${bankId}: same room geometry`);
+        assert.deepEqual(bank.speakers.map(node => node.textContent), labels, `${bankId}: speaker labels`);
+        assert.deepEqual(bank.speakers.map(node => node.classList.contains('is-active')),
+            global.speakers.map(node => node.classList.contains('is-active')));
+        assert.deepEqual(bank.positions.filter(node => node.classList.contains('is-target')).map(node => node.getAttribute()),
+            complete ? [] : [step.position], `${bankId}: selected microphone`);
+        assert(bank.subs.every(node => node.classList.contains('hidden')), `${bankId}: individual bank hides subs`);
+        assert(global.subs.every(node => !node.classList.contains('hidden')), `${bankId}: Global keeps subs`);
+    }
 }
 
 // Scope: derived from the area and the active topology, so it follows the selection.
