@@ -41,6 +41,32 @@
         return (root && root.FXRouteOutputState) || null;
     }
 
+    // Easy/Expert view of the DSP tab, kept per browser like the grid/list
+    // views. Easy (Global only) is the default without a stored choice.
+    const EXPERT_VIEW_STORAGE_KEY = 'fx-dsp-expert';
+
+    function readStoredExpertView() {
+        try {
+            return localStorage.getItem(EXPERT_VIEW_STORAGE_KEY) === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // The switch changes the view only: the output state is not written, the
+    // catalog is read again through the other view.
+    async function setExpertView(expert) {
+        const system = deps.getState().outputSystem;
+        if (!system || !!system.expert === !!expert) return;
+        system.expert = !!expert;
+        try {
+            localStorage.setItem(EXPERT_VIEW_STORAGE_KEY, expert ? '1' : '0');
+        } catch (e) {
+            // Storage unavailable: the choice lasts for this page only.
+        }
+        await deps.refreshCatalog(true);
+    }
+
     // Transition-error formatter owned by api.js; this module only displays it.
     function formatError(detail, fallback) {
         const api = (root && root.FXRouteApi) || null;
@@ -153,7 +179,7 @@
     }
 
     function requireMeasurableArea() {
-        // A sweep only needs an area to measure; All Banks measures the whole system.
+        // A sweep only needs an area to measure; Ind. Banks measures the whole system.
         if (deps.measurementArea()?.available !== false) return true;
         deps.showToast('Select a filter bank for measurement.', 'warning');
         return false;
@@ -163,12 +189,20 @@
         const mod = (root && root.FXRouteOutputState) || null;
         const catalog = (deps.getState().outputSystem || {}).catalog;
         if (!mod || !deps.getElements().effectsBankSelect) return;
+        const expert = !!deps.getState().outputSystem?.expert;
+        // The Expert switch is offered wherever a bank selection exists.
+        const expertToggle = deps.getElements().effectsExpertToggle;
+        if (expertToggle) {
+            expertToggle.checked = expert;
+            expertToggle.closest('.effects-expert-toggle')?.classList.toggle('hidden',
+                !catalog || !mod.bankSelectorVisible(catalog.modes?.[catalog.active_mode]));
+        }
         if (!catalog) {
             deps.getElements().effectsBankSelect.innerHTML = '';
             deps.getElements().effectsBankSelect.closest('.effects-bank-row')?.classList.add('hidden');
             return;
         }
-        mod.renderBankSelector(deps.getElements().effectsBankSelect, catalog, catalog.active_mode || 'stereo');
+        mod.renderBankSelector(deps.getElements().effectsBankSelect, catalog, catalog.active_mode || 'stereo', expert);
         deps.getElements().effectsBankSelect.disabled = !!deps.getState().outputSystem.busy || effectsCompareLoadInFlight;
         deps.renderMeasurementArea();
         renderBankImportTarget();
@@ -176,7 +210,7 @@
     }
 
     function renderSweepGroupRow() {
-        /* Measure narrows Global or All Banks to a configured speaker group.
+        /* Measure narrows Global or Ind. Banks to a configured speaker group.
          * Chips are only rebuilt when the routed groups change: replacing the
          * clicked button would read as an outside click and close the menu. */
         const row = deps.getElements().measurementSweepGroupRow;
@@ -206,7 +240,7 @@
     }
 
     function syncBankActionButtons() {
-        /* All Banks switches A/B jointly and can be measured as a whole system,
+        /* Ind. Banks switches A/B jointly and can be measured as a whole system,
          * but owns no bank: there is nothing to import or combine there. */
         const area = deps.measurementArea();
         const aggregate = area?.available === false || area?.importable === false;
@@ -220,7 +254,7 @@
         if (importButton) {
             importButton.classList?.toggle('hidden', aggregate);
             importButton.disabled = aggregate;
-            importButton.title = aggregate ? 'All Banks only switches A/B; select a filter bank to import.' : '';
+            importButton.title = aggregate ? 'Ind. Banks only switches A/B; select a filter bank to import.' : '';
         }
         if (deps.getElements().effectsCombineSaveBtn) {
             renderEffectsCombine();
@@ -240,6 +274,16 @@
         const importable = area?.available !== false && area?.importable !== false;
         if (note) note.textContent = !importable ? 'Select a filter bank before importing.'
             : `Target: ${area?.label || 'Global'} · ${mono ? 'Mono' : 'Stereo L/R'}`;
+        // Surround Global imports for one configured speaker group, chosen here
+        // like the measured group; the chips set the same selection.
+        const catalog = deps.getState().outputSystem?.catalog;
+        const measurement = deps.getState().measurement || {};
+        const choice = importable && catalog ? outputState()?.globalGroupChoice(catalog, measurement.globalGroup) : null;
+        root.FXRouteUiHelpers?.renderChipRow(deps.getElements().effectsImportGroupRow, choice ? choice.options : [], {
+            attribute: 'data-import-group',
+            selected: choice ? choice.selected : '',
+            disabled: !!measurement.startInFlight,
+        });
         // Mono banks get a single import field: the stereo file area is hidden
         // and the remaining pane accepts every mono-supported format. A stale
         // file selection from the other mode is cleared on switching only, so
@@ -453,7 +497,7 @@
         effectsCompareLoadInFlight = !!isBusy;
         const compare = getEffectsCompareState();
         const busy = effectsCompareLoadInFlight || !!deps.getState().outputSystem?.busy;
-        // All Banks lists the bank presets of each slot in place of the picker;
+        // Ind. Banks lists the bank presets of each slot in place of the picker;
         // Surround Global lists one picker per speaker group instead.
         const slotRows = !!compare.aggregate || !!compare.groupSlots;
         if (deps.getElements().effectsCompareA) deps.getElements().effectsCompareA.disabled = busy || slotRows;
@@ -518,7 +562,7 @@
         if (target.innerHTML !== html) target.innerHTML = html;
     }
 
-    // All Banks slots: the preset each switched bank plays on that side. A bank
+    // Ind. Banks slots: the preset each switched bank plays on that side. A bank
     // without a B stays on A; in a mixed state each bank marks the side it is on.
     function renderAllBanksSlots(effectiveActiveSide) {
         const catalog = deps.getState().outputSystem?.catalog;
@@ -616,14 +660,14 @@
 
         // Rebuilding <option> lists on every WS push closes an open dropdown.
         // Only touch the DOM when the values actually changed.
-        // All Banks owns no presets: its hidden selects hold one aggregate
+        // Ind. Banks owns no presets: its hidden selects hold one aggregate
         // label each, and the slots list the bank presets instead.
-        const optionsA = aggregate ? '<option>All Banks · A</option>' :
+        const optionsA = aggregate ? '<option>Ind. Banks · A</option>' :
             (!presetA ? '<option value="">Per-channel presets</option>' : '') + presets.map(n => `<option value="${deps.escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${deps.escapeHtml(n)}</option>`).join('');
         if (deps.getElements().effectsCompareA.innerHTML !== optionsA) {
             deps.getElements().effectsCompareA.innerHTML = optionsA;
         }
-        const optionsB = aggregate ? '<option>All Banks · B</option>' :
+        const optionsB = aggregate ? '<option>Ind. Banks · B</option>' :
             (!presetB && canB ? '<option value="" selected>Per-channel presets</option>' : '')
             + presets.map(n => `<option value="${deps.escapeHtml(n)}" ${n === (presetB || (canB ? '' : 'Neutral')) ? 'selected' : ''}>${deps.escapeHtml(n)}</option>`).join('');
         if (deps.getElements().effectsCompareB.innerHTML !== optionsB) {
@@ -657,11 +701,11 @@
             const chainLabel = getEffectsChainLabelForPreset(chainPresetName, presetMap);
             deps.getElements().effectsCompareChain.textContent = chainLabel;
         }
-        // All Banks: the status names the side only; the slots list the banks.
+        // Ind. Banks: the status names the side only; the slots list the banks.
         deps.getElements().effectsCompareChain?.classList?.toggle('hidden', !!aggregate);
         if (aggregate) {
             if (deps.getElements().effectsCompareActive) deps.getElements().effectsCompareActive.textContent = effectiveActiveSide
-                ? `Listening: ${effectiveActiveSide} · All Banks` : 'Listening: Mixed A/B';
+                ? `Listening: ${effectiveActiveSide} · Ind. Banks` : 'Listening: Mixed A/B';
             renderAllBanksSlots(effectiveActiveSide);
         } else if (groupSlots) {
             // Surround Global: the slots list each group's preset; the chain names
@@ -701,7 +745,7 @@
         return { name: effectiveActiveSide === 'B' ? row.presetB : row.presetA, label: row.label };
     }
 
-    // Delete targets the selected bank's active preset, as in Global; All
+    // Delete targets the selected bank's active preset, as in Global; Ind.
     // Banks has no Delete.
     function syncEffectsDeleteButton() {
         const button = deps.getElements().effectsDeleteBtn;
@@ -780,7 +824,7 @@
         if (deps.getElements().effectsCombineSaveBtn) {
             deps.getElements().effectsCombineSaveBtn.disabled = !fx.available || !validation.isValid;
             if (validation.aggregate) {
-                deps.getElements().effectsCombineSaveBtn.title = 'All Banks owns no presets; select a concrete filterbank.';
+                deps.getElements().effectsCombineSaveBtn.title = 'Ind. Banks owns no presets; select a concrete filterbank.';
             } else if (validation.crossBank) {
                 deps.getElements().effectsCombineSaveBtn.title = 'Combine only presets from the selected bank.';
             } else {
@@ -792,8 +836,8 @@
     async function createCombinedEffectsPreset() {
         const validation = getEffectsCombineValidationState();
         if (validation.aggregate) {
-            if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = '<div style="color: var(--danger);">All Banks owns no presets; select a concrete filterbank.</div>';
-            deps.showToast('All Banks owns no presets; select a concrete filterbank', 'error');
+            if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = '<div style="color: var(--danger);">Ind. Banks owns no presets; select a concrete filterbank.</div>';
+            deps.showToast('Ind. Banks owns no presets; select a concrete filterbank', 'error');
             return;
         }
         if (validation.crossBank) {
@@ -1225,6 +1269,9 @@
             // import file, dual-filter create, and the combine draft inputs.
             // Compare dropdowns bind through setupEffectsCompareActions below.
             if (deps.getElements().effectsDeleteBtn) deps.getElements().effectsDeleteBtn.addEventListener('click', deleteEffectsPreset);
+            deps.getElements().effectsExpertToggle?.addEventListener('change', (event) => {
+                void setExpertView(!!event.target.checked);
+            });
             if (deps.getElements().effectsToggleImportBtn) {
                 deps.getElements().effectsToggleImportBtn.addEventListener('click', () => {
                     const shouldOpen = deps.getElements().effectsImportPanel?.classList.contains('hidden');
@@ -1275,6 +1322,8 @@
 
     return {
         init,
+        readStoredExpertView,
+        setExpertView,
         getDefaultEffectsCombineDraft,
         normalizeEffectsCombineDraft,
         setEffectsImportPanelOpen,

@@ -119,6 +119,32 @@
     background-color: var(--bg-surface);
 }
 
+/* Bank selector and Expert switch share the header's right edge, also when
+   they wrap below the title. */
+.effects-compare-header-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    margin-left: auto;
+    max-width: 100%;
+}
+
+/* Speaker group of a Surround Global import, under the Target line. */
+.effects-import-group-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+}
+
+.effects-import-group-row .measurement-chip {
+    min-height: 32px;
+    padding: 0.3rem 0.8rem;
+    font-size: 0.78rem;
+}
+
 .effects-rew-dual-grid.is-mono {
     grid-template-columns: 1fr;
 }

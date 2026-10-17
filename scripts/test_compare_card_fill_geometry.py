@@ -8,7 +8,7 @@ fills the card and spends the spare height evenly between its sections
 (status, preset pair, actions, info line); the preset slots keep their natural
 height. Below 768px the card keeps its natural height and the plain gaps.
 
-All Banks fills the same card with the same sections: the slots list the
+Ind. Banks fills the same card with the same sections: the slots list the
 bank presets of each side instead of a picker, and long preset names end in
 an ellipsis inside their slot.
 
@@ -114,7 +114,7 @@ MEASURE_JS = """
 }
 """
 
-# All Banks through the real compare render: Global plus area banks, one of them with a long B.
+# Ind. Banks through the real compare render: Global plus area banks, one of them with a long B.
 ALL_BANKS_JS = """
 () => {
     const b = (label, a, bb, side) => ({ label, preset: side === 'B' ? bb : a, preset_a: a, preset_b: bb,
@@ -173,6 +173,8 @@ def _run():
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1440, "height": 1300})
             page.add_init_script(STUB)
+            # Ind. Banks is a selection of the Expert view.
+            page.add_init_script("localStorage.setItem('fx-dsp-expert', '1');")
             page.goto(f"http://127.0.0.1:{PORT}/static/index.html")
             page.wait_for_selector("#playback-bar", state="visible")
             page.wait_for_timeout(300)
@@ -235,7 +237,7 @@ def _run():
                       all(abs(x - 14.4) <= 1.5 for x in g))
                 check(f"[{width}px] no horizontal page overflow", m["docFits"])
 
-            # All Banks: the same four sections fill the card, the slots list the banks.
+            # Ind. Banks: the same four sections fill the card, the slots list the banks.
             page.evaluate(ALL_BANKS_JS)
             for width in (1440, 1000, 800, 767, 600, 390):
                 page.set_viewport_size({"width": width, "height": 1300})
@@ -246,7 +248,7 @@ def _run():
                 tag = f"[{width}px/all banks]"
                 g = gaps(m["blocks"])
                 check(f"{tag} status, slots, actions and info line ({[b['id'] for b in m['blocks']]})", len(m["blocks"]) == 4)
-                check(f"{tag} the status names the side and shows only Global", a["active"] == "Listening: A · All Banks"
+                check(f"{tag} the status names the side and shows only Global", a["active"] == "Listening: A · Ind. Banks"
                       and not a["chainShown"] and a["chipsShown"] and a["chipBanks"] == ["Global"])
                 check(f"{tag} the toggle reads as in a single bank", a["toggle"] == "Compare A/B")
                 check(f"{tag} both slots list the switched banks without a picker",

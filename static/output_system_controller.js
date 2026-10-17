@@ -36,13 +36,20 @@
         deps = Object.assign(deps, overrides || {});
     }
 
+    // Every stored catalog is the view of the Easy/Expert switch (Easy works on Global).
+    function viewOf(catalog) {
+        const mod = deps.outputSystemModule();
+        return mod && typeof mod.viewCatalog === 'function'
+            ? mod.viewCatalog(catalog, !!deps.getState().outputSystem.expert) : catalog;
+    }
+
     async function fetchOutputSystemCatalog(force = false) {
         deps.ensureOutputBoxes();
         const mod = deps.outputSystemModule();
         if (!mod) return null;
         if (deps.getState().outputSystem.catalog && !force) return deps.getState().outputSystem.catalog;
         try {
-            deps.getState().outputSystem.catalog = await mod.fetchCatalog(fetch);
+            deps.getState().outputSystem.catalog = viewOf(await mod.fetchCatalog(fetch));
         } catch (e) {
             deps.getState().outputSystem.catalog = null;
         }
@@ -71,7 +78,7 @@
         try {
             const mutation = mod.buildMutation(kind, fields);
             const getCatalog = async () => {
-                const fresh = await mod.fetchCatalog(fetch);
+                const fresh = viewOf(await mod.fetchCatalog(fetch));
                 deps.getState().outputSystem.catalog = fresh;
                 return fresh;
             };

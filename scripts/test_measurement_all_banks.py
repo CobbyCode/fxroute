@@ -45,7 +45,7 @@ class AllBanksTargetTests(unittest.TestCase):
             loaded = store.get_measurement(saved["id"])
             self.assertEqual(loaded["measurement_target"], target)
             self.assertEqual(loaded["channel"], "left")
-            with self.assertRaisesRegex(ValueError, "through All Banks"):
+            with self.assertRaisesRegex(ValueError, "through Ind. Banks"):
                 require_commit_target(loaded["measurement_target"], target["measured_roles"],
                                       mode="surround", bank_id="rear")
 
@@ -64,7 +64,7 @@ class AllBanksTargetTests(unittest.TestCase):
                 self.assertEqual(target["measured_roles"], measured)
                 self.assertEqual(target_output_mask(target, roles=roles), mask)
                 self.assertEqual(target_input_mask(target), input_mask)
-                with self.assertRaisesRegex(ValueError, "through All Banks"):
+                with self.assertRaisesRegex(ValueError, "through Ind. Banks"):
                     require_commit_target(target, measured, mode="surround", bank_id="global", group=group)
 
     def test_group_repeat_masks_keep_subs_on_both_sides(self):
@@ -128,7 +128,7 @@ class AllBanksTargetTests(unittest.TestCase):
         state = state_for("surround", SURROUND)
         target = freeze(state, "all")
         for bank in ("all", "global", "main"):
-            with self.subTest(bank=bank), self.assertRaisesRegex(ValueError, "All Banks cannot be imported|through All Banks"):
+            with self.subTest(bank=bank), self.assertRaisesRegex(ValueError, "Ind. Banks cannot be imported|through Ind. Banks"):
                 require_commit_target(target, target["measured_roles"], mode="surround", bank_id=bank)
 
     def test_it_never_merges_with_a_bank_or_global_measurement(self):

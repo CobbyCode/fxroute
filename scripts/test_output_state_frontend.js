@@ -226,14 +226,14 @@ function allBanksAreaTests() {
         selected_bank: 'all', topology: { mode: 'stereo-sub', roles }, banks: {}, ...extra } } });
     const mixed = OutputState.measurementArea(withAll());
     assert.deepEqual(mixed, {
-        bank_id: 'all', label: 'All Banks', channel: 'stereo', channel_mode: 'stereo', available: true,
+        bank_id: 'all', label: 'Ind. Banks', channel: 'stereo', channel_mode: 'stereo', available: true,
         sides: ['left', 'stereo', 'right'],
         note: 'Whole system as listened (every bank on its A/B side); not importable.',
         repeat_supported: true, repeat_note: '', polarity_supported: false, importable: false,
     });
     // The joint A/B side the sweep will be heard on labels the area.
-    assert.equal(OutputState.measurementArea(withAll({ all_banks: { active_side: 'B' } })).label, 'All Banks · B');
-    assert.equal(OutputState.measurementArea(withAll({ all_banks: { active_side: null } })).label, 'All Banks');
+    assert.equal(OutputState.measurementArea(withAll({ all_banks: { active_side: 'B' } })).label, 'Ind. Banks · B');
+    assert.equal(OutputState.measurementArea(withAll({ all_banks: { active_side: null } })).label, 'Ind. Banks');
     // Nothing routed: nothing to measure.
     const none = OutputState.measurementArea(withAll({}, []));
     assert.deepEqual([none.available, none.sides, none.note], [false, [], 'Select a filter bank for measurement.']);

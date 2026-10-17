@@ -151,8 +151,8 @@ function combineOptions() {
     await Effects.createPeqPreset();
     assert.deepEqual(toasts.at(-1), { message: 'Select a filter bank for import or measurement.', type: 'warning' });
     await BankUI.createCombinedEffectsPreset();
-    assert.match(elements.effectsStatus.innerHTML, /All Banks owns no presets/);
-    assert.equal(requests.length, count, 'All Banks must not create or combine presets');
+    assert.match(elements.effectsStatus.innerHTML, /Ind. Banks owns no presets/);
+    assert.equal(requests.length, count, 'Ind. Banks must not create or combine presets');
     assert.equal(inFlight, false);
     console.log('output PEQ bank creation and Combine: ok');
 })().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => {

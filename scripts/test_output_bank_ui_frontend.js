@@ -163,7 +163,7 @@ const realFetch = globalThis.fetch;
         assert.equal(checked.aggregate, true);
         assert.equal(checked.isValid, false);
         await BankUI.createCombinedEffectsPreset();
-        assert.match(elements.effectsStatus.innerHTML, /All Banks owns no presets/);
+        assert.match(elements.effectsStatus.innerHTML, /Ind. Banks owns no presets/);
     }
 
     // Until the catalog is ready, no stale DSP status may activate a preset.
@@ -207,7 +207,7 @@ const realFetch = globalThis.fetch;
     assert.equal(BankUI.detectEffectsImportType(null), null);
 
     // Delete follows the selected bank's active preset exactly like Global,
-    // not the legacy DSP active preset; All Banks has no Delete.
+    // not the legacy DSP active preset; Ind. Banks has no Delete.
     {
         const bank = (id, preset, preset_a, preset_b) => ({ id, label: id, preset, preset_a, preset_b,
             active_side: preset === preset_a ? 'A' : 'B', can_a: true, can_b: !!preset_b });
@@ -279,7 +279,7 @@ const realFetch = globalThis.fetch;
         assert.equal(elements.effectsCompareToggle.disabled, false);
     }
 
-    // All Banks switches to B once one bank has a B; the others stay on A.
+    // Ind. Banks switches to B once one bank has a B; the others stay on A.
     {
         const mutations = [];
         const toasts = [];

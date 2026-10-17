@@ -124,7 +124,7 @@ function chips(row) {
 // Nothing to choose, or a concrete bank: the row is hidden and empty.
 for (const [label, catalog] of [
     ['one routed group', catalogFor({ roles: ['main_l', 'main_r', 'sub1'] })],
-    ['one routed All Banks group', catalogFor({ roles: ['main_l', 'main_r', 'sub1'], selectedBank: 'all' })],
+    ['one routed Ind. Banks group', catalogFor({ roles: ['main_l', 'main_r', 'sub1'], selectedBank: 'all' })],
     ['area bank selected', catalogFor({ roles: ALL_ROLES, selectedBank: 'rear' })],
     ['other output mode', catalogFor({ roles: ['main_l', 'main_r', 'sub_l', 'sub_r'], mode: 'stereo-sub' })],
     ['no catalog yet', null],
@@ -136,7 +136,7 @@ for (const [label, catalog] of [
     assert.equal(row.innerHTML, '', label);
 }
 
-// All Banks uses the same configured group chips and scope text as Global.
+// Ind. Banks uses the same configured group chips and scope text as Global.
 {
     const { row, state, elements } = setup(catalogFor({ roles: ALL_ROLES, selectedBank: 'all' }), { globalGroup: 'rear' });
     elements.effectsBankSelect = { innerHTML: '', value: '', closest: () => ({ classList: classList() }) };
@@ -154,7 +154,7 @@ for (const [label, catalog] of [
     state.outputSystem.catalog.modes.surround.all_banks = { active_side: 'B' };
     const area = OutputState.measurementArea(state.outputSystem.catalog, undefined, state.measurement.allBanksGroup);
     assert.deepEqual([area.bank_id, area.group, area.label, area.importable],
-        ['all', 'front', 'All Banks · B · Front L/R + Sub', false]);
+        ['all', 'front', 'Ind. Banks · B · Front L/R + Sub', false]);
     assert.equal(area.polarity_supported, false);
     assert.equal(area.note, 'Only selected speakers and subs play.');
     BankUI.selectEffectsGroup('');
@@ -283,7 +283,7 @@ function syncSideRow(area, sweepSide = 'stereo') {
     assert.deepEqual(restored.buttons.map(button => button.textContent), ['Left', 'Stereo', 'Right']);
 }
 
-// All Banks uses the identical per-group sides, including mono Center.
+// Ind. Banks uses the identical per-group sides, including mono Center.
 {
     const catalog = catalogFor({ roles: [...ALL_ROLES, 'side_l', 'side_r'], selectedBank: 'all' });
     for (const [group, labels] of [
@@ -304,7 +304,7 @@ function syncSideRow(area, sweepSide = 'stereo') {
     assert.equal(center.state.measurement.sweepSide, 'stereo');
 }
 
-// The app reads the separate memories instead of leaking Global's group into All Banks.
+// The app reads the separate memories instead of leaking Global's group into Ind. Banks.
 {
     const match = /function measurementAreaFromCatalog\(group\) \{[\s\S]*?\n\}\n/.exec(appSource);
     const catalog = catalogFor({ roles: ALL_ROLES, selectedBank: 'all' });
@@ -381,7 +381,7 @@ assert.match(appSource, /window\.FXRouteBankUI\.renderSweepGroupRow\(\);\s*syncS
     assert.deepEqual(run({ measurements: [entry('a', 'side')], visible: ['a'] }), [], 'an unrouted group is ignored');
     assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: [] }), [], 'nothing selected');
     assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: ['a'], selectedBank: 'all' }), [],
-        'All Banks results are never imported');
+        'Ind. Banks results are never imported');
     assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: ['a'], selectedBank: 'rear' }), [], 'a concrete bank');
     assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: ['a'], active: true }), [], 'not during a measurement');
     assert.deepEqual(run({ measurements: [entry('a', 'rear')], visible: ['a'], startInFlight: true }), []);

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// A result measured through All Banks can be saved and inspected, but it never
+// A result measured through Ind. Banks can be saved and inspected, but it never
 // becomes a filter: the app reports why, the PEQ editor refuses to take or
 // create while one is shown, and the convolver editor refuses to take it.  A
 // convolver Create follows its draft: a result shown after the take is no
-// source, and the backend rejects a taken All Banks source.
+// source, and the backend rejects a taken Ind. Banks source.
 
 const assert = require('assert/strict');
 const fs = require('fs');
@@ -30,11 +30,11 @@ const throughBank = (id) => ({ id, measurement_target: { bank_id: 'rear', mode: 
 
 assert.equal(reasonFor({}), '');
 assert.equal(reasonFor({ current: [throughBank('a'), { id: 'legacy' }] }), '');
-assert.match(reasonFor({ current: [throughAll('a')] }), /measured through All Banks/);
+assert.match(reasonFor({ current: [throughAll('a')] }), /measured through Ind. Banks/);
 assert.match(reasonFor({ current: [{ id: 'grouped', measurement_target: {
-    bank_id: 'all', mode: 'surround', global_group: 'rear', active_side: 'B' } }] }), /measured through All Banks/);
-// A visible saved All Banks result blocks too; a hidden one does not.
-assert.match(reasonFor({ saved: [throughBank('b'), throughAll('c')], visible: { b: true, c: true } }), /All Banks/);
+    bank_id: 'all', mode: 'surround', global_group: 'rear', active_side: 'B' } }] }), /measured through Ind. Banks/);
+// A visible saved Ind. Banks result blocks too; a hidden one does not.
+assert.match(reasonFor({ saved: [throughBank('b'), throughAll('c')], visible: { b: true, c: true } }), /Ind. Banks/);
 assert.equal(reasonFor({ saved: [throughAll('c')], visible: { c: false } }), '');
 
 const toasts = [];

@@ -381,7 +381,7 @@ class MainMeasurementCommitVerifierTests(unittest.TestCase):
             self.verify(frozen_target())
 
     def test_all_banks_and_results_without_a_target_are_rejected(self):
-        with self.assertRaisesRegex(ValueError, "through All Banks"):
+        with self.assertRaisesRegex(ValueError, "through Ind. Banks"):
             self.verify(frozen_target(bank_id="all"))
         for source in (None, {}, {"schema": "fxroute.measurement-target", "version": 1, "legacy": True}):
             with self.subTest(source=source), self.assertRaisesRegex(ValueError, "no frozen target; measure again"):

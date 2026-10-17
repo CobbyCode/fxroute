@@ -82,7 +82,7 @@ function roleLabel(roleId, mode) {
     if (mode === 'surround' && roleId === 'main_l') return 'Front L';
     if (mode === 'surround' && roleId === 'main_r') return 'Front R';
     if (roleId === 'global') return 'Global';
-    if (roleId === 'all') return 'All Banks';
+    if (roleId === 'all') return 'Ind. Banks';
     if (['main', 'low', 'low_mid', 'mid', 'high', 'sub'].includes(roleId)) {
         return `${roleId.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} L/R`;
     }
@@ -246,7 +246,7 @@ function resolveGlobalGroup(modeConfig, group) {
     return options.find(option => option.id === group) || options[0] || null;
 }
 
-// Global and All Banks use the same routed speaker-group selection.
+// Global and Ind. Banks use the same routed speaker-group selection.
 // Null in every concrete bank and other output mode.
 function globalGroupChoice(catalog, group) {
     const mode = catalog && catalog.active_mode;
@@ -270,12 +270,12 @@ function measurementArea(catalog, bankId, group) {
     const bank = modeConfig.banks?.[selected];
     const groupedBank = mode === 'surround' && ['global', 'all'].includes(selected);
     const groupOption = groupedBank ? resolveGlobalGroup(modeConfig, group) : null;
-    // All Banks measures the system or a group as currently listened (every bank on
+    // Ind. Banks measures the system or a group as currently listened (every bank on
     // its A/B side). It owns no bank, so a result can be saved but not imported.
     const allBanks = selected === 'all';
     const routed = (modeConfig.topology?.roles || []).length > 0;
     const listened = allBanks ? modeConfig.all_banks?.active_side : null;
-    const aggregateLabel = allBanks ? `All Banks${listened ? ` · ${listened}` : ''}` : 'Global';
+    const aggregateLabel = allBanks ? `Ind. Banks${listened ? ` · ${listened}` : ''}` : 'Global';
     const label = groupOption ? `${aggregateLabel} · ${groupOption.label}`
         : allBanks ? aggregateLabel : bank?.label || roleLabel(selected);
     const available = !(allBanks && !routed) && !(groupedBank && !groupOption);
@@ -315,7 +315,7 @@ function measurementArea(catalog, bankId, group) {
 
 function bankOptions(modeConfig) {
     const banks = modeConfig?.banks || {};
-    return [{ id: 'global', label: 'Global' }, { id: 'all', label: 'All Banks' },
+    return [{ id: 'global', label: 'Global' }, { id: 'all', label: 'Ind. Banks' },
         ...Object.entries(banks).filter(([id]) => id !== 'global').map(([id, bank]) => ({ id, label: bank.label || roleLabel(id) }))];
 }
 
@@ -323,6 +323,15 @@ function bankSelectorVisible(modeConfig) {
     const roles = modeConfig?.topology?.roles || [];
     if (modeConfig?.topology?.mode === 'surround') return roles.length > 0;
     return roles.length > 0 && !(roles.length === 2 && roles.includes('main_l') && roles.includes('main_r'));
+}
+
+// Easy view: the DSP tab works on Global in every mode. Only the view changes;
+// the stored bank selection is kept for Expert, which shows the catalog as is.
+function viewCatalog(catalog, expert) {
+    if (expert || !catalog?.modes) return catalog;
+    const modes = Object.fromEntries(Object.entries(catalog.modes)
+        .map(([mode, config]) => [mode, { ...config, selected_bank: 'global' }]));
+    return { ...catalog, modes };
 }
 
 function bankBinding(catalog, group) {
@@ -340,7 +349,7 @@ function bankBinding(catalog, group) {
 function bankOwner(catalog) {
     if (!catalog) return null;
     const bankId = catalog.modes?.[catalog.active_mode]?.selected_bank || 'global';
-    if (bankId === 'all') throw new Error('All Banks owns no presets; select a concrete filterbank.');
+    if (bankId === 'all') throw new Error('Ind. Banks owns no presets; select a concrete filterbank.');
     return { bank_mode: catalog.active_mode, bank_id: bankId };
 }
 
@@ -354,7 +363,7 @@ function isBuiltinBankPreset(name) {
 // name is unique within its bank only. Neutral is shared; Direct is Global-only.
 function presetsForBank(presets, bankId, mode) {
     if (!Array.isArray(presets)) return [];
-    // All Banks owns no presets: it only switches A/B jointly.
+    // Ind. Banks owns no presets: it only switches A/B jointly.
     if (!bankId || bankId === 'all') return [];
     return presets.filter((entry) => {
         if (isBuiltinBankPreset(entry?.name)) return entry.name !== 'Direct' || bankId === 'global';
@@ -448,7 +457,7 @@ function mergeNumberedBanks(items) {
     return entries.map(({ family, key, ...entry }) => entry);
 }
 
-// Active presets outside the selected bank: All Banks shows Global only.
+// Active presets outside the selected bank: Ind. Banks shows Global only.
 // A bank whose channels listen to different presets has no single preset.
 // Pure stereo shows no bank selector, so the A/B tile shows no bank chips.
 function activePresetOverview(catalog) {
@@ -467,7 +476,7 @@ function activePresetOverview(catalog) {
     }));
 }
 
-// A and B slot of every area bank that All Banks switches jointly; Global is
+// A and B slot of every area bank that Ind. Banks switches jointly; Global is
 // not switched. A bank without a B stays on A (canB false); a null slot with
 // canB means per-channel presets. Banks merge only on equal slots and side.
 function allBanksCompareOverview(catalog) {
@@ -569,7 +578,8 @@ function renderRoutingGrid(grid, catalog, mode, assignments, channelCount, disab
     }
 }
 
-function renderBankSelector(select, catalog, mode) {
+// The bank selector is part of the Expert view only.
+function renderBankSelector(select, catalog, mode, expert) {
     const modeConfig = catalog && catalog.modes && catalog.modes[mode];
     if (!select) return null;
     if (!modeConfig) {
@@ -582,7 +592,7 @@ function renderBankSelector(select, catalog, mode) {
     if (select.innerHTML !== html) select.innerHTML = html;
     if (select.value !== modeConfig.selected_bank) select.value = modeConfig.selected_bank;
     const bank = modeConfig.banks[modeConfig.selected_bank];
-    select.closest('.effects-bank-row')?.classList.toggle('hidden', !bankSelectorVisible(modeConfig));
+    select.closest('.effects-bank-row')?.classList.toggle('hidden', !expert || !bankSelectorVisible(modeConfig));
     return bank || null;
 }
 
@@ -615,6 +625,7 @@ function renderBankSelector(select, catalog, mode) {
         measurementArea,
         bankOptions,
         bankSelectorVisible,
+        viewCatalog,
         bankBinding,
         bankOwner,
         isBuiltinBankPreset,

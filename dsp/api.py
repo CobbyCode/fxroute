@@ -39,7 +39,7 @@ from audio.filter_banks import resolve_bank
 from audio.output_state import referenced_presets, release_bank_preset, set_bank_preset
 from audio.output_state_store import StateConflictError
 from audio.output_topology import SURROUND_GROUPS
-from dsp.surround_global import BUILTIN_PRESETS, preset_group
+from dsp.surround_global import BUILTIN_PRESETS
 from library.core import path_within_root
 from library.api import _cleanup_temp_file
 from uploads import (
@@ -274,7 +274,7 @@ async def _routed_roles(state: dict, mode: str, bank_id: str) -> list | None:
 async def _validate_bank_target(service, binding: dict, *, needs_group: bool = False) -> str:
     """Fail fast (400) when the requested bank is not routed.
 
-    Returns the canonical bank id (All Banks is rejected: it owns no
+    Returns the canonical bank id (Ind. Banks is rejected: it owns no
     presets and only switches A/B jointly).
     """
     try:
@@ -287,11 +287,11 @@ async def _validate_bank_target(service, binding: dict, *, needs_group: bool = F
         if config is None:
             raise ValueError("Unknown output mode")
         if str(binding["bank_id"]).strip() == "all":
-            raise ValueError("All Banks owns no presets; select a concrete filterbank")
+            raise ValueError("Ind. Banks owns no presets; select a concrete filterbank")
         roles = await _routed_roles(state, binding["mode"], binding["bank_id"])
         canonical = resolve_bank(config, binding["bank_id"], roles)["id"]
     except ValueError as exc:
-        if "All Banks" in str(exc):
+        if "Ind. Banks" in str(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(
             status_code=400,
@@ -349,7 +349,7 @@ async def _optional_owner(body: dict) -> dict:
     """Bank and output mode whose preset library a request addresses.
 
     Preset names are unique within a bank only, so combine, delete and
-    download name the bank. All Banks is rejected; absent fields address the
+    download name the bank. Ind. Banks is rejected; absent fields address the
     Stereo Global bank.
     """
     if not isinstance(body, dict):
@@ -373,7 +373,8 @@ async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) ->
 
     The bank resolves against the routed roles, so only the roles that play
     its library take the preset (see ``_routed_roles``). In Surround Global
-    the preset replaces only its speaker group in the listened slot.
+    the preset replaces only its speaker group (the binding's, which every
+    create and import tags it with) in the listened slot.
     The binding was already checked before the preset was written (see
     ``_resolve_bank_binding``): a conflict here is a race with another writer,
     not a stale client, so it names the created preset to keep the state
@@ -389,11 +390,6 @@ async def _assign_created_preset_to_bank(*, created_name: str, binding: dict) ->
         state = service.load()
         roles = await _routed_roles(state, binding["mode"], binding["bank_id"])
         group = binding.get("bank_group")
-        if binding["mode"] == "surround" and binding["bank_id"] == "global":
-            # A Surround Global preset is selected for the group whose filters
-            # it holds; an imported preset file brings its own.
-            payload = _deps().require_dsp_manager().read_preset("surround", "global", created_name)
-            group = preset_group(payload) or group
         service.validate_bank_preset(state, binding["mode"], binding["bank_id"], created_name, roles=roles,
                                      group=group)
         committed = await _deps().drain_worker(
@@ -849,13 +845,15 @@ async def import_dsp_preset_json(
     file: UploadFile = File(...),
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
+    bank_group: str = Form(""),
     expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
-    binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision,
+                                  bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding)
+        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
 
     try:
@@ -888,13 +886,15 @@ async def import_dsp_preset_bundle(
     file: UploadFile = File(...),
     bank_mode: str = Form(""),
     bank_id: str = Form(""),
+    bank_group: str = Form(""),
     expected_revision: int = Form(-1),
 ):
     dsp_mgr = _deps().require_dsp_manager()
-    binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision)
+    binding = _parse_bank_binding(bank_mode=bank_mode, bank_id=bank_id, expected_revision=expected_revision,
+                                  bank_group=bank_group)
     canonical_bank = None
     if binding is not None:
-        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding)
+        canonical_bank = await _resolve_bank_binding(_require_output_state_service(), binding, needs_group=True)
         binding = {**binding, "bank_id": canonical_bank}
 
     temp_zip_path = None

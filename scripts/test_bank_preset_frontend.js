@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Strict per-bank preset picker: each bank lists exclusively its own
 // presets (plus built-ins), Global one set per output mode. A preset name is
-// unique within its bank only. All Banks lists none (joint A/B switching only).
+// unique within its bank only. Ind. Banks lists none (joint A/B switching only).
 const assert = require('node:assert/strict');
 const ui = require('../static/output_state.js');
 
@@ -42,7 +42,7 @@ assert.equal(ui.presetsForBank(presets, 'main', 'stereo').find(p => p.name === '
 // A Global preset without its output mode belongs to no Global bank.
 assert.deepEqual(ui.presetsForBank([...builtins, { name: 'Orphan', bank: 'global' }], 'global', 'stereo').map(p => p.name),
     ['Direct', 'Neutral']);
-// All Banks owns no presets: joint A/B switching only.
+// Ind. Banks owns no presets: joint A/B switching only.
 assert.deepEqual(ui.presetsForBank(presets, 'all', 'stereo-sub'), []);
 assert.deepEqual(ui.presetsForBank(presets, '', 'stereo-sub'), []);
 assert.deepEqual(ui.presetsForBank('not-an-array', 'low', 'stereo-sub'), []);
@@ -51,14 +51,14 @@ assert.equal(ui.isBuiltinBankPreset('Direct'), true);
 assert.equal(ui.isBuiltinBankPreset('Neutral'), true);
 assert.equal(ui.isBuiltinBankPreset('LowCorr'), false);
 
-// Combine, delete and download address the concrete bank; All Banks is rejected.
+// Combine, delete and download address the concrete bank; Ind. Banks is rejected.
 const catalog = (selected_bank) => ({
     revision: 3, active_mode: 'stereo-sub',
     modes: { 'stereo-sub': { selected_bank } },
 });
 assert.deepEqual(ui.bankOwner(catalog('main')), { bank_mode: 'stereo-sub', bank_id: 'main' });
 assert.deepEqual(ui.bankOwner(catalog('global')), { bank_mode: 'stereo-sub', bank_id: 'global' });
-assert.throws(() => ui.bankOwner(catalog('all')), /All Banks/);
+assert.throws(() => ui.bankOwner(catalog('all')), /Ind. Banks/);
 assert.equal(ui.bankOwner(null), null);
 
 console.log('bank preset frontend tests passed');

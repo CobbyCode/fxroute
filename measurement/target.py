@@ -50,7 +50,7 @@ __all__ = [
 SCHEMA = "fxroute.measurement-target"
 VERSION = 1
 GLOBAL_BANK_ID = "global"
-# All Banks measures the system or a Surround group as currently listened: no bank is owned,
+# Ind. Banks measures the system or a Surround group as currently listened: no bank is owned,
 # so a result can be saved and inspected but never committed as a correction.
 ALL_BANKS_ID = "all"
 # A host-reference or electrical capture taps the DSP ingress monitor, i.e.
@@ -102,12 +102,12 @@ def _measurement_area(validated: dict, *, bank_id: object, output_key: object, c
     topology.require_activatable()
     if all_banks:
         if not topology.roles:
-            raise ValueError("All Banks needs at least one routed speaker")
+            raise ValueError("Ind. Banks needs at least one routed speaker")
         definition = {**definition, "roles": list(topology.roles)}
     surround_global = mode == "surround" and bank_id == GLOBAL_BANK_ID
     group_supported = mode == "surround" and bank_id in (GLOBAL_BANK_ID, ALL_BANKS_ID)
     if group is not None and not group_supported:
-        raise ValueError("A speaker group applies to Surround Global or All Banks only")
+        raise ValueError("A speaker group applies to Surround Global or Ind. Banks only")
     grouped = surround_global or (group_supported and group is not None)
     if grouped:
         if group not in routed_groups(topology.roles):
@@ -153,7 +153,7 @@ def freeze_measurement_target(
     """Freeze the measurement target from committed output state.
 
     Surround Global requires a speaker ``group`` (front, center, side, rear).
-    All Banks optionally uses the same scope; without a group it measures
+    Ind. Banks optionally uses the same scope; without a group it measures
     the whole system. A group covers its speakers plus every sub.
 
     ``fingerprint`` is the service-computed processing fingerprint for the
@@ -339,7 +339,7 @@ def require_commit_target(target: object, roles: object, *, mode: str, bank_id: 
     if not isinstance(target, dict) or target.get("schema") != SCHEMA or target.get("legacy"):
         raise ValueError("Source measurement carries no frozen target; measure again")
     if target.get("bank_id") == ALL_BANKS_ID:
-        raise ValueError("A measurement taken through All Banks cannot be imported or committed into a bank")
+        raise ValueError("A measurement taken through Ind. Banks cannot be imported or committed into a bank")
     if target.get("mode") != mode or target.get("bank_id") != bank_id:
         raise ValueError(
             f"Measurement was captured for {target.get('mode')} area "

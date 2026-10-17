@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
-// All Banks compare tile: the status names the listened side only, each
+// Ind. Banks compare tile: the status names the listened side only, each
 // slot lists the bank presets of its side in place of the hidden picker, and
 // the toggle reads "Compare A/B" as in a single bank; non-aggregate mode keeps
 // the real preset pickers.
@@ -106,7 +106,7 @@ const rows = (html) => [...html.matchAll(/<li class="([^"]*)" data-tooltip="([^"
         active_side: 'A', can_a: true, can_b: true });
     vm.runInContext('renderEffectsCompare()', context);
     const { elements } = context;
-    assert.equal(elements.effectsCompareActive.textContent, 'Listening: A · All Banks');
+    assert.equal(elements.effectsCompareActive.textContent, 'Listening: A · Ind. Banks');
     assert.ok(elements.effectsCompareChain.classList.contains('hidden'), 'the chain line leaves the status');
     assert.equal(elements.effectsCompareToggle.textContent, 'Compare A/B');
     assert.ok(!elements.effectsCompareABanks.classList.contains('hidden'));
@@ -120,7 +120,7 @@ const rows = (html) => [...html.matchAll(/<li class="([^"]*)" data-tooltip="([^"
         { classes: 'effects-compare-slot-bank', tooltip: 'Main L/R: Conv LR &lt;B&gt;', key: 'Main L/R', preset: 'Conv LR &lt;B&gt;' },
         { classes: 'effects-compare-slot-bank is-fixed', tooltip: 'Sub 1: no preset B, stays on A', key: 'Sub 1', preset: 'stays on A' },
     ]);
-    assert.ok(!elements.effectsCompareBBanks.innerHTML.includes('Global'), 'Global is not switched by All Banks');
+    assert.ok(!elements.effectsCompareBBanks.innerHTML.includes('Global'), 'Global is not switched by Ind. Banks');
     const [slotA, slotB] = context.slots;
     assert.ok(slotA.classList.contains('is-active') && !slotA.classList.contains('is-armed'));
     assert.ok(!slotB.classList.contains('is-active') && slotB.classList.contains('is-armed'));
@@ -132,7 +132,7 @@ const rows = (html) => [...html.matchAll(/<li class="([^"]*)" data-tooltip="([^"
     const context = makeContext('all', onB, { preset: null, preset_a: 'Neutral', preset_b: null,
         active_side: 'B', can_a: true, can_b: true });
     vm.runInContext('renderEffectsCompare()', context);
-    assert.equal(context.elements.effectsCompareActive.textContent, 'Listening: B · All Banks');
+    assert.equal(context.elements.effectsCompareActive.textContent, 'Listening: B · Ind. Banks');
     const [slotA, slotB] = context.slots;
     assert.ok(slotB.classList.contains('is-active') && !slotA.classList.contains('is-active'));
     assert.ok(!context.elements.effectsCompareABanks.innerHTML.includes('is-heard'));
@@ -164,14 +164,14 @@ const rows = (html) => [...html.matchAll(/<li class="([^"]*)" data-tooltip="([^"
 // Non-aggregate: real preset pickers stay in place.
 {
     const context = makeContext('main', banks);
-    // Coming from All Banks: lists shown, chain line hidden.
+    // Coming from Ind. Banks: lists shown, chain line hidden.
     context.elements.effectsCompareABanks.classList.toggle('hidden', false);
     context.elements.effectsCompareBBanks.classList.toggle('hidden', false);
     context.elements.effectsCompareChain.classList.toggle('hidden', true);
     vm.runInContext('renderEffectsCompare()', context);
     assert.match(context.elements.effectsCompareA.innerHTML, /<option value="Neutral" selected>Neutral<\/option>/);
     assert.doesNotMatch(context.elements.effectsCompareB.innerHTML, /Select preset|No preset/);
-    assert.notEqual(context.elements.effectsCompareA.innerHTML, '<option>All Banks · A</option>');
+    assert.notEqual(context.elements.effectsCompareA.innerHTML, '<option>Ind. Banks · A</option>');
     // The single-bank view keeps its chain line and toggle label, the lists stay hidden.
     assert.ok(!context.elements.effectsCompareChain.classList.contains('hidden'));
     assert.equal(context.elements.effectsCompareChain.textContent, 'Chain: Single preset');

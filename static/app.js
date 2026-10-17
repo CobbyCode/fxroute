@@ -728,6 +728,8 @@ let state = {
     outputSystem: {
         catalog: null,
         busy: false,
+        // Easy (Global only) or Expert (bank selection) view of the DSP tab.
+        expert: window.FXRouteBankUI ? window.FXRouteBankUI.readStoredExpertView() : false,
     },
     crossover: {
         activeWay: null,
@@ -1035,6 +1037,7 @@ const elements = {
     osTopology: document.getElementById('os-topology'),
     osFeedback: document.getElementById('os-feedback'),
     effectsBankSelect: document.getElementById('effects-bank-select'),
+    effectsExpertToggle: document.getElementById('effects-expert-toggle'),
     effectsCrossoverCard: document.getElementById('effects-crossover-card'),
     effectsCrossoverSummary: document.getElementById('effects-crossover-summary'),
     effectsCrossoverTabs: document.getElementById('effects-crossover-tabs'),
@@ -1282,6 +1285,7 @@ const elements = {
     effectsCompareRow: document.getElementById('effects-compare-row'),
     effectsToggleImportBtn: document.getElementById('effects-toggle-import'),
     effectsImportPanel: document.getElementById('effects-import-panel'),
+    effectsImportGroupRow: document.getElementById('effects-import-group-row'),
     effectsImportFile: document.getElementById('effects-import-file'),
     effectsImportFilename: document.getElementById('effects-import-filename'),
     effectsLimiterEnabled: document.getElementById('effects-limiter-enabled'),
@@ -3387,7 +3391,7 @@ function renderMeasurementArea() {
         elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight || area?.available === false;
     }
     if (elements.measurementHybridOpenBtn) {
-        // Advanced ends in a correction model, which All Banks cannot take.
+        // Advanced ends in a correction model, which Ind. Banks cannot take.
         const blocked = area?.available === false || area?.importable === false
             || !!outputSystemModule()?.isSubwooferBank?.(area?.bank_id);
         elements.measurementHybridOpenBtn.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', blocked);
@@ -3951,14 +3955,14 @@ function waitForNextAnimationFrame() {
 
 
 function measurementImportBlockedReason() {
-    /* A result measured through All Banks has no bank to commit into: it can be
+    /* A result measured through Ind. Banks has no bank to commit into: it can be
      * saved and inspected, but it never becomes a filter. */
     const visibleSaved = (state.measurement.measurements || [])
         .filter(measurement => state.measurement.visibilityById?.[measurement.id]);
     const throughAllBanks = [...getCurrentMeasurementEntries(), ...visibleSaved]
         .some(measurement => measurement?.measurement_target?.bank_id === 'all');
     return throughAllBanks
-        ? 'This result was measured through All Banks; it can be saved and inspected but not imported into a bank.'
+        ? 'This result was measured through Ind. Banks; it can be saved and inspected but not imported into a bank.'
         : '';
 }
 
@@ -4967,6 +4971,12 @@ function setupMeasurementActions() {
         const button = event.target.closest?.('[data-sweep-group]');
         if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
         selectMeasurementSpeakerGroup(button.getAttribute('data-sweep-group') || '');
+    });
+    // The import panel chips choose the same speaker group for an imported filter.
+    elements.effectsImportGroupRow?.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-import-group]');
+        if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
+        selectMeasurementSpeakerGroup(button.getAttribute('data-import-group') || '');
     });
     document.querySelectorAll('#measurement-sweep-side-row [data-sweep-side]').forEach((button) => {
         button.addEventListener('click', () => {

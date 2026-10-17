@@ -465,6 +465,8 @@ def _run():
             page = browser.new_page(viewport={"width": VIEWPORTS[0][0], "height": VIEWPORTS[0][1]})
             page.add_init_script(STUB)
             page.add_init_script("window.__stubSelectedBank = 'sub1';")
+            # A bank selection other than Global belongs to the Expert view.
+            page.add_init_script("localStorage.setItem('fx-dsp-expert', '1');")
             _open_measurement(page)
             page.locator("#measurement-sweep-toggle").click()
             page.wait_for_function(

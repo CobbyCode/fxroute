@@ -502,14 +502,45 @@ class ApiTests(Fixture):
         listed = {entry["name"]: entry["group"] for entry in self.client.get("/api/dsp/presets").json()["presets"]
                   if entry["mode"] == "surround"}
         self.assertEqual(listed, {"Front EQ": "front", "Rear EQ": "rear"})
-        # A preset file carries no measurement group; it fills the group it holds.
-        exported = self.manager.export_preset_json("Rear EQ", bank="global", mode="surround")
-        response = self.client.post("/api/dsp/presets/import-json", data={
-            "bank_mode": "surround", "bank_id": "global", "expected_revision": str(self.service.load()["revision"])},
-            files={"file": ("Rear copy.json", exported.encode(), "application/json")})
+
+    def test_surround_global_imports_belong_to_the_chosen_group(self):
+        """An imported file is tagged with the group chosen for it, like a measured filter."""
+        self.route("main_l", "main_r", "rear_l", "rear_r", "sub1", mode="surround")
+        state = self.service.load()
+        self.service.commit(state_api.switch_mode(state, "surround"), expected_revision=state["revision"])
+        self.create_peq("Rear EQ", -2.0, "global", "surround", bank_group="rear")
+        rear_file = self.manager.export_preset_json("Rear EQ", bank="global", mode="surround")
+        self.create("Stereo EQ", -3.0, "global", "stereo")
+        stereo_file = self.manager.export_preset_json("Stereo EQ", bank="global", mode="stereo")
+
+        def post(endpoint, name, content, media, **group):
+            return self.client.post(f"/api/dsp/presets/{endpoint}", data={
+                "bank_mode": "surround", "bank_id": "global", **group,
+                "expected_revision": str(self.service.load()["revision"])},
+                files={"file": (name, content, media)})
+
+        refused = post("import-json", "No group.json", rear_file.encode(), "application/json")
+        self.assertEqual(refused.status_code, 400, refused.text)
+        self.assertIn("speaker group", refused.text)
+        # The chosen group replaces the file's own tag, and tags an untagged file.
+        for name, content, group in (("Front copy", rear_file, "front"), ("Rear stereo", stereo_file, "rear")):
+            response = post("import-json", f"{name}.json", content.encode(), "application/json", bank_group=group)
+            self.assertEqual(response.status_code, 200, response.text)
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("preset.json", stereo_file)
+        response = post("import-bundle", "Front bundle.zip", bundle.getvalue(), "application/zip", bank_group="front")
         self.assertEqual(response.status_code, 200, response.text)
+        listed = {entry["name"]: entry["group"] for entry in self.client.get("/api/dsp/presets").json()["presets"]
+                  if entry["mode"] == "surround"}
+        self.assertEqual(listed, {"Rear EQ": "rear", "Front copy": "front", "Rear stereo": "rear",
+                                  "Front bundle": "front"})
+        for name, group in (("Front copy", "front"), ("Rear stereo", "rear")):
+            payload = self.manager.read_preset("surround", "global", name)
+            self.assertEqual({plugin["group"] for plugin in payload["chain"]}, {group})
+        # Each import takes only its own group's place in the listened slot.
         self.assertEqual(self.service.load()["modes"]["surround"]["banks"]["global"]["preset"],
-                         {**neutral_selection(), "front": "Front EQ", "rear": "Rear copy"})
+                         {**neutral_selection(), "front": "Front bundle", "rear": "Rear stereo"})
 
     def test_a_lone_sub_l_lists_its_presets_and_irs(self):
         """Stereo + Sub with one mono sub on sub_l: its bank is sub_l, not the Sub L/R pair."""

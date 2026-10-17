@@ -345,9 +345,9 @@ class SpeakerAlignService:
             reference_input_channel_right=reference_input_channel_right)
         reference_id = _session_identity(reference_id, "upstream reference")
         microphone_position_id = _session_identity(microphone_position_id, "microphone position")
+        # The stored bank selection is a view choice (Easy shows Global over
+        # it); the run always measures the Global target.
         state = deepcopy(self._get_state())
-        if state["modes"][state["active_mode"]]["selected_bank"] != "global":
-            raise ValueError("Speaker Align is available only from Global")
         self._check_available()
         # Capture the entry epoch before discovery can yield to a window close.
         job_id = uuid4().hex

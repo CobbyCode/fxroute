@@ -218,7 +218,7 @@ async function request(url, body) {
     // Compare slots per way bank, and the all-banks switch. Bank order
     // follows the routed roles, so the sub pair lands last.
     assert.deepEqual(Object.keys(current.modes['stereo-sub'].banks), ['global', 'low', 'high', 'sub']);
-    // The routed sub pair carries no B slot yet: All Banks still switches the
+    // The routed sub pair carries no B slot yet: Ind. Banks still switches the
     // ways that have one and keeps the sub pair on A.
     assert.equal(current.modes['stereo-sub'].banks.sub.preset_b, null);
     assert.equal(current.modes['stereo-sub'].banks.low.preset_b, null);

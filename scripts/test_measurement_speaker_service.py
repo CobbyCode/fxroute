@@ -252,13 +252,13 @@ class StartValidationTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
                           reference_id="r", microphone_position_id="m")
         self.assertEqual(service.jobs(), [])
 
-    async def test_non_global_selection_fails_before_job_exists(self):
+    async def test_stored_bank_selection_does_not_gate_the_run(self):
+        # The DSP tab's Easy view shows Global over any stored Expert bank
+        # selection; the run measures the Global target either way.
         self.state["modes"]["stereo-sub"]["selected_bank"] = "left_low"
-        service = self.service()
-        with self.assertRaisesRegex(ValueError, "Global"):
-            await service.start(side="left", input_id="mic", reference_input_channel="2",
-                          reference_id="r", microphone_position_id="m")
-        self.assertEqual(service.jobs(), [])
+        service, job_id = await self.start()
+        job = await self.wait_terminal(service, job_id)
+        self.assertEqual(job["status"], "committed")
 
     async def test_missing_electrical_reference_fails_before_any_sweep(self):
         # Verification only admits the electrical reference: without one the

@@ -1426,7 +1426,7 @@ class DSPManager:
                 "source_presets": sources, "plugin_count": len(chain)}
 
     def import_preset_json(self, preset_filename: str, preset_text: str, bank: Any = None,
-                           mode: Any = None) -> Dict[str, Any]:
+                           mode: Any = None, group: Optional[str] = None) -> Dict[str, Any]:
         try:
             source = json.loads(preset_text)
         except json.JSONDecodeError as exc:
@@ -1439,6 +1439,12 @@ class DSPManager:
         else:
             payload = self._translate_legacy_preset(source)
         name = self._ensure_overwritable_name(preset_filename)
+        self._guard_create(name, bank, group, mode)
+        if group:
+            # Imported for one Surround Global speaker group, like a measured
+            # filter: the chosen group replaces any group tags of the file.
+            payload["chain"] = [{**plugin, "group": group} for plugin in payload["chain"]]
+            payload["metadata"] = {**payload.get("metadata", {}), "layout": SURROUND_LAYOUT}
         path = store.write(name, payload)
         return {"name": name, "filename": path.name, "path": str(path), "bank": store.bank,
                 "source_presets": payload.get("metadata", {}).get("source_presets", [])}

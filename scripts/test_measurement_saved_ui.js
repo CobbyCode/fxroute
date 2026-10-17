@@ -51,18 +51,18 @@ assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: groupTarget 
 });
 assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: { schema: 'fxroute.measurement-target',
     mode: 'surround', bank_id: 'all', active_side: 'B' } }), {
-    label: 'All Banks · B', mode: 'surround',
-    title: 'All Banks · B · Surround · measured whole system as listened',
+    label: 'Ind. Banks · B', mode: 'surround',
+    title: 'Ind. Banks · B · Surround · measured whole system as listened',
 });
 assert.equal(savedUi.measurementAreaBadge({ measurement_target: { schema: 'fxroute.measurement-target',
-    mode: 'surround', bank_id: 'all', active_side: null } }).label, 'All Banks');
+    mode: 'surround', bank_id: 'all', active_side: null } }).label, 'Ind. Banks');
 assert.deepEqual(savedUi.measurementAreaBadge({ measurement_target: { ...groupTarget,
     bank_id: 'all', active_side: 'B' } }), {
-    label: 'All Banks · B · Rear L/R', mode: 'surround',
-    title: 'All Banks · B · Rear L/R · Surround · measured with the subs as listened',
+    label: 'Ind. Banks · B · Rear L/R', mode: 'surround',
+    title: 'Ind. Banks · B · Rear L/R · Surround · measured with the subs as listened',
 });
 assert.equal(savedUi.measurementAreaBadge({ measurement_target: { ...groupTarget,
-    bank_id: 'all', active_side: null } }).label, 'All Banks · Rear L/R');
+    bank_id: 'all', active_side: null } }).label, 'Ind. Banks · Rear L/R');
 savedUi.renderMeasurementPanelSavedListSection({ measurementState: state.measurement, measurements: saved });
 let html = elements.measurementList.innerHTML;
 assert.match(html, /<details class="measurement-saved-group" open>/);
