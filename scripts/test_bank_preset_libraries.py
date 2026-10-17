@@ -491,17 +491,40 @@ class ApiTests(Fixture):
         self.assertEqual(listed, {("global", "stereo"), ("global", "stereo-sub"), ("main", None)})
 
     def test_surround_global_filters_fill_their_group_of_the_listened_slot(self):
-        self.route("main_l", "main_r", "rear_l", "rear_r", "sub1", mode="surround")
+        self.route("main_l", "main_r", "center", "side_l", "side_r", "rear_l", "rear_r", "sub1",
+                   mode="surround")
         state = self.service.load()
         self.service.commit(state_api.switch_mode(state, "surround"), expected_revision=state["revision"])
-        self.create_peq("Front EQ", -1.0, "global", "surround", bank_group="front")
-        self.create_peq("Rear EQ", -2.0, "global", "surround", bank_group="rear")
+        selection = {}
+        for group, name in (("front", "Front EQ"), ("center", "Center EQ"), ("side", "Side EQ"), ("rear", "Rear EQ")):
+            left = [{"filterType": "bell", "frequencyHz": 100, "gainDb": -1.0, "q": 1}]
+            right = [{"filterType": "bell", "frequencyHz": 200, "gainDb": -2.0, "q": 1}]
+            params = {"channelMode": "stereo-linked", "eqMode": "IIR", "bands": left} if group == "center" else {
+                "channelMode": "dual", "eqMode": "IIR", "leftBands": left, "rightBands": right}
+            self.create_peq(name, -1.0, "global", "surround", bank_group=group,
+                            peq={"enabled": True, "params": params})
+            selection[group] = name
+            bank = self.service.load()["modes"]["surround"]["banks"]["global"]
+            self.assertEqual(bank["preset"], {**neutral_selection(), **selection})
+            stored = self.manager.read_preset("surround", "global", name)["chain"][0]
+            self.assertEqual(stored["group"], group)
+            self.assertEqual(stored["params"]["channelMode"], params["channelMode"])
+            if group == "center":
+                self.assertEqual(stored["params"]["bands"][0]["frequencyHz"], 100)
+                self.assertNotIn("rightBands", stored["params"])
+            else:
+                self.assertEqual(stored["params"]["leftBands"][0]["frequencyHz"], 100)
+                self.assertEqual(stored["params"]["rightBands"][0]["frequencyHz"], 200)
         bank = self.service.load()["modes"]["surround"]["banks"]["global"]
-        self.assertEqual(bank["preset"], {**neutral_selection(), "front": "Front EQ", "rear": "Rear EQ"})
+        self.assertEqual(bank["preset"], selection)
         self.assertEqual(bank["preset_a"], bank["preset"])
         listed = {entry["name"]: entry["group"] for entry in self.client.get("/api/dsp/presets").json()["presets"]
-                  if entry["mode"] == "surround"}
-        self.assertEqual(listed, {"Front EQ": "front", "Rear EQ": "rear"})
+                   if entry["mode"] == "surround"}
+        self.assertEqual(listed, {"Front EQ": "front", "Center EQ": "center", "Side EQ": "side", "Rear EQ": "rear"})
+        plan = self.service.compile_plan(self.service.load(), output_key="A", channels=16, sample_rate_hz=48000)
+        text = self.manager.compile_engine_text(self.service.compile_layout(plan), preset_name=selection, mode="surround")
+        self.assertEqual([line for line in text.splitlines() if line.startswith("pairs ")],
+                         ["pairs 1", "pairs 2", "pairs 8", "pairs 16"])
 
     def test_surround_global_imports_belong_to_the_chosen_group(self):
         """An imported file is tagged with the group chosen for it, like a measured filter."""

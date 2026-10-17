@@ -1386,6 +1386,7 @@ const elements = {
     effectsPeqDisclosure: document.getElementById('effects-peq-disclosure'),
     effectsPeqDisclosureMeta: document.querySelector('#effects-peq-disclosure .effects-disclosure-meta'),
     effectsPeqSummary: document.getElementById('effects-peq-summary'),
+    effectsPeqGroupRow: document.getElementById('effects-peq-group-row'),
     effectsPeqPresetName: document.getElementById('effects-peq-preset-name'),
     effectsPeqModeSelect: document.getElementById('effects-peq-mode-select'),
     effectsPeqAddBandBtn: document.getElementById('effects-peq-add-band'),
@@ -4981,6 +4982,11 @@ function setupMeasurementActions() {
         const button = event.target.closest?.('[data-import-group]');
         if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
         selectMeasurementSpeakerGroup(button.getAttribute('data-import-group') || '');
+    });
+    elements.effectsPeqGroupRow?.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-peq-group]');
+        if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
+        selectMeasurementSpeakerGroup(button.getAttribute('data-peq-group') || '');
     });
     document.querySelectorAll('#measurement-sweep-side-row [data-sweep-side]').forEach((button) => {
         button.addEventListener('click', () => {

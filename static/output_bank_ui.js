@@ -284,6 +284,11 @@
             selected: choice ? choice.selected : '',
             disabled: !!measurement.startInFlight,
         });
+        root.FXRouteUiHelpers?.renderChipRow(deps.getElements().effectsPeqGroupRow, choice ? choice.options : [], {
+            attribute: 'data-peq-group',
+            selected: choice ? choice.selected : '',
+            disabled: !!measurement.startInFlight,
+        });
         // Mono banks get a single import field: the stereo file area is hidden
         // and the remaining pane accepts every mono-supported format. A stale
         // file selection from the other mode is cleared on switching only, so
