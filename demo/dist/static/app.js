@@ -393,7 +393,6 @@ window.FXRouteBankUI?.init({
     renderMeasurementArea: () => renderMeasurementArea(),
     measurementArea: () => measurementAreaFromCatalog(),
     applyMutation: (kind, fields, message, options) => applyOutputSystemMutation(kind, fields, message, options),
-    confirmDialog: (message) => confirm(message),
 });
 window.FXRouteMeasurementPanelUI?.init({
     getElements: () => elements,
@@ -1163,6 +1162,11 @@ const elements = {
     effectsInfo: document.getElementById('effects-info'),
     // elements.effectsPresetStatus removed — preset status is now shown in the compare row
     effectsDeleteBtn: document.getElementById('effects-delete'),
+    effectsDeletePanel: document.getElementById('effects-delete-panel'),
+    effectsDeleteList: document.getElementById('effects-delete-list'),
+    effectsDeleteDescription: document.getElementById('effects-delete-description'),
+    effectsDeleteConfirm: document.getElementById('effects-delete-confirm'),
+    effectsDeleteCancel: document.getElementById('effects-delete-cancel'),
     effectsCompareA: document.getElementById('effects-compare-a'),
     effectsCompareB: document.getElementById('effects-compare-b'),
     effectsCompareToggle: document.getElementById('effects-compare-toggle'),

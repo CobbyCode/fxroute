@@ -46,9 +46,11 @@ function stubClassList() {
 }
 
 function stubEl(overrides = {}) {
+    const listeners = {};
     return { value: '', textContent: '', innerHTML: '', disabled: false, checked: false, style: {},
         dataset: {}, files: [], accept: '', placeholder: '', classList: stubClassList(),
-        setAttribute() {}, addEventListener() {}, focus() {}, select() {},
+        setAttribute() {}, listeners, addEventListener(type, handler) { listeners[type] = handler; }, focus() {}, select() {},
+        querySelector: () => null, querySelectorAll: () => [],
         closest: () => null, ...overrides };
 }
 
@@ -85,6 +87,11 @@ function bankElements() {
         effectsCombinePresetName: stubEl(),
         effectsCombineSaveBtn: stubEl(),
         effectsDeleteBtn: stubEl(),
+        effectsDeletePanel: stubEl(),
+        effectsDeleteList: stubEl(),
+        effectsDeleteDescription: stubEl(),
+        effectsDeleteConfirm: stubEl(),
+        effectsDeleteCancel: stubEl(),
         effectsToggleImportBtn: stubEl(),
         effectsImportPanel: stubEl(),
         effectsImportFile: stubEl(),
@@ -229,6 +236,9 @@ const realFetch = globalThis.fetch;
             return { ok: true, json: async () => ({}) };
         };
         await BankUI.deleteEffectsPreset();
+        assert.deepEqual(deleted, [], 'the custom dialog must confirm before deleting');
+        BankUI.wireBankUi();
+        await elements.effectsDeleteConfirm.listeners.click();
         globalThis.fetch = realFetch;
         assert.deepEqual(deleted, ['3'], 'Delete targets the bank\'s listened preset');
         for (const [selected, expected] of [['global', [true, false]], ['sub1', [true, false]], ['all', [true, true]]]) {
@@ -313,7 +323,7 @@ const realFetch = globalThis.fetch;
         assert.doesNotMatch(elements.effectsCompareB.innerHTML, /value="Neutral" selected/);
     }
 
-    // Preset delete guards the empty and built-in cases before confirming.
+    // Preset delete guards empty and built-in cases before opening the dialog.
     {
         const toasts = [];
         const calls = [];
@@ -323,20 +333,23 @@ const realFetch = globalThis.fetch;
                 banks: { global: bare('global', 'Global'), main: bare('main', 'Main L/R') },
                 topology: { roles: ['main_l', 'main_r'] } } } };
         const state = { outputSystem: { catalog: emptyCatalog },
-            dsp: { presets: [], compare: {}, active_preset: '' } };
-        initBankUI(state, bankElements(), { showToast: (message, type) => toasts.push([message, type]) });
+            dsp: { available: true, presets: [], compare: {}, active_preset: '' } };
+        const elements = bankElements();
+        initBankUI(state, elements, { showToast: (message, type) => toasts.push([message, type]) });
         await BankUI.deleteEffectsPreset();
         assert.deepEqual(toasts.at(-1), ['No active preset to delete', 'warning']);
         const bank = emptyCatalog.modes['stereo-sub'].banks.main;
         bank.preset = 'Direct';
         await BankUI.deleteEffectsPreset();
-        assert.match(toasts.at(-1)[0], /built-in/);
+        assert.match(toasts.at(-1)[0], /No active preset to delete/);
         bank.preset = 'Room';
         globalThis.fetch = async (url) => {
             calls.push(url);
             return { ok: true, json: async () => ({}) };
         };
         await BankUI.deleteEffectsPreset();
+        BankUI.wireBankUi();
+        await elements.effectsDeleteConfirm.listeners.click();
         globalThis.fetch = realFetch;
         assert.ok(calls.includes('/api/dsp/presets/delete'));
         assert.match(toasts.at(-1)[0], /Deleted preset: Room/);
@@ -373,6 +386,8 @@ const realFetch = globalThis.fetch;
             return { ok: true, json: async () => ({}) };
         };
         await BankUI.deleteEffectsPreset();
+        BankUI.wireBankUi();
+        await elements.effectsDeleteConfirm.listeners.click();
         globalThis.fetch = realFetch;
         assert.deepEqual(requests, [['/api/dsp/presets/delete',
             { preset_name: 'Room', bank_mode: 'stereo-sub', bank_id: 'global' }]]);

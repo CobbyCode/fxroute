@@ -30,7 +30,6 @@
         renderMeasurementArea: () => {},
         measurementArea: () => null,
         applyMutation: async () => null,
-        confirmDialog: (message) => (typeof confirm === 'function' ? confirm(message) : false),
     };
 
     function init(overrides) {
@@ -78,6 +77,8 @@
     let effectsCompareActionsWired = false;
     let _bankImportChannelMode = null;
     let effectsImportInFlight = false;
+    let effectsDeleteDraft = null;
+    let effectsDeleteInFlight = false;
 
     function getDefaultEffectsCombineDraft() {
         return {
@@ -235,7 +236,6 @@
         if (!measurement || measurement[field] === group) return;
         measurement[field] = group;
         renderEffectsBankSelector();
-        // Surround Global deletes the listened preset of the selected group.
         syncEffectsDeleteButton();
     }
 
@@ -517,6 +517,7 @@
                 ? 'Assign preset B in at least one bank first.' : 'Select preset B to compare.') : '';
         }
         if (deps.getElements().effectsBankSelect) deps.getElements().effectsBankSelect.disabled = busy;
+        syncEffectsDeleteButton();
     }
 
     function getEffectsChainLabelForPreset(presetName, presetMap = new Map()) {
@@ -735,16 +736,25 @@
         setEffectsCompareLoadBusy(effectsCompareLoadInFlight);
     }
 
-    // The preset Delete removes: the selected bank's listened preset; in
-    // Surround Global the listened slot's preset of the speaker group the
-    // measurement targets.
-    function activeDeletablePreset() {
-        const { activePreset, effectiveActiveSide, groupSlots } = getEffectsCompareState();
-        if (!groupSlots) return { name: activePreset, label: '' };
-        const group = deps.measurementArea()?.group;
-        const row = (globalGroupRows() || []).find(item => item.group === group);
-        if (!row) return { name: '', label: '' };
-        return { name: effectiveActiveSide === 'B' ? row.presetB : row.presetA, label: row.label };
+    // Surround Global deletes from every routed group on the listened side,
+    // independently of the measurement/import target and Easy/Expert view.
+    function activeDeletablePresets() {
+        const { activePreset, effectiveActiveSide, groupSlots, aggregate } = getEffectsCompareState();
+        if (aggregate) return [];
+        const catalog = deps.getState().outputSystem?.catalog;
+        const config = catalog?.modes?.[catalog.active_mode];
+        const bank = config?.banks?.[config.selected_bank];
+        if (groupSlots && effectiveActiveSide !== 'A' && effectiveActiveSide !== 'B') return [];
+        const entries = groupSlots
+            ? (globalGroupRows() || []).map(row => ({
+                name: effectiveActiveSide === 'B' ? row.presetB : row.presetA, label: row.label, group: row.group,
+            }))
+            : [{ name: activePreset, label: bank?.label || '', group: '' }];
+        return entries.filter(entry => entry.name && entry.name !== 'Direct' && entry.name !== 'Neutral');
+    }
+
+    function effectsDeleteContext() {
+        return JSON.stringify([outputSystemBankOwner(), getEffectsCompareState().effectiveActiveSide, activeDeletablePresets()]);
     }
 
     // Delete targets the selected bank's active preset, as in Global; Ind.
@@ -752,13 +762,40 @@
     function syncEffectsDeleteButton() {
         const button = deps.getElements().effectsDeleteBtn;
         if (!button) return;
-        const { aggregate, groupSlots } = getEffectsCompareState();
-        const { name, label } = activeDeletablePreset();
+        const { aggregate } = getEffectsCompareState();
         button.classList.toggle('hidden', !!aggregate);
-        button.disabled = !deps.getState().dsp?.available || !name || name === 'Direct' || name === 'Neutral';
-        const tooltip = groupSlots ? `Delete active ${label || 'speaker group'} preset` : 'Delete active preset';
+        button.disabled = effectsDeleteInFlight || !!deps.getState().outputSystem?.busy
+            || !deps.getState().dsp?.available || activeDeletablePresets().length === 0;
+        const tooltip = 'Delete active presets';
         if (button.dataset) button.dataset.tooltip = tooltip;
         button.setAttribute?.('aria-label', tooltip);
+    }
+
+    function syncEffectsDeleteDialog() {
+        const elements = deps.getElements();
+        const multiple = (effectsDeleteDraft?.presets.length || 0) > 1;
+        const inputs = Array.from(elements.effectsDeleteList?.querySelectorAll('input[data-delete-index]') || []);
+        const selected = multiple ? inputs.filter(input => input.checked).length : effectsDeleteDraft ? 1 : 0;
+        if (elements.effectsDeleteConfirm) {
+            elements.effectsDeleteConfirm.textContent = multiple ? `Delete (${selected})` : 'Delete';
+            elements.effectsDeleteConfirm.disabled = effectsDeleteInFlight || selected === 0;
+        }
+        if (elements.effectsDeleteCancel) elements.effectsDeleteCancel.disabled = effectsDeleteInFlight;
+        inputs.forEach(input => { input.disabled = effectsDeleteInFlight; });
+    }
+
+    function closeEffectsDeleteDialog() {
+        if (effectsDeleteInFlight) return;
+        const panel = deps.getElements().effectsDeletePanel;
+        effectsDeleteDraft = null;
+        panel?.classList.add('hidden');
+        root.FXRouteModal?.close(panel);
+        if (deps.getElements().effectsDeleteBtn?.disabled) {
+            const compare = deps.getElements().effectsCompareToggle;
+            const fallback = compare && !compare.disabled && !compare.classList.contains('hidden')
+                ? compare : document.querySelector?.('.tab-btn[data-tab="effects"]');
+            fallback?.focus();
+        }
     }
 
     function getEffectsCombineValidationState() {
@@ -1187,33 +1224,77 @@
         }
     }
 
-    async function deleteEffectsPreset() {
-        const { name: presetName, label } = activeDeletablePreset();
-        if (!presetName) {
+    function deleteEffectsPreset() {
+        if (effectsDeleteInFlight) return;
+        const presets = activeDeletablePresets();
+        if (!presets.length) {
             deps.showToast('No active preset to delete', 'warning');
             return;
         }
-        if (presetName === 'Direct' || presetName === 'Neutral') {
-            deps.showToast(`Preset "${presetName}" is built-in and cannot be deleted`, 'error');
+        if (!deps.getState().dsp?.available || deps.getState().outputSystem?.busy) return;
+        const elements = deps.getElements();
+        if (!elements.effectsDeletePanel || !elements.effectsDeleteList) return;
+        effectsDeleteDraft = { presets, owner: outputSystemBankOwner() || {}, context: effectsDeleteContext() };
+        const multiple = presets.length > 1;
+        elements.effectsDeleteList.innerHTML = presets.map((preset, index) => {
+            const copy = `<span class="effects-delete-copy"><strong>${deps.escapeHtml(preset.label)}</strong>`
+                + `<span>${deps.escapeHtml(preset.name)}</span></span>`;
+            return multiple ? `<label class="effects-delete-item"><input type="checkbox" data-delete-index="${index}" checked>${copy}</label>`
+                : `<div class="effects-delete-item">${copy}</div>`;
+        }).join('');
+        const side = getEffectsCompareState().effectiveActiveSide;
+        if (elements.effectsDeleteDescription) elements.effectsDeleteDescription.textContent =
+            (side ? `Listening: ${side} · ` : '') + (multiple ? 'Select the presets to delete.' : 'Delete this preset?');
+        syncEffectsDeleteDialog();
+        elements.effectsDeletePanel.classList.remove('hidden');
+        root.FXRouteModal?.open(elements.effectsDeletePanel, {
+            opener: elements.effectsDeleteBtn, initialFocus: elements.effectsDeleteCancel,
+            onEscape: closeEffectsDeleteDialog,
+        });
+    }
+
+    async function confirmEffectsPresetDelete() {
+        if (!effectsDeleteDraft || effectsDeleteInFlight) return;
+        const { presets, owner, context } = effectsDeleteDraft;
+        const inputs = Array.from(deps.getElements().effectsDeleteList?.querySelectorAll('input[data-delete-index]') || []);
+        const selected = presets.length === 1 ? presets : presets.filter((preset, index) =>
+            inputs.some(input => Number(input.dataset.deleteIndex) === index && input.checked));
+        if (!selected.length) return;
+        if (context !== effectsDeleteContext() || !deps.getState().dsp?.available || deps.getState().outputSystem?.busy) {
+            closeEffectsDeleteDialog();
+            deps.showToast('Active presets changed. Reopen Delete active to review them.', 'warning');
             return;
         }
-        if (!deps.confirmDialog(`Delete ${label ? `${label} ` : ''}preset "${presetName}"?`)) return;
-        deps.getElements().effectsDeleteBtn.disabled = true;
+        effectsDeleteInFlight = true;
+        syncEffectsDeleteDialog();
+        syncEffectsDeleteButton();
+        let deletedCount = 0;
         try {
-            const resp = await fetch('/api/dsp/presets/delete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ preset_name: presetName, ...(outputSystemBankOwner() || {}) }),
-            });
-            const data = await resp.json();
-            if (!resp.ok) throw new Error(data.detail || 'Preset delete failed');
-            await deps.fetchEffects();
-            void deps.refreshCatalog(true);
-            deps.showToast(`Deleted preset: ${presetName}`, 'success');
+            for (const preset of selected) {
+                const resp = await fetch('/api/dsp/presets/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preset_name: preset.name, ...owner }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(formatError(data.detail, typeof data.detail === 'string' ? data.detail : 'Preset delete failed'));
+                deletedCount++;
+            }
+            deps.showToast(selected.length === 1 ? `Deleted preset: ${selected[0].name}` : `Deleted ${selected.length} presets`, 'success');
         } catch (e) {
-            deps.showToast(e.message || 'Preset delete failed', 'error');
+            const progress = deletedCount ? `Deleted ${deletedCount} of ${selected.length} presets. ` : '';
+            deps.showToast(progress + (e.message || 'Preset delete failed'), 'error');
         } finally {
-            syncEffectsDeleteButton();
+            try {
+                await deps.fetchEffects();
+                await deps.refreshCatalog(true);
+            } catch (e) {
+                deps.showToast(e.message || 'Preset refresh failed', 'error');
+            } finally {
+                effectsDeleteInFlight = false;
+                syncEffectsDeleteButton();
+                closeEffectsDeleteDialog();
+            }
         }
     }
 
@@ -1271,6 +1352,11 @@
             // import file, dual-filter create, and the combine draft inputs.
             // Compare dropdowns bind through setupEffectsCompareActions below.
             if (deps.getElements().effectsDeleteBtn) deps.getElements().effectsDeleteBtn.addEventListener('click', deleteEffectsPreset);
+            deps.getElements().effectsDeleteConfirm?.addEventListener('click', confirmEffectsPresetDelete);
+            deps.getElements().effectsDeleteCancel?.addEventListener('click', closeEffectsDeleteDialog);
+            deps.getElements().effectsDeleteList?.addEventListener('change', syncEffectsDeleteDialog);
+            deps.getElements().effectsDeletePanel?.querySelector('.manage-overlay-backdrop')
+                ?.addEventListener('click', closeEffectsDeleteDialog);
             deps.getElements().effectsExpertToggle?.addEventListener('change', (event) => {
                 void setExpertView(!!event.target.checked);
             });

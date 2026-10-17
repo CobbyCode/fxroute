@@ -542,6 +542,37 @@ class ApiTests(Fixture):
         self.assertEqual(self.service.load()["modes"]["surround"]["banks"]["global"]["preset"],
                          {**neutral_selection(), "front": "Front bundle", "rear": "Rear stereo"})
 
+    def test_surround_group_deletes_preserve_unselected_presets_and_other_side(self):
+        self.route("main_l", "main_r", "center", "side_l", "side_r", "rear_l", "rear_r", "sub1",
+                   mode="surround")
+        state = self.service.load()
+        self.service.commit(state_api.switch_mode(state, "surround"), expected_revision=state["revision"])
+        groups = {"front": "Front A", "center": "Center A", "side": "Side A", "rear": "Rear A"}
+        for group, name in groups.items():
+            self.create_peq(name, -1.0, "global", "surround", bank_group=group)
+        self.manager.create_peq_preset("Rear B", peq(-2.0), bank="global", mode="surround", group="rear")
+        state = self.service.load()
+        state = state_api.set_bank_preset(state, "surround", "global", preset_b="Rear B", group="rear")
+        self.service.commit(state, expected_revision=state["revision"])
+        inactive = copy.deepcopy(self.service.load()["modes"]["surround"]["banks"]["global"]["preset_b"])
+        # Delete each group separately, including Rear while Front is Neutral.
+        remaining = dict(groups)
+        for group in ("front", "center", "side", "rear"):
+            with self.subTest(group=group):
+                response = self.client.post("/api/dsp/presets/delete", json={
+                    "preset_name": groups[group], **self.owner("global", "surround")})
+                self.assertEqual(response.status_code, 200, response.text)
+                remaining[group] = "Neutral"
+                bank = self.service.load()["modes"]["surround"]["banks"]["global"]
+                self.assertEqual(bank["preset"], remaining)
+                self.assertEqual(bank["preset_a"], remaining)
+                inactive = {key: "Neutral" if value == groups[group] else value for key, value in inactive.items()}
+                self.assertEqual(bank["preset_b"], inactive)
+                names = {entry["name"] for entry in self.manager.list_presets()}
+                self.assertNotIn(groups[group], names)
+                self.assertIn("Rear B", names)
+                self.assertTrue(set(remaining.values()) - {"Neutral"} <= names)
+
     def test_a_lone_sub_l_lists_its_presets_and_irs(self):
         """Stereo + Sub with one mono sub on sub_l: its bank is sub_l, not the Sub L/R pair."""
         state = self.service.load()

@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Surround Global A/B tile: each slot holds one preset picker per routed
 // speaker group, listing that group's presets; a pick names its group, the
-// slot pickers stay hidden, and Delete removes the listened preset of the
-// group the measurement targets.
+// slot pickers stay hidden, and Delete includes all listened group presets.
 const assert = require('node:assert/strict');
 
 const OutputState = require('../static/output_state.js');
@@ -128,11 +127,9 @@ const rows = (html) => [...html.matchAll(/<li class="effects-compare-slot-bank e
     assert.deepEqual(rowsB[1].labels, ['Neutral', 'Rear FIR', 'Rear FIR B', 'Direct · all groups']);
     const [tileA, tileB] = context.slots;
     assert.ok(tileB.classList.contains('is-active') && tileA.classList.contains('is-armed'));
-    // Delete removes the listened preset of the measured group.
+    // Delete considers all listened groups, not the measurement target.
     assert.equal(elements.effectsDeleteBtn.disabled, false);
-    assert.equal(elements.effectsDeleteBtn.dataset.tooltip, 'Delete active Rear preset');
-    BankUI.deleteEffectsPreset();
-    assert.deepEqual(context.confirmations, ['Delete Rear preset "Rear FIR B"?']);
+    assert.equal(elements.effectsDeleteBtn.dataset.tooltip, 'Delete active presets');
 }
 
 // A long generated name keeps its start and its distinguishing last word.
@@ -162,13 +159,13 @@ const rows = (html) => [...html.matchAll(/<li class="effects-compare-slot-bank e
     assert.equal(OutputState.SURROUND_GROUP_LABELS.front, 'Front L/R');
 }
 
-// A legacy empty B displays Neutral; a Neutral group disables Delete.
+// A legacy empty B displays Neutral; an active Front enables Delete even if Rear is Neutral.
 {
     const slotA = selection({ front: 'Front FIR' });
     const context = makeContext({ preset: slotA, preset_a: slotA, preset_b: null });
     BankUI.renderEffectsCompare();
     assert.deepEqual(rows(context.elements.effectsCompareBBanks.innerHTML).map(row => row.selected), ['Neutral', 'Neutral']);
-    assert.equal(context.elements.effectsDeleteBtn.disabled, true);
+    assert.equal(context.elements.effectsDeleteBtn.disabled, false);
     assert.equal(context.elements.effectsCompareToggle.disabled, true);
 }
 
