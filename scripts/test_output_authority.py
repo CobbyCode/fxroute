@@ -259,6 +259,96 @@ class OutputAuthorityTests(unittest.IsolatedAsyncioTestCase):
         del self.volumes["alsa_output.A"]
         self.assertEqual(state(), ("alsa_output.A", False))
 
+    def test_fresh_install_follows_default_without_saving_a_selection(self):
+        persistence._audio_output_selection_path().unlink()
+        self.assertEqual(overview.selected_output_default_state(), ("alsa_output.B", False))
+        self.assertEqual(overview.reconcile_selected_output_default(), "alsa_output.B")
+        self.assertIsNone(persistence._load_audio_output_selection().get("selected_key"))
+        self.assertEqual(self.default, "alsa_output.B")
+        self.assertFalse(persistence._audio_output_selection_path().exists())
+
+    def test_fresh_install_never_promotes_the_internal_ingress_sink(self):
+        persistence._audio_output_selection_path().unlink()
+        self.default = "fxroute_dsp_sink"
+        self.volumes = {"fxroute_dsp_sink": 100}
+        self.assertEqual(overview.selected_output_default_state(), (None, False))
+        self.assertIsNone(overview.reconcile_selected_output_default())
+        self.assertIsNone(persistence._load_audio_output_selection().get("selected_key"))
+
+    async def test_fresh_install_repairs_recreated_default_output_links(self):
+        persistence._audio_output_selection_path().unlink()
+        self.default = "alsa_output.A"
+        self.links -= self.desired
+        deps = _watcher_deps(SimpleNamespace(
+            sleep=lambda _d: None, get_dsp_runtime=lambda: self.runtime,
+            get_audio_output_overview=lambda: self.fail("Link repair needs no overview"),
+            observe_playback_samplerate_drift=mock.AsyncMock()))
+        deps = replace(deps, reconcile_output_default=overview.reconcile_selected_output_default,
+                       read_output_default_state=overview.selected_output_default_state,
+                       get_coordinator_lock=asyncio.Lock,
+                       get_measurement_sr_session=lambda: SimpleNamespace(lock=asyncio.Lock()))
+        await DspOrchestrator(deps).reconcile_output_authority()
+        self.assertEqual(self.links, self.desired | {self.tap})
+        self.assertTrue(await self.runtime.verify())
+        self.assertIsNone(persistence._load_audio_output_selection().get("selected_key"))
+
+    def test_fresh_split_output_authority_matches_overview_fallback(self):
+        persistence._audio_output_selection_path().unlink()
+        line1 = "alsa_output.usb-BEHRINGER_UMC204HD_192k-00.HiFi__Line1__sink"
+        line2 = "alsa_output.usb-BEHRINGER_UMC204HD_192k-00.HiFi__Line2__sink"
+        combined = "alsa_output.usb-BEHRINGER_UMC204HD_192k-00.HiFi__combined"
+
+        def command(args):
+            if list(args) in (["pactl", "list", "sinks"], ["pw-cli", "ls", "Node"], ["pw-link", "-io"]):
+                return ""
+            return self.command(args)
+
+        for with_other in (False, True):
+            for default in (line1, "fxroute_dsp_sink"):
+                with self.subTest(with_other=with_other, default=default):
+                    self.default = default
+                    self.volumes = {line1: 30, line2: 30}
+                    if with_other:
+                        self.volumes["alsa_output.A"] = 30
+                    if default == "fxroute_dsp_sink":
+                        self.volumes[default] = 100
+                    expected = "alsa_output.A" if with_other else combined
+                    with mock.patch.object(overview, "_run_command", side_effect=command), \
+                            mock.patch.object(overview, "get_bluetooth_audio_overview", return_value={"devices": []}):
+                        visible = overview.get_audio_output_overview(status={
+                            "available": True, "sink": {"name": default}, "relevant_sink": {"name": default}})
+                        self.assertEqual(visible["selected_output"]["key"], expected)
+                        self.assertEqual(overview.selected_output_default_state(), (expected, False))
+                        self.assertEqual(overview.reconcile_selected_output_default(), expected)
+                    self.assertFalse(persistence._audio_output_selection_path().exists())
+
+    def test_fresh_output_authority_matches_running_sink_overview(self):
+        persistence._audio_output_selection_path().unlink()
+        short = (
+            "70\talsa_output.A\tPipeWire\ts32le 2ch 44100Hz\tRUNNING\n"
+            "71\talsa_output.B\tPipeWire\ts32le 2ch 44100Hz\tSUSPENDED\n"
+            "72\tfxroute_dsp_sink\tPipeWire\tfloat32le 2ch 44100Hz\tSUSPENDED\n")
+
+        def command(args):
+            if list(args) == ["pactl", "list", "sinks", "short"]:
+                return short
+            if list(args) == ["pactl", "get-default-sink"]:
+                return "alsa_output.B"
+            if list(args) in (["pactl", "list", "sinks"], ["pw-cli", "ls", "Node"], ["pw-link", "-io"]):
+                return ""
+            raise AssertionError(f"Unexpected command: {args}")
+
+        relevant = overview._select_relevant_sink({"name": "alsa_output.B"}, overview._parse_pactl_sinks_short(short))
+        self.assertEqual(relevant["name"], "alsa_output.A")
+        with mock.patch.object(overview, "_run_command", side_effect=command), \
+                mock.patch.object(overview, "get_bluetooth_audio_overview", return_value={"devices": []}):
+            visible = overview.get_audio_output_overview(status={
+                "available": True, "sink": {"name": "alsa_output.B"}, "relevant_sink": relevant})
+            self.assertEqual(visible["selected_output"]["key"], "alsa_output.A")
+            self.assertEqual(overview.selected_output_default_state(), ("alsa_output.A", False))
+            self.assertEqual(overview.reconcile_selected_output_default(), "alsa_output.A")
+        self.assertFalse(persistence._audio_output_selection_path().exists())
+
     async def test_steady_tick_holds_no_coordinator_lock(self):
         # Healthy graph: saved default already authoritative, helper active
         # on the selected output, links verify. The 2 s tick must return

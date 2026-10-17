@@ -1479,6 +1479,30 @@ def _primary_sink_for_combined(combined_key: str | None, live_names: list[str]) 
     members = groups.get(card or "")
     return members[0] if members else None
 
+def _unselected_output_key() -> str | None:
+    """Resolve the implicit output without saving a selection or changing defaults."""
+    sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
+    live_names = [str(sink.get("name") or "") for sink in sinks]
+    current = _run_command(["pactl", "get-default-sink"]).strip()
+    groups = group_hifi_split_sinks(live_names)
+    members = {name for group in groups.values() for name in group}
+    # Mirror the overview inventory: split members are hidden, groups follow
+    # the physical entries. Both paths must choose the same implicit device.
+    outputs = [
+        {"key": name, "selectable": name not in NON_SELECTABLE_OUTPUT_KEYS and name not in members}
+        for name in live_names if name
+    ]
+    for card in groups:
+        key = combined_hifi_key_for_card(card)
+        if key:
+            outputs.append({"key": key, "selectable": True})
+    relevant = _select_relevant_sink({"name": current}, sinks)
+    selected = _build_selected_output_payload(None, (relevant or {}).get("name") or current, outputs)
+    if selected:
+        return selected["key"]
+    return _selectable_fallback_key(outputs, current)
+
+
 def reconcile_selected_output_default() -> str | None:
     """Restore the saved sink's default without changing selection or mode.
 
@@ -1490,10 +1514,12 @@ def reconcile_selected_output_default() -> str | None:
     sink and it becomes the default. Zero or several card-mates keep the
     saved identity untouched.  A HiFi split pair migrates to its virtual
     group key instead, and the PipeWire default tracks its primary member.
+    Without a saved selection, return the implicit output for graph repair
+    without persisting it or changing the system default.
     """
     selected = _load_audio_output_selection().get("selected_key")
     if not selected:
-        return None
+        return _unselected_output_key()
     sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
     live_names = [str(sink.get("name") or "") for sink in sinks]
     grouped = combined_key_for_selected_key(selected, live_names)
@@ -1525,7 +1551,7 @@ def reconcile_selected_output_default() -> str | None:
 
 
 def selected_output_default_state() -> tuple[str | None, bool]:
-    """Read (selected_key, drifted) for the saved output default without writing.
+    """Read (effective_key, drifted) for output authority without writing.
 
     Returns the saved selection key and whether PipeWire's default currently
     differs while the selected device is present, i.e. exactly when
@@ -1534,11 +1560,12 @@ def selected_output_default_state() -> tuple[str | None, bool]:
     background watchers diagnose drift without holding the Coordinator lock;
     the mutating reconcile stays on the locked repair path. Read failures
     report no drift so a watcher never repairs from untrusted state.
+    With no saved selection, the implicit output still owns its DSP links.
     """
     selected = _load_audio_output_selection().get("selected_key")
-    if not selected:
-        return None, False
     try:
+        if not selected:
+            return _unselected_output_key(), False
         sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
     except Exception:
         return selected, False
