@@ -1,25 +1,25 @@
 # Changelog
 
-## 1.0-beta14 (2026-10-13)
+## 1.0-beta14 (2026-10-17)
 
 First stand since `1.0-beta12`: the Surround rebuild (third output mode
 with S/PDIF Dolby Digital / DTS decoding, fold-down, group bass
-management, group-scoped Global presets and measurement), common
+management, per-group Global presets and measurement), common
 sample-rate conversion, input auto-select, Custom Input Mapping,
 multichannel STDIN, Level Matching and Polarity Check, central AV Sync,
-the Fast/HQ upmixer, and gapless TIDAL playback. Distribution: web demo
-on GitHub Pages, Raspberry Pi 4/5 images via GitHub Release, x86_64
-Ubuntu 26.04 ISO via SourceForge. Khadas/VIM1S stays internal and gets
-no public image.
+the Fast/HQ upmixer, Easy/Expert A/B bank control, and gapless TIDAL
+playback. Distribution: web demo on GitHub Pages, Raspberry Pi 4/5
+images via GitHub Release, x86_64 Ubuntu 26.04 ISO via SourceForge.
+Khadas/VIM1S stays internal and gets no public image.
 
 ### Release provenance
 
-- Source stand: `main` @ `d2601a3c` — the `0a0f6346` documentation stand
-  plus the follow-up work recorded under *Presets and filter banks*,
-  *Measurement* and *Fixes*. No Armbian, installer-image, or
-  live-converter changes this cycle; `install.sh`/`uninstall.sh` ship the
-  SRC converter plugin handling and the surround ingress helper build.
-- The web demo snapshot follows this stand (`demo/dist` parity is green).
+- Source stand: `main` @ `48520ed7` plus the `CHANGELOG.md` finalization.
+  No Armbian, installer-image, or live-converter changes this cycle;
+  `install.sh`/`uninstall.sh` ship the SRC converter plugin handling and
+  the surround ingress helper build.
+- The web demo snapshot follows this stand (`demo/dist` parity is green)
+  and supports interactive preset and library uploads in the browser.
 
 ### Surround
 
@@ -35,29 +35,42 @@ no public image.
   programme, with a low-latency Fast matrix and a per-frequency HQ engine.
   Multichannel content bypasses it: no processing and no added delay, with
   an automatic, crossfaded switch in both directions.
-- **Global exists in Surround as a group-scoped preset.** One whole-system
-  preset whose PEQ and convolver plugins each carry the speaker group they
-  correct (Front L/R, Center, Side L/R, Rear L/R). A tagged plugin runs on
-  that group's effect pairs ahead of the output matrix and the bass-management
-  split, so the correction covers the speaker and its share of the sub bus.
-  LFE is no group; a group without a routed speaker folds down and its plugin
-  stays out of the chain; a delay band is refused. The native engine gained
-  per-pair plugin stage masks and an input mute for this.
+- **Global in Surround selects one preset per speaker group.** Each Global
+  preset holds the PEQ or convolver filters of one group (Front L/R, Center,
+  Side L/R, Rear L/R), and Preset A and Preset B each provide one picker per
+  routed group (plus Neutral and Direct) whose selected filters run together;
+  Global A/B switches the whole group selection at once. Measuring, importing,
+  creating a PEQ preset, and combining presets in Surround Global each select
+  the target speaker group via shared group chips. A group's plugins run on
+  its effect pairs ahead of the output matrix and the bass-management split,
+  so the correction covers the speaker and its share of the sub bus. LFE is no
+  group; a group without a routed speaker folds down and its filter stays out
+  of the chain; a delay band is refused. The native engine gained per-pair
+  plugin stage masks and an input mute for this.
 - **Measurements are scoped to a speaker group.** A Surround Global sweep
   measures the selected group's speakers plus every sub, mutes the other
   groups at the outputs, and silences the front pair's sink feed for every
   group but Front so its bass cannot arrive through the shared bass bus.
   Groups are separate measurement identities with their own commit gate.
-- **All Banks is measurable as the whole system as listened**: every routed
-  role is excited, nothing is muted, and the frozen result records each
-  bank's listened preset and the joint A/B side. It owns no bank, so such a
-  result can be saved and inspected but never imported or committed, and the
-  Advanced wizard is refused for it.
-- The Advanced wizard follows the selected measuring area: a mono group
-  (Center + Sub) produces a single Center model, a pair area keeps the L/R
-  models and the subwoofer alignment check, and sub banks stay listening-only.
+- **Ind. Banks is measurable as the whole system or a Surround group as
+  listened**: every routed role (or the selected group plus the subs) is
+  excited, and the frozen result records each bank's listened preset and the
+  joint A/B side. It owns no bank, so such a result can be saved and
+  inspected but never imported or committed, and the Advanced wizard is
+  refused for it.
+- **The Advanced wizard follows the selected measuring area and can measure
+  all Surround groups by microphone position.** A mono group (Center + Sub)
+  produces a single Center model, a pair area keeps the L/R models and the
+  subwoofer alignment check, and sub banks stay listening-only. In Surround
+  Global a speaker row (`Front`, `Center`, `Side`, `Rear`, `All`) selects the
+  group inside the dialog, and **All** measures every routed group by shared
+  microphone position (nearfield takes first, then main, left and right
+  listening positions across all groups). The room diagram shows subwoofers
+  only for areas that measure them.
 - **Speaker Auto Alignment** stays unavailable in Surround because the Global
-  bank is group-scoped there, not a whole-speaker bank.
+  bank is group-scoped there, not a whole-speaker bank. In Stereo crossover
+  setups it always aligns through the Global bank, including from the Easy
+  view while Expert has another bank selected.
 
 ### Sample-rate conversion
 
@@ -73,8 +86,9 @@ no public image.
   output under load.
 - Under the **Auto** policy the graph follows the active source's native
   rate; a rate the output does not support plays at the highest supported
-  rate below it. Inactive unbound streams no longer block the SRC
-  selection, and transient engine stalls are survived with counted
+  rate below it, without triggering drift-recovery reloads when the native
+  rate exceeds the output's range. Inactive unbound streams no longer block
+  the SRC selection, and transient engine stalls are survived with counted
   silence.
 
 ### Sources and inputs
@@ -139,24 +153,30 @@ no public image.
   routes right now: a speaker whose pair partner is not routed is a bank
   of its own, and a bank that is not routed (that pair, or the crossover
   ways while the crossover is off) takes no new presets until it is routed
-  again; its presets and assignments stay. **Direct** and **Neutral**
-  exist in every bank without a file. Preset and IR files of an
-  installation from before this change sit in the former flat `presets/`
-  and `irs/` folders and are no longer read — recreate or re-import them;
-  the old files stay on disk.
-- **The A/B card names what every bank listens to.** Below Listening and
-  Chain it lists one chip per bank of the active output mode, Global
-  first, with the preset that bank plays; numbered banks in a row on the
-  same preset share a chip (`Sub 1/2`), the selected bank's chip is
-  outlined, and a shortened name keeps its full text in the tooltip. With
-  **All Banks** selected the Preset A and Preset B slots list the preset
-  each switched area bank plays on that side instead of a picker: a bank
-  without a B reads *stays on A*, a mixed state marks the side each bank
-  listens to, and Global stays out because All Banks does not switch it.
-  The toggle reads **Compare A/B** in both cases, and the status names the
-  listened side only (`Listening: A · All Banks`, `Listening: Mixed A/B`).
+  again; its presets and assignments stay. **Neutral** exists in every bank
+  without a file; **Direct** belongs exclusively to the **Global** bank.
+  Preset and IR files of an installation from before this change sit in
+  the former flat `presets/` and `irs/` folders and are no longer read —
+  recreate or re-import them; the old files stay on disk.
+- **Easy and Expert views on the A/B card.** The A/B card opens in **Easy**
+  on the Global bank without a bank selector; the **Expert** switch at the
+  top right exposes the full bank selection (**Global**, **Ind. Banks**, and
+  each routed area bank). The view choice is stored per browser without
+  altering the active bank filters. Below Listening and Chain, chips show the
+  active preset of the other banks (Easy hides Neutral area banks; Ind. Banks
+  shows Global; pure Stereo hides the chip row; numbered banks in a row on
+  the same preset share a chip such as `Sub 1/2`). With **Ind. Banks**
+  selected the Preset A and Preset B slots list the preset each switched area
+  bank plays on that side instead of a picker: a bank without a B reads
+  *stays on A*, a mixed state marks the side each bank listens to, and Global
+  stays out because Ind. Banks does not switch it. The toggle reads **Compare
+  A/B** in both cases, and the status names the listened side only
+  (`Listening: A · Ind. Banks`, `Listening: Mixed A/B`). **Delete active**
+  opens a confirmation dialog (hidden on Ind. Banks) that lists every active
+  group preset on the listened side in Surround Global so you can select
+  which presets to delete.
 
-### TIDAL and streaming
+### TIDAL, Qobuz, Spotify and Bluetooth
 
 - Consecutive TIDAL album tracks at the same sample rate now play
   gaplessly: the same-rate successor is resolved during playback and
@@ -165,10 +185,18 @@ no public image.
   navigation as before.
 - TIDAL search result tabs list Albums first and new searches open on
   Albums; Discover Similar returns to the entry context.
+- **Qobuz Connect re-join guard**: FXRoute persists the observed repeat and
+  transport intent across `qbzd` restarts and Connect re-joins, writes the
+  exact daemon repeat modes (`off`/`one`/`all`), and suppresses unsolicited
+  join autoplays while keeping user-initiated starts responsive.
 - Transient Spotify source stalls are reported as 503 with spotifyd-only
   MPRIS detection, a committed streaming claim returns a line input to
   App playback, and Connect source handoffs are serialized so line
   monitoring cannot interrupt playback.
+- **Bluetooth stability**: Bluetooth stereo connections stay connected across
+  input switches, reconnect on source re-entry waits for PipeWire source
+  discovery before completing, and buffered SRC suppresses feedback loops on
+  Bluetooth clock updates.
 
 ### Calibration
 
@@ -180,7 +208,7 @@ no public image.
   reached is refused before anything is stored, and **Reset to 0 dB**
   drops the family's raw levels and commits 0 dB to its slots.
 - **Polarity Check** diagnoses speaker wiring only and changes no
-  setting. It runs per speaker bank (not Global, All Banks or sub banks)
+  setting. It runs per speaker bank (not Global, Ind. Banks or sub banks)
   and reads the first high-frequency pulse.
 - **AV Sync** sets the total electronic audio delay per output mode, not
   an extra delay: the engine credits input latency, fixed SRC buffering,
@@ -214,9 +242,12 @@ no public image.
   speaker group must be the ones the preset is committed into, and their
   measured roles must be the roles that bank plays on the selected
   outputs. Sample rate, processing, output device and reference tap are no
-  longer compared. An All Banks result can be saved and inspected but never
+  longer compared. An Ind. Banks result can be saved and inspected but never
   committed, and a result without a frozen target (Auto Sub results carry
   none by design) is refused and has to be measured again.
+- Stereo sweep captures evaluate both configured electrical reference
+  channels (Left and Right) and admit the channel carrying the sweep, so a
+  disabled sibling reference no longer invalidates a valid stereo reference.
 - The A/B compare card summarises the calibration of the active output
   mode: the Level Matching trim of each routed speaker, the sub gains, the
   effective AV Sync delay, and the SPL calibration (or the 83 dB reference
@@ -231,7 +262,7 @@ no public image.
 ### Fixes
 
 - Suite contracts that the surround measurement work left stale now match the
-  code: the bank-group test checks that All Banks is measured as the whole
+  code: the bank-group test checks that Ind. Banks is measured as the whole
   system, and the two measurement-start harnesses wire
   `requireMeasurableArea` instead of the import-only bank gate.
 - Starting a measurement on a rate-tiered interface (Scarlett 16i16, 18i16,
@@ -241,7 +272,9 @@ no public image.
   entry now re-probes into the tier of the measurement rate like every other
   rate change, and closing the Measure window returns the device to the tier
   of the playback rate. An input that claims the 48 kHz carrier in the
-  meantime keeps it.
+  meantime keeps it. If a tier reprobe times out during rollback, FXRoute
+  restores the rule and re-probes the previous tier instead of leaving the
+  output gate latched.
 - A measurement on a microphone input that does not offer 48 kHz now stays
   on the rate the output already runs at, when the input supports it,
   instead of dropping to the lowest supported rate. On a Scarlett at Fixed
@@ -256,6 +289,11 @@ no public image.
   player without a file for a playback change by the user. It now accounts
   for its own release; starting or stopping something during the Measure
   window still prevents the restore.
+- If stopping an **SPL Calibration** fails to restore the pre-calibration
+  volume and DSP state, FXRoute now holds the output behind a confirmed
+  hardware mute and a persistent coordinator hold (`409`) across transitions
+  and service restarts until *Retry restore* succeeds, preventing accidental
+  100% volume playback.
 - A sweep analysis at 88.2 kHz or above could stay in "Processing
   measurement…" for good and hold the measurement session until the service
   was restarted. Only at those rates are the timing search's dot products
@@ -286,10 +324,15 @@ no public image.
   nodes, and a graph sampled while its links were still initializing had no
   owned path and stayed cached for half a second, so the measurement failed
   on a graph that was already rebuilding itself. Such a graph is now read
-  again after a short pause and never cached; a path that is missing for
+  again after a short pause, the 0.5 s cache window starts at the settled
+  dump, and transient failures are never cached; a path that is missing for
   good still fails at once.
+- Non-finite (`NaN`/`Inf`) impulse-response samples are rejected at upload
+  and bundle import, measurement/job files are written atomically, and the
+  legacy v1 overview sync and flat preset-loader paths have been removed in
+  favor of serialized v2 output-state graph writes.
 
-### Installer and maintenance
+### Installer, demo and maintenance
 
 - `install.sh` builds the surround ingress helper (`fxroute-surround-input`,
   FFmpeg 5+) and the common SRC converter plugin (SoX/libsoxr build
@@ -298,6 +341,9 @@ no public image.
 - The native engine runs convolver/crystalizer channels and output banks
   on a graph-owned worker pool with vectorized convolution MACs, and
   reuses engine-owned workers across live graph swaps.
+- The browser demo (`demo/`) mirrors the Surround, Upmixer, Calibration and
+  Easy/Expert surfaces, persists session state across reloads, and supports
+  preset and library track uploads in the browser.
 
 Public release artifact names (to be built from tag `v1.0-beta14`):
 
