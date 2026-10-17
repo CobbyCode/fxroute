@@ -16,7 +16,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_state import (default_output_state, set_bank_preset, set_mode_routing, switch_mode,
-                                validate_output_state)
+                                switch_all_banks, validate_output_state)
+from dsp.banks import BankState
 from measurement.store import MeasurementStore
 from measurement.target import (freeze_measurement_target, require_commit_target, target_input_mask,
                                 target_output_mask, targets_compatible, sweep_output_masks)
@@ -116,13 +117,30 @@ class AllBanksTargetTests(unittest.TestCase):
         state = set_bank_preset(state, "surround", "main", preset_b="Front B")
         state = set_bank_preset(state, "surround", "main", active_side="B")
         target = freeze(state, "all")
-        self.assertEqual(target["active_side"], "B")
-        self.assertEqual(target["bank_presets"]["main_l"], "Front B")
-        self.assertEqual(target["bank_presets"]["rear_l"], "Neutral")
-        # Mixed banks have no single preset.
+        self.assertIsNone(target["active_side"])
+        self.assertEqual(target["bank_presets"], {
+            "main_l": "Front B", "main_r": "Front B", "center": "Neutral",
+            "rear_l": "Neutral", "rear_r": "Neutral", "sub1": "Neutral", "sub2": "Neutral",
+        })
+        # Mixed banks have no common A/B side or single preset.
         self.assertIsNone(target["preset"])
         # Global stays in the chain as listened but is no bank of this list.
         self.assertNotIn("global", target["bank_presets"])
+
+    def test_joint_b_switch_records_b_including_equal_neutral_slots(self):
+        state = state_for("surround", SURROUND)
+        state = set_bank_preset(state, "surround", "main", preset_b="Front B", active_side="B")
+        global_before = state["modes"]["surround"]["banks"]["global"]
+        mixed = freeze(state, "all")
+        switched = switch_all_banks(state, "surround", "A", 16, "B")
+        target = freeze(switched, "all")
+        self.assertEqual(target["active_side"], "B")
+        self.assertIsNone(target["preset"])
+        self.assertEqual(target["bank_presets"], mixed["bank_presets"])
+        for role in SURROUND:
+            self.assertEqual(BankState.from_dict(switched["modes"]["surround"]["banks"][role]).active_side, "B", role)
+        self.assertEqual(switched["modes"]["surround"]["banks"]["global"], global_before)
+        self.assertIsNone(mixed["active_side"], "a frozen target must not change after a switch")
 
     def test_the_commit_gate_refuses_an_all_banks_measurement(self):
         state = state_for("surround", SURROUND)

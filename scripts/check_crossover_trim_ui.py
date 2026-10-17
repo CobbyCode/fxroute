@@ -2,15 +2,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Browser check for crossover trim decimals (two at most), stepping, and narrow layouts.
 
-Run against the local demo server: python3 scripts/serve_demo.py
-Then: python3 scripts/check_crossover_trim_ui.py
+Starts an isolated live-worktree demo server automatically.
+Run: python3 scripts/check_crossover_trim_ui.py
 """
 
 from playwright.sync_api import sync_playwright
 
+from demo_server_test_support import demo_server
+
 
 def main():
-    with sync_playwright() as playwright:
+    with demo_server() as url, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         errors = []
@@ -18,7 +20,7 @@ def main():
         try:
             # ?fast: this check drives the UI; the demo's response pace is
             # irrelevant to it (see demo/state.js demoPace).
-            page.goto("http://localhost:8765/?fast", wait_until="networkidle")
+            page.goto(f"{url}/?fast", wait_until="networkidle")
             page.evaluate("toggleSettingsPanel(true)")
             page.locator("#settings-output-mode-select:not([disabled])").wait_for()
 

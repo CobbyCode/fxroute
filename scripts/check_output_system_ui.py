@@ -8,31 +8,16 @@ switches to Crossover, then verifies the bank selector and the Crossover
 tile (tabs, graph, controls) on the DSP tab. Fails on uncaught page
 errors or console errors from the new modules.
 
-Run manually after output-system UI changes; not part of the test suite:
+Run manually after output-system UI changes or through scripts/run_tests.sh:
 
     python3 scripts/check_output_system_ui.py [--shots DIR]
 """
 
 import argparse
 import pathlib
-import subprocess
 import sys
-import time
-import urllib.request
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-PORT = 8765
-
-
-def wait_for_server(timeout_s: float = 20.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        try:
-            urllib.request.urlopen(f"http://localhost:{PORT}/", timeout=2)
-            return
-        except Exception:
-            time.sleep(0.3)
-    raise RuntimeError("demo server did not come up")
+from demo_server_test_support import demo_server
 
 
 def main() -> int:
@@ -44,26 +29,21 @@ def main() -> int:
 
     from playwright.sync_api import sync_playwright
 
-    server = subprocess.Popen(
-        [sys.executable, "scripts/serve_demo.py"],
-        cwd=ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
     failures: list[str] = []
     problems: list[str] = []
-    try:
-        wait_for_server()
+    with demo_server() as url:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             page = browser.new_page(viewport={"width": 1440, "height": 900})
+            # Individual bank selection belongs to the Expert view.
+            page.add_init_script("localStorage.setItem('fx-dsp-expert', '1');")
             page.on("pageerror", lambda error: problems.append(f"pageerror: {error}"))
             page.on("console", lambda message: problems.append(f"console.{message.type}: {message.text}")
                     if message.type == "error" else None)
             # ?fast runs the demo without its response pace: this check drives
             # the UI, and the simulated latency is irrelevant to what it asserts
             # (the fixed waits below would otherwise race the paced mutations).
-            page.goto(f"http://localhost:{PORT}/?fast", wait_until="networkidle")
+            page.goto(f"{url}/?fast", wait_until="networkidle")
             page.wait_for_selector("#playback-bar", state="visible", timeout=15000)
 
             def check(name: str, condition: bool) -> None:
@@ -142,7 +122,7 @@ def main() -> int:
             page.evaluate("document.getElementById('tab-btn-effects').click()")
             page.wait_for_selector("#effects-bank-select", state="visible", timeout=5000)
             bank_options = page.locator("#effects-bank-select option").all_inner_texts()
-            check("bank selector groups stereo ways", bank_options == ['Global', 'All Banks', 'Low L/R', 'Mid L/R', 'High L/R', 'Sub L/R'])
+            check("bank selector groups stereo ways", bank_options == ['Global', 'Ind. Banks', 'Low L/R', 'Mid L/R', 'High L/R', 'Sub L/R'])
             check("no redundant bank status", page.locator("#effects-bank-info").count() == 0)
             card = page.locator("#effects-crossover-card")
             check("crossover card visible", card.is_visible())
@@ -537,8 +517,6 @@ def main() -> int:
             page.screenshot(path=str(shots / 'output-mobile.png'))
 
             browser.close()
-    finally:
-        server.terminate()
     relevant = [p for p in problems if "output" in p.lower() or "crossover" in p.lower()
                 or "bank" in p.lower() or "pageerror" in p.lower()]
     for problem in problems:

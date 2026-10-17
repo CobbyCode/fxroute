@@ -218,19 +218,31 @@ async function request(url, body) {
     // Compare slots per way bank, and the all-banks switch. Bank order
     // follows the routed roles, so the sub pair lands last.
     assert.deepEqual(Object.keys(current.modes['stereo-sub'].banks), ['global', 'low', 'high', 'sub']);
-    // The routed sub pair carries no B slot yet: Ind. Banks still switches the
-    // ways that have one and keeps the sub pair on A.
-    assert.equal(current.modes['stereo-sub'].banks.sub.preset_b, null);
-    assert.equal(current.modes['stereo-sub'].banks.low.preset_b, null);
+    // B starts Neutral, including banks whose A is also Neutral. An individual
+    // switch is mixed until Ind. Banks switches every routed bank together.
+    assert.equal(current.modes['stereo-sub'].banks.sub.preset_b, 'Neutral');
+    assert.equal(current.modes['stereo-sub'].banks.low.preset_b, 'Neutral');
     await apply({ kind: 'set_bank_preset', bank_id: 'low', preset_b: 'Low B' });
+    await apply({ kind: 'set_bank_preset', bank_id: 'low', active_side: 'B' });
+    assert.equal(current.modes['stereo-sub'].all_banks.active_side, null);
+    assert.equal(current.modes['stereo-sub'].banks.low.preset, 'Low B');
+    assert.equal(current.modes['stereo-sub'].banks.sub.active_side, 'A');
+    const globalBeforeSwitch = current.modes['stereo-sub'].banks.global;
     await apply({ kind: 'switch_all_banks', active_side: 'B' });
     const partial = current.modes['stereo-sub'];
-    assert.equal(partial.banks.low.preset, partial.banks.low.preset_b);
-    assert.equal(partial.banks.sub.preset, partial.banks.sub.preset_a);
+    assert.equal(partial.banks.low.preset, 'Low B');
+    for (const bankId of ['high', 'sub']) {
+        assert.equal(partial.banks[bankId].preset, 'Neutral');
+        assert.equal(partial.banks[bankId].active_side, 'B');
+    }
+    assert.deepEqual(partial.banks.global, globalBeforeSwitch);
     assert.equal(partial.all_banks.active_side, 'B');
     assert.equal(partial.all_banks.can_b, true);
     await apply({ kind: 'switch_all_banks', active_side: 'A' });
     assert.equal(current.modes['stereo-sub'].banks.low.preset, current.modes['stereo-sub'].banks.low.preset_a);
+    for (const bankId of ['low', 'high', 'sub']) {
+        assert.equal(current.modes['stereo-sub'].banks[bankId].active_side, 'A');
+    }
     await apply({ kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'low', preset_b: 'Low B' });
     await apply({ kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'high', preset_b: 'High B' });
     await apply({ kind: 'set_bank_preset', mode: 'stereo-sub', bank_id: 'sub', preset_b: 'Sub B' });
@@ -253,7 +265,7 @@ async function request(url, body) {
     assert.equal(stereoMode.topology.way_count, null);
 
     // Surround Global: a group filter fills its group of the listened slot,
-    // B starts from A, A/B switches the whole selection, and a delete
+    // an existing Neutral B stays independent, A/B switches the selection, and a delete
     // releases only the group holding the preset.
     const surroundApply = async (mutation) => {
         const state = await request('/api/audio/output-state');
@@ -276,17 +288,23 @@ async function request(url, body) {
         .map(entry => [entry.name, entry.group]);
     assert.deepEqual(groups, [['Front EQ', 'front'], ['Rear EQ', 'rear'], ['Rear EQ B', 'rear']]);
     await surroundApply({ kind: 'set_bank_preset', bank_id: 'global', preset_b: 'Rear EQ', group: 'rear' });
-    assert.deepEqual((await surroundGlobal()).preset_b, { ...neutral, front: 'Front EQ', rear: 'Rear EQ' });
+    assert.deepEqual((await surroundGlobal()).preset_b, { ...neutral, rear: 'Rear EQ' });
     const same = await rawRequest('/api/audio/output-state/apply', { expected_revision: (await request('/api/audio/output-state')).revision,
         mutation: { kind: 'set_bank_preset', mode: 'surround', bank_id: 'global', preset_b: 'Rear EQ B', group: 'rear' } });
-    assert.equal(same.status, 400);
+    assert.equal(same.status, 200, 'equal group assignments in A and B are allowed');
+    assert.deepEqual((await surroundGlobal()).preset_b, { ...neutral, rear: 'Rear EQ B' });
+    await surroundApply({ kind: 'set_bank_preset', bank_id: 'global', preset_b: 'Rear EQ', group: 'rear' });
     await surroundApply({ kind: 'set_bank_preset', bank_id: 'global', active_side: 'B' });
     assert.equal((await surroundGlobal()).active_side, 'B');
-    assert.equal((await request('/api/dsp/presets')).active_preset, 'front: Front EQ · rear: Rear EQ');
+    assert.equal((await request('/api/dsp/presets')).active_preset, 'rear: Rear EQ');
     await request('/api/dsp/presets/delete', { preset_name: 'Front EQ', bank_mode: 'surround', bank_id: 'global' });
     const released = await surroundGlobal();
     assert.deepEqual([released.preset_a, released.preset_b, released.active_side],
         [{ ...neutral, rear: 'Rear EQ B' }, { ...neutral, rear: 'Rear EQ' }, 'B']);
+    await surroundApply({ kind: 'set_bank_preset', bank_id: 'global', preset_b: 'Rear EQ B', group: 'rear' });
+    const equalSlots = await surroundGlobal();
+    assert.deepEqual(equalSlots.preset_a, equalSlots.preset_b);
+    assert.equal(equalSlots.active_side, 'B', 'editing the listened B preserves B even when both slots match');
     // Combine stays within one speaker group.
     await createGroup('Front EQ 2', 'front');
     const mixed = await rawRequest('/api/dsp/presets/combine', { presetName: 'Both', presetNames: ['Rear EQ', 'Front EQ 2'],

@@ -51,8 +51,11 @@ def state_fixture(ways=0, subs=("sub1",)):
                 if (kind == "highpass" and way != "low") or (kind == "lowpass" and way != "high"):
                     settings[kind] = {"family": "linkwitz-riley", "slope_db_oct": 24,
                                       "frequency_hz": frequency}
-    for config in state["modes"].values():
-        for bank in config["banks"].values():
+    for mode_name, config in state["modes"].items():
+        for bank_id, bank in config["banks"].items():
+            if mode_name == "surround" and bank_id == "global":
+                # Keep the inactive mode's group-shaped Neutral selection.
+                continue
             bank.update(preset="Room", preset_a="Neutral", preset_b="Room")
     return validate_output_state(state)
 

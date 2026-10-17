@@ -173,7 +173,7 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
             "run_monitor_loop built the source overview on the event loop",
         )
 
-    async def test_bluetooth_monitor_skips_overview_when_source_mode_is_app_playback(self):
+    async def test_bluetooth_monitor_skips_overview_when_app_playback_agent_is_healthy(self):
         seen = []
         monitor = BluetoothInputMonitor(
             BluetoothInputDependencies(
@@ -181,6 +181,7 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
                 get_persisted_source_mode=lambda: "app-playback",
             )
         )
+        monitor.agent_process = SimpleNamespace(returncode=None)
         sleeps = 0
 
         def overview_builder():
@@ -199,7 +200,41 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
             task = asyncio.create_task(monitor.run_monitor_loop())
             with self.assertRaises(asyncio.CancelledError):
                 await task
-        self.assertEqual(seen, [], "app-playback ticks must not build the source overview")
+        self.assertEqual(seen, [], "idle ticks with a healthy agent must not build the source overview")
+
+    async def test_bluetooth_monitor_initial_authorization_probe_runs_off_loop(self):
+        seen = []
+        monitor = BluetoothInputMonitor(BluetoothInputDependencies(
+            sync_peak_monitor_for_source_mode_state=None,
+            get_persisted_source_mode=lambda: "app-playback",
+        ))
+        sleeps = 0
+
+        def overview_builder():
+            seen.append(threading.current_thread() is MAIN_THREAD)
+            return {"mode": "app-playback", "bluetooth": {"selectable": True}}
+
+        async def start_agent():
+            monitor.agent_process = SimpleNamespace(returncode=None)
+
+        async def two_sleeps_then_cancel(_delay):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps >= 2:
+                raise asyncio.CancelledError
+
+        with patch.object(bluetooth_module, "get_audio_source_overview", overview_builder), patch.object(
+            bluetooth_module, "set_bluetooth_receiver_enabled"
+        ), patch.object(monitor, "_ensure_agent", AsyncMock(side_effect=start_agent)) as ensure_agent, patch.object(
+            bluetooth_module.asyncio, "sleep", two_sleeps_then_cancel
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await monitor.run_monitor_loop()
+
+        self.assertEqual(seen, [False], "initial authorization probes off-loop; healthy idle ticks skip it")
+        ensure_agent.assert_awaited_once()
+        self.assertIsNotNone(monitor.agent_process)
+        self.assertIsNone(monitor.agent_process.returncode)
 
     async def test_bluetooth_monitor_without_mode_provider_keeps_legacy_overview(self):
         seen = []
