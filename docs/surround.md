@@ -16,6 +16,13 @@ Surround is an output mode in the existing Output System. The mode is remembered
 - Level Matching stores one mode-wide calibration family over logical speakers; crossover ways stay together. Individual speaker banks keep staged matching against the Front reference, while Global/Ind. Banks/Sub can measure all speaker groups in one run. Subs remain owned by Auto Sub Optimize. Polarity Check diagnoses wiring only in individual speaker banks, never Global/Ind. Banks/Sub.
 - Sub 1/Sub 2 use the existing mono/dual-mono adjustment and optimization paths. No parallel Surround optimizer or DSP engine is created.
 
+<p align="center">
+  <a href="../media/screenshots/surround-easy.png"><img src="../media/screenshots/surround-easy.png" width="48%" alt="Beta 14 Surround Global in Easy view: separate Front, Center, Side and Rear presets for A and B"></a>
+  <a href="../media/screenshots/surround-expert.png"><img src="../media/screenshots/surround-expert.png" width="48%" alt="Beta 14 Surround in Expert view: Ind. Banks A/B assignments and separate Global status"></a>
+</p>
+
+*Beta 14 web-demo examples, with simulated presets. Easy compares the Global group selections; Expert also exposes the area banks and Ind. Banks. See the [manual](../MANUAL.md#56-surround-output-mode) for the controls, [output routing](../media/screenshots/surround-routing.png) for the role assignments, and the [room diagram](../media/screenshots/room-diagram.png) for a group-scoped Advanced measurement.*
+
 ## Digital ingress
 
 The selected capture pair feeds `fxroute_surround_input` before stereo ingress, gain, remix or SRC in all three output modes. Detection uses samples, not a sound-card name or a manual digital/analog flag. Its realtime callback only exchanges bounded PCM/carrier buffers; a separate worker recognizes IEC-61937, validates/deframes AC-3 and DTS Core, decodes with libavcodec and projects actual decoder positions onto the shared bus. Split stereo pairs can feed the two carrier ports from different capture nodes. Explicit custom PCM mappings retain their direct routing.

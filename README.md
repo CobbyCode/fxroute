@@ -17,10 +17,12 @@ Try the interface without any audio hardware, directly in your browser: https://
 The demo is the real FXRoute frontend — same UI — with simulated backend state for playback, DSP, radio, and measurement, so every view is explorable in a normal browser.
 
 <p align="center">
-  <img src="media/screenshots/radio-overview.png" width="32%" alt="FXRoute Radio tab: My Stations above the curated Station Catalog, a station playing in the footer">
-  <img src="media/screenshots/dsp.png" width="32%" alt="FXRoute DSP tab: A/B compare on the Neutral and convolver presets, and the Output extras card">
-  <img src="media/screenshots/measurement.png" width="32%" alt="FXRoute measurement assistant: the measurement workflows on the left, two saved sweeps against the neutral target on the graph">
+  <a href="media/screenshots/radio-overview.png"><img src="media/screenshots/radio-overview.png" width="32%" alt="Beta 14 Radio: My Stations, Station Catalog, and the playback bar with L/R/Sub meters"></a>
+  <a href="media/screenshots/dsp.png"><img src="media/screenshots/dsp.png" width="32%" alt="Beta 14 DSP: Easy A/B compare with Neutral and a convolver preset, calibration summary, and Output extras"></a>
+  <a href="media/screenshots/measurement-graph.png"><img src="media/screenshots/measurement-graph.png" width="32%" alt="Beta 14 measurement graph: completed L/R Repeat, Neutral target, 1/6-octave smoothing, and Save current"></a>
 </p>
+
+Beta 14 demo screenshots (simulated playback and measurements). Click an image for full resolution; the [manual](MANUAL.md) also illustrates routing, Surround Easy/Expert, PEQ, Convolver, and the room diagram.
 
 ## What FXRoute does
 

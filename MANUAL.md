@@ -4,6 +4,8 @@ FXRoute turns a small Linux audio PC into a browser-controlled music and DSP sys
 
 This is the user manual. The [README](README.md) covers the feature overview, installation, and the web demo; [docs/INSTALLER.md](docs/INSTALLER.md) covers the installer and streaming providers in depth.
 
+Screenshots show the Beta 14 frontend in the web demo. Playback, example presets, and measurements are simulated; they are not measurements of your room. Click an image to view it at full resolution.
+
 ## 1. What FXRoute is for
 
 FXRoute assumes one audio machine running a Linux user session with an active PipeWire stack (desktop, or headless with user services enabled).
@@ -62,6 +64,8 @@ The playback bar at the bottom is always visible:
 - click the current cover to open the detail card with metadata, "Recently played" where the source provides it, and the queue
 
 Source and app volumes (Spotify client, Qobuz app) stay separate from the FXRoute master volume. The compact source switcher next to the transport controls selects between app playback, an external input, Bluetooth input, and STDIN.
+
+[![Beta 14 main view: Radio with saved stations, Station Catalog, playback controls, and L/R/Sub output meters](media/screenshots/radio-overview.png)](media/screenshots/radio-overview.png)
 
 ## 4. Sources
 
@@ -205,6 +209,8 @@ Open **DSP** to shape the sound. The **Measure** button on this page opens the m
 
 FXRoute routes every source through one output-routing model. A **mode** decides which roles exist, **Output Routing** assigns those roles to hardware outputs, and the active assignments define the **topology** — which in turn defines the filter banks, the crossover card, the subwoofer card, and what a measurement sweep excites.
 
+[![DSP in Easy view: Global A/B presets, Output extras, and the level, sub, delay, and SPL summary](media/screenshots/dsp.png)](media/screenshots/dsp.png)
+
 ### 5.1 Presets, filter banks and A/B compare
 
 - **Presets** are selectable chains. **Direct** bypasses the whole processing chain including the global helpers; it belongs to the **Global** bank and is not offered in an area bank. **Neutral** is a clean chain that keeps the helpers active and is the default in every bank. Both are built in and cannot be deleted.
@@ -222,6 +228,10 @@ FXRoute routes every source through one output-routing model. A **mode** decides
 - **Create PEQ preset** builds paired left/right bands from scratch (a mono bank edits one set of **Mono bands**), up to 20 bands per side. Each band has a type — **Bell**, **Notch**, **Low shelf**, **High shelf**, **Low pass**, **High pass**, **Gain** (a level trim, shared by both sides), or **Delay** (0–500 ms) — plus frequency (20–20000 Hz), gain (±24 dB), and Q (0.1–100). The **EQ mode** selects IIR, FIR, FFT, or SPM. The preset is written into the selected filter bank.
 - **Q means the same in every bank.** PEQ bands follow the RBJ definition that REW and Equalizer APO use, so a preset renders with the same bandwidth in the Global bank as in a way or sub bank, and a REW import keeps the Q REW calculated.
 - **Way and sub banks** take PEQ and convolver presets only: at most one PEQ, in IIR mode, and one convolver per bank, and at most 32 biquad stages per output including the crossover filters. The FIR/FFT/SPM EQ modes and the output extras belong to the Global bank.
+
+[![Import filter into Surround Global: Side speaker group selected, stereo file and separate Left/Right IR or REW inputs, and preset naming](media/screenshots/preset-import.png)](media/screenshots/preset-import.png)
+
+*The Target line and speaker chips identify the group that receives the imported preset.*
 
 ### 5.2 Output extras
 
@@ -273,6 +283,13 @@ An incomplete routing is saved but not activated; the interface says so instead 
 
 **The sub configuration is derived, not selected.** The routed sub roles alone decide it, and the Subwoofer card badge names it: one sub role is a **Mono sub**, two distinct roles are **Dual-mono subs**, and the pair Sub L + Sub R is **Stereo subs** (Surround only offers Sub 1 and Sub 2, so it stays a Mono sub or Dual-mono subs). Older FXRoute versions and parts of the interface still call these *2.1*, *2.2* and *2.2 Stereo Bass*; those are labels for the same three derived layouts, not modes you can pick.
 
+<p align="center">
+  <a href="media/screenshots/output-routing.png"><img src="media/screenshots/output-routing.png" width="48%" alt="Stereo + Sub output routing: Crossover On, Low/High L/R ways and Sub 1/Sub 2 on an 18-output interface"></a>
+  <a href="media/screenshots/surround-routing.png"><img src="media/screenshots/surround-routing.png" width="48%" alt="Surround output routing: front crossover ways, Center, Side, Rear and two subs, with LFE routed to Sub 1/Sub 2"></a>
+</p>
+
+*Left: Stereo + Sub. Right: Surround. Each mode keeps its own assignments; Crossover remains an independent switch.*
+
 ### 5.4 Crossover and speaker ways
 
 The **Crossover / Speaker** card on the DSP page appears when Crossover is On and at least one speaker way is routed. The number of ways (2, 3, or 4) is derived from the routing, not chosen: each side must carry Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High, and both sides must match.
@@ -287,6 +304,8 @@ The **Crossover / Speaker** card on the DSP page appears when Crossover is On an
 - The card header summarizes the system, for example `3-Way Stereo System · Sub HPF 80 Hz · High-pass off`.
 - **Link L/R** in this card is a UI convenience: it merges the tabs and copies the crossover filter values to the mirrored side. Way trim (level, align, polarity) always stays per side.
 
+[![Crossover / Speaker: left Low way, response preview, sub-owned 80 Hz high-pass, 3 kHz low-pass, and per-way trim](media/screenshots/crossover.png)](media/screenshots/crossover.png)
+
 ### 5.5 Subwoofers
 
 The **Subwoofer** card appears on the DSP page when at least one sub role is routed. Its header shows the routed configuration (`Crossover 80 Hz · LR24 · Main HPF on`, or the two sides separately for an unlinked stereo pair) and the derived badge (`Mono sub`, `Dual-mono subs`, `Stereo subs`).
@@ -300,6 +319,8 @@ In **Surround** the card's **Global** group becomes the speaker groups **Front L
 - A **Mono sub**, a **Dual-mono** pair, and a **linked stereo pair** all share one crossover, so their subs cannot drift apart. Only a true Sub L + Sub R pair offers **Link L/R**; with the link off the card shows a `Sub L` / `Sub R` tab pair and one side at a time, each with its own crossover frequency, type, and slope. The **Main highpass** switch is shared in every layout. In Surround the link switch is labelled **Link groups** and links the speaker groups instead; Sub 1 and Sub 2 always share the same mono bass bus.
 - Mono and dual-mono subs are fed by both channels summed at half gain, so they are excited from either side; in Surround both sub roles receive the same summed mono bass bus; a true Sub L + Sub R pair is side-fed. A dual-mono or mono sub is also a **mono** filter bank: paired PEQ bands must match, and a convolver impulse response must be mono.
 - Subwoofer routing needs a selected multichannel output with at least three channels; subs summed from both sides need a channel count that covers the mode.
+
+[![Surround Subwoofer: Front, Center, Side and Rear group tabs with Link groups off, crossover preview, and Sub 1/Sub 2 level, alignment and polarity](media/screenshots/subwoofer.png)](media/screenshots/subwoofer.png)
 
 ### 5.6 Surround output mode
 
@@ -316,6 +337,13 @@ In **Surround** the card's **Global** group becomes the speaker groups **Front L
 
 Surround introduces no separate DSP engine or optimizer: it uses the same banks, output processing, subwoofer paths, and measurement tools. **Speaker Auto Alignment** stays unavailable because the Surround Global bank is group-scoped, while aligning a whole speaker needs one bank for all of its ways (section 6.5). See [Basic Surround path](docs/surround.md) for the ingress implementation, build requirements, and verification coverage.
 
+<p align="center">
+  <a href="media/screenshots/surround-easy.png"><img src="media/screenshots/surround-easy.png" width="48%" alt="Surround Easy A/B: Global Front, Center, Side and Rear preset pickers in each slot; Side room PEQ active in A, Neutral in B"></a>
+  <a href="media/screenshots/surround-expert.png"><img src="media/screenshots/surround-expert.png" width="48%" alt="Surround Expert A/B: Ind. Banks selected, per-bank A/B assignments, and the separate Global status chip"></a>
+</p>
+
+*Easy (left) compares the Global speaker-group selections. Expert (right) exposes the bank selector; Ind. Banks lists the area-bank assignments in both slots and leaves Global separate.*
+
 ### 5.7 Sample rate
 
 **Sample Rate** defaults to **Auto**: the PipeWire graph and DAC follow the effective playback rate of the current source (local files, radio, TIDAL, Spotify, Qobuz, Bluetooth can differ). A source rate the selected output does not support plays at the highest supported rate below it (for example 96 kHz on a 48 kHz-only card, 384 kHz on a 192 kHz device), and PipeWire resamples the source; supported rates always stay native. A fixed rate forces one clock; FXRoute rejects rates the selected output does not support and caps processing at 384 kHz. Switching policy automatically restores the track and playing or paused state after the audio path changes; seekable tracks retain their position and radio reconnects live. Use Auto when sources with different native rates play together; use a fixed rate when the DAC, DSP chain, or external hardware needs one clock.
@@ -328,7 +356,9 @@ Some USB interfaces offer fewer hardware channels at higher rates. For known pro
 
 Open **Measure** on the DSP page. The assistant plays sweeps through the active DSP chain, records the response from a host microphone, and turns saved measurements into PEQ or FIR/convolver corrections. A microphone input is selected in **Setup**.
 
-The workflow column holds: **Measurements** (Setup, Start Sweep → Run Single Sweep / Start LR Repeat / Advanced), **Subwoofer** (Auto Sub Optimize, only when subs are routed), **Speaker Auto Alignment** (only for a clean 2-, 3-, or 4-way crossover), and **Calibration** (AV Sync, SPL Calibration, Level Matching, and bank-dependent Polarity Check). Only one measurement runs at a time; while Auto Sub Optimize or a sweep is running, the competing start controls are refused rather than queued silently.
+The workflow panel holds: **Measurements** (Setup, Start Sweep → Run Single Sweep / Start LR Repeat / Advanced), **Subwoofer** (Auto Sub Optimize, only when subs are routed), **Speaker Auto Alignment** (only for a clean 2-, 3-, or 4-way crossover), and **Calibration** (AV Sync, SPL Calibration, Level Matching, and bank-dependent Polarity Check). Only one measurement runs at a time; while Auto Sub Optimize or a sweep is running, the competing start controls are refused rather than queued silently.
+
+[![Measurement assistant in Stereo + Sub: sweep, subwoofer, speaker alignment and calibration workflows above a completed L/R Repeat graph](media/screenshots/measurement.png)](media/screenshots/measurement.png)
 
 ### 6.1 Setup: microphone, electrical reference, and files
 
@@ -379,6 +409,8 @@ The wizard follows the selected **Measuring area**, so the step list and the mod
 In **Surround Global** the open Advanced dialog shows a speaker row (`Front`, `Center`, `Side`, `Rear`, `All`) above the first step, so the pair or the single Center can be chosen without leaving it. A group chip sets the same speaker selection as the chips in the sweep menu; the room view places the speakers for the group (front wall, side walls, behind the seat). **All** measures every routed group by microphone position instead of group by group: first each group's nearfield direct response, one start per speaker (two for a pair, one for Center); then a single start at the main listening position that measures every routed group in turn — each group's captures and its subwoofer alignment check, the mono Center without one; then a single start at the left listening position for every group; then one at the right. The header names the group of the current step and its position in the run, and the first step of each listening position says that all speakers are measured automatically. A failed subwoofer alignment check is repeated while the microphone is still at the main position, before the run moves on; a cancelled or failed position resumes with the speakers still missing there. The speaker row is locked once the first measurement is taken; close and reopen the dialog to change it.
 
 The room view shows the subwoofers only for a run that measures them: the whole-system Global area, a Surround group (its target keeps the subs audible) and a subwoofer bank; an individual speaker bank mutes every sub and shows none.
+
+[![Advanced room diagram for Surround Side L/R + Sub: side speakers, both subs, microphone and listening positions, group selector, and the first direct-response step](media/screenshots/room-diagram.png)](media/screenshots/room-diagram.png)
 
 When subwoofer routing is active, a stereo area ends with a **Subwoofer alignment check** that returns the microphone to the main listening position and measures the summed L+R response with the subs in circuit — in the **All** series inside the main-position start of its group. A Surround group keeps the subs audible for it; an individual pair bank mutes them, so its check covers only the bank's own L+R sum. The wizard label reflects the derived sub layout (`Stereo`, `2.1`, `2.2 Mono`, `2.2 Stereo`).
 
@@ -462,6 +494,10 @@ New correction IRs made by FXRoute carry per-channel timing metadata, separating
   The aligned modes need separate saved L/R measurements with valid direct-arrival timing. FXRoute blocks filter creation when the measured L/R timing offset is unsafe; the graph shows the arrival relation (for example `L arrives 5.27 ms later than R`).
 
   **Create** (PEQ and Convolver) commits a preset only into the bank its source measurements were taken for: their frozen mode, bank and speaker group must be the ones the preset is committed into, and their measured roles must be the roles that bank plays on the selected outputs. Sample rate, processing, output device and reference tap are not compared. An Ind. Banks result can be saved and inspected but never committed, and a result without a frozen target (Auto Sub results carry none by design) is refused and has to be measured again.
+
+[![PEQ assistant: a Bell filter at 82 Hz, -3 dB and Q 3, staged for Left and Right, ready to create a named preset](media/screenshots/peq.png)](media/screenshots/peq.png)
+
+[![Convolver assistant: target curve, correction range, boost/cut limits, Dip Guard, phase type, taps, and a staged Left/Right FIR preset](media/screenshots/convolver.png)](media/screenshots/convolver.png)
 
 ### 6.9 Saved runs
 
