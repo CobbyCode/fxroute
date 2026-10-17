@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// The Advanced dialog chooses the speakers (one routed group, or all of them
-// in turn) and a series measures every group with its regular sequence.  Runs
+// The Advanced dialog chooses one routed group or all speakers by position. Runs
 // the real flows module with only the DOM and the measurement API simulated.
 
 const assert = require('assert');
@@ -59,7 +58,7 @@ function measurementFor(form, index, ungatedGroups = new Set()) {
     const measurement = {
         id: `m-${index}`, channel, measurement_role: role,
         input_device: { label: 'Mic' }, input_channels: { mic: 1 }, calibration: {}, audio_output_context: {},
-        traces: [{ kind: 'sweep', role: 'trusted', points: frequencies.map(frequency => [frequency, 0]) }],
+        traces: [{ kind: 'sweep', role: 'trusted', points: frequencies.map(frequency => [frequency, index]) }],
         analysis: {},
         measurement_target: { schema: 'fxroute.measurement-target', bank_id: 'global', global_group: group },
     };
@@ -74,7 +73,7 @@ function measurementFor(form, index, ungatedGroups = new Set()) {
 }
 
 function makeSeries({ groups = ['front', 'center', 'side', 'rear'], selected = 'front', poorIntegrationOnce = [],
-    ungated = [] } = {}) {
+    ungated = [], cancelOnceAt = 0, failOnceAt = 0 } = {}) {
     const state = {
         measurement: { selectedInputId: 'in1', selectedInputKey: 'k', selectedMicInputChannel: '1',
             selectedReferenceInputChannel: '', pendingRepeatMeasurements: [] },
@@ -118,6 +117,10 @@ function makeSeries({ groups = ['front', 'center', 'side', 'rear'], selected = '
             pollMeasurementJob: async (id) => {
                 const index = Number(id.slice(4));
                 const form = forms[index - 1];
+                if (index === cancelOnceAt || index === failOnceAt) {
+                    return { ok: true, status: 200, json: async () => ({ job: {
+                        id, status: index === cancelOnceAt ? 'cancelled' : 'failed', message: 'Capture interrupted' } }) };
+                }
                 const measurement = measurementFor(form, index, ungatedGroups);
                 // The first integration check of a listed group fails once.
                 if (form.get('measurement_role') === 'integration' && poorLeft.has(form.get('measurement_group'))) {
@@ -218,17 +221,28 @@ async function runToEnd(Flows, { stopOnError = false } = {}) {
         assert.equal(wizard.scope.series, true, 'a locked choice is ignored');
         await runToEnd(Flows);
         assert.equal(forms.length, 31);
-        const groupsOfRequests = [];
-        forms.forEach((form) => {
-            const group = form.get('measurement_group');
-            if (groupsOfRequests[groupsOfRequests.length - 1] !== group) groupsOfRequests.push(group);
-        });
-        assert.deepEqual(groupsOfRequests, ['front', 'center', 'side', 'rear'], 'each step names its own group');
+        assert.deepEqual(forms.slice(0, 7).map(form => [form.get('measurement_group'), form.get('channel'), form.get('measurement_role')]), [
+            ['front', 'left', 'direct'], ['front', 'right', 'direct'], ['center', 'stereo', 'direct'],
+            ['side', 'left', 'direct'], ['side', 'right', 'direct'], ['rear', 'left', 'direct'], ['rear', 'right', 'direct']]);
+        assert.deepEqual(forms.slice(7, 17).map(form => [form.get('measurement_group'), form.get('channel'), form.get('measurement_role')]), [
+            ['front', 'left', 'mlp'], ['front', 'right', 'mlp'], ['front', 'stereo', 'integration'], ['center', 'stereo', 'mlp'],
+            ['side', 'left', 'mlp'], ['side', 'right', 'mlp'], ['side', 'stereo', 'integration'],
+            ['rear', 'left', 'mlp'], ['rear', 'right', 'mlp'], ['rear', 'stereo', 'integration']]);
         assert.equal(choice.selected, 'front', 'the series never moves the shared selection');
         assert.equal(wizard.profile.series, true);
         assert.deepEqual(wizard.profile.parts.map(part => part.scope.group), ['front', 'center', 'side', 'rear']);
         assert.deepEqual(Object.keys(wizard.profile.parts[0].profile.models), ['left', 'right']);
         assert.deepEqual(Object.keys(wizard.profile.parts[1].profile.models), ['stereo']);
+        assert.deepEqual(wizard.profile.parts.flatMap(part => Object.values(part.profile.models).map(model => model.timingMeasurement.id)),
+            ['m-8', 'm-9', 'm-11', 'm-12', 'm-13', 'm-15', 'm-16'], 'timing stays tied to each speaker at Main');
+        const bassLevels = wizard.profile.parts.flatMap(part => Object.values(part.profile.models).map(model => model.points[0][1]));
+        [12.05, 13.05, 14.75, 15.75, 16.75, 18.45, 19.45].forEach((want, index) =>
+            assert(Math.abs(bassLevels[index] - want) < 1e-9,
+                `Model ${index} must combine only its own listening captures: got ${bassLevels[index]}, expected ${want}`));
+        assert.equal(wizard.captures.length, 31);
+        assert.equal(new Set(wizard.captures.map(capture => capture.stepId)).size, 31);
+        assert.deepEqual(wizard.captures.map(capture => [capture.group, capture.position, capture.channel]),
+            wizard.sequence.map(step => [step.group, step.position, step.channel]));
         const summary = elements.measurementHybridSummary.innerHTML;
         assert.deepEqual([...summary.matchAll(/<strong>([^<]+)<\/strong>/g)].map(match => match[1]),
             ['Front L/R + Sub', 'Center + Sub', 'Side L/R + Sub', 'Rear L/R + Sub']);
@@ -260,9 +274,31 @@ async function runToEnd(Flows, { stopOnError = false } = {}) {
         assert.equal(wizard.open, false);
     }
 
-    // A failed integration check is repeated for that group before the next group starts.
+    // One start per listening position crosses group boundaries without moving the mic.
     {
-        const { Flows, forms } = makeSeries({ poorIntegrationOnce: ['front'] });
+        const { Flows, forms, elements } = makeSeries();
+        Flows.openHybridMeasurementWizard();
+        Flows.selectHybridWizardScope('all');
+        const wizard = Flows.getHybridWizardState();
+        for (let index = 0; index < 7; index += 1) {
+            await Flows.runHybridWizardSweep();
+            assert.equal(forms.length, index + 1, 'nearfield measures only the current speaker');
+            assert.equal(wizard.quality?.retry, false);
+            assert.deepEqual(wizard.groupProfiles, {}, 'no profile is built before listening captures exist');
+        }
+        for (const [position, total] of [['mlp', 17], ['left', 24], ['right', 31]]) {
+            assert.equal(wizard.sequence[wizard.stepIndex].position, position);
+            assert.match(elements.measurementHybridInstruction.textContent, /All speakers will be measured automatically/);
+            await Flows.runHybridWizardSweep();
+            assert.equal(forms.length, total, `one start completes ${position} across all groups`);
+            assert.equal(wizard.quality?.retry, false);
+        }
+        assert.ok(wizard.profile);
+    }
+
+    // A failed integration check is repeated while still at Main.
+    for (const [group, requestCount] of [['front', 10], ['side', 14], ['rear', 17]]) {
+        const { Flows, forms } = makeSeries({ poorIntegrationOnce: [group] });
         Flows.openHybridMeasurementWizard();
         Flows.selectHybridWizardScope('all');
         const wizard = Flows.getHybridWizardState();
@@ -270,12 +306,48 @@ async function runToEnd(Flows, { stopOnError = false } = {}) {
         assert.equal(wizard.quality?.level, 'error');
         assert.match(wizard.status, /integration check failed/i);
         const integrationStep = wizard.sequence[wizard.stepIndex];
-        assert.deepEqual([integrationStep.role, integrationStep.group], ['integration', 'front']);
-        assert.equal(forms.length, 9, 'no other group was measured yet');
-        assert.equal(wizard.groupProfiles.front, undefined);
+        assert.deepEqual([integrationStep.role, integrationStep.group], ['integration', group]);
+        assert.equal(forms.length, requestCount, 'integration is checked before moving away from Main');
+        assert.equal(wizard.groupProfiles[group], undefined);
         await runToEnd(Flows);
         assert.equal(forms.length, 9 + 1 + 4 + 9 + 9, 'only the integration step was repeated');
         assert.deepEqual(wizard.profile.parts.map(part => part.scope.group), ['front', 'center', 'side', 'rear']);
+        assert.equal(wizard.captures.length, 31, 'the repeated integration capture replaces its predecessor');
+    }
+
+    // Cancellation or failure mid-position resumes only the remaining speakers.
+    for (const interrupt of [{ cancelOnceAt: 12 }, { failOnceAt: 12 }]) {
+        const { Flows, forms } = makeSeries(interrupt);
+        Flows.openHybridMeasurementWizard();
+        Flows.selectHybridWizardScope('all');
+        const wizard = Flows.getHybridWizardState();
+        for (let index = 0; index < 8; index += 1) await Flows.runHybridWizardSweep();
+        assert.equal(wizard.stepIndex, 11, 'interrupted Side L stays selected at Main');
+        assert.equal(wizard.captures.length, 11);
+        await Flows.runHybridWizardSweep();
+        assert.equal(wizard.stepIndex, 17, 'resume completes Main, without starting Left');
+        assert.equal(forms.length, 18);
+        await runToEnd(Flows);
+        assert.ok(wizard.profile);
+        assert.equal(forms.length, 32);
+        assert.equal(wizard.captures.length, 31);
+    }
+
+    // Back to Main replaces that entire position and uses the latest timing data.
+    {
+        const { Flows, forms } = makeSeries();
+        Flows.openHybridMeasurementWizard();
+        Flows.selectHybridWizardScope('all');
+        const wizard = Flows.getHybridWizardState();
+        for (let index = 0; index < 9; index += 1) await Flows.runHybridWizardSweep();
+        assert.equal(wizard.stepIndex, 24);
+        wizard.stepIndex = Hybrid.getPreviousPositionIndex(wizard.sequence,
+            Hybrid.getPreviousPositionIndex(wizard.sequence, wizard.stepIndex));
+        assert.equal(wizard.stepIndex, 7);
+        await runToEnd(Flows);
+        assert.equal(forms.length, 48);
+        assert.equal(wizard.captures.length, 31);
+        assert.equal(wizard.profile.parts[0].profile.left.timingMeasurement.id, 'm-25');
     }
 
     // The series compares the routed groups: a changed group set stops it.

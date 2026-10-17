@@ -1023,7 +1023,7 @@ function getHybridWizardState() {
 }
 
 
-// A series measures every routed group in turn; the scope alone says so.
+// A series measures every routed group at shared microphone positions.
 function isHybridSeries(wizard) {
     return wizard.scope?.series === true;
 }
@@ -1070,7 +1070,7 @@ function getLiveHybridScopeId(series) {
 }
 
 
-// Regular sequence of the selected group, or of every routed group in turn.
+// Regular selected-group sequence, or all groups ordered by microphone position.
 function buildHybridWizardSequence(series) {
     const scopes = series ? getCurrentHybridGroupScopes() : null;
     return scopes
@@ -1307,8 +1307,7 @@ function renderHybridMeasurementWizard() {
     const complete = !!wizard.profile;
     const current = wizard.sequence[wizard.stepIndex] || null;
     const scope = HybridMeasurement.normalizeScope(wizard.scope || wizard.mode);
-    // A series measures one group at a time: header, summary and the room
-    // view follow the group of the current step (the last one when complete).
+    // Header and room view follow the active speaker group at this position.
     const stepScope = HybridMeasurement.scopeForStep(scope, current || wizard.sequence[wizard.sequence.length - 1]);
     if (deps.getElements().measurementHybridMode) {
         deps.getElements().measurementHybridMode.textContent = buildHybridHeaderText(scope, stepScope, complete);
@@ -1452,6 +1451,9 @@ async function runHybridWizardStep(step) {
             }
             wizard.captures = wizard.captures.filter(item => item.stepId !== step.id);
             wizard.captures.push({ stepId: step.id, role: step.role, position: step.position, channel: step.channel, group: step.group || '', measurement });
+            if (step.role === 'integration' && isHybridSeries(wizard)) {
+                HybridMeasurement.validateIntegration(HybridMeasurement.groupCaptures(wizard.captures, step.group), stepScope);
+            }
             wizard.quality = { level: 'ok', retry: false };
             wizard.stepIndex += 1;
             return true;
@@ -1477,13 +1479,11 @@ async function cancelHybridWizardMeasurement() {
 }
 
 
-// Profiles the group whose last step was just measured (series only).  A
-// failed integration check repeats that group's integration step; any other
-// failure repeats the group from its first step.
+// Profile a group only after its final scheduled capture, not a group boundary.
+// Any non-integration model failure restarts that group's nearfield capture.
 function buildFinishedHybridGroupProfile(wizard) {
     const last = wizard.sequence[wizard.stepIndex - 1];
-    const next = wizard.sequence[wizard.stepIndex];
-    if (!last || (next && next.group === last.group)) return;
+    if (!last || wizard.sequence.slice(wizard.stepIndex).some(step => step.group === last.group)) return;
     try {
         wizard.groupProfiles[last.group] = HybridMeasurement.buildProfile(
             HybridMeasurement.groupCaptures(wizard.captures, last.group),
@@ -1512,7 +1512,6 @@ async function runHybridWizardSweep() {
         return;
     }
     const seriesEnd = HybridMeasurement.getPositionSeriesEnd(wizard.sequence, wizard.stepIndex);
-    const startIndex = wizard.stepIndex;
     wizard.running = true;
     wizard.cancelRequested = false;
     wizard.quality = null;
@@ -1528,6 +1527,7 @@ async function runHybridWizardSweep() {
             wizard.jobId = '';
             deps.getState().measurement.activeJobId = '';
             if (!completed || wizard.cancelRequested) break;
+            if (series) buildFinishedHybridGroupProfile(wizard);
             if (wizard.stepIndex <= seriesEnd) {
                 const next = wizard.sequence[wizard.stepIndex];
                 wizard.phase = 'preparing';
@@ -1540,12 +1540,6 @@ async function runHybridWizardSweep() {
             wizard.status = 'Measurement cancelled. The microphone position is ready to measure again.';
             wizard.quality = null;
         } else {
-            // A series profiles each group as soon as its last step is
-            // measured: a failed integration check is repeated before the
-            // next group starts, not after every group is done.
-            const measuredStepsThisRun = wizard.stepIndex > startIndex;
-            const mayHaveFinishedGroup = series && measuredStepsThisRun && !wizard.quality?.retry;
-            if (mayHaveFinishedGroup) buildFinishedHybridGroupProfile(wizard);
             if (wizard.stepIndex >= wizard.sequence.length) {
                 wizard.profile = series
                     ? HybridMeasurement.buildSeriesProfile(wizard.scope, wizard.groupProfiles)

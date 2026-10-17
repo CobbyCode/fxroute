@@ -83,9 +83,8 @@
         };
     }
 
-    // A series runs the regular sequence of several speaker groups one after
-    // another.  Its scope only lists the group scopes; every reader of one
-    // step's scope goes through scopeForStep.
+    // A series measures several groups at shared listening positions. Its scope
+    // lists the group scopes; readers of one step's scope use scopeForStep.
     function buildSeriesScope(scopes) {
         const list = (Array.isArray(scopes) ? scopes : []).filter(Boolean);
         return {
@@ -141,38 +140,44 @@
         return { mode: scope.mode, scope, modeLabel: scope.label, steps };
     }
 
-    // The regular sequence of every group scope, back to back.  Step ids carry
-    // their group so captures of different groups never share an id.
+    // Keep every group's capture identity, but visit each listening position
+    // only once. Integration checks share Main with their source captures.
     function buildSeriesSequence(scopes) {
         const scope = buildSeriesScope(scopes);
-        const steps = [];
-        scope.scopes.forEach((groupScope) => {
+        const groupedSteps = scope.scopes.flatMap((groupScope) => {
             // A single speaker already names itself ("Center speaker").
             const named = groupScope.channels.length === 2;
-            buildSequence(groupScope).steps.forEach(item => steps.push({
+            return buildSequence(groupScope).steps.map(item => ({
                 ...item,
                 id: `${groupScope.group}:${item.id}`,
                 group: groupScope.group,
                 active: named ? `${groupScope.groupName} · ${item.active}` : item.active,
             }));
         });
+        const steps = groupedSteps.filter(item => item.role === 'direct');
+        for (const position of ['mlp', 'left', 'right']) {
+            groupedSteps.filter(item => item.role !== 'direct' && item.position === position).forEach((item, index) => {
+                const instruction = item.instruction.replace(/ Left and right will be measured automatically\.$/, '');
+                steps.push({ ...item, move: index === 0, instruction: index === 0
+                    ? `${instruction} All speakers will be measured automatically.` : 'Keep the microphone here.' });
+            });
+        }
         return { mode: scope.mode, scope, modeLabel: scope.label, steps };
     }
 
     function getPositionSeriesEnd(steps, startIndex) {
-        const { position, group } = steps[startIndex] || {};
+        const { position } = steps[startIndex] || {};
         let endIndex = startIndex;
         while (endIndex + 1 < steps.length && steps[endIndex + 1].position === position
-            && steps[endIndex + 1].group === group) endIndex += 1;
+            && !steps[endIndex + 1].move) endIndex += 1;
         return endIndex;
     }
 
     function getPreviousPositionIndex(steps, currentIndex) {
         if (currentIndex <= 0) return 0;
-        const previous = steps[currentIndex - 1] || {};
         let index = currentIndex - 1;
-        while (index > 0 && steps[index - 1]?.position === previous.position
-            && steps[index - 1]?.group === previous.group) index -= 1;
+        while (index > 0 && !steps[index]?.move
+            && steps[index - 1]?.position === steps[index]?.position) index -= 1;
         return index;
     }
 
@@ -480,7 +485,7 @@
         return { channel, points: room.points, constraints: room.constraints, timingMeasurement: room.timingMeasurement, modelBlend: null };
     }
 
-    function buildProfile(captures, scopeOrMode = 'stereo') {
+    function validateIntegration(captures, scopeOrMode = 'stereo') {
         const scope = normalizeScope(scopeOrMode);
         const pair = scope.channels.length === 2;
         // A single channel has no second summand to compare.
@@ -493,6 +498,12 @@
             error.retryRole = 'integration';
             throw error;
         }
+        return integration;
+    }
+
+    function buildProfile(captures, scopeOrMode = 'stereo') {
+        const scope = normalizeScope(scopeOrMode);
+        const integration = validateIntegration(captures, scope);
         const models = Object.fromEntries(scope.channels.map(channel => [
             channel, scope.direct ? buildHybridSide(captures, channel) : buildListeningSide(captures, channel)]));
         return { mode: scope.mode, scope, models, left: models.left || null, right: models.right || null, integration };
@@ -528,6 +539,7 @@
         isUsableDirectMeasurement,
         validateDirectMicrophonePosition,
         validateComplexSum,
+        validateIntegration,
         buildProfile,
         getDiagramState,
         interpolate,
