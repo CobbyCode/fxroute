@@ -289,6 +289,11 @@
             selected: choice ? choice.selected : '',
             disabled: !!measurement.startInFlight,
         });
+        root.FXRouteUiHelpers?.renderChipRow(deps.getElements().effectsCombineGroupRow, choice ? choice.options : [], {
+            attribute: 'data-combine-group',
+            selected: choice ? choice.selected : '',
+            disabled: !!measurement.startInFlight,
+        });
         // Mono banks get a single import field: the stereo file area is hidden
         // and the remaining pane accepts every mono-supported format. A stale
         // file selection from the other mode is cleared on switching only, so
@@ -910,6 +915,8 @@
         if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = `<div>Saving combined preset: <strong>${deps.escapeHtml(validation.presetName)}</strong>…</div>`;
         try {
             const owner = outputSystemBankOwner();
+            const group = owner?.bank_mode === 'surround' && owner.bank_id === 'global'
+                ? outputSystemBankBinding()?.bank_group : null;
             const resp = await fetch('/api/dsp/presets/combine', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -917,6 +924,7 @@
                     presetName: validation.presetName,
                     presetNames: validation.selectedPresets,
                     ...(owner || {}),
+                    ...(group ? { bank_group: group } : {}),
                 }),
             });
             const data = await resp.json().catch(() => ({}));

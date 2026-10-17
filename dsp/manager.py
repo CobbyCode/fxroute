@@ -1397,7 +1397,7 @@ class DSPManager:
 
     def combine_presets(self, preset_name: str, source_presets: List[str],
                         extras: Optional[Dict[str, Any]] = None, bank: Any = None,
-                        mode: Any = None) -> Dict[str, Any]:
+                        mode: Any = None, group: Optional[str] = None) -> Dict[str, Any]:
         del extras
         name = self._ensure_overwritable_name(preset_name)
         if not name:
@@ -1408,6 +1408,9 @@ class DSPManager:
         if name in sources:
             raise ValueError("New preset name must differ from the source presets")
         store = self.library(bank, mode)
+        group = self._group_for_create(group, store)
+        if group:
+            self._guard_create(name, bank, group, mode)
         chain = []
         counters: Dict[str, int] = {}
         for source in sources:
@@ -1417,6 +1420,8 @@ class DSPManager:
                 number = counters.get(base, 0)
                 counters[base] = number + 1
                 item["id"] = f"{base}#{number}"
+                if group:
+                    item["group"] = group
                 chain.append(item)
         self._validate_supported_chain(chain)
         self._clamp_chain_limiter_params(chain)

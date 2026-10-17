@@ -656,6 +656,47 @@ class ApiTests(Fixture):
         self.assertEqual(self.stored("Both"), [("main", None)])
         self.assertEqual(self.service.load(), before)
 
+    def test_combine_stores_the_chosen_surround_group_for_both_slots(self):
+        self.route("main_l", "main_r", "center", "side_l", "side_r", "rear_l", "rear_r", "sub1",
+                   mode="surround")
+        for name, group, gain_db in (("Front EQ", "front", -1.0), ("Side EQ", "side", -2.0)):
+            self.manager.create_peq_preset(name, peq(gain_db), bank="global", mode="surround", group=group)
+        sources = ["Front EQ", "Side EQ"]
+        original = [self.manager.read_preset("surround", "global", name) for name in sources]
+        before = self.service.load()
+        for group in ("front", "center", "side", "rear"):
+            with self.subTest(group=group):
+                name = f"Combined {group}"
+                response = self.client.post("/api/dsp/presets/combine", json={
+                    "presetName": name, "presetNames": sources,
+                    **self.owner("global", "surround"), "bank_group": group})
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = self.manager.read_preset("surround", "global", name)
+                self.assertEqual(payload["metadata"]["source_presets"], sources)
+                self.assertEqual([plugin["group"] for plugin in payload["chain"]], [group, group])
+                self.assertEqual([plugin["id"] for plugin in payload["chain"]], ["equalizer#0", "equalizer#1"])
+                self.assertEqual([plugin["params"] for plugin in payload["chain"]],
+                                 [source["chain"][0]["params"] for source in original])
+                entry = next(entry for entry in self.manager.list_presets() if entry["name"] == name)
+                self.assertEqual((entry["bank"], entry["mode"], entry["group"]), ("global", "surround", group))
+                self.service.validate_bank_preset(before, "surround", "global", name, group=group)
+                for slot in ("preset_a", "preset_b"):
+                    assigned = state_api.set_bank_preset(before, "surround", "global", group=group, **{slot: name})
+                    self.assertEqual(assigned["modes"]["surround"]["banks"]["global"][slot][group], name)
+        self.assertEqual([self.manager.read_preset("surround", "global", name) for name in sources], original)
+        self.assertEqual(self.service.load(), before, "Combine must not activate or alter any bank")
+
+    def test_combine_rejects_invalid_group_targets_before_writing(self):
+        for mode, bank, group in (("surround", "global", "sub1"), ("stereo", "global", "front"),
+                                  ("stereo-sub", "main", "rear")):
+            with self.subTest(mode=mode, bank=bank, group=group):
+                self.create("Source", -1.0, bank, mode)
+                response = self.client.post("/api/dsp/presets/combine", json={
+                    "presetName": "Rejected", "presetNames": ["Source", "Neutral"],
+                    **self.owner(bank, mode), "bank_group": group})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual(self.stored("Rejected"), [])
+
     def test_download_serves_the_named_banks_preset(self):
         self.create_peq("Room", -1.0, "global")
         self.create_peq("Room", -2.0, "main")

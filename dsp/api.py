@@ -724,10 +724,14 @@ async def combine_dsp_presets(request: Request):
     if not isinstance(preset_names, list):
         raise HTTPException(status_code=400, detail="presetNames must be an array")
     owner = await _optional_owner(body)
+    group = str(body.get("bank_group") or "").strip()
+    if group and (owner.get("bank") != "global" or owner.get("mode") != "surround"):
+        raise HTTPException(status_code=400, detail="A speaker group applies to Surround Global only")
 
     try:
         async with _deps().dsp_mutation_lock():
-            created = dsp_mgr.combine_presets(preset_name, preset_names, **owner)
+            created = dsp_mgr.combine_presets(preset_name, preset_names, **owner,
+                                              **({"group": group} if group else {}))
         status = await _finish_dsp_preset_mutation(refresh_reason=None)
         return {
             "status": "ok",

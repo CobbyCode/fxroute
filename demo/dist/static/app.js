@@ -1378,6 +1378,7 @@ const elements = {
     effectsCombinePreset3: document.getElementById('effects-combine-preset-3'),
     effectsCombinePresetName: document.getElementById('effects-combine-preset-name'),
     effectsCombineSaveBtn: document.getElementById('effects-combine-save'),
+    effectsCombineGroupRow: document.getElementById('effects-combine-group-row'),
     effectsRewLeftFile: document.getElementById('effects-rew-left-file'),
     effectsRewRightFile: document.getElementById('effects-rew-right-file'),
     effectsRewLeftText: document.getElementById('effects-rew-left-text'),
@@ -4987,6 +4988,11 @@ function setupMeasurementActions() {
         const button = event.target.closest?.('[data-peq-group]');
         if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
         selectMeasurementSpeakerGroup(button.getAttribute('data-peq-group') || '');
+    });
+    elements.effectsCombineGroupRow?.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-combine-group]');
+        if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
+        selectMeasurementSpeakerGroup(button.getAttribute('data-combine-group') || '');
     });
     document.querySelectorAll('#measurement-sweep-side-row [data-sweep-side]').forEach((button) => {
         button.addEventListener('click', () => {

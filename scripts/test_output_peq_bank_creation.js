@@ -76,7 +76,7 @@ const state = {
 };
 const elements = {
     effectsBankSelect: element({ closest: () => element() }),
-    effectsImportGroupRow: chipRow(), effectsPeqGroupRow: chipRow(),
+    effectsImportGroupRow: chipRow(), effectsPeqGroupRow: chipRow(), effectsCombineGroupRow: chipRow(),
     effectsInfo: element(), effectsDeleteBtn: element(), effectsStatus: element(),
     effectsPeqPresetName: element(), effectsPeqModeSelect: element({ value: 'IIR' }),
     effectsPeqCreatePresetBtn: element(), effectsPeqDisclosure: element({ open: true }),
@@ -201,6 +201,11 @@ function combineOptions() {
     const chipIds = () => row.buttons.map(button => button.getAttribute('data-peq-group'));
     assert.deepEqual(chipIds(), ['front', 'center', 'side', 'rear'], 'PEQ offers every routed Global group');
     assert.equal(row.classList.contains('hidden'), false);
+    const combineRow = elements.effectsCombineGroupRow;
+    assert.deepEqual(combineRow.buttons.map(button => button.getAttribute('data-combine-group')),
+        ['front', 'center', 'side', 'rear'], 'Combine offers every routed Global group');
+    assert.deepEqual(combineRow.buttons.map(button => button.textContent), ['Front', 'Center', 'Side', 'Rear']);
+    assert.equal(combineRow.classList.contains('hidden'), false);
 
     const appSource = fs.readFileSync(require.resolve('../static/app.js'), 'utf8');
     const clickBinding = /elements\.effectsPeqGroupRow\?\.addEventListener\('click', \(event\) => \{[\s\S]*?\n    \}\);/.exec(appSource);
@@ -209,6 +214,13 @@ function combineOptions() {
     new Function('elements', 'state', 'window', 'selectMeasurementSpeakerGroup', clickBinding[0])(
         elements, state, { FXRouteMeasurementJob: { hasActiveMeasurementJob: () => measurementActive } },
         (group) => BankUI.selectEffectsGroup(group));
+    const combineBinding = /elements\.effectsCombineGroupRow\?\.addEventListener\('click', \(event\) => \{[\s\S]*?\n    \}\);/.exec(appSource);
+    assert.ok(combineBinding, 'the Combine group chips have a click binding');
+    new Function('elements', 'state', 'window', 'selectMeasurementSpeakerGroup', combineBinding[0])(
+        elements, state, { FXRouteMeasurementJob: { hasActiveMeasurementJob: () => measurementActive } },
+        (group) => BankUI.selectEffectsGroup(group));
+    const combineClick = (group) => combineRow.listeners.click({ target: { closest: () => combineRow.buttons
+        .find(button => button.getAttribute('data-combine-group') === group) } });
     const click = (group) => row.listeners.click({ target: { closest: () => row.buttons.find(button => button.getAttribute('data-peq-group') === group) } });
     for (const group of ['rear', 'center', 'side', 'front']) {
         click(group);
@@ -230,24 +242,50 @@ function combineOptions() {
                 leftBands: [{ filterType: 'bell', frequencyHz: 100, gainDb: 0, q: 1, delayMs: 0 }],
                 rightBands: [{ filterType: 'bell', frequencyHz: 200, gainDb: 0, q: 1, delayMs: 0 }] });
     }
+    presets.push({ name: 'Surround PEQ', bank: 'global', mode: 'surround', group: 'front' });
+    for (const group of ['rear', 'center', 'side', 'front']) {
+        combineClick(group);
+        assert.equal(state.measurement.globalGroup, group);
+        assert.deepEqual(combineRow.buttons.filter(button => button.getAttribute('aria-pressed') === 'true')
+            .map(button => button.getAttribute('data-combine-group')), [group]);
+        assert.deepEqual(row.buttons.filter(button => button.getAttribute('aria-pressed') === 'true')
+            .map(button => button.getAttribute('data-peq-group')), [group], 'PEQ and Combine share the choice');
+        elements.effectsCombinePreset1.value = 'Surround PEQ';
+        elements.effectsCombinePreset2.value = 'Neutral';
+        elements.effectsCombinePresetName.value = `${group} combined`;
+        await BankUI.createCombinedEffectsPreset();
+        assert.deepEqual(requests.at(-1), { url: '/api/dsp/presets/combine', body: {
+            presetName: `${group} combined`, presetNames: ['Surround PEQ', 'Neutral'],
+            bank_mode: 'surround', bank_id: 'global', bank_group: group,
+        } });
+    }
     state.measurement.startInFlight = true;
     click('rear');
+    combineClick('rear');
     assert.equal(state.measurement.globalGroup, 'front', 'do not change group while a measurement starts');
     state.measurement.startInFlight = false;
     measurementActive = true;
     click('rear');
+    combineClick('rear');
     assert.equal(state.measurement.globalGroup, 'front', 'do not change group during a measurement');
     measurementActive = false;
     state.outputSystem.catalog.modes.surround.topology.roles = ['center'];
     BankUI.renderEffectsBankSelector();
     assert.equal(row.classList.contains('hidden'), true, 'one routed group needs no choice');
+    assert.equal(combineRow.classList.contains('hidden'), true);
     assert.deepEqual(BankUI.bankBindingJson().bank_group, 'center', 'a vanished selection falls back to the available group');
     assert.equal(rightPane.classList.contains('hidden'), true);
+    state.outputSystem.catalog.modes.surround.topology.roles = ['main_l', 'main_r', 'rear_l', 'rear_r'];
+    BankUI.renderEffectsBankSelector();
+    assert.deepEqual(combineRow.buttons.map(button => button.getAttribute('data-combine-group')), ['front', 'rear'],
+        'Combine excludes unrouted Center and Side');
     for (const selected of ['all', 'main']) {
         state.outputSystem.catalog.modes.surround.selected_bank = selected;
         BankUI.renderEffectsBankSelector();
         assert.equal(row.innerHTML, '', `${selected}: no Surround Global chips`);
         assert.equal(row.classList.contains('hidden'), true);
+        assert.equal(combineRow.innerHTML, '', `${selected}: no Combine group chips`);
+        assert.equal(combineRow.classList.contains('hidden'), true);
     }
     state.outputSystem.catalog = { revision: 21, active_mode: 'stereo-sub', modes: { 'stereo-sub': {
         selected_bank: 'global', banks, topology: { roles: ['main_l', 'main_r', 'sub1', 'sub2'] },
@@ -255,6 +293,8 @@ function combineOptions() {
     BankUI.renderEffectsBankSelector();
     assert.equal(row.innerHTML, '');
     assert.equal(row.classList.contains('hidden'), true);
+    assert.equal(combineRow.innerHTML, '');
+    assert.equal(combineRow.classList.contains('hidden'), true);
     assert.equal(rightPane.classList.contains('hidden'), false);
     assert.equal('bank_group' in BankUI.bankBindingJson(), false, 'the remembered group does not leak into other modes');
     console.log('output PEQ bank creation and Combine: ok');
