@@ -277,6 +277,19 @@ assert.equal(Hybrid.getDiagramState(centerScope, 'stereo').layout, 'single');
 assert.deepEqual(Hybrid.getDiagramState(subScope, 'stereo').speakers, { left: false, right: false, stereo: false });
 assert.equal(Hybrid.getDiagramState(subScope, 'stereo').layout, 'sub');
 assert(Hybrid.getDiagramState(subScope, 'stereo').subs.left.active, 'subs stay visible for a sub scope');
+// A Surround group target covers every sub; an individual speaker bank mutes
+// them, so its room view must not show subs that never play.
+const centerBankScope = Hybrid.buildScope({ bank_id: 'center', label: 'Center', channel_mode: 'mono' }, subTopology);
+const centerBankDiagram = Hybrid.getDiagramState(centerBankScope, 'stereo');
+assert.equal(centerBankScope.includesSubs, false);
+assert(!centerBankDiagram.subs.left.visible && !centerBankDiagram.subs.right.visible,
+    'an individual Center bank does not measure the subs');
+const centerGroupDiagram = Hybrid.getDiagramState(centerScope, 'stereo');
+assert(centerGroupDiagram.subs.left.visible && centerGroupDiagram.subs.left.active);
+assert(centerGroupDiagram.subs.right.visible && centerGroupDiagram.subs.right.active);
+const mainBankScope = Hybrid.buildScope({ bank_id: 'main', label: 'Main L/R', channel_mode: 'stereo' }, { sub_mode: 'stereo' });
+assert(!Hybrid.getDiagramState(mainBankScope, 'left').subs.left.visible, 'an individual pair bank mutes the subs');
+assert(Hybrid.getDiagramState('subwoofer-2.2', 'left').subs.left.visible, 'the whole-system scope keeps the subs');
 
 // A series is the regular sequence of every group back to back; step ids carry
 // the group, and a position series never runs across a group boundary.

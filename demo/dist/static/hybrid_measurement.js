@@ -46,6 +46,7 @@
         return {
             id: normalized, mode: normalized, label: MODE_LABELS[normalized], channels: ['left', 'right'],
             direct: true, integration: normalized !== 'stereo', speaker: '', unit: 'speaker', wholeSystem: true,
+            includesSubs: true,
         };
     }
 
@@ -60,6 +61,9 @@
         const subwoofer = bankId.startsWith('sub');
         const channels = area.channel_mode === 'mono' ? ['stereo'] : ['left', 'right'];
         const wholeSystem = bankId === 'global' && !area.group;
+        // A Surround group target covers every sub; an individual speaker bank
+        // mutes them, and a subwoofer scope measures them directly.
+        const includesSubs = subwoofer || wholeSystem || !!area.group;
         const name = String(area.label || '').replace(/^Global · /, '').replace(/ \+ Sub$/, '');
         return {
             id: [bankId, area.group || '', channels.join(','), mode].join('|'),
@@ -71,6 +75,7 @@
             speaker: channels.length === 1 ? (subwoofer ? name : `${name} speaker`) : '',
             unit: subwoofer ? 'sub' : 'speaker',
             wholeSystem,
+            includesSubs,
             group: String(area.group || ''),
             groupName: name,
         };
@@ -93,6 +98,7 @@
             speaker: '',
             unit: 'speaker',
             wholeSystem: false,
+            includesSubs: true,
             group: '',
             groupName: '',
         };
@@ -437,12 +443,16 @@
             left: { visible: false, active: false, label: 'SUB 1', single: false },
             right: { visible: false, active: false, label: 'SUB 2', single: false },
         };
-        if (normalized === 'subwoofer-2.1') {
+        // Only a scope whose target covers the subs shows them: a whole-system
+        // run, a Surround group (its target keeps the subs audible) or a
+        // subwoofer scope.  An individual speaker bank mutes every sub.
+        const showSubs = scope.includesSubs !== false;
+        if (showSubs && normalized === 'subwoofer-2.1') {
             subs.left = { visible: true, active: !!activeChannel, label: 'SUB', single: true };
-        } else if (normalized === 'subwoofer-2.2') {
+        } else if (showSubs && normalized === 'subwoofer-2.2') {
             subs.left.visible = subs.right.visible = true;
             subs.left.active = subs.right.active = !!activeChannel;
-        } else if (normalized === 'subwoofer-2.2-stereo') {
+        } else if (showSubs && normalized === 'subwoofer-2.2-stereo') {
             subs.left.visible = subs.right.visible = true;
             subs.left.label = 'SUB L';
             subs.right.label = 'SUB R';
